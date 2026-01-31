@@ -6,7 +6,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = "https://blueview2-production.up.railway.app"
+BASE_URL = "https://docshare-31.preview.emergentagent.com"
 
 # Test credentials
 TEST_EMAIL = "rfs2671@gmail.com"
