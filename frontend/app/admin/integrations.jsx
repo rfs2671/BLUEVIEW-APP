@@ -92,7 +92,9 @@ export default function AdminIntegrationsScreen() {
       const supported = await Linking.canOpenURL(authorize_url);
       if (supported) {
         await Linking.openURL(authorize_url);
-        toast.info('Dropbox Login', 'Complete authorization in your browser, then return here');
+        // Show code input after opening auth URL
+        setShowCodeInput(true);
+        toast.info('Dropbox Login', 'Complete authorization in browser, then paste the code below');
       } else {
         toast.error('Error', 'Cannot open Dropbox authorization URL');
       }
@@ -101,6 +103,31 @@ export default function AdminIntegrationsScreen() {
       toast.error('Connection Error', error.response?.data?.detail || 'Could not start Dropbox connection');
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleCompleteAuth = async () => {
+    if (!authCode.trim()) {
+      toast.error('Error', 'Please enter the authorization code');
+      return;
+    }
+
+    setCompletingAuth(true);
+    try {
+      const result = await dropboxAPI.completeAuth(authCode.trim());
+      setDropboxStatus({
+        connected: true,
+        account_email: result.email,
+        connected_at: new Date().toISOString(),
+      });
+      setShowCodeInput(false);
+      setAuthCode('');
+      toast.success('Connected!', result.email ? `Connected as ${result.email}` : 'Dropbox connected successfully');
+    } catch (error) {
+      console.error('Failed to complete auth:', error);
+      toast.error('Connection Error', error.response?.data?.detail || 'Could not complete Dropbox connection');
+    } finally {
+      setCompletingAuth(false);
     }
   };
 
