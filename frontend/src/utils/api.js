@@ -192,6 +192,16 @@ export const checkinsAPI = {
     const response = await apiClient.get(`/api/checkins/project/${projectId}/active`);
     return response.data;
   },
+
+  checkIn: async (checkinData) => {
+    const response = await apiClient.post('/api/checkins', checkinData);
+    return response.data;
+  },
+
+  checkOut: async (checkinId) => {
+    const response = await apiClient.post(`/api/checkins/${checkinId}/checkout`);
+    return response.data;
+  },
 };
 
 /**
