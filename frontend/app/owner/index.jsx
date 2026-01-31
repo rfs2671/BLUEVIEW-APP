@@ -296,27 +296,6 @@ export default function OwnerPortalScreen() {
       </AnimatedBackground>
     );
   }
-                    )}
-                  </Pressable>
-                }
-              />
-              
-              <GlassButton
-                title="Access Portal"
-                icon={<Lock size={18} color={colors.text.primary} />}
-                onPress={handleLogin}
-                style={styles.loginBtn}
-              />
-            </GlassCard>
-
-            <Pressable onPress={() => router.back()} style={styles.backLink}>
-              <Text style={styles.backLinkText}>← Return to app</Text>
-            </Pressable>
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
 
   // Owner Dashboard
   return (
