@@ -180,13 +180,10 @@ export default function ProjectsScreen() {
               </>
             ) : filteredProjects.length > 0 ? (
               filteredProjects.map((project) => (
-                <Pressable
+                <GlassListItem
                   key={getProjectId(project)}
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
-                  style={({ pressed }) => [
-                    styles.projectCard,
-                    pressed && styles.projectCardPressed,
-                  ]}
+                  style={styles.projectCard}
                 >
                   <IconPod>
                     <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
@@ -234,7 +231,7 @@ export default function ProjectsScreen() {
                   >
                     <Trash2 size={16} strokeWidth={1.5} color={colors.text.muted} />
                   </Pressable>
-                </Pressable>
+                </GlassListItem>
               ))
             ) : (
               <View style={styles.emptyState}>
