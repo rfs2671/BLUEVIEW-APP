@@ -405,4 +405,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.glass.border,
   },
+  adminActionCard: {
+    borderColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  adminIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
 });
