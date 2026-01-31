@@ -401,15 +401,12 @@ export default function AdminIntegrationsScreen() {
                 {projects.length > 0 ? (
                   <View style={styles.projectsList}>
                     {projects.map((project) => (
-                      <Pressable
+                      <GlassListItem
                         key={project._id || project.id}
                         onPress={() =>
                           router.push(`/projects/${project._id || project.id}/dropbox-settings`)
                         }
-                        style={({ pressed }) => [
-                          styles.projectItem,
-                          pressed && styles.projectItemPressed,
-                        ]}
+                        style={styles.projectItem}
                       >
                         <IconPod size={40}>
                           <FolderOpen
@@ -427,7 +424,7 @@ export default function AdminIntegrationsScreen() {
                         {project.dropbox_folder_path && (
                           <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
                         )}
-                      </Pressable>
+                      </GlassListItem>
                     ))}
                   </View>
                 ) : (
