@@ -231,8 +231,22 @@ export default function OwnerPortalScreen() {
 
   const activeCount = admins.filter(a => a.status === 'active').length;
 
-  // Login Screen
-  if (!isAuthenticated) {
+  // Show loading while checking auth
+  if (authLoading) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={styles.container}>
+          <View style={styles.loginContent}>
+            <ActivityIndicator size="large" color={colors.text.primary} />
+            <Text style={styles.loadingText}>Loading...</Text>
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
+
+  // Owner Password Screen (user is logged in but needs owner password)
+  if (!ownerAuthenticated) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={styles.container}>
@@ -244,6 +258,9 @@ export default function OwnerPortalScreen() {
             <Text style={styles.loginTitle}>Owner Portal</Text>
             <Text style={styles.loginSubtitle}>
               Master administration for Blueview platform
+            </Text>
+            <Text style={styles.loggedInAs}>
+              Logged in as: {user?.name || user?.email}
             </Text>
 
             <GlassCard style={styles.loginCard}>
@@ -258,6 +275,27 @@ export default function OwnerPortalScreen() {
                       <EyeOff size={20} color={colors.text.muted} />
                     ) : (
                       <Eye size={20} color={colors.text.muted} />
+                    )}
+                  </Pressable>
+                }
+              />
+              
+              <GlassButton
+                title="Access Portal"
+                icon={<Lock size={18} color={colors.text.primary} />}
+                onPress={handleOwnerLogin}
+                style={styles.loginBtn}
+              />
+            </GlassCard>
+
+            <Pressable onPress={() => router.back()} style={styles.backLink}>
+              <Text style={styles.backLinkText}>← Return to app</Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
                     )}
                   </Pressable>
                 }
