@@ -70,3 +70,7 @@ ios/
 .vercel
 *.tsbuildinfo
 dump.rdb
+-e 
+# Environment files
+*.env
+*.env.*
