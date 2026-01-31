@@ -33,15 +33,17 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { adminUsersAPI } from '../../src/utils/api';
+import { useAuth } from '../../src/context/AuthContext';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
-const OWNER_PASSWORD = 'blueview2024'; // In real app, would be server-validated
+const OWNER_PASSWORD = 'blueview2024'; // Secondary validation for owner portal
 
 export default function OwnerPortalScreen() {
   const router = useRouter();
   const toast = useToast();
+  const { isAuthenticated: isUserLoggedIn, isLoading: authLoading, user, logout } = useAuth();
 
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -58,25 +60,34 @@ export default function OwnerPortalScreen() {
   const [formEmail, setFormEmail] = useState('');
   const [formPassword, setFormPassword] = useState('');
 
+  // Redirect if not logged in
   useEffect(() => {
-    if (isAuthenticated) {
+    if (!authLoading && !isUserLoggedIn) {
+      router.replace('/login');
+    }
+  }, [isUserLoggedIn, authLoading]);
+
+  useEffect(() => {
+    if (ownerAuthenticated && isUserLoggedIn) {
       fetchAdmins();
     }
-  }, [isAuthenticated]);
+  }, [ownerAuthenticated, isUserLoggedIn]);
 
-  const handleLogin = () => {
+  const handleOwnerLogin = () => {
     if (password === OWNER_PASSWORD) {
-      setIsAuthenticated(true);
+      setOwnerAuthenticated(true);
       setPassword('');
       toast.success('Welcome', 'Owner portal access granted');
     } else {
-      toast.error('Access Denied', 'Invalid password');
+      toast.error('Access Denied', 'Invalid owner password');
     }
   };
 
-  const handleLogout = () => {
-    setIsAuthenticated(false);
+  const handleLogout = async () => {
+    setOwnerAuthenticated(false);
     setPassword('');
+    await logout();
+    router.replace('/login');
   };
 
   const fetchAdmins = async () => {
