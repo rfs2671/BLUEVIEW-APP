@@ -81,23 +81,28 @@ export default function OwnerPortalScreen() {
 
   const fetchAdmins = async () => {
     setLoading(true);
-    // Mock data - in real app would fetch from API
-    setTimeout(() => {
-      setAdmins([
-        {
-          id: '1',
-          company_name: 'BuildCo Construction',
-          contact_name: 'James Wilson',
-          email: 'james@buildco.com',
-          created_at: '2024-01-15',
-          status: 'active',
-        },
-        {
-          id: '2',
-          company_name: 'Metro Builders',
-          contact_name: 'Lisa Chen',
-          email: 'lisa@metrobuilders.com',
-          created_at: '2024-02-20',
+    try {
+      // Fetch admin users from API
+      const usersData = await adminUsersAPI.getAll().catch(() => []);
+      // Filter to only show admin role users
+      const adminUsers = Array.isArray(usersData) 
+        ? usersData.filter(u => u.role === 'admin').map(u => ({
+            id: u.id || u._id,
+            company_name: u.company_name || 'Individual Admin',
+            contact_name: u.name,
+            email: u.email,
+            created_at: u.created_at ? new Date(u.created_at).toISOString().split('T')[0] : 'N/A',
+            status: 'active',
+          }))
+        : [];
+      setAdmins(adminUsers);
+    } catch (error) {
+      console.error('Failed to fetch admins:', error);
+      toast.error('Error', 'Could not load admin accounts');
+    } finally {
+      setLoading(false);
+    }
+  };
           status: 'active',
         },
         {
