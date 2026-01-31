@@ -1,13 +1,14 @@
 # Blueview2 - Expo React Native App
 
 ## Project Overview
-Construction site management application with NFC-based worker check-in system, daily logs, project management, and admin controls.
+Construction site management application with NFC-based worker check-in system, daily logs, project management, Dropbox integration, and admin controls.
 
 ## Tech Stack
 - **Frontend**: Expo React Native (~54.0.32), React 19.1.0, Expo Router
 - **Backend**: FastAPI, Python 3.11, MongoDB
 - **Styling**: Base44 Glassmorphism theme (deep blue gradient, glass cards)
 - **Authentication**: JWT tokens with bcrypt password hashing
+- **Build**: EAS Build configured for Android APK generation
 
 ## Pages Implemented
 
@@ -17,14 +18,14 @@ Construction site management application with NFC-based worker check-in system, 
 | `/` | Home Dashboard | ✅ Working |
 | `/projects` | Projects List | ✅ Working |
 | `/project/[id]` | Project Detail | ✅ Working |
-| `/project/[id]/report-settings` | Report Settings | ✅ Working |
+| `/project/[id]/report-settings` | Report Settings (NFC Tags) | ✅ Working |
 | `/checkin` | Manual Check-In | ✅ Working |
 | `/nfc?tag=TAG_ID` | NFC Check-In | ✅ Working |
 | `/workers` | Workers/Sign-In Log | ✅ Working |
 | `/workers/[id]` | Worker Detail | ✅ Working |
 | `/daily-log` | Daily Log | ✅ Working |
 | `/reports` | Reports | ✅ Working |
-| `/admin/integrations` | Dropbox Integration | ✅ Working |
+| `/admin/integrations` | Dropbox Integration | ✅ Working (OAuth flow complete) |
 | `/admin/users` | Admin User Management | ✅ Full CRUD |
 | `/admin/subcontractors` | Admin Subcontractors | ✅ Full CRUD |
 | `/owner` | Owner Portal | ✅ Working |
@@ -60,7 +61,8 @@ Construction site management application with NFC-based worker check-in system, 
 
 ### NFC Tags
 - `GET /api/nfc-tags/{tag_id}/info` - Get tag info (PUBLIC)
-- `POST /api/projects/{id}/nfc-tags` - Register NFC tag
+- `GET /api/projects/{id}/nfc-tags` - Get project's NFC tags
+- `POST /api/projects/{id}/nfc-tags` - Register NFC tag to project
 - `DELETE /api/projects/{id}/nfc-tags/{tag_id}` - Remove NFC tag
 
 ### Workers
@@ -76,6 +78,15 @@ Construction site management application with NFC-based worker check-in system, 
 - `GET /api/checkins/project/{id}/active` - Active check-ins
 - `GET /api/checkins/project/{id}/today` - Today's check-ins
 
+### Dropbox Integration
+- `GET /api/dropbox/status` - Get connection status
+- `GET /api/dropbox/auth-url` - Get OAuth authorization URL
+- `GET /api/dropbox/callback` - OAuth callback handler (returns HTML)
+- `POST /api/dropbox/complete-auth` - Exchange code for tokens
+- `POST /api/dropbox/disconnect` - Disconnect Dropbox
+- `POST /api/projects/{id}/link-dropbox` - Link folder to project
+- `GET /api/projects/{id}/dropbox-files` - Get project files
+
 ### Dashboard
 - `GET /api/stats/dashboard` - Dashboard statistics
 
@@ -87,10 +98,39 @@ Construction site management application with NFC-based worker check-in system, 
 5. Auto check-in via `/api/checkin`
 6. Success screen with timestamp
 
+## Dropbox OAuth Flow
+1. Admin clicks "Connect to Dropbox" → Opens OAuth URL in browser
+2. User authorizes in Dropbox → Redirected to callback with code
+3. User copies authorization code from callback page
+4. User pastes code in app → App exchanges code for tokens
+5. Tokens stored in database → Status shows "Connected"
+
+## Android Build Instructions
+The project is configured for Android builds using EAS:
+
+```bash
+# Install dependencies
+cd frontend && yarn install
+
+# Generate Android native code
+npx expo prebuild --platform android
+
+# Build APK using EAS (cloud build)
+npx eas build --platform android --profile preview
+
+# Or for local build (requires Android Studio & JDK)
+cd android && ./gradlew assembleDebug
+```
+
 ## Test Credentials
 - **Admin**: rfs2671@gmail.com / Asdddfgh1$
 - **Owner Portal Password**: blueview2024
 - **Sample NFC Tag**: BLUEVIEW-TAG-001
+
+## Testing Status (as of January 31, 2026)
+- **Backend**: 100% (26/26 tests passed)
+- **Frontend**: 95% (all flows working)
+- Test reports: `/app/test_reports/iteration_8.json`
 
 ---
 *Last Updated: January 31, 2026*
