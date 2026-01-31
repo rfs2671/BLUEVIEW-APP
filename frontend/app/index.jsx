@@ -215,6 +215,38 @@ export default function DashboardScreen() {
                   ))}
                 </View>
               </View>
+
+              {/* Admin Section - Only for admin users */}
+              {user?.role === 'admin' && (
+                <View style={styles.quickActionsSection}>
+                  <Text style={styles.sectionLabel}>ADMINISTRATION</Text>
+                  <View style={styles.quickActionsGrid}>
+                    {adminActions.map((action) => {
+                      const Icon = action.icon;
+                      return (
+                        <Pressable
+                          key={action.title}
+                          onPress={() => router.push(action.path)}
+                          style={({ pressed }) => [
+                            styles.quickActionCard,
+                            styles.adminActionCard,
+                            pressed && styles.quickActionPressed,
+                          ]}
+                        >
+                          <View style={styles.quickActionContent}>
+                            <View style={styles.adminIconRow}>
+                              <Icon size={16} strokeWidth={1.5} color="#f59e0b" />
+                              <Text style={styles.quickActionTitle}>{action.title}</Text>
+                            </View>
+                            <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
+                          </View>
+                          <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
             </>
           )}
         </ScrollView>
