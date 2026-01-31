@@ -43,8 +43,11 @@ export default function AdminIntegrationsScreen() {
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [completingAuth, setCompletingAuth] = useState(false);
   const [dropboxStatus, setDropboxStatus] = useState({ connected: false });
   const [projects, setProjects] = useState([]);
+  const [showCodeInput, setShowCodeInput] = useState(false);
+  const [authCode, setAuthCode] = useState('');
 
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
