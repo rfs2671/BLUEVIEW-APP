@@ -69,39 +69,18 @@ export default function AdminSubcontractorsScreen() {
 
   const fetchData = async () => {
     try {
-      // Mock data - in real app would fetch from API
-      setSubcontractors([
-        { 
-          id: '1', 
-          company_name: 'ABC Electric', 
-          contact_name: 'Mike Johnson',
-          email: 'mike@abcelectric.com',
-          phone: '555-0123',
-          trade: 'Electrical',
-          worker_count: 12,
-          project_count: 3,
-        },
-        { 
-          id: '2', 
-          company_name: 'Quality Plumbing', 
-          contact_name: 'Sarah Davis',
-          email: 'sarah@qualityplumb.com',
-          phone: '555-0456',
-          trade: 'Plumbing',
-          worker_count: 8,
-          project_count: 2,
-        },
-        { 
-          id: '3', 
-          company_name: 'Steel Works Inc', 
-          contact_name: 'Tom Brown',
-          email: 'tom@steelworks.com',
-          phone: '555-0789',
-          trade: 'Structural',
-          worker_count: 15,
-          project_count: 4,
-        },
-      ]);
+      // Fetch real data from API
+      const subsData = await adminSubcontractorsAPI.getAll().catch(() => []);
+      setSubcontractors(Array.isArray(subsData) ? subsData.map(sub => ({
+        id: sub.id || sub._id,
+        company_name: sub.company_name,
+        contact_name: sub.contact_name,
+        email: sub.email,
+        phone: sub.phone,
+        trade: sub.trade,
+        worker_count: sub.workers_count || 0,
+        project_count: sub.assigned_projects?.length || 0,
+      })) : []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Error', 'Could not load subcontractors');
