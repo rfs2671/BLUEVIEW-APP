@@ -248,7 +248,11 @@ export default function WorkersScreen() {
                   .toUpperCase();
 
                 return (
-                  <View key={checkin._id || checkin.id || index} style={styles.checkinCard}>
+                  <GlassListItem 
+                    key={checkin._id || checkin.id || index} 
+                    style={styles.checkinCard}
+                    onPress={() => router.push(`/workers/${checkin.worker_id || checkin._id || checkin.id}`)}
+                  >
                     {/* Time */}
                     <View style={styles.timeSection}>
                       <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
@@ -301,7 +305,7 @@ export default function WorkersScreen() {
                         </>
                       )}
                     </View>
-                  </View>
+                  </GlassListItem>
                 );
               })
             ) : (
