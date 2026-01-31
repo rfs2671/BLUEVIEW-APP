@@ -363,18 +363,7 @@ const styles = StyleSheet.create({
   },
   quickActionCard: {
     width: '48%',
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
     padding: spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  quickActionPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
   },
   quickActionContent: {
     flex: 1,
