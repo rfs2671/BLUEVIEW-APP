@@ -301,4 +301,141 @@ export const dropboxAPI = {
   },
 };
 
+/**
+ * Admin User Management APIs
+ */
+export const adminUsersAPI = {
+  getAll: async () => {
+    const response = await apiClient.get('/api/admin/users');
+    return response.data;
+  },
+
+  getById: async (userId) => {
+    const response = await apiClient.get(`/api/admin/users/${userId}`);
+    return response.data;
+  },
+
+  create: async (userData) => {
+    const response = await apiClient.post('/api/admin/users', userData);
+    return response.data;
+  },
+
+  update: async (userId, userData) => {
+    const response = await apiClient.put(`/api/admin/users/${userId}`, userData);
+    return response.data;
+  },
+
+  delete: async (userId) => {
+    const response = await apiClient.delete(`/api/admin/users/${userId}`);
+    return response.data;
+  },
+
+  assignProjects: async (userId, projectIds) => {
+    const response = await apiClient.post(`/api/admin/users/${userId}/assign-projects`, {
+      project_ids: projectIds,
+    });
+    return response.data;
+  },
+};
+
+/**
+ * Admin Subcontractors APIs
+ */
+export const adminSubcontractorsAPI = {
+  getAll: async () => {
+    const response = await apiClient.get('/api/admin/subcontractors');
+    return response.data;
+  },
+
+  getById: async (subId) => {
+    const response = await apiClient.get(`/api/admin/subcontractors/${subId}`);
+    return response.data;
+  },
+
+  create: async (subData) => {
+    const response = await apiClient.post('/api/admin/subcontractors', subData);
+    return response.data;
+  },
+
+  update: async (subId, subData) => {
+    const response = await apiClient.put(`/api/admin/subcontractors/${subId}`, subData);
+    return response.data;
+  },
+
+  delete: async (subId) => {
+    const response = await apiClient.delete(`/api/admin/subcontractors/${subId}`);
+    return response.data;
+  },
+};
+
+/**
+ * NFC Check-In APIs
+ */
+export const nfcAPI = {
+  // Get NFC tag info (no auth required - used on worker check-in)
+  getTagInfo: async (tagId) => {
+    const response = await axios.get(`${API_BASE_URL}/api/nfc-tags/${tagId}/info`);
+    return response.data;
+  },
+
+  // Link NFC tag to project (admin only)
+  linkToProject: async (projectId, tagId, locationDescription) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, {
+      tag_id: tagId,
+      location_description: locationDescription,
+    });
+    return response.data;
+  },
+
+  // Unlink NFC tag from project (admin only)
+  unlinkFromProject: async (projectId, tagId) => {
+    const response = await apiClient.delete(`/api/projects/${projectId}/nfc-tags/${tagId}`);
+    return response.data;
+  },
+
+  // Get project NFC tags
+  getProjectTags: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/nfc-tags`);
+    return response.data;
+  },
+
+  // Process check-in (no auth - used by workers)
+  checkIn: async (checkinData) => {
+    const response = await axios.post(`${API_BASE_URL}/api/checkin`, checkinData);
+    return response.data;
+  },
+
+  // Register new worker (no auth)
+  registerWorker: async (workerData) => {
+    const response = await axios.post(`${API_BASE_URL}/api/workers/register`, workerData);
+    return response.data;
+  },
+};
+
+/**
+ * Owner Portal APIs
+ */
+export const ownerAPI = {
+  // Get all admin accounts
+  getAdmins: async () => {
+    const response = await apiClient.get('/api/owner/admins');
+    return response.data;
+  },
+
+  createAdmin: async (adminData) => {
+    const response = await apiClient.post('/api/owner/admins', adminData);
+    return response.data;
+  },
+
+  updateAdmin: async (adminId, adminData) => {
+    const response = await apiClient.put(`/api/owner/admins/${adminId}`, adminData);
+    return response.data;
+  },
+
+  deleteAdmin: async (adminId) => {
+    const response = await apiClient.delete(`/api/owner/admins/${adminId}`);
+    return response.data;
+  },
+};
+
 export default apiClient;
