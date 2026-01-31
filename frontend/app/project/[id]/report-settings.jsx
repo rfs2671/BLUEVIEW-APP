@@ -123,32 +123,44 @@ export default function ReportSettingsScreen() {
     }
   };
 
-  const handleAddTag = () => {
+  const handleAddTag = async () => {
     if (!newTagId.trim() || !newTagLocation.trim()) {
       toast.error('Error', 'Please fill in both fields');
       return;
     }
     
-    setNfcTags([...nfcTags, { id: newTagId, location: newTagLocation }]);
-    setNewTagId('');
-    setNewTagLocation('');
-    setShowAddTag(false);
-    toast.success('Added', 'NFC tag registered');
+    try {
+      await nfcAPI.linkToProject(projectId, newTagId, newTagLocation);
+      setNfcTags([...nfcTags, { tag_id: newTagId, location: newTagLocation }]);
+      setNewTagId('');
+      setNewTagLocation('');
+      setShowAddTag(false);
+      toast.success('Added', 'NFC tag registered to project');
+    } catch (error) {
+      console.error('Failed to add NFC tag:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not register NFC tag');
+    }
   };
 
-  const handleDeleteTag = (index) => {
-    const confirmDelete = () => {
-      const updated = nfcTags.filter((_, i) => i !== index);
-      setNfcTags(updated);
-      toast.success('Deleted', 'NFC tag removed');
+  const handleDeleteTag = (tagId, index) => {
+    const confirmDelete = async () => {
+      try {
+        await nfcAPI.unlinkFromProject(projectId, tagId);
+        const updated = nfcTags.filter((_, i) => i !== index);
+        setNfcTags(updated);
+        toast.success('Deleted', 'NFC tag removed from project');
+      } catch (error) {
+        console.error('Failed to delete NFC tag:', error);
+        toast.error('Error', error.response?.data?.detail || 'Could not remove NFC tag');
+      }
     };
 
     if (Platform.OS === 'web') {
-      if (window.confirm('Remove this NFC tag?')) {
+      if (window.confirm('Remove this NFC tag from project?')) {
         confirmDelete();
       }
     } else {
-      Alert.alert('Remove Tag', 'Remove this NFC tag?', [
+      Alert.alert('Remove Tag', 'Remove this NFC tag from project?', [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Remove', style: 'destructive', onPress: confirmDelete },
       ]);
