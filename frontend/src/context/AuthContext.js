@@ -40,21 +40,21 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = async (email, password) => {
-    const loginResponse = await authAPI.login(email, password);
+    // Login returns only token, so we need to fetch user data separately
+    await authAPI.login(email, password);
     
-    // The API returns user data directly in the response
-    const userData = loginResponse.user || {
-      email: loginResponse.email,
-      full_name: loginResponse.name,
-      name: loginResponse.name,
-      role: loginResponse.role,
+    // Fetch user data using the token
+    const userData = await authAPI.getMe();
+    const normalizedUser = {
+      ...userData,
+      full_name: userData.full_name || userData.name,
     };
     
-    setUser(userData);
-    await setStoredUser(userData);
+    setUser(normalizedUser);
+    await setStoredUser(normalizedUser);
     setIsAuthenticated(true);
     
-    return userData;
+    return normalizedUser;
   };
 
   const logout = async () => {
