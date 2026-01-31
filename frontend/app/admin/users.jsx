@@ -103,45 +103,66 @@ export default function AdminUsersScreen() {
     router.replace('/login');
   };
 
-  const handleAddUser = () => {
+  const handleAddUser = async () => {
     if (!formName.trim() || !formEmail.trim() || !formPassword.trim()) {
       toast.error('Error', 'Please fill in all required fields');
       return;
     }
 
-    const newUser = {
-      id: Date.now().toString(),
-      name: formName,
-      email: formEmail,
-      role: formRole,
-      assigned_projects: [],
-    };
-
-    setUsers([...users, newUser]);
-    resetForm();
-    setShowAddModal(false);
-    toast.success('Added', 'User created successfully');
+    try {
+      const newUser = await adminUsersAPI.create({
+        name: formName,
+        email: formEmail,
+        role: formRole,
+        password: formPassword,
+      });
+      
+      setUsers([...users, newUser]);
+      resetForm();
+      setShowAddModal(false);
+      toast.success('Added', 'User created successfully');
+    } catch (error) {
+      console.error('Failed to create user:', error);
+      toast.error('Error', 'Backend does not support user creation yet');
+    }
   };
 
-  const handleEditUser = () => {
+  const handleEditUser = async () => {
     if (!selectedUser) return;
     
-    const updated = users.map(u => 
-      u.id === selectedUser.id 
-        ? { ...u, name: formName, email: formEmail, role: formRole }
-        : u
-    );
-    
-    setUsers(updated);
-    resetForm();
-    setShowEditModal(false);
-    toast.success('Updated', 'User updated successfully');
+    try {
+      await adminUsersAPI.update(selectedUser.id, {
+        name: formName,
+        email: formEmail,
+        role: formRole,
+      });
+      
+      const updated = users.map(u => 
+        u.id === selectedUser.id 
+          ? { ...u, name: formName, email: formEmail, role: formRole }
+          : u
+      );
+      
+      setUsers(updated);
+      resetForm();
+      setShowEditModal(false);
+      toast.success('Updated', 'User updated successfully');
+    } catch (error) {
+      console.error('Failed to update user:', error);
+      toast.error('Error', 'Backend does not support user updates yet');
+    }
   };
 
   const handleDeleteUser = (userId) => {
-    const confirmDelete = () => {
-      setUsers(users.filter(u => u.id !== userId));
-      toast.success('Deleted', 'User removed');
+    const confirmDelete = async () => {
+      try {
+        await adminUsersAPI.delete(userId);
+        setUsers(users.filter(u => u.id !== userId));
+        toast.success('Deleted', 'User removed');
+      } catch (error) {
+        console.error('Failed to delete user:', error);
+        toast.error('Error', 'Backend does not support user deletion yet');
+      }
     };
 
     if (Platform.OS === 'web') {
