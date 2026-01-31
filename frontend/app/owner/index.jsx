@@ -103,31 +103,38 @@ export default function OwnerPortalScreen() {
       setLoading(false);
     }
   };
-          status: 'active',
-        },
-        {
-          id: '3',
-          company_name: 'Harbor Construction',
-          contact_name: 'Robert Davis',
-          email: 'robert@harbor.com',
-          created_at: '2024-03-10',
-          status: 'inactive',
-        },
-      ]);
-      setLoading(false);
-    }, 500);
-  };
 
-  const handleAddAdmin = () => {
+  const handleAddAdmin = async () => {
     if (!formCompanyName.trim() || !formContactName.trim() || !formEmail.trim() || !formPassword.trim()) {
       toast.error('Error', 'Please fill in all fields');
       return;
     }
 
-    const newAdmin = {
-      id: Date.now().toString(),
-      company_name: formCompanyName,
-      contact_name: formContactName,
+    try {
+      const newAdmin = await adminUsersAPI.create({
+        name: formContactName,
+        company_name: formCompanyName,
+        email: formEmail,
+        password: formPassword,
+        role: 'admin',
+      });
+      
+      setAdmins([...admins, {
+        id: newAdmin.id || newAdmin._id,
+        company_name: formCompanyName,
+        contact_name: formContactName,
+        email: formEmail,
+        created_at: new Date().toISOString().split('T')[0],
+        status: 'active',
+      }]);
+      resetForm();
+      setShowAddModal(false);
+      toast.success('Created', 'Admin account created successfully');
+    } catch (error) {
+      console.error('Failed to create admin:', error);
+      toast.error('Error', 'Backend does not support admin creation yet');
+    }
+  };
       email: formEmail,
       created_at: new Date().toISOString().split('T')[0],
       status: 'active',
