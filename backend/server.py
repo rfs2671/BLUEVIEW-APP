@@ -763,6 +763,198 @@ async def link_dropbox_folder(project_id: str, folder_data: dict, admin = Depend
     
     return {"message": "Dropbox folder linked successfully", "folder_path": folder_path}
 
+@api_router.post("/dropbox/complete-auth")
+async def complete_dropbox_auth(auth_data: dict, current_user = Depends(get_current_user)):
+    """Exchange authorization code for access tokens and store them"""
+    code = auth_data.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code required")
+    
+    app_key = os.environ.get("DROPBOX_APP_KEY", "37ueec2e4se8gbg")
+    app_secret = os.environ.get("DROPBOX_APP_SECRET", "9uvjvxkh9gvelys")
+    
+    # Exchange code for tokens
+    token_url = "https://api.dropboxapi.com/oauth2/token"
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                token_url,
+                data={
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "client_id": app_key,
+                    "client_secret": app_secret,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Dropbox token exchange failed: {response.text}")
+                raise HTTPException(status_code=400, detail="Failed to exchange authorization code")
+            
+            token_data = response.json()
+            access_token = token_data.get("access_token")
+            refresh_token = token_data.get("refresh_token")
+            
+            if not access_token:
+                raise HTTPException(status_code=400, detail="No access token received")
+            
+            # Get account info to verify connection
+            account_response = await client.post(
+                "https://api.dropboxapi.com/2/users/get_current_account",
+                headers={"Authorization": f"Bearer {access_token}"}
+            )
+            
+            account_email = None
+            if account_response.status_code == 200:
+                account_data = account_response.json()
+                account_email = account_data.get("email")
+            
+            # Store tokens in database
+            user_id = current_user.get("id")
+            now = datetime.now(timezone.utc)
+            
+            await db.integrations.update_one(
+                {"type": "dropbox", "user_id": user_id},
+                {
+                    "$set": {
+                        "type": "dropbox",
+                        "user_id": user_id,
+                        "access_token": access_token,
+                        "refresh_token": refresh_token,
+                        "account_email": account_email,
+                        "connected_at": now,
+                        "updated_at": now
+                    }
+                },
+                upsert=True
+            )
+            
+            logger.info(f"Dropbox connected for user {user_id} ({account_email})")
+            
+            return {
+                "success": True,
+                "message": "Dropbox connected successfully",
+                "email": account_email
+            }
+            
+        except httpx.RequestError as e:
+            logger.error(f"Dropbox API request failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to connect to Dropbox API")
+
+@api_router.get("/dropbox/callback")
+async def dropbox_oauth_callback(code: str = None, error: str = None):
+    """
+    OAuth callback handler - returns HTML page that extracts the code
+    and sends it to the frontend for completion
+    """
+    if error:
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Dropbox Authorization Failed</title></head>
+        <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; background: #1a1a2e; color: white;">
+            <div style="text-align: center;">
+                <h1>Authorization Failed</h1>
+                <p>Error: {error}</p>
+                <p>Please close this window and try again.</p>
+            </div>
+        </body>
+        </html>
+        """
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    
+    if not code:
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Dropbox Authorization</title></head>
+        <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; background: #1a1a2e; color: white;">
+            <div style="text-align: center;">
+                <h1>Missing Authorization Code</h1>
+                <p>No authorization code received from Dropbox.</p>
+                <p>Please close this window and try again.</p>
+            </div>
+        </body>
+        </html>
+        """
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+    
+    # Return HTML page with the code that user can copy or auto-redirect
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Dropbox Authorization</title>
+        <style>
+            body {{
+                font-family: system-ui, -apple-system, sans-serif;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0a0a1a 100%);
+                color: white;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                background: rgba(255,255,255,0.1);
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255,255,255,0.2);
+                max-width: 500px;
+            }}
+            h1 {{ color: #4ade80; margin-bottom: 20px; }}
+            .code-box {{
+                background: rgba(0,0,0,0.3);
+                padding: 15px;
+                border-radius: 10px;
+                font-family: monospace;
+                word-break: break-all;
+                margin: 20px 0;
+                font-size: 14px;
+            }}
+            .btn {{
+                background: #0061FF;
+                color: white;
+                border: none;
+                padding: 12px 30px;
+                border-radius: 10px;
+                cursor: pointer;
+                font-size: 16px;
+                margin: 10px;
+            }}
+            .btn:hover {{ opacity: 0.9; }}
+            .success {{ color: #4ade80; }}
+            .info {{ color: #94a3b8; font-size: 14px; margin-top: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>✓ Authorization Successful</h1>
+            <p>Copy this authorization code back to the Blueview app:</p>
+            <div class="code-box" id="code">{code}</div>
+            <button class="btn" onclick="copyCode()">Copy Code</button>
+            <p class="info">After copying, return to the Blueview app and paste this code to complete the connection.</p>
+            <p id="status"></p>
+        </div>
+        <script>
+            function copyCode() {{
+                navigator.clipboard.writeText("{code}");
+                document.getElementById('status').innerHTML = '<span class="success">Code copied to clipboard!</span>';
+            }}
+        </script>
+    </body>
+    </html>
+    """
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(content=html_content)
+
 # ==================== STATS / DASHBOARD ====================
 
 @api_router.get("/stats/dashboard")
