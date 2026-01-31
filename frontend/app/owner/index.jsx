@@ -533,7 +533,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text.muted,
     textAlign: 'center',
+    marginBottom: spacing.md,
+  },
+  loggedInAs: {
+    fontSize: 12,
+    color: colors.text.subtle,
     marginBottom: spacing.xl,
+  },
+  loadingText: {
+    fontSize: 14,
+    color: colors.text.muted,
+    marginTop: spacing.md,
   },
   loginCard: {
     width: '100%',
