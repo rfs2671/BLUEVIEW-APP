@@ -14,7 +14,7 @@ import {
   Briefcase,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
+import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import { DashboardSkeleton, StatCardSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
