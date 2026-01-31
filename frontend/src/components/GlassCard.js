@@ -6,7 +6,7 @@ import { colors, borderRadius, spacing } from '../styles/theme';
 /**
  * GlassCard - Glassmorphism card component with hover support
  */
-export const GlassCard = ({ children, style, onPress, intensity = 20 }) => {
+export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true }) => {
   const [isHovered, setIsHovered] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
   
@@ -14,7 +14,10 @@ export const GlassCard = ({ children, style, onPress, intensity = 20 }) => {
     onPress,
     onHoverIn: () => setIsHovered(true),
     onHoverOut: () => setIsHovered(false),
-  } : {};
+  } : {
+    onMouseEnter: () => hoverEffect && setIsHovered(true),
+    onMouseLeave: () => hoverEffect && setIsHovered(false),
+  };
   
   return (
     <CardWrapper
@@ -22,13 +25,13 @@ export const GlassCard = ({ children, style, onPress, intensity = 20 }) => {
       style={[
         styles.container,
         style,
-        isHovered && onPress && styles.cardHovered,
+        isHovered && hoverEffect && styles.cardHovered,
       ]}
     >
       <BlurView intensity={intensity} tint="dark" style={styles.blur}>
         <View style={styles.content}>{children}</View>
       </BlurView>
-      <View style={[styles.border, isHovered && onPress && styles.borderHovered]} />
+      <View style={[styles.border, isHovered && hoverEffect && styles.borderHovered]} />
     </CardWrapper>
   );
 };
