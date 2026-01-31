@@ -716,17 +716,19 @@ async def get_dropbox_status(current_user = Depends(get_current_user)):
     if dropbox_config:
         return {
             "connected": True,
-            "email": dropbox_config.get("email"),
+            "account_email": dropbox_config.get("account_email"),
             "connected_at": dropbox_config.get("connected_at")
         }
-    return {"connected": False, "connected_at": None}
+    return {"connected": False, "account_email": None, "connected_at": None}
 
 @api_router.get("/dropbox/auth-url")
 async def get_dropbox_auth_url(current_user = Depends(get_current_user)):
     app_key = os.environ.get("DROPBOX_APP_KEY", "37ueec2e4se8gbg")
-    redirect_uri = os.environ.get("DROPBOX_REDIRECT_URI", "https://blueview.app/dropbox/callback")
+    # Use the preview URL for callback
+    base_url = os.environ.get("BASE_URL", "https://projnfc.preview.emergentagent.com")
+    redirect_uri = f"{base_url}/api/dropbox/callback"
     
-    authorize_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={app_key}&token_access_type=offline"
+    authorize_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={app_key}&redirect_uri={redirect_uri}&token_access_type=offline"
     
     return {"authorize_url": authorize_url}
 
