@@ -198,20 +198,17 @@ export default function DashboardScreen() {
                 <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
                 <View style={styles.quickActionsGrid}>
                   {quickActions.map((action) => (
-                    <Pressable
+                    <GlassListItem
                       key={action.title}
                       onPress={() => router.push(action.path)}
-                      style={({ pressed }) => [
-                        styles.quickActionCard,
-                        pressed && styles.quickActionPressed,
-                      ]}
+                      style={styles.quickActionCard}
                     >
                       <View style={styles.quickActionContent}>
                         <Text style={styles.quickActionTitle}>{action.title}</Text>
                         <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
                       </View>
                       <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                    </Pressable>
+                    </GlassListItem>
                   ))}
                 </View>
               </View>
@@ -224,14 +221,10 @@ export default function DashboardScreen() {
                     {adminActions.map((action) => {
                       const Icon = action.icon;
                       return (
-                        <Pressable
+                        <GlassListItem
                           key={action.title}
                           onPress={() => router.push(action.path)}
-                          style={({ pressed }) => [
-                            styles.quickActionCard,
-                            styles.adminActionCard,
-                            pressed && styles.quickActionPressed,
-                          ]}
+                          style={[styles.quickActionCard, styles.adminActionCard]}
                         >
                           <View style={styles.quickActionContent}>
                             <View style={styles.adminIconRow}>
@@ -241,7 +234,7 @@ export default function DashboardScreen() {
                             <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
                           </View>
                           <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                        </Pressable>
+                        </GlassListItem>
                       );
                     })}
                   </View>
