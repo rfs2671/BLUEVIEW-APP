@@ -100,33 +100,51 @@ export default function AdminSubcontractorsScreen() {
     router.replace('/login');
   };
 
-  const handleAddSubcontractor = () => {
+  const handleAddSubcontractor = async () => {
     if (!formCompanyName.trim() || !formContactName.trim() || !formEmail.trim()) {
       toast.error('Error', 'Please fill in all required fields');
       return;
     }
 
-    const newSub = {
-      id: Date.now().toString(),
-      company_name: formCompanyName,
-      contact_name: formContactName,
-      email: formEmail,
-      phone: formPhone,
-      trade: formTrade,
-      worker_count: 0,
-      project_count: 0,
-    };
+    try {
+      const newSub = await adminSubcontractorsAPI.create({
+        company_name: formCompanyName,
+        contact_name: formContactName,
+        email: formEmail,
+        phone: formPhone,
+        trade: formTrade,
+        password: formPassword,
+      });
 
-    setSubcontractors([...subcontractors, newSub]);
-    resetForm();
-    setShowAddModal(false);
-    toast.success('Added', 'Subcontractor created successfully');
+      setSubcontractors([...subcontractors, {
+        id: newSub.id || newSub._id,
+        company_name: formCompanyName,
+        contact_name: formContactName,
+        email: formEmail,
+        phone: formPhone,
+        trade: formTrade,
+        worker_count: 0,
+        project_count: 0,
+      }]);
+      resetForm();
+      setShowAddModal(false);
+      toast.success('Added', 'Subcontractor created successfully');
+    } catch (error) {
+      console.error('Failed to create subcontractor:', error);
+      toast.error('Error', 'Backend does not support subcontractor creation yet');
+    }
   };
 
   const handleDeleteSubcontractor = (subId) => {
-    const confirmDelete = () => {
-      setSubcontractors(subcontractors.filter(s => s.id !== subId));
-      toast.success('Deleted', 'Subcontractor removed');
+    const confirmDelete = async () => {
+      try {
+        await adminSubcontractorsAPI.delete(subId);
+        setSubcontractors(subcontractors.filter(s => s.id !== subId));
+        toast.success('Deleted', 'Subcontractor removed');
+      } catch (error) {
+        console.error('Failed to delete subcontractor:', error);
+        toast.error('Error', 'Backend does not support deletion yet');
+      }
     };
 
     if (Platform.OS === 'web') {
