@@ -25,7 +25,7 @@ import {
   Key,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
+import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
