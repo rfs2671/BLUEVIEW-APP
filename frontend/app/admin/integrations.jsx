@@ -276,25 +276,72 @@ export default function AdminIntegrationsScreen() {
                       documents directly to your projects.
                     </Text>
 
-                    <Pressable
-                      onPress={handleConnectDropbox}
-                      disabled={connecting}
-                      style={({ pressed }) => [
-                        styles.dropboxButton,
-                        pressed && styles.dropboxButtonPressed,
-                        connecting && styles.dropboxButtonDisabled,
-                      ]}
-                    >
-                      {connecting ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <>
-                          <Cloud size={22} strokeWidth={2} color="#fff" />
-                          <Text style={styles.dropboxButtonText}>Connect to Dropbox</Text>
-                          <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
-                        </>
-                      )}
-                    </Pressable>
+                    {!showCodeInput ? (
+                      <Pressable
+                        onPress={handleConnectDropbox}
+                        disabled={connecting}
+                        style={({ pressed }) => [
+                          styles.dropboxButton,
+                          pressed && styles.dropboxButtonPressed,
+                          connecting && styles.dropboxButtonDisabled,
+                        ]}
+                      >
+                        {connecting ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <>
+                            <Cloud size={22} strokeWidth={2} color="#fff" />
+                            <Text style={styles.dropboxButtonText}>Connect to Dropbox</Text>
+                            <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
+                          </>
+                        )}
+                      </Pressable>
+                    ) : (
+                      <View style={styles.codeInputSection}>
+                        <Text style={styles.codeInputLabel}>
+                          After authorizing in Dropbox, paste the code below:
+                        </Text>
+                        <View style={styles.codeInputRow}>
+                          <TextInput
+                            style={styles.codeInput}
+                            value={authCode}
+                            onChangeText={setAuthCode}
+                            placeholder="Paste authorization code"
+                            placeholderTextColor={colors.text.subtle}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                          />
+                        </View>
+                        <View style={styles.codeButtonRow}>
+                          <GlassButton
+                            title="Cancel"
+                            onPress={() => {
+                              setShowCodeInput(false);
+                              setAuthCode('');
+                            }}
+                            style={styles.cancelCodeBtn}
+                          />
+                          <Pressable
+                            onPress={handleCompleteAuth}
+                            disabled={completingAuth || !authCode.trim()}
+                            style={({ pressed }) => [
+                              styles.completeAuthButton,
+                              pressed && styles.dropboxButtonPressed,
+                              (completingAuth || !authCode.trim()) && styles.dropboxButtonDisabled,
+                            ]}
+                          >
+                            {completingAuth ? (
+                              <ActivityIndicator size="small" color="#fff" />
+                            ) : (
+                              <>
+                                <Key size={18} strokeWidth={2} color="#fff" />
+                                <Text style={styles.dropboxButtonText}>Complete Connection</Text>
+                              </>
+                            )}
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
                   </View>
                 )}
               </GlassCard>
