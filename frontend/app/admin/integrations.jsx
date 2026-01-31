@@ -693,18 +693,8 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   projectItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
     padding: spacing.md,
-    transition: 'all 0.2s ease',
-  },
-  projectItemPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
   projectInfo: {
     flex: 1,
