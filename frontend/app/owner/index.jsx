@@ -135,37 +135,44 @@ export default function OwnerPortalScreen() {
       toast.error('Error', 'Backend does not support admin creation yet');
     }
   };
-      email: formEmail,
-      created_at: new Date().toISOString().split('T')[0],
-      status: 'active',
-    };
 
-    setAdmins([...admins, newAdmin]);
-    resetForm();
-    setShowAddModal(false);
-    toast.success('Created', 'Admin account created successfully');
-  };
-
-  const handleEditAdmin = () => {
+  const handleEditAdmin = async () => {
     if (!selectedAdmin) return;
     
-    const updated = admins.map(a => 
-      a.id === selectedAdmin.id 
-        ? { ...a, company_name: formCompanyName, contact_name: formContactName, email: formEmail }
-        : a
-    );
-    
-    setAdmins(updated);
-    resetForm();
-    setShowEditModal(false);
-    toast.success('Updated', 'Admin account updated');
+    try {
+      await adminUsersAPI.update(selectedAdmin.id, {
+        name: formContactName,
+        company_name: formCompanyName,
+        email: formEmail,
+      });
+      
+      const updated = admins.map(a => 
+        a.id === selectedAdmin.id 
+          ? { ...a, company_name: formCompanyName, contact_name: formContactName, email: formEmail }
+          : a
+      );
+      
+      setAdmins(updated);
+      resetForm();
+      setShowEditModal(false);
+      toast.success('Updated', 'Admin account updated');
+    } catch (error) {
+      console.error('Failed to update admin:', error);
+      toast.error('Error', 'Backend does not support admin updates yet');
+    }
   };
 
   const handleDeleteAdmin = (adminId) => {
     const admin = admins.find(a => a.id === adminId);
-    const confirmDelete = () => {
-      setAdmins(admins.filter(a => a.id !== adminId));
-      toast.success('Deleted', 'Admin account removed');
+    const confirmDelete = async () => {
+      try {
+        await adminUsersAPI.delete(adminId);
+        setAdmins(admins.filter(a => a.id !== adminId));
+        toast.success('Deleted', 'Admin account removed');
+      } catch (error) {
+        console.error('Failed to delete admin:', error);
+        toast.error('Error', 'Backend does not support admin deletion yet');
+      }
     };
 
     if (Platform.OS === 'web') {
