@@ -8,7 +8,7 @@ import requests
 import os
 from datetime import datetime
 
-BASE_URL = "https://docshare-31.preview.emergentagent.com"
+BASE_URL = "https://projnfc.preview.emergentagent.com"
 
 # Test credentials
 TEST_EMAIL = "rfs2671@gmail.com"
