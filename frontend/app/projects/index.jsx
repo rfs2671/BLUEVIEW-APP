@@ -182,6 +182,7 @@ export default function ProjectsScreen() {
               filteredProjects.map((project) => (
                 <Pressable
                   key={getProjectId(project)}
+                  onPress={() => router.push(`/project/${getProjectId(project)}`)}
                   style={({ pressed }) => [
                     styles.projectCard,
                     pressed && styles.projectCardPressed,
