@@ -73,17 +73,17 @@ export default function AdminUsersScreen() {
 
   const fetchData = async () => {
     try {
-      // Mock data - in real app would fetch from API
-      setUsers([
-        { id: '1', name: 'John Smith', email: 'john@example.com', role: 'cp', assigned_projects: ['proj1'] },
-        { id: '2', name: 'Jane Doe', email: 'jane@example.com', role: 'worker', assigned_projects: [] },
-        { id: '3', name: 'Bob Wilson', email: 'bob@example.com', role: 'cp', assigned_projects: ['proj1', 'proj2'] },
+      // Fetch real data from API
+      const [usersData, projectsData] = await Promise.all([
+        adminUsersAPI.getAll().catch(() => []),
+        projectsAPI.getAll().catch(() => []),
       ]);
-      setProjects([
-        { id: 'proj1', name: 'Downtown Tower' },
-        { id: 'proj2', name: 'Harbor Bridge' },
-        { id: 'proj3', name: 'Airport Terminal' },
-      ]);
+      
+      setUsers(Array.isArray(usersData) ? usersData : []);
+      setProjects(Array.isArray(projectsData) ? projectsData.map(p => ({
+        id: p.id || p._id,
+        name: p.name,
+      })) : []);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Error', 'Could not load users');
