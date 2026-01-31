@@ -5,7 +5,8 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_BASE_URL = 'https://blueview2-production.up.railway.app';
+// Use local backend (proxied through Emergent)
+const API_BASE_URL = 'https://demobackend.emergentagent.com';
 
 // Create axios instance
 const apiClient = axios.create({
