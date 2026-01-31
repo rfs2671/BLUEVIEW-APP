@@ -131,9 +131,9 @@ npx serve dist -l 3000 -s
 | `/daily-log` | Daily Log | ✅ Working |
 | `/reports` | Reports | ✅ Working |
 | `/admin/integrations` | Dropbox Integration | ✅ Working |
-| `/admin/users` | Admin User Management | ✅ NEW - Working (MOCK DATA) |
-| `/admin/subcontractors` | Admin Subcontractors | ✅ NEW - Working (MOCK DATA) |
-| `/owner` | Owner Portal | ✅ NEW - Working (MOCK DATA) |
+| `/admin/users` | Admin User Management | ✅ Connected to real API |
+| `/admin/subcontractors` | Admin Subcontractors | ✅ Connected to real API |
+| `/owner` | Owner Portal | ✅ Connected to real API (requires login + owner password) |
 | `/projects/[id]/dropbox-settings` | Project Dropbox Settings | ✅ Working |
 | `/projects/[id]/construction-plans` | Construction Plans Viewer | ✅ Working |
 
