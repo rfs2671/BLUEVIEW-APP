@@ -212,15 +212,14 @@ The app now has all pages from the original PDF spec plus additional Dropbox int
 - axios
 
 ## Next Steps (Backlog)
-- Connect Admin User Management to real backend API
-- Connect Admin Subcontractors to real backend API
-- Connect Owner Portal to real backend API
 - Dark/light theme toggle
 - Android native build testing
 - Photo upload integration
 - Voice-to-text for daily logs
 - Push notifications
 - Offline support
+- Backend: Add POST/PUT/DELETE endpoints for admin users management
+- Backend: Add POST/PUT/DELETE endpoints for subcontractors management
 
 ---
 *Last Updated: January 31, 2026*
