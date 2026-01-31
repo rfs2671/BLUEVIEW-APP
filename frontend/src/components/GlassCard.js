@@ -153,6 +153,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  listItem: {
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    padding: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    transition: 'all 0.2s ease',
+  },
+  listItemHovered: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    transform: [{ scale: 1.01 }, { translateY: -2 }],
+  },
+  listItemPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
+  },
+  listItemDisabled: {
+    opacity: 0.5,
+  },
 });
 
 export default GlassCard;
