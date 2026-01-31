@@ -47,7 +47,10 @@ export const StatCard = ({ children, style, onPress }) => {
     onPress,
     onHoverIn: () => setIsHovered(true),
     onHoverOut: () => setIsHovered(false),
-  } : {};
+  } : {
+    onMouseEnter: () => setIsHovered(true),
+    onMouseLeave: () => setIsHovered(false),
+  };
   
   return (
     <CardWrapper
@@ -60,6 +63,31 @@ export const StatCard = ({ children, style, onPress }) => {
     >
       <View style={styles.statContent}>{children}</View>
     </CardWrapper>
+  );
+};
+
+/**
+ * GlassListItem - Interactive list item with hover support
+ */
+export const GlassListItem = ({ children, style, onPress, disabled }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      onHoverIn={() => setIsHovered(true)}
+      onHoverOut={() => setIsHovered(false)}
+      style={({ pressed }) => [
+        styles.listItem,
+        isHovered && styles.listItemHovered,
+        pressed && styles.listItemPressed,
+        disabled && styles.listItemDisabled,
+        style,
+      ]}
+    >
+      {children}
+    </Pressable>
   );
 };
 
