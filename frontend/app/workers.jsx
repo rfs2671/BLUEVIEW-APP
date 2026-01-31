@@ -15,7 +15,7 @@ import {
   LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { StatCard, IconPod } from '../src/components/GlassCard';
+import { StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import { WorkerCardSkeleton, StatCardSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
