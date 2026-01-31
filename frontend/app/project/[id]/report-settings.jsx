@@ -340,18 +340,18 @@ export default function ReportSettingsScreen() {
             {nfcTags.length > 0 ? (
               <View style={styles.listContainer}>
                 {nfcTags.map((tag, index) => (
-                  <View key={index} style={styles.listItem}>
+                  <View key={tag.tag_id || index} style={styles.listItem}>
                     <View style={styles.tagContent}>
                       <IconPod size={36}>
                         <Nfc size={16} strokeWidth={1.5} color={colors.text.secondary} />
                       </IconPod>
                       <View style={styles.tagInfo}>
-                        <Text style={styles.tagLocation}>{tag.location}</Text>
-                        <Text style={styles.tagId}>ID: {tag.id}</Text>
+                        <Text style={styles.tagLocation}>{tag.location || tag.location_description}</Text>
+                        <Text style={styles.tagId}>ID: {tag.tag_id || tag.id}</Text>
                       </View>
                     </View>
                     {isAdmin && (
-                      <Pressable onPress={() => handleDeleteTag(index)} style={styles.deleteBtn}>
+                      <Pressable onPress={() => handleDeleteTag(tag.tag_id || tag.id, index)} style={styles.deleteBtn}>
                         <Trash2 size={16} strokeWidth={1.5} color={colors.status.error} />
                       </Pressable>
                     )}
