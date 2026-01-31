@@ -359,17 +359,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   projectCard: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    padding: spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: spacing.md,
-  },
-  projectCardPressed: {
-    opacity: 0.8,
   },
   projectInfo: {
     flex: 1,
