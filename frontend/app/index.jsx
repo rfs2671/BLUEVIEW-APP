@@ -9,6 +9,9 @@ import {
   LogOut,
   LayoutGrid,
   ChevronRight,
+  Settings,
+  UserCog,
+  Briefcase,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
@@ -26,6 +29,11 @@ const quickActions = [
   { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log' },
   { title: 'Reports', subtitle: 'View & download', path: '/reports' },
   { title: 'Integrations', subtitle: 'Dropbox & cloud sync', path: '/admin/integrations' },
+];
+
+const adminActions = [
+  { title: 'User Management', subtitle: 'Manage CPs & workers', path: '/admin/users', icon: UserCog },
+  { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
 ];
 
 export default function DashboardScreen() {
