@@ -4,24 +4,9 @@
  */
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Constants from 'expo-constants';
 
-// Get API URL from environment or use default
-const getApiUrl = () => {
-  // Try Expo constants first (for Expo environment variables)
-  const expoExtra = Constants.expoConfig?.extra?.apiUrl;
-  if (expoExtra) return expoExtra;
-  
-  // Try process.env for web builds
-  if (typeof process !== 'undefined' && process.env?.REACT_APP_BACKEND_URL) {
-    return process.env.REACT_APP_BACKEND_URL;
-  }
-  
-  // Default to local backend proxy
-  return 'https://demobackend.emergentagent.com';
-};
-
-const API_BASE_URL = getApiUrl();
+// API Base URL - uses the preview URL which proxies /api to backend
+const API_BASE_URL = 'https://docshare-31.preview.emergentagent.com';
 
 // Create axios instance
 const apiClient = axios.create({
