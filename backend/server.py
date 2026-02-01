@@ -294,15 +294,31 @@ async def get_admin_user(current_user = Depends(get_current_user)):
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(credentials: UserLogin):
+    # First try regular user login
     user = await db.users.find_one({"email": credentials.email})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user and verify_password(credentials.password, user.get("password", "")):
+        token = create_token(str(user["_id"]), user["email"], user.get("role", "worker"))
+        return TokenResponse(token=token)
     
-    if not verify_password(credentials.password, user.get("password", "")):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Try site device login (username matches email field in login)
+    device = await db.site_devices.find_one({"username": credentials.email, "is_active": True})
+    if device and verify_password(credentials.password, device.get("password", "")):
+        # Update last login
+        await db.site_devices.update_one(
+            {"_id": device["_id"]},
+            {"$set": {"last_login": datetime.now(timezone.utc)}}
+        )
+        
+        token = create_token(
+            str(device["_id"]), 
+            device["username"], 
+            "site_device",
+            site_mode=True,
+            project_id=device.get("project_id")
+        )
+        return TokenResponse(token=token)
     
-    token = create_token(str(user["_id"]), user["email"], user.get("role", "worker"))
-    return TokenResponse(token=token)
+    raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @api_router.post("/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate):
@@ -322,12 +338,33 @@ async def register(user_data: UserCreate):
     
     return UserResponse(**user_dict)
 
-@api_router.get("/auth/me", response_model=UserResponse)
+@api_router.get("/auth/me")
 async def get_me(current_user = Depends(get_current_user)):
     user = dict(current_user)
     if "password" in user:
         del user["password"]
-    return UserResponse(**user)
+    
+    # For site devices, include project info
+    if user.get("site_mode"):
+        project_id = user.get("project_id")
+        if project_id:
+            project = await db.projects.find_one({"_id": ObjectId(project_id)})
+            if project:
+                user["project_name"] = project.get("name")
+                user["project"] = serialize_id(project)
+        
+        return {
+            "id": user.get("id"),
+            "name": user.get("device_name", "Site Device"),
+            "username": user.get("username"),
+            "role": "site_device",
+            "site_mode": True,
+            "project_id": user.get("project_id"),
+            "project_name": user.get("project_name"),
+            "project": user.get("project")
+        }
+    
+    return user
 
 # ==================== ADMIN USER MANAGEMENT ====================
 
