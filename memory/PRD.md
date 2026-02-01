@@ -10,8 +10,28 @@ Construction site management application with NFC-based worker check-in system, 
 - **Authentication**: JWT tokens with bcrypt password hashing
 - **Build**: EAS Build configured for Android APK generation
 
+## Features
+
+### Core Features
+- 🏗️ **Project Management** - Create and manage construction projects
+- 👷 **Worker Check-In** - NFC tag and manual check-in options
+- 📊 **Dashboard** - Real-time statistics and activity tracking
+- 📁 **Dropbox Integration** - Sync construction plans and documents
+- 👥 **Admin Panel** - User and subcontractor management
+- 📱 **Mobile Ready** - Android APK build support via EAS
+
+### Site Device Login System (NEW)
+- **Project-Specific Credentials**: Admin creates credentials linked to specific projects
+- **Site Mode**: Restricted view showing only 3 screens:
+  - Check-Ins (project workers only)
+  - Daily Log Books (project logs only)
+  - Documents (project Dropbox files only)
+- **No Admin Access**: Site devices cannot access admin features or other projects
+- **Signature Sections**: Daily logs include Superintendent and Competent Person sign-off areas
+
 ## Pages Implemented
 
+### Regular User Pages
 | Route | Page | Status |
 |-------|------|--------|
 | `/login` | Login | ✅ Working |
@@ -24,113 +44,64 @@ Construction site management application with NFC-based worker check-in system, 
 | `/workers` | Workers/Sign-In Log | ✅ Working |
 | `/workers/[id]` | Worker Detail | ✅ Working |
 | `/daily-log` | Daily Log | ✅ Working |
+| `/documents` | Documents | ✅ Working |
 | `/reports` | Reports | ✅ Working |
-| `/admin/integrations` | Dropbox Integration | ✅ Working (OAuth flow complete) |
+| `/admin/integrations` | Dropbox Integration | ✅ Working |
 | `/admin/users` | Admin User Management | ✅ Full CRUD |
 | `/admin/subcontractors` | Admin Subcontractors | ✅ Full CRUD |
+| `/admin/site-devices` | Site Device Management | ✅ NEW |
 | `/owner` | Owner Portal | ✅ Working |
-| `/projects/[id]/dropbox-settings` | Project Dropbox Settings | ✅ Working |
-| `/projects/[id]/construction-plans` | Construction Plans Viewer | ✅ Working |
+
+### Site Mode Pages (NEW)
+| Route | Page | Status |
+|-------|------|--------|
+| `/site/checkins` | Site Check-Ins | ✅ Working |
+| `/site/daily-logs` | Site Daily Log Books | ✅ Working |
+| `/site/documents` | Site Documents | ✅ Working |
 
 ## Backend API Endpoints
 
+### Site Device Management (NEW)
+- `GET /api/admin/site-devices` - List all site devices
+- `POST /api/admin/site-devices` - Create site device
+- `GET /api/admin/site-devices/{id}` - Get site device
+- `PUT /api/admin/site-devices/{id}` - Update site device (enable/disable)
+- `DELETE /api/admin/site-devices/{id}` - Delete site device
+- `GET /api/projects/{id}/site-devices` - Get devices for project
+
 ### Authentication
-- `POST /api/auth/login` - Login with email/password
+- `POST /api/auth/login` - Login (supports both email and site device username)
 - `POST /api/auth/register` - Register new user
-- `GET /api/auth/me` - Get current user info
+- `GET /api/auth/me` - Get current user info (includes site_mode flag)
 
-### Admin User Management
-- `GET /api/admin/users` - List all users
-- `POST /api/admin/users` - Create user
-- `PUT /api/admin/users/{id}` - Update user
-- `DELETE /api/admin/users/{id}` - Delete user
-- `POST /api/admin/users/{id}/assign-projects` - Assign projects
+### Other Endpoints
+(See previous documentation for full list)
 
-### Admin Subcontractors
-- `GET /api/admin/subcontractors` - List all subcontractors
-- `POST /api/admin/subcontractors` - Create subcontractor
-- `PUT /api/admin/subcontractors/{id}` - Update subcontractor
-- `DELETE /api/admin/subcontractors/{id}` - Delete subcontractor
+## Site Device Login Flow
+1. Admin creates site device in Admin → Site Devices
+2. Admin assigns project and creates username/password
+3. On-site tablet/phone logs in with username/password
+4. App detects site_mode from JWT token
+5. User redirected to `/site/checkins` with restricted navigation
+6. Only project-specific data accessible
 
-### Projects
-- `GET /api/projects` - List projects
-- `POST /api/projects` - Create project
-- `GET /api/projects/{id}` - Get project
-- `PUT /api/projects/{id}` - Update project
-- `DELETE /api/projects/{id}` - Delete project
+## Daily Log Sign-Off Sections
+Daily logs in site mode include two signature sections:
+1. **Superintendent Sign-Off** - For project superintendent approval
+2. **Competent Person Sign-Off** - For safety/compliance approval
 
-### NFC Tags
-- `GET /api/nfc-tags/{tag_id}/info` - Get tag info (PUBLIC)
-- `GET /api/projects/{id}/nfc-tags` - Get project's NFC tags
-- `POST /api/projects/{id}/nfc-tags` - Register NFC tag to project
-- `DELETE /api/projects/{id}/nfc-tags/{tag_id}` - Remove NFC tag
-
-### Workers
-- `GET /api/workers` - List workers
-- `POST /api/workers/register` - Self-register worker (PUBLIC)
-- `GET /api/workers/{id}` - Get worker
-- `PUT /api/workers/{id}` - Update worker
-- `DELETE /api/workers/{id}` - Delete worker
-
-### Check-Ins
-- `POST /api/checkin` - Worker check-in (PUBLIC)
-- `POST /api/checkins/{id}/checkout` - Worker check-out
-- `GET /api/checkins/project/{id}/active` - Active check-ins
-- `GET /api/checkins/project/{id}/today` - Today's check-ins
-
-### Dropbox Integration
-- `GET /api/dropbox/status` - Get connection status
-- `GET /api/dropbox/auth-url` - Get OAuth authorization URL
-- `GET /api/dropbox/callback` - OAuth callback handler (returns HTML)
-- `POST /api/dropbox/complete-auth` - Exchange code for tokens
-- `POST /api/dropbox/disconnect` - Disconnect Dropbox
-- `POST /api/projects/{id}/link-dropbox` - Link folder to project
-- `GET /api/projects/{id}/dropbox-files` - Get project files
-
-### Dashboard
-- `GET /api/stats/dashboard` - Dashboard statistics
-
-## NFC Check-In Flow
-1. Worker scans NFC tag → Opens URL `/nfc?tag=TAG_ID`
-2. App fetches tag info from `/api/nfc-tags/{tag_id}/info`
-3. If new worker: Shows registration form
-4. Worker registers → Profile saved to AsyncStorage
-5. Auto check-in via `/api/checkin`
-6. Success screen with timestamp
-
-## Dropbox OAuth Flow
-1. Admin clicks "Connect to Dropbox" → Opens OAuth URL in browser
-2. User authorizes in Dropbox → Redirected to callback with code
-3. User copies authorization code from callback page
-4. User pastes code in app → App exchanges code for tokens
-5. Tokens stored in database → Status shows "Connected"
-
-## Android Build Instructions
-The project is configured for Android builds using EAS:
-
-```bash
-# Install dependencies
-cd frontend && yarn install
-
-# Generate Android native code
-npx expo prebuild --platform android
-
-# Build APK using EAS (cloud build)
-npx eas build --platform android --profile preview
-
-# Or for local build (requires Android Studio & JDK)
-cd android && ./gradlew assembleDebug
-```
+Both currently show "Pending signature" with "Coming soon" placeholder.
 
 ## Test Credentials
 - **Admin**: rfs2671@gmail.com / Asdddfgh1$
+- **Site Device**: site-downtown-1 / sitepass123 (Downtown Tower project)
 - **Owner Portal Password**: blueview2024
-- **Sample NFC Tag**: BLUEVIEW-TAG-001
 
-## Testing Status (as of January 31, 2026)
-- **Backend**: 100% (26/26 tests passed)
-- **Frontend**: 95% (all flows working)
+## Testing Status (as of February 1, 2026)
+- **Backend**: All endpoints working
+- **Frontend**: All pages working
+- **Site Mode**: Fully functional
 - Test reports: `/app/test_reports/iteration_8.json`
 
 ---
-*Last Updated: January 31, 2026*
+*Last Updated: February 1, 2026*
