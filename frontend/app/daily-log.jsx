@@ -5,80 +5,105 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
+  TextInput,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
+  Calendar,
+  Sun,
   Cloud,
   CloudRain,
-  Sun,
-  CloudSun,
   Wind,
-  Snowflake,
-  Thermometer,
   Plus,
-  ChevronDown,
-  ChevronUp,
+  Users,
   Check,
   X,
-  Send,
-  Building2,
+  ChevronDown,
   LogOut,
+  FileText,
+  Building2,
+  ShieldCheck,
+  HardHat,
+  AlertTriangle,
+  ClipboardList,
+  History,
+  CheckCircle,
+  XCircle,
+  MinusCircle,
+  PenTool,
+  Clock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
+import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
+import SignaturePad from '../src/components/SignaturePad';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI } from '../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const weatherOptions = [
-  { label: 'Sunny', icon: Sun },
-  { label: 'Partly Cloudy', icon: CloudSun },
-  { label: 'Cloudy', icon: Cloud },
-  { label: 'Rainy', icon: CloudRain },
-  { label: 'Windy', icon: Wind },
-  { label: 'Snow', icon: Snowflake },
-  { label: 'Hot', icon: Thermometer },
-  { label: 'Cold', icon: Thermometer },
+  { value: 'sunny', label: 'Sunny', icon: Sun },
+  { value: 'cloudy', label: 'Cloudy', icon: Cloud },
+  { value: 'rainy', label: 'Rainy', icon: CloudRain },
+  { value: 'windy', label: 'Windy', icon: Wind },
+];
+
+const SAFETY_CHECKLIST_ITEMS = [
+  { id: 'fall_protection', label: 'Fall Protection' },
+  { id: 'scaffolding', label: 'Scaffolding' },
+  { id: 'ppe', label: 'PPE (Personal Protective Equipment)' },
+  { id: 'hazards', label: 'Hazard Identification' },
+  { id: 'base_conditions', label: 'Base Conditions' },
 ];
 
 export default function DailyLogScreen() {
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
+  // Tab state
+  const [activeTab, setActiveTab] = useState('today'); // 'today' or 'previous'
+
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
-  const [showWeatherPicker, setShowWeatherPicker] = useState(false);
-  const [weather, setWeather] = useState('Sunny');
-  const [expandedCard, setExpandedCard] = useState(null);
-  const [notes, setNotes] = useState('');
-  const [subcontractorCards, setSubcontractorCards] = useState([
-    {
-      company_name: 'Subcontractor 1',
-      worker_count: 0,
-      work_description: '',
-      inspection: { cleanliness: 'pass', safety: 'pass' },
-    },
-  ]);
+  const [allLogs, setAllLogs] = useState([]);
+  const [existingLog, setExistingLog] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
 
-  const today = new Date().toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
+  // Form state
+  const [formData, setFormData] = useState({
+    weather: 'sunny',
+    notes: '',
+    worker_count: 0,
+    subcontractor_cards: [],
+    // Safety checklist
+    safety_checklist: {},
+    // Corrective actions
+    corrective_actions: '',
+    corrective_actions_na: false,
+    // Incident log
+    incident_log: '',
+    incident_log_na: false,
+    // Signatures
+    superintendent_name: '',
+    superintendent_signature: null,
+    competent_person_name: '',
+    competent_person_signature: null,
   });
 
-  const WeatherIcon = weatherOptions.find((w) => w.label === weather)?.icon || Sun;
+  const isAdmin = user?.role === 'admin';
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -87,22 +112,26 @@ export default function DailyLogScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch projects
+  // Initialize for site mode
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && siteMode && siteProject) {
+      setSelectedProject(siteProject);
+      fetchLogsForProject(siteProject.id);
+    } else if (isAuthenticated && !siteMode) {
       fetchProjects();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, siteMode, siteProject]);
 
   const fetchProjects = async () => {
     setLoading(true);
     try {
-      const data = await projectsAPI.getAll();
-      const projectList = Array.isArray(data) ? data : [];
+      const projectsData = await projectsAPI.getAll();
+      const projectList = Array.isArray(projectsData) ? projectsData : [];
       setProjects(projectList);
-
       if (projectList.length > 0) {
-        setSelectedProject(projectList[0]);
+        const firstProject = projectList[0];
+        setSelectedProject(firstProject);
+        await fetchLogsForProject(firstProject._id || firstProject.id);
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error);
@@ -112,57 +141,142 @@ export default function DailyLogScreen() {
     }
   };
 
-  const handleProjectChange = (project) => {
+  const fetchLogsForProject = async (projectId) => {
+    try {
+      const logs = await dailyLogsAPI.getByProject(projectId);
+      const logsList = Array.isArray(logs) ? logs : [];
+      setAllLogs(logsList);
+
+      // Check for today's log
+      const today = new Date().toISOString().split('T')[0];
+      const todayLog = logsList.find((l) => l.date === today);
+      
+      if (todayLog) {
+        setExistingLog(todayLog);
+        populateFormFromLog(todayLog);
+      } else {
+        setExistingLog(null);
+        resetForm();
+      }
+    } catch (error) {
+      console.error('Failed to fetch logs:', error);
+      setAllLogs([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const populateFormFromLog = (log) => {
+    setFormData({
+      weather: log.weather || 'sunny',
+      notes: log.notes || '',
+      worker_count: log.worker_count || 0,
+      subcontractor_cards: log.subcontractor_cards || [],
+      safety_checklist: log.safety_checklist || {},
+      corrective_actions: log.corrective_actions || '',
+      corrective_actions_na: log.corrective_actions_na || false,
+      incident_log: log.incident_log || '',
+      incident_log_na: log.incident_log_na || false,
+      superintendent_name: log.superintendent_signature?.signer_name || '',
+      superintendent_signature: log.superintendent_signature || null,
+      competent_person_name: log.competent_person_signature?.signer_name || '',
+      competent_person_signature: log.competent_person_signature || null,
+    });
+  };
+
+  const resetForm = () => {
+    setFormData({
+      weather: 'sunny',
+      notes: '',
+      worker_count: 0,
+      subcontractor_cards: [],
+      safety_checklist: {},
+      corrective_actions: '',
+      corrective_actions_na: false,
+      incident_log: '',
+      incident_log_na: false,
+      superintendent_name: '',
+      superintendent_signature: null,
+      competent_person_name: '',
+      competent_person_signature: null,
+    });
+  };
+
+  const handleProjectChange = async (project) => {
     setSelectedProject(project);
     setShowProjectPicker(false);
+    setLoading(true);
+    await fetchLogsForProject(project._id || project.id);
   };
 
-  const toggleInspection = (cardIndex, field) => {
-    const updated = [...subcontractorCards];
-    updated[cardIndex].inspection[field] =
-      updated[cardIndex].inspection[field] === 'pass' ? 'fail' : 'pass';
-    setSubcontractorCards(updated);
-  };
-
-  const addSubcontractorCard = () => {
-    setSubcontractorCards([
-      ...subcontractorCards,
-      {
-        company_name: `Subcontractor ${subcontractorCards.length + 1}`,
-        worker_count: 0,
-        work_description: '',
-        inspection: { cleanliness: 'pass', safety: 'pass' },
+  const handleSafetyCheckChange = (itemId, status) => {
+    const now = new Date().toISOString();
+    const userName = user?.full_name || user?.name || user?.device_name || 'Unknown';
+    
+    setFormData((prev) => ({
+      ...prev,
+      safety_checklist: {
+        ...prev.safety_checklist,
+        [itemId]: {
+          status,
+          checked_by: userName,
+          checked_at: now,
+        },
       },
-    ]);
+    }));
   };
 
-  const updateSubcontractorCard = (index, field, value) => {
-    const updated = [...subcontractorCards];
-    updated[index][field] = value;
-    setSubcontractorCards(updated);
+  const createAuditTrail = () => {
+    return {
+      entered_by: user?.full_name || user?.name || user?.device_name || 'Unknown',
+      entered_by_id: user?.id,
+      entered_at: new Date().toISOString(),
+    };
   };
 
-  const handleSave = async () => {
+  const handleSubmit = async () => {
     if (!selectedProject) {
-      toast.warning('No Project', 'Please select a project first');
+      toast.warning('Select Project', 'Please select a project first');
       return;
     }
 
     setSaving(true);
     try {
+      const today = new Date().toISOString().split('T')[0];
       const logData = {
         project_id: selectedProject._id || selectedProject.id,
-        date: new Date().toISOString().split('T')[0],
-        weather: weather,
-        notes: notes,
-        subcontractor_cards: subcontractorCards,
+        date: today,
+        weather: formData.weather,
+        notes: formData.notes,
+        worker_count: parseInt(formData.worker_count) || 0,
+        subcontractor_cards: formData.subcontractor_cards,
+        safety_checklist: formData.safety_checklist,
+        corrective_actions: formData.corrective_actions,
+        corrective_actions_na: formData.corrective_actions_na,
+        corrective_actions_audit: formData.corrective_actions ? createAuditTrail() : null,
+        incident_log: formData.incident_log,
+        incident_log_na: formData.incident_log_na,
+        incident_log_audit: formData.incident_log ? createAuditTrail() : null,
+        superintendent_signature: formData.superintendent_signature,
+        competent_person_signature: formData.competent_person_signature,
       };
 
-      await dailyLogsAPI.create(logData);
-      toast.success('Saved', 'Daily log saved successfully');
+      if (existingLog) {
+        // Update existing log
+        await dailyLogsAPI.update(existingLog.id || existingLog._id, logData);
+        toast.success('Updated', 'Daily log updated successfully');
+      } else {
+        // Create new log
+        const newLog = await dailyLogsAPI.create(logData);
+        setExistingLog(newLog);
+        toast.success('Created', 'Daily log created successfully');
+      }
+
+      // Refresh logs
+      await fetchLogsForProject(selectedProject._id || selectedProject.id);
     } catch (error) {
-      console.error('Failed to save daily log:', error);
-      toast.error('Save Error', error.response?.data?.detail || 'Could not save daily log');
+      console.error('Failed to save log:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not save daily log');
     } finally {
       setSaving(false);
     }
@@ -175,6 +289,96 @@ export default function DailyLogScreen() {
 
   const getProjectId = (project) => project?._id || project?.id;
 
+  const formatDate = (dateStr) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const formatTimestamp = (timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const getWeatherIcon = (weather) => {
+    const option = weatherOptions.find((w) => w.value === weather);
+    return option?.icon || Cloud;
+  };
+
+  const previousLogs = allLogs.filter(
+    (log) => log.date !== new Date().toISOString().split('T')[0]
+  );
+
+  // Render safety checklist item
+  const renderSafetyCheckItem = (item) => {
+    const checkData = formData.safety_checklist[item.id] || { status: 'unchecked' };
+    
+    return (
+      <View key={item.id} style={styles.checklistItem}>
+        <Text style={styles.checklistLabel}>{item.label}</Text>
+        <View style={styles.checklistOptions}>
+          <Pressable
+            onPress={() => handleSafetyCheckChange(item.id, 'checked')}
+            style={[
+              styles.checkOption,
+              checkData.status === 'checked' && styles.checkOptionActive,
+            ]}
+          >
+            <CheckCircle
+              size={16}
+              strokeWidth={1.5}
+              color={checkData.status === 'checked' ? '#4ade80' : colors.text.muted}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSafetyCheckChange(item.id, 'unchecked')}
+            style={[
+              styles.checkOption,
+              checkData.status === 'unchecked' && styles.checkOptionUnchecked,
+            ]}
+          >
+            <XCircle
+              size={16}
+              strokeWidth={1.5}
+              color={checkData.status === 'unchecked' ? '#ef4444' : colors.text.muted}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() => handleSafetyCheckChange(item.id, 'na')}
+            style={[
+              styles.checkOption,
+              checkData.status === 'na' && styles.checkOptionNA,
+            ]}
+          >
+            <Text
+              style={[
+                styles.naText,
+                checkData.status === 'na' && styles.naTextActive,
+              ]}
+            >
+              N/A
+            </Text>
+          </Pressable>
+        </View>
+        {checkData.checked_at && (
+          <Text style={styles.auditText}>
+            {checkData.checked_by} • {formatTimestamp(checkData.checked_at)}
+          </Text>
+        )}
+      </View>
+    );
+  };
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -186,13 +390,55 @@ export default function DailyLogScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            {siteMode ? (
+              <View style={styles.siteBadge}>
+                <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+                <Text style={styles.siteBadgeText}>SITE MODE</Text>
+              </View>
+            ) : (
+              <Text style={styles.logoText}>BLUEVIEW</Text>
+            )}
           </View>
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={handleLogout}
           />
+        </View>
+
+        {/* Tab Selector */}
+        <View style={styles.tabContainer}>
+          <Pressable
+            onPress={() => setActiveTab('today')}
+            style={[styles.tab, activeTab === 'today' && styles.tabActive]}
+          >
+            <ClipboardList
+              size={16}
+              strokeWidth={1.5}
+              color={activeTab === 'today' ? '#4ade80' : colors.text.muted}
+            />
+            <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>
+              Today's Log
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setActiveTab('previous')}
+            style={[styles.tab, activeTab === 'previous' && styles.tabActive]}
+          >
+            <History
+              size={16}
+              strokeWidth={1.5}
+              color={activeTab === 'previous' ? '#4ade80' : colors.text.muted}
+            />
+            <Text style={[styles.tabText, activeTab === 'previous' && styles.tabTextActive]}>
+              Previous Days
+            </Text>
+            {previousLogs.length > 0 && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>{previousLogs.length}</Text>
+              </View>
+            )}
+          </Pressable>
         </View>
 
         <ScrollView
@@ -202,39 +448,43 @@ export default function DailyLogScreen() {
         >
           {/* Title */}
           <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>SUPER</Text>
+            <Text style={styles.titleLabel}>
+              {activeTab === 'today' ? 'CREATE / EDIT' : 'VIEW'}
+            </Text>
             <Text style={styles.titleText}>Daily Log</Text>
-            <Text style={styles.dateText}>{today}</Text>
           </View>
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={70} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={90} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={150} />
+              <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={150} borderRadiusValue={borderRadius.xl} />
             </>
-          ) : (
+          ) : activeTab === 'today' ? (
             <>
-              {/* Project Selector */}
-              <Pressable
-                style={styles.selectorCard}
-                onPress={() => setShowProjectPicker(!showProjectPicker)}
-              >
-                <View style={styles.selectorContent}>
-                  <IconPod size={44}>
+              {/* Project Selector (only for non-site mode) */}
+              {!siteMode && (
+                <Pressable
+                  style={styles.projectSelector}
+                  onPress={() => setShowProjectPicker(!showProjectPicker)}
+                >
+                  <IconPod size={40}>
                     <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                   </IconPod>
-                  <Text style={styles.selectorText}>
-                    {selectedProject?.name || 'Select Project'}
-                  </Text>
-                </View>
-                <ChevronDown
-                  size={20}
-                  strokeWidth={1.5}
-                  color={colors.text.muted}
-                  style={showProjectPicker && styles.iconRotated}
-                />
-              </Pressable>
+                  <View style={styles.projectInfo}>
+                    <Text style={styles.projectLabel}>PROJECT</Text>
+                    <Text style={styles.projectName}>
+                      {selectedProject?.name || 'Select project'}
+                    </Text>
+                  </View>
+                  <ChevronDown
+                    size={20}
+                    strokeWidth={1.5}
+                    color={colors.text.muted}
+                    style={showProjectPicker && styles.iconRotated}
+                  />
+                </Pressable>
+              )}
 
               {showProjectPicker && (
                 <View style={styles.dropdown}>
@@ -247,219 +497,388 @@ export default function DailyLogScreen() {
                         getProjectId(selectedProject) === getProjectId(p) && styles.dropdownItemActive,
                       ]}
                     >
-                      <Text
-                        style={[
-                          styles.dropdownText,
-                          getProjectId(selectedProject) === getProjectId(p) && styles.dropdownTextActive,
-                        ]}
-                      >
-                        {p.name}
-                      </Text>
+                      <Text style={styles.dropdownText}>{p.name}</Text>
                     </Pressable>
                   ))}
                 </View>
               )}
 
-              {/* Weather Selector */}
-              <Pressable
-                style={styles.selectorCard}
-                onPress={() => setShowWeatherPicker(!showWeatherPicker)}
-              >
-                <View style={styles.selectorContent}>
-                  <IconPod size={44}>
-                    <WeatherIcon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                  </IconPod>
-                  <View>
-                    <Text style={styles.selectorLabel}>WEATHER</Text>
-                    <Text style={styles.selectorText}>{weather}</Text>
-                  </View>
+              {/* Site Mode Project Display */}
+              {siteMode && siteProject && (
+                <View style={styles.siteProjectCard}>
+                  <Building2 size={16} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={styles.siteProjectName}>{siteProject.name}</Text>
                 </View>
-                <ChevronDown
-                  size={20}
-                  strokeWidth={1.5}
-                  color={colors.text.muted}
-                  style={showWeatherPicker && styles.iconRotated}
-                />
-              </Pressable>
+              )}
 
-              {showWeatherPicker && (
+              {/* Date Display */}
+              <View style={styles.dateCard}>
+                <Calendar size={18} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={styles.dateText}>{formatDate(new Date())}</Text>
+                {existingLog && (
+                  <View style={styles.existingBadge}>
+                    <Check size={12} strokeWidth={2} color="#4ade80" />
+                    <Text style={styles.existingText}>Log exists</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Weather Selection */}
+              <GlassCard style={styles.section}>
+                <Text style={styles.sectionTitle}>Weather Conditions</Text>
                 <View style={styles.weatherGrid}>
-                  {weatherOptions.map((opt) => {
-                    const Icon = opt.icon;
+                  {weatherOptions.map((option) => {
+                    const Icon = option.icon;
+                    const isSelected = formData.weather === option.value;
                     return (
                       <Pressable
-                        key={opt.label}
-                        onPress={() => {
-                          setWeather(opt.label);
-                          setShowWeatherPicker(false);
-                        }}
-                        style={[
-                          styles.weatherItem,
-                          weather === opt.label && styles.weatherItemActive,
-                        ]}
+                        key={option.value}
+                        onPress={() => setFormData({ ...formData, weather: option.value })}
+                        style={[styles.weatherOption, isSelected && styles.weatherOptionSelected]}
                       >
                         <Icon
-                          size={18}
+                          size={24}
                           strokeWidth={1.5}
-                          color={weather === opt.label ? colors.text.primary : colors.text.muted}
+                          color={isSelected ? '#4ade80' : colors.text.muted}
                         />
-                        <Text
-                          style={[
-                            styles.weatherLabel,
-                            weather === opt.label && styles.weatherLabelActive,
-                          ]}
-                        >
-                          {opt.label}
+                        <Text style={[styles.weatherLabel, isSelected && styles.weatherLabelSelected]}>
+                          {option.label}
                         </Text>
                       </Pressable>
                     );
                   })}
                 </View>
-              )}
+              </GlassCard>
 
-              {/* Subcontractor Cards */}
-              <View style={styles.subcontractorSection}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionLabel}>SUBCONTRACTOR CARDS</Text>
-                  <GlassButton
-                    title="Add"
-                    icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                    onPress={addSubcontractorCard}
-                    style={styles.addButton}
+              {/* Worker Count */}
+              <GlassCard style={styles.section}>
+                <Text style={styles.sectionTitle}>Worker Count</Text>
+                <View style={styles.workerCountRow}>
+                  <Users size={20} strokeWidth={1.5} color={colors.text.muted} />
+                  <TextInput
+                    style={styles.workerCountInput}
+                    value={String(formData.worker_count)}
+                    onChangeText={(val) => setFormData({ ...formData, worker_count: val })}
+                    keyboardType="numeric"
+                    placeholder="0"
+                    placeholderTextColor={colors.text.subtle}
                   />
+                  <Text style={styles.workerCountLabel}>workers on site today</Text>
                 </View>
-
-                {subcontractorCards.map((card, index) => (
-                  <View key={index} style={styles.subcontractorCard}>
-                    <Pressable
-                      style={styles.subcontractorHeader}
-                      onPress={() => setExpandedCard(expandedCard === index ? null : index)}
-                    >
-                      <View style={styles.subcontractorAvatar}>
-                        <Text style={styles.avatarText}>{card.company_name.charAt(0)}</Text>
-                      </View>
-                      <View style={styles.subcontractorInfo}>
-                        <GlassInput
-                          value={card.company_name}
-                          onChangeText={(text) => updateSubcontractorCard(index, 'company_name', text)}
-                          placeholder="Company Name"
-                          style={styles.companyInput}
-                          inputStyle={styles.companyInputText}
-                        />
-                        <View style={styles.workerCountRow}>
-                          <GlassInput
-                            value={String(card.worker_count)}
-                            onChangeText={(text) =>
-                              updateSubcontractorCard(index, 'worker_count', parseInt(text) || 0)
-                            }
-                            keyboardType="numeric"
-                            style={styles.workerCountInput}
-                            inputStyle={styles.workerCountInputText}
-                          />
-                          <Text style={styles.workersLabel}>workers</Text>
-                        </View>
-                      </View>
-                      {expandedCard === index ? (
-                        <ChevronUp size={20} strokeWidth={1.5} color={colors.text.muted} />
-                      ) : (
-                        <ChevronDown size={20} strokeWidth={1.5} color={colors.text.muted} />
-                      )}
-                    </Pressable>
-
-                    {expandedCard === index && (
-                      <View style={styles.subcontractorExpanded}>
-                        <View style={styles.inputGroup}>
-                          <Text style={styles.inputLabel}>WORK PERFORMED</Text>
-                          <GlassInput
-                            value={card.work_description}
-                            onChangeText={(text) =>
-                              updateSubcontractorCard(index, 'work_description', text)
-                            }
-                            placeholder="Describe work performed..."
-                            multiline
-                            numberOfLines={3}
-                          />
-                        </View>
-
-                        <View style={styles.inputGroup}>
-                          <Text style={styles.inputLabel}>INSPECTION</Text>
-                          <View style={styles.inspectionRow}>
-                            <Pressable
-                              style={[
-                                styles.inspectionBtn,
-                                card.inspection.cleanliness === 'pass' && styles.inspectionBtnActive,
-                              ]}
-                              onPress={() => toggleInspection(index, 'cleanliness')}
-                            >
-                              {card.inspection.cleanliness === 'pass' ? (
-                                <Check size={16} strokeWidth={1.5} color={colors.text.primary} />
-                              ) : (
-                                <X size={16} strokeWidth={1.5} color={colors.text.muted} />
-                              )}
-                              <Text
-                                style={[
-                                  styles.inspectionText,
-                                  card.inspection.cleanliness === 'pass' && styles.inspectionTextActive,
-                                ]}
-                              >
-                                Cleanliness
-                              </Text>
-                            </Pressable>
-                            <Pressable
-                              style={[
-                                styles.inspectionBtn,
-                                card.inspection.safety === 'pass' && styles.inspectionBtnActive,
-                              ]}
-                              onPress={() => toggleInspection(index, 'safety')}
-                            >
-                              {card.inspection.safety === 'pass' ? (
-                                <Check size={16} strokeWidth={1.5} color={colors.text.primary} />
-                              ) : (
-                                <X size={16} strokeWidth={1.5} color={colors.text.muted} />
-                              )}
-                              <Text
-                                style={[
-                                  styles.inspectionText,
-                                  card.inspection.safety === 'pass' && styles.inspectionTextActive,
-                                ]}
-                              >
-                                Safety
-                              </Text>
-                            </Pressable>
-                          </View>
-                        </View>
-                      </View>
-                    )}
-                  </View>
-                ))}
-              </View>
+              </GlassCard>
 
               {/* Notes */}
-              <View style={styles.notesSection}>
-                <Text style={styles.sectionLabel}>ADDITIONAL NOTES</Text>
-                <GlassInput
-                  value={notes}
-                  onChangeText={setNotes}
-                  placeholder="Any additional notes..."
+              <GlassCard style={styles.section}>
+                <Text style={styles.sectionTitle}>Daily Notes</Text>
+                <TextInput
+                  style={styles.notesInput}
+                  value={formData.notes}
+                  onChangeText={(val) => setFormData({ ...formData, notes: val })}
+                  placeholder="Enter daily notes, progress updates, etc..."
+                  placeholderTextColor={colors.text.subtle}
                   multiline
                   numberOfLines={4}
                 />
+              </GlassCard>
+
+              {/* Safety Inspection Checklist */}
+              <GlassCard style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <ShieldCheck size={20} strokeWidth={1.5} color="#f59e0b" />
+                  <Text style={styles.sectionTitle}>Safety Inspection Checklist</Text>
+                </View>
+                <Text style={styles.sectionSubtitle}>
+                  Check each item, mark as unchecked if issue found, or N/A if not applicable
+                </Text>
+                <View style={styles.checklistContainer}>
+                  {SAFETY_CHECKLIST_ITEMS.map(renderSafetyCheckItem)}
+                </View>
+              </GlassCard>
+
+              {/* Corrective Actions */}
+              <GlassCard style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <AlertTriangle size={20} strokeWidth={1.5} color="#ef4444" />
+                  <Text style={styles.sectionTitle}>Corrective Actions</Text>
+                </View>
+                <Text style={styles.sectionSubtitle}>
+                  Document any unsafe conditions found and how they were addressed
+                </Text>
+                <Pressable
+                  onPress={() =>
+                    setFormData({ ...formData, corrective_actions_na: !formData.corrective_actions_na })
+                  }
+                  style={styles.naCheckbox}
+                >
+                  <View
+                    style={[styles.checkbox, formData.corrective_actions_na && styles.checkboxChecked]}
+                  >
+                    {formData.corrective_actions_na && (
+                      <Check size={12} strokeWidth={2} color="#fff" />
+                    )}
+                  </View>
+                  <Text style={styles.naCheckboxLabel}>N/A - No corrective actions needed</Text>
+                </Pressable>
+                {!formData.corrective_actions_na && (
+                  <TextInput
+                    style={styles.notesInput}
+                    value={formData.corrective_actions}
+                    onChangeText={(val) => setFormData({ ...formData, corrective_actions: val })}
+                    placeholder="Describe unsafe conditions and corrective measures taken..."
+                    placeholderTextColor={colors.text.subtle}
+                    multiline
+                    numberOfLines={3}
+                  />
+                )}
+              </GlassCard>
+
+              {/* Incident Log */}
+              <GlassCard style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <FileText size={20} strokeWidth={1.5} color="#3b82f6" />
+                  <Text style={styles.sectionTitle}>Incident Log</Text>
+                </View>
+                <Text style={styles.sectionSubtitle}>
+                  Record any accidents, injuries, or near-misses that occurred
+                </Text>
+                <Pressable
+                  onPress={() =>
+                    setFormData({ ...formData, incident_log_na: !formData.incident_log_na })
+                  }
+                  style={styles.naCheckbox}
+                >
+                  <View
+                    style={[styles.checkbox, formData.incident_log_na && styles.checkboxChecked]}
+                  >
+                    {formData.incident_log_na && (
+                      <Check size={12} strokeWidth={2} color="#fff" />
+                    )}
+                  </View>
+                  <Text style={styles.naCheckboxLabel}>N/A - No incidents occurred</Text>
+                </Pressable>
+                {!formData.incident_log_na && (
+                  <TextInput
+                    style={styles.notesInput}
+                    value={formData.incident_log}
+                    onChangeText={(val) => setFormData({ ...formData, incident_log: val })}
+                    placeholder="Describe any incidents, injuries, or near-misses..."
+                    placeholderTextColor={colors.text.subtle}
+                    multiline
+                    numberOfLines={3}
+                  />
+                )}
+              </GlassCard>
+
+              {/* Superintendent Signature */}
+              <View style={styles.signatureSection}>
+                <View style={styles.signatureHeader}>
+                  <IconPod size={40}>
+                    <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                  </IconPod>
+                  <Text style={styles.signatureTitle}>Superintendent Sign-Off</Text>
+                </View>
+                <SignaturePad
+                  title="Superintendent Signature"
+                  signerName={formData.superintendent_name}
+                  onNameChange={(name) => setFormData({ ...formData, superintendent_name: name })}
+                  existingSignature={formData.superintendent_signature}
+                  onSignatureCapture={(sig) =>
+                    setFormData({ ...formData, superintendent_signature: sig })
+                  }
+                />
               </View>
 
-              {/* Submit */}
+              {/* Competent Person Signature */}
+              <View style={styles.signatureSection}>
+                <View style={styles.signatureHeader}>
+                  <IconPod size={40}>
+                    <ShieldCheck size={18} strokeWidth={1.5} color="#3b82f6" />
+                  </IconPod>
+                  <Text style={styles.signatureTitle}>Competent Person Sign-Off</Text>
+                </View>
+                <SignaturePad
+                  title="Competent Person Signature"
+                  signerName={formData.competent_person_name}
+                  onNameChange={(name) => setFormData({ ...formData, competent_person_name: name })}
+                  existingSignature={formData.competent_person_signature}
+                  onSignatureCapture={(sig) =>
+                    setFormData({ ...formData, competent_person_signature: sig })
+                  }
+                />
+              </View>
+
+              {/* Submit Button */}
               <GlassButton
-                title="Submit Daily Log"
-                icon={<Send size={20} strokeWidth={1.5} color={colors.text.primary} />}
-                onPress={handleSave}
+                title={saving ? 'Saving...' : existingLog ? 'Update Daily Log' : 'Submit Daily Log'}
+                onPress={handleSubmit}
                 loading={saving}
-                disabled={!selectedProject}
                 style={styles.submitButton}
               />
+            </>
+          ) : (
+            /* Previous Days Tab */
+            <>
+              {previousLogs.length > 0 ? (
+                <View style={styles.previousLogsList}>
+                  {previousLogs.map((log) => {
+                    const WeatherIcon = getWeatherIcon(log.weather);
+                    return (
+                      <GlassListItem
+                        key={log.id || log._id}
+                        onPress={() => setSelectedPreviousLog(log)}
+                        style={styles.previousLogItem}
+                      >
+                        <View style={styles.logDateSection}>
+                          <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
+                          <Text style={styles.logDate}>{formatDate(log.date)}</Text>
+                        </View>
+                        <View style={styles.logSummary}>
+                          <View style={styles.logStat}>
+                            <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={styles.logStatText}>{log.weather}</Text>
+                          </View>
+                          <View style={styles.logStat}>
+                            <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
+                          </View>
+                          {log.superintendent_signature && (
+                            <View style={styles.signedBadge}>
+                              <PenTool size={10} strokeWidth={1.5} color="#4ade80" />
+                            </View>
+                          )}
+                        </View>
+                      </GlassListItem>
+                    );
+                  })}
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <IconPod size={64}>
+                    <History size={28} strokeWidth={1.5} color={colors.text.muted} />
+                  </IconPod>
+                  <Text style={styles.emptyTitle}>No Previous Logs</Text>
+                  <Text style={styles.emptyText}>
+                    Previous daily logs for this project will appear here.
+                  </Text>
+                </GlassCard>
+              )}
             </>
           )}
         </ScrollView>
 
-        <FloatingNav />
+        {!siteMode && <FloatingNav />}
+
+        {/* Previous Log Detail Modal */}
+        <Modal
+          visible={!!selectedPreviousLog}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setSelectedPreviousLog(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>
+                  Log: {selectedPreviousLog && formatDate(selectedPreviousLog.date)}
+                </Text>
+                <Pressable onPress={() => setSelectedPreviousLog(null)}>
+                  <X size={24} strokeWidth={1.5} color={colors.text.muted} />
+                </Pressable>
+              </View>
+
+              <ScrollView style={styles.modalScroll}>
+                {selectedPreviousLog && (
+                  <>
+                    <View style={styles.modalSection}>
+                      <Text style={styles.modalLabel}>WEATHER</Text>
+                      <Text style={styles.modalValue}>{selectedPreviousLog.weather}</Text>
+                    </View>
+                    <View style={styles.modalSection}>
+                      <Text style={styles.modalLabel}>WORKER COUNT</Text>
+                      <Text style={styles.modalValue}>{selectedPreviousLog.worker_count || 0}</Text>
+                    </View>
+                    {selectedPreviousLog.notes && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>NOTES</Text>
+                        <Text style={styles.modalValue}>{selectedPreviousLog.notes}</Text>
+                      </View>
+                    )}
+                    {selectedPreviousLog.safety_checklist && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>SAFETY CHECKLIST</Text>
+                        {Object.entries(selectedPreviousLog.safety_checklist).map(([key, value]) => (
+                          <View key={key} style={styles.checklistReview}>
+                            <Text style={styles.checklistReviewLabel}>
+                              {SAFETY_CHECKLIST_ITEMS.find((i) => i.id === key)?.label || key}
+                            </Text>
+                            <View
+                              style={[
+                                styles.statusBadge,
+                                value.status === 'checked' && styles.statusChecked,
+                                value.status === 'unchecked' && styles.statusUnchecked,
+                                value.status === 'na' && styles.statusNA,
+                              ]}
+                            >
+                              <Text style={styles.statusText}>{value.status?.toUpperCase()}</Text>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                    {(selectedPreviousLog.corrective_actions || selectedPreviousLog.corrective_actions_na) && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>CORRECTIVE ACTIONS</Text>
+                        <Text style={styles.modalValue}>
+                          {selectedPreviousLog.corrective_actions_na
+                            ? 'N/A - No corrective actions needed'
+                            : selectedPreviousLog.corrective_actions}
+                        </Text>
+                      </View>
+                    )}
+                    {(selectedPreviousLog.incident_log || selectedPreviousLog.incident_log_na) && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>INCIDENT LOG</Text>
+                        <Text style={styles.modalValue}>
+                          {selectedPreviousLog.incident_log_na
+                            ? 'N/A - No incidents occurred'
+                            : selectedPreviousLog.incident_log}
+                        </Text>
+                      </View>
+                    )}
+                    {selectedPreviousLog.superintendent_signature && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>SUPERINTENDENT SIGNATURE</Text>
+                        <Text style={styles.modalValue}>
+                          {selectedPreviousLog.superintendent_signature.signer_name}
+                        </Text>
+                        <Text style={styles.auditText}>
+                          Signed: {formatTimestamp(selectedPreviousLog.superintendent_signature.signed_at)}
+                        </Text>
+                      </View>
+                    )}
+                    {selectedPreviousLog.competent_person_signature && (
+                      <View style={styles.modalSection}>
+                        <Text style={styles.modalLabel}>COMPETENT PERSON SIGNATURE</Text>
+                        <Text style={styles.modalValue}>
+                          {selectedPreviousLog.competent_person_signature.signer_name}
+                        </Text>
+                        <Text style={styles.auditText}>
+                          Signed: {formatTimestamp(selectedPreviousLog.competent_person_signature.signed_at)}
+                        </Text>
+                      </View>
+                    )}
+                  </>
+                )}
+              </ScrollView>
+
+              <GlassButton
+                title="Close"
+                onPress={() => setSelectedPreviousLog(null)}
+                style={styles.closeButton}
+              />
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -487,6 +906,64 @@ const styles = StyleSheet.create({
     ...typography.label,
     color: colors.text.muted,
   },
+  siteBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.3)',
+  },
+  siteBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#4ade80',
+    letterSpacing: 0.5,
+  },
+  tabContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  tabActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    borderColor: 'rgba(74, 222, 128, 0.3)',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text.muted,
+  },
+  tabTextActive: {
+    color: '#4ade80',
+  },
+  badge: {
+    backgroundColor: '#4ade80',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+  },
   scrollView: {
     flex: 1,
   },
@@ -495,7 +972,7 @@ const styles = StyleSheet.create({
     paddingBottom: 120,
   },
   titleSection: {
-    marginBottom: spacing.xl,
+    marginBottom: spacing.lg,
   },
   titleLabel: {
     ...typography.label,
@@ -507,38 +984,30 @@ const styles = StyleSheet.create({
     fontWeight: '200',
     color: colors.text.primary,
     letterSpacing: -1,
-    marginBottom: spacing.xs,
-  },
-  dateText: {
-    fontSize: 16,
-    fontWeight: '300',
-    color: colors.text.muted,
   },
   mb16: {
     marginBottom: spacing.md,
   },
-  selectorCard: {
+  projectSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
     padding: spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
-  selectorContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
+  projectInfo: {
+    flex: 1,
   },
-  selectorLabel: {
+  projectLabel: {
     ...typography.label,
     color: colors.text.muted,
     marginBottom: 2,
   },
-  selectorText: {
+  projectName: {
     fontSize: 16,
     fontWeight: '500',
     color: colors.text.primary,
@@ -562,162 +1031,347 @@ const styles = StyleSheet.create({
   },
   dropdownText: {
     fontSize: 15,
-    color: colors.text.muted,
+    color: colors.text.secondary,
   },
-  dropdownTextActive: {
-    color: colors.text.primary,
-  },
-  weatherGrid: {
+  siteProjectCard: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginBottom: spacing.lg,
-  },
-  weatherItem: {
-    width: '23%',
     alignItems: 'center',
-    padding: spacing.md,
+    gap: spacing.sm,
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    gap: spacing.xs,
+    padding: spacing.md,
+    marginBottom: spacing.md,
   },
-  weatherItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  weatherLabel: {
-    fontSize: 11,
-    color: colors.text.muted,
-  },
-  weatherLabelActive: {
+  siteProjectName: {
+    fontSize: 15,
     color: colors.text.primary,
   },
-  subcontractorSection: {
+  dateCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  dateText: {
+    flex: 1,
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  existingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: borderRadius.full,
+  },
+  existingText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#4ade80',
+  },
+  section: {
     marginBottom: spacing.lg,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.md,
-  },
-  sectionLabel: {
-    ...typography.label,
-    color: colors.text.muted,
-  },
-  addButton: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  subcontractorCard: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
+    gap: spacing.sm,
     marginBottom: spacing.sm,
-    overflow: 'hidden',
   },
-  subcontractorHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: spacing.md,
-    gap: spacing.md,
-  },
-  subcontractorAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: borderRadius.full,
-    backgroundColor: colors.glass.background,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    fontSize: 18,
-    fontWeight: '500',
-    color: colors.text.secondary,
-  },
-  subcontractorInfo: {
-    flex: 1,
-  },
-  companyInput: {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    padding: 0,
-    marginBottom: spacing.xs,
-  },
-  companyInputText: {
+  sectionTitle: {
     fontSize: 16,
     fontWeight: '500',
-    padding: 0,
+    color: colors.text.primary,
   },
-  workerCountRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  workerCountInput: {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    width: 40,
-    padding: 0,
-  },
-  workerCountInputText: {
-    fontSize: 14,
+  sectionSubtitle: {
+    fontSize: 13,
     color: colors.text.muted,
-    padding: 0,
+    marginBottom: spacing.md,
   },
-  workersLabel: {
-    fontSize: 14,
-    color: colors.text.muted,
-  },
-  subcontractorExpanded: {
-    padding: spacing.md,
-    paddingTop: 0,
-    borderTopWidth: 1,
-    borderTopColor: colors.glass.border,
-  },
-  inputGroup: {
-    marginTop: spacing.md,
-  },
-  inputLabel: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.sm,
-  },
-  inspectionRow: {
+  weatherGrid: {
     flexDirection: 'row',
     gap: spacing.sm,
   },
-  inspectionBtn: {
+  weatherOption: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    padding: spacing.md,
-    backgroundColor: colors.glass.background,
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     borderRadius: borderRadius.lg,
     borderWidth: 1,
     borderColor: colors.glass.border,
   },
-  inspectionBtnActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  weatherOptionSelected: {
+    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    borderColor: '#4ade80',
   },
-  inspectionText: {
+  weatherLabel: {
+    fontSize: 12,
+    color: colors.text.muted,
+  },
+  weatherLabelSelected: {
+    color: '#4ade80',
+  },
+  workerCountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  workerCountInput: {
+    fontSize: 32,
+    fontWeight: '200',
+    color: colors.text.primary,
+    minWidth: 60,
+    textAlign: 'center',
+  },
+  workerCountLabel: {
     fontSize: 14,
+    color: colors.text.muted,
+  },
+  notesInput: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    padding: spacing.md,
+    color: colors.text.primary,
+    fontSize: 14,
+    minHeight: 100,
+    textAlignVertical: 'top',
+  },
+  checklistContainer: {
+    gap: spacing.sm,
+  },
+  checklistItem: {
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  checklistLabel: {
+    fontSize: 14,
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+  },
+  checklistOptions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  checkOption: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  checkOptionActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    borderColor: '#4ade80',
+  },
+  checkOptionUnchecked: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderColor: '#ef4444',
+  },
+  checkOptionNA: {
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    borderColor: colors.text.muted,
+  },
+  naText: {
+    fontSize: 12,
     fontWeight: '500',
     color: colors.text.muted,
   },
-  inspectionTextActive: {
+  naTextActive: {
     color: colors.text.primary,
   },
-  notesSection: {
+  auditText: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    marginTop: spacing.xs,
+  },
+  naCheckbox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: '#4ade80',
+    borderColor: '#4ade80',
+  },
+  naCheckboxLabel: {
+    fontSize: 14,
+    color: colors.text.secondary,
+  },
+  signatureSection: {
     marginBottom: spacing.lg,
   },
+  signatureHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  signatureTitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
   submitButton: {
-    marginTop: spacing.sm,
+    marginTop: spacing.md,
+    marginBottom: spacing.xxl,
+  },
+  previousLogsList: {
+    gap: spacing.sm,
+  },
+  previousLogItem: {
+    gap: spacing.md,
+  },
+  logDateSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    minWidth: 140,
+  },
+  logDate: {
+    fontSize: 14,
+    color: colors.text.primary,
+  },
+  logSummary: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: spacing.md,
+  },
+  logStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  logStatText: {
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  signedBadge: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    padding: 4,
+    borderRadius: borderRadius.full,
+  },
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+    maxWidth: 260,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  modalContent: {
+    backgroundColor: '#1a1a2e',
+    borderRadius: borderRadius.xxl,
+    width: '100%',
+    maxWidth: 500,
+    maxHeight: '80%',
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  modalScroll: {
+    padding: spacing.lg,
+  },
+  modalSection: {
+    marginBottom: spacing.lg,
+  },
+  modalLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+    marginBottom: spacing.xs,
+  },
+  modalValue: {
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  checklistReview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
+  },
+  checklistReviewLabel: {
+    fontSize: 14,
+    color: colors.text.secondary,
+  },
+  statusBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.glass.background,
+  },
+  statusChecked: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+  },
+  statusUnchecked: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+  },
+  statusNA: {
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.text.muted,
+  },
+  closeButton: {
+    margin: spacing.lg,
   },
 });
