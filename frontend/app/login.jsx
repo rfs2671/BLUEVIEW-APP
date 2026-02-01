@@ -13,7 +13,7 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { login, isAuthenticated, isLoading: authLoading, siteMode } = useAuth();
   const toast = useToast();
   
   const [email, setEmail] = useState('');
