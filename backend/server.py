@@ -743,13 +743,91 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    if not project.get("dropbox_enabled"):
+    if not project.get("dropbox_enabled") or not project.get("dropbox_folder"):
         return {"files": [], "message": "Dropbox not enabled for this project"}
     
-    # In real implementation, would fetch from Dropbox API
-    # For now, return stored files
-    files = await db.dropbox_files.find({"project_id": project_id}).to_list(1000)
-    return {"files": serialize_list(files)}
+    # Get Dropbox access token
+    dropbox_config = await db.integrations.find_one({"type": "dropbox"})
+    if not dropbox_config or not dropbox_config.get("access_token"):
+        return {"files": [], "message": "Dropbox not connected"}
+    
+    access_token = dropbox_config.get("access_token")
+    folder_path = project.get("dropbox_folder", "")
+    
+    # Fetch files from Dropbox
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                "https://api.dropboxapi.com/2/files/list_folder",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                json={"path": folder_path if folder_path else "", "recursive": False}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Dropbox list_folder failed: {response.text}")
+                return {"files": [], "message": "Failed to fetch files from Dropbox"}
+            
+            data = response.json()
+            files = []
+            for entry in data.get("entries", []):
+                if entry.get(".tag") == "file":
+                    files.append({
+                        "name": entry.get("name"),
+                        "path": entry.get("path_display"),
+                        "size": entry.get("size", 0),
+                        "modified": entry.get("client_modified") or entry.get("server_modified"),
+                        "id": entry.get("id")
+                    })
+            
+            return {"files": files}
+            
+        except Exception as e:
+            logger.error(f"Error fetching Dropbox files: {e}")
+            return {"files": [], "message": str(e)}
+
+@api_router.get("/projects/{project_id}/dropbox-file-url")
+async def get_dropbox_file_url(project_id: str, file_path: str, current_user = Depends(get_current_user)):
+    """Get a temporary download/view URL for a Dropbox file"""
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Get Dropbox access token
+    dropbox_config = await db.integrations.find_one({"type": "dropbox"})
+    if not dropbox_config or not dropbox_config.get("access_token"):
+        raise HTTPException(status_code=400, detail="Dropbox not connected")
+    
+    access_token = dropbox_config.get("access_token")
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Get temporary link for the file
+            response = await client.post(
+                "https://api.dropboxapi.com/2/files/get_temporary_link",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                json={"path": file_path}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Dropbox get_temporary_link failed: {response.text}")
+                raise HTTPException(status_code=400, detail="Failed to get file URL")
+            
+            data = response.json()
+            return {
+                "url": data.get("link"),
+                "name": data.get("metadata", {}).get("name"),
+                "size": data.get("metadata", {}).get("size")
+            }
+            
+        except httpx.RequestError as e:
+            logger.error(f"Dropbox API request failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to connect to Dropbox API")
 
 @api_router.post("/projects/{project_id}/link-dropbox")
 async def link_dropbox_folder(project_id: str, folder_data: dict, admin = Depends(get_admin_user)):
