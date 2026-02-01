@@ -6,8 +6,8 @@ import {
   LayoutDashboard,
   FolderKanban,
   Users,
-  ClipboardList,
   FileText,
+  FolderOpen,
 } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 
@@ -15,7 +15,7 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/projects', icon: FolderKanban, label: 'Projects' },
   { path: '/workers', icon: Users, label: 'Workers' },
-  { path: '/daily-log', icon: ClipboardList, label: 'Daily Log' },
+  { path: '/documents', icon: FolderOpen, label: 'Documents' },
   { path: '/reports', icon: FileText, label: 'Reports' },
 ];
 
