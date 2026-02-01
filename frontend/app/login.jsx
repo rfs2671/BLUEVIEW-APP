@@ -25,9 +25,14 @@ export default function LoginScreen() {
   // Redirect if already authenticated
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
-      router.replace('/');
+      // Check if site mode and redirect accordingly
+      if (siteMode) {
+        router.replace('/site/checkins');
+      } else {
+        router.replace('/');
+      }
     }
-  }, [isAuthenticated, authLoading]);
+  }, [isAuthenticated, authLoading, siteMode]);
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
