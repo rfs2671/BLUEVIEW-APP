@@ -188,12 +188,37 @@ class SubcontractorResponse(BaseModel):
     created_at: Optional[datetime] = None
 
 # Daily Log Models
+class SafetyCheckItem(BaseModel):
+    item: str
+    status: str  # 'checked', 'unchecked', 'na'
+    checked_by: Optional[str] = None
+    checked_at: Optional[str] = None
+
+class SignatureData(BaseModel):
+    signer_name: str
+    signed_at: str
+    paths: Optional[List[List[Dict]]] = None
+
 class DailyLogCreate(BaseModel):
     project_id: str
     date: str
     weather: Optional[str] = None
     notes: Optional[str] = None
     worker_count: int = 0
+    subcontractor_cards: Optional[List[Dict]] = None
+    # Safety checklist
+    safety_checklist: Optional[Dict[str, Dict]] = None
+    # Corrective actions
+    corrective_actions: Optional[str] = None
+    corrective_actions_na: bool = False
+    corrective_actions_audit: Optional[Dict] = None
+    # Incident log
+    incident_log: Optional[str] = None
+    incident_log_na: bool = False
+    incident_log_audit: Optional[Dict] = None
+    # Signatures
+    superintendent_signature: Optional[Dict] = None
+    competent_person_signature: Optional[Dict] = None
 
 class DailyLogResponse(BaseModel):
     id: str
@@ -202,10 +227,23 @@ class DailyLogResponse(BaseModel):
     weather: Optional[str] = None
     notes: Optional[str] = None
     worker_count: int = 0
+    subcontractor_cards: Optional[List[Dict]] = None
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
-    superintendent_signoff: Optional[Dict[str, Any]] = None
-    competent_person_signoff: Optional[Dict[str, Any]] = None
+    updated_at: Optional[datetime] = None
+    # Safety checklist
+    safety_checklist: Optional[Dict[str, Dict]] = None
+    # Corrective actions
+    corrective_actions: Optional[str] = None
+    corrective_actions_na: bool = False
+    corrective_actions_audit: Optional[Dict] = None
+    # Incident log
+    incident_log: Optional[str] = None
+    incident_log_na: bool = False
+    incident_log_audit: Optional[Dict] = None
+    # Signatures
+    superintendent_signature: Optional[Dict] = None
+    competent_person_signature: Optional[Dict] = None
 
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
