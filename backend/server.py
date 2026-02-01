@@ -204,6 +204,29 @@ class DailyLogResponse(BaseModel):
     worker_count: int = 0
     created_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    superintendent_signoff: Optional[Dict[str, Any]] = None
+    competent_person_signoff: Optional[Dict[str, Any]] = None
+
+# Site Device Models
+class SiteDeviceCreate(BaseModel):
+    project_id: str
+    device_name: str
+    username: str
+    password: str
+
+class SiteDeviceResponse(BaseModel):
+    id: str
+    project_id: str
+    project_name: str
+    device_name: str
+    username: str
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    last_login: Optional[datetime] = None
+
+class SiteDeviceLogin(BaseModel):
+    username: str
+    password: str
 
 # ==================== AUTH HELPERS ====================
 
