@@ -214,6 +214,11 @@ export const dailyLogsAPI = {
     return response.data;
   },
 
+  getById: async (logId) => {
+    const response = await apiClient.get(`/api/daily-logs/${logId}`);
+    return response.data;
+  },
+
   getByProject: async (projectId) => {
     const response = await apiClient.get(`/api/daily-logs/project/${projectId}`);
     return response.data;
@@ -226,6 +231,11 @@ export const dailyLogsAPI = {
 
   create: async (logData) => {
     const response = await apiClient.post('/api/daily-logs', logData);
+    return response.data;
+  },
+
+  update: async (logId, updateData) => {
+    const response = await apiClient.put(`/api/daily-logs/${logId}`, updateData);
     return response.data;
   },
 
