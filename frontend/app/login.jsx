@@ -45,8 +45,15 @@ export default function LoginScreen() {
 
     try {
       const userData = await login(email, password);
-      toast.success('Welcome back!', `Logged in as ${userData.full_name || userData.name || userData.email}`);
-      router.replace('/');
+      
+      // Check if site mode login
+      if (userData.site_mode) {
+        toast.success('Site Mode', `Connected to ${userData.project_name || 'project'}`);
+        router.replace('/site/checkins');
+      } else {
+        toast.success('Welcome back!', `Logged in as ${userData.full_name || userData.name || userData.email}`);
+        router.replace('/');
+      }
     } catch (err) {
       const errorMessage = err.response?.data?.detail || err.message || 'Invalid credentials';
       setError(errorMessage);
