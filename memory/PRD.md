@@ -85,23 +85,60 @@ Construction site management application with NFC-based worker check-in system, 
 5. User redirected to `/site/checkins` with restricted navigation
 6. Only project-specific data accessible
 
-## Daily Log Sign-Off Sections
-Daily logs in site mode include two signature sections:
-1. **Superintendent Sign-Off** - For project superintendent approval
-2. **Competent Person Sign-Off** - For safety/compliance approval
+## Daily Log Features (Fully Implemented - Feb 1, 2026)
+The Daily Log page includes comprehensive sections:
 
-Both currently show "Pending signature" with "Coming soon" placeholder.
+### Today's Log Tab
+1. **Project Selector** - Choose project (admin mode) or fixed (site mode)
+2. **Weather Conditions** - Sunny, Cloudy, Rainy, Windy options
+3. **Worker Count** - Number input for workers on site
+4. **Daily Notes** - Free-form text area for progress updates
+5. **Safety Inspection Checklist** - 5 items with Check/Unchecked/N/A options:
+   - Fall Protection
+   - Scaffolding
+   - PPE (Personal Protective Equipment)
+   - Hazard Identification
+   - Base Conditions
+6. **Corrective Actions** - Text area with N/A checkbox
+7. **Incident Log** - Text area with N/A checkbox
+8. **Superintendent Sign-Off** - SignaturePad component for signature capture
+9. **Competent Person Sign-Off** - SignaturePad component for signature capture
+
+### Previous Days Tab
+- Shows historical logs with date, weather, worker count
+- Click to view full log details in modal
+- Displays signature status for each log
+
+### SignaturePad Component Features
+- Name input field with Edit button
+- Touch/mouse signature drawing area
+- Clear and Confirm buttons
+- Verified badge after signature confirmation
+- Timestamp tracking
 
 ## Test Credentials
 - **Admin**: rfs2671@gmail.com / Asdddfgh1$
-- **Site Device**: site-downtown-1 / sitepass123 (Downtown Tower project)
+- **Site Device**: site-downtown-1 / password (Downtown Tower project)
 - **Owner Portal Password**: blueview2024
 
 ## Testing Status (as of February 1, 2026)
-- **Backend**: All endpoints working
-- **Frontend**: All pages working
+- **Backend**: 100% (21/21 tests passed)
+- **Frontend**: 100% (all tested features working)
 - **Site Mode**: Fully functional
-- Test reports: `/app/test_reports/iteration_8.json`
+- Test reports: `/app/test_reports/iteration_9.json`
+- Pytest results: `/app/test_reports/pytest/pytest_results.xml`
+
+## Android Build
+EAS build is configured. To build Android APK:
+```bash
+cd /app/frontend
+npx eas build --platform android --profile preview
+```
+
+## Dropbox Integration
+- Backend OAuth flow fully implemented
+- Requires manual Dropbox authorization through web browser
+- API endpoints: `/api/dropbox/status`, `/api/dropbox/auth-url`, `/api/dropbox/complete-auth`
 
 ---
 *Last Updated: February 1, 2026*
