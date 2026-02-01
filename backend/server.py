@@ -68,7 +68,7 @@ class UserCreate(BaseModel):
     trade: Optional[str] = None
 
 class UserLogin(BaseModel):
-    email: EmailStr
+    email: str  # Can be email or username for site devices
     password: str
 
 class UserResponse(BaseModel):
