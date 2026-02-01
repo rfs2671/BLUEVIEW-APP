@@ -889,19 +889,47 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
 
 @api_router.get("/daily-logs")
 async def get_daily_logs(current_user = Depends(get_current_user)):
-    logs = await db.daily_logs.find({}).to_list(1000)
+    logs = await db.daily_logs.find({}).sort("date", -1).to_list(1000)
     return serialize_list(logs)
 
 @api_router.post("/daily-logs", response_model=DailyLogResponse)
 async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_current_user)):
     log_dict = log_data.model_dump()
-    log_dict["created_at"] = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    log_dict["created_at"] = now
+    log_dict["updated_at"] = now
     log_dict["created_by"] = current_user.get("id")
+    log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
     
     return DailyLogResponse(**log_dict)
+
+@api_router.put("/daily-logs/{log_id}")
+async def update_daily_log(log_id: str, update_data: dict, current_user = Depends(get_current_user)):
+    """Update an existing daily log"""
+    # Remove fields that shouldn't be updated directly
+    update_data.pop("id", None)
+    update_data.pop("_id", None)
+    update_data.pop("created_at", None)
+    update_data.pop("created_by", None)
+    
+    update_data["updated_at"] = datetime.now(timezone.utc)
+    update_data["updated_by"] = current_user.get("id")
+    update_data["updated_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
+    
+    result = await db.daily_logs.update_one(
+        {"_id": ObjectId(log_id)},
+        {"$set": update_data}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+    
+    # Return updated log
+    log = await db.daily_logs.find_one({"_id": ObjectId(log_id)})
+    return serialize_id(log)
 
 @api_router.get("/daily-logs/{log_id}", response_model=DailyLogResponse)
 async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
@@ -912,7 +940,7 @@ async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
 
 @api_router.get("/daily-logs/project/{project_id}")
 async def get_project_daily_logs(project_id: str, current_user = Depends(get_current_user)):
-    logs = await db.daily_logs.find({"project_id": project_id}).to_list(1000)
+    logs = await db.daily_logs.find({"project_id": project_id}).sort("date", -1).to_list(1000)
     return serialize_list(logs)
 
 # ==================== REPORTS ====================
