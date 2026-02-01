@@ -32,7 +32,7 @@ export default function LoginScreen() {
         router.replace('/');
       }
     }
-  }, [isAuthenticated, authLoading, siteMode]);
+  }, [isAuthenticated, authLoading, siteMode, router]);
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
