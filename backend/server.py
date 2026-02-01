@@ -488,6 +488,109 @@ async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     return {"message": "Subcontractor deleted successfully"}
 
+# ==================== SITE DEVICE MANAGEMENT ====================
+
+@api_router.get("/admin/site-devices")
+async def get_site_devices(admin = Depends(get_admin_user)):
+    """Get all site devices"""
+    devices = await db.site_devices.find({}, {"password": 0}).to_list(1000)
+    result = []
+    for device in devices:
+        device_data = serialize_id(device)
+        # Get project name
+        if device.get("project_id"):
+            project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+            device_data["project_name"] = project.get("name") if project else "Unknown"
+        result.append(device_data)
+    return result
+
+@api_router.post("/admin/site-devices")
+async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_admin_user)):
+    """Create a new site device credential"""
+    # Check if username exists
+    existing = await db.site_devices.find_one({"username": device_data.username})
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    # Verify project exists
+    project = await db.projects.find_one({"_id": ObjectId(device_data.project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    device_dict = device_data.model_dump()
+    device_dict["password"] = hash_password(device_dict["password"])
+    device_dict["is_active"] = True
+    device_dict["created_at"] = datetime.now(timezone.utc)
+    device_dict["created_by"] = admin.get("id")
+    
+    result = await db.site_devices.insert_one(device_dict)
+    
+    return {
+        "id": str(result.inserted_id),
+        "project_id": device_data.project_id,
+        "project_name": project.get("name"),
+        "device_name": device_data.device_name,
+        "username": device_data.username,
+        "is_active": True,
+        "message": "Site device created successfully"
+    }
+
+@api_router.get("/admin/site-devices/{device_id}")
+async def get_site_device(device_id: str, admin = Depends(get_admin_user)):
+    """Get a specific site device"""
+    device = await db.site_devices.find_one({"_id": ObjectId(device_id)}, {"password": 0})
+    if not device:
+        raise HTTPException(status_code=404, detail="Site device not found")
+    
+    device_data = serialize_id(device)
+    if device.get("project_id"):
+        project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+        device_data["project_name"] = project.get("name") if project else "Unknown"
+    
+    return device_data
+
+@api_router.put("/admin/site-devices/{device_id}")
+async def update_site_device(device_id: str, update_data: dict, admin = Depends(get_admin_user)):
+    """Update a site device"""
+    update_fields = {}
+    
+    if "device_name" in update_data:
+        update_fields["device_name"] = update_data["device_name"]
+    if "is_active" in update_data:
+        update_fields["is_active"] = update_data["is_active"]
+    if "password" in update_data and update_data["password"]:
+        update_fields["password"] = hash_password(update_data["password"])
+    
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    
+    result = await db.site_devices.update_one(
+        {"_id": ObjectId(device_id)},
+        {"$set": update_fields}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Site device not found")
+    
+    return {"message": "Site device updated successfully"}
+
+@api_router.delete("/admin/site-devices/{device_id}")
+async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
+    """Delete a site device"""
+    result = await db.site_devices.delete_one({"_id": ObjectId(device_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Site device not found")
+    return {"message": "Site device deleted successfully"}
+
+@api_router.get("/projects/{project_id}/site-devices")
+async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user)):
+    """Get all site devices for a specific project"""
+    devices = await db.site_devices.find(
+        {"project_id": project_id},
+        {"password": 0}
+    ).to_list(100)
+    return serialize_list(devices)
+
 # ==================== PROJECTS ====================
 
 @api_router.get("/projects", response_model=List[ProjectResponse])
