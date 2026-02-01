@@ -236,11 +236,13 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-def create_token(user_id: str, email: str, role: str) -> str:
+def create_token(user_id: str, email: str, role: str, site_mode: bool = False, project_id: str = None) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "site_mode": site_mode,
+        "project_id": project_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
         "iat": datetime.now(timezone.utc)
     }
@@ -253,14 +255,31 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
+        site_mode = payload.get("site_mode", False)
+        project_id = payload.get("project_id")
+        
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
         
+        # For site devices, fetch from site_devices collection
+        if site_mode:
+            device = await db.site_devices.find_one({"_id": ObjectId(user_id)})
+            if not device:
+                raise HTTPException(status_code=401, detail="Device not found")
+            
+            device_data = serialize_id(device)
+            device_data["site_mode"] = True
+            device_data["role"] = "site_device"
+            return device_data
+        
+        # Regular user
         user = await db.users.find_one({"_id": ObjectId(user_id)})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
-        return serialize_id(user)
+        user_data = serialize_id(user)
+        user_data["site_mode"] = False
+        return user_data
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
