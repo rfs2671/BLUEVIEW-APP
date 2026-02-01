@@ -1,0 +1,482 @@
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  Users,
+  Building2,
+  Clock,
+  MapPin,
+  LogOut,
+  RefreshCw,
+} from 'lucide-react-native';
+import AnimatedBackground from '../../src/components/AnimatedBackground';
+import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
+import GlassButton from '../../src/components/GlassButton';
+import { GlassSkeleton, StatCardSkeleton } from '../../src/components/GlassSkeleton';
+import SiteNav from '../../src/components/SiteNav';
+import { useToast } from '../../src/components/Toast';
+import { useAuth } from '../../src/context/AuthContext';
+import { checkinsAPI } from '../../src/utils/api';
+import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+
+export default function SiteCheckInsScreen() {
+  const router = useRouter();
+  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const toast = useToast();
+
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [checkins, setCheckins] = useState([]);
+  const [stats, setStats] = useState({ total: 0, active: 0 });
+
+  // Redirect if not authenticated or not in site mode
+  useEffect(() => {
+    if (!authLoading) {
+      if (!isAuthenticated) {
+        router.replace('/login');
+      } else if (!siteMode) {
+        router.replace('/');
+      }
+    }
+  }, [isAuthenticated, authLoading, siteMode]);
+
+  // Fetch data
+  useEffect(() => {
+    if (isAuthenticated && siteMode && siteProject?.id) {
+      fetchData();
+    }
+  }, [isAuthenticated, siteMode, siteProject]);
+
+  const fetchData = async () => {
+    if (!siteProject?.id) return;
+    
+    setLoading(true);
+    try {
+      const todayCheckins = await checkinsAPI.getTodayByProject(siteProject.id);
+      const checkinList = Array.isArray(todayCheckins) ? todayCheckins : [];
+      setCheckins(checkinList);
+      
+      const activeCount = checkinList.filter(c => !c.check_out_time).length;
+      setStats({
+        total: checkinList.length,
+        active: activeCount,
+      });
+    } catch (error) {
+      console.error('Failed to fetch check-ins:', error);
+      toast.error('Load Error', 'Could not load check-in data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await fetchData();
+    setRefreshing(false);
+    toast.success('Refreshed', 'Check-in data updated');
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
+
+  const formatTime = (dateStr) => {
+    if (!dateStr) return '--:--';
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const getWorkerInfo = (checkin) => ({
+    name: checkin.worker_name || checkin.worker?.name || 'Unknown Worker',
+    trade: checkin.worker?.trade || checkin.trade || 'General',
+    company: checkin.worker?.company_name || checkin.company || 'N/A',
+    checkInTime: checkin.check_in_time || checkin.timestamp,
+    checkOutTime: checkin.check_out_time,
+  });
+
+  return (
+    <AnimatedBackground>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        {/* Header */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <View style={styles.siteBadge}>
+              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Text style={styles.siteBadgeText}>SITE MODE</Text>
+            </View>
+            <Text style={styles.projectName} numberOfLines={1}>
+              {siteProject?.name || 'Project'}
+            </Text>
+          </View>
+          <GlassButton
+            variant="icon"
+            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+            onPress={handleLogout}
+          />
+        </View>
+
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Title */}
+          <View style={styles.titleSection}>
+            <View style={styles.titleRow}>
+              <Text style={styles.titleLabel}>TODAY'S</Text>
+              <GlassButton
+                variant="icon"
+                icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.muted} />}
+                onPress={handleRefresh}
+                style={styles.refreshBtn}
+              />
+            </View>
+            <Text style={styles.titleText}>Check-Ins</Text>
+          </View>
+
+          {/* Stats */}
+          <View style={styles.statsRow}>
+            {loading ? (
+              <>
+                <StatCardSkeleton style={styles.statCard} />
+                <StatCardSkeleton style={styles.statCard} />
+              </>
+            ) : (
+              <>
+                <StatCard style={styles.statCard}>
+                  <Text style={styles.statLabel}>TOTAL TODAY</Text>
+                  <Text style={styles.statValue}>{stats.total}</Text>
+                </StatCard>
+                <StatCard style={styles.statCard}>
+                  <View style={styles.activeIndicator}>
+                    <View style={styles.activeDot} />
+                    <Text style={styles.statLabel}>ON-SITE NOW</Text>
+                  </View>
+                  <Text style={[styles.statValue, styles.activeValue]}>{stats.active}</Text>
+                </StatCard>
+              </>
+            )}
+          </View>
+
+          {/* Check-ins List */}
+          {loading ? (
+            <>
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
+            </>
+          ) : checkins.length > 0 ? (
+            <View style={styles.checkinsList}>
+              {checkins.map((checkin, index) => {
+                const workerInfo = getWorkerInfo(checkin);
+                const initials = workerInfo.name
+                  .split(' ')
+                  .map((n) => n[0])
+                  .join('')
+                  .toUpperCase();
+
+                return (
+                  <GlassListItem 
+                    key={checkin._id || checkin.id || index} 
+                    style={styles.checkinCard}
+                  >
+                    {/* Time */}
+                    <View style={styles.timeSection}>
+                      <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
+                      {workerInfo.checkOutTime && (
+                        <Text style={styles.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
+                      )}
+                    </View>
+
+                    <View style={styles.divider} />
+
+                    {/* Worker Info */}
+                    <View style={styles.workerInfo}>
+                      <View style={styles.workerHeader}>
+                        <View style={styles.avatar}>
+                          <Text style={styles.avatarText}>{initials}</Text>
+                        </View>
+                        <View style={styles.workerDetails}>
+                          <Text style={styles.workerName}>{workerInfo.name}</Text>
+                          <Text style={styles.workerTrade}>{workerInfo.trade}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.workerMeta}>
+                        <View style={styles.metaItem}>
+                          <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
+                          <Text style={styles.metaText}>{workerInfo.company}</Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Status */}
+                    <View
+                      style={[
+                        styles.statusBadge,
+                        !workerInfo.checkOutTime && styles.statusActive,
+                      ]}
+                    >
+                      {!workerInfo.checkOutTime ? (
+                        <>
+                          <View style={styles.statusDot} />
+                          <Text style={styles.statusText}>ON-SITE</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
+                          <Text style={[styles.statusText, styles.statusDone]}>DONE</Text>
+                        </>
+                      )}
+                    </View>
+                  </GlassListItem>
+                );
+              })}
+            </View>
+          ) : (
+            <GlassCard style={styles.emptyCard}>
+              <IconPod size={64}>
+                <Users size={28} strokeWidth={1.5} color={colors.text.muted} />
+              </IconPod>
+              <Text style={styles.emptyTitle}>No Check-Ins Today</Text>
+              <Text style={styles.emptyText}>
+                Workers will appear here when they check in to this project.
+              </Text>
+            </GlassCard>
+          )}
+        </ScrollView>
+
+        <SiteNav />
+      </SafeAreaView>
+    </AnimatedBackground>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    flex: 1,
+  },
+  siteBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.3)',
+  },
+  siteBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#4ade80',
+    letterSpacing: 0.5,
+  },
+  projectName: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.primary,
+    flex: 1,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: spacing.lg,
+    paddingBottom: 120,
+  },
+  titleSection: {
+    marginBottom: spacing.lg,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  titleLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+  },
+  refreshBtn: {
+    padding: spacing.xs,
+  },
+  titleText: {
+    fontSize: 48,
+    fontWeight: '200',
+    color: colors.text.primary,
+    letterSpacing: -1,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  statCard: {
+    flex: 1,
+    padding: spacing.lg,
+  },
+  statLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+    marginBottom: spacing.xs,
+  },
+  statValue: {
+    fontSize: 36,
+    fontWeight: '200',
+    color: colors.text.primary,
+  },
+  activeIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4ade80',
+  },
+  activeValue: {
+    color: '#4ade80',
+  },
+  mb12: {
+    marginBottom: spacing.sm + 4,
+  },
+  checkinsList: {
+    gap: spacing.sm,
+  },
+  checkinCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  timeSection: {
+    minWidth: 60,
+    alignItems: 'center',
+  },
+  timeText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  timeOutText: {
+    fontSize: 11,
+    color: colors.text.muted,
+    marginTop: 2,
+  },
+  divider: {
+    width: 1,
+    height: 40,
+    backgroundColor: colors.glass.border,
+  },
+  workerInfo: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  workerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  avatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  workerDetails: {
+    flex: 1,
+  },
+  workerName: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  workerTrade: {
+    fontSize: 12,
+    color: colors.text.muted,
+  },
+  workerMeta: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginLeft: 44,
+  },
+  metaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  metaText: {
+    fontSize: 11,
+    color: colors.text.subtle,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    borderRadius: borderRadius.full,
+  },
+  statusActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+  },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#4ade80',
+  },
+  statusText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#4ade80',
+    letterSpacing: 0.5,
+  },
+  statusDone: {
+    color: colors.text.subtle,
+  },
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginTop: spacing.lg,
+    marginBottom: spacing.sm,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+    maxWidth: 260,
+  },
+});
