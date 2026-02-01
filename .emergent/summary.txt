@@ -1,81 +1,95 @@
 <analysis>**original_problem_statement:**
-The user's initial request was to convert a React Native application into a React web application with a futuristic Base44 glassmorphism theme, and then connect it to their live backend. The project then pivoted back to an Expo React Native application (for web and Android) while preserving the aesthetic.
+The user's initial request was to convert a React Native app to a React web app with a Base44 glassmorphism theme. The project then pivoted back to an Expo React Native application (for web and Android) while preserving the aesthetic.
 
-The scope expanded significantly to include:
-1.  A comprehensive Dropbox integration for admins to connect an account, project managers to link folders, and team members to view files.
-2.  Implementation of 8 additional application pages based on a user-provided PDF, including detailed views, admin panels, and an owner portal.
-3.  A complete backend migration from relying on the user's external production server to a new, fully-featured local FastAPI backend to support all frontend features.
-4.  The most recent request is to finalize the implementation by enabling NFC tag management on a per-project basis and completing the Dropbox OAuth authentication flow.
+The scope has since expanded significantly to include:
+1.  A comprehensive Dropbox integration for file management.
+2.  Implementation of numerous application pages based on a user-provided PDF.
+3.  A complete backend migration to a local FastAPI server.
+4.  NFC tag management functionality.
+5.  A site mode login system for on-site devices with restricted, project-specific access.
+6.  A highly detailed Daily Log page with safety checklists, signature capture, and historical logs.
+7.  Consistent UI/UX enhancements, such as adding hover effects to all interactive elements.
+8.  General repository cleanup to prepare for deployment.
 
 **PRODUCT REQUIREMENTS:**
--   **App Pages:** Implement all pages from  (Login, Dashboard, Projects, Project Detail, Workers, Worker Detail, Check-In, NFC Check-In, Reports, Admin Panels, Owner Portal, etc.).
--   **Design:** Maintain the Base44 (Soft, Frosted, Deep-Blue glassmorphism) aesthetic across all pages.
--   **Backend:** A fully functional local backend that supports all frontend features, including authentication, CRUD operations for all data models, and third-party integration logic.
--   **NFC:** Implement the check-in flow as per  and allow admins to manage NFC tags for each project.
--   **Dropbox:** Full integration allowing an admin to connect a Dropbox account and link folders to projects for file viewing.
+-   **App Pages:** Implement all pages from  and subsequent user requests, including Login, Dashboard, Projects, Workers, Check-In, Reports, Admin Panels, Documents, and a Site Mode UI.
+-   **Design:** Maintain the Base44 (Soft, Frosted, Deep-Blue glassmorphism) aesthetic across all pages, including consistent hover effects.
+-   **Backend:** A fully functional local FastAPI backend supporting all features, including multi-level authentication (admin vs. site device), CRUD operations, and third-party integrations.
+-   **NFC & Dropbox:** Implement full functionality for NFC tag management and Dropbox file access.
+-   **Site Mode:** A separate, restricted login for on-site devices that only grants access to data for a single, pre-assigned project.
 
 **User's preferred language**: English
 
 **what currently exists?**
-The project is a comprehensive Expo React Native web application with a custom Base44 glassmorphism design. It is connected to a newly-built, full-featured local FastAPI backend that handles authentication, data models (projects, workers, users, etc.), and business logic. Most of the required application pages have been built and connected to this local backend. The UI for NFC tag management and Dropbox integration exists, but the underlying functionality is incomplete.
+The project is a comprehensive Expo React Native web application with a custom Base44 glassmorphism design. It is connected to a full-featured local FastAPI backend handling authentication, complex data models (projects, workers, daily logs, site devices), and business logic. The key features implemented include multi-level authentication, NFC tag management, a Documents page for Dropbox files, and a complete Site Mode for on-site devices. The UI has been enhanced with consistent hover effects, and the repository has been cleaned for deployment. The most recent work involved a major overhaul of the Daily Log page to include new sections for safety checklists and signature capture.
 
 **Last working item**:
--   **Last item agent was working:** The agent was simultaneously addressing two user requests: connecting the NFC tag management UI to the backend API and implementing the final step of the Dropbox OAuth 2.0 flow. The agent had already modified the frontend for NFC management and was about to edit  to add the Dropbox OAuth callback handler.
+-   **Last item agent was working:** The agent was in the final stages of implementing a major feature enhancement for the  and  pages. This included adding a safety checklist, corrective action logs, incident logs, signature pads, and a Previous Days tab. The agent had just updated the frontend code and backend models and was attempting to visually test the new UI via screenshots.
 -   **Status:** IN PROGRESS
 -   **Agent Testing Done:** N
--   **Which testing method agent to use?** both. Use  to test the new backend endpoints for Dropbox callback and NFC tag management. Use the frontend testing agent to conduct an E2E test of managing NFC tags from the UI and to verify the Dropbox connection status updates correctly after authorization.
+-   **Which testing method agent to use?** Frontend testing agent. The changes are extensive and involve multiple new UI components (), complex state management, and API interactions. A comprehensive visual and interactive test is required after an initial successful screenshot verification.
 -   **User Testing Done:** N
 
 **All Pending/In progress Issue list**:
--   **Issue 1:** Complete Dropbox OAuth Flow (Priority: P0)
--   **Issue 2:** Connect and Test NFC Tag Management UI (Priority: P1)
+-   **Issue 1:** Verify the enhanced Daily Log page functionality (Priority: P0)
+-   **Issue 2:** Full E2E test of Dropbox connection and file viewing (Priority: P1)
 
 **Issues Detail:**
 -   **Issue 1:**
-    -   **Attempted fixes:** The agent identified that the backend was missing the callback handler to process the authorization code from Dropbox. The user provided the necessary Dropbox App Secret.
+    -   **Attempted fixes:** A  component was created, the backend  model and API endpoints were updated, and both  and  were rewritten to include the new UI. An initial screenshot was taken but was incomplete.
     -   **Next debug checklist:**
-        1.  Add the Dropbox App Secret () to the backend environment or configuration.
-        2.  Implement a new endpoint, , in .
-        3.  This endpoint must handle the incoming request from Dropbox, exchange the received  for an access/refresh token, and securely store these tokens in the database, associating them with the user.
-        4.  Ensure the frontend at  polls the  endpoint and updates the UI to Connected upon success.
-    -   **Why fix this issue and what will be achieved with the fix?** This will complete the core Dropbox authentication feature, unblocking further work on file syncing and viewing.
+        1.  Take a full-page, scrolling screenshot of  to visually confirm all new sections are rendered correctly (Safety Checklist, Signature Pads, Previous Logs tab).
+        2.  Test the interactivity: confirm checkboxes, signature pads, and tab switching all function as expected.
+        3.  Test form submission to ensure the new data fields (signatures, checklist state) are correctly saved to the backend. Verify with a  request to the API.
+    -   **Why fix this issue and what will be achieved with the fix?** This will complete a major user-requested feature, making the daily log a comprehensive on-site reporting tool.
     -   **Status:** IN PROGRESS
     -   **Is recurring issue?** N
     -   **Should Test frontend/backend/both after fix?** both
     -   **Blocked on other issue:** None
 
 -   **Issue 2:**
-    -   **Attempted fixes:** The agent modified  to make API calls for adding and deleting NFC tags.
+    -   **Attempted fixes:** The backend OAuth callback is implemented and has passed  tests. The Documents page is built and correctly handles various states (no connection, empty folder).
     -   **Next debug checklist:**
-        1.  Thoroughly test the backend endpoints in :  and .
-        2.  Perform an end-to-end test from the frontend UI: navigate to a project's Report Settings, add a new NFC tag, verify it appears in the list, and then delete it.
-    -   **Why fix this issue and what will be achieved with the fix?** This fulfills a direct user requirement to allow admins to manage NFC tags for each project.
-    -   **Status:** IN PROGRESS
+        1.  Manually perform the full OAuth flow in the frontend UI: Connect Dropbox, authorize, and enter the returned code.
+        2.  Verify the UI updates to show a Connected status.
+        3.  Navigate to the Documents page for a project linked to a Dropbox folder that contains files.
+        4.  Verify the file list is displayed correctly and that the View/Download button works.
+    -   **Why fix this issue and what will be achieved with the fix?** This validates the core Dropbox integration, a key project requirement.
+    -   **Status:** NOT STARTED
     -   **Is recurring issue?** N
     -   **Should Test frontend/backend/both after fix?** both
     -   **Blocked on other issue:** None
 
 **In progress Task List**:
-The pending issues cover all in-progress tasks.
+-   **Task 1:** Complete UI testing for the new Daily Log page features.
+    -   **Where to resume:** The agent was about to take a new screenshot of the  page to get a full view of all the new components.
+    -   **What will be achieved with this?** Visual confirmation that the complex new UI has been implemented correctly before proceeding to interactive testing.
+    -   **Status:** IN PROGRESS
+    -   **Should Test frontend/backend/both after fix?** both
+    -   **Blocked on something:** None
 
 **Upcoming and Future Tasks**
 -   **Upcoming Tasks:**
-    -   **P0: Implement Backend CRUD for Admin Panels:** The backend currently lacks , , and  endpoints for  and . These need to be implemented in  to make the admin management pages fully functional.
-    -   **P1: Full Regression Testing:** After the current issues are resolved, run a comprehensive E2E test with the testing agent to ensure the entire application, including all new pages and the local backend, works seamlessly.
+    -   **P0: Android Native Build:** The user has explicitly requested this. The project is configured for EAS builds. The next step is to run  and test the resulting APK.
+    -   **P1: Full Regression Testing:** After the Daily Log and Dropbox features are verified, run a comprehensive E2E test with the testing agent to ensure the entire application works seamlessly.
 
 -   **Future Tasks:**
     -   Implement a dark/light theme toggle.
-    -   Perform Android native build and testing.
     -   Add push notification capabilities.
+    -   Implement a preview modal for images/PDFs in the Documents screen.
+    -   Add search/filter functionality to the Documents screen.
+    -   Allow document uploads from within the app.
 
 **Completed work in this session**
--   **Full Local Backend Creation:** A comprehensive FastAPI backend was built from scratch in , including data models, authentication (JWT), and API routes for all application features, making the app self-contained.
--   **Frontend Re-integration:** The frontend was successfully re-pointed from the user's production backend to the new local backend.
--   **New Page Implementation (8 pages):** All 8 missing pages requested by the user from a PDF were created and integrated, including Project Detail, Admin User Management, Subcontractors, and the Owner Portal.
--   **Live Data Integration:** All mock data on the newly created pages was replaced with live data fetched from the local backend API.
--   **NFC Check-In Implementation:** The NFC check-in page () was implemented according to the user's technical guide, with a corresponding backend endpoint.
--   **Role-Based Access Control (RBAC):** Admin-only restrictions were added to sensitive pages and components.
--   **UI Navigation Improvements:** Links from dashboard and list pages to the new detail pages were added to improve user flow.
+-   **Dropbox OAuth Backend:** Implemented the  endpoint in  to handle token exchange.
+-   **NFC & Admin API Testing:** Confirmed via  that backend APIs for NFC tag management and Admin CRUD are fully functional.
+-   **UI Hover Effects:** Added consistent hover effects to interactive elements across the app by creating a reusable  component.
+-   **Repository Cleanup:** Removed backup folders, temporary build files, cleaned , and created  files.
+-   **Documents Page Creation:** Built the  screen, added a Documents tab to the navigation, and implemented the backend endpoint to generate file download URLs.
+-   **On-Site Device Site Mode:** A full-featured, restricted-access mode was created, including:
+    -   **Backend:** New  model, admin management APIs, and a separate login endpoint ().
+    -   **Frontend:** Updated , a restricted , dedicated pages (), and an admin management UI.
+-   **Daily Log Enhancements (UI/Backend):** Added backend support and UI placeholders for signature pads on the daily log pages.
 
 **Earlier issues found/mentioned but not fixed**
 -   None.
@@ -87,88 +101,88 @@ The pending issues cover all in-progress tasks.
 
 
 **Key Technical Concepts**
--   **Frontend:** Expo SDK (for React Native web/mobile), Expo Router (file-based routing), Axios.
--   **Backend:** FastAPI (Python), MongoDB, Pydantic, JWT for authentication.
--   **Styling:** React Native , , and custom  components for the Base44 glassmorphism theme.
--   **Workflow:** Frontend code changes require a rebuild () and a service restart (frontend: ERROR (not running)
-frontend: started) to be reflected.
+-   **Frontend:** Expo SDK, Expo Router, Axios, React Hooks, .
+-   **Backend:** FastAPI, MongoDB (via ), Pydantic, JWT for auth (separate tokens for admin/users and site devices).
+-   **Styling:** , , custom glassmorphism components.
+-   **Workflow:** Frontend changes require  and a supervisor restart.
 
 **key DB schema**
--   **Users**: {email, hashed_password, role, full_name, company, etc.}
--   **Projects**: {name, location, status, nfc_tags}
--   **Workers**: {phone, name, trade, company, status, etc.}
--   **Subcontractors**: {company_name, contact_name, email, etc.}
--   **CheckIns**: {worker_id, project_id, timestamp, method}
--   **NFCTags**: {tag_id, location, project_id}
--   **DropboxTokens**: {user_id, access_token, refresh_token} (schema to be finalized)
+-   **Users**: {email, hashed_password, role, full_name}
+-   **Projects**: {name, location, status, nfc_tags, dropbox_folder_path}
+-   **DailyLogs**: {project_id, date, weather, notes, safety_checklist, corrective_actions, incident_log, superintendent_signature, competent_person_signature, audit_trail}
+-   **SiteDevices**: {username, hashed_password, project_id, last_login, status}
+-   **DropboxTokens**: {user_id, access_token, refresh_token}
 
 **changes in tech stack**
--   The application's backend was completely transitioned from an external, live production server to a newly built, self-contained local FastAPI server.
+-   Added  and its web polyfill () to support the new signature pad feature.
 
 **All files of reference**
--   : The complete source for the local backend. Needs modification for the Dropbox callback.
--   : UI for managing project NFC tags.
--   : UI to initiate the Dropbox connection.
--   : Defines all frontend API calls.
+-   : The main daily log page, heavily modified.
+-   : The site-mode version of the daily log page.
+-   : New component for capturing signatures.
+-   : Backend server, updated with new models and endpoints for daily logs and site devices.
+-   : API client, updated with  and site device functions.
+-   : The new documents screen.
+-   : The new admin page for managing site devices.
+-   : Updated to handle site mode.
 
 **Areas that need refactoring**:
--   The frontend code for admin management of Users and Subcontractors contains handlers for create/edit/delete actions that will fail because the corresponding backend endpoints do not exist. This requires backend implementation followed by frontend wiring.
+-   None identified.
 
 **key api endpoints**
--   : Add NFC tag to a project.
--   : Delete an NFC tag.
--   : **(Needs to be created)** To handle the OAuth redirect from Dropbox.
--   : **(Needs to be created)**
--   : **(Needs to be created)**
--   : **(Needs to be created)**
--   : **(Needs to be created)**
+-   : **(New)** Updates an existing daily log with signatures, checklists, etc.
+-   : **(New)** Handles login for on-site devices.
+-   : **(New)** Full CRUD for managing site devices.
+-   : **(New)** Gets a temporary download link for a Dropbox file.
 
 **Critical Info for New Agent**
--   **Use Local Backend:** The entire application now runs against the local backend defined in . Do not use any external URLs.
--   **Dropbox App Secret:** The user has provided the Dropbox App Secret: . This must be used to implement the backend OAuth callback.
--   **Frontend Build Step:** Any changes to frontend source files require a rebuild command () followed by a supervisor restart (frontend: stopped
+-   **Two Login Systems:** The app has two distinct authentication flows: a standard email/password login for admins/users, and a separate username/password login for site mode devices.  uses the  flag to manage this.
+-   **Complex Daily Log UI:** The daily log pages are now highly complex, with multi-step forms, tabs, and new components like the signature pad. Edit these files with caution.
+-   **Frontend Build Step is Mandatory:** Any changes to frontend source files require a rebuild () followed by a supervisor restart (frontend: ERROR (not running)
 frontend: started).
--   **Incomplete CRUD:** The Admin User and Subcontractor pages are currently read-only. The backend lacks the necessary  endpoints, which is a known upcoming task.
+-   **Dropbox E2E Test Needed:** To fully test the Dropbox integration, the complete OAuth flow must be performed manually through the UI.
 
 **documents and test reports created in this job**
 -   
 -   
 -   
 -   
+-   
 
 **Last 10 User Messages and any pending HUMAN messages**
-1.  **User Request:** nfc tags should be able to be added per project... what other information u need for dropbox oauth synch? whats the current workflow of the dropbox in the app?
-2.  **User Info:** Provides Dropbox App Secret:  and confirms the backend should handle the OAuth flow.
-3.  **User Request:** Connect everything to the real backend; no mock data. Provided an NFC guide.
-4.  **User Request:** Implement all missing pages from a provided PDF, maintaining the existing design.
-5.  **User Confirmation:** all of the above. keep the design we have throughout all pages - confirming the plan to add 8 new pages.
-6.  **User Approval:** User approved the plan to implement Role-Based Access Control.
-7.  **User Request:** Responded yes to a question about restricting access to admin pages.
-8.  **User Feedback:** connect everything to real backend no mock data. check nfc function...
-9.  **User Request:** ...make backend work perfectly with all new updates. should be a fully working app...
-10. **User Question:** what other information u need for dropbox oauth synch? whats the current workflow of the dropbox in the app?
+1.  **Request:** Add a comprehensive set of features to , including safety checklists, signature pads, and a Previous Days tab.
+2.  **Request:** Create a site mode login system with project-specific credentials and restricted UI.
+3.  **Request:** Create a Documents screen to display project-specific Dropbox files.
+4.  **Request:** whats with the backup frontend? i want a clean final ready to deploy repo - This led to the repository cleanup task.
+5.  **Confirmation:** The hover effects are now working... summary was sent.
+6.  **Request:** by log in screen when pointer hover over a field it lights up but by the rest of the app all tabs and fields are static. fix it.
+7.  **Confirmation:** go ahead. also test for android native build - This approved the initial plan and added the Android build task.
+8.  **Confirmation:** (implied) Agent presented a plan, and the user responded with go ahead, indicating approval.
+9.  **User Question:** whats the current workflow of the dropbox in the app?
+10. **User Info:** Provided Dropbox App Secret: .
 
 **Project Health Check:**
 -   **Broken:**
-    -   Dropbox authentication is non-functional due to the missing backend callback.
-    -   Admin CRUD operations for Users and Subcontractors are not implemented on the backend.
+    -   The new UI on the Daily Log page is not fully verified and may have rendering or state management issues.
 -   **Mocked:**
-    -   None. All mock data has been replaced with calls to the local backend.
+    -   None.
 
 **3rd Party Integrations**
--   **Dropbox:** In-progress integration for file syncing. Uses an App Key () and App Secret (). Backend handles OAuth.
+-   **Dropbox:** Uses an App Key () and App Secret (). OAuth flow is implemented on the backend but the full end-to-end user flow is untested.
+-   ** / :** New dependency added for signature pads.
 
 **Testing status**
--   **Testing agent used after significant changes:** YES
+-   **Testing agent used after significant changes:** YES, but before the latest set of major features (hover effects, repo cleanup, documents page, site mode, daily log enhancement). A new run is recommended after the current work is stable.
 -   **Troubleshoot agent used after agent stuck in loop:** NO
--   **Test files created:** [, , ]
+-   **Test files created:** None.
 -   **Known regressions:** None.
 
 **Credentials to test flow:**
 -   **Admin Email:** 
 -   **Admin Password:** 
--   **Owner Portal Password:**  (hardcoded in )
+-   **Site Device Username:** 
+-   **Site Device Password:** 
 
 **What agent forgot to execute**
--   The agent did not execute the final edit to  to add the Dropbox OAuth callback endpoint, which was the immediate next step in its plan.
--   The last  run was initiated but did not produce a report, leaving the most recent batch of changes without full automated verification.</analysis>
+-   The agent has not fully verified the UI of the enhanced Daily Log page. It was in the process of taking a better screenshot to confirm the rendering of all new elements.
+-   The agent did not perform a full, end-to-end manual test of the Dropbox OAuth flow, which remains a critical pending task.</analysis>

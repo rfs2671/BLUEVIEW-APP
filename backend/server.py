@@ -973,7 +973,7 @@ async def get_dropbox_status(current_user = Depends(get_current_user)):
 async def get_dropbox_auth_url(current_user = Depends(get_current_user)):
     app_key = os.environ.get("DROPBOX_APP_KEY", "37ueec2e4se8gbg")
     # Use the preview URL for callback
-    base_url = os.environ.get("BASE_URL", "https://projnfc.preview.emergentagent.com")
+    base_url = os.environ.get("BASE_URL", "https://safety-check-36.preview.emergentagent.com")
     redirect_uri = f"{base_url}/api/dropbox/callback"
     
     authorize_url = f"https://www.dropbox.com/oauth2/authorize?response_type=code&client_id={app_key}&redirect_uri={redirect_uri}&token_access_type=offline"

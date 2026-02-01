@@ -6,7 +6,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // API Base URL - uses the preview URL which proxies /api to backend
-const API_BASE_URL = 'https://projnfc.preview.emergentagent.com';
+const API_BASE_URL = 'https://safety-check-36.preview.emergentagent.com';
 
 // Create axios instance
 const apiClient = axios.create({
