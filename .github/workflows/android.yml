@@ -1,0 +1,111 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Create .env file
+        run: |
+          echo "REACT_APP_BACKEND_URL=${{ secrets.BACKEND_URL }}" > ./frontend/.env
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: yarn install
+
+      - name: Clean android directory
+        working-directory: ./frontend
+        run: rm -rf android
+
+      - name: Prebuild for Android
+        working-directory: ./frontend
+        run: npx expo prebuild --platform android
+
+      - name: Enable New Architecture
+        working-directory: ./frontend/android
+        run: |
+          cat >> gradle.properties << 'EOF'
+          newArchEnabled=true
+          hermesEnabled=true
+          EOF
+
+      - name: Fix MainApplication.kt
+        working-directory: ./frontend
+        run: |
+          mkdir -p android/app/src/main/java/com/blueview/passport
+          cat > android/app/src/main/java/com/blueview/passport/MainApplication.kt << 'KOTLIN'
+          package com.blueview.passport
+
+          import android.app.Application
+          import com.facebook.react.PackageList
+          import com.facebook.react.ReactApplication
+          import com.facebook.react.ReactNativeHost
+          import com.facebook.react.ReactPackage
+          import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint
+          import com.facebook.react.defaults.DefaultReactNativeHost
+          import com.facebook.soloader.SoLoader
+          import com.blueview.passport.BuildConfig
+          import expo.modules.ApplicationLifecycleDispatcher
+          import expo.modules.ReactNativeHostWrapper
+
+          class MainApplication : Application(), ReactApplication {
+            override val reactNativeHost: ReactNativeHost by lazy {
+              ReactNativeHostWrapper(
+                this,
+                object : DefaultReactNativeHost(this) {
+                  override fun getPackages(): List<ReactPackage> =
+                    PackageList(this@MainApplication).packages
+
+                  override fun getUseDeveloperSupport(): Boolean = BuildConfig.DEBUG
+                }
+              )
+            }
+
+            override fun onCreate() {
+              super.onCreate()
+              SoLoader.init(this, false)
+              ApplicationLifecycleDispatcher.onApplicationCreate(this)
+            }
+          }
+          KOTLIN
+
+      - name: Build APK with Gradle
+        working-directory: ./frontend/android
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.apk
+          path: frontend/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
+
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: frontend/android/build/
+          retention-days: 7
