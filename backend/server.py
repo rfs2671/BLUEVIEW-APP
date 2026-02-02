@@ -1333,7 +1333,7 @@ async def startup_event():
     
     # Create indexes
     await db.users.create_index("email", unique=True)
-    await db.workers.create_index("phone", unique=True, sparse=true)
+    await db.workers.create_index("phone", unique=True, sparse=True)
     await db.nfc_tags.create_index("tag_id", unique=True)
     await db.subcontractors.create_index("email", unique=True)
     
