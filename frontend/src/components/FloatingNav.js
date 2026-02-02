@@ -86,13 +86,10 @@ const FloatingNav = () => {
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    bottom: 24,
-    left: '50%',
-    transform: [{ translateX: -200 }],
-    width: 400,
-    borderRadius: borderRadius.full,
-    overflow: 'hidden',
+  alignSelf: 'center',
+  bottom: 24,
+  borderRadius: borderRadius.full,
+  overflow: 'hidden',
   },
   blur: {
     borderRadius: borderRadius.full,
