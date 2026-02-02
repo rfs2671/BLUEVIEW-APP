@@ -6,7 +6,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // API Base URL - uses the preview URL which proxies /api to backend
-const API_BASE_URL = 'https://safety-check-36.preview.emergentagent.com';
+const API_BASE_URL = 'https://blueview2-production.up.railway.app';
 
 // Create axios instance
 const apiClient = axios.create({
@@ -102,7 +102,7 @@ apiClient.interceptors.response.use(
  */
 export const authAPI = {
   login: async (email, password) => {
-    const response = await axios.post(`${API_BASE_URL}/api/auth/login`, {
+    const response = await apiClient.post('/api/auth/login', {
       email,
       password,
     });
@@ -385,7 +385,7 @@ export const adminSubcontractorsAPI = {
 export const nfcAPI = {
   // Get NFC tag info (no auth required - used on worker check-in)
   getTagInfo: async (tagId) => {
-    const response = await axios.get(`${API_BASE_URL}/api/nfc-tags/${tagId}/info`);
+    const response = await apiClient.get(`/api/nfc-tags/${tagId}/info`);
     return response.data;
   },
 
@@ -412,13 +412,13 @@ export const nfcAPI = {
 
   // Process check-in (no auth - used by workers)
   checkIn: async (checkinData) => {
-    const response = await axios.post(`${API_BASE_URL}/api/checkin`, checkinData);
+    const response = await apiClient.post('/api/checkin', checkinData);
     return response.data;
   },
 
   // Register new worker (no auth)
   registerWorker: async (workerData) => {
-    const response = await axios.post(`${API_BASE_URL}/api/workers/register`, workerData);
+    const response = await apiClient.post('/api/workers/register', workerData);
     return response.data;
   },
 };
