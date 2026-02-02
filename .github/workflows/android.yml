@@ -1,0 +1,62 @@
+name: Build APK
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Install yarn
+        run: npm install -g yarn
+      - name: Create .env file
+        run: |
+          echo "REACT_APP_BACKEND_URL=${{ secrets.BACKEND_URL }}" > ./frontend/.env
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: yarn install
+      - name: Clean android directory
+        working-directory: ./frontend
+        run: rm -rf android
+      - name: Prebuild for Android
+        working-directory: ./frontend
+        run: npx expo prebuild --platform android --clean
+      - name: Update gradle.properties
+        working-directory: ./frontend/android
+        run: |
+          cat >> gradle.properties << 'EOF'
+          newArchEnabled=true
+          hermesEnabled=true
+          org.gradle.jvmargs=-Xmx4096m -XX:+UseParallelGC
+          EOF
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_FILE }}" | base64 -d > frontend/android/app/release.keystore
+      - name: Build Release APK
+        working-directory: ./frontend/android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --info
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release.apk
+          path: frontend/android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: frontend/android/build/
+          retention-days: 7
