@@ -27,7 +27,7 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 const quickActions = [
   { title: 'Projects', subtitle: 'Manage job sites', path: '/projects' },
   { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers' },
-  { title: 'Daily Log', subtitle: 'View reports', path: '/daily-log' },
+  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log' },
   { title: 'Reports', subtitle: 'View & download', path: '/reports' },
 ];
 
@@ -198,17 +198,18 @@ export default function DashboardScreen() {
                 <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
                 <View style={styles.quickActionsGrid}>
                   {quickActions.map((action) => (
-                    <GlassListItem
-                      key={action.title}
-                      onPress={() => router.push(action.path)}
-                      style={styles.quickActionCard}
-                    >
-                      <View style={styles.quickActionContent}>
-                        <Text style={styles.quickActionTitle}>{action.title}</Text>
-                        <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
-                      </View>
-                      <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                    </GlassListItem>
+                    <View key={action.title} style={styles.quickActionWrapper}>
+                      <GlassListItem
+                        onPress={() => router.push(action.path)}
+                        style={styles.quickActionCard}
+                      >
+                        <View style={styles.quickActionContent}>
+                          <Text style={styles.quickActionTitle}>{action.title}</Text>
+                          <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
+                        </View>
+                        <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                      </GlassListItem>
+                    </View>
                   ))}
                 </View>
               </View>
@@ -221,20 +222,21 @@ export default function DashboardScreen() {
                     {adminActions.map((action) => {
                       const Icon = action.icon;
                       return (
-                        <GlassListItem
-                          key={action.title}
-                          onPress={() => router.push(action.path)}
-                          style={[styles.quickActionCard, styles.adminActionCard]}
-                        >
-                          <View style={styles.quickActionContent}>
-                            <View style={styles.adminIconRow}>
-                              <Icon size={16} strokeWidth={1.5} color="#f59e0b" />
-                              <Text style={styles.quickActionTitle}>{action.title}</Text>
+                        <View key={action.title} style={styles.quickActionWrapper}>
+                          <GlassListItem
+                            onPress={() => router.push(action.path)}
+                            style={[styles.quickActionCard, styles.adminActionCard]}
+                          >
+                            <View style={styles.quickActionContent}>
+                              <View style={styles.adminIconRow}>
+                                <Icon size={16} strokeWidth={1.5} color="#f59e0b" />
+                                <Text style={styles.quickActionTitle}>{action.title}</Text>
+                              </View>
+                              <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
                             </View>
-                            <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
-                          </View>
-                          <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                        </GlassListItem>
+                            <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                          </GlassListItem>
+                        </View>
                       );
                     })}
                   </View>
@@ -347,7 +349,6 @@ const styles = StyleSheet.create({
     ...typography.label,
     fontSize: 9,
     color: colors.text.muted,
-    letterSpacing: 0.5,
   },
   quickActionsSection: {
     marginTop: spacing.md,
@@ -361,10 +362,14 @@ const styles = StyleSheet.create({
   quickActionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.md,
+    marginHorizontal: -spacing.sm,
+  },
+  quickActionWrapper: {
+    width: '50%',
+    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.md,
   },
   quickActionCard: {
-    width: '48%',
     padding: spacing.lg,
   },
   quickActionContent: {
