@@ -27,15 +27,13 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 const quickActions = [
   { title: 'Projects', subtitle: 'Manage job sites', path: '/projects' },
   { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers' },
-  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log' },
+  { title: 'Daily Log', subtitle: 'View reports', path: '/daily-log' },
   { title: 'Reports', subtitle: 'View & download', path: '/reports' },
-  { title: 'Integrations', subtitle: 'Dropbox & cloud sync', path: '/admin/integrations' },
 ];
 
 const adminActions = [
   { title: 'User Management', subtitle: 'Manage CPs & workers', path: '/admin/users', icon: UserCog },
   { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
-  { title: 'Site Devices', subtitle: 'On-site device logins', path: '/admin/site-devices', icon: Smartphone },
 ];
 
 export default function DashboardScreen() {
@@ -124,9 +122,9 @@ export default function DashboardScreen() {
   }
 
   const statItems = [
-    { icon: Users, value: stats.totalWorkers, label: 'Total Workers' },
-    { icon: Building2, value: stats.activeProjects, label: 'Active Projects' },
-    { icon: MapPin, value: stats.onSiteNow, label: 'On Site Now' },
+    { icon: Users, value: stats.totalWorkers, label: 'Workers' },
+    { icon: Building2, value: stats.activeProjects, label: 'Projects' },
+    { icon: MapPin, value: stats.onSiteNow, label: 'On Site' },
   ];
 
   return (
@@ -347,7 +345,9 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     ...typography.label,
+    fontSize: 9,
     color: colors.text.muted,
+    letterSpacing: 0.5,
   },
   quickActionsSection: {
     marginTop: spacing.md,
@@ -361,12 +361,10 @@ const styles = StyleSheet.create({
   quickActionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    justifyContent: 'space-between',
     gap: spacing.md,
   },
   quickActionCard: {
-    width: '47%',
-    minWidth: 150,
+    width: '48%',
     padding: spacing.lg,
   },
   quickActionContent: {
