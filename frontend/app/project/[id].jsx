@@ -33,6 +33,10 @@ import {
   CheckCircle,
   XCircle,
   Mail,
+  Cloud,
+  Folder,
+  FileText,
+  Link as LinkIcon,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -60,6 +64,20 @@ const siteDevicesAPI = {
   },
   toggle: async (projectId, deviceId) => {
     const response = await apiClient.put(`/api/projects/${projectId}/site-devices/${deviceId}/toggle`);
+    return response.data;
+  },
+};
+
+// Dropbox API for project-specific integration
+const dropboxAPI = {
+  linkFolder: async (projectId, folderPath) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/link-dropbox`, {
+      folder_path: folderPath,
+    });
+    return response.data;
+  },
+  getFiles: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/dropbox-files`);
     return response.data;
   },
 };
@@ -97,6 +115,13 @@ export default function ProjectDetailScreen() {
   const [addingDevice, setAddingDevice] = useState(false);
   const [showCredentials, setShowCredentials] = useState(null);
 
+  // Dropbox integration
+  const [showDropboxModal, setShowDropboxModal] = useState(false);
+  const [dropboxFolder, setDropboxFolder] = useState('');
+  const [linkingDropbox, setLinkingDropbox] = useState(false);
+  const [dropboxFiles, setDropboxFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
@@ -123,6 +148,11 @@ export default function ProjectDetailScreen() {
           setSiteDevices(Array.isArray(devices) ? devices : []);
         } catch (e) {
           setSiteDevices([]);
+        }
+
+        // Fetch Dropbox files if connected
+        if (projectData.dropbox_enabled && projectData.dropbox_folder) {
+          fetchDropboxFiles();
         }
       }
 
@@ -162,6 +192,19 @@ export default function ProjectDetailScreen() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const fetchDropboxFiles = async () => {
+    setLoadingFiles(true);
+    try {
+      const result = await dropboxAPI.getFiles(projectId);
+      setDropboxFiles(result.files || []);
+    } catch (error) {
+      console.error('Failed to fetch Dropbox files:', error);
+      setDropboxFiles([]);
+    } finally {
+      setLoadingFiles(false);
     }
   };
 
@@ -288,6 +331,52 @@ export default function ProjectDetailScreen() {
     }
   };
 
+  const handleLinkDropbox = async () => {
+    if (!dropboxFolder.trim()) {
+      toast.error('Error', 'Please enter a Dropbox folder path');
+      return;
+    }
+
+    setLinkingDropbox(true);
+    try {
+      await dropboxAPI.linkFolder(projectId, dropboxFolder);
+      toast.success('Connected', 'Dropbox folder linked successfully');
+      setDropboxFolder('');
+      setShowDropboxModal(false);
+      await fetchData();
+    } catch (error) {
+      console.error('Failed to link Dropbox:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not link Dropbox folder');
+    } finally {
+      setLinkingDropbox(false);
+    }
+  };
+
+  const handleDisconnectDropbox = () => {
+    const confirmDisconnect = async () => {
+      try {
+        await dropboxAPI.linkFolder(projectId, '');
+        toast.success('Disconnected', 'Dropbox folder unlinked');
+        setDropboxFiles([]);
+        await fetchData();
+      } catch (error) {
+        console.error('Failed to disconnect Dropbox:', error);
+        toast.error('Error', 'Could not disconnect Dropbox');
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Disconnect Dropbox folder from this project?')) {
+        confirmDisconnect();
+      }
+    } else {
+      Alert.alert('Disconnect Dropbox', 'Remove Dropbox folder link from this project?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Disconnect', style: 'destructive', onPress: confirmDisconnect },
+      ]);
+    }
+  };
+
   const quickActions = [
     { title: 'Check-In', icon: QrCode, path: `/checkin?projectId=${projectId}`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
@@ -308,6 +397,7 @@ export default function ProjectDetailScreen() {
   }
 
   const nfcTags = project?.nfc_tags || [];
+  const isDropboxConnected = project?.dropbox_enabled && project?.dropbox_folder;
 
   return (
     <AnimatedBackground>
@@ -497,6 +587,69 @@ export default function ProjectDetailScreen() {
             </>
           )}
 
+          {/* Dropbox Integration Section - Admin Only */}
+          {isAdmin && (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionLabel}>DROPBOX INTEGRATION</Text>
+                {!isDropboxConnected && (
+                  <GlassButton
+                    title="Link Folder"
+                    icon={<LinkIcon size={16} color={colors.text.primary} />}
+                    onPress={() => setShowDropboxModal(true)}
+                  />
+                )}
+              </View>
+              
+              {isDropboxConnected ? (
+                <View style={styles.itemsList}>
+                  <GlassCard style={styles.dropboxCard}>
+                    <View style={styles.dropboxHeader}>
+                      <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
+                      <View style={styles.dropboxInfo}>
+                        <Text style={styles.dropboxTitle}>Connected Folder</Text>
+                        <Text style={styles.dropboxPath}>{project.dropbox_folder}</Text>
+                      </View>
+                      <Pressable
+                        onPress={handleDisconnectDropbox}
+                        style={styles.disconnectBtn}
+                      >
+                        <Text style={styles.disconnectText}>Disconnect</Text>
+                      </Pressable>
+                    </View>
+
+                    {loadingFiles ? (
+                      <View style={styles.filesLoading}>
+                        <ActivityIndicator size="small" color={colors.text.primary} />
+                        <Text style={styles.filesLoadingText}>Loading files...</Text>
+                      </View>
+                    ) : dropboxFiles.length > 0 ? (
+                      <View style={styles.filesList}>
+                        <Text style={styles.filesHeader}>FILES ({dropboxFiles.length})</Text>
+                        {dropboxFiles.map((file, idx) => (
+                          <View key={idx} style={styles.fileRow}>
+                            <FileText size={16} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <View style={styles.noFiles}>
+                        <Text style={styles.noFilesText}>No files in this folder</Text>
+                      </View>
+                    )}
+                  </GlassCard>
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <Cloud size={40} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyText}>No Dropbox folder linked</Text>
+                  <Text style={styles.emptySubtext}>Link a Dropbox folder to share project documents</Text>
+                </GlassCard>
+              )}
+            </>
+          )}
+
           {/* On-Site Workers */}
           <Text style={styles.sectionLabel}>ON-SITE WORKERS</Text>
           {workersByCompany.length > 0 ? (
@@ -644,6 +797,57 @@ export default function ProjectDetailScreen() {
                     title={addingDevice ? 'Creating...' : 'Create Device'}
                     onPress={handleAddDevice}
                     loading={addingDevice}
+                    style={styles.addButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Link Dropbox Folder Modal */}
+        <Modal
+          visible={showDropboxModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowDropboxModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowDropboxModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Link Dropbox Folder</Text>
+                  <Pressable onPress={() => setShowDropboxModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.modalDesc}>
+                  Enter the path to your Dropbox folder containing project documents.
+                </Text>
+
+                <View style={styles.modalForm}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>FOLDER PATH</Text>
+                    <GlassInput
+                      value={dropboxFolder}
+                      onChangeText={setDropboxFolder}
+                      placeholder="/Projects/Downtown Building"
+                    />
+                  </View>
+
+                  <View style={styles.infoBox}>
+                    <Folder size={16} strokeWidth={1.5} color="#0061FF" />
+                    <Text style={styles.infoText}>
+                      All users you create will be able to view files from this folder.
+                    </Text>
+                  </View>
+
+                  <GlassButton
+                    title={linkingDropbox ? 'Linking...' : 'Link Folder'}
+                    onPress={handleLinkDropbox}
+                    loading={linkingDropbox}
                     style={styles.addButton}
                   />
                 </View>
@@ -915,6 +1119,78 @@ const styles = StyleSheet.create({
   },
   toggleBtn: {
     flex: 1,
+  },
+  dropboxCard: {
+    padding: spacing.md,
+  },
+  dropboxHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+    paddingBottom: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
+  },
+  dropboxInfo: {
+    flex: 1,
+  },
+  dropboxTitle: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginBottom: 2,
+  },
+  dropboxPath: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#0061FF',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  disconnectBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  disconnectText: {
+    fontSize: 13,
+    color: colors.status.error,
+  },
+  filesLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+  },
+  filesLoadingText: {
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  filesList: {
+    gap: spacing.xs,
+  },
+  filesHeader: {
+    ...typography.label,
+    fontSize: 10,
+    color: colors.text.muted,
+    marginBottom: spacing.xs,
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  fileName: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.text.primary,
+  },
+  noFiles: {
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+  },
+  noFilesText: {
+    fontSize: 13,
+    color: colors.text.muted,
   },
   emptyCard: {
     alignItems: 'center',
