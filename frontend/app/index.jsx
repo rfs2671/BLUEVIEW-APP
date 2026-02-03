@@ -361,11 +361,11 @@ const styles = StyleSheet.create({
   quickActionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.md,
     justifyContent: 'space-between',
+    gap: spacing.md,
   },
   quickActionCard: {
-    width: '48%',
+    width: '47%',
     minWidth: 150,
     padding: spacing.lg,
   },
