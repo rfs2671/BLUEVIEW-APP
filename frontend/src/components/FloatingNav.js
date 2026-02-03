@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable, Text } from 'react-native';
+import { View, StyleSheet, Pressable, Text, ScrollView } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { BlurView } from 'expo-blur';
 import {
@@ -64,44 +64,68 @@ const FloatingNav = () => {
 
   return (
     <View style={styles.container}>
-      <BlurView intensity={40} tint="dark" style={styles.blur}>
-        <View style={styles.nav}>
-          {navItems.map((item) => {
-            const isActive = pathname === item.path;
-            return (
-              <NavItem
-                key={item.path}
-                item={item}
-                isActive={isActive}
-                onPress={() => router.push(item.path)}
-              />
-            );
-          })}
-        </View>
-      </BlurView>
-      <View style={styles.border} />
+      <View style={styles.innerContainer}>
+        <BlurView intensity={40} tint="dark" style={styles.blur}>
+          <View style={styles.blurContent}>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.scrollContent}
+              style={styles.scrollView}
+            >
+              <View style={styles.nav}>
+                {navItems.map((item) => {
+                  const isActive = pathname === item.path;
+                  return (
+                    <NavItem
+                      key={item.path}
+                      item={item}
+                      isActive={isActive}
+                      onPress={() => router.push(item.path)}
+                    />
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+        </BlurView>
+        <View style={styles.border} />
+      </View>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-  alignSelf: 'center',
-  bottom: 24,
-  borderRadius: borderRadius.full,
-  overflow: 'hidden',
+    position: 'absolute',
+    bottom: 24,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  innerContainer: {
+    maxWidth: 700,
+    marginHorizontal: spacing.lg,
+    borderRadius: borderRadius.full,
+    overflow: 'hidden',
   },
   blur: {
     borderRadius: borderRadius.full,
   },
+  blurContent: {
+    backgroundColor: colors.glass.background,
+  },
+  scrollView: {
+    flexGrow: 0,
+  },
+  scrollContent: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+  },
   nav: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
     gap: 2,
-    backgroundColor: colors.glass.background,
   },
   border: {
     ...StyleSheet.absoluteFillObject,
