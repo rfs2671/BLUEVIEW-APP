@@ -6,7 +6,6 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  TextInput,
   Alert,
   Platform,
 } from 'react-native';
@@ -15,13 +14,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   LogOut,
+  Mail,
   Plus,
   Trash2,
-  Nfc,
-  MapPin,
-  Tag,
-  Settings,
-  ChevronRight,
+  Save,
+  Building2,
+  AlertCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../../src/components/GlassCard';
@@ -29,7 +27,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
-import { projectsAPI, nfcAPI } from '../../../src/utils/api';
+import { projectsAPI } from '../../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
 
 export default function ReportSettingsScreen() {
@@ -39,19 +37,10 @@ export default function ReportSettingsScreen() {
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [project, setProject] = useState(null);
-  
-  // Trade mappings
-  const [tradeMappings, setTradeMappings] = useState([]);
-  const [showAddMapping, setShowAddMapping] = useState(false);
-  const [newFieldTrade, setNewFieldTrade] = useState('');
-  const [newFormalTrade, setNewFormalTrade] = useState('');
-
-  // NFC Tags
-  const [nfcTags, setNfcTags] = useState([]);
-  const [showAddTag, setShowAddTag] = useState(false);
-  const [newTagId, setNewTagId] = useState('');
-  const [newTagLocation, setNewTagLocation] = useState('');
+  const [emailList, setEmailList] = useState([]);
+  const [newEmail, setNewEmail] = useState('');
 
   const isAdmin = user?.role === 'admin';
 
@@ -63,21 +52,16 @@ export default function ReportSettingsScreen() {
 
   useEffect(() => {
     if (isAuthenticated && projectId) {
-      fetchData();
+      fetchProject();
     }
   }, [isAuthenticated, projectId]);
 
-  const fetchData = async () => {
+  const fetchProject = async () => {
+    setLoading(true);
     try {
       const projectData = await projectsAPI.getById(projectId);
       setProject(projectData);
-      
-      // Load trade mappings and NFC tags from project data
-      setTradeMappings(projectData.trade_mappings || [
-        { field: 'Elec', formal: 'Electrician' },
-        { field: 'Plumb', formal: 'Plumber' },
-      ]);
-      setNfcTags(projectData.nfc_tags || []);
+      setEmailList(projectData.report_email_list || []);
     } catch (error) {
       console.error('Failed to fetch project:', error);
       toast.error('Error', 'Could not load project settings');
@@ -86,92 +70,91 @@ export default function ReportSettingsScreen() {
     }
   };
 
+  const handleAddEmail = () => {
+    const trimmedEmail = newEmail.trim().toLowerCase();
+    
+    if (!trimmedEmail) {
+      toast.warning('Empty Email', 'Please enter an email address');
+      return;
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      toast.error('Invalid Email', 'Please enter a valid email address');
+      return;
+    }
+
+    if (emailList.includes(trimmedEmail)) {
+      toast.warning('Duplicate', 'This email is already in the list');
+      return;
+    }
+
+    setEmailList([...emailList, trimmedEmail]);
+    setNewEmail('');
+    toast.success('Added', 'Email added to list');
+  };
+
+  const handleRemoveEmail = (emailToRemove) => {
+    const confirmRemove = () => {
+      setEmailList(emailList.filter(email => email !== emailToRemove));
+      toast.success('Removed', 'Email removed from list');
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Remove ${emailToRemove}?`)) {
+        confirmRemove();
+      }
+    } else {
+      Alert.alert('Remove Email', `Remove ${emailToRemove} from the list?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: confirmRemove },
+      ]);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await projectsAPI.update(projectId, {
+        report_email_list: emailList,
+      });
+      toast.success('Saved', 'Report settings updated successfully');
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not save settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleLogout = async () => {
     await logout();
     router.replace('/login');
   };
 
-  const handleAddMapping = () => {
-    if (!newFieldTrade.trim() || !newFormalTrade.trim()) {
-      toast.error('Error', 'Please fill in both fields');
-      return;
-    }
-    
-    setTradeMappings([...tradeMappings, { field: newFieldTrade, formal: newFormalTrade }]);
-    setNewFieldTrade('');
-    setNewFormalTrade('');
-    setShowAddMapping(false);
-    toast.success('Added', 'Trade mapping added');
-  };
+  if (!isAdmin) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={styles.container}>
+          <View style={styles.accessDenied}>
+            <AlertCircle size={56} strokeWidth={1} color={colors.status.error} />
+            <Text style={styles.accessDeniedTitle}>Admin Access Required</Text>
+            <Text style={styles.accessDeniedDesc}>
+              Only administrators can modify report settings.
+            </Text>
+            <GlassButton
+              title="Go Back"
+              onPress={() => router.back()}
+              style={styles.returnBtn}
+            />
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
 
-  const handleDeleteMapping = (index) => {
-    const confirmDelete = () => {
-      const updated = tradeMappings.filter((_, i) => i !== index);
-      setTradeMappings(updated);
-      toast.success('Deleted', 'Trade mapping removed');
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm('Delete this trade mapping?')) {
-        confirmDelete();
-      }
-    } else {
-      Alert.alert('Delete Mapping', 'Delete this trade mapping?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: confirmDelete },
-      ]);
-    }
-  };
-
-  const handleAddTag = async () => {
-    if (!newTagId.trim() || !newTagLocation.trim()) {
-      toast.error('Error', 'Please fill in both fields');
-      return;
-    }
-    
-    try {
-      await nfcAPI.linkToProject(projectId, newTagId, newTagLocation);
-      setNfcTags([...nfcTags, { tag_id: newTagId, location: newTagLocation }]);
-      setNewTagId('');
-      setNewTagLocation('');
-      setShowAddTag(false);
-      toast.success('Added', 'NFC tag registered to project');
-    } catch (error) {
-      console.error('Failed to add NFC tag:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not register NFC tag');
-    }
-  };
-
-  const handleDeleteTag = (tagId, index) => {
-    const confirmDelete = async () => {
-      try {
-        await nfcAPI.unlinkFromProject(projectId, tagId);
-        const updated = nfcTags.filter((_, i) => i !== index);
-        setNfcTags(updated);
-        toast.success('Deleted', 'NFC tag removed from project');
-      } catch (error) {
-        console.error('Failed to delete NFC tag:', error);
-        toast.error('Error', error.response?.data?.detail || 'Could not remove NFC tag');
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm('Remove this NFC tag from project?')) {
-        confirmDelete();
-      }
-    } else {
-      Alert.alert('Remove Tag', 'Remove this NFC tag from project?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: confirmDelete },
-      ]);
-    }
-  };
-
-  const handleScanNfc = () => {
-    toast.info('NFC', 'NFC scanning is only available on native devices');
-  };
-
-  if (authLoading || loading) {
+  if (loading) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={styles.container}>
@@ -211,157 +194,88 @@ export default function ReportSettingsScreen() {
         >
           {/* Title */}
           <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>{project?.name || 'PROJECT'}</Text>
-            <Text style={styles.titleText}>Report Settings</Text>
+            <Text style={styles.titleLabel}>PROJECT SETTINGS</Text>
+            <Text style={styles.titleText}>Report Email List</Text>
+            {project && (
+              <View style={styles.projectBadge}>
+                <Building2 size={14} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={styles.projectName}>{project.name}</Text>
+              </View>
+            )}
           </View>
 
-          {/* Trade Mappings Section */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
-                <Tag size={20} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.sectionTitle}>Trade Mappings</Text>
-              </View>
-              {isAdmin && (
-                <GlassButton
-                  variant="icon"
-                  icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                  onPress={() => setShowAddMapping(true)}
-                />
-              )}
-            </View>
-            <Text style={styles.sectionDesc}>
-              Map field trade names to formal names for reports
+          {/* Description */}
+          <GlassCard style={styles.infoCard}>
+            <IconPod size={44}>
+              <Mail size={18} strokeWidth={1.5} color="#3b82f6" />
+            </IconPod>
+            <Text style={styles.infoTitle}>Auto-Send Reports</Text>
+            <Text style={styles.infoText}>
+              Daily reports for this project will be automatically sent to all email addresses in this list.
             </Text>
+          </GlassCard>
 
-            {showAddMapping && (
-              <GlassCard style={styles.addForm}>
-                <GlassInput
-                  value={newFieldTrade}
-                  onChangeText={setNewFieldTrade}
-                  placeholder="Field trade (e.g., Elec)"
-                />
-                <GlassInput
-                  value={newFormalTrade}
-                  onChangeText={setNewFormalTrade}
-                  placeholder="Formal trade (e.g., Electrician)"
-                  style={styles.inputSpacing}
-                />
-                <View style={styles.addFormButtons}>
-                  <GlassButton
-                    title="Cancel"
-                    onPress={() => setShowAddMapping(false)}
-                    style={styles.cancelBtn}
-                  />
-                  <GlassButton
-                    title="Add Mapping"
-                    onPress={handleAddMapping}
-                  />
-                </View>
-              </GlassCard>
-            )}
-
-            {tradeMappings.length > 0 ? (
-              <View style={styles.listContainer}>
-                {tradeMappings.map((mapping, index) => (
-                  <View key={index} style={styles.listItem}>
-                    <View style={styles.mappingContent}>
-                      <Text style={styles.fieldText}>{mapping.field}</Text>
-                      <ChevronRight size={16} color={colors.text.subtle} />
-                      <Text style={styles.formalText}>{mapping.formal}</Text>
-                    </View>
-                    {isAdmin && (
-                      <Pressable onPress={() => handleDeleteMapping(index)} style={styles.deleteBtn}>
-                        <Trash2 size={16} strokeWidth={1.5} color={colors.status.error} />
-                      </Pressable>
-                    )}
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <Text style={styles.emptyText}>No trade mappings configured</Text>
-            )}
-          </View>
-
-          {/* NFC Tags Section */}
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
-                <Nfc size={20} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.sectionTitle}>NFC Check-In Tags</Text>
-              </View>
-              {isAdmin && (
-                <GlassButton
-                  variant="icon"
-                  icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                  onPress={() => setShowAddTag(true)}
-                />
-              )}
+          {/* Add Email Input */}
+          <GlassCard style={styles.addEmailCard}>
+            <Text style={styles.sectionTitle}>Add Email Address</Text>
+            <View style={styles.addEmailRow}>
+              <GlassInput
+                value={newEmail}
+                onChangeText={setNewEmail}
+                placeholder="email@example.com"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                style={styles.emailInput}
+                onSubmitEditing={handleAddEmail}
+              />
+              <GlassButton
+                variant="icon"
+                icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={handleAddEmail}
+              />
             </View>
-            <Text style={styles.sectionDesc}>
-              Register NFC tags for specific locations on site
-            </Text>
+          </GlassCard>
 
-            {showAddTag && (
-              <GlassCard style={styles.addForm}>
-                <View style={styles.nfcScanRow}>
-                  <GlassInput
-                    value={newTagId}
-                    onChangeText={setNewTagId}
-                    placeholder="Tag ID"
-                    style={styles.tagIdInput}
-                  />
-                  <GlassButton
-                    title="Scan"
-                    icon={<Nfc size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                    onPress={handleScanNfc}
-                  />
-                </View>
-                <GlassInput
-                  value={newTagLocation}
-                  onChangeText={setNewTagLocation}
-                  placeholder="Location description (e.g., Main Entrance)"
-                  style={styles.inputSpacing}
-                />
-                <View style={styles.addFormButtons}>
-                  <GlassButton
-                    title="Cancel"
-                    onPress={() => setShowAddTag(false)}
-                    style={styles.cancelBtn}
-                  />
-                  <GlassButton
-                    title="Add Tag"
-                    onPress={handleAddTag}
-                  />
-                </View>
-              </GlassCard>
-            )}
+          {/* Email List */}
+          <Text style={styles.sectionLabel}>
+            EMAIL LIST ({emailList.length})
+          </Text>
 
-            {nfcTags.length > 0 ? (
-              <View style={styles.listContainer}>
-                {nfcTags.map((tag, index) => (
-                  <View key={tag.tag_id || index} style={styles.listItem}>
-                    <View style={styles.tagContent}>
-                      <IconPod size={36}>
-                        <Nfc size={16} strokeWidth={1.5} color={colors.text.secondary} />
-                      </IconPod>
-                      <View style={styles.tagInfo}>
-                        <Text style={styles.tagLocation}>{tag.location || tag.location_description}</Text>
-                        <Text style={styles.tagId}>ID: {tag.tag_id || tag.id}</Text>
-                      </View>
-                    </View>
-                    {isAdmin && (
-                      <Pressable onPress={() => handleDeleteTag(tag.tag_id || tag.id, index)} style={styles.deleteBtn}>
-                        <Trash2 size={16} strokeWidth={1.5} color={colors.status.error} />
-                      </Pressable>
-                    )}
+          {emailList.length > 0 ? (
+            <View style={styles.emailList}>
+              {emailList.map((email, index) => (
+                <GlassCard key={index} style={styles.emailCard}>
+                  <View style={styles.emailRow}>
+                    <Mail size={16} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={styles.emailText}>{email}</Text>
+                    <Pressable
+                      onPress={() => handleRemoveEmail(email)}
+                      style={styles.deleteBtn}
+                    >
+                      <Trash2 size={16} color={colors.status.error} />
+                    </Pressable>
                   </View>
-                ))}
-              </View>
-            ) : (
-              <Text style={styles.emptyText}>No NFC tags registered</Text>
-            )}
-          </View>
+                </GlassCard>
+              ))}
+            </View>
+          ) : (
+            <GlassCard style={styles.emptyCard}>
+              <Mail size={40} strokeWidth={1} color={colors.text.subtle} />
+              <Text style={styles.emptyTitle}>No Email Addresses</Text>
+              <Text style={styles.emptyText}>
+                Add email addresses to receive automatic daily reports for this project.
+              </Text>
+            </GlassCard>
+          )}
+
+          {/* Save Button */}
+          <GlassButton
+            title={saving ? 'Saving...' : 'Save Settings'}
+            icon={<Save size={20} strokeWidth={1.5} color={colors.text.primary} />}
+            onPress={handleSave}
+            loading={saving}
+            style={styles.saveButton}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>
@@ -381,6 +295,27 @@ const styles = StyleSheet.create({
   loadingText: {
     color: colors.text.muted,
     fontSize: 14,
+  },
+  accessDenied: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xl,
+    gap: spacing.md,
+  },
+  accessDeniedTitle: {
+    fontSize: 22,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginTop: spacing.md,
+  },
+  accessDeniedDesc: {
+    fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+  },
+  returnBtn: {
+    marginTop: spacing.lg,
   },
   header: {
     flexDirection: 'row',
@@ -416,117 +351,111 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   titleText: {
-    fontSize: 36,
+    fontSize: 48,
     fontWeight: '200',
     color: colors.text.primary,
-    letterSpacing: -0.5,
+    letterSpacing: -1,
+    marginBottom: spacing.md,
   },
-  section: {
-    marginBottom: spacing.xl,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.sm,
-  },
-  sectionTitleRow: {
+  projectBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
   },
-  sectionTitle: {
+  projectName: {
+    fontSize: 14,
+    color: colors.text.primary,
+  },
+  infoCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    marginBottom: spacing.lg,
+  },
+  infoTitle: {
     fontSize: 18,
     fontWeight: '500',
     color: colors.text.primary,
-  },
-  sectionDesc: {
-    fontSize: 13,
-    color: colors.text.muted,
-    marginBottom: spacing.md,
-  },
-  addForm: {
-    marginBottom: spacing.md,
-  },
-  inputSpacing: {
-    marginTop: spacing.sm,
-  },
-  addFormButtons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: spacing.sm,
     marginTop: spacing.md,
+    marginBottom: spacing.sm,
   },
-  cancelBtn: {
-    opacity: 0.7,
-  },
-  nfcScanRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-  },
-  tagIdInput: {
-    flex: 1,
-  },
-  listContainer: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    overflow: 'hidden',
-  },
-  listItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.glass.border,
-  },
-  mappingContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    flex: 1,
-  },
-  fieldText: {
+  infoText: {
     fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+    maxWidth: 320,
+    lineHeight: 20,
+  },
+  addEmailCard: {
+    marginBottom: spacing.lg,
+  },
+  sectionTitle: {
+    fontSize: 16,
     fontWeight: '500',
     color: colors.text.primary,
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
+    marginBottom: spacing.md,
   },
-  formalText: {
-    fontSize: 14,
-    color: colors.text.secondary,
+  addEmailRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    alignItems: 'flex-end',
   },
-  tagContent: {
+  emailInput: {
+    flex: 1,
+  },
+  sectionLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.xs,
+  },
+  emailList: {
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  emailCard: {
+    padding: spacing.md,
+  },
+  emailRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    flex: 1,
   },
-  tagInfo: {
+  emailText: {
     flex: 1,
-  },
-  tagLocation: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 15,
     color: colors.text.primary,
-  },
-  tagId: {
-    fontSize: 12,
-    color: colors.text.muted,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
   deleteBtn: {
     padding: spacing.sm,
   },
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginTop: spacing.md,
+  },
   emptyText: {
     fontSize: 14,
     color: colors.text.muted,
-    fontStyle: 'italic',
-    paddingVertical: spacing.lg,
     textAlign: 'center',
+    maxWidth: 280,
+    lineHeight: 20,
+  },
+  saveButton: {
+    marginTop: spacing.md,
   },
 });
