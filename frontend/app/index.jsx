@@ -362,9 +362,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: spacing.md,
+    justifyContent: 'space-between',
   },
   quickActionCard: {
     width: '48%',
+    minWidth: 150,
     padding: spacing.lg,
   },
   quickActionContent: {
