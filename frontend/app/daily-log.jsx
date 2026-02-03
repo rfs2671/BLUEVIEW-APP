@@ -37,6 +37,7 @@ import {
   MinusCircle,
   PenTool,
   Clock,
+  Eye,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -70,8 +71,8 @@ export default function DailyLogScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState('today'); // 'today' or 'previous'
+  // Tab state - Admin can only view, Site mode can create/edit
+  const [activeTab, setActiveTab] = useState('previous'); // Default to 'previous' for admin
 
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
@@ -112,12 +113,14 @@ export default function DailyLogScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Initialize for site mode
+  // Initialize - Admin starts on 'previous' tab (view only)
   useEffect(() => {
     if (isAuthenticated && siteMode && siteProject) {
+      setActiveTab('today'); // Site mode can create/edit
       setSelectedProject(siteProject);
       fetchLogsForProject(siteProject.id);
     } else if (isAuthenticated && !siteMode) {
+      setActiveTab('previous'); // Admin can only view
       fetchProjects();
     }
   }, [isAuthenticated, siteMode, siteProject]);
@@ -395,6 +398,11 @@ export default function DailyLogScreen() {
                 <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
                 <Text style={styles.siteBadgeText}>SITE MODE</Text>
               </View>
+            ) : isAdmin ? (
+              <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
+                <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
+                <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
+              </View>
             ) : (
               <Text style={styles.logoText}>BLUEVIEW</Text>
             )}
@@ -406,40 +414,42 @@ export default function DailyLogScreen() {
           />
         </View>
 
-        {/* Tab Selector */}
-        <View style={styles.tabContainer}>
-          <Pressable
-            onPress={() => setActiveTab('today')}
-            style={[styles.tab, activeTab === 'today' && styles.tabActive]}
-          >
-            <ClipboardList
-              size={16}
-              strokeWidth={1.5}
-              color={activeTab === 'today' ? '#4ade80' : colors.text.muted}
-            />
-            <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>
-              Today's Log
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveTab('previous')}
-            style={[styles.tab, activeTab === 'previous' && styles.tabActive]}
-          >
-            <History
-              size={16}
-              strokeWidth={1.5}
-              color={activeTab === 'previous' ? '#4ade80' : colors.text.muted}
-            />
-            <Text style={[styles.tabText, activeTab === 'previous' && styles.tabTextActive]}>
-              Previous Days
-            </Text>
-            {previousLogs.length > 0 && (
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>{previousLogs.length}</Text>
-              </View>
-            )}
-          </Pressable>
-        </View>
+        {/* Tab Selector - Only show for site mode */}
+        {siteMode && (
+          <View style={styles.tabContainer}>
+            <Pressable
+              onPress={() => setActiveTab('today')}
+              style={[styles.tab, activeTab === 'today' && styles.tabActive]}
+            >
+              <ClipboardList
+                size={16}
+                strokeWidth={1.5}
+                color={activeTab === 'today' ? '#4ade80' : colors.text.muted}
+              />
+              <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>
+                Today's Log
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setActiveTab('previous')}
+              style={[styles.tab, activeTab === 'previous' && styles.tabActive]}
+            >
+              <History
+                size={16}
+                strokeWidth={1.5}
+                color={activeTab === 'previous' ? '#4ade80' : colors.text.muted}
+              />
+              <Text style={[styles.tabText, activeTab === 'previous' && styles.tabTextActive]}>
+                Previous Days
+              </Text>
+              {previousLogs.length > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{previousLogs.length}</Text>
+                </View>
+              )}
+            </Pressable>
+          </View>
+        )}
 
         <ScrollView
           style={styles.scrollView}
@@ -449,9 +459,9 @@ export default function DailyLogScreen() {
           {/* Title */}
           <View style={styles.titleSection}>
             <Text style={styles.titleLabel}>
-              {activeTab === 'today' ? 'CREATE / EDIT' : 'VIEW'}
+              {isAdmin ? 'VIEW' : activeTab === 'today' ? 'CREATE / EDIT' : 'VIEW'}
             </Text>
-            <Text style={styles.titleText}>Daily Log</Text>
+            <Text style={styles.titleText}>Daily Logs</Text>
           </View>
 
           {loading ? (
@@ -460,10 +470,11 @@ export default function DailyLogScreen() {
               <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} style={styles.mb16} />
               <GlassSkeleton width="100%" height={150} borderRadiusValue={borderRadius.xl} />
             </>
-          ) : activeTab === 'today' ? (
+          ) : (!siteMode || activeTab === 'previous') ? (
+            /* Previous Days Tab - Admin can only see this */
             <>
-              {/* Project Selector (only for non-site mode) */}
-              {!siteMode && (
+              {/* Project Selector (only for admin) */}
+              {isAdmin && (
                 <Pressable
                   style={styles.projectSelector}
                   onPress={() => setShowProjectPicker(!showProjectPicker)}
@@ -503,6 +514,54 @@ export default function DailyLogScreen() {
                 </View>
               )}
 
+              {previousLogs.length > 0 ? (
+                <View style={styles.previousLogsList}>
+                  {previousLogs.map((log) => {
+                    const WeatherIcon = getWeatherIcon(log.weather);
+                    return (
+                      <GlassListItem
+                        key={log.id || log._id}
+                        onPress={() => setSelectedPreviousLog(log)}
+                        style={styles.previousLogItem}
+                      >
+                        <View style={styles.logDateSection}>
+                          <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
+                          <Text style={styles.logDate}>{formatDate(log.date)}</Text>
+                        </View>
+                        <View style={styles.logSummary}>
+                          <View style={styles.logStat}>
+                            <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={styles.logStatText}>{log.weather}</Text>
+                          </View>
+                          <View style={styles.logStat}>
+                            <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
+                          </View>
+                          {log.superintendent_signature && (
+                            <View style={styles.signedBadge}>
+                              <PenTool size={10} strokeWidth={1.5} color="#4ade80" />
+                            </View>
+                          )}
+                        </View>
+                      </GlassListItem>
+                    );
+                  })}
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <IconPod size={64}>
+                    <History size={28} strokeWidth={1.5} color={colors.text.muted} />
+                  </IconPod>
+                  <Text style={styles.emptyTitle}>No Logs Found</Text>
+                  <Text style={styles.emptyText}>
+                    Daily logs for this project will appear here.
+                  </Text>
+                </GlassCard>
+              )}
+            </>
+          ) : (
+            /* Today's Log Tab - Only for site mode */
+            <>
               {/* Site Mode Project Display */}
               {siteMode && siteProject && (
                 <View style={styles.siteProjectCard}>
@@ -669,98 +728,55 @@ export default function DailyLogScreen() {
                 )}
               </GlassCard>
 
-              {/* Superintendent Signature */}
-              <View style={styles.signatureSection}>
-                <View style={styles.signatureHeader}>
-                  <IconPod size={40}>
-                    <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
-                  </IconPod>
-                  <Text style={styles.signatureTitle}>Superintendent Sign-Off</Text>
-                </View>
-                <SignaturePad
-                  title="Superintendent Signature"
-                  signerName={formData.superintendent_name}
-                  onNameChange={(name) => setFormData({ ...formData, superintendent_name: name })}
-                  existingSignature={formData.superintendent_signature}
-                  onSignatureCapture={(sig) =>
-                    setFormData({ ...formData, superintendent_signature: sig })
-                  }
-                />
-              </View>
+              {/* Signatures - Only in site mode */}
+              {siteMode && (
+                <>
+                  {/* Superintendent Signature */}
+                  <View style={styles.signatureSection}>
+                    <View style={styles.signatureHeader}>
+                      <IconPod size={40}>
+                        <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                      </IconPod>
+                      <Text style={styles.signatureTitle}>Superintendent Sign-Off</Text>
+                    </View>
+                    <SignaturePad
+                      title="Superintendent Signature"
+                      signerName={formData.superintendent_name}
+                      onNameChange={(name) => setFormData({ ...formData, superintendent_name: name })}
+                      existingSignature={formData.superintendent_signature}
+                      onSignatureCapture={(sig) =>
+                        setFormData({ ...formData, superintendent_signature: sig })
+                      }
+                    />
+                  </View>
 
-              {/* Competent Person Signature */}
-              <View style={styles.signatureSection}>
-                <View style={styles.signatureHeader}>
-                  <IconPod size={40}>
-                    <ShieldCheck size={18} strokeWidth={1.5} color="#3b82f6" />
-                  </IconPod>
-                  <Text style={styles.signatureTitle}>Competent Person Sign-Off</Text>
-                </View>
-                <SignaturePad
-                  title="Competent Person Signature"
-                  signerName={formData.competent_person_name}
-                  onNameChange={(name) => setFormData({ ...formData, competent_person_name: name })}
-                  existingSignature={formData.competent_person_signature}
-                  onSignatureCapture={(sig) =>
-                    setFormData({ ...formData, competent_person_signature: sig })
-                  }
-                />
-              </View>
+                  {/* Competent Person Signature */}
+                  <View style={styles.signatureSection}>
+                    <View style={styles.signatureHeader}>
+                      <IconPod size={40}>
+                        <ShieldCheck size={18} strokeWidth={1.5} color="#3b82f6" />
+                      </IconPod>
+                      <Text style={styles.signatureTitle}>Competent Person Sign-Off</Text>
+                    </View>
+                    <SignaturePad
+                      title="Competent Person Signature"
+                      signerName={formData.competent_person_name}
+                      onNameChange={(name) => setFormData({ ...formData, competent_person_name: name })}
+                      existingSignature={formData.competent_person_signature}
+                      onSignatureCapture={(sig) =>
+                        setFormData({ ...formData, competent_person_signature: sig })
+                      }
+                    />
+                  </View>
 
-              {/* Submit Button */}
-              <GlassButton
-                title={saving ? 'Saving...' : existingLog ? 'Update Daily Log' : 'Submit Daily Log'}
-                onPress={handleSubmit}
-                loading={saving}
-                style={styles.submitButton}
-              />
-            </>
-          ) : (
-            /* Previous Days Tab */
-            <>
-              {previousLogs.length > 0 ? (
-                <View style={styles.previousLogsList}>
-                  {previousLogs.map((log) => {
-                    const WeatherIcon = getWeatherIcon(log.weather);
-                    return (
-                      <GlassListItem
-                        key={log.id || log._id}
-                        onPress={() => setSelectedPreviousLog(log)}
-                        style={styles.previousLogItem}
-                      >
-                        <View style={styles.logDateSection}>
-                          <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-                          <Text style={styles.logDate}>{formatDate(log.date)}</Text>
-                        </View>
-                        <View style={styles.logSummary}>
-                          <View style={styles.logStat}>
-                            <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={styles.logStatText}>{log.weather}</Text>
-                          </View>
-                          <View style={styles.logStat}>
-                            <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
-                          </View>
-                          {log.superintendent_signature && (
-                            <View style={styles.signedBadge}>
-                              <PenTool size={10} strokeWidth={1.5} color="#4ade80" />
-                            </View>
-                          )}
-                        </View>
-                      </GlassListItem>
-                    );
-                  })}
-                </View>
-              ) : (
-                <GlassCard style={styles.emptyCard}>
-                  <IconPod size={64}>
-                    <History size={28} strokeWidth={1.5} color={colors.text.muted} />
-                  </IconPod>
-                  <Text style={styles.emptyTitle}>No Previous Logs</Text>
-                  <Text style={styles.emptyText}>
-                    Previous daily logs for this project will appear here.
-                  </Text>
-                </GlassCard>
+                  {/* Submit Button */}
+                  <GlassButton
+                    title={saving ? 'Saving...' : existingLog ? 'Update Daily Log' : 'Submit Daily Log'}
+                    onPress={handleSubmit}
+                    loading={saving}
+                    style={styles.submitButton}
+                  />
+                </>
               )}
             </>
           )}
@@ -917,11 +933,18 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(74, 222, 128, 0.3)',
   },
+  viewOnlyBadge: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+  },
   siteBadgeText: {
     fontSize: 10,
     fontWeight: '600',
     color: '#4ade80',
     letterSpacing: 0.5,
+  },
+  viewOnlyText: {
+    color: '#3b82f6',
   },
   tabContainer: {
     flexDirection: 'row',
