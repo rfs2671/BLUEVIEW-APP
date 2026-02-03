@@ -259,7 +259,7 @@ export default function ProjectsScreen() {
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowAddModal(false)} />
             <View style={styles.modalContent}>
-              <GlassCard style={styles.modalCard}>
+              <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>New Project</Text>
                   <GlassButton
@@ -432,7 +432,7 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
   },
   modalContent: {
     padding: spacing.lg,
