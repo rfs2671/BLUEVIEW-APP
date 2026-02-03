@@ -21,15 +21,18 @@ import {
   Building2,
   QrCode,
   ClipboardList,
-  FileText,
   Settings,
-  Nfc,
+  Wifi,
   ChevronRight,
   HardHat,
   Plus,
   Trash2,
   X,
-  Wifi,
+  Smartphone,
+  Key,
+  CheckCircle,
+  XCircle,
+  Mail,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -38,7 +41,28 @@ import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
+import apiClient from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+
+// Site device API for project-specific devices
+const siteDevicesAPI = {
+  getByProject: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/site-devices`);
+    return response.data;
+  },
+  create: async (projectId, deviceData) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/site-devices`, deviceData);
+    return response.data;
+  },
+  delete: async (projectId, deviceId) => {
+    const response = await apiClient.delete(`/api/projects/${projectId}/site-devices/${deviceId}`);
+    return response.data;
+  },
+  toggle: async (projectId, deviceId) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/site-devices/${deviceId}/toggle`);
+    return response.data;
+  },
+};
 
 export default function ProjectDetailScreen() {
   const router = useRouter();
@@ -62,6 +86,17 @@ export default function ProjectDetailScreen() {
   const [nfcLocation, setNfcLocation] = useState('');
   const [addingNfc, setAddingNfc] = useState(false);
 
+  // Site devices management
+  const [siteDevices, setSiteDevices] = useState([]);
+  const [showAddDeviceModal, setShowAddDeviceModal] = useState(false);
+  const [newDevice, setNewDevice] = useState({
+    device_name: '',
+    username: '',
+    password: '',
+  });
+  const [addingDevice, setAddingDevice] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(null);
+
   const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
@@ -80,6 +115,16 @@ export default function ProjectDetailScreen() {
     try {
       const projectData = await projectsAPI.getById(projectId);
       setProject(projectData);
+
+      // Fetch site devices for this project
+      if (isAdmin) {
+        try {
+          const devices = await siteDevicesAPI.getByProject(projectId);
+          setSiteDevices(Array.isArray(devices) ? devices : []);
+        } catch (e) {
+          setSiteDevices([]);
+        }
+      }
 
       // Fetch active check-ins for this project
       try {
@@ -147,7 +192,7 @@ export default function ProjectDetailScreen() {
       setNfcTagId('');
       setNfcLocation('');
       setShowAddNfcModal(false);
-      await fetchData(); // Refresh to show new tag
+      await fetchData();
     } catch (error) {
       console.error('Failed to add NFC tag:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not add NFC tag');
@@ -177,6 +222,69 @@ export default function ProjectDetailScreen() {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: confirmDelete },
       ]);
+    }
+  };
+
+  const handleAddDevice = async () => {
+    if (!newDevice.device_name.trim() || !newDevice.username.trim() || !newDevice.password.trim()) {
+      toast.error('Error', 'Please fill in all fields');
+      return;
+    }
+
+    setAddingDevice(true);
+    try {
+      const result = await siteDevicesAPI.create(projectId, newDevice);
+      toast.success('Created', 'Site device created successfully');
+      
+      // Show credentials
+      setShowCredentials({
+        ...result,
+        password: newDevice.password,
+      });
+
+      setNewDevice({ device_name: '', username: '', password: '' });
+      setShowAddDeviceModal(false);
+      await fetchData();
+    } catch (error) {
+      console.error('Failed to create device:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not create site device');
+    } finally {
+      setAddingDevice(false);
+    }
+  };
+
+  const handleDeleteDevice = (deviceId) => {
+    const confirmDelete = async () => {
+      try {
+        await siteDevicesAPI.delete(projectId, deviceId);
+        toast.success('Deleted', 'Site device removed');
+        await fetchData();
+      } catch (error) {
+        console.error('Failed to delete device:', error);
+        toast.error('Error', 'Could not delete site device');
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Remove this site device?')) {
+        confirmDelete();
+      }
+    } else {
+      Alert.alert('Remove Site Device', 'Are you sure?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: confirmDelete },
+      ]);
+    }
+  };
+
+  const handleToggleDevice = async (device) => {
+    try {
+      await siteDevicesAPI.toggle(projectId, device.id);
+      toast.success('Updated', `Device ${device.is_active ? 'disabled' : 'enabled'}`);
+      await fetchData();
+    } catch (error) {
+      console.error('Failed to toggle device:', error);
+      toast.error('Error', 'Could not update device');
     }
   };
 
@@ -256,17 +364,17 @@ export default function ProjectDetailScreen() {
             </StatCard>
             <StatCard style={styles.statCard}>
               <IconPod style={styles.statIcon}>
-                <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
-              <Text style={styles.statValue}>{stats.subcontractors}</Text>
-              <Text style={styles.statLabel}>COMPANIES</Text>
-            </StatCard>
-            <StatCard style={styles.statCard}>
-              <IconPod style={styles.statIcon}>
                 <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
               <Text style={styles.statValue}>{nfcTags.length}</Text>
               <Text style={styles.statLabel}>NFC TAGS</Text>
+            </StatCard>
+            <StatCard style={styles.statCard}>
+              <IconPod style={styles.statIcon}>
+                <Smartphone size={18} strokeWidth={1.5} color={colors.text.secondary} />
+              </IconPod>
+              <Text style={styles.statValue}>{siteDevices.length}</Text>
+              <Text style={styles.statLabel}>DEVICES</Text>
             </StatCard>
           </View>
 
@@ -306,14 +414,14 @@ export default function ProjectDetailScreen() {
               </View>
               
               {nfcTags.length > 0 ? (
-                <View style={styles.nfcTagsList}>
+                <View style={styles.itemsList}>
                   {nfcTags.map((tag) => (
-                    <GlassCard key={tag.tag_id} style={styles.nfcTagCard}>
-                      <View style={styles.nfcTagHeader}>
+                    <GlassCard key={tag.tag_id} style={styles.itemCard}>
+                      <View style={styles.itemHeader}>
                         <Wifi size={20} strokeWidth={1.5} color="#10b981" />
-                        <View style={styles.nfcTagInfo}>
-                          <Text style={styles.nfcTagId}>{tag.tag_id}</Text>
-                          <Text style={styles.nfcTagLocation}>{tag.location || 'Check-In Point'}</Text>
+                        <View style={styles.itemInfo}>
+                          <Text style={styles.itemId}>{tag.tag_id}</Text>
+                          <Text style={styles.itemLocation}>{tag.location || 'Check-In Point'}</Text>
                         </View>
                         <Pressable
                           onPress={() => handleDeleteNfcTag(tag.tag_id)}
@@ -326,10 +434,64 @@ export default function ProjectDetailScreen() {
                   ))}
                 </View>
               ) : (
-                <GlassCard style={styles.emptyNfcCard}>
-                  <Nfc size={40} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyNfcText}>No NFC tags registered</Text>
-                  <Text style={styles.emptyNfcSubtext}>Add NFC tags for worker check-in</Text>
+                <GlassCard style={styles.emptyCard}>
+                  <Wifi size={40} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyText}>No NFC tags registered</Text>
+                  <Text style={styles.emptySubtext}>Add NFC tags for worker check-in</Text>
+                </GlassCard>
+              )}
+            </>
+          )}
+
+          {/* Site Devices Section - Admin Only */}
+          {isAdmin && (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionLabel}>SITE DEVICES</Text>
+                <GlassButton
+                  title="Add Device"
+                  icon={<Plus size={16} color={colors.text.primary} />}
+                  onPress={() => setShowAddDeviceModal(true)}
+                />
+              </View>
+              
+              {siteDevices.length > 0 ? (
+                <View style={styles.itemsList}>
+                  {siteDevices.map((device) => (
+                    <GlassCard key={device.id} style={styles.deviceCard}>
+                      <View style={styles.deviceHeader}>
+                        <Smartphone size={20} strokeWidth={1.5} color={device.is_active ? '#4ade80' : colors.text.muted} />
+                        <View style={styles.deviceInfo}>
+                          <Text style={styles.deviceName}>{device.device_name}</Text>
+                          <Text style={styles.deviceUsername}>@{device.username}</Text>
+                        </View>
+                        <View style={[styles.deviceStatusBadge, device.is_active && styles.deviceStatusActive]}>
+                          <Text style={[styles.deviceStatusText, device.is_active && styles.deviceStatusTextActive]}>
+                            {device.is_active ? 'Active' : 'Disabled'}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.deviceActions}>
+                        <GlassButton
+                          title={device.is_active ? 'Disable' : 'Enable'}
+                          onPress={() => handleToggleDevice(device)}
+                          style={styles.toggleBtn}
+                        />
+                        <Pressable
+                          onPress={() => handleDeleteDevice(device.id)}
+                          style={styles.deleteBtn}
+                        >
+                          <Trash2 size={16} color={colors.status.error} />
+                        </Pressable>
+                      </View>
+                    </GlassCard>
+                  ))}
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <Smartphone size={40} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyText}>No site devices registered</Text>
+                  <Text style={styles.emptySubtext}>Add devices for on-site access</Text>
                 </GlassCard>
               )}
             </>
@@ -415,6 +577,118 @@ export default function ProjectDetailScreen() {
                   />
                 </View>
               </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Add Site Device Modal */}
+        <Modal
+          visible={showAddDeviceModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowAddDeviceModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowAddDeviceModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Add Site Device</Text>
+                  <Pressable onPress={() => setShowAddDeviceModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.modalDesc}>
+                  Create credentials for an on-site device (tablet or phone) to access this project.
+                </Text>
+
+                <View style={styles.modalForm}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>DEVICE NAME</Text>
+                    <GlassInput
+                      value={newDevice.device_name}
+                      onChangeText={(val) => setNewDevice({ ...newDevice, device_name: val })}
+                      placeholder="e.g., Site Tablet 1"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>USERNAME</Text>
+                    <GlassInput
+                      value={newDevice.username}
+                      onChangeText={(val) => setNewDevice({ ...newDevice, username: val })}
+                      placeholder="e.g., site-tablet-1"
+                      autoCapitalize="none"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>PASSWORD</Text>
+                    <GlassInput
+                      value={newDevice.password}
+                      onChangeText={(val) => setNewDevice({ ...newDevice, password: val })}
+                      placeholder="Create a secure password"
+                      secureTextEntry
+                    />
+                  </View>
+
+                  <View style={styles.infoBox}>
+                    <Key size={16} strokeWidth={1.5} color="#f59e0b" />
+                    <Text style={styles.infoText}>
+                      Save these credentials securely. The password cannot be recovered after creation.
+                    </Text>
+                  </View>
+
+                  <GlassButton
+                    title={addingDevice ? 'Creating...' : 'Create Device'}
+                    onPress={handleAddDevice}
+                    loading={addingDevice}
+                    style={styles.addButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Credentials Display Modal */}
+        <Modal
+          visible={!!showCredentials}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowCredentials(null)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.credentialsModal}>
+              <View style={styles.successIcon}>
+                <CheckCircle size={48} strokeWidth={1.5} color="#4ade80" />
+              </View>
+              <Text style={styles.credentialsTitle}>Device Created!</Text>
+              <Text style={styles.credentialsSubtitle}>
+                Save these credentials for the on-site device:
+              </Text>
+
+              <View style={styles.credentialsBox}>
+                <View style={styles.credentialRow}>
+                  <Text style={styles.credentialLabel}>Device</Text>
+                  <Text style={styles.credentialValueBold}>{showCredentials?.device_name}</Text>
+                </View>
+                <View style={styles.credentialRow}>
+                  <Text style={styles.credentialLabel}>Username</Text>
+                  <Text style={styles.credentialValueMono}>{showCredentials?.username}</Text>
+                </View>
+                <View style={styles.credentialRow}>
+                  <Text style={styles.credentialLabel}>Password</Text>
+                  <Text style={styles.credentialValueMono}>{showCredentials?.password}</Text>
+                </View>
+              </View>
+
+              <GlassButton
+                title="Done"
+                onPress={() => setShowCredentials(null)}
+                style={styles.doneBtn}
+              />
             </View>
           </View>
         </Modal>
@@ -565,46 +839,95 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text.primary,
   },
-  nfcTagsList: {
+  itemsList: {
     gap: spacing.sm,
     marginBottom: spacing.xl,
   },
-  nfcTagCard: {
+  itemCard: {
     padding: spacing.md,
   },
-  nfcTagHeader: {
+  itemHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
   },
-  nfcTagInfo: {
+  itemInfo: {
     flex: 1,
   },
-  nfcTagId: {
+  itemId: {
     fontSize: 14,
     fontWeight: '500',
     color: colors.text.primary,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
-  nfcTagLocation: {
+  itemLocation: {
     fontSize: 13,
     color: colors.text.muted,
   },
   deleteBtn: {
     padding: spacing.sm,
   },
-  emptyNfcCard: {
+  deviceCard: {
+    padding: spacing.md,
+  },
+  deviceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+  deviceInfo: {
+    flex: 1,
+  },
+  deviceName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  deviceUsername: {
+    fontSize: 13,
+    color: colors.text.muted,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  deviceStatusBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    borderRadius: borderRadius.full,
+  },
+  deviceStatusActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+  },
+  deviceStatusText: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: colors.text.muted,
+  },
+  deviceStatusTextActive: {
+    color: '#4ade80',
+  },
+  deviceActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.glass.border,
+    paddingTop: spacing.md,
+  },
+  toggleBtn: {
+    flex: 1,
+  },
+  emptyCard: {
     alignItems: 'center',
     paddingVertical: spacing.xl,
     gap: spacing.sm,
     marginBottom: spacing.xl,
   },
-  emptyNfcText: {
+  emptyText: {
     fontSize: 16,
     fontWeight: '500',
     color: colors.text.muted,
   },
-  emptyNfcSubtext: {
+  emptySubtext: {
     fontSize: 13,
     color: colors.text.subtle,
   },
@@ -654,21 +977,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.text.muted,
   },
-  emptyCard: {
-    alignItems: 'center',
-    paddingVertical: spacing.xxl,
-    gap: spacing.sm,
-  },
-  emptyText: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.muted,
-  },
-  emptySubtext: {
-    fontSize: 13,
-    color: colors.text.subtle,
-    textAlign: 'center',
-  },
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -711,7 +1019,83 @@ const styles = StyleSheet.create({
     ...typography.label,
     color: colors.text.muted,
   },
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  infoText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#f59e0b',
+    lineHeight: 18,
+  },
   addButton: {
     marginTop: spacing.sm,
+  },
+  credentialsModal: {
+    backgroundColor: '#1a1a2e',
+    borderRadius: borderRadius.xxl,
+    padding: spacing.xl,
+    maxWidth: 400,
+    alignSelf: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    margin: spacing.lg,
+  },
+  successIcon: {
+    marginBottom: spacing.lg,
+  },
+  credentialsTitle: {
+    fontSize: 24,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+  },
+  credentialsSubtitle: {
+    fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+    marginBottom: spacing.lg,
+  },
+  credentialsBox: {
+    width: '100%',
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    marginBottom: spacing.lg,
+  },
+  credentialRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
+  },
+  credentialLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+  },
+  credentialValueBold: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  credentialValueMono: {
+    fontSize: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    color: '#4ade80',
+  },
+  doneBtn: {
+    width: '100%',
   },
 });
