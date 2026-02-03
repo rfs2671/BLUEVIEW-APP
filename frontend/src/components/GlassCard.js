@@ -6,7 +6,7 @@ import { colors, borderRadius, spacing } from '../styles/theme';
 /**
  * GlassCard - Glassmorphism card component with hover support
  */
-export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true }) => {
+export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true, variant = 'default' }) => {
   const [isHovered, setIsHovered] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
   
@@ -19,6 +19,10 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
     onMouseLeave: () => hoverEffect && setIsHovered(false),
   };
   
+  // Use higher opacity for modals
+  const contentStyle = variant === 'modal' ? styles.contentModal : styles.content;
+  const blurIntensity = variant === 'modal' ? 80 : intensity;
+  
   return (
     <CardWrapper
       {...cardProps}
@@ -28,8 +32,8 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
         isHovered && hoverEffect && styles.cardHovered,
       ]}
     >
-      <BlurView intensity={intensity} tint="dark" style={styles.blur}>
-        <View style={styles.content}>{children}</View>
+      <BlurView intensity={blurIntensity} tint="dark" style={styles.blur}>
+        <View style={contentStyle}>{children}</View>
       </BlurView>
       <View style={[styles.border, isHovered && hoverEffect && styles.borderHovered]} />
     </CardWrapper>
@@ -113,6 +117,10 @@ const styles = StyleSheet.create({
   },
   content: {
     backgroundColor: colors.glass.background,
+    padding: spacing.xl,
+  },
+  contentModal: {
+    backgroundColor: 'rgba(255, 255, 255, 0.0)',
     padding: spacing.xl,
   },
   border: {
