@@ -159,7 +159,7 @@ export default function ProjectsScreen() {
               <GlassInput
                 value={searchQuery}
                 onChangeText={setSearchQuery}
-                placeholder="Search projects..."
+                placeholder="Search"
                 leftIcon={<Search size={20} strokeWidth={1.5} color={colors.text.subtle} />}
               />
             </View>
