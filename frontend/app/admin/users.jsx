@@ -79,7 +79,12 @@ export default function AdminUsersScreen() {
         projectsAPI.getAll().catch(() => []),
       ]);
       
-      setUsers(Array.isArray(usersData) ? usersData : []);
+      // FILTER: Only show CPs and workers, exclude admins
+      const filteredUsers = Array.isArray(usersData) 
+        ? usersData.filter(u => u.role !== 'admin')
+        : [];
+      
+      setUsers(filteredUsers);
       setProjects(Array.isArray(projectsData) ? projectsData.map(p => ({
         id: p.id || p._id,
         name: p.name,
@@ -123,12 +128,18 @@ export default function AdminUsersScreen() {
       toast.success('Added', 'User created successfully');
     } catch (error) {
       console.error('Failed to create user:', error);
-      toast.error('Error', 'Backend does not support user creation yet');
+      toast.error('Error', error.response?.data?.detail || 'Could not create user');
     }
   };
 
   const handleEditUser = async () => {
     if (!selectedUser) return;
+    
+    // PREVENT EDITING SELF
+    if (selectedUser.id === user?.id || selectedUser.id === user?._id) {
+      toast.error('Error', 'You cannot edit your own account');
+      return;
+    }
     
     try {
       await adminUsersAPI.update(selectedUser.id, {
@@ -149,11 +160,17 @@ export default function AdminUsersScreen() {
       toast.success('Updated', 'User updated successfully');
     } catch (error) {
       console.error('Failed to update user:', error);
-      toast.error('Error', 'Backend does not support user updates yet');
+      toast.error('Error', error.response?.data?.detail || 'Could not update user');
     }
   };
 
   const handleDeleteUser = (userId) => {
+    // PREVENT DELETING SELF
+    if (userId === user?.id || userId === user?._id) {
+      toast.error('Error', 'You cannot delete your own account');
+      return;
+    }
+    
     const confirmDelete = async () => {
       try {
         await adminUsersAPI.delete(userId);
@@ -161,7 +178,7 @@ export default function AdminUsersScreen() {
         toast.success('Deleted', 'User removed');
       } catch (error) {
         console.error('Failed to delete user:', error);
-        toast.error('Error', 'Backend does not support user deletion yet');
+        toast.error('Error', error.response?.data?.detail || 'Could not delete user');
       }
     };
 
@@ -177,18 +194,25 @@ export default function AdminUsersScreen() {
     }
   };
 
-  const handleAssignProjects = () => {
+  const handleAssignProjects = async () => {
     if (!selectedUser) return;
     
-    const updated = users.map(u => 
-      u.id === selectedUser.id 
-        ? { ...u, assigned_projects: assignedProjects }
-        : u
-    );
-    
-    setUsers(updated);
-    setShowAssignModal(false);
-    toast.success('Updated', 'Projects assigned');
+    try {
+      await adminUsersAPI.assignProjects(selectedUser.id, assignedProjects);
+      
+      const updated = users.map(u => 
+        u.id === selectedUser.id 
+          ? { ...u, assigned_projects: assignedProjects }
+          : u
+      );
+      
+      setUsers(updated);
+      setShowAssignModal(false);
+      toast.success('Updated', 'Projects assigned');
+    } catch (error) {
+      console.error('Failed to assign projects:', error);
+      toast.error('Error', 'Could not assign projects');
+    }
   };
 
   const toggleProjectAssignment = (projectId) => {
@@ -200,6 +224,12 @@ export default function AdminUsersScreen() {
   };
 
   const openEditModal = (userItem) => {
+    // PREVENT EDITING SELF
+    if (userItem.id === user?.id || userItem.id === user?._id) {
+      toast.error('Error', 'You cannot edit your own account');
+      return;
+    }
+    
     setSelectedUser(userItem);
     setFormName(userItem.name);
     setFormEmail(userItem.email);
@@ -304,6 +334,8 @@ export default function AdminUsersScreen() {
             <View style={styles.usersList}>
               {users.map((userItem) => {
                 const roleStyle = getRoleBadgeStyle(userItem.role);
+                const isSelf = userItem.id === user?.id || userItem.id === user?._id;
+                
                 return (
                   <GlassCard key={userItem.id} style={styles.userCard}>
                     <View style={styles.userHeader}>
@@ -342,12 +374,14 @@ export default function AdminUsersScreen() {
                         icon={<Edit3 size={14} color={colors.text.primary} />}
                         onPress={() => openEditModal(userItem)}
                         style={styles.actionBtn}
+                        disabled={isSelf}
                       />
                       <Pressable 
                         onPress={() => handleDeleteUser(userItem.id)}
-                        style={styles.deleteBtn}
+                        style={[styles.deleteBtn, isSelf && styles.deleteBtnDisabled]}
+                        disabled={isSelf}
                       >
-                        <Trash2 size={16} color={colors.status.error} />
+                        <Trash2 size={16} color={isSelf ? colors.text.subtle : colors.status.error} />
                       </Pressable>
                     </View>
                   </GlassCard>
@@ -370,7 +404,7 @@ export default function AdminUsersScreen() {
 
           {/* Add User Modal */}
           {showAddModal && (
-            <GlassCard style={styles.modal}>
+            <GlassCard variant="modal" style={styles.modal}>
               <Text style={styles.modalTitle}>Add New User</Text>
               <GlassInput
                 value={formName}
@@ -426,7 +460,7 @@ export default function AdminUsersScreen() {
 
           {/* Edit User Modal */}
           {showEditModal && (
-            <GlassCard style={styles.modal}>
+            <GlassCard variant="modal" style={styles.modal}>
               <Text style={styles.modalTitle}>Edit User</Text>
               <GlassInput
                 value={formName}
@@ -474,7 +508,7 @@ export default function AdminUsersScreen() {
 
           {/* Assign Projects Modal */}
           {showAssignModal && (
-            <GlassCard style={styles.modal}>
+            <GlassCard variant="modal" style={styles.modal}>
               <Text style={styles.modalTitle}>Assign Projects</Text>
               <Text style={styles.modalSubtitle}>Select projects for {selectedUser?.name}</Text>
               <View style={styles.projectsList}>
@@ -673,6 +707,9 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: borderRadius.md,
     backgroundColor: colors.glass.background,
+  },
+  deleteBtnDisabled: {
+    opacity: 0.3,
   },
   emptyCard: {
     alignItems: 'center',
