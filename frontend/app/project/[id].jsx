@@ -7,6 +7,9 @@ import {
   Pressable,
   ActivityIndicator,
   RefreshControl,
+  Modal,
+  Alert,
+  Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,10 +26,15 @@ import {
   Nfc,
   ChevronRight,
   HardHat,
+  Plus,
+  Trash2,
+  X,
+  Wifi,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
+import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
@@ -47,6 +55,14 @@ export default function ProjectDetailScreen() {
     subcontractorCount: 0,
   });
   const [workersByCompany, setWorkersByCompany] = useState([]);
+  
+  // NFC management
+  const [showAddNfcModal, setShowAddNfcModal] = useState(false);
+  const [nfcTagId, setNfcTagId] = useState('');
+  const [nfcLocation, setNfcLocation] = useState('');
+  const [addingNfc, setAddingNfc] = useState(false);
+
+  const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -114,11 +130,60 @@ export default function ProjectDetailScreen() {
     router.replace('/login');
   };
 
+  const handleAddNfcTag = async () => {
+    if (!nfcTagId.trim() || !nfcLocation.trim()) {
+      toast.error('Error', 'Please enter tag ID and location');
+      return;
+    }
+
+    setAddingNfc(true);
+    try {
+      await projectsAPI.addNfcTag(projectId, {
+        tag_id: nfcTagId,
+        location_description: nfcLocation,
+      });
+
+      toast.success('Added', 'NFC tag registered successfully');
+      setNfcTagId('');
+      setNfcLocation('');
+      setShowAddNfcModal(false);
+      await fetchData(); // Refresh to show new tag
+    } catch (error) {
+      console.error('Failed to add NFC tag:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not add NFC tag');
+    } finally {
+      setAddingNfc(false);
+    }
+  };
+
+  const handleDeleteNfcTag = (tagId) => {
+    const confirmDelete = async () => {
+      try {
+        await projectsAPI.deleteNfcTag(projectId, tagId);
+        toast.success('Deleted', 'NFC tag removed');
+        await fetchData();
+      } catch (error) {
+        console.error('Failed to delete NFC tag:', error);
+        toast.error('Error', 'Could not delete NFC tag');
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Remove this NFC tag?')) {
+        confirmDelete();
+      }
+    } else {
+      Alert.alert('Remove NFC Tag', 'Are you sure?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: confirmDelete },
+      ]);
+    }
+  };
+
   const quickActions = [
     { title: 'Check-In', icon: QrCode, path: `/checkin?projectId=${projectId}`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
-    { title: 'NFC Check-In', icon: Nfc, path: `/nfc?projectId=${projectId}`, color: '#10b981' },
   ];
 
   if (authLoading || loading) {
@@ -133,6 +198,8 @@ export default function ProjectDetailScreen() {
       </AnimatedBackground>
     );
   }
+
+  const nfcTags = project?.nfc_tags || [];
 
   return (
     <AnimatedBackground>
@@ -196,10 +263,10 @@ export default function ProjectDetailScreen() {
             </StatCard>
             <StatCard style={styles.statCard}>
               <IconPod style={styles.statIcon}>
-                <HardHat size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={styles.statValue}>{stats.subcontractorCount}</Text>
-              <Text style={styles.statLabel}>SUBS</Text>
+              <Text style={styles.statValue}>{nfcTags.length}</Text>
+              <Text style={styles.statLabel}>NFC TAGS</Text>
             </StatCard>
           </View>
 
@@ -225,6 +292,48 @@ export default function ProjectDetailScreen() {
               );
             })}
           </View>
+
+          {/* NFC Tags Section - Admin Only */}
+          {isAdmin && (
+            <>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionLabel}>NFC CHECK-IN TAGS</Text>
+                <GlassButton
+                  title="Add Tag"
+                  icon={<Plus size={16} color={colors.text.primary} />}
+                  onPress={() => setShowAddNfcModal(true)}
+                />
+              </View>
+              
+              {nfcTags.length > 0 ? (
+                <View style={styles.nfcTagsList}>
+                  {nfcTags.map((tag) => (
+                    <GlassCard key={tag.tag_id} style={styles.nfcTagCard}>
+                      <View style={styles.nfcTagHeader}>
+                        <Wifi size={20} strokeWidth={1.5} color="#10b981" />
+                        <View style={styles.nfcTagInfo}>
+                          <Text style={styles.nfcTagId}>{tag.tag_id}</Text>
+                          <Text style={styles.nfcTagLocation}>{tag.location || 'Check-In Point'}</Text>
+                        </View>
+                        <Pressable
+                          onPress={() => handleDeleteNfcTag(tag.tag_id)}
+                          style={styles.deleteBtn}
+                        >
+                          <Trash2 size={16} color={colors.status.error} />
+                        </Pressable>
+                      </View>
+                    </GlassCard>
+                  ))}
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyNfcCard}>
+                  <Nfc size={40} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyNfcText}>No NFC tags registered</Text>
+                  <Text style={styles.emptyNfcSubtext}>Add NFC tags for worker check-in</Text>
+                </GlassCard>
+              )}
+            </>
+          )}
 
           {/* On-Site Workers */}
           <Text style={styles.sectionLabel}>ON-SITE WORKERS</Text>
@@ -256,6 +365,59 @@ export default function ProjectDetailScreen() {
             </GlassCard>
           )}
         </ScrollView>
+
+        {/* Add NFC Tag Modal */}
+        <Modal
+          visible={showAddNfcModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowAddNfcModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowAddNfcModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Add NFC Tag</Text>
+                  <Pressable onPress={() => setShowAddNfcModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.modalDesc}>
+                  Tap an NFC tag or enter its ID manually to register it for check-ins.
+                </Text>
+
+                <View style={styles.modalForm}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>TAG ID</Text>
+                    <GlassInput
+                      value={nfcTagId}
+                      onChangeText={setNfcTagId}
+                      placeholder="Enter or scan NFC tag ID"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>LOCATION</Text>
+                    <GlassInput
+                      value={nfcLocation}
+                      onChangeText={setNfcLocation}
+                      placeholder="e.g., Main Entrance, Building A"
+                    />
+                  </View>
+
+                  <GlassButton
+                    title={addingNfc ? 'Adding...' : 'Add NFC Tag'}
+                    onPress={handleAddNfcTag}
+                    loading={addingNfc}
+                    style={styles.addButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -364,6 +526,13 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     paddingHorizontal: spacing.xs,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+    paddingHorizontal: spacing.xs,
+  },
   actionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -395,6 +564,49 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: colors.text.primary,
+  },
+  nfcTagsList: {
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  nfcTagCard: {
+    padding: spacing.md,
+  },
+  nfcTagHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  nfcTagInfo: {
+    flex: 1,
+  },
+  nfcTagId: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: colors.text.primary,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  nfcTagLocation: {
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  deleteBtn: {
+    padding: spacing.sm,
+  },
+  emptyNfcCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+  },
+  emptyNfcText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.muted,
+  },
+  emptyNfcSubtext: {
+    fontSize: 13,
+    color: colors.text.subtle,
   },
   companyCard: {
     marginBottom: spacing.md,
@@ -456,5 +668,50 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.text.subtle,
     textAlign: 'center',
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+  },
+  modalContent: {
+    padding: spacing.lg,
+  },
+  modalCard: {
+    maxWidth: 500,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  modalDesc: {
+    fontSize: 14,
+    color: colors.text.muted,
+    marginBottom: spacing.lg,
+  },
+  modalForm: {
+    gap: spacing.md,
+  },
+  inputGroup: {
+    gap: spacing.sm,
+  },
+  inputLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+  },
+  addButton: {
+    marginTop: spacing.sm,
   },
 });
