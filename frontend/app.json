@@ -15,14 +15,31 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.blueview.app"
+      "bundleIdentifier": "com.blueview.app",
+      "infoPlist": {
+        "NFCReaderUsageDescription": "This app needs NFC to register and scan check-in tags for workers.",
+        "NSCameraUsageDescription": "This app needs camera access to take photos for daily logs and reports.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to attach photos to reports.",
+        "NSLocationWhenInUseUsageDescription": "This app needs your location to geotag reports and check-ins."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#050a12"
       },
-      "package": "com.blueview.app"
+      "package": "com.blueview.app",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "NFC",
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
     },
     "web": {
       "bundler": "metro",
