@@ -140,7 +140,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 60,
     right: 16,
-    zIndex: 1000,
+    zIndex: 99999,
+    elevation: 99999,
     gap: spacing.sm,
   },
   toast: {
