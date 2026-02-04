@@ -363,14 +363,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginHorizontal: -spacing.sm,
+    alignItems: 'stretch',
   },
   quickActionWrapper: {
     width: '50%',
     paddingHorizontal: spacing.sm,
     marginBottom: spacing.md,
+    flexShrink: 0,
   },
   quickActionCard: {
     padding: spacing.lg,
+    width: '100%',
+    minHeight: 90,
   },
   quickActionContent: {
     flex: 1,
