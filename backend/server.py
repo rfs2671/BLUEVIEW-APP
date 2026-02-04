@@ -28,9 +28,6 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'blueview-secret-key-2024')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
-# Owner Portal Password
-OWNER_PASSWORD = "blueview2024"
-
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
@@ -101,7 +98,6 @@ class ProjectUpdate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = None
-    report_email_list: Optional[List[str]] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -112,7 +108,6 @@ class ProjectResponse(BaseModel):
     nfc_tags: List[Dict] = []
     dropbox_folder: Optional[str] = None
     dropbox_enabled: bool = False
-    report_email_list: List[str] = []
     created_at: Optional[datetime] = None
 
 # Worker Models
@@ -165,6 +160,8 @@ class NfcTagResponse(BaseModel):
     status: str = "active"
     created_at: Optional[datetime] = None
 
+
+
 class NfcTagInfo(BaseModel):
     tag_id: str
     project_id: str
@@ -172,6 +169,15 @@ class NfcTagInfo(BaseModel):
     location_description: str
     company_name: Optional[str] = None
 
+# Public Check-In Models
+class PublicCheckInSubmit(BaseModel):
+    project_id: str
+    tag_id: str
+    name: str
+    phone: str
+    company: str
+    trade: str
+    
 # Subcontractor Models
 class SubcontractorCreate(BaseModel):
     company_name: str
@@ -252,6 +258,7 @@ class DailyLogResponse(BaseModel):
 
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
+    project_id: str
     device_name: str
     username: str
     password: str
@@ -332,29 +339,6 @@ async def get_admin_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-def get_filter_for_user(current_user: dict) -> dict:
-    """
-    Returns MongoDB filter based on user role.
-    - Owner: No filter (sees everything)
-    - Admin: Filter by admin_id
-    - Site device: No admin_id check (access controlled by project_id)
-    """
-    role = current_user.get("role")
-    
-    # Owner sees everything
-    if role == "owner":
-        return {}
-    
-    # Site devices don't use admin_id filtering
-    if role == "site_device":
-        return {}
-    
-    # Admins see only their data
-    if role == "admin":
-        return {"admin_id": current_user.get("id")}
-    
-    return {}
-
 # ==================== AUTH ROUTES ====================
 
 @api_router.post("/auth/login", response_model=TokenResponse)
@@ -431,28 +415,11 @@ async def get_me(current_user = Depends(get_current_user)):
     
     return user
 
-# ==================== OWNER PORTAL ====================
-
-@api_router.post("/owner/verify")
-async def verify_owner_password(password_data: dict):
-    """Verify owner portal password"""
-    password = password_data.get("password")
-    if password == OWNER_PASSWORD:
-        return {"valid": True}
-    return {"valid": False}
-
 # ==================== ADMIN USER MANAGEMENT ====================
 
 @api_router.get("/admin/users", response_model=List[UserResponse])
 async def get_admin_users(current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(current_user)
-    
-    # Exclude admin role from results for regular admins
-    if current_user.get("role") == "admin":
-        filter_query["role"] = {"$ne": "admin"}
-    
-    users = await db.users.find(filter_query, {"password": 0}).to_list(1000)
+    users = await db.users.find({}, {"password": 0}).to_list(1000)
     return [UserResponse(**serialize_id(u)) for u in users]
 
 @api_router.post("/admin/users", response_model=UserResponse)
@@ -466,9 +433,6 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     user_dict["created_at"] = datetime.now(timezone.utc)
     user_dict["assigned_projects"] = []
     
-    # MULTI-TENANCY: Add admin_id
-    user_dict["admin_id"] = admin.get("id")
-    
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
     del user_dict["password"]
@@ -477,27 +441,22 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
 
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
 async def get_admin_user_by_id(user_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify access
-    filter_query = {"_id": ObjectId(user_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
-    user = await db.users.find_one(filter_query, {"password": 0})
+    user = await db.users.find_one({"_id": ObjectId(user_id)}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**serialize_id(user))
 
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
 async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(user_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
     # Remove password from update if not provided
     update_data = {k: v for k, v in user_data.items() if v is not None and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
     
-    result = await db.users.update_one(filter_query, {"$set": update_data})
+    result = await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": update_data}
+    )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -507,26 +466,29 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
 
 @api_router.delete("/admin/users/{user_id}")
 async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(user_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    result = await db.users.delete_one(filter_query)
+    result = await db.users.delete_one({"_id": ObjectId(user_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User deleted successfully"}
 
-# ==================== SUBCONTRACTORS ====================
+@api_router.post("/admin/users/{user_id}/assign-projects")
+async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_admin_user)):
+    result = await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {"$set": {"assigned_projects": project_ids.get("project_ids", [])}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "Projects assigned successfully"}
 
-@api_router.get("/admin/subcontractors")
-async def get_subcontractors(admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(admin)
-    
-    subs = await db.subcontractors.find(filter_query, {"password": 0}).to_list(1000)
-    return serialize_list(subs)
+# ==================== ADMIN SUBCONTRACTORS ====================
 
-@api_router.post("/admin/subcontractors")
+@api_router.get("/admin/subcontractors", response_model=List[SubcontractorResponse])
+async def get_subcontractors(current_user = Depends(get_current_user)):
+    subs = await db.subcontractors.find({}, {"password": 0}).to_list(1000)
+    return [SubcontractorResponse(**serialize_id(s)) for s in subs]
+
+@api_router.post("/admin/subcontractors", response_model=SubcontractorResponse)
 async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(get_admin_user)):
     existing = await db.subcontractors.find_one({"email": sub_data.email})
     if existing:
@@ -535,11 +497,8 @@ async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(ge
     sub_dict = sub_data.model_dump()
     sub_dict["password"] = hash_password(sub_dict["password"])
     sub_dict["created_at"] = datetime.now(timezone.utc)
-    sub_dict["assigned_projects"] = []
     sub_dict["workers_count"] = 0
-    
-    # MULTI-TENANCY: Add admin_id
-    sub_dict["admin_id"] = admin.get("id")
+    sub_dict["assigned_projects"] = []
     
     result = await db.subcontractors.insert_one(sub_dict)
     sub_dict["id"] = str(result.inserted_id)
@@ -547,28 +506,23 @@ async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(ge
     
     return SubcontractorResponse(**sub_dict)
 
-@api_router.get("/admin/subcontractors/{sub_id}")
-async def get_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(sub_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    sub = await db.subcontractors.find_one(filter_query, {"password": 0})
+@api_router.get("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
+async def get_subcontractor(sub_id: str, current_user = Depends(get_current_user)):
+    sub = await db.subcontractors.find_one({"_id": ObjectId(sub_id)}, {"password": 0})
     if not sub:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     return SubcontractorResponse(**serialize_id(sub))
 
-@api_router.put("/admin/subcontractors/{sub_id}")
+@api_router.put("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
 async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(sub_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
     update_data = {k: v for k, v in sub_data.items() if v is not None and k != "password"}
     if "password" in sub_data and sub_data["password"]:
         update_data["password"] = hash_password(sub_data["password"])
     
-    result = await db.subcontractors.update_one(filter_query, {"$set": update_data})
+    result = await db.subcontractors.update_one(
+        {"_id": ObjectId(sub_id)},
+        {"$set": update_data}
+    )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
@@ -578,65 +532,51 @@ async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_
 
 @api_router.delete("/admin/subcontractors/{sub_id}")
 async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(sub_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    result = await db.subcontractors.delete_one(filter_query)
+    result = await db.subcontractors.delete_one({"_id": ObjectId(sub_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     return {"message": "Subcontractor deleted successfully"}
 
 # ==================== SITE DEVICE MANAGEMENT ====================
 
-@api_router.get("/projects/{project_id}/site-devices")
-async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user)):
-    """Get all site devices for a specific project"""
-    # MULTI-TENANCY: Verify project ownership first
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    devices = await db.site_devices.find(
-        {"project_id": project_id},
-        {"password": 0}
-    ).to_list(100)
-    return serialize_list(devices)
+@api_router.get("/admin/site-devices")
+async def get_site_devices(admin = Depends(get_admin_user)):
+    """Get all site devices"""
+    devices = await db.site_devices.find({}, {"password": 0}).to_list(1000)
+    result = []
+    for device in devices:
+        device_data = serialize_id(device)
+        # Get project name
+        if device.get("project_id"):
+            project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+            device_data["project_name"] = project.get("name") if project else "Unknown"
+        result.append(device_data)
+    return result
 
-@api_router.post("/projects/{project_id}/site-devices")
-async def create_project_site_device(project_id: str, device_data: SiteDeviceCreate, admin = Depends(get_admin_user)):
-    """Create a new site device for a specific project"""
-    # MULTI-TENANCY: Verify project ownership first
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
+@api_router.post("/admin/site-devices")
+async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_admin_user)):
+    """Create a new site device credential"""
     # Check if username exists
     existing = await db.site_devices.find_one({"username": device_data.username})
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
     
+    # Verify project exists
+    project = await db.projects.find_one({"_id": ObjectId(device_data.project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
     device_dict = device_data.model_dump()
-    device_dict["project_id"] = project_id
     device_dict["password"] = hash_password(device_dict["password"])
     device_dict["is_active"] = True
     device_dict["created_at"] = datetime.now(timezone.utc)
     device_dict["created_by"] = admin.get("id")
     
-    # MULTI-TENANCY: Add admin_id from project
-    device_dict["admin_id"] = project.get("admin_id")
-    
     result = await db.site_devices.insert_one(device_dict)
     
     return {
         "id": str(result.inserted_id),
-        "project_id": project_id,
+        "project_id": device_data.project_id,
         "project_name": project.get("name"),
         "device_name": device_data.device_name,
         "username": device_data.username,
@@ -644,53 +584,67 @@ async def create_project_site_device(project_id: str, device_data: SiteDeviceCre
         "message": "Site device created successfully"
     }
 
-@api_router.put("/projects/{project_id}/site-devices/{device_id}/toggle")
-async def toggle_project_site_device(project_id: str, device_id: str, admin = Depends(get_admin_user)):
-    """Toggle site device active status"""
-    # MULTI-TENANCY: Verify project ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    device = await db.site_devices.find_one({"_id": ObjectId(device_id), "project_id": project_id})
+@api_router.get("/admin/site-devices/{device_id}")
+async def get_site_device(device_id: str, admin = Depends(get_admin_user)):
+    """Get a specific site device"""
+    device = await db.site_devices.find_one({"_id": ObjectId(device_id)}, {"password": 0})
     if not device:
         raise HTTPException(status_code=404, detail="Site device not found")
     
-    new_status = not device.get("is_active", True)
-    await db.site_devices.update_one(
+    device_data = serialize_id(device)
+    if device.get("project_id"):
+        project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+        device_data["project_name"] = project.get("name") if project else "Unknown"
+    
+    return device_data
+
+@api_router.put("/admin/site-devices/{device_id}")
+async def update_site_device(device_id: str, update_data: dict, admin = Depends(get_admin_user)):
+    """Update a site device"""
+    update_fields = {}
+    
+    if "device_name" in update_data:
+        update_fields["device_name"] = update_data["device_name"]
+    if "is_active" in update_data:
+        update_fields["is_active"] = update_data["is_active"]
+    if "password" in update_data and update_data["password"]:
+        update_fields["password"] = hash_password(update_data["password"])
+    
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    
+    result = await db.site_devices.update_one(
         {"_id": ObjectId(device_id)},
-        {"$set": {"is_active": new_status}}
+        {"$set": update_fields}
     )
     
-    return {"message": "Site device updated successfully", "is_active": new_status}
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Site device not found")
+    
+    return {"message": "Site device updated successfully"}
 
-@api_router.delete("/projects/{project_id}/site-devices/{device_id}")
-async def delete_project_site_device(project_id: str, device_id: str, admin = Depends(get_admin_user)):
+@api_router.delete("/admin/site-devices/{device_id}")
+async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     """Delete a site device"""
-    # MULTI-TENANCY: Verify project ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    result = await db.site_devices.delete_one({"_id": ObjectId(device_id), "project_id": project_id})
+    result = await db.site_devices.delete_one({"_id": ObjectId(device_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Site device not found")
     return {"message": "Site device deleted successfully"}
+
+@api_router.get("/projects/{project_id}/site-devices")
+async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user)):
+    """Get all site devices for a specific project"""
+    devices = await db.site_devices.find(
+        {"project_id": project_id},
+        {"password": 0}
+    ).to_list(100)
+    return serialize_list(devices)
 
 # ==================== PROJECTS ====================
 
 @api_router.get("/projects", response_model=List[ProjectResponse])
 async def get_projects(current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(current_user)
-    
-    projects = await db.projects.find(filter_query).to_list(1000)
+    projects = await db.projects.find({}).to_list(1000)
     return [ProjectResponse(**serialize_id(p)) for p in projects]
 
 @api_router.post("/projects", response_model=ProjectResponse)
@@ -700,10 +654,6 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["nfc_tags"] = []
     project_dict["dropbox_enabled"] = False
     project_dict["dropbox_folder"] = None
-    project_dict["report_email_list"] = []
-    
-    # MULTI-TENANCY: Add admin_id
-    project_dict["admin_id"] = admin.get("id")
     
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
@@ -712,24 +662,19 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
 
 @api_router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify access
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(filter_query)
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return ProjectResponse(**serialize_id(project))
 
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     
-    result = await db.projects.update_one(filter_query, {"$set": update_data})
+    result = await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": update_data}
+    )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -739,11 +684,7 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
 
 @api_router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    result = await db.projects.delete_one(filter_query)
+    result = await db.projects.delete_one({"_id": ObjectId(project_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"message": "Project deleted successfully"}
@@ -752,22 +693,14 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
 
 @api_router.get("/projects/{project_id}/nfc-tags")
 async def get_project_nfc_tags(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(filter_query)
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project.get("nfc_tags", [])
 
 @api_router.post("/projects/{project_id}/nfc-tags")
 async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify project ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -782,9 +715,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         "project_name": project.get("name"),
         "location_description": tag_data.location_description,
         "status": "active",
-        "created_at": datetime.now(timezone.utc),
-        # MULTI-TENANCY: Add admin_id from project
-        "admin_id": project.get("admin_id")
+        "created_at": datetime.now(timezone.utc)
     }
     
     # Store in nfc_tags collection
@@ -800,14 +731,6 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
 
 @api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify project ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    project = await db.projects.find_one(filter_query)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     await db.nfc_tags.delete_one({"tag_id": tag_id, "project_id": project_id})
     await db.projects.update_one(
         {"_id": ObjectId(project_id)},
@@ -832,14 +755,150 @@ async def get_nfc_tag_info(tag_id: str):
         company_name=tag.get("company_name")
     )
 
+@api_router.get("/checkin/{project_id}/{tag_id}/info")
+async def get_checkin_info(project_id: str, tag_id: str):
+    """Public endpoint - no auth required"""
+    try:
+        tag = await db.nfc_tags.find_one({
+            "tag_id": tag_id,
+            "project_id": project_id,
+            "status": "active"
+        })
+        
+        if not tag:
+            raise HTTPException(status_code=404, detail="Invalid check-in link")
+        
+        project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        return {
+            "project_id": project_id,
+            "project_name": project.get("name", "Unknown Project"),
+            "location": tag.get("location_description", "Check-In Point"),
+            "tag_id": tag_id,
+            "company_name": project.get("company_name")
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+@api_router.post("/checkin/submit")
+async def submit_checkin(checkin_data: PublicCheckInSubmit):
+    """Public endpoint - workers check in via this"""
+    try:
+        # Verify tag
+        tag = await db.nfc_tags.find_one({
+            "tag_id": checkin_data.tag_id,
+            "project_id": checkin_data.project_id,
+            "status": "active"
+        })
+        
+        if not tag:
+            raise HTTPException(status_code=404, detail="Invalid check-in")
+        
+        project = await db.projects.find_one({"_id": ObjectId(checkin_data.project_id)})
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        admin_id = project.get("admin_id")
+        
+        # Find or create worker
+        worker = await db.workers.find_one({"phone": checkin_data.phone})
+        
+        if not worker:
+            new_worker = {
+                "name": checkin_data.name,
+                "phone": checkin_data.phone,
+                "company": checkin_data.company,
+                "trade": checkin_data.trade,
+                "admin_id": admin_id,
+                "created_at": datetime.now(timezone.utc),
+                "status": "active"
+            }
+            result = await db.workers.insert_one(new_worker)
+            worker = new_worker
+            worker["_id"] = result.inserted_id
+        else:
+            # Update worker info
+            update_fields = {}
+            if worker.get("name") != checkin_data.name:
+                update_fields["name"] = checkin_data.name
+            if worker.get("company") != checkin_data.company:
+                update_fields["company"] = checkin_data.company
+            if worker.get("trade") != checkin_data.trade:
+                update_fields["trade"] = checkin_data.trade
+            if not worker.get("admin_id"):
+                update_fields["admin_id"] = admin_id
+            
+            if update_fields:
+                await db.workers.update_one(
+                    {"_id": worker["_id"]},
+                    {"$set": update_fields}
+                )
+        
+        # Check if already checked in today
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        existing_checkin = await db.checkins.find_one({
+            "worker_id": str(worker["_id"]),
+            "project_id": checkin_data.project_id,
+            "check_in_time": {"$gte": today_start},
+            "status": "checked_in"
+        })
+        
+        if existing_checkin:
+            return {
+                "success": True,
+                "message": "Already checked in",
+                "checkin_id": str(existing_checkin["_id"]),
+                "worker_name": worker.get("name"),
+                "project_name": project.get("name"),
+                "check_in_time": existing_checkin["check_in_time"].isoformat()
+            }
+        
+        # Create check-in
+        now = datetime.now(timezone.utc)
+        checkin_record = {
+            "worker_id": str(worker["_id"]),
+            "worker_name": worker.get("name"),
+            "worker_phone": worker.get("phone"),
+            "company": worker.get("company"),
+            "trade": worker.get("trade"),
+            "project_id": checkin_data.project_id,
+            "project_name": project.get("name"),
+            "admin_id": admin_id,
+            "tag_id": checkin_data.tag_id,
+            "check_in_time": now,
+            "check_out_time": None,
+            "status": "checked_in",
+            "timestamp": now
+        }
+        
+        result = await db.checkins.insert_one(checkin_record)
+        
+        return {
+            "success": True,
+            "message": "Check-in successful",
+            "checkin_id": str(result.inserted_id),
+            "worker_name": worker.get("name"),
+            "project_name": project.get("name"),
+            "check_in_time": now.isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Check-in failed: {str(e)}")
+        
 # ==================== WORKERS ====================
 
 @api_router.get("/workers", response_model=List[WorkerResponse])
 async def get_workers(current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(current_user)
-    
-    workers = await db.workers.find(filter_query).to_list(1000)
+    workers = await db.workers.find({}).to_list(1000)
     return [WorkerResponse(**serialize_id(w)) for w in workers]
 
 @api_router.post("/workers/register")
@@ -856,33 +915,25 @@ async def register_worker(worker_data: WorkerCreate):
     worker_dict["certifications"] = []
     worker_dict["signature"] = None
     
-    # MULTI-TENANCY: Workers created via public registration don't have admin_id yet
-    # They'll be associated when they check in to a project
-    
     result = await db.workers.insert_one(worker_dict)
     
     return {"worker_id": str(result.inserted_id), "message": "Worker registered successfully"}
 
 @api_router.get("/workers/{worker_id}", response_model=WorkerResponse)
 async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify access
-    filter_query = {"_id": ObjectId(worker_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
-    worker = await db.workers.find_one(filter_query)
+    worker = await db.workers.find_one({"_id": ObjectId(worker_id)})
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
     return WorkerResponse(**serialize_id(worker))
 
 @api_router.put("/workers/{worker_id}", response_model=WorkerResponse)
 async def update_worker(worker_id: str, worker_data: dict, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(worker_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
     update_data = {k: v for k, v in worker_data.items() if v is not None}
     
-    result = await db.workers.update_one(filter_query, {"$set": update_data})
+    result = await db.workers.update_one(
+        {"_id": ObjectId(worker_id)},
+        {"$set": update_data}
+    )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Worker not found")
@@ -892,11 +943,7 @@ async def update_worker(worker_id: str, worker_data: dict, current_user = Depend
 
 @api_router.delete("/workers/{worker_id}")
 async def delete_worker(worker_id: str, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(worker_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
-    result = await db.workers.delete_one(filter_query)
+    result = await db.workers.delete_one({"_id": ObjectId(worker_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Worker not found")
     return {"message": "Worker deleted successfully"}
@@ -928,13 +975,6 @@ async def check_in_worker(checkin_data: CheckInCreate):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # MULTI-TENANCY: Associate worker with project's admin if not already
-    if not worker.get("admin_id"):
-        await db.workers.update_one(
-            {"_id": worker["_id"]},
-            {"$set": {"admin_id": project.get("admin_id")}}
-        )
-    
     # Create check-in record
     now = datetime.now(timezone.utc)
     checkin_record = {
@@ -947,9 +987,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
         "check_in_time": now,
         "check_out_time": None,
         "status": "checked_in",
-        "timestamp": now,
-        # MULTI-TENANCY: Add admin_id from project
-        "admin_id": project.get("admin_id")
+        "timestamp": now
     }
     
     result = await db.checkins.insert_one(checkin_record)
@@ -967,12 +1005,8 @@ async def check_in_worker(checkin_data: CheckInCreate):
 
 @api_router.post("/checkins/{checkin_id}/checkout")
 async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify access
-    filter_query = {"_id": ObjectId(checkin_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
     result = await db.checkins.update_one(
-        filter_query,
+        {"_id": ObjectId(checkin_id)},
         {"$set": {"check_out_time": datetime.now(timezone.utc), "status": "checked_out"}}
     )
     if result.matched_count == 0:
@@ -981,27 +1015,11 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
 
 @api_router.get("/checkins/project/{project_id}")
 async def get_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access first
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     checkins = await db.checkins.find({"project_id": project_id}).to_list(1000)
     return serialize_list(checkins)
 
 @api_router.get("/checkins/project/{project_id}/active")
 async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access first
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     checkins = await db.checkins.find({
         "project_id": project_id,
         "status": "checked_in"
@@ -1010,14 +1028,6 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
 
 @api_router.get("/checkins/project/{project_id}/today")
 async def get_today_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access first
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -1027,41 +1037,42 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
 
 # ==================== DAILY LOGS ====================
 
-@api_router.post("/daily-logs")
+@api_router.get("/daily-logs")
+async def get_daily_logs(current_user = Depends(get_current_user)):
+    logs = await db.daily_logs.find({}).sort("date", -1).to_list(1000)
+    return serialize_list(logs)
+
+@api_router.post("/daily-logs", response_model=DailyLogResponse)
 async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access and get admin_id
-    project_filter = {"_id": ObjectId(log_data.project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     log_dict = log_data.model_dump()
-    log_dict["created_at"] = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    log_dict["created_at"] = now
+    log_dict["updated_at"] = now
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
-    
-    # MULTI-TENANCY: Add admin_id from project
-    log_dict["admin_id"] = project.get("admin_id")
     
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
     
-    return serialize_id(log_dict)
+    return DailyLogResponse(**log_dict)
 
 @api_router.put("/daily-logs/{log_id}")
-async def update_daily_log(log_id: str, log_data: dict, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify ownership
-    filter_query = {"_id": ObjectId(log_id)}
-    filter_query.update(get_filter_for_user(current_user))
+async def update_daily_log(log_id: str, update_data: dict, current_user = Depends(get_current_user)):
+    """Update an existing daily log"""
+    # Remove fields that shouldn't be updated directly
+    update_data.pop("id", None)
+    update_data.pop("_id", None)
+    update_data.pop("created_at", None)
+    update_data.pop("created_by", None)
     
-    update_data = {k: v for k, v in log_data.items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
     update_data["updated_by"] = current_user.get("id")
     update_data["updated_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     
-    result = await db.daily_logs.update_one(filter_query, {"$set": update_data})
+    result = await db.daily_logs.update_one(
+        {"_id": ObjectId(log_id)},
+        {"$set": update_data}
+    )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Daily log not found")
@@ -1072,25 +1083,13 @@ async def update_daily_log(log_id: str, log_data: dict, current_user = Depends(g
 
 @api_router.get("/daily-logs/{log_id}", response_model=DailyLogResponse)
 async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify access
-    filter_query = {"_id": ObjectId(log_id)}
-    filter_query.update(get_filter_for_user(current_user))
-    
-    log = await db.daily_logs.find_one(filter_query)
+    log = await db.daily_logs.find_one({"_id": ObjectId(log_id)})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
     return DailyLogResponse(**serialize_id(log))
 
 @api_router.get("/daily-logs/project/{project_id}")
 async def get_project_daily_logs(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access first
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     logs = await db.daily_logs.find({"project_id": project_id}).sort("date", -1).to_list(1000)
     return serialize_list(logs)
 
@@ -1098,22 +1097,11 @@ async def get_project_daily_logs(project_id: str, current_user = Depends(get_cur
 
 @api_router.get("/reports")
 async def get_reports(current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(current_user)
-    
-    reports = await db.reports.find(filter_query).to_list(1000)
+    reports = await db.reports.find({}).to_list(1000)
     return serialize_list(reports)
 
 @api_router.get("/reports/project/{project_id}")
 async def get_project_reports(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access first
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
     reports = await db.reports.find({"project_id": project_id}).to_list(1000)
     return serialize_list(reports)
 
@@ -1149,11 +1137,7 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
 
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Verify project access
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1205,11 +1189,7 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 @api_router.get("/projects/{project_id}/dropbox-file-url")
 async def get_dropbox_file_url(project_id: str, file_path: str, current_user = Depends(get_current_user)):
     """Get a temporary download/view URL for a Dropbox file"""
-    # MULTI-TENANCY: Verify project access
-    project_filter = {"_id": ObjectId(project_id)}
-    project_filter.update(get_filter_for_user(current_user))
-    
-    project = await db.projects.find_one(project_filter)
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1249,14 +1229,10 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
 
 @api_router.post("/projects/{project_id}/link-dropbox")
 async def link_dropbox_folder(project_id: str, folder_data: dict, admin = Depends(get_admin_user)):
-    # MULTI-TENANCY: Verify project ownership
-    filter_query = {"_id": ObjectId(project_id)}
-    filter_query.update(get_filter_for_user(admin))
-    
     folder_path = folder_data.get("folder_path")
     
     result = await db.projects.update_one(
-        filter_query,
+        {"_id": ObjectId(project_id)},
         {"$set": {"dropbox_enabled": True, "dropbox_folder": folder_path}}
     )
     
@@ -1396,7 +1372,7 @@ async def dropbox_oauth_callback(code: str = None, error: str = None):
                 font-family: system-ui, -apple-system, sans-serif;
                 display: flex;
                 align-items: center;
-                justifty-content: center;
+                justify-content: center;
                 height: 100vh;
                 margin: 0;
                 background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3e 50%, #0a0a1a 100%);
@@ -1461,15 +1437,12 @@ async def dropbox_oauth_callback(code: str = None, error: str = None):
 
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):
-    # MULTI-TENANCY: Filter by admin_id
-    filter_query = get_filter_for_user(current_user)
-    
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     
-    total_workers = await db.workers.count_documents(filter_query)
-    total_projects = await db.projects.count_documents({**filter_query, "status": "active"})
-    on_site_now = await db.checkins.count_documents({**filter_query, "status": "checked_in"})
-    today_checkins = await db.checkins.count_documents({**filter_query, "check_in_time": {"$gte": today_start}})
+    total_workers = await db.workers.count_documents({})
+    total_projects = await db.projects.count_documents({"status": "active"})
+    on_site_now = await db.checkins.count_documents({"status": "checked_in"})
+    today_checkins = await db.checkins.count_documents({"check_in_time": {"$gte": today_start}})
     
     return {
         "total_workers": total_workers,
@@ -1482,7 +1455,7 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "Blueview API v2.0.0 with Multi-Tenancy", "status": "running"}
+    return {"message": "Blueview API v2.0.0", "status": "running"}
 
 @api_router.get("/health")
 async def health_check():
@@ -1506,7 +1479,7 @@ async def shutdown_db_client():
 # Startup event to create indexes and seed data
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Starting Blueview API with Multi-Tenancy...")
+    logger.info("Starting Blueview API...")
     
     # Create indexes
     await db.users.create_index("email", unique=True)
@@ -1514,20 +1487,10 @@ async def startup_event():
     await db.nfc_tags.create_index("tag_id", unique=True)
     await db.subcontractors.create_index("email", unique=True)
     
-    # MULTI-TENANCY: Create indexes for admin_id
-    await db.projects.create_index("admin_id")
-    await db.workers.create_index("admin_id")
-    await db.checkins.create_index("admin_id")
-    await db.daily_logs.create_index("admin_id")
-    await db.subcontractors.create_index("admin_id")
-    await db.nfc_tags.create_index("admin_id")
-    await db.site_devices.create_index("admin_id")
-    await db.reports.create_index("admin_id")
-    
     # Check if admin user exists, if not create default
     admin = await db.users.find_one({"email": "rfs2671@gmail.com"})
     if not admin:
-        admin_id = await db.users.insert_one({
+        await db.users.insert_one({
             "email": "rfs2671@gmail.com",
             "password": hash_password("Asdddfgh1$"),
             "name": "Roy Fishman",
@@ -1536,43 +1499,5 @@ async def startup_event():
             "assigned_projects": []
         })
         logger.info("Created default admin user")
-        
-        # MULTI-TENANCY: Assign existing data to default admin
-        default_admin_id = str(admin_id.inserted_id)
-        
-        logger.info("Migrating existing data to default admin...")
-        await db.projects.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.workers.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.checkins.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.daily_logs.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.subcontractors.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.nfc_tags.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.site_devices.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        await db.reports.update_many(
-            {"admin_id": {"$exists": False}},
-            {"$set": {"admin_id": default_admin_id}}
-        )
-        logger.info("Migration complete")
     
     logger.info("Blueview API started successfully")
