@@ -47,7 +47,13 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "react-native-nfc-manager",
+        {
+          "nfcPermission": "This app uses NFC to scan worker check-in tags."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false
