@@ -5,7 +5,6 @@ import { View, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from '../src/context/AuthContext';
 import { ToastProvider } from '../src/components/Toast';
-import TopAlert from '../src/components/TopAlert';  // ← ADD THIS
 import { colors } from '../src/styles/theme';
 
 /**
@@ -25,7 +24,6 @@ export default function RootLayout() {
                 animation: 'fade',
               }}
             />
-            <TopAlert />  {/* ← ADD THIS */}
           </View>
         </ToastProvider>
       </AuthProvider>
