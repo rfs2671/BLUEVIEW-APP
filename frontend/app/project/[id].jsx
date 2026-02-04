@@ -37,6 +37,8 @@ import {
   Folder,
   FileText,
   Link as LinkIcon,
+  Zap,
+  Radio,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -46,6 +48,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
+import * as NfcHelper from '../../src/utils/nfcHelper';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 // Site device API for project-specific devices
@@ -103,6 +106,9 @@ export default function ProjectDetailScreen() {
   const [nfcTagId, setNfcTagId] = useState('');
   const [nfcLocation, setNfcLocation] = useState('');
   const [addingNfc, setAddingNfc] = useState(false);
+  const [scanningNfc, setScanningNfc] = useState(false);
+  const [nfcSupported, setNfcSupported] = useState(false);
+  const [nfcEnabled, setNfcEnabled] = useState(false);
 
   // Site devices management
   const [siteDevices, setSiteDevices] = useState([]);
@@ -135,6 +141,20 @@ export default function ProjectDetailScreen() {
       fetchData();
     }
   }, [isAuthenticated, projectId]);
+
+  // Check NFC capability
+  useEffect(() => {
+    const checkNfcCapability = async () => {
+      await NfcHelper.initNfc();
+      const supported = await NfcHelper.isNfcSupported();
+      setNfcSupported(supported);
+      if (supported) {
+        const enabled = await NfcHelper.isNfcEnabled();
+        setNfcEnabled(enabled);
+      }
+    };
+    checkNfcCapability();
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -216,6 +236,58 @@ export default function ProjectDetailScreen() {
   const handleLogout = async () => {
     await logout();
     router.replace('/login');
+  };
+
+  const handleScanNfcTag = async () => {
+    if (!nfcLocation.trim()) {
+      toast.warning('Location Required', 'Please enter the tag location first');
+      return;
+    }
+
+    if (!nfcEnabled) {
+      toast.error('NFC Disabled', 'Please enable NFC in your device settings');
+      return;
+    }
+
+    setScanningNfc(true);
+    toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
+
+    try {
+      const result = await NfcHelper.registerNfcTag(
+        projectId,
+        'https://app.blueview.com'  // TODO: Replace with your actual domain
+      );
+
+      if (result.success) {
+        toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
+        
+        setAddingNfc(true);
+        try {
+          await projectsAPI.addNfcTag(projectId, {
+            tag_id: result.tagId,
+            location_description: nfcLocation,
+          });
+
+          toast.success('Success!', 'NFC tag registered to project');
+          setNfcLocation('');
+          setShowAddNfcModal(false);
+          await fetchData();
+        } catch (error) {
+          console.error('Failed to register tag:', error);
+          toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
+        } finally {
+          setAddingNfc(false);
+        }
+      } else {
+        toast.error('Scan Failed', result.error || 'Could not scan NFC tag');
+      }
+    } catch (error) {
+      console.error('NFC scan error:', error);
+      toast.error('Error', 'Failed to scan NFC tag');
+    } finally {
+      setScanningNfc(false);
+      await NfcHelper.cancelNfc();
+    }
   };
 
   const handleAddNfcTag = async () => {
@@ -686,48 +758,130 @@ export default function ProjectDetailScreen() {
           visible={showAddNfcModal}
           transparent
           animationType="slide"
-          onRequestClose={() => setShowAddNfcModal(false)}
+          onRequestClose={() => {
+            setShowAddNfcModal(false);
+            NfcHelper.cancelNfc();
+          }}
         >
           <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowAddNfcModal(false)} />
+            <Pressable 
+              style={styles.modalBackdrop} 
+              onPress={() => {
+                setShowAddNfcModal(false);
+                NfcHelper.cancelNfc();
+              }} 
+            />
             <View style={styles.modalContent}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Add NFC Tag</Text>
-                  <Pressable onPress={() => setShowAddNfcModal(false)}>
+                  <Text style={styles.modalTitle}>Register NFC Tag</Text>
+                  <Pressable 
+                    onPress={() => {
+                      setShowAddNfcModal(false);
+                      NfcHelper.cancelNfc();
+                    }}
+                  >
                     <X size={24} color={colors.text.primary} />
                   </Pressable>
                 </View>
 
-                <Text style={styles.modalDesc}>
-                  Tap an NFC tag or enter its ID manually to register it for check-ins.
+                <Text style={styles.modalInstructions}>
+                  {nfcSupported 
+                    ? 'Scan a blank NFC tag to automatically program it with this project\'s check-in link.'
+                    : 'NFC not available. You can register tags manually by entering the tag ID.'}
                 </Text>
 
                 <View style={styles.modalForm}>
+                  {/* Location Input - REQUIRED FIRST */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>TAG ID</Text>
-                    <GlassInput
-                      value={nfcTagId}
-                      onChangeText={setNfcTagId}
-                      placeholder="Enter or scan NFC tag ID"
-                    />
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>LOCATION</Text>
+                    <Text style={styles.inputLabel}>LOCATION *</Text>
                     <GlassInput
                       value={nfcLocation}
                       onChangeText={setNfcLocation}
-                      placeholder="e.g., Main Entrance, Building A"
+                      placeholder="e.g., Main Entrance, Building A Gate"
+                      editable={!scanningNfc && !addingNfc}
                     />
+                    <Text style={styles.inputHint}>
+                      Where is this NFC tag located?
+                    </Text>
                   </View>
 
-                  <GlassButton
-                    title={addingNfc ? 'Adding...' : 'Add NFC Tag'}
-                    onPress={handleAddNfcTag}
-                    loading={addingNfc}
-                    style={styles.addButton}
-                  />
+                  {/* NFC Scan Section */}
+                  {nfcSupported && (
+                    <>
+                      <View style={styles.scanSection}>
+                        <View style={styles.scanHeader}>
+                          <Radio size={20} strokeWidth={1.5} color="#3b82f6" />
+                          <Text style={styles.scanTitle}>Scan NFC Tag</Text>
+                        </View>
+
+                        {!nfcEnabled && (
+                          <View style={styles.warningBox}>
+                            <Text style={styles.warningText}>
+                              ⚠️ NFC is disabled. Please enable NFC in your device settings.
+                            </Text>
+                          </View>
+                        )}
+
+                        <GlassButton
+                          title={scanningNfc ? 'Scanning... Hold phone near tag' : 'Scan & Program Tag'}
+                          icon={
+                            <Zap 
+                              size={20} 
+                              strokeWidth={1.5} 
+                              color={scanningNfc ? '#4ade80' : colors.text.primary} 
+                            />
+                          }
+                          onPress={handleScanNfcTag}
+                          loading={scanningNfc}
+                          disabled={!nfcLocation.trim() || !nfcEnabled || addingNfc}
+                          style={[
+                            styles.scanButton,
+                            scanningNfc && styles.scanButtonActive,
+                          ]}
+                        />
+
+                        <View style={styles.infoBox}>
+                          <Text style={styles.infoText}>
+                            💡 This will read the tag ID and write the check-in URL to the tag automatically.
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Divider */}
+                      <View style={styles.divider}>
+                        <View style={styles.dividerLine} />
+                        <Text style={styles.dividerText}>OR</Text>
+                        <View style={styles.dividerLine} />
+                      </View>
+                    </>
+                  )}
+
+                  {/* Manual Entry Section */}
+                  <View style={styles.manualSection}>
+                    <Text style={styles.manualTitle}>Manual Entry</Text>
+                    
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>TAG ID</Text>
+                      <GlassInput
+                        value={nfcTagId}
+                        onChangeText={setNfcTagId}
+                        placeholder="e.g., 04:A1:B2:C3:D4:E5:F6"
+                        editable={!scanningNfc && !addingNfc}
+                      />
+                      <Text style={styles.inputHint}>
+                        Enter the NFC tag ID manually if scanning is unavailable
+                      </Text>
+                    </View>
+
+                    <GlassButton
+                      title={addingNfc ? 'Adding...' : 'Add Manually'}
+                      onPress={handleAddNfcTag}
+                      loading={addingNfc}
+                      disabled={!nfcTagId.trim() || !nfcLocation.trim() || scanningNfc}
+                      style={styles.manualButton}
+                    />
+                  </View>
                 </View>
               </GlassCard>
             </View>
@@ -1373,5 +1527,91 @@ const styles = StyleSheet.create({
   },
   doneBtn: {
     width: '100%',
+  },
+  // NFC Scanning Styles
+  modalInstructions: {
+    fontSize: 14,
+    color: colors.text.muted,
+    lineHeight: 20,
+    marginBottom: spacing.lg,
+  },
+  inputHint: {
+    fontSize: 12,
+    color: colors.text.subtle,
+    marginTop: spacing.xs,
+  },
+  scanSection: {
+    marginBottom: spacing.lg,
+  },
+  scanHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  scanTitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  warningBox: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    marginBottom: spacing.md,
+  },
+  warningText: {
+    fontSize: 13,
+    color: '#f59e0b',
+    lineHeight: 18,
+  },
+  scanButton: {
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  scanButtonActive: {
+    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    borderColor: 'rgba(74, 222, 128, 0.3)',
+  },
+  infoBox: {
+    backgroundColor: 'rgba(59, 130, 246, 0.05)',
+    borderRadius: borderRadius.md,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  infoText: {
+    fontSize: 12,
+    color: '#3b82f6',
+    lineHeight: 16,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: spacing.lg,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.glass.border,
+  },
+  dividerText: {
+    ...typography.label,
+    fontSize: 11,
+    color: colors.text.subtle,
+    paddingHorizontal: spacing.md,
+  },
+  manualSection: {
+    // No additional styles needed
+  },
+  manualTitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginBottom: spacing.md,
+  },
+  manualButton: {
+    marginTop: spacing.sm,
   },
 });
