@@ -238,57 +238,57 @@ export default function ProjectDetailScreen() {
     router.replace('/login');
   };
 
-  const handleScanNfcTag = async () => {
-    if (!nfcLocation.trim()) {
-      toast.warning('Location Required', 'Please enter the tag location first');
-      return;
-    }
-
-    if (!nfcEnabled) {
-      toast.error('NFC Disabled', 'Please enable NFC in your device settings');
-      return;
-    }
-
-    setScanningNfc(true);
-    toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
-
-    try {
-      const result = await NfcHelper.registerNfcTag(
-        projectId,
-        'https://app.blueview.com'  // TODO: Replace with your actual domain
-      );
-
-      if (result.success) {
-        toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
+ const handleScanNfcTag = async () => {
+  if (!nfcLocation.trim()) {
+    toast.warning('Location Required', 'Please enter the tag location first');
+    return;
+  }
+  if (!nfcEnabled) {
+    toast.error('NFC Disabled', 'Please enable NFC in your device settings');
+    return;
+  }
+  setScanningNfc(true);
+  toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
+  try {
+    const result = await NfcHelper.registerNfcTag(
+      projectId,
+      'https://app.blueview.com'  // TODO: Replace with your actual domain
+    );
+    if (result.success) {
+      toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
+      
+      setAddingNfc(true);
+      try {
+        const response = await projectsAPI.addNfcTag(projectId, {
+          tag_id: result.tagId,
+          location_description: nfcLocation,
+        });
         
-        setAddingNfc(true);
-        try {
-          await projectsAPI.addNfcTag(projectId, {
-            tag_id: result.tagId,
-            location_description: nfcLocation,
-          });
-
-          toast.success('Success!', 'NFC tag registered to project');
-          setNfcLocation('');
-          setShowAddNfcModal(false);
-          await fetchData();
-        } catch (error) {
-          console.error('Failed to register tag:', error);
-          toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
-        } finally {
-          setAddingNfc(false);
+        // Update project state immediately with returned data
+        if (response.project) {
+          setProject(response.project);
         }
-      } else {
-        toast.error('Scan Failed', result.error || 'Could not scan NFC tag');
+        
+        toast.success('Success!', 'NFC tag registered to project');
+        setNfcLocation('');
+        setShowAddNfcModal(false);
+      } catch (error) {
+        console.error('Failed to register tag:', error);
+        toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
+      } finally {
+        setAddingNfc(false);
       }
-    } catch (error) {
-      console.error('NFC scan error:', error);
-      toast.error('Error', 'Failed to scan NFC tag');
-    } finally {
-      setScanningNfc(false);
-      await NfcHelper.cancelNfc();
+    } else {
+      toast.error('Scan Failed', result.error || 'Could not scan NFC tag');
     }
-  };
+  } catch (error) {
+    console.error('NFC scan error:', error);
+    toast.error('Error', 'Failed to scan NFC tag');
+  } finally {
+    setScanningNfc(false);
+    await NfcHelper.cancelNfc();
+  }
+};
 
   const handleAddNfcTag = async () => {
     if (!nfcTagId.trim() || !nfcLocation.trim()) {
