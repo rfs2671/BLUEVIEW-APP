@@ -699,14 +699,14 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
     return project.get("nfc_tags", [])
 
 @api_router.post("/projects/{project_id}/nfc-tags")
-async def add_nfc_tag_to_project(project_id: str, tag_data: NFCTagCreate, admin = Depends(get_admin_user)):
+async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
     # Create NFC tag document
     nfc_tag = {
         "tag_id": tag_data.tag_id,
         "project_id": project_id,
         "location_description": tag_data.location_description,
         "created_at": datetime.now(timezone.utc),
-        "admin_id": admin["_id"]
+        "admin_id": admin["id"]
     }
     
     # Store in nfc_tags collection
