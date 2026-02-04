@@ -699,23 +699,14 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
     return project.get("nfc_tags", [])
 
 @api_router.post("/projects/{project_id}/nfc-tags")
-async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Check if tag already exists
-    existing_tag = await db.nfc_tags.find_one({"tag_id": tag_data.tag_id})
-    if existing_tag:
-        raise HTTPException(status_code=400, detail="NFC tag already registered to another project")
-    
+async def add_nfc_tag_to_project(project_id: str, tag_data: NFCTagCreate, admin = Depends(get_admin_user)):
+    # Create NFC tag document
     nfc_tag = {
         "tag_id": tag_data.tag_id,
         "project_id": project_id,
-        "project_name": project.get("name"),
         "location_description": tag_data.location_description,
-        "status": "active",
-        "created_at": datetime.now(timezone.utc)
+        "created_at": datetime.now(timezone.utc),
+        "admin_id": admin["_id"]
     }
     
     # Store in nfc_tags collection
@@ -728,12 +719,12 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     )
     
     # Fetch updated project
-updated_project = await db.projects.find_one({"_id": ObjectId(project_id)})
-return {
-    "message": "NFC tag registered successfully",
-    "tag_id": tag_data.tag_id,
-    "project": serialize_doc(updated_project)  # Return full project with new tag
-}
+    updated_project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    return {
+        "message": "NFC tag registered successfully",
+        "tag_id": tag_data.tag_id,
+        "project": serialize_id(updated_project)
+    }
 
 @api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
