@@ -727,7 +727,13 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         {"$push": {"nfc_tags": {"tag_id": tag_data.tag_id, "location": tag_data.location_description}}}
     )
     
-    return {"message": "NFC tag registered successfully", "tag_id": tag_data.tag_id}
+    # Fetch updated project
+updated_project = await db.projects.find_one({"_id": ObjectId(project_id)})
+return {
+    "message": "NFC tag registered successfully",
+    "tag_id": tag_data.tag_id,
+    "project": serialize_doc(updated_project)  # Return full project with new tag
+}
 
 @api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
