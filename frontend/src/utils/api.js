@@ -6,7 +6,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // API Base URL - uses the preview URL which proxies /api to backend
-const API_BASE_URL = 'https://blueview2-production.up.railway.app';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
 
 // Create axios instance
 const apiClient = axios.create({
