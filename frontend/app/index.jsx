@@ -13,6 +13,7 @@ import {
   UserCog,
   Briefcase,
   Smartphone,
+  Cloud,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -34,6 +35,7 @@ const quickActions = [
 const adminActions = [
   { title: 'User Management', subtitle: 'Manage CPs & workers', path: '/admin/users', icon: UserCog },
   { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
+  { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
 ];
 
 export default function DashboardScreen() {
