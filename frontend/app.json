@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Blueview",
-    "slug": "blueview",
+    "slug": "blue-view",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -13,6 +13,12 @@
       "resizeMode": "contain",
       "backgroundColor": "#050a12"
     },
+    "extra": {
+      "eas": {
+        "projectId": "1b6489c3-e63b-49de-a0b0-2d40cacac203"
+      },
+      "router": {}
+    }
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.blueview.app",
