@@ -139,6 +139,16 @@ export const projectsAPI = {
     return response.data;
   },
 
+  addNfcTag: async (projectId, tagData) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, tagData);
+    return response.data;
+  },
+
+  deleteNfcTag: async (projectId, tagId) => {
+    const response = await apiClient.delete(`/api/projects/${projectId}/nfc-tags/${tagId}`);
+    return response.data;
+  },
+
   create: async (projectData) => {
     const response = await apiClient.post('/api/projects', projectData);
     return response.data;
