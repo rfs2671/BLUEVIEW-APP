@@ -1,4 +1,4 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
@@ -7,8 +7,8 @@ RUN npm install
 
 COPY . .
 
-# Build for web
-RUN npx expo export:web
+# Build for web using Metro (not Webpack)
+RUN npx expo export --platform web
 
 # Install serve
 RUN npm install -g serve
