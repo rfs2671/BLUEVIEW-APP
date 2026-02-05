@@ -29,6 +29,7 @@
         "backgroundColor": "#050a12"
       },
       "package": "com.blueview.app",
+      "versionCode": 1,
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE",
