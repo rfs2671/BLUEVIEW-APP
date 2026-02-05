@@ -252,7 +252,7 @@ export default function ProjectDetailScreen() {
   try {
     const result = await NfcHelper.registerNfcTag(
       projectId,
-      'https://app.blueview.com'  // TODO: Replace with your actual domain
+      'https://blue-view.app'  // TODO: Replace with your actual domain
     );
     if (result.success) {
       toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
