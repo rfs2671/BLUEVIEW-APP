@@ -1466,6 +1466,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_origins=[
         "https://blue-view.app",
+        "https://blueview.vercel.app",
         "http://localhost:3000",
         "http://localhost:8000",
     ],
