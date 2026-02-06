@@ -293,6 +293,59 @@ class SiteDeviceLogin(BaseModel):
     username: str
     password: str
 
+# ==================== CHECKLIST MODELS ====================
+
+class ChecklistItemCreate(BaseModel):
+    text: str
+    order: int = 0
+
+class ChecklistItemResponse(BaseModel):
+    id: str
+    text: str
+    order: int = 0
+
+class ChecklistCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    items: List[Dict[str, Any]]  # [{text: str, order: int}]
+
+class ChecklistResponse(BaseModel):
+    id: str
+    title: str
+    description: Optional[str] = None
+    items: List[Dict[str, Any]]
+    company_id: str
+    created_by: str
+    created_by_name: Optional[str] = None
+    created_at: datetime
+
+class ChecklistAssignmentCreate(BaseModel):
+    checklist_id: str
+    project_ids: List[str]
+    user_ids: List[str]
+
+class ChecklistAssignmentResponse(BaseModel):
+    id: str
+    checklist_id: str
+    checklist_title: str
+    project_id: str
+    project_name: str
+    assigned_users: List[Dict[str, str]]  # [{id, name, email}]
+    created_at: datetime
+    completion_stats: Optional[Dict[str, int]] = None  # {completed: X, total: Y}
+
+class ChecklistCompletionUpdate(BaseModel):
+    item_completions: Dict[str, Dict[str, Any]]  # {item_id: {checked: bool, note: str, timestamp: str}}
+
+class ChecklistCompletionResponse(BaseModel):
+    id: str
+    assignment_id: str
+    user_id: str
+    user_name: str
+    item_completions: Dict[str, Dict[str, Any]]
+    progress: Dict[str, int]  # {completed: X, total: Y}
+    last_updated: datetime
+
 # ==================== AUTH HELPERS ====================
 
 def hash_password(password: str) -> str:
@@ -1788,6 +1841,344 @@ async def dropbox_oauth_callback(code: str = None, error: str = None):
     from fastapi.responses import HTMLResponse
     return HTMLResponse(content=html_content)
 
+# ==================== ADMIN CHECKLISTS ====================
+
+@api_router.get("/admin/checklists")
+async def get_admin_checklists(admin = Depends(get_admin_user)):
+    """Get all checklists for admin's company"""
+    company_id = get_user_company_id(admin)
+    
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    checklists = await db.checklists.find(query).to_list(1000)
+    
+    result = []
+    for checklist in checklists:
+        checklist_data = serialize_id(checklist)
+        
+        # Get assignment count
+        assignment_count = await db.checklist_assignments.count_documents({
+            "checklist_id": checklist_data["id"]
+        })
+        checklist_data["assignment_count"] = assignment_count
+        
+        result.append(checklist_data)
+    
+    return result
+
+@api_router.post("/admin/checklists")
+async def create_checklist(checklist_data: ChecklistCreate, admin = Depends(get_admin_user)):
+    """Create a new checklist"""
+    company_id = get_user_company_id(admin)
+    
+    # Add unique IDs to items
+    items_with_ids = []
+    for idx, item in enumerate(checklist_data.items):
+        items_with_ids.append({
+            "id": str(uuid.uuid4()),
+            "text": item.get("text", ""),
+            "order": item.get("order", idx)
+        })
+    
+    checklist_dict = {
+        "title": checklist_data.title,
+        "description": checklist_data.description,
+        "items": items_with_ids,
+        "company_id": company_id,
+        "created_by": admin.get("id"),
+        "created_by_name": admin.get("name"),
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    result = await db.checklists.insert_one(checklist_dict)
+    checklist_dict["id"] = str(result.inserted_id)
+    
+    return checklist_dict
+
+@api_router.get("/admin/checklists/{checklist_id}")
+async def get_checklist(checklist_id: str, admin = Depends(get_admin_user)):
+    """Get a specific checklist"""
+    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id)})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    return serialize_id(checklist)
+
+@api_router.put("/admin/checklists/{checklist_id}")
+async def update_checklist(
+    checklist_id: str,
+    checklist_data: ChecklistCreate,
+    admin = Depends(get_admin_user)
+):
+    """Update a checklist"""
+    # Add/preserve IDs for items
+    items_with_ids = []
+    for idx, item in enumerate(checklist_data.items):
+        items_with_ids.append({
+            "id": item.get("id", str(uuid.uuid4())),
+            "text": item.get("text", ""),
+            "order": item.get("order", idx)
+        })
+    
+    update_data = {
+        "title": checklist_data.title,
+        "description": checklist_data.description,
+        "items": items_with_ids,
+        "updated_at": datetime.now(timezone.utc)
+    }
+    
+    result = await db.checklists.update_one(
+        {"_id": ObjectId(checklist_id)},
+        {"$set": update_data}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id)})
+    return serialize_id(checklist)
+
+@api_router.delete("/admin/checklists/{checklist_id}")
+async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
+    """Delete a checklist and all its assignments"""
+    # Delete all assignments first
+    await db.checklist_assignments.delete_many({"checklist_id": checklist_id})
+    
+    # Delete all completions
+    assignments = await db.checklist_assignments.find({"checklist_id": checklist_id}).to_list(1000)
+    assignment_ids = [str(a["_id"]) for a in assignments]
+    await db.checklist_completions.delete_many({"assignment_id": {"$in": assignment_ids}})
+    
+    # Delete checklist
+    result = await db.checklists.delete_one({"_id": ObjectId(checklist_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    return {"message": "Checklist deleted successfully"}
+
+@api_router.post("/admin/checklists/{checklist_id}/assign")
+async def assign_checklist(
+    checklist_id: str,
+    assignment_data: ChecklistAssignmentCreate,
+    admin = Depends(get_admin_user)
+):
+    """Assign checklist to projects and users"""
+    # Verify checklist exists
+    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id)})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    assignments_created = []
+    
+    # Create assignment for each project
+    for project_id in assignment_data.project_ids:
+        # Verify project exists
+        project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        if not project:
+            continue
+        
+        # Get user details
+        assigned_users = []
+        for user_id in assignment_data.user_ids:
+            user = await db.users.find_one({"_id": ObjectId(user_id)})
+            if user:
+                assigned_users.append({
+                    "id": str(user["_id"]),
+                    "name": user.get("name"),
+                    "email": user.get("email")
+                })
+        
+        assignment_dict = {
+            "checklist_id": checklist_id,
+            "checklist_title": checklist.get("title"),
+            "project_id": project_id,
+            "project_name": project.get("name"),
+            "assigned_user_ids": assignment_data.user_ids,
+            "assigned_users": assigned_users,
+            "created_by": admin.get("id"),
+            "created_at": datetime.now(timezone.utc),
+            "company_id": get_user_company_id(admin)
+        }
+        
+        result = await db.checklist_assignments.insert_one(assignment_dict)
+        assignment_dict["id"] = str(result.inserted_id)
+        assignments_created.append(assignment_dict)
+    
+    return {
+        "message": f"Checklist assigned to {len(assignments_created)} project(s)",
+        "assignments": assignments_created
+    }
+
+@api_router.get("/admin/checklists/{checklist_id}/assignments")
+async def get_checklist_assignments(checklist_id: str, admin = Depends(get_admin_user)):
+    """Get all assignments for a checklist"""
+    assignments = await db.checklist_assignments.find(
+        {"checklist_id": checklist_id}
+    ).to_list(1000)
+    
+    result = []
+    for assignment in assignments:
+        assignment_data = serialize_id(assignment)
+        
+        # Get completion stats
+        assignment_id = assignment_data["id"]
+        completions = await db.checklist_completions.find(
+            {"assignment_id": assignment_id}
+        ).to_list(1000)
+        
+        assignment_data["completions"] = [serialize_id(c) for c in completions]
+        result.append(assignment_data)
+    
+    return result
+
+# ==================== PROJECT CHECKLISTS ====================
+
+@api_router.get("/projects/{project_id}/checklists")
+async def get_project_checklists(project_id: str, current_user = Depends(get_current_user)):
+    """Get all checklists assigned to a project"""
+    assignments = await db.checklist_assignments.find(
+        {"project_id": project_id}
+    ).to_list(1000)
+    
+    result = []
+    for assignment in assignments:
+        assignment_data = serialize_id(assignment)
+        
+        # Get checklist details
+        checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+        if checklist:
+            assignment_data["checklist"] = serialize_id(checklist)
+        
+        # Get completion stats for this assignment
+        completions = await db.checklist_completions.find(
+            {"assignment_id": assignment_data["id"]}
+        ).to_list(1000)
+        
+        completed_count = sum(1 for c in completions if c.get("progress", {}).get("completed") == c.get("progress", {}).get("total"))
+        total_assigned = len(assignment.get("assigned_user_ids", []))
+        
+        assignment_data["completion_stats"] = {
+            "completed": completed_count,
+            "total": total_assigned
+        }
+        
+        assignment_data["completions"] = [serialize_id(c) for c in completions]
+        
+        result.append(assignment_data)
+    
+    return result
+
+# ==================== USER CHECKLISTS ====================
+
+@api_router.get("/checklists/assigned")
+async def get_assigned_checklists(current_user = Depends(get_current_user)):
+    """Get checklists assigned to current user"""
+    user_id = current_user.get("id")
+    
+    # Find assignments where user is in assigned_user_ids
+    assignments = await db.checklist_assignments.find(
+        {"assigned_user_ids": user_id}
+    ).to_list(1000)
+    
+    result = []
+    for assignment in assignments:
+        assignment_data = serialize_id(assignment)
+        
+        # Get checklist details
+        checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+        if checklist:
+            assignment_data["checklist"] = serialize_id(checklist)
+        
+        # Get user's completion for this assignment
+        completion = await db.checklist_completions.find_one({
+            "assignment_id": assignment_data["id"],
+            "user_id": user_id
+        })
+        
+        if completion:
+            assignment_data["completion"] = serialize_id(completion)
+        else:
+            assignment_data["completion"] = None
+        
+        result.append(assignment_data)
+    
+    return result
+
+@api_router.get("/checklists/assignments/{assignment_id}")
+async def get_assignment_details(assignment_id: str, current_user = Depends(get_current_user)):
+    """Get assignment details with checklist and user's completion"""
+    assignment = await db.checklist_assignments.find_one({"_id": ObjectId(assignment_id)})
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    
+    assignment_data = serialize_id(assignment)
+    
+    # Get checklist
+    checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+    if checklist:
+        assignment_data["checklist"] = serialize_id(checklist)
+    
+    # Get user's completion
+    user_id = current_user.get("id")
+    completion = await db.checklist_completions.find_one({
+        "assignment_id": assignment_id,
+        "user_id": user_id
+    })
+    
+    if completion:
+        assignment_data["completion"] = serialize_id(completion)
+    
+    return assignment_data
+
+@api_router.put("/checklists/assignments/{assignment_id}/complete")
+async def update_checklist_completion(
+    assignment_id: str,
+    completion_data: ChecklistCompletionUpdate,
+    current_user = Depends(get_current_user)
+):
+    """Update user's completion of a checklist"""
+    user_id = current_user.get("id")
+    
+    # Calculate progress
+    total_items = len(completion_data.item_completions)
+    completed_items = sum(1 for item in completion_data.item_completions.values() if item.get("checked"))
+    
+    progress = {
+        "completed": completed_items,
+        "total": total_items
+    }
+    
+    # Update or create completion record
+    now = datetime.now(timezone.utc)
+    completion_dict = {
+        "assignment_id": assignment_id,
+        "user_id": user_id,
+        "user_name": current_user.get("name"),
+        "item_completions": completion_data.item_completions,
+        "progress": progress,
+        "last_updated": now
+    }
+    
+    existing = await db.checklist_completions.find_one({
+        "assignment_id": assignment_id,
+        "user_id": user_id
+    })
+    
+    if existing:
+        await db.checklist_completions.update_one(
+            {"_id": existing["_id"]},
+            {"$set": completion_dict}
+        )
+        completion_dict["id"] = str(existing["_id"])
+    else:
+        completion_dict["created_at"] = now
+        result = await db.checklist_completions.insert_one(completion_dict)
+        completion_dict["id"] = str(result.inserted_id)
+    
+    return completion_dict
+
 # ==================== STATS / DASHBOARD ====================
 
 @api_router.get("/stats/dashboard")
@@ -1859,6 +2250,11 @@ async def startup_event():
     await db.nfc_tags.create_index("tag_id", unique=True)
     await db.subcontractors.create_index("email", unique=True)
     await db.companies.create_index("name", unique=True)
+    await db.checklists.create_index("company_id")
+    await db.checklist_assignments.create_index("checklist_id")
+    await db.checklist_assignments.create_index("project_id")
+    await db.checklist_assignments.create_index("assigned_user_ids")
+    await db.checklist_completions.create_index([("assignment_id", 1), ("user_id", 1)])
     
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
