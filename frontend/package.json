@@ -40,10 +40,12 @@
   },
   "private": true,
   "expo": {
-  "doctor": {
-    "reactNativeDirectoryCheck": {
-      "exclude": ["react-native-nfc-manager"]
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-nfc-manager"
+        ]
+      }
     }
   }
-}
 }
