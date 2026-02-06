@@ -9,20 +9,22 @@
       "android": {
         "buildType": "app-bundle",
         "gradleCommand": ":app:assembleDebug"
-      }
+      },
+      "channel": "development"
     },
     "preview": {
       "distribution": "internal",
       "android": {
         "buildType": "apk"
-      }
+      },
+      "channel": "preview"
     },
     "production": {
       "distribution": "store",
       "android": {
-        "buildType": "apk",
-        "channel": "production"
-      }
+        "buildType": "apk"
+      },
+      "channel": "production"
     }
   },
   "submit": {
@@ -30,11 +32,6 @@
       "android": {
         "track": "production"
       }
-    }
-  },
-  "update": {
-    "production": {
-      "channel": "production"
     }
   }
 }
