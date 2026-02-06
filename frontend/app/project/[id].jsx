@@ -39,6 +39,7 @@ import {
   Link as LinkIcon,
   Zap,
   Radio,
+  Clock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -46,7 +47,7 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { projectsAPI, checkinsAPI } from '../../src/utils/api';
+import { projectsAPI, checkinsAPI, checklistsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -127,6 +128,8 @@ export default function ProjectDetailScreen() {
   const [linkingDropbox, setLinkingDropbox] = useState(false);
   const [dropboxFiles, setDropboxFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
+  const [checklists, setChecklists] = useState([]);
+  const [loadingChecklists, setLoadingChecklists] = useState(false);
 
   const isAdmin = user?.role === 'admin';
 
@@ -210,6 +213,7 @@ export default function ProjectDetailScreen() {
       console.error('Failed to fetch project:', error);
       toast.error('Error', 'Could not load project details');
     } finally {
+      fetchChecklists();
       setLoading(false);
       setRefreshing(false);
     }
@@ -228,6 +232,19 @@ export default function ProjectDetailScreen() {
     }
   };
 
+  const fetchChecklists = async () => {
+  setLoadingChecklists(true);
+  try {
+    const data = await checklistsAPI.getByProject(projectId);
+    setChecklists(data);
+  } catch (error) {
+    console.error('Failed to fetch checklists:', error);
+    setChecklists([]);
+  } finally {
+    setLoadingChecklists(false);
+  }
+};
+  
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
@@ -490,7 +507,7 @@ export default function ProjectDetailScreen() {
             onPress={handleLogout}
           />
         </View>
-
+        
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -751,6 +768,102 @@ export default function ProjectDetailScreen() {
               <Text style={styles.emptySubtext}>Workers will appear here when they check in</Text>
             </GlassCard>
           )}
+          {/* Checklists Section */}
+<Text style={styles.sectionLabel}>CHECKLISTS</Text>
+{loadingChecklists ? (
+  <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
+) : checklists.length > 0 ? (
+  <View style={styles.itemsList}>
+    {checklists.map((assignment) => {
+      const completedCount = assignment.completions?.filter(
+        c => c.progress?.completed === c.progress?.total
+      ).length || 0;
+      const totalAssigned = assignment.assigned_users?.length || 0;
+      const allComplete = completedCount === totalAssigned && totalAssigned > 0;
+
+      return (
+        <GlassCard key={assignment.id} style={styles.checklistCard}>
+          <View style={styles.checklistHeader}>
+            <View style={styles.checklistInfo}>
+              <Text style={styles.checklistTitle}>
+                {assignment.checklist?.title || 'Checklist'}
+              </Text>
+              {assignment.checklist?.description && (
+                <Text style={styles.checklistDescription} numberOfLines={2}>
+                  {assignment.checklist.description}
+                </Text>
+              )}
+            </View>
+            {allComplete ? (
+              <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
+            ) : (
+              <Clock size={24} strokeWidth={1.5} color="#f59e0b" />
+            )}
+          </View>
+
+          <View style={styles.checklistStats}>
+            <View style={styles.checklistStatItem}>
+              <Text style={styles.checklistStatLabel}>Items</Text>
+              <Text style={styles.checklistStatValue}>
+                {assignment.checklist?.items?.length || 0}
+              </Text>
+            </View>
+            <View style={styles.checklistStatDivider} />
+            <View style={styles.checklistStatItem}>
+              <Text style={styles.checklistStatLabel}>Assigned</Text>
+              <Text style={styles.checklistStatValue}>{totalAssigned}</Text>
+            </View>
+            <View style={styles.checklistStatDivider} />
+            <View style={styles.checklistStatItem}>
+              <Text style={styles.checklistStatLabel}>Complete</Text>
+              <Text style={[
+                styles.checklistStatValue,
+                allComplete && styles.checklistStatValueComplete
+              ]}>
+                {completedCount}/{totalAssigned}
+              </Text>
+            </View>
+          </View>
+
+          {assignment.assigned_users && assignment.assigned_users.length > 0 && (
+            <View style={styles.assignedUsers}>
+              <Text style={styles.assignedUsersLabel}>Assigned to:</Text>
+              <View style={styles.assignedUsersList}>
+                {assignment.assigned_users.map((user) => {
+                  const userCompletion = assignment.completions?.find(
+                    c => c.user_id === user.id
+                  );
+                  const progress = userCompletion?.progress || { completed: 0, total: 0 };
+                  const isComplete = progress.completed === progress.total && progress.total > 0;
+
+                  return (
+                    <View key={user.id} style={styles.assignedUserItem}>
+                      <View style={styles.assignedUserInfo}>
+                        <Text style={styles.assignedUserName}>{user.name}</Text>
+                        <Text style={styles.assignedUserProgress}>
+                          {progress.completed}/{progress.total}
+                        </Text>
+                      </View>
+                      {isComplete && (
+                        <CheckCircle size={14} strokeWidth={1.5} color="#4ade80" />
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+        </GlassCard>
+      );
+    })}
+  </View>
+) : (
+  <GlassCard style={styles.emptyCard}>
+    <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />
+    <Text style={styles.emptyText}>No checklists assigned</Text>
+    <Text style={styles.emptySubtext}>Checklists will appear here when assigned to this project</Text>
+  </GlassCard>
+)}
         </ScrollView>
 
         {/* Add NFC Tag Modal */}
@@ -1614,4 +1727,97 @@ const styles = StyleSheet.create({
   manualButton: {
     marginTop: spacing.sm,
   },
+  checklistCard: {
+  marginBottom: spacing.md,
+  padding: spacing.lg,
+},
+checklistHeader: {
+  flexDirection: 'row',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  marginBottom: spacing.md,
+},
+checklistInfo: {
+  flex: 1,
+  marginRight: spacing.md,
+},
+checklistTitle: {
+  fontSize: 16,
+  fontWeight: '500',
+  color: colors.text.primary,
+  marginBottom: spacing.xs,
+},
+checklistDescription: {
+  fontSize: 13,
+  color: colors.text.secondary,
+  lineHeight: 18,
+},
+checklistStats: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingVertical: spacing.md,
+  marginBottom: spacing.md,
+  backgroundColor: 'rgba(255,255,255,0.03)',
+  borderRadius: borderRadius.md,
+},
+checklistStatItem: {
+  flex: 1,
+  alignItems: 'center',
+},
+checklistStatLabel: {
+  fontSize: 10,
+  color: colors.text.muted,
+  marginBottom: spacing.xs,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+},
+checklistStatValue: {
+  fontSize: 16,
+  fontWeight: '600',
+  color: colors.text.primary,
+},
+checklistStatValueComplete: {
+  color: '#4ade80',
+},
+checklistStatDivider: {
+  width: 1,
+  height: 28,
+  backgroundColor: colors.glass.border,
+},
+assignedUsers: {
+  marginTop: spacing.md,
+  paddingTop: spacing.md,
+  borderTopWidth: 1,
+  borderTopColor: colors.glass.border,
+},
+assignedUsersLabel: {
+  fontSize: 11,
+  color: colors.text.muted,
+  marginBottom: spacing.sm,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+},
+assignedUsersList: {
+  gap: spacing.sm,
+},
+assignedUserItem: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  paddingVertical: spacing.xs,
+},
+assignedUserInfo: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: spacing.md,
+  flex: 1,
+},
+assignedUserName: {
+  fontSize: 13,
+  color: colors.text.primary,
+},
+assignedUserProgress: {
+  fontSize: 11,
+  color: colors.text.muted,
+},
 });
