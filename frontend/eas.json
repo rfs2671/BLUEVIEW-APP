@@ -20,7 +20,8 @@
     "production": {
       "distribution": "store",
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "apk",
+        "channel": "production"
       }
     }
   },
@@ -29,6 +30,11 @@
       "android": {
         "track": "production"
       }
+    }
+  },
+  "update": {
+    "production": {
+      "channel": "production"
     }
   }
 }
