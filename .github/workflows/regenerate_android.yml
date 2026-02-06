@@ -1,0 +1,35 @@
+name: Regenerate Android
+on: workflow_dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: npm install
+        
+      - name: Delete old android
+        run: rm -rf frontend/android
+        
+      - name: Generate complete android
+        working-directory: ./frontend
+        run: npx expo prebuild --platform android
+        
+      - name: Commit
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add frontend/android/
+          git commit -m "Regenerate complete Android folder" || echo "Nothing to commit"
+          git push
