@@ -30,12 +30,12 @@ import {
   PenTool,
   CheckCircle,
   XCircle,
+  home,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
-import SiteNav from '../../src/components/SiteNav';
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
@@ -289,9 +289,14 @@ export default function SiteDailyLogsScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
           <View style={styles.headerLeft}>
+            <GlassButton
+              variant="icon"
+              icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/site')}
+            />
             <View style={styles.siteBadge}>
               <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-              <Text style={styles.siteBadgeText}>SITE MODE</Text>
+              <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
             </View>
             <Text style={styles.projectName} numberOfLines={1}>
               {siteProject?.name || 'Project'}
@@ -492,7 +497,6 @@ export default function SiteDailyLogsScreen() {
           )}
         </ScrollView>
 
-        <SiteNav />
 
         {/* Previous Log Modal */}
         <Modal visible={!!selectedPreviousLog} animationType="slide" transparent onRequestClose={() => setSelectedPreviousLog(null)}>
