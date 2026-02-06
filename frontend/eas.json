@@ -7,7 +7,7 @@
       "developmentClient": true,
       "distribution": "internal",
       "android": {
-        "buildType": "apk",
+        "buildType": "aab",
         "gradleCommand": ":app:assembleDebug"
       }
     },
