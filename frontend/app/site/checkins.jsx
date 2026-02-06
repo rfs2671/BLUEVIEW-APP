@@ -1,3 +1,4 @@
+import { Home } from 'lucide-react-native';
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -14,7 +15,6 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { GlassSkeleton, StatCardSkeleton } from '../../src/components/GlassSkeleton';
-import SiteNav from '../../src/components/SiteNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
@@ -101,21 +101,26 @@ export default function SiteCheckInsScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-              <Text style={styles.siteBadgeText}>SITE MODE</Text>
-            </View>
-            <Text style={styles.projectName} numberOfLines={1}>
-              {siteProject?.name || 'Project'}
-            </Text>
-          </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
-        </View>
+  <View style={styles.headerLeft}>
+    <GlassButton
+      variant="icon"
+      icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
+      onPress={() => router.push('/site')}
+    />
+    <View style={styles.siteBadge}>
+      <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+      <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
+    </View>
+    <Text style={styles.projectName} numberOfLines={1}>
+      {siteProject?.name || 'Project'}
+    </Text>
+  </View>
+  <GlassButton
+    variant="icon"
+    icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+    onPress={handleLogout}
+  />
+</View>
 
         <ScrollView
           style={styles.scrollView}
@@ -247,7 +252,6 @@ export default function SiteCheckInsScreen() {
           )}
         </ScrollView>
 
-        <SiteNav />
       </SafeAreaView>
     </AnimatedBackground>
   );
