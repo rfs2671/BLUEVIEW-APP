@@ -459,4 +459,67 @@ export const ownerAPI = {
   },
 };
 
+/**
+ * Checklists APIs
+ */
+export const checklistsAPI = {
+  // Admin - Manage checklists
+  getAll: async () => {
+    const response = await apiClient.get('/api/admin/checklists');
+    return response.data;
+  },
+
+  create: async (data) => {
+    const response = await apiClient.post('/api/admin/checklists', data);
+    return response.data;
+  },
+
+  getById: async (id) => {
+    const response = await apiClient.get(`/api/admin/checklists/${id}`);
+    return response.data;
+  },
+
+  update: async (id, data) => {
+    const response = await apiClient.put(`/api/admin/checklists/${id}`, data);
+    return response.data;
+  },
+
+  delete: async (id) => {
+    const response = await apiClient.delete(`/api/admin/checklists/${id}`);
+    return response.data;
+  },
+
+  assign: async (checklistId, data) => {
+    const response = await apiClient.post(`/api/admin/checklists/${checklistId}/assign`, data);
+    return response.data;
+  },
+
+  getAssignments: async (checklistId) => {
+    const response = await apiClient.get(`/api/admin/checklists/${checklistId}/assignments`);
+    return response.data;
+  },
+
+  // Project - Get checklists for project
+  getByProject: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/checklists`);
+    return response.data;
+  },
+
+  // User - Get assigned checklists
+  getAssigned: async () => {
+    const response = await apiClient.get('/api/checklists/assigned');
+    return response.data;
+  },
+
+  getAssignmentDetails: async (assignmentId) => {
+    const response = await apiClient.get(`/api/checklists/assignments/${assignmentId}`);
+    return response.data;
+  },
+
+  updateCompletion: async (assignmentId, data) => {
+    const response = await apiClient.put(`/api/checklists/assignments/${assignmentId}/complete`, data);
+    return response.data;
+  },
+};
+
 export default apiClient;
