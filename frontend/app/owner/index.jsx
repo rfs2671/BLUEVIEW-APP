@@ -5,73 +5,121 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  ActivityIndicator,
-  Alert,
+  Modal,
+  KeyboardAvoidingView,
   Platform,
-  TextInput,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  Lock,
+  ArrowLeft,
   LogOut,
   Building2,
   Plus,
   Edit3,
   Trash2,
-  Mail,
-  Calendar,
-  CheckCircle,
-  XCircle,
-  Share2,
+  Users,
+  AlertTriangle,
+  X,
   Eye,
-  EyeOff,
+  ShieldAlert,
+  CheckCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
+import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import { GlassSkeleton } from '../../src/components/GlassSkeleton';
+import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
-import { adminUsersAPI } from '../../src/utils/api';
 import { useAuth } from '../../src/context/AuthContext';
+import apiClient from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
-const OWNER_PASSWORD = 'blueview2024'; // Secondary validation for owner portal
+// Owner password
+const OWNER_PASSWORD = 'Asdddfgh1$';
+
+// Owner API functions
+const ownerAPI = {
+  getCompanies: async () => {
+    const response = await apiClient.get('/api/owner/companies');
+    return response.data;
+  },
+  createCompany: async (companyData) => {
+    const response = await apiClient.post('/api/owner/companies', companyData);
+    return response.data;
+  },
+  getAdmins: async () => {
+    const response = await apiClient.get('/api/owner/admins');
+    return response.data;
+  },
+  createAdmin: async (adminData) => {
+    const response = await apiClient.post('/api/owner/admins', adminData);
+    return response.data;
+  },
+  deleteAdmin: async (adminId) => {
+    const response = await apiClient.delete(`/api/owner/admins/${adminId}`);
+    return response.data;
+  },
+  migrateData: async (assignments) => {
+    const response = await apiClient.post('/api/admin/migrate-company-data', {
+      assignments: assignments,
+    });
+    return response.data;
+  },
+};
 
 export default function OwnerPortalScreen() {
   const router = useRouter();
+  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
-  const { isAuthenticated: isUserLoggedIn, isLoading: authLoading, user, logout } = useAuth();
 
+  // Auth state
   const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+
+  // Data state
   const [loading, setLoading] = useState(false);
-  
-  // Admin management
+  const [companies, setCompanies] = useState([]);
   const [admins, setAdmins] = useState([]);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
+  const [unmigratedAdmins, setUnmigratedAdmins] = useState([]);
+
+  // Modal states
+  const [showCreateCompanyModal, setShowCreateCompanyModal] = useState(false);
+  const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
+  const [showCompanyAdminsModal, setShowCompanyAdminsModal] = useState(false);
+  const [showMigrationModal, setShowMigrationModal] = useState(false);
+  const [showDeleteCompanyModal, setShowDeleteCompanyModal] = useState(false);
+  const [showDeleteAdminModal, setShowDeleteAdminModal] = useState(false);
+
+  // Selected data
+  const [selectedCompany, setSelectedCompany] = useState(null);
   const [selectedAdmin, setSelectedAdmin] = useState(null);
-  
+  const [companyAdmins, setCompanyAdmins] = useState([]);
+
   // Form fields
   const [formCompanyName, setFormCompanyName] = useState('');
-  const [formContactName, setFormContactName] = useState('');
-  const [formEmail, setFormEmail] = useState('');
-  const [formPassword, setFormPassword] = useState('');
+  const [formAdminName, setFormAdminName] = useState('');
+  const [formAdminEmail, setFormAdminEmail] = useState('');
+  const [formAdminPassword, setFormAdminPassword] = useState('');
+  const [formAdminCompanyId, setFormAdminCompanyId] = useState('');
+
+  // Migration state
+  const [migrationAssignments, setMigrationAssignments] = useState({});
 
   // Redirect if not logged in
   useEffect(() => {
-    if (!authLoading && !isUserLoggedIn) {
+    if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
-  }, [isUserLoggedIn, authLoading]);
+  }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
-    if (ownerAuthenticated && isUserLoggedIn) {
-      fetchAdmins();
+    if (ownerAuthenticated && isAuthenticated) {
+      fetchData();
     }
-  }, [ownerAuthenticated, isUserLoggedIn]);
+  }, [ownerAuthenticated, isAuthenticated]);
 
   const handleOwnerLogin = () => {
     if (password === OWNER_PASSWORD) {
@@ -90,223 +138,216 @@ export default function OwnerPortalScreen() {
     router.replace('/login');
   };
 
-  const fetchAdmins = async () => {
+  const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch admin users from API
-      const usersData = await adminUsersAPI.getAll().catch(() => []);
-      // Filter to only show admin role users
-      const adminUsers = Array.isArray(usersData) 
-        ? usersData.filter(u => u.role === 'admin').map(u => ({
-            id: u.id || u._id,
-            company_name: u.company_name || 'Individual Admin',
-            contact_name: u.name,
-            email: u.email,
-            created_at: u.created_at ? new Date(u.created_at).toISOString().split('T')[0] : 'N/A',
-            status: 'active',
-          }))
-        : [];
-      setAdmins(adminUsers);
+      const [companiesData, adminsData] = await Promise.all([
+        ownerAPI.getCompanies(),
+        ownerAPI.getAdmins(),
+      ]);
+
+      setCompanies(Array.isArray(companiesData) ? companiesData : []);
+      setAdmins(Array.isArray(adminsData) ? adminsData : []);
+
+      // Find admins without company_id
+      const unmigrated = adminsData.filter(a => !a.company_id);
+      setUnmigratedAdmins(unmigrated);
     } catch (error) {
-      console.error('Failed to fetch admins:', error);
-      toast.error('Error', 'Could not load admin accounts');
+      console.error('Failed to fetch data:', error);
+      toast.error('Error', 'Could not load data');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAddAdmin = async () => {
-    if (!formCompanyName.trim() || !formContactName.trim() || !formEmail.trim() || !formPassword.trim()) {
-      toast.error('Error', 'Please fill in all fields');
+  const handleCreateCompany = async () => {
+    if (!formCompanyName.trim()) {
+      toast.error('Error', 'Company name is required');
       return;
     }
 
     try {
-      const newAdmin = await adminUsersAPI.create({
-        name: formContactName,
-        company_name: formCompanyName,
-        email: formEmail,
-        password: formPassword,
-        role: 'admin',
+      const newCompany = await ownerAPI.createCompany({ name: formCompanyName });
+      setCompanies([...companies, newCompany]);
+      setFormCompanyName('');
+      setShowCreateCompanyModal(false);
+      toast.success('Created', 'Company created successfully');
+    } catch (error) {
+      console.error('Failed to create company:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not create company');
+    }
+  };
+
+  const handleCreateAdmin = async () => {
+    if (!formAdminName.trim() || !formAdminEmail.trim() || !formAdminPassword.trim() || !formAdminCompanyId) {
+      toast.error('Error', 'All fields are required');
+      return;
+    }
+
+    try {
+      const selectedCompany = companies.find(c => c.id === formAdminCompanyId);
+      const newAdmin = await ownerAPI.createAdmin({
+        name: formAdminName,
+        email: formAdminEmail,
+        password: formAdminPassword,
+        company_name: selectedCompany.name,
       });
-      
-      setAdmins([...admins, {
-        id: newAdmin.id || newAdmin._id,
-        company_name: formCompanyName,
-        contact_name: formContactName,
-        email: formEmail,
-        created_at: new Date().toISOString().split('T')[0],
-        status: 'active',
-      }]);
-      resetForm();
-      setShowAddModal(false);
+
+      setAdmins([...admins, newAdmin]);
+      resetAdminForm();
+      setShowCreateAdminModal(false);
       toast.success('Created', 'Admin account created successfully');
     } catch (error) {
       console.error('Failed to create admin:', error);
-      toast.error('Error', 'Backend does not support admin creation yet');
+      toast.error('Error', error.response?.data?.detail || 'Could not create admin');
     }
   };
 
-  const handleEditAdmin = async () => {
-    if (!selectedAdmin) return;
+  const handleViewCompanyAdmins = (company) => {
+    const companyAdminsList = admins.filter(a => a.company_id === company.id);
+    setSelectedCompany(company);
+    setCompanyAdmins(companyAdminsList);
+    setShowCompanyAdminsModal(true);
+  };
+
+  const handleDeleteCompany = (company) => {
+    const companyAdminsList = admins.filter(a => a.company_id === company.id);
     
-    try {
-      await adminUsersAPI.update(selectedAdmin.id, {
-        name: formContactName,
-        company_name: formCompanyName,
-        email: formEmail,
-      });
-      
-      const updated = admins.map(a => 
-        a.id === selectedAdmin.id 
-          ? { ...a, company_name: formCompanyName, contact_name: formContactName, email: formEmail }
-          : a
-      );
-      
-      setAdmins(updated);
-      resetForm();
-      setShowEditModal(false);
-      toast.success('Updated', 'Admin account updated');
-    } catch (error) {
-      console.error('Failed to update admin:', error);
-      toast.error('Error', 'Backend does not support admin updates yet');
+    if (companyAdminsList.length > 0) {
+      toast.error('Cannot Delete', `Company has ${companyAdminsList.length} admin(s). Remove admins first.`);
+      return;
     }
+
+    setSelectedCompany(company);
+    setShowDeleteCompanyModal(true);
   };
 
-  const handleDeleteAdmin = (adminId) => {
-    const admin = admins.find(a => a.id === adminId);
-    const confirmDelete = async () => {
-      try {
-        await adminUsersAPI.delete(adminId);
-        setAdmins(admins.filter(a => a.id !== adminId));
-        toast.success('Deleted', 'Admin account removed');
-      } catch (error) {
-        console.error('Failed to delete admin:', error);
-        toast.error('Error', 'Backend does not support admin deletion yet');
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(`Delete ${admin?.company_name}? This will remove all associated data.`)) {
-        confirmDelete();
-      }
-    } else {
-      Alert.alert(
-        'Delete Admin',
-        `Delete ${admin?.company_name}? This will remove all associated data.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Delete', style: 'destructive', onPress: confirmDelete },
-        ]
-      );
-    }
+  const confirmDeleteCompany = async () => {
+    // Note: Backend endpoint not created yet, but structure is ready
+    toast.info('Coming Soon', 'Company deletion will be available in next update');
+    setShowDeleteCompanyModal(false);
+    setSelectedCompany(null);
   };
 
-  const handleShareCredentials = (admin) => {
-    const credentials = `Company: ${admin.company_name}\nEmail: ${admin.email}\nLogin URL: https://blueview.app/login`;
-    
-    if (Platform.OS === 'web') {
-      navigator.clipboard?.writeText(credentials);
-      toast.success('Copied', 'Credentials copied to clipboard');
-    } else {
-      toast.info('Credentials', `Email: ${admin.email}`);
-    }
-  };
-
-  const openEditModal = (admin) => {
+  const handleDeleteAdmin = (admin) => {
     setSelectedAdmin(admin);
-    setFormCompanyName(admin.company_name);
-    setFormContactName(admin.contact_name);
-    setFormEmail(admin.email);
-    setShowEditModal(true);
+    setShowDeleteAdminModal(true);
   };
 
-  const resetForm = () => {
-    setFormCompanyName('');
-    setFormContactName('');
-    setFormEmail('');
-    setFormPassword('');
-    setSelectedAdmin(null);
+  const confirmDeleteAdmin = async () => {
+    try {
+      await ownerAPI.deleteAdmin(selectedAdmin.id);
+      setAdmins(admins.filter(a => a.id !== selectedAdmin.id));
+      toast.success('Deleted', 'Admin account deleted');
+      setShowDeleteAdminModal(false);
+      setSelectedAdmin(null);
+    } catch (error) {
+      console.error('Failed to delete admin:', error);
+      toast.error('Error', error.response?.data?.detail || 'Could not delete admin');
+    }
   };
 
-  const activeCount = admins.filter(a => a.status === 'active').length;
+  const handleOpenMigration = () => {
+    // Initialize migration assignments
+    const initial = {};
+    unmigratedAdmins.forEach(admin => {
+      initial[admin.id] = '';
+    });
+    setMigrationAssignments(initial);
+    setShowMigrationModal(true);
+  };
 
-  // Show loading while checking auth
-  if (authLoading) {
-    return (
-      <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loginContent}>
-            <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading...</Text>
-          </View>
-        </SafeAreaView>
-      </AnimatedBackground>
-    );
-  }
+  const handleMigrate = async () => {
+    // Check all admins have company assigned
+    const allAssigned = Object.values(migrationAssignments).every(id => id !== '');
+    if (!allAssigned) {
+      toast.error('Error', 'Please assign all admins to companies');
+      return;
+    }
 
-  // Owner Password Screen (user is logged in but needs owner password)
+    try {
+      const assignments = Object.entries(migrationAssignments).map(([adminId, companyId]) => {
+        const admin = unmigratedAdmins.find(a => a.id === adminId);
+        return {
+          admin_email: admin.email,
+          company_id: companyId,
+        };
+      });
+
+      const result = await ownerAPI.migrateData(assignments);
+      
+      toast.success('Success', 'Data migration completed');
+      setShowMigrationModal(false);
+      fetchData(); // Refresh data
+    } catch (error) {
+      console.error('Migration failed:', error);
+      toast.error('Error', error.response?.data?.detail || 'Migration failed');
+    }
+  };
+
+  const resetAdminForm = () => {
+    setFormAdminName('');
+    setFormAdminEmail('');
+    setFormAdminPassword('');
+    setFormAdminCompanyId('');
+  };
+
+  // If not authenticated with owner password
   if (!ownerAuthenticated) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loginContent}>
-            <View style={styles.lockIcon}>
-              <Lock size={48} strokeWidth={1} color={colors.text.primary} />
-            </View>
-            
-            <Text style={styles.loginTitle}>Owner Portal</Text>
-            <Text style={styles.loginSubtitle}>
-              Master administration for Blueview platform
-            </Text>
-            <Text style={styles.loggedInAs}>
-              Logged in as: {user?.name || user?.email}
-            </Text>
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.header}>
+            <GlassButton
+              variant="icon"
+              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/')}
+            />
+            <Text style={styles.logoText}>OWNER PORTAL</Text>
+            <View style={{ width: 48 }} />
+          </View>
 
+          <View style={styles.centerContent}>
             <GlassCard style={styles.loginCard}>
-              <GlassInput
-                value={password}
-                onChangeText={setPassword}
-                placeholder="Enter owner password"
-                secureTextEntry={!showPassword}
-                rightIcon={
-                  <Pressable onPress={() => setShowPassword(!showPassword)}>
-                    {showPassword ? (
-                      <EyeOff size={20} color={colors.text.muted} />
-                    ) : (
-                      <Eye size={20} color={colors.text.muted} />
-                    )}
-                  </Pressable>
-                }
-              />
-              
-              <GlassButton
-                title="Access Portal"
-                icon={<Lock size={18} color={colors.text.primary} />}
-                onPress={handleOwnerLogin}
-                style={styles.loginBtn}
-              />
-            </GlassCard>
+              <IconPod size={64}>
+                <ShieldAlert size={28} strokeWidth={1.5} color="#f59e0b" />
+              </IconPod>
+              <Text style={styles.loginTitle}>Owner Access</Text>
+              <Text style={styles.loginSubtitle}>Enter owner password to continue</Text>
 
-            <Pressable onPress={() => router.back()} style={styles.backLink}>
-              <Text style={styles.backLinkText}>← Return to app</Text>
-            </Pressable>
+              <View style={styles.loginForm}>
+                <GlassInput
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholder="Owner password"
+                  secureTextEntry
+                  onSubmitEditing={handleOwnerLogin}
+                  autoFocus
+                />
+                <GlassButton
+                  title="Access Portal"
+                  onPress={handleOwnerLogin}
+                  style={styles.loginButton}
+                />
+              </View>
+            </GlassCard>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
     );
   }
 
-  // Owner Dashboard
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <IconPod size={44}>
-              <Lock size={20} strokeWidth={1.5} color={colors.text.primary} />
-            </IconPod>
+            <GlassButton
+              variant="icon"
+              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/')}
+            />
             <Text style={styles.logoText}>OWNER PORTAL</Text>
           </View>
           <GlassButton
@@ -321,182 +362,434 @@ export default function OwnerPortalScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Stats */}
-          <View style={styles.statsRow}>
-            <StatCard style={styles.statCard}>
-              <IconPod size={40}>
-                <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
-              <Text style={styles.statValue}>{admins.length}</Text>
-              <Text style={styles.statLabel}>COMPANIES</Text>
-            </StatCard>
-            <StatCard style={styles.statCard}>
-              <IconPod size={40}>
-                <CheckCircle size={18} strokeWidth={1.5} color="#10b981" />
-              </IconPod>
-              <Text style={styles.statValue}>{activeCount}</Text>
-              <Text style={styles.statLabel}>ACTIVE</Text>
-            </StatCard>
+          {/* Migration Banner */}
+          {unmigratedAdmins.length > 0 && (
+            <Pressable onPress={handleOpenMigration} style={styles.migrationBanner}>
+              <AlertTriangle size={20} strokeWidth={1.5} color="#f59e0b" />
+              <View style={styles.migrationText}>
+                <Text style={styles.migrationTitle}>
+                  ⚠️ You have {unmigratedAdmins.length} admin(s) without companies
+                </Text>
+                <Text style={styles.migrationSubtitle}>Tap to assign companies and migrate data</Text>
+              </View>
+            </Pressable>
+          )}
+
+          {/* Companies Section */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Companies</Text>
+              <GlassButton
+                title="Create Company"
+                icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => setShowCreateCompanyModal(true)}
+              />
+            </View>
+
+            {loading ? (
+              <View style={styles.loadingContainer}>
+                <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
+              </View>
+            ) : companies.length > 0 ? (
+              <View style={styles.companiesList}>
+                {companies.map((company) => {
+                  const companyAdminCount = admins.filter(a => a.company_id === company.id).length;
+                  return (
+                    <GlassCard key={company.id} style={styles.companyCard}>
+                      <View style={styles.companyHeader}>
+                        <IconPod size={44}>
+                          <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                        </IconPod>
+                        <View style={styles.companyInfo}>
+                          <Text style={styles.companyName}>{company.name}</Text>
+                          <Text style={styles.companyMeta}>
+                            {companyAdminCount} admin{companyAdminCount !== 1 ? 's' : ''}
+                          </Text>
+                        </View>
+                        <View style={styles.companyActions}>
+                          <Pressable
+                            onPress={() => handleViewCompanyAdmins(company)}
+                            style={styles.actionBtn}
+                          >
+                            <Eye size={18} strokeWidth={1.5} color={colors.text.primary} />
+                          </Pressable>
+                          <Pressable
+                            onPress={() => handleDeleteCompany(company)}
+                            style={styles.actionBtn}
+                          >
+                            <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                          </Pressable>
+                        </View>
+                      </View>
+                    </GlassCard>
+                  );
+                })}
+              </View>
+            ) : (
+              <GlassCard style={styles.emptyCard}>
+                <Building2 size={40} strokeWidth={1} color={colors.text.subtle} />
+                <Text style={styles.emptyText}>No companies yet</Text>
+                <Text style={styles.emptySubtext}>Create your first company to get started</Text>
+              </GlassCard>
+            )}
           </View>
 
-          {/* Admin List Header */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Admin Accounts</Text>
-            <GlassButton
-              title="Create Admin"
-              icon={<Plus size={16} color={colors.text.primary} />}
-              onPress={() => setShowAddModal(true)}
-            />
+          {/* Create Admin Section */}
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Admin Accounts</Text>
+              <GlassButton
+                title="Create Admin"
+                icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => setShowCreateAdminModal(true)}
+                disabled={companies.length === 0}
+              />
+            </View>
+
+            {companies.length === 0 && (
+              <View style={styles.infoBox}>
+                <AlertTriangle size={16} strokeWidth={1.5} color="#f59e0b" />
+                <Text style={styles.infoText}>Create a company first before adding admins</Text>
+              </View>
+            )}
           </View>
-
-          {/* Admin List */}
-          {loading ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={colors.text.primary} />
-            </View>
-          ) : (
-            <View style={styles.adminList}>
-              {admins.map((admin) => (
-                <GlassCard key={admin.id} style={styles.adminCard}>
-                  <View style={styles.adminHeader}>
-                    <View style={styles.adminInfo}>
-                      <Text style={styles.companyName}>{admin.company_name}</Text>
-                      <Text style={styles.contactName}>{admin.contact_name}</Text>
-                    </View>
-                    <View style={[
-                      styles.statusBadge,
-                      admin.status === 'active' ? styles.statusActive : styles.statusInactive
-                    ]}>
-                      <Text style={[
-                        styles.statusText,
-                        admin.status === 'active' ? styles.statusTextActive : styles.statusTextInactive
-                      ]}>
-                        {admin.status.toUpperCase()}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.adminDetails}>
-                    <View style={styles.detailRow}>
-                      <Mail size={14} color={colors.text.muted} />
-                      <Text style={styles.detailText}>{admin.email}</Text>
-                    </View>
-                    <View style={styles.detailRow}>
-                      <Calendar size={14} color={colors.text.muted} />
-                      <Text style={styles.detailText}>Created: {admin.created_at}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.adminActions}>
-                    <GlassButton
-                      title="Share"
-                      icon={<Share2 size={14} color={colors.text.primary} />}
-                      onPress={() => handleShareCredentials(admin)}
-                      style={styles.actionBtn}
-                    />
-                    <GlassButton
-                      title="Edit"
-                      icon={<Edit3 size={14} color={colors.text.primary} />}
-                      onPress={() => openEditModal(admin)}
-                      style={styles.actionBtn}
-                    />
-                    <Pressable 
-                      onPress={() => handleDeleteAdmin(admin.id)}
-                      style={styles.deleteBtn}
-                    >
-                      <Trash2 size={16} color={colors.status.error} />
-                    </Pressable>
-                  </View>
-                </GlassCard>
-              ))}
-            </View>
-          )}
-
-          {/* Add Modal */}
-          {showAddModal && (
-            <GlassCard style={styles.modal}>
-              <Text style={styles.modalTitle}>Create Admin Account</Text>
-              
-              <GlassInput
-                value={formCompanyName}
-                onChangeText={setFormCompanyName}
-                placeholder="Company Name"
-                leftIcon={<Building2 size={18} color={colors.text.subtle} />}
-              />
-              <GlassInput
-                value={formContactName}
-                onChangeText={setFormContactName}
-                placeholder="Contact Name"
-                style={styles.inputSpacing}
-              />
-              <GlassInput
-                value={formEmail}
-                onChangeText={setFormEmail}
-                placeholder="Email"
-                keyboardType="email-address"
-                leftIcon={<Mail size={18} color={colors.text.subtle} />}
-                style={styles.inputSpacing}
-              />
-              <GlassInput
-                value={formPassword}
-                onChangeText={setFormPassword}
-                placeholder="Password"
-                secureTextEntry
-                style={styles.inputSpacing}
-              />
-
-              <View style={styles.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => { setShowAddModal(false); resetForm(); }}
-                />
-                <GlassButton
-                  title="Create"
-                  onPress={handleAddAdmin}
-                />
-              </View>
-            </GlassCard>
-          )}
-
-          {/* Edit Modal */}
-          {showEditModal && (
-            <GlassCard style={styles.modal}>
-              <Text style={styles.modalTitle}>Edit Admin Account</Text>
-              
-              <GlassInput
-                value={formCompanyName}
-                onChangeText={setFormCompanyName}
-                placeholder="Company Name"
-                leftIcon={<Building2 size={18} color={colors.text.subtle} />}
-              />
-              <GlassInput
-                value={formContactName}
-                onChangeText={setFormContactName}
-                placeholder="Contact Name"
-                style={styles.inputSpacing}
-              />
-              <GlassInput
-                value={formEmail}
-                onChangeText={setFormEmail}
-                placeholder="Email"
-                keyboardType="email-address"
-                leftIcon={<Mail size={18} color={colors.text.subtle} />}
-                style={styles.inputSpacing}
-              />
-
-              <View style={styles.modalActions}>
-                <GlassButton
-                  title="Cancel"
-                  onPress={() => { setShowEditModal(false); resetForm(); }}
-                />
-                <GlassButton
-                  title="Save"
-                  onPress={handleEditAdmin}
-                />
-              </View>
-            </GlassCard>
-          )}
         </ScrollView>
+
+        <FloatingNav />
+
+        {/* Create Company Modal */}
+        <Modal
+          visible={showCreateCompanyModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowCreateCompanyModal(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowCreateCompanyModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Create Company</Text>
+                  <Pressable onPress={() => setShowCreateCompanyModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <View style={styles.modalForm}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>COMPANY NAME</Text>
+                    <GlassInput
+                      value={formCompanyName}
+                      onChangeText={setFormCompanyName}
+                      placeholder="e.g., ABC Construction Inc."
+                    />
+                  </View>
+
+                  <GlassButton
+                    title="Create Company"
+                    onPress={handleCreateCompany}
+                    style={styles.submitButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Create Admin Modal */}
+        <Modal
+          visible={showCreateAdminModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => {
+            setShowCreateAdminModal(false);
+            resetAdminForm();
+          }}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable
+              style={styles.modalBackdrop}
+              onPress={() => {
+                setShowCreateAdminModal(false);
+                resetAdminForm();
+              }}
+            />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Create Admin Account</Text>
+                  <Pressable
+                    onPress={() => {
+                      setShowCreateAdminModal(false);
+                      resetAdminForm();
+                    }}
+                  >
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <View style={styles.modalForm}>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>COMPANY</Text>
+                    <Pressable
+                      onPress={() => {}} // Will be dropdown
+                      style={styles.selectInput}
+                    >
+                      <Text style={styles.selectText}>
+                        {formAdminCompanyId
+                          ? companies.find(c => c.id === formAdminCompanyId)?.name
+                          : 'Select company'}
+                      </Text>
+                    </Pressable>
+                    <ScrollView style={styles.dropdown} nestedScrollEnabled>
+                      {companies.map(company => (
+                        <Pressable
+                          key={company.id}
+                          onPress={() => setFormAdminCompanyId(company.id)}
+                          style={[
+                            styles.dropdownItem,
+                            formAdminCompanyId === company.id && styles.dropdownItemSelected,
+                          ]}
+                        >
+                          <Text style={styles.dropdownText}>{company.name}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>ADMIN NAME</Text>
+                    <GlassInput
+                      value={formAdminName}
+                      onChangeText={setFormAdminName}
+                      placeholder="Full name"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>EMAIL</Text>
+                    <GlassInput
+                      value={formAdminEmail}
+                      onChangeText={setFormAdminEmail}
+                      placeholder="admin@company.com"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>PASSWORD</Text>
+                    <GlassInput
+                      value={formAdminPassword}
+                      onChangeText={setFormAdminPassword}
+                      placeholder="Create password"
+                      secureTextEntry
+                    />
+                  </View>
+
+                  <GlassButton
+                    title="Create Admin"
+                    onPress={handleCreateAdmin}
+                    style={styles.submitButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* View Company Admins Modal */}
+        <Modal
+          visible={showCompanyAdminsModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowCompanyAdminsModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowCompanyAdminsModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    {selectedCompany?.name} - Admins
+                  </Text>
+                  <Pressable onPress={() => setShowCompanyAdminsModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <ScrollView style={styles.adminsList}>
+                  {companyAdmins.length > 0 ? (
+                    companyAdmins.map((admin) => (
+                      <View key={admin.id} style={styles.adminItem}>
+                        <View style={styles.adminInfo}>
+                          <Text style={styles.adminName}>{admin.name}</Text>
+                          <Text style={styles.adminEmail}>{admin.email}</Text>
+                        </View>
+                        <Pressable
+                          onPress={() => {
+                            setShowCompanyAdminsModal(false);
+                            handleDeleteAdmin(admin);
+                          }}
+                          style={styles.deleteAdminBtn}
+                        >
+                          <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                        </Pressable>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.emptyText}>No admins in this company</Text>
+                  )}
+                </ScrollView>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Migration Modal */}
+        <Modal
+          visible={showMigrationModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowMigrationModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowMigrationModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Migrate Admin Data</Text>
+                  <Pressable onPress={() => setShowMigrationModal(false)}>
+                    <X size={24} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.migrationInstructions}>
+                  Assign each admin to a company. Their projects, workers, and data will be moved to that company.
+                </Text>
+
+                <ScrollView style={styles.migrationList}>
+                  {unmigratedAdmins.map((admin) => (
+                    <View key={admin.id} style={styles.migrationItem}>
+                      <View style={styles.migrationAdminInfo}>
+                        <Text style={styles.migrationAdminName}>{admin.name}</Text>
+                        <Text style={styles.migrationAdminEmail}>{admin.email}</Text>
+                      </View>
+                      <ScrollView style={styles.migrationDropdown} nestedScrollEnabled>
+                        <Text style={styles.dropdownLabel}>Assign to:</Text>
+                        {companies.map(company => (
+                          <Pressable
+                            key={company.id}
+                            onPress={() =>
+                              setMigrationAssignments({
+                                ...migrationAssignments,
+                                [admin.id]: company.id,
+                              })
+                            }
+                            style={[
+                              styles.dropdownItem,
+                              migrationAssignments[admin.id] === company.id && styles.dropdownItemSelected,
+                            ]}
+                          >
+                            <Text style={styles.dropdownText}>{company.name}</Text>
+                            {migrationAssignments[admin.id] === company.id && (
+                              <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                            )}
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  ))}
+                </ScrollView>
+
+                <GlassButton
+                  title="Migrate Data"
+                  onPress={handleMigrate}
+                  style={styles.submitButton}
+                />
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Delete Company Confirmation */}
+        <Modal
+          visible={showDeleteCompanyModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowDeleteCompanyModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowDeleteCompanyModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.confirmCard}>
+                <IconPod size={64}>
+                  <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
+                </IconPod>
+                <Text style={styles.confirmTitle}>Delete Company?</Text>
+                <Text style={styles.confirmText}>
+                  Are you sure you want to delete "{selectedCompany?.name}"?
+                </Text>
+                <View style={styles.confirmActions}>
+                  <GlassButton
+                    title="Cancel"
+                    onPress={() => setShowDeleteCompanyModal(false)}
+                    variant="secondary"
+                  />
+                  <GlassButton
+                    title="Delete"
+                    onPress={confirmDeleteCompany}
+                    style={styles.deleteButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Delete Admin Confirmation */}
+        <Modal
+          visible={showDeleteAdminModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowDeleteAdminModal(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowDeleteAdminModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.confirmCard}>
+                <IconPod size={64}>
+                  <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
+                </IconPod>
+                <Text style={styles.confirmTitle}>Delete Admin?</Text>
+                <Text style={styles.confirmText}>
+                  Are you sure you want to delete admin "{selectedAdmin?.name}"?
+                </Text>
+                <Text style={styles.confirmWarning}>
+                  ⚠️ This will only delete the admin account. Their created projects and data will remain.
+                </Text>
+                <View style={styles.confirmActions}>
+                  <GlassButton
+                    title="Cancel"
+                    onPress={() => setShowDeleteAdminModal(false)}
+                    variant="secondary"
+                  />
+                  <GlassButton
+                    title="Delete"
+                    onPress={confirmDeleteAdmin}
+                    style={styles.deleteButton}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -506,67 +799,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  loginContent: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
-  },
-  lockIcon: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    backgroundColor: colors.glass.background,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.xl,
-  },
-  loginTitle: {
-    fontSize: 32,
-    fontWeight: '200',
-    color: colors.text.primary,
-    marginBottom: spacing.sm,
-  },
-  loginSubtitle: {
-    fontSize: 14,
-    color: colors.text.muted,
-    textAlign: 'center',
-    marginBottom: spacing.md,
-  },
-  loggedInAs: {
-    fontSize: 12,
-    color: colors.text.subtle,
-    marginBottom: spacing.xl,
-  },
-  loadingText: {
-    fontSize: 14,
-    color: colors.text.muted,
-    marginTop: spacing.md,
-  },
-  loginCard: {
-    width: '100%',
-    maxWidth: 400,
-  },
-  loginBtn: {
-    marginTop: spacing.lg,
-  },
-  backLink: {
-    marginTop: spacing.xl,
-  },
-  backLinkText: {
-    fontSize: 14,
-    color: colors.text.muted,
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
   },
   headerLeft: {
     flexDirection: 'row',
@@ -575,6 +813,8 @@ const styles = StyleSheet.create({
   },
   logoText: {
     ...typography.label,
+    fontSize: 11,
+    letterSpacing: 2,
     color: colors.text.muted,
   },
   scrollView: {
@@ -582,27 +822,64 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: spacing.lg,
-    paddingBottom: 120,
   },
-  statsRow: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.xl,
-  },
-  statCard: {
+  centerContent: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
   },
-  statValue: {
-    fontSize: 32,
-    fontWeight: '200',
+  loginCard: {
+    width: '100%',
+    maxWidth: 400,
+    alignItems: 'center',
+    padding: spacing.xxl,
+  },
+  loginTitle: {
+    fontSize: 24,
+    fontWeight: '300',
     color: colors.text.primary,
-    marginTop: spacing.sm,
+    marginTop: spacing.lg,
   },
-  statLabel: {
-    ...typography.label,
-    fontSize: 9,
+  loginSubtitle: {
+    fontSize: 14,
     color: colors.text.muted,
     marginTop: spacing.xs,
+    marginBottom: spacing.xl,
+  },
+  loginForm: {
+    width: '100%',
+    gap: spacing.md,
+  },
+  loginButton: {
+    marginTop: spacing.sm,
+  },
+  migrationBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderRadius: borderRadius.xl,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  migrationText: {
+    flex: 1,
+  },
+  migrationTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#f59e0b',
+  },
+  migrationSubtitle: {
+    fontSize: 12,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
+  },
+  section: {
+    marginBottom: spacing.xl,
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -616,22 +893,20 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
   },
   loadingContainer: {
-    paddingVertical: spacing.xxl,
-    alignItems: 'center',
+    paddingVertical: spacing.lg,
   },
-  adminList: {
+  companiesList: {
     gap: spacing.md,
   },
-  adminCard: {
+  companyCard: {
     marginBottom: 0,
   },
-  adminHeader: {
+  companyHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginBottom: spacing.md,
+    alignItems: 'center',
+    gap: spacing.md,
   },
-  adminInfo: {
+  companyInfo: {
     flex: 1,
   },
   companyName: {
@@ -639,76 +914,222 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text.primary,
   },
-  contactName: {
-    fontSize: 14,
-    color: colors.text.muted,
-  },
-  statusBadge: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
-  },
-  statusActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-  },
-  statusInactive: {
-    backgroundColor: 'rgba(156, 163, 175, 0.2)',
-  },
-  statusText: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  statusTextActive: {
-    color: '#10b981',
-  },
-  statusTextInactive: {
-    color: '#9ca3af',
-  },
-  adminDetails: {
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-    paddingBottom: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.glass.border,
-  },
-  detailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  detailText: {
+  companyMeta: {
     fontSize: 13,
-    color: colors.text.secondary,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
   },
-  adminActions: {
+  companyActions: {
     flexDirection: 'row',
-    alignItems: 'center',
     gap: spacing.sm,
   },
   actionBtn: {
-    flex: 1,
+    padding: spacing.sm,
   },
-  deleteBtn: {
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.muted,
+  },
+  emptySubtext: {
+    fontSize: 13,
+    color: colors.text.subtle,
+  },
+  infoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderRadius: borderRadius.lg,
     padding: spacing.md,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.glass.background,
   },
-  modal: {
-    marginTop: spacing.xl,
+  infoText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.text.secondary,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+  },
+  modalContent: {
+    width: '90%',
+    maxWidth: 500,
+    maxHeight: '80%',
+  },
+  modalCard: {
+    padding: spacing.xl,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.lg,
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: '500',
     color: colors.text.primary,
+  },
+  modalForm: {
+    gap: spacing.md,
+  },
+  inputGroup: {
+    gap: spacing.xs,
+  },
+  inputLabel: {
+    ...typography.label,
+    fontSize: 11,
+    color: colors.text.muted,
+  },
+  selectInput: {
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    borderRadius: borderRadius.lg,
+    padding: spacing.md,
+  },
+  selectText: {
+    fontSize: 15,
+    color: colors.text.primary,
+  },
+  dropdown: {
+    maxHeight: 150,
+    marginTop: spacing.xs,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    borderRadius: borderRadius.md,
+    marginBottom: spacing.xs,
+  },
+  dropdownItemSelected: {
+    borderColor: '#4ade80',
+    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+  },
+  dropdownText: {
+    fontSize: 14,
+    color: colors.text.primary,
+  },
+  dropdownLabel: {
+    ...typography.label,
+    fontSize: 10,
+    color: colors.text.muted,
+    marginBottom: spacing.xs,
+  },
+  submitButton: {
+    marginTop: spacing.md,
+  },
+  adminsList: {
+    maxHeight: 400,
+  },
+  adminItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    borderRadius: borderRadius.lg,
+    marginBottom: spacing.sm,
+  },
+  adminInfo: {
+    flex: 1,
+  },
+  adminName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  adminEmail: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
+  },
+  deleteAdminBtn: {
+    padding: spacing.sm,
+  },
+  migrationInstructions: {
+    fontSize: 14,
+    color: colors.text.secondary,
     marginBottom: spacing.lg,
   },
-  inputSpacing: {
+  migrationList: {
+    maxHeight: 400,
+    marginBottom: spacing.lg,
+  },
+  migrationItem: {
+    padding: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    borderRadius: borderRadius.lg,
+    marginBottom: spacing.md,
+  },
+  migrationAdminInfo: {
+    marginBottom: spacing.md,
+  },
+  migrationAdminName: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  migrationAdminEmail: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
+  },
+  migrationDropdown: {
+    maxHeight: 120,
+  },
+  confirmCard: {
+    alignItems: 'center',
+    padding: spacing.xxl,
+  },
+  confirmTitle: {
+    fontSize: 20,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginTop: spacing.lg,
+  },
+  confirmText: {
+    fontSize: 14,
+    color: colors.text.secondary,
+    textAlign: 'center',
     marginTop: spacing.sm,
   },
-  modalActions: {
+  confirmWarning: {
+    fontSize: 12,
+    color: '#f59e0b',
+    textAlign: 'center',
+    marginTop: spacing.md,
+  },
+  confirmActions: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: spacing.sm,
-    marginTop: spacing.lg,
+    gap: spacing.md,
+    marginTop: spacing.xl,
+    width: '100%',
+  },
+  deleteButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderColor: '#ef4444',
   },
 });
