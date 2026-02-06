@@ -44,6 +44,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ==================== COMPANY MODEL ====================
+
+class Company(BaseModel):
+    id: str
+    name: str
+    created_at: datetime
+    created_by: Optional[str] = None  # Owner who created it
+
+class CompanyCreate(BaseModel):
+    name: str
+    
 # ==================== MODELS ====================
 
 def serialize_id(obj):
@@ -63,7 +74,8 @@ class UserCreate(BaseModel):
     password: str
     name: str
     role: str = "worker"
-    company_name: Optional[str] = None
+    company_name: Optional[str] = None  # For display, but we'll use company_id
+    company_id: Optional[str] = None  # Link to companies collection
     phone: Optional[str] = None
     trade: Optional[str] = None
 
@@ -77,6 +89,7 @@ class UserResponse(BaseModel):
     name: str
     role: str
     company_name: Optional[str] = None
+    company_id: Optional[str] = None  # Add company_id
     phone: Optional[str] = None
     trade: Optional[str] = None
     assigned_projects: List[str] = []
@@ -92,6 +105,7 @@ class ProjectCreate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    # company_id will be auto-injected from current_user
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -105,6 +119,8 @@ class ProjectResponse(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    company_id: Optional[str] = None  # Add company_id
+    company_name: Optional[str] = None  # For display
     nfc_tags: List[Dict] = []
     dropbox_folder: Optional[str] = None
     dropbox_enabled: bool = False
@@ -117,6 +133,7 @@ class WorkerCreate(BaseModel):
     trade: str
     company: str
     device_id: Optional[str] = None
+    # company_id (admin's company) will be auto-injected
 
 class WorkerResponse(BaseModel):
     id: str
@@ -124,6 +141,7 @@ class WorkerResponse(BaseModel):
     phone: str
     trade: str
     company: str
+    company_id: Optional[str] = None  # Admin's company who manages this worker
     status: str = "active"
     certifications: List[Dict] = []
     signature: Optional[Dict] = None
@@ -159,8 +177,6 @@ class NfcTagResponse(BaseModel):
     location_description: str
     status: str = "active"
     created_at: Optional[datetime] = None
-
-
 
 class NfcTagInfo(BaseModel):
     tag_id: str
@@ -285,13 +301,14 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
-def create_token(user_id: str, email: str, role: str, site_mode: bool = False, project_id: str = None) -> str:
+def create_token(user_id: str, email: str, role: str, site_mode: bool = False, project_id: str = None, company_id: str = None) -> str:
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
         "site_mode": site_mode,
         "project_id": project_id,
+        "company_id": company_id,
         "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
         "iat": datetime.now(timezone.utc)
     }
@@ -319,6 +336,13 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             device_data = serialize_id(device)
             device_data["site_mode"] = True
             device_data["role"] = "site_device"
+            
+            # Get company_id from project
+            if device.get("project_id"):
+                project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+                if project:
+                    device_data["company_id"] = project.get("company_id")
+            
             return device_data
         
         # Regular user
@@ -335,8 +359,27 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Invalid token")
 
 async def get_admin_user(current_user = Depends(get_current_user)):
-    if current_user.get("role") != "admin":
+    if current_user.get("role") not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+def get_user_company_id(current_user):
+    """Get the company_id from current user"""
+    # Site devices inherit company from their project
+    if current_user.get("site_mode"):
+        return current_user.get("company_id")
+    
+    # Regular users have company_id directly
+    return current_user.get("company_id")
+
+async def require_company_access(current_user = Depends(get_current_user)):
+    """Ensure user has a company_id (for company-scoped operations)"""
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(
+            status_code=403, 
+            detail="Company access required. Please contact your administrator."
+        )
     return current_user
 
 # ==================== AUTH ROUTES ====================
@@ -346,7 +389,12 @@ async def login(credentials: UserLogin):
     # First try regular user login
     user = await db.users.find_one({"email": credentials.email})
     if user and verify_password(credentials.password, user.get("password", "")):
-        token = create_token(str(user["_id"]), user["email"], user.get("role", "worker"))
+        token = create_token(
+            str(user["_id"]), 
+            user["email"], 
+            user.get("role", "worker"),
+            company_id=user.get("company_id")
+        )
         return TokenResponse(token=token)
     
     # Try site device login (username matches email field in login)
@@ -358,12 +406,20 @@ async def login(credentials: UserLogin):
             {"$set": {"last_login": datetime.now(timezone.utc)}}
         )
         
+        # Get company_id from project
+        company_id = None
+        if device.get("project_id"):
+            project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+            if project:
+                company_id = project.get("company_id")
+        
         token = create_token(
             str(device["_id"]), 
             device["username"], 
             "site_device",
             site_mode=True,
-            project_id=device.get("project_id")
+            project_id=device.get("project_id"),
+            company_id=company_id
         )
         return TokenResponse(token=token)
     
@@ -380,6 +436,10 @@ async def register(user_data: UserCreate):
     user_dict["password"] = hash_password(user_dict["password"])
     user_dict["created_at"] = datetime.now(timezone.utc)
     user_dict["assigned_projects"] = []
+    
+    # If no company_id provided, this is invalid (except for testing)
+    if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
+        raise HTTPException(status_code=400, detail="Company ID required")
     
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -410,7 +470,8 @@ async def get_me(current_user = Depends(get_current_user)):
             "site_mode": True,
             "project_id": user.get("project_id"),
             "project_name": user.get("project_name"),
-            "project": user.get("project")
+            "project": user.get("project"),
+            "company_id": user.get("company_id")
         }
     
     return user
@@ -419,7 +480,14 @@ async def get_me(current_user = Depends(get_current_user)):
 
 @api_router.get("/admin/users", response_model=List[UserResponse])
 async def get_admin_users(current_user = Depends(get_current_user)):
-    users = await db.users.find({}, {"password": 0}).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    # Filter by company if not owner
+    query = {}
+    if current_user.get("role") != "owner" and company_id:
+        query["company_id"] = company_id
+    
+    users = await db.users.find(query, {"password": 0}).to_list(1000)
     return [UserResponse(**serialize_id(u)) for u in users]
 
 @api_router.post("/admin/users", response_model=UserResponse)
@@ -432,6 +500,11 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     user_dict["password"] = hash_password(user_dict["password"])
     user_dict["created_at"] = datetime.now(timezone.utc)
     user_dict["assigned_projects"] = []
+    
+    # IMPORTANT: Inherit company_id from admin creating the user
+    user_dict["company_id"] = admin.get("company_id")
+    if admin.get("company_name"):
+        user_dict["company_name"] = admin.get("company_name")
     
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -485,7 +558,13 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
 
 @api_router.get("/admin/subcontractors", response_model=List[SubcontractorResponse])
 async def get_subcontractors(current_user = Depends(get_current_user)):
-    subs = await db.subcontractors.find({}, {"password": 0}).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    subs = await db.subcontractors.find(query, {"password": 0}).to_list(1000)
     return [SubcontractorResponse(**serialize_id(s)) for s in subs]
 
 @api_router.post("/admin/subcontractors", response_model=SubcontractorResponse)
@@ -499,6 +578,7 @@ async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(ge
     sub_dict["created_at"] = datetime.now(timezone.utc)
     sub_dict["workers_count"] = 0
     sub_dict["assigned_projects"] = []
+    sub_dict["company_id"] = admin.get("company_id")
     
     result = await db.subcontractors.insert_one(sub_dict)
     sub_dict["id"] = str(result.inserted_id)
@@ -537,11 +617,211 @@ async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     return {"message": "Subcontractor deleted successfully"}
 
+# ==================== OWNER - COMPANY MANAGEMENT ====================
+
+@api_router.get("/owner/companies")
+async def get_companies(current_user = Depends(get_current_user)):
+    """Get all companies (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    companies = await db.companies.find({}).to_list(1000)
+    return serialize_list(companies)
+
+@api_router.post("/owner/companies")
+async def create_company(company_data: CompanyCreate, current_user = Depends(get_current_user)):
+    """Create a new company (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    # Check if company name already exists
+    existing = await db.companies.find_one({"name": company_data.name})
+    if existing:
+        raise HTTPException(status_code=400, detail="Company name already exists")
+    
+    company_dict = {
+        "name": company_data.name,
+        "created_at": datetime.now(timezone.utc),
+        "created_by": current_user.get("id")
+    }
+    
+    result = await db.companies.insert_one(company_dict)
+    company_dict["id"] = str(result.inserted_id)
+    
+    return company_dict
+
+@api_router.post("/owner/admins")
+async def create_admin_with_company(admin_data: dict, current_user = Depends(get_current_user)):
+    """Create admin account with company (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    # Required fields
+    required = ["email", "password", "name", "company_name"]
+    for field in required:
+        if field not in admin_data or not admin_data[field]:
+            raise HTTPException(status_code=400, detail=f"{field} is required")
+    
+    # Check if email exists
+    existing_user = await db.users.find_one({"email": admin_data["email"]})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create company first
+    company_name = admin_data["company_name"]
+    existing_company = await db.companies.find_one({"name": company_name})
+    
+    if existing_company:
+        company_id = str(existing_company["_id"])
+    else:
+        company_doc = {
+            "name": company_name,
+            "created_at": datetime.now(timezone.utc),
+            "created_by": current_user.get("id")
+        }
+        company_result = await db.companies.insert_one(company_doc)
+        company_id = str(company_result.inserted_id)
+    
+    # Create admin user
+    user_doc = {
+        "email": admin_data["email"],
+        "password": hash_password(admin_data["password"]),
+        "name": admin_data["name"],
+        "role": "admin",
+        "company_id": company_id,
+        "company_name": company_name,
+        "created_at": datetime.now(timezone.utc),
+        "assigned_projects": []
+    }
+    
+    user_result = await db.users.insert_one(user_doc)
+    
+    return {
+        "id": str(user_result.inserted_id),
+        "email": admin_data["email"],
+        "name": admin_data["name"],
+        "company_id": company_id,
+        "company_name": company_name,
+        "role": "admin",
+        "message": "Admin account created successfully"
+    }
+
+@api_router.get("/owner/admins")
+async def get_admin_accounts(current_user = Depends(get_current_user)):
+    """Get all admin accounts (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    admins = await db.users.find({"role": "admin"}, {"password": 0}).to_list(1000)
+    return serialize_list(admins)
+
+@api_router.delete("/owner/admins/{admin_id}")
+async def delete_admin_account(admin_id: str, current_user = Depends(get_current_user)):
+    """Delete admin account (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    result = await db.users.delete_one({"_id": ObjectId(admin_id), "role": "admin"})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Admin not found")
+    
+    return {"message": "Admin account deleted successfully"}
+
+# ==================== DATA MIGRATION ====================
+
+@api_router.post("/admin/migrate-company-data")
+async def migrate_company_data(migration_data: dict, current_user = Depends(get_current_user)):
+    """
+    Assign existing data to companies.
+    migration_data format: {
+        "assignments": [
+            {"admin_email": "admin@company.com", "company_id": "company_id_here"}
+        ]
+    }
+    """
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    assignments = migration_data.get("assignments", [])
+    results = []
+    
+    for assignment in assignments:
+        admin_email = assignment.get("admin_email")
+        company_id = assignment.get("company_id")
+        
+        if not admin_email or not company_id:
+            continue
+        
+        # Find admin user
+        admin = await db.users.find_one({"email": admin_email, "role": "admin"})
+        if not admin:
+            results.append({"email": admin_email, "status": "not_found"})
+            continue
+        
+        admin_id = str(admin["_id"])
+        
+        # Get company info
+        company = await db.companies.find_one({"_id": ObjectId(company_id)})
+        if not company:
+            results.append({"email": admin_email, "status": "company_not_found"})
+            continue
+        
+        company_name = company.get("name")
+        
+        # Update admin user
+        await db.users.update_one(
+            {"_id": admin["_id"]},
+            {"$set": {"company_id": company_id, "company_name": company_name}}
+        )
+        
+        # Update all projects created by this admin
+        await db.projects.update_many(
+            {"admin_id": admin_id},
+            {"$set": {"company_id": company_id, "company_name": company_name}}
+        )
+        
+        # Update all workers created by this admin
+        await db.workers.update_many(
+            {"admin_id": admin_id},
+            {"$set": {"company_id": company_id}}
+        )
+        
+        # Update all checkins
+        await db.checkins.update_many(
+            {"admin_id": admin_id},
+            {"$set": {"company_id": company_id}}
+        )
+        
+        # Update all daily logs
+        await db.daily_logs.update_many(
+            {"created_by": admin_id},
+            {"$set": {"company_id": company_id}}
+        )
+        
+        # Update site devices
+        projects = await db.projects.find({"company_id": company_id}).to_list(1000)
+        project_ids = [str(p["_id"]) for p in projects]
+        
+        await db.site_devices.update_many(
+            {"project_id": {"$in": project_ids}},
+            {"$set": {"company_id": company_id}}
+        )
+        
+        results.append({
+            "email": admin_email,
+            "company_name": company_name,
+            "status": "success"
+        })
+    
+    return {"results": results}
+
 # ==================== SITE DEVICE MANAGEMENT ====================
 
 @api_router.get("/admin/site-devices")
 async def get_site_devices(admin = Depends(get_admin_user)):
     """Get all site devices"""
+    company_id = get_user_company_id(admin)
+    
     devices = await db.site_devices.find({}, {"password": 0}).to_list(1000)
     result = []
     for device in devices:
@@ -549,7 +829,11 @@ async def get_site_devices(admin = Depends(get_admin_user)):
         # Get project name
         if device.get("project_id"):
             project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
-            device_data["project_name"] = project.get("name") if project else "Unknown"
+            if project:
+                device_data["project_name"] = project.get("name")
+                # Filter by company
+                if company_id and project.get("company_id") != company_id:
+                    continue
         result.append(device_data)
     return result
 
@@ -561,16 +845,22 @@ async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
     
-    # Verify project exists
+    # Verify project exists and belongs to admin's company
     project = await db.projects.find_one({"_id": ObjectId(device_data.project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check company access
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
     
     device_dict = device_data.model_dump()
     device_dict["password"] = hash_password(device_dict["password"])
     device_dict["is_active"] = True
     device_dict["created_at"] = datetime.now(timezone.utc)
     device_dict["created_by"] = admin.get("id")
+    device_dict["company_id"] = project.get("company_id")
     
     result = await db.site_devices.insert_one(device_dict)
     
@@ -644,7 +934,14 @@ async def get_project_site_devices(project_id: str, admin = Depends(get_admin_us
 
 @api_router.get("/projects", response_model=List[ProjectResponse])
 async def get_projects(current_user = Depends(get_current_user)):
-    projects = await db.projects.find({}).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    # Filter by company_id if user has one
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    projects = await db.projects.find(query).to_list(1000)
     return [ProjectResponse(**serialize_id(p)) for p in projects]
 
 @api_router.post("/projects", response_model=ProjectResponse)
@@ -654,6 +951,11 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["nfc_tags"] = []
     project_dict["dropbox_enabled"] = False
     project_dict["dropbox_folder"] = None
+    
+    # IMPORTANT: Auto-inject company_id from admin
+    project_dict["company_id"] = admin.get("company_id")
+    project_dict["company_name"] = admin.get("company_name")
+    project_dict["admin_id"] = admin.get("id")
     
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
@@ -665,6 +967,12 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     project = await db.projects.find_one({"_id": ObjectId(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check company access
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
     return ProjectResponse(**serialize_id(project))
 
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse)
@@ -700,13 +1008,24 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
 
 @api_router.post("/projects/{project_id}/nfc-tags")
 async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
+    # Get project and verify company access
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
     # Create NFC tag document
     nfc_tag = {
         "tag_id": tag_data.tag_id,
         "project_id": project_id,
         "location_description": tag_data.location_description,
         "created_at": datetime.now(timezone.utc),
-        "admin_id": admin["id"]
+        "admin_id": admin["id"],
+        "company_id": project.get("company_id"),
+        "status": "active"
     }
     
     # Store in nfc_tags collection
@@ -744,12 +1063,15 @@ async def get_nfc_tag_info(tag_id: str):
     if not tag:
         raise HTTPException(status_code=404, detail="NFC tag not found or inactive")
     
+    # Get project info
+    project = await db.projects.find_one({"_id": ObjectId(tag["project_id"])})
+    
     return NfcTagInfo(
         tag_id=tag["tag_id"],
         project_id=tag["project_id"],
-        project_name=tag.get("project_name", "Unknown Project"),
+        project_name=project.get("name", "Unknown Project") if project else "Unknown Project",
         location_description=tag.get("location_description", "Check-In Point"),
-        company_name=tag.get("company_name")
+        company_name=project.get("company_name") if project else None
     )
 
 @api_router.get("/checkin/{project_id}/{tag_id}/info")
@@ -803,6 +1125,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             raise HTTPException(status_code=404, detail="Project not found")
         
         admin_id = project.get("admin_id")
+        company_id = project.get("company_id")
         
         # Find or create worker
         worker = await db.workers.find_one({"phone": checkin_data.phone})
@@ -814,6 +1137,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                 "company": checkin_data.company,
                 "trade": checkin_data.trade,
                 "admin_id": admin_id,
+                "company_id": company_id,
                 "created_at": datetime.now(timezone.utc),
                 "status": "active"
             }
@@ -831,6 +1155,8 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                 update_fields["trade"] = checkin_data.trade
             if not worker.get("admin_id"):
                 update_fields["admin_id"] = admin_id
+            if not worker.get("company_id"):
+                update_fields["company_id"] = company_id
             
             if update_fields:
                 await db.workers.update_one(
@@ -868,6 +1194,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "project_id": checkin_data.project_id,
             "project_name": project.get("name"),
             "admin_id": admin_id,
+            "company_id": company_id,
             "tag_id": checkin_data.tag_id,
             "check_in_time": now,
             "check_out_time": None,
@@ -895,7 +1222,14 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
 
 @api_router.get("/workers", response_model=List[WorkerResponse])
 async def get_workers(current_user = Depends(get_current_user)):
-    workers = await db.workers.find({}).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    # Filter by company_id if user has one
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    workers = await db.workers.find(query).to_list(1000)
     return [WorkerResponse(**serialize_id(w)) for w in workers]
 
 @api_router.post("/workers/register")
@@ -921,6 +1255,12 @@ async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
     worker = await db.workers.find_one({"_id": ObjectId(worker_id)})
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
+    
+    # Check company access
+    company_id = get_user_company_id(current_user)
+    if company_id and worker.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
     return WorkerResponse(**serialize_id(worker))
 
 @api_router.put("/workers/{worker_id}", response_model=WorkerResponse)
@@ -981,6 +1321,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
         "worker_trade": worker.get("trade"),
         "project_id": str(project["_id"]),
         "project_name": project.get("name"),
+        "company_id": project.get("company_id"),
         "check_in_time": now,
         "check_out_time": None,
         "status": "checked_in",
@@ -1036,7 +1377,13 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
 
 @api_router.get("/daily-logs")
 async def get_daily_logs(current_user = Depends(get_current_user)):
-    logs = await db.daily_logs.find({}).sort("date", -1).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    logs = await db.daily_logs.find(query).sort("date", -1).to_list(1000)
     return serialize_list(logs)
 
 @api_router.post("/daily-logs", response_model=DailyLogResponse)
@@ -1047,6 +1394,11 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     log_dict["updated_at"] = now
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
+    
+    # Get project to inject company_id
+    project = await db.projects.find_one({"_id": ObjectId(log_data.project_id)})
+    if project:
+        log_dict["company_id"] = project.get("company_id")
     
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
@@ -1094,7 +1446,13 @@ async def get_project_daily_logs(project_id: str, current_user = Depends(get_cur
 
 @api_router.get("/reports")
 async def get_reports(current_user = Depends(get_current_user)):
-    reports = await db.reports.find({}).to_list(1000)
+    company_id = get_user_company_id(current_user)
+    
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    reports = await db.reports.find(query).to_list(1000)
     return serialize_list(reports)
 
 @api_router.get("/reports/project/{project_id}")
@@ -1434,12 +1792,23 @@ async def dropbox_oauth_callback(code: str = None, error: str = None):
 
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):
+    company_id = get_user_company_id(current_user)
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     
-    total_workers = await db.workers.count_documents({})
-    total_projects = await db.projects.count_documents({"status": "active"})
-    on_site_now = await db.checkins.count_documents({"status": "checked_in"})
-    today_checkins = await db.checkins.count_documents({"check_in_time": {"$gte": today_start}})
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    
+    total_workers = await db.workers.count_documents(query)
+    
+    project_query = {**query, "status": "active"}
+    total_projects = await db.projects.count_documents(project_query)
+    
+    checkin_query = {**query, "status": "checked_in"}
+    on_site_now = await db.checkins.count_documents(checkin_query)
+    
+    today_query = {**query, "check_in_time": {"$gte": today_start}}
+    today_checkins = await db.checkins.count_documents(today_query)
     
     return {
         "total_workers": total_workers,
@@ -1489,18 +1858,26 @@ async def startup_event():
     await db.workers.create_index("phone", unique=True, sparse=True)
     await db.nfc_tags.create_index("tag_id", unique=True)
     await db.subcontractors.create_index("email", unique=True)
+    await db.companies.create_index("name", unique=True)
     
-    # Check if admin user exists, if not create default
-    admin = await db.users.find_one({"email": "rfs2671@gmail.com"})
-    if not admin:
+    # Create owner account if doesn't exist
+    owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
+    if not owner:
         await db.users.insert_one({
             "email": "rfs2671@gmail.com",
             "password": hash_password("Asdddfgh1$"),
             "name": "Roy Fishman",
-            "role": "admin",
+            "role": "owner",  # Changed to owner
             "created_at": datetime.now(timezone.utc),
             "assigned_projects": []
         })
-        logger.info("Created default admin user")
+        logger.info("Created default owner user")
+    elif owner.get("role") == "admin":
+        # Upgrade existing admin to owner
+        await db.users.update_one(
+            {"email": "rfs2671@gmail.com"},
+            {"$set": {"role": "owner"}}
+        )
+        logger.info("Upgraded existing admin to owner role")
     
     logger.info("Blueview API started successfully")
