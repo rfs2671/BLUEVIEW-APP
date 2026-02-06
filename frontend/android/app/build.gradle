@@ -1,14 +1,28 @@
-signingConfigs {
-    release {
-        storeFile file("release.keystore")
-        storePassword System.getenv("KEYSTORE_PASSWORD")
-        keyAlias System.getenv("KEY_ALIAS")
-        keyPassword System.getenv("KEY_PASSWORD")
+android {
+    namespace "com.blueview.app"
+    compileSdkVersion rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId "com.blueview.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
     }
-}
-buildTypes {
-    release {
-        signingConfig signingConfigs.release
-        minifyEnabled false
+
+    signingConfigs {
+        release {
+            storeFile file("release.keystore")
+            storePassword System.getenv("KEYSTORE_PASSWORD")
+            keyAlias System.getenv("KEY_ALIAS")
+            keyPassword System.getenv("KEY_PASSWORD")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+        }
     }
 }
