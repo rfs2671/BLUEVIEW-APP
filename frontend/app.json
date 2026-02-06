@@ -11,9 +11,7 @@
     "updates": {
       "url": "https://u.expo.dev/1b4489c3-e63b-49de-a0b0-2d40cacac203"
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "1.0.0",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
