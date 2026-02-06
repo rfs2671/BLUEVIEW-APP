@@ -50,8 +50,6 @@ venv/
 
 # Mobile/Expo
 .expo/
-android/
-ios/
 *.apk
 *.aab
 *.ipa
