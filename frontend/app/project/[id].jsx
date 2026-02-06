@@ -769,7 +769,7 @@ export default function ProjectDetailScreen() {
             </GlassCard>
           )}
           {/* Checklists Section */}
-<Text style={styles.sectionLabel}>CHECKLISTS (OTA TEST)</Text>
+<Text style={styles.sectionLabel}>CHECKLISTS (OTA-TEST)</Text>
 {loadingChecklists ? (
   <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
 ) : checklists.length > 0 ? (
