@@ -1,0 +1,31 @@
+name: Setup EAS Project
+on: workflow_dispatch
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Expo
+        uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          
+      - name: Initialize EAS project
+        working-directory: ./frontend
+        run: eas init --id
+```
+
+---
+
+## **Your `.github/workflows/` folder should now have:**
+```
+blueview/
+└── .github/
+    └── workflows/
+        ├── android.yml (already exists)
+        ├── ota-update.yml (NEW - just created)
+        └── setup-eas.yml (NEW - just created)
