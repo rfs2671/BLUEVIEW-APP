@@ -25,13 +25,13 @@ export default function LoginScreen() {
   // Redirect if already authenticated
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
-      // Check if site mode and redirect accordingly
-      if (siteMode) {
-        router.replace('/site/checkins');
-      } else {
-        router.replace('/');
-      }
-    }
+  // Check if site mode and redirect accordingly
+  if (siteMode) {
+    router.replace('/site');
+  } else {
+    router.replace('/');
+  }
+}
   }, [isAuthenticated, authLoading, siteMode, router]);
 
   const handleSubmit = async () => {
@@ -47,10 +47,10 @@ export default function LoginScreen() {
       const userData = await login(email, password);
       
       // Check if site mode login
-      if (userData.site_mode) {
-        toast.success('Site Mode', `Connected to ${userData.project_name || 'project'}`);
-        router.replace('/site/checkins');
-      } else {
+    if (userData.site_mode) {
+      toast.success('Site Mode', `Connected to ${userData.project_name || 'project'}`);
+      router.replace('/site');
+    } else {
         toast.success('Welcome back!', `Logged in as ${userData.full_name || userData.name || userData.email}`);
         router.replace('/');
       }
