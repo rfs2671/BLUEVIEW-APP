@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { RefreshCw } from 'lucide-react-native';
 import GlassButton from './GlassButton';
-import { useDatabase } from '../contexts/DatabaseContext';
+import { useDatabase } from '../context/DatabaseContext';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useToast } from './Toast';
 import { colors, spacing, typography } from '../styles/theme';
