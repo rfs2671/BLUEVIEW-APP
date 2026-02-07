@@ -21,7 +21,10 @@ import { WorkerCardSkeleton, StatCardSkeleton } from '../src/components/GlassSke
 import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
+import { useWorkers } from '../src/hooks/useWorkers';
+import { useProjects } from '../src/hooks/useProjects';
+import { useCheckIns } from '../src/hooks/useCheckIns';
+import OfflineIndicator from '../src/components/OfflineIndicator';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 export default function WorkersScreen() {
@@ -30,10 +33,13 @@ export default function WorkersScreen() {
   const toast = useToast();
 
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [loading, setLoading] = useState(true);
-  const [workers, setWorkers] = useState([]);
-  const [checkins, setCheckins] = useState([]);
-  const [projects, setProjects] = useState([]);
+
+// Use hooks for data
+  const { workers, loading: workersLoading } = useWorkers();
+  const { projects, loading: projectsLoading } = useProjects();
+  const { getTodayCheckIns } = useCheckIns();
+  const [todayCheckIns, setTodayCheckIns] = useState([]);
+  const loading = workersLoading || projectsLoading;
 
   const formatTime = (isoString) => {
     if (!isoString) return '--:--';
@@ -73,62 +79,19 @@ export default function WorkersScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch data
-  useEffect(() => {
+  // Fetch today's check-ins
+useEffect(() => {
+  const fetchCheckIns = async () => {
     if (isAuthenticated) {
-      fetchData();
-    }
-  }, [isAuthenticated, selectedDate]);
-
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const [workersData, projectsData] = await Promise.all([
-        workersAPI.getAll().catch(() => []),
-        projectsAPI.getAll().catch(() => []),
-      ]);
-
-      setWorkers(Array.isArray(workersData) ? workersData : []);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-
-      let allCheckins = [];
-      if (projectsData.length > 0) {
-        const checkinsPromises = projectsData.map((project) =>
-          checkinsAPI.getTodayByProject(project._id || project.id).catch(() => [])
-        );
-        const checkinsResults = await Promise.all(checkinsPromises);
-        allCheckins = checkinsResults.flat();
-      }
-
-      if (allCheckins.length === 0) {
-        try {
-          const generalCheckins = await checkinsAPI.getAll();
-          allCheckins = Array.isArray(generalCheckins) ? generalCheckins : [];
-        } catch (e) {
-          allCheckins = workersData.slice(0, 4).map((worker, index) => ({
-            _id: `checkin-${index}`,
-            worker_id: worker._id || worker.id,
-            worker_name: worker.name || worker.full_name,
-            worker_trade: worker.trade || 'General',
-            worker_company: worker.company || 'Unknown Company',
-            project_name: projectsData[index % projectsData.length]?.name || 'Project',
-            check_in_time: new Date().toISOString(),
-            check_out_time: index === 1 ? new Date().toISOString() : null,
-          }));
-        }
-      }
-
-      setCheckins(allCheckins);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Load Error', 'Could not load worker data');
-    } finally {
-      setLoading(false);
+      const checkIns = await getTodayCheckIns();
+      setTodayCheckIns(checkIns);
     }
   };
+  fetchCheckIns();
+}, [isAuthenticated, selectedDate]);
 
-  const uniqueProjects = new Set(checkins.map((c) => c.project_name || c.project_id)).size;
-  const uniqueCompanies = new Set(checkins.map((c) => c.worker_company || c.company)).size;
+  const uniqueProjects = new Set(todayCheckIns.map((c) => c.projectName || c.projectId)).size;
+  const uniqueCompanies = new Set(todayCheckIns.map((c) => c.workerCompany)).size;
 
   const getWorkerInfo = (checkin) => ({
     name: checkin.worker_name || checkin.name || 'Unknown Worker',
@@ -145,7 +108,7 @@ export default function WorkersScreen() {
   };
 
   const statItems = [
-    { icon: Users, value: checkins.length, label: 'Workers' },
+    { icon: Users, value: todayCheckIns.length, label: 'Workers' },
     { icon: Building2, value: uniqueProjects, label: 'Projects' },
     { icon: Briefcase, value: uniqueCompanies, label: 'Companies' },
   ];
@@ -163,13 +126,16 @@ export default function WorkersScreen() {
             />
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
+          <View style={styles.headerRight}>
+            <OfflineIndicator />
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />
+          </View>
         </View>
-
+          
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -238,8 +204,8 @@ export default function WorkersScreen() {
                 <WorkerCardSkeleton />
                 <WorkerCardSkeleton />
               </>
-            ) : checkins.length > 0 ? (
-              checkins.map((checkin, index) => {
+            ) : todaycheckins.length > 0 ? (
+              todayCheckins.map((checkin, index) => {
                 const workerInfo = getWorkerInfo(checkin);
                 const initials = workerInfo.name
                   .split(' ')
