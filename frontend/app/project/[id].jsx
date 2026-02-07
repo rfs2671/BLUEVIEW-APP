@@ -47,6 +47,9 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useProjects } from '../../src/hooks/useProjects';
+import { useCheckIns } from '../../src/hooks/useCheckIns';
+import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
@@ -95,6 +98,8 @@ export default function ProjectDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [project, setProject] = useState(null);
+  const { getProjectById } = useProjects();
+  const { getActiveCheckIns } = useCheckIns();
   const [stats, setStats] = useState({
     onSiteWorkers: 0,
     subcontractors: 0,
@@ -161,7 +166,7 @@ export default function ProjectDetailScreen() {
 
   const fetchData = async () => {
     try {
-      const projectData = await projectsAPI.getById(projectId);
+      const projectData = await getProjectById(projectId);
       setProject(projectData);
 
       // Fetch site devices for this project
@@ -181,8 +186,7 @@ export default function ProjectDetailScreen() {
 
       // Fetch active check-ins for this project
       try {
-        const activeCheckins = await checkinsAPI.getActiveByProject(projectId);
-        const workers = Array.isArray(activeCheckins) ? activeCheckins : [];
+        const workers = await getActiveCheckIns(projectId);
         
         // Group workers by company
         const grouped = workers.reduce((acc, worker) => {
@@ -501,6 +505,8 @@ export default function ProjectDetailScreen() {
             />
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
+          <View style={styles.headerRight}>
+          <OfflineIndicator />
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -1191,6 +1197,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.08)',
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+ },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
