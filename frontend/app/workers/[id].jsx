@@ -32,7 +32,8 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { workersAPI } from '../../src/utils/api';
+import { useWorkers } from '../../src/hooks/useWorkers';
+import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 export default function WorkerDetailScreen() {
@@ -44,6 +45,7 @@ export default function WorkerDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [worker, setWorker] = useState(null);
+  const { getWorkerById, updateWorker } = useWorkers();
   const [editMode, setEditMode] = useState(false);
   
   // Edit form fields
@@ -78,12 +80,12 @@ export default function WorkerDetailScreen() {
 
   const fetchWorker = async () => {
     try {
-      const workerData = await workersAPI.getById(workerId);
+      const workerData = await getWorkerById(workerId);
       setWorker(workerData);
       setName(workerData.name || '');
       setTrade(workerData.trade || '');
       setCompany(workerData.company || '');
-      setOshaNumber(workerData.osha_number || '');
+      setOshaNumber(workerData.oshaNumber || '');
       setCertifications(workerData.certifications || []);
       setSignature(workerData.signature || null);
     } catch (error) {
@@ -98,18 +100,24 @@ export default function WorkerDetailScreen() {
     await logout();
     router.replace('/login');
   };
-
+ 
   const handleSave = async () => {
     setSaving(true);
     try {
-      // In real app, would call API to update worker
-      setWorker({ ...worker, name, trade, company, osha_number: oshaNumber });
+      await updateWorker(workerId, {
+        name,
+        trade,
+        company,
+        osha_number: oshaNumber,
+        certifications,
+      });
+      setWorker({ ...worker, name, trade, company, oshaNumber });
       setEditMode(false);
       toast.success('Saved', 'Worker information updated');
-    } catch (error) {
+  }   catch (error) {
       console.error('Failed to save:', error);
       toast.error('Error', 'Could not save changes');
-    } finally {
+  }   finally {
       setSaving(false);
     }
   };
@@ -185,21 +193,22 @@ export default function WorkerDetailScreen() {
             />
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
-            {isAdmin && !editMode && (
-              <GlassButton
-                variant="icon"
-                icon={<Edit3 size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                onPress={() => setEditMode(true)}
-              />
-            )}
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
+            <View style={styles.headerRight}>
+              <OfflineIndicator />
+              {isAdmin && !editMode && (
+                <GlassButton
+                  variant="icon"
+                  icon={<Edit3 size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={() => setEditMode(true)}
             />
-          </View>
-        </View>
+          )}
+          <GlassButton
+            variant="icon"
+            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+            onPress={handleLogout}
+          />    
+       </View>
+       </View>
 
         <ScrollView
           style={styles.scrollView}
