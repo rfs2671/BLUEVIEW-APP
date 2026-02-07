@@ -1,17 +1,30 @@
 name: Fix Lockfile
 on: workflow_dispatch
+
 jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: |
-          npm install
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add package-lock.json
-          git commit -m "Update lockfile"
+
+      - name: Regenerate Lockfile
+        # This 'working-directory' tells the robot to enter your folder first
+        working-directory: ./frontend 
+        run: |
+          rm -f package-lock.json
+          npm install --package-lock-only
+          
+      - name: Push Changes back to Repo
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          # We add the specific path to the lockfile here
+          git add frontend/package-lock.json
+          git commit -m "chore: auto-update frontend lockfile" || echo "No changes"
           git push
