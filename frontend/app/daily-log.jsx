@@ -48,7 +48,9 @@ import FloatingNav from '../src/components/FloatingNav';
 import SignaturePad from '../src/components/SignaturePad';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { projectsAPI, dailyLogsAPI } from '../src/utils/api';
+import { useProjects } from '../src/hooks/useProjects';
+import { useDailyLogs } from '../src/hooks/useDailyLogs';
+import OfflineIndicator from '../src/components/OfflineIndicator';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const weatherOptions = [
@@ -105,6 +107,8 @@ export default function DailyLogScreen() {
   });
 
   const isAdmin = user?.role === 'admin';
+  const { projects: projectsList, loading: projectsLoading } = useProjects();
+  const { dailyLogs, loading: logsLoading, createDailyLog, updateDailyLog } = useDailyLogs(selectedProject?._id || selectedProject?.id);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -126,15 +130,13 @@ export default function DailyLogScreen() {
   }, [isAuthenticated, siteMode, siteProject]);
 
   const fetchProjects = async () => {
-    setLoading(true);
-    try {
-      const projectsData = await projectsAPI.getAll();
-      const projectList = Array.isArray(projectsData) ? projectsData : [];
-      setProjects(projectList);
-      if (projectList.length > 0) {
-        const firstProject = projectList[0];
-        setSelectedProject(firstProject);
-        await fetchLogsForProject(firstProject._id || firstProject.id);
+  setLoading(true);
+  try {
+    setProjects(projectsList);
+    if (projectsList.length > 0) {
+      const firstProject = projectsList[0];
+      setSelectedProject(firstProject);
+      await fetchLogsForProject(firstProject._id || firstProject.id);
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error);
@@ -144,23 +146,21 @@ export default function DailyLogScreen() {
     }
   };
 
-  const fetchLogsForProject = async (projectId) => {
-    try {
-      const logs = await dailyLogsAPI.getByProject(projectId);
-      const logsList = Array.isArray(logs) ? logs : [];
-      setAllLogs(logsList);
+ const fetchLogsForProject = async (projectId) => {
+  try {
+    setAllLogs(dailyLogs);
 
-      // Check for today's log
-      const today = new Date().toISOString().split('T')[0];
-      const todayLog = logsList.find((l) => l.date === today);
-      
-      if (todayLog) {
-        setExistingLog(todayLog);
-        populateFormFromLog(todayLog);
-      } else {
-        setExistingLog(null);
-        resetForm();
-      }
+    // Check for today's log
+    const today = new Date().toISOString().split('T')[0];
+    const todayLog = dailyLogs.find((l) => l.date === today);
+    
+    if (todayLog) {
+      setExistingLog(todayLog);
+      populateFormFromLog(todayLog);
+    } else {
+      setExistingLog(null);
+      resetForm();
+    }
     } catch (error) {
       console.error('Failed to fetch logs:', error);
       setAllLogs([]);
@@ -263,17 +263,16 @@ export default function DailyLogScreen() {
         superintendent_signature: formData.superintendent_signature,
         competent_person_signature: formData.competent_person_signature,
       };
-
-      if (existingLog) {
-        // Update existing log
-        await dailyLogsAPI.update(existingLog.id || existingLog._id, logData);
-        toast.success('Updated', 'Daily log updated successfully');
-      } else {
-        // Create new log
-        const newLog = await dailyLogsAPI.create(logData);
-        setExistingLog(newLog);
-        toast.success('Created', 'Daily log created successfully');
-      }
+    if (existingLog) {
+      // Update existing log
+      await updateDailyLog(existingLog.id || existingLog._id, logData);
+      toast.success('Updated', 'Daily log updated successfully');
+    } else {
+      // Create new log
+      const newLog = await createDailyLog(logData);
+      setExistingLog(newLog);
+      toast.success('Created', 'Daily log created successfully');
+    }
 
       // Refresh logs
       await fetchLogsForProject(selectedProject._id || selectedProject.id);
@@ -388,31 +387,33 @@ export default function DailyLogScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/')}
-            />
-            {siteMode ? (
-              <View style={styles.siteBadge}>
-                <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-                <Text style={styles.siteBadgeText}>SITE MODE</Text>
-              </View>
-            ) : isAdmin ? (
-              <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
-                <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
-                <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
-              </View>
-            ) : (
-              <Text style={styles.logoText}>BLUEVIEW</Text>
-            )}
-          </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
-        </View>
+  <GlassButton
+    variant="icon"
+    icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+    onPress={() => router.push('/')}
+  />
+  {siteMode ? (
+    <View style={styles.siteBadge}>
+      <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+      <Text style={styles.siteBadgeText}>SITE MODE</Text>
+    </View>
+  ) : isAdmin ? (
+    <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
+      <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
+      <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
+    </View>
+  ) : (
+    <Text style={styles.logoText}>BLUEVIEW</Text>
+  )}
+</View>
+<View style={styles.headerRight}>
+  <OfflineIndicator />
+  <GlassButton
+    variant="icon"
+    icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+    onPress={handleLogout}
+  />
+</View>
 
         {/* Tab Selector - Only show for site mode */}
         {siteMode && (
@@ -917,6 +918,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+},
   },
   logoText: {
     ...typography.label,
