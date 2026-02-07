@@ -2,7 +2,7 @@ import { Database } from '@nozbe/watermelondb';
 import SQLiteAdapter from '@nozbe/watermelondb/adapters/sqlite';
 
 import schema from './schema';
-import Worker from './models/Worker';
+import Worker from './models/worker';
 import Project from './models/Project';
 import CheckIn from './models/CheckIn';
 import DailyLog from './models/DailyLog';
