@@ -20,9 +20,13 @@ import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/G
 import GlassButton from '../src/components/GlassButton';
 import { DashboardSkeleton, StatCardSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
+import OfflineIndicator from '../src/components/OfflineIndicator';
+import SyncButton from '../src/components/SyncButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
+import { useWorkers } from '../src/hooks/useWorkers';
+import { useProjects } from '../src/hooks/useProjects';
+import { useCheckIns } from '../src/hooks/useCheckIns';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const quickActions = [
@@ -43,12 +47,12 @@ export default function DashboardScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
   
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    totalWorkers: 0,
-    activeProjects: 0,
-    onSiteNow: 0,
-  });
+  // Use hooks for data - auto-updates, works offline
+  const { workers, loading: workersLoading } = useWorkers();
+  const { projects, loading: projectsLoading } = useProjects();
+  const { checkIns, loading: checkInsLoading, getActiveCheckIns } = useCheckIns();
+  
+  const [activeCheckInsCount, setActiveCheckInsCount] = useState(0);
 
   const today = new Date();
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
@@ -61,47 +65,17 @@ export default function DashboardScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch dashboard data
+  // Count active check-ins (workers currently on site)
   useEffect(() => {
+    const countActiveCheckIns = async () => {
+      const active = await getActiveCheckIns();
+      setActiveCheckInsCount(active.length);
+    };
+    
     if (isAuthenticated) {
-      fetchDashboardData();
+      countActiveCheckIns();
     }
-  }, [isAuthenticated]);
-
-  const fetchDashboardData = async () => {
-    setLoading(true);
-    try {
-      const [workersData, projectsData] = await Promise.all([
-        workersAPI.getAll().catch(() => []),
-        projectsAPI.getAll().catch(() => []),
-      ]);
-
-      const totalWorkers = Array.isArray(workersData) ? workersData.length : 0;
-      const activeProjects = Array.isArray(projectsData)
-        ? projectsData.filter((p) => p.status === 'active' || !p.status).length
-        : 0;
-
-      let onSiteNow = 0;
-      if (projectsData.length > 0) {
-        try {
-          const checkinsPromises = projectsData.slice(0, 3).map((project) =>
-            checkinsAPI.getActiveByProject(project._id || project.id).catch(() => [])
-          );
-          const checkinsResults = await Promise.all(checkinsPromises);
-          onSiteNow = checkinsResults.flat().length;
-        } catch (e) {
-          onSiteNow = Math.floor(totalWorkers * 0.7);
-        }
-      }
-
-      setStats({ totalWorkers, activeProjects, onSiteNow });
-    } catch (error) {
-      console.error('Failed to fetch dashboard data:', error);
-      toast.error('Data Load Error', 'Could not load dashboard statistics');
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [isAuthenticated, checkIns]);
 
   const getUserFirstName = () => {
     if (user?.full_name) return user.full_name.split(' ')[0];
@@ -113,6 +87,14 @@ export default function DashboardScreen() {
   const handleLogout = async () => {
     await logout();
     router.replace('/login');
+  };
+
+  const loading = workersLoading || projectsLoading || checkInsLoading;
+
+  const stats = {
+    totalWorkers: workers.length,
+    activeProjects: projects.filter(p => p.status === 'active' || !p.status).length,
+    onSiteNow: activeCheckInsCount,
   };
 
   if (authLoading) {
@@ -140,11 +122,14 @@ export default function DashboardScreen() {
             </View>
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
+          <View style={styles.headerRight}>
+            <OfflineIndicator />
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />
+          </View>
         </View>
 
         <ScrollView
@@ -153,95 +138,90 @@ export default function DashboardScreen() {
           showsVerticalScrollIndicator={false}
         >
           {loading ? (
-            <>
-              <DashboardSkeleton />
-              <View style={styles.quickActionsSection}>
-                <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
-                <View style={styles.quickActionsGrid}>
-                  {[1, 2, 3, 4].map((i) => (
-                    <View key={i} style={styles.quickActionSkeleton} />
-                  ))}
-                </View>
-              </View>
-            </>
+            <DashboardSkeleton />
           ) : (
             <>
-              {/* Main Glass Card */}
-              <GlassCard style={styles.mainCard}>
-                {/* Date */}
-                <View style={styles.dateSection}>
+              {/* Greeting */}
+              <View style={styles.greetingSection}>
+                <Text style={styles.greetingSmall}>WELCOME BACK</Text>
+                <Text style={styles.greetingLarge}>{getUserFirstName()}</Text>
+                <View style={styles.dateRow}>
                   <Text style={styles.dayName}>{dayName}</Text>
+                  <Text style={styles.dateDivider}>•</Text>
                   <Text style={styles.fullDate}>{fullDate}</Text>
                 </View>
+              </View>
 
-                {/* Name */}
-                <Text style={styles.userName}>{getUserFirstName()}</Text>
-                <Text style={styles.userEmail}>{user?.email || 'user@blueview.com'}</Text>
-
-                {/* Stats Grid */}
-                <View style={styles.statsGrid}>
-                  {statItems.map((stat, index) => {
+              {/* Stats */}
+              <View style={styles.statsGrid}>
+                {loading ? (
+                  <>
+                    <StatCardSkeleton />
+                    <StatCardSkeleton />
+                    <StatCardSkeleton />
+                  </>
+                ) : (
+                  statItems.map((stat) => {
                     const Icon = stat.icon;
                     return (
                       <StatCard key={stat.label} style={styles.statCard}>
-                        <IconPod style={styles.statIconPod}>
-                          <Icon size={20} strokeWidth={1.5} color={colors.text.secondary} />
+                        <IconPod size={44} style={styles.statIcon}>
+                          <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
                         </IconPod>
                         <Text style={styles.statValue}>{stat.value}</Text>
                         <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
                       </StatCard>
                     );
-                  })}
-                </View>
-              </GlassCard>
-
-              {/* Quick Actions */}
-              <View style={styles.quickActionsSection}>
-                <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
-                <View style={styles.quickActionsGrid}>
-                  {quickActions.map((action) => (
-                    <View key={action.title} style={styles.quickActionWrapper}>
-                      <GlassListItem
-                        onPress={() => router.push(action.path)}
-                        style={styles.quickActionCard}
-                      >
-                        <View style={styles.quickActionContent}>
-                          <Text style={styles.quickActionTitle}>{action.title}</Text>
-                          <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
-                        </View>
-                        <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                      </GlassListItem>
-                    </View>
-                  ))}
-                </View>
+                  })
+                )}
               </View>
 
-              {/* Admin Section - Only for admin users */}
+              {/* Sync Button */}
+              <View style={styles.syncSection}>
+                <SyncButton showLabel={true} />
+              </View>
+
+              {/* Quick Actions */}
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
+                <GlassCard style={styles.actionsCard}>
+                  {quickActions.map((action, index) => (
+                    <GlassListItem
+                      key={action.path}
+                      title={action.title}
+                      subtitle={action.subtitle}
+                      onPress={() => router.push(action.path)}
+                      showBorder={index < quickActions.length - 1}
+                      rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                    />
+                  ))}
+                </GlassCard>
+              </View>
+
+              {/* Admin Actions (if admin) */}
               {user?.role === 'admin' && (
-                <View style={styles.quickActionsSection}>
-                  <Text style={styles.sectionLabel}>ADMINISTRATION</Text>
-                  <View style={styles.quickActionsGrid}>
-                    {adminActions.map((action) => {
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>ADMIN TOOLS</Text>
+                  <GlassCard style={styles.actionsCard}>
+                    {adminActions.map((action, index) => {
                       const Icon = action.icon;
                       return (
-                        <View key={action.title} style={styles.quickActionWrapper}>
-                          <GlassListItem
-                            onPress={() => router.push(action.path)}
-                            style={[styles.quickActionCard, styles.adminActionCard]}
-                          >
-                            <View style={styles.quickActionContent}>
-                              <View style={styles.adminIconRow}>
-                                <Icon size={16} strokeWidth={1.5} color="#f59e0b" />
-                                <Text style={styles.quickActionTitle}>{action.title}</Text>
-                              </View>
-                              <Text style={styles.quickActionSubtitle}>{action.subtitle}</Text>
-                            </View>
-                            <ChevronRight size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                          </GlassListItem>
-                        </View>
+                        <GlassListItem
+                          key={action.path}
+                          title={action.title}
+                          subtitle={action.subtitle}
+                          leftIcon={
+                            <IconPod size={36}>
+                              <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
+                            </IconPod>
+                          }
+                          onPress={() => router.push(action.path)}
+                          showBorder={index < adminActions.length - 1}
+                          rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                        />
                       );
                     })}
-                  </View>
+                  </GlassCard>
                 </View>
               )}
             </>
@@ -262,11 +242,12 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.background.start,
   },
   loadingText: {
-    ...typography.label,
-    color: colors.text.muted,
+    fontSize: typography.sizes.sm,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 2,
   },
   header: {
     flexDirection: 'row',
@@ -274,138 +255,112 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.md,
+    gap: spacing.sm,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   logoIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: borderRadius.full,
-    backgroundColor: colors.glass.background,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   logoText: {
-    ...typography.label,
-    color: colors.text.muted,
+    fontSize: typography.sizes.md,
+    fontWeight: '700',
+    color: colors.text.primary,
+    letterSpacing: 1,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 120,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 100,
   },
-  mainCard: {
+  greetingSection: {
     marginBottom: spacing.xl,
   },
-  dateSection: {
-    marginBottom: spacing.xl,
+  greetingSmall: {
+    fontSize: typography.sizes.xs,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1.5,
+    marginBottom: spacing.xs,
+  },
+  greetingLarge: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   dayName: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.xs,
+    fontSize: typography.sizes.sm,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  dateDivider: {
+    fontSize: typography.sizes.sm,
+    color: colors.text.subtle,
   },
   fullDate: {
-    fontSize: 16,
-    fontWeight: '300',
-    color: colors.text.muted,
-  },
-  userName: {
-    fontSize: 48,
-    fontWeight: '200',
-    color: colors.text.primary,
-    letterSpacing: -1,
-    marginBottom: spacing.xs,
-  },
-  userEmail: {
-    fontSize: 16,
-    fontWeight: '300',
-    color: colors.text.muted,
-    marginBottom: spacing.xxl,
+    fontSize: typography.sizes.sm,
+    color: colors.text.secondary,
   },
   statsGrid: {
     flexDirection: 'row',
     gap: spacing.md,
+    marginBottom: spacing.xl,
   },
   statCard: {
     flex: 1,
   },
-  statIconPod: {
-    marginBottom: spacing.lg,
+  statIcon: {
+    marginBottom: spacing.sm,
   },
   statValue: {
-    ...typography.stat,
+    fontSize: 28,
+    fontWeight: '700',
     color: colors.text.primary,
-    marginBottom: spacing.xs,
+    marginBottom: 2,
   },
   statLabel: {
-    ...typography.label,
-    fontSize: 9,
-    color: colors.text.muted,
+    fontSize: typography.sizes.xs,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1,
   },
-  quickActionsSection: {
-    marginTop: spacing.md,
+  syncSection: {
+    marginBottom: spacing.xl,
   },
-  sectionLabel: {
-    ...typography.label,
-    color: colors.text.muted,
+  section: {
+    marginBottom: spacing.xl,
+  },
+  sectionTitle: {
+    fontSize: typography.sizes.xs,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1.5,
     marginBottom: spacing.md,
-    paddingHorizontal: spacing.xs,
   },
-  quickActionsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -spacing.sm,
-    alignItems: 'stretch',
-  },
-  quickActionWrapper: {
-    width: '50%',
-    paddingHorizontal: spacing.sm,
-    marginBottom: spacing.md,
-    flexShrink: 0,
-  },
-  quickActionCard: {
-    padding: spacing.lg,
-    width: '100%',
-    minHeight: 90,
-  },
-  quickActionContent: {
-    flex: 1,
-  },
-  quickActionTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginBottom: spacing.xs,
-  },
-  quickActionSubtitle: {
-    fontSize: 14,
-    fontWeight: '300',
-    color: colors.text.muted,
-  },
-  quickActionSkeleton: {
-    width: '48%',
-    height: 80,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-  },
-  adminActionCard: {
-    borderColor: 'rgba(245, 158, 11, 0.2)',
-  },
-  adminIconRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
+  actionsCard: {
+    padding: 0,
+    overflow: 'hidden',
   },
 });
