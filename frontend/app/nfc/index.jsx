@@ -23,7 +23,10 @@ import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
-import { nfcAPI } from '../../src/utils/api';
+import { useCheckIns } from '../../src/hooks/useCheckIns';
+import { useProjects } from '../../src/hooks/useProjects';
+import OfflineIndicator from '../../src/components/OfflineIndicator';
+import apiClient from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const WORKER_PROFILE_KEY = 'blueview_worker_profile';
@@ -33,6 +36,8 @@ export default function NfcCheckInScreen() {
   const router = useRouter();
   const { tag: tagId, projectId } = useLocalSearchParams();
   const toast = useToast();
+  const { createCheckIn } = useCheckIns();
+  const { getProjectById } = useProjects();
 
   // States for the check-in flow
   const [status, setStatus] = useState('loading'); // loading, register, checking_in, success, error
@@ -79,48 +84,63 @@ export default function NfcCheckInScreen() {
   };
 
   const initializeCheckIn = async () => {
-    try {
-      // If no tag ID provided, show error
-      if (!tagId) {
-        setStatus('error');
-        setErrorMessage('No NFC tag detected. Please tap an NFC tag to check in.');
-        return;
-      }
-
-      // Fetch tag info from backend
-      const info = await nfcAPI.getTagInfo(tagId);
-      setTagInfo(info);
-
-      // Check if worker profile exists in local storage
-      const storedProfile = await AsyncStorage.getItem(WORKER_PROFILE_KEY);
-      const storedWorkerId = await AsyncStorage.getItem(WORKER_ID_KEY);
-
-      if (storedProfile && storedWorkerId) {
-        // Returning worker - auto check-in
-        const profile = JSON.parse(storedProfile);
-        setWorkerProfile(profile);
-        await performCheckIn(storedWorkerId, profile.phone);
-      } else {
-        // New worker - show registration form
-        setStatus('register');
-      }
-    } catch (error) {
-      console.error('Failed to initialize check-in:', error);
+  try {
+    // If no tag ID provided, show error
+    if (!tagId) {
       setStatus('error');
-      setErrorMessage(error.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.');
+      setErrorMessage('No NFC tag detected. Please tap an NFC tag to check in.');
+      return;
     }
-  };
 
+    // Fetch tag info from backend (still uses API for NFC-specific data)
+    const info = await apiClient.get(`/api/nfc/tags/${tagId}`);
+    setTagInfo(info.data);
+
+    // Check if worker profile exists in local storage
+    const storedProfile = await AsyncStorage.getItem(WORKER_PROFILE_KEY);
+    const storedWorkerId = await AsyncStorage.getItem(WORKER_ID_KEY);
+
+    if (storedProfile && storedWorkerId) {
+      // Returning worker - auto check-in
+      const profile = JSON.parse(storedProfile);
+      setWorkerProfile(profile);
+      await performCheckIn(storedWorkerId, profile.phone);
+    } else {
+      // New worker - show registration form
+      setStatus('register');
+    }
+  } catch (error) {
+    console.error('Failed to initialize check-in:', error);
+    setStatus('error');
+    setErrorMessage(error.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.');
+  }
+};
   const performCheckIn = async (workerId, phone) => {
-    setStatus('checking_in');
-    
-    try {
-      const result = await nfcAPI.checkIn({
-        worker_id: workerId,
-        tag_id: tagId,
-        phone: phone,
-      });
+  setStatus('checking_in');
+  
+  try {
+    const result = await createCheckIn({
+      worker_id: workerId,
+      tag_id: tagId,
+      phone: phone,
+      project_id: tagInfo?.project_id || projectId,
+    });
 
+    setCheckInResult(result);
+    setStatus('success');
+
+    // Auto-close after 3 seconds
+    setTimeout(() => {
+      if (Platform.OS === 'web') {
+        window.close();
+      }
+    }, 3000);
+  } catch (error) {
+    console.error('Check-in failed:', error);
+    setStatus('error');
+    setErrorMessage(error.response?.data?.detail || 'Check-in failed. Please try again.');
+  }
+};
       setCheckInResult(result);
       setStatus('success');
 
@@ -138,26 +158,49 @@ export default function NfcCheckInScreen() {
   };
 
   const handleRegister = async () => {
-    if (!formPhone.trim() || !formName.trim() || !formTrade.trim() || !formCompany.trim()) {
-      toast.error('Error', 'Please fill in all fields');
-      return;
-    }
+  if (!formPhone.trim() || !formName.trim() || !formTrade.trim() || !formCompany.trim()) {
+    toast.error('Error', 'Please fill in all fields');
+    return;
+  }
 
-    setRegistering(true);
+  setRegistering(true);
 
-    try {
-      // Generate device fingerprint
-      const deviceId = `WEB_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  try {
+    // Generate device fingerprint
+    const deviceId = `WEB_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-      // Register worker with backend
-      const result = await nfcAPI.registerWorker({
-        phone: formPhone,
-        name: formName,
-        trade: formTrade,
-        company: formCompany,
-        device_id: deviceId,
-      });
+    // Register worker with backend (still uses API for NFC-specific registration)
+    const result = await apiClient.post('/api/nfc/register-worker', {
+      phone: formPhone,
+      name: formName,
+      trade: formTrade,
+      company: formCompany,
+      device_id: deviceId,
+    });
 
+    // Save profile to local storage
+    const profile = {
+      phone: formPhone,
+      name: formName,
+      trade: formTrade,
+      company: formCompany,
+      deviceId: deviceId,
+      registeredAt: new Date().toISOString(),
+    };
+
+    await AsyncStorage.setItem(WORKER_PROFILE_KEY, JSON.stringify(profile));
+    await AsyncStorage.setItem(WORKER_ID_KEY, result.data.worker_id);
+
+    setWorkerProfile(profile);
+
+    // Auto check-in after registration
+    await performCheckIn(result.data.worker_id, formPhone);
+  } catch (error) {
+    console.error('Registration failed:', error);
+    toast.error('Error', error.response?.data?.detail || 'Registration failed. Please try again.');
+    setRegistering(false);
+  }
+};
       // Save profile to local storage
       const profile = {
         phone: formPhone,
