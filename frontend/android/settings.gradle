@@ -1,20 +1,34 @@
 pluginManagement {
-  def reactNativeGradlePlugin = new File(
-    providers.exec {
-      workingDir(rootDir)
-      commandLine("node", "--print", "require.resolve('@react-native/gradle-plugin/package.json', { paths: [require.resolve('react-native/package.json')] })")
-    }.standardOutput.asText.get().trim()
-  ).getParentFile().absolutePath
-  includeBuild(reactNativeGradlePlugin)
-  
-  def expoPluginsPath = new File(
-    providers.exec {
-      workingDir(rootDir)
-      commandLine("node", "--print", "require.resolve('expo-modules-autolinking/package.json', { paths: [require.resolve('expo/package.json')] })")
-    }.standardOutput.asText.get().trim(),
-    "../android/expo-gradle-plugin"
-  ).absolutePath
-  includeBuild(expoPluginsPath)
+  def version = providers.exec {
+    commandLine("node", "-e", "console.log(require('react-native/package.json').version);")
+  }.standardOutput.asText.get().trim()
+  def (_, reactNativeMinor, reactNativePatch) = version.split("\\.")
+
+  includeBuild(new File(["node", "--print", "require.resolve('@react-native/gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).getParentFile().toString())
+  if(reactNativeMinor.toInteger() >= 71) {
+    includeBuild(new File(["node", "--print", "require.resolve('react-native-gradle-plugin/package.json')"].execute(null, rootDir).text.trim()).getParentFile().toString())
+  }
+
+  // Include expo-modules-autolinking
+  def expoCLI = providers.exec {
+    commandLine("node", "-e", "console.log(require('expo-modules-autolinking/package.json').main || 'index.js');")
+  }.standardOutput.asText.get().trim()
+  def expoModulesAutolinkingPath = providers.exec {
+    commandLine("node", "-e", "console.log(require.resolve('expo-modules-autolinking').replace('/build/index.js', '').replace('\\\\build\\\\index.js', ''));")
+  }.standardOutput.asText.get().trim()
+  if (new File("${expoModulesAutolinkingPath}/android/expo-gradle-plugin").exists()) {
+    includeBuild("${expoModulesAutolinkingPath}/android/expo-gradle-plugin")
+  }
+
+  plugins {
+    id("com.facebook.react.settings")
+  }
+
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
 }
 
 plugins {
@@ -22,18 +36,13 @@ plugins {
   id("expo-autolinking-settings")
 }
 
-extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
-  if (System.getenv('EXPO_USE_COMMUNITY_AUTOLINKING') == '1') {
-    ex.autolinkLibrariesFromCommand()
-  } else {
-    ex.autolinkLibrariesFromCommand(expoAutolinking.rnConfigCommand)
-  }
-}
-expoAutolinking.useExpoModules()
+rootProject.name = 'blueview'
 
-rootProject.name = 'Blueview'
-
-expoAutolinking.useExpoVersionCatalog()
+apply from: new File(["node", "--print", "require.resolve('expo/package.json')"].execute(null, rootDir).text.trim(), "../scripts/autolinking.gradle")
+useExpoModules()
 
 include ':app'
-includeBuild(expoAutolinking.reactNativeGradlePlugin)
+
+// Auto-link packages from react-native.config.js
+apply from: new File(["node", "--print", "require.resolve('react-native/package.json')"].execute(null, rootDir).text.trim(), "../scripts/react-native.config.js")
+applyNativeModulesSettingsGradle(settings)
