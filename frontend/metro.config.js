@@ -8,6 +8,11 @@ config.resolver.extraNodeModules = {
   stream: require.resolve('readable-stream'),
   buffer: require.resolve('buffer'),
   process: require.resolve('process/browser'),
+  url: require.resolve('react-native-url-polyfill'),
+  http: require.resolve('stream-http'),
+  https: require.resolve('https-browserify'),
+  os: require.resolve('os-browserify/browser'),
+  path: require.resolve('path-browserify'),
 };
 
 module.exports = config;
