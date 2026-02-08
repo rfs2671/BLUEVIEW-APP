@@ -43,6 +43,15 @@
     "react-native-web": "~0.19.13",
     "readable-stream": "^4.5.2",
     "rxjs": "^7.8.1"
+    "buffer": "^6.0.3",
+    "https-browserify": "^1.0.0",
+    "os-browserify": "^0.3.0",
+    "path-browserify": "^1.0.1",
+    "process": "^0.11.10",
+    "react-native-quick-crypto": "^0.7.0",
+    "react-native-url-polyfill": "^2.0.0",
+    "readable-stream": "^4.5.2",
+    "stream-http": "^3.2.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.0",
