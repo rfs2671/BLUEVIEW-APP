@@ -1,28 +1,22 @@
-import { Database } from '@nozbe/watermelondb';
-import SQLiteAdapter from '@nozbe/watermelondb/adapters/sqlite';
+import { Database } from '@nozbe/watermelondb'
+import LokiJSAdapter from '@nozbe/watermelondb/adapters/lokijs'
+import { schema } from './schema'
+import { Worker } from './models/Worker'
+import { Project } from './models/Project'
+import { CheckIn } from './models/CheckIn'
+import { DailyLog } from './models/DailyLog'
 
-import schema from './schema';
-import Worker from './models/worker';
-import Project from './models/Project';
-import CheckIn from './models/CheckIn';
-import DailyLog from './models/DailyLog';
-import NfcTag from './models/NfcTag';
-
-// Create the SQLite adapter
-const adapter = new SQLiteAdapter({
+const adapter = new LokiJSAdapter({
   schema,
-  // Optional: migrations for future schema changes
-  // migrations,
-  jsi: true, // Use JSI for better performance
+  useWebWorker: false,
+  useIncrementalIndexedDB: true,
+  dbName: 'blueview',
   onSetUpError: (error) => {
-    console.error('Database setup error:', error);
-  },
-});
+    console.error('Database setup error:', error)
+  }
+})
 
-// Create the database
-const database = new Database({
+export const database = new Database({
   adapter,
-  modelClasses: [Worker, Project, CheckIn, DailyLog, NfcTag],
-});
-
-export default database;
+  modelClasses: [Worker, Project, CheckIn, DailyLog],
+})
