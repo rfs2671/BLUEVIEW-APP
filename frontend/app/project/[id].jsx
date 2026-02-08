@@ -237,17 +237,17 @@ export default function ProjectDetailScreen() {
   };
 
   const fetchChecklists = async () => {
-  setLoadingChecklists(true);
-  try {
-    const data = await checklistsAPI.getByProject(projectId);
-    setChecklists(data);
-  } catch (error) {
-    console.error('Failed to fetch checklists:', error);
-    setChecklists([]);
-  } finally {
-    setLoadingChecklists(false);
-  }
-};
+    setLoadingChecklists(true);
+    try {
+      const data = await checklistsAPI.getByProject(projectId);
+      setChecklists(data);
+    } catch (error) {
+      console.error('Failed to fetch checklists:', error);
+      setChecklists([]);
+    } finally {
+      setLoadingChecklists(false);
+    }
+  };
   
   const onRefresh = () => {
     setRefreshing(true);
@@ -259,57 +259,56 @@ export default function ProjectDetailScreen() {
     router.replace('/login');
   };
 
- const handleScanNfcTag = async () => {
-  if (!nfcLocation.trim()) {
-    toast.warning('Location Required', 'Please enter the tag location first');
-    return;
-  }
-  if (!nfcEnabled) {
-    toast.error('NFC Disabled', 'Please enable NFC in your device settings');
-    return;
-  }
-  setScanningNfc(true);
-  toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
-  try {
-    const result = await NfcHelper.registerNfcTag(
-      projectId,
-      'https://blue-view.app'  // TODO: Replace with your actual domain
-    );
-    if (result.success) {
-      toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
-      
-      setAddingNfc(true);
-      try {
-        const response = await projectsAPI.addNfcTag(projectId, {
-          tag_id: result.tagId,
-          location_description: nfcLocation,
-        });
-        
-        // Update project state immediately with returned data
-        if (response.project) {
-          setProject(response.project);
-        }
-        
-        toast.success('Success!', 'NFC tag registered to project');
-        setNfcLocation('');
-        setShowAddNfcModal(false);
-      } catch (error) {
-        console.error('Failed to register tag:', error);
-        toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
-      } finally {
-        setAddingNfc(false);
-      }
-    } else {
-      toast.error('Scan Failed', result.error || 'Could not scan NFC tag');
+  const handleScanNfcTag = async () => {
+    if (!nfcLocation.trim()) {
+      toast.warning('Location Required', 'Please enter the tag location first');
+      return;
     }
-  } catch (error) {
-    console.error('NFC scan error:', error);
-    toast.error('Error', 'Failed to scan NFC tag');
-  } finally {
-    setScanningNfc(false);
-    await NfcHelper.cancelNfc();
-  }
-};
+    if (!nfcEnabled) {
+      toast.error('NFC Disabled', 'Please enable NFC in your device settings');
+      return;
+    }
+    setScanningNfc(true);
+    toast.info('Ready to Scan', 'Hold your phone near the NFC tag...');
+    try {
+      const result = await NfcHelper.registerNfcTag(
+        projectId,
+        'https://blue-view.app'
+      );
+      if (result.success) {
+        toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);
+        
+        setAddingNfc(true);
+        try {
+          const response = await projectsAPI.addNfcTag(projectId, {
+            tag_id: result.tagId,
+            location_description: nfcLocation,
+          });
+          
+          if (response.project) {
+            setProject(response.project);
+          }
+          
+          toast.success('Success!', 'NFC tag registered to project');
+          setNfcLocation('');
+          setShowAddNfcModal(false);
+        } catch (error) {
+          console.error('Failed to register tag:', error);
+          toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
+        } finally {
+          setAddingNfc(false);
+        }
+      } else {
+        toast.error('Scan Failed', result.error || 'Could not scan NFC tag');
+      }
+    } catch (error) {
+      console.error('NFC scan error:', error);
+      toast.error('Error', 'Failed to scan NFC tag');
+    } finally {
+      setScanningNfc(false);
+      await NfcHelper.cancelNfc();
+    }
+  };
 
   const handleAddNfcTag = async () => {
     if (!nfcTagId.trim() || !nfcLocation.trim()) {
@@ -372,7 +371,6 @@ export default function ProjectDetailScreen() {
       const result = await siteDevicesAPI.create(projectId, newDevice);
       toast.success('Created', 'Site device created successfully');
       
-      // Show credentials
       setShowCredentials({
         ...result,
         password: newDevice.password,
@@ -506,12 +504,13 @@ export default function ProjectDetailScreen() {
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
           <View style={styles.headerRight}>
-          <OfflineIndicator />
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
+            <OfflineIndicator />
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />
+          </View>
         </View>
         
         <ScrollView
@@ -774,102 +773,103 @@ export default function ProjectDetailScreen() {
               <Text style={styles.emptySubtext}>Workers will appear here when they check in</Text>
             </GlassCard>
           )}
+
           {/* Checklists Section */}
-<Text style={styles.sectionLabel}>CHECKLISTS (OTA-TEST)</Text>
-{loadingChecklists ? (
-  <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
-) : checklists.length > 0 ? (
-  <View style={styles.itemsList}>
-    {checklists.map((assignment) => {
-      const completedCount = assignment.completions?.filter(
-        c => c.progress?.completed === c.progress?.total
-      ).length || 0;
-      const totalAssigned = assignment.assigned_users?.length || 0;
-      const allComplete = completedCount === totalAssigned && totalAssigned > 0;
+          <Text style={styles.sectionLabel}>CHECKLISTS (OTA-TEST)</Text>
+          {loadingChecklists ? (
+            <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
+          ) : checklists.length > 0 ? (
+            <View style={styles.itemsList}>
+              {checklists.map((assignment) => {
+                const completedCount = assignment.completions?.filter(
+                  c => c.progress?.completed === c.progress?.total
+                ).length || 0;
+                const totalAssigned = assignment.assigned_users?.length || 0;
+                const allComplete = completedCount === totalAssigned && totalAssigned > 0;
 
-      return (
-        <GlassCard key={assignment.id} style={styles.checklistCard}>
-          <View style={styles.checklistHeader}>
-            <View style={styles.checklistInfo}>
-              <Text style={styles.checklistTitle}>
-                {assignment.checklist?.title || 'Checklist'}
-              </Text>
-              {assignment.checklist?.description && (
-                <Text style={styles.checklistDescription} numberOfLines={2}>
-                  {assignment.checklist.description}
-                </Text>
-              )}
-            </View>
-            {allComplete ? (
-              <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
-            ) : (
-              <Clock size={24} strokeWidth={1.5} color="#f59e0b" />
-            )}
-          </View>
-
-          <View style={styles.checklistStats}>
-            <View style={styles.checklistStatItem}>
-              <Text style={styles.checklistStatLabel}>Items</Text>
-              <Text style={styles.checklistStatValue}>
-                {assignment.checklist?.items?.length || 0}
-              </Text>
-            </View>
-            <View style={styles.checklistStatDivider} />
-            <View style={styles.checklistStatItem}>
-              <Text style={styles.checklistStatLabel}>Assigned</Text>
-              <Text style={styles.checklistStatValue}>{totalAssigned}</Text>
-            </View>
-            <View style={styles.checklistStatDivider} />
-            <View style={styles.checklistStatItem}>
-              <Text style={styles.checklistStatLabel}>Complete</Text>
-              <Text style={[
-                styles.checklistStatValue,
-                allComplete && styles.checklistStatValueComplete
-              ]}>
-                {completedCount}/{totalAssigned}
-              </Text>
-            </View>
-          </View>
-
-          {assignment.assigned_users && assignment.assigned_users.length > 0 && (
-            <View style={styles.assignedUsers}>
-              <Text style={styles.assignedUsersLabel}>Assigned to:</Text>
-              <View style={styles.assignedUsersList}>
-                {assignment.assigned_users.map((user) => {
-                  const userCompletion = assignment.completions?.find(
-                    c => c.user_id === user.id
-                  );
-                  const progress = userCompletion?.progress || { completed: 0, total: 0 };
-                  const isComplete = progress.completed === progress.total && progress.total > 0;
-
-                  return (
-                    <View key={user.id} style={styles.assignedUserItem}>
-                      <View style={styles.assignedUserInfo}>
-                        <Text style={styles.assignedUserName}>{user.name}</Text>
-                        <Text style={styles.assignedUserProgress}>
-                          {progress.completed}/{progress.total}
+                return (
+                  <GlassCard key={assignment.id} style={styles.checklistCard}>
+                    <View style={styles.checklistHeader}>
+                      <View style={styles.checklistInfo}>
+                        <Text style={styles.checklistTitle}>
+                          {assignment.checklist?.title || 'Checklist'}
                         </Text>
+                        {assignment.checklist?.description && (
+                          <Text style={styles.checklistDescription} numberOfLines={2}>
+                            {assignment.checklist.description}
+                          </Text>
+                        )}
                       </View>
-                      {isComplete && (
-                        <CheckCircle size={14} strokeWidth={1.5} color="#4ade80" />
+                      {allComplete ? (
+                        <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
+                      ) : (
+                        <Clock size={24} strokeWidth={1.5} color="#f59e0b" />
                       )}
                     </View>
-                  );
-                })}
-              </View>
+
+                    <View style={styles.checklistStats}>
+                      <View style={styles.checklistStatItem}>
+                        <Text style={styles.checklistStatLabel}>Items</Text>
+                        <Text style={styles.checklistStatValue}>
+                          {assignment.checklist?.items?.length || 0}
+                        </Text>
+                      </View>
+                      <View style={styles.checklistStatDivider} />
+                      <View style={styles.checklistStatItem}>
+                        <Text style={styles.checklistStatLabel}>Assigned</Text>
+                        <Text style={styles.checklistStatValue}>{totalAssigned}</Text>
+                      </View>
+                      <View style={styles.checklistStatDivider} />
+                      <View style={styles.checklistStatItem}>
+                        <Text style={styles.checklistStatLabel}>Complete</Text>
+                        <Text style={[
+                          styles.checklistStatValue,
+                          allComplete && styles.checklistStatValueComplete
+                        ]}>
+                          {completedCount}/{totalAssigned}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {assignment.assigned_users && assignment.assigned_users.length > 0 && (
+                      <View style={styles.assignedUsers}>
+                        <Text style={styles.assignedUsersLabel}>Assigned to:</Text>
+                        <View style={styles.assignedUsersList}>
+                          {assignment.assigned_users.map((user) => {
+                            const userCompletion = assignment.completions?.find(
+                              c => c.user_id === user.id
+                            );
+                            const progress = userCompletion?.progress || { completed: 0, total: 0 };
+                            const isComplete = progress.completed === progress.total && progress.total > 0;
+
+                            return (
+                              <View key={user.id} style={styles.assignedUserItem}>
+                                <View style={styles.assignedUserInfo}>
+                                  <Text style={styles.assignedUserName}>{user.name}</Text>
+                                  <Text style={styles.assignedUserProgress}>
+                                    {progress.completed}/{progress.total}
+                                  </Text>
+                                </View>
+                                {isComplete && (
+                                  <CheckCircle size={14} strokeWidth={1.5} color="#4ade80" />
+                                )}
+                              </View>
+                            );
+                          })}
+                        </View>
+                      </View>
+                    )}
+                  </GlassCard>
+                );
+              })}
             </View>
+          ) : (
+            <GlassCard style={styles.emptyCard}>
+              <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />
+              <Text style={styles.emptyText}>No checklists assigned</Text>
+              <Text style={styles.emptySubtext}>Checklists will appear here when assigned to this project</Text>
+            </GlassCard>
           )}
-        </GlassCard>
-      );
-    })}
-  </View>
-) : (
-  <GlassCard style={styles.emptyCard}>
-    <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />
-    <Text style={styles.emptyText}>No checklists assigned</Text>
-    <Text style={styles.emptySubtext}>Checklists will appear here when assigned to this project</Text>
-  </GlassCard>
-)}
         </ScrollView>
 
         {/* Add NFC Tag Modal */}
@@ -911,7 +911,6 @@ export default function ProjectDetailScreen() {
                 </Text>
 
                 <View style={styles.modalForm}>
-                  {/* Location Input - REQUIRED FIRST */}
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>LOCATION *</Text>
                     <GlassInput
@@ -925,7 +924,6 @@ export default function ProjectDetailScreen() {
                     </Text>
                   </View>
 
-                  {/* NFC Scan Section */}
                   {nfcSupported && (
                     <>
                       <View style={styles.scanSection}>
@@ -967,7 +965,6 @@ export default function ProjectDetailScreen() {
                         </View>
                       </View>
 
-                      {/* Divider */}
                       <View style={styles.divider}>
                         <View style={styles.dividerLine} />
                         <Text style={styles.dividerText}>OR</Text>
@@ -976,7 +973,6 @@ export default function ProjectDetailScreen() {
                     </>
                   )}
 
-                  {/* Manual Entry Section */}
                   <View style={styles.manualSection}>
                     <Text style={styles.manualTitle}>Manual Entry</Text>
                     
@@ -1201,7 +1197,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
- },
+  },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1652,7 +1648,6 @@ const styles = StyleSheet.create({
   doneBtn: {
     width: '100%',
   },
-  // NFC Scanning Styles
   modalInstructions: {
     fontSize: 14,
     color: colors.text.muted,
@@ -1699,17 +1694,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(74, 222, 128, 0.1)',
     borderColor: 'rgba(74, 222, 128, 0.3)',
   },
-  infoBox: {
-    backgroundColor: 'rgba(59, 130, 246, 0.05)',
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-    marginTop: spacing.md,
-  },
-  infoText: {
-    fontSize: 12,
-    color: '#3b82f6',
-    lineHeight: 16,
-  },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1727,7 +1711,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   manualSection: {
-    // No additional styles needed
+    // manual section styles
   },
   manualTitle: {
     fontSize: 16,
@@ -1739,96 +1723,96 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
   checklistCard: {
-  marginBottom: spacing.md,
-  padding: spacing.lg,
-},
-checklistHeader: {
-  flexDirection: 'row',
-  alignItems: 'flex-start',
-  justifyContent: 'space-between',
-  marginBottom: spacing.md,
-},
-checklistInfo: {
-  flex: 1,
-  marginRight: spacing.md,
-},
-checklistTitle: {
-  fontSize: 16,
-  fontWeight: '500',
-  color: colors.text.primary,
-  marginBottom: spacing.xs,
-},
-checklistDescription: {
-  fontSize: 13,
-  color: colors.text.secondary,
-  lineHeight: 18,
-},
-checklistStats: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  paddingVertical: spacing.md,
-  marginBottom: spacing.md,
-  backgroundColor: 'rgba(255,255,255,0.03)',
-  borderRadius: borderRadius.md,
-},
-checklistStatItem: {
-  flex: 1,
-  alignItems: 'center',
-},
-checklistStatLabel: {
-  fontSize: 10,
-  color: colors.text.muted,
-  marginBottom: spacing.xs,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5,
-},
-checklistStatValue: {
-  fontSize: 16,
-  fontWeight: '600',
-  color: colors.text.primary,
-},
-checklistStatValueComplete: {
-  color: '#4ade80',
-},
-checklistStatDivider: {
-  width: 1,
-  height: 28,
-  backgroundColor: colors.glass.border,
-},
-assignedUsers: {
-  marginTop: spacing.md,
-  paddingTop: spacing.md,
-  borderTopWidth: 1,
-  borderTopColor: colors.glass.border,
-},
-assignedUsersLabel: {
-  fontSize: 11,
-  color: colors.text.muted,
-  marginBottom: spacing.sm,
-  textTransform: 'uppercase',
-  letterSpacing: 0.5,
-},
-assignedUsersList: {
-  gap: spacing.sm,
-},
-assignedUserItem: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  paddingVertical: spacing.xs,
-},
-assignedUserInfo: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  gap: spacing.md,
-  flex: 1,
-},
-assignedUserName: {
-  fontSize: 13,
-  color: colors.text.primary,
-},
-assignedUserProgress: {
-  fontSize: 11,
-  color: colors.text.muted,
-},
+    marginBottom: spacing.md,
+    padding: spacing.lg,
+  },
+  checklistHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: spacing.md,
+  },
+  checklistInfo: {
+    flex: 1,
+    marginRight: spacing.md,
+  },
+  checklistTitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: colors.text.primary,
+    marginBottom: spacing.xs,
+  },
+  checklistDescription: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    lineHeight: 18,
+  },
+  checklistStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    marginBottom: spacing.md,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: borderRadius.md,
+  },
+  checklistStatItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  checklistStatLabel: {
+    fontSize: 10,
+    color: colors.text.muted,
+    marginBottom: spacing.xs,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  checklistStatValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  checklistStatValueComplete: {
+    color: '#4ade80',
+  },
+  checklistStatDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: colors.glass.border,
+  },
+  assignedUsers: {
+    marginTop: spacing.md,
+    paddingTop: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.glass.border,
+  },
+  assignedUsersLabel: {
+    fontSize: 11,
+    color: colors.text.muted,
+    marginBottom: spacing.sm,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  assignedUsersList: {
+    gap: spacing.sm,
+  },
+  assignedUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.xs,
+  },
+  assignedUserInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    flex: 1,
+  },
+  assignedUserName: {
+    fontSize: 13,
+    color: colors.text.primary,
+  },
+  assignedUserProgress: {
+    fontSize: 11,
+    color: colors.text.muted,
+  },
 });
