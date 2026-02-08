@@ -84,67 +84,46 @@ export default function NfcCheckInScreen() {
   };
 
   const initializeCheckIn = async () => {
-  try {
-    // If no tag ID provided, show error
-    if (!tagId) {
-      setStatus('error');
-      setErrorMessage('No NFC tag detected. Please tap an NFC tag to check in.');
-      return;
-    }
-
-    // Fetch tag info from backend (still uses API for NFC-specific data)
-    const info = await apiClient.get(`/api/nfc/tags/${tagId}`);
-    setTagInfo(info.data);
-
-    // Check if worker profile exists in local storage
-    const storedProfile = await AsyncStorage.getItem(WORKER_PROFILE_KEY);
-    const storedWorkerId = await AsyncStorage.getItem(WORKER_ID_KEY);
-
-    if (storedProfile && storedWorkerId) {
-      // Returning worker - auto check-in
-      const profile = JSON.parse(storedProfile);
-      setWorkerProfile(profile);
-      await performCheckIn(storedWorkerId, profile.phone);
-    } else {
-      // New worker - show registration form
-      setStatus('register');
-    }
-  } catch (error) {
-    console.error('Failed to initialize check-in:', error);
-    setStatus('error');
-    setErrorMessage(error.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.');
-  }
-};
-  const performCheckIn = async (workerId, phone) => {
-  setStatus('checking_in');
-  
-  try {
-    const result = await createCheckIn({
-      worker_id: workerId,
-      tag_id: tagId,
-      phone: phone,
-      project_id: tagInfo?.project_id || projectId,
-    });
-
-    setCheckInResult(result);
-    setStatus('success');
-
-    // Auto-close after 3 seconds
-    setTimeout(() => {
-      if (Platform.OS === 'web') {
-        window.close();
+    try {
+      if (!tagId) {
+        setStatus('error');
+        setErrorMessage('No NFC tag detected. Please tap an NFC tag to check in.');
+        return;
       }
-    }, 3000);
-  } catch (error) {
-    console.error('Check-in failed:', error);
-    setStatus('error');
-    setErrorMessage(error.response?.data?.detail || 'Check-in failed. Please try again.');
-  }
-};
+
+      const info = await apiClient.get(`/api/nfc/tags/${tagId}`);
+      setTagInfo(info.data);
+
+      const storedProfile = await AsyncStorage.getItem(WORKER_PROFILE_KEY);
+      const storedWorkerId = await AsyncStorage.getItem(WORKER_ID_KEY);
+
+      if (storedProfile && storedWorkerId) {
+        const profile = JSON.parse(storedProfile);
+        setWorkerProfile(profile);
+        await performCheckIn(storedWorkerId, profile.phone);
+      } else {
+        setStatus('register');
+      }
+    } catch (error) {
+      console.error('Failed to initialize check-in:', error);
+      setStatus('error');
+      setErrorMessage(error.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.');
+    }
+  };
+
+  const performCheckIn = async (workerId, phone) => {
+    setStatus('checking_in');
+    try {
+      const result = await createCheckIn({
+        worker_id: workerId,
+        tag_id: tagId,
+        phone: phone,
+        project_id: tagInfo?.project_id || projectId,
+      });
+
       setCheckInResult(result);
       setStatus('success');
 
-      // Auto-close after 3 seconds
       setTimeout(() => {
         if (Platform.OS === 'web') {
           window.close();
@@ -158,50 +137,23 @@ export default function NfcCheckInScreen() {
   };
 
   const handleRegister = async () => {
-  if (!formPhone.trim() || !formName.trim() || !formTrade.trim() || !formCompany.trim()) {
-    toast.error('Error', 'Please fill in all fields');
-    return;
-  }
+    if (!formPhone.trim() || !formName.trim() || !formTrade.trim() || !formCompany.trim()) {
+      toast.error('Error', 'Please fill in all fields');
+      return;
+    }
 
-  setRegistering(true);
+    setRegistering(true);
+    try {
+      const deviceId = `WEB_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-  try {
-    // Generate device fingerprint
-    const deviceId = `WEB_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const result = await apiClient.post('/api/nfc/register-worker', {
+        phone: formPhone,
+        name: formName,
+        trade: formTrade,
+        company: formCompany,
+        device_id: deviceId,
+      });
 
-    // Register worker with backend (still uses API for NFC-specific registration)
-    const result = await apiClient.post('/api/nfc/register-worker', {
-      phone: formPhone,
-      name: formName,
-      trade: formTrade,
-      company: formCompany,
-      device_id: deviceId,
-    });
-
-    // Save profile to local storage
-    const profile = {
-      phone: formPhone,
-      name: formName,
-      trade: formTrade,
-      company: formCompany,
-      deviceId: deviceId,
-      registeredAt: new Date().toISOString(),
-    };
-
-    await AsyncStorage.setItem(WORKER_PROFILE_KEY, JSON.stringify(profile));
-    await AsyncStorage.setItem(WORKER_ID_KEY, result.data.worker_id);
-
-    setWorkerProfile(profile);
-
-    // Auto check-in after registration
-    await performCheckIn(result.data.worker_id, formPhone);
-  } catch (error) {
-    console.error('Registration failed:', error);
-    toast.error('Error', error.response?.data?.detail || 'Registration failed. Please try again.');
-    setRegistering(false);
-  }
-};
-      // Save profile to local storage
       const profile = {
         phone: formPhone,
         name: formName,
@@ -212,12 +164,10 @@ export default function NfcCheckInScreen() {
       };
 
       await AsyncStorage.setItem(WORKER_PROFILE_KEY, JSON.stringify(profile));
-      await AsyncStorage.setItem(WORKER_ID_KEY, result.worker_id);
+      await AsyncStorage.setItem(WORKER_ID_KEY, result.data.worker_id);
 
       setWorkerProfile(profile);
-
-      // Auto check-in after registration
-      await performCheckIn(result.worker_id, formPhone);
+      await performCheckIn(result.data.worker_id, formPhone);
     } catch (error) {
       console.error('Registration failed:', error);
       toast.error('Error', error.response?.data?.detail || 'Registration failed. Please try again.');
