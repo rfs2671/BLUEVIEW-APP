@@ -73,9 +73,7 @@ export default function DailyLogScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
-  // Tab state - Admin can only view, Site mode can create/edit
-  const [activeTab, setActiveTab] = useState('previous'); // Default to 'previous' for admin
-
+  const [activeTab, setActiveTab] = useState('previous'); 
   const [loading, setLoading] = useState(true);
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
@@ -85,21 +83,16 @@ export default function DailyLogScreen() {
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
 
-  // Form state
   const [formData, setFormData] = useState({
     weather: 'sunny',
     notes: '',
     worker_count: 0,
     subcontractor_cards: [],
-    // Safety checklist
     safety_checklist: {},
-    // Corrective actions
     corrective_actions: '',
     corrective_actions_na: false,
-    // Incident log
     incident_log: '',
     incident_log_na: false,
-    // Signatures
     superintendent_name: '',
     superintendent_signature: null,
     competent_person_name: '',
@@ -110,33 +103,31 @@ export default function DailyLogScreen() {
   const { projects: projectsList, loading: projectsLoading } = useProjects();
   const { dailyLogs, loading: logsLoading, createDailyLog, updateDailyLog } = useDailyLogs(selectedProject?._id || selectedProject?.id);
 
-  // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, authLoading]);
 
-  // Initialize - Admin starts on 'previous' tab (view only)
   useEffect(() => {
     if (isAuthenticated && siteMode && siteProject) {
-      setActiveTab('today'); // Site mode can create/edit
+      setActiveTab('today');
       setSelectedProject(siteProject);
       fetchLogsForProject(siteProject.id);
     } else if (isAuthenticated && !siteMode) {
-      setActiveTab('previous'); // Admin can only view
+      setActiveTab('previous');
       fetchProjects();
     }
   }, [isAuthenticated, siteMode, siteProject]);
 
   const fetchProjects = async () => {
-  setLoading(true);
-  try {
-    setProjects(projectsList);
-    if (projectsList.length > 0) {
-      const firstProject = projectsList[0];
-      setSelectedProject(firstProject);
-      await fetchLogsForProject(firstProject._id || firstProject.id);
+    setLoading(true);
+    try {
+      setProjects(projectsList);
+      if (projectsList.length > 0) {
+        const firstProject = projectsList[0];
+        setSelectedProject(firstProject);
+        await fetchLogsForProject(firstProject._id || firstProject.id);
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error);
@@ -146,21 +137,19 @@ export default function DailyLogScreen() {
     }
   };
 
- const fetchLogsForProject = async (projectId) => {
-  try {
-    setAllLogs(dailyLogs);
-
-    // Check for today's log
-    const today = new Date().toISOString().split('T')[0];
-    const todayLog = dailyLogs.find((l) => l.date === today);
-    
-    if (todayLog) {
-      setExistingLog(todayLog);
-      populateFormFromLog(todayLog);
-    } else {
-      setExistingLog(null);
-      resetForm();
-    }
+  const fetchLogsForProject = async (projectId) => {
+    try {
+      setAllLogs(dailyLogs);
+      const today = new Date().toISOString().split('T')[0];
+      const todayLog = dailyLogs.find((l) => l.date === today);
+      
+      if (todayLog) {
+        setExistingLog(todayLog);
+        populateFormFromLog(todayLog);
+      } else {
+        setExistingLog(null);
+        resetForm();
+      }
     } catch (error) {
       console.error('Failed to fetch logs:', error);
       setAllLogs([]);
@@ -263,18 +252,14 @@ export default function DailyLogScreen() {
         superintendent_signature: formData.superintendent_signature,
         competent_person_signature: formData.competent_person_signature,
       };
-    if (existingLog) {
-      // Update existing log
-      await updateDailyLog(existingLog.id || existingLog._id, logData);
-      toast.success('Updated', 'Daily log updated successfully');
-    } else {
-      // Create new log
-      const newLog = await createDailyLog(logData);
-      setExistingLog(newLog);
-      toast.success('Created', 'Daily log created successfully');
-    }
-
-      // Refresh logs
+      if (existingLog) {
+        await updateDailyLog(existingLog.id || existingLog._id, logData);
+        toast.success('Updated', 'Daily log updated successfully');
+      } else {
+        const newLog = await createDailyLog(logData);
+        setExistingLog(newLog);
+        toast.success('Created', 'Daily log created successfully');
+      }
       await fetchLogsForProject(selectedProject._id || selectedProject.id);
     } catch (error) {
       console.error('Failed to save log:', error);
@@ -321,7 +306,6 @@ export default function DailyLogScreen() {
     (log) => log.date !== new Date().toISOString().split('T')[0]
   );
 
-  // Render safety checklist item
   const renderSafetyCheckItem = (item) => {
     const checkData = formData.safety_checklist[item.id] || { status: 'unchecked' };
     
@@ -387,35 +371,36 @@ export default function DailyLogScreen() {
         {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-  <GlassButton
-    variant="icon"
-    icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-    onPress={() => router.push('/')}
-  />
-  {siteMode ? (
-    <View style={styles.siteBadge}>
-      <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-      <Text style={styles.siteBadgeText}>SITE MODE</Text>
-    </View>
-  ) : isAdmin ? (
-    <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
-      <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
-      <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
-    </View>
-  ) : (
-    <Text style={styles.logoText}>BLUEVIEW</Text>
-  )}
-</View>
-<View style={styles.headerRight}>
-  <OfflineIndicator />
-  <GlassButton
-    variant="icon"
-    icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-    onPress={handleLogout}
-  />
-</View>
+            <GlassButton
+              variant="icon"
+              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/')}
+            />
+            {siteMode ? (
+              <View style={styles.siteBadge}>
+                <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+                <Text style={styles.siteBadgeText}>SITE MODE</Text>
+              </View>
+            ) : isAdmin ? (
+              <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
+                <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
+                <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
+              </View>
+            ) : (
+              <Text style={styles.logoText}>BLUEVIEW</Text>
+            )}
+          </View>
+          <View style={styles.headerRight}>
+            <OfflineIndicator />
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />
+          </View>
+        </View>
 
-        {/* Tab Selector - Only show for site mode */}
+        {/* Tab Selector */}
         {siteMode && (
           <View style={styles.tabContainer}>
             <Pressable
@@ -457,7 +442,6 @@ export default function DailyLogScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Title */}
           <View style={styles.titleSection}>
             <Text style={styles.titleLabel}>
               {isAdmin ? 'VIEW' : activeTab === 'today' ? 'CREATE / EDIT' : 'VIEW'}
@@ -472,9 +456,7 @@ export default function DailyLogScreen() {
               <GlassSkeleton width="100%" height={150} borderRadiusValue={borderRadius.xl} />
             </>
           ) : (!siteMode || activeTab === 'previous') ? (
-            /* Previous Days Tab - Admin can only see this */
             <>
-              {/* Project Selector (only for admin) */}
               {isAdmin && (
                 <Pressable
                   style={styles.projectSelector}
@@ -561,9 +543,7 @@ export default function DailyLogScreen() {
               )}
             </>
           ) : (
-            /* Today's Log Tab - Only for site mode */
             <>
-              {/* Site Mode Project Display */}
               {siteMode && siteProject && (
                 <View style={styles.siteProjectCard}>
                   <Building2 size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -571,7 +551,6 @@ export default function DailyLogScreen() {
                 </View>
               )}
 
-              {/* Date Display */}
               <View style={styles.dateCard}>
                 <Calendar size={18} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={styles.dateText}>{formatDate(new Date())}</Text>
@@ -583,7 +562,6 @@ export default function DailyLogScreen() {
                 )}
               </View>
 
-              {/* Weather Selection */}
               <GlassCard style={styles.section}>
                 <Text style={styles.sectionTitle}>Weather Conditions</Text>
                 <View style={styles.weatherGrid}>
@@ -610,7 +588,6 @@ export default function DailyLogScreen() {
                 </View>
               </GlassCard>
 
-              {/* Worker Count */}
               <GlassCard style={styles.section}>
                 <Text style={styles.sectionTitle}>Worker Count</Text>
                 <View style={styles.workerCountRow}>
@@ -627,7 +604,6 @@ export default function DailyLogScreen() {
                 </View>
               </GlassCard>
 
-              {/* Notes */}
               <GlassCard style={styles.section}>
                 <Text style={styles.sectionTitle}>Daily Notes</Text>
                 <TextInput
@@ -641,7 +617,6 @@ export default function DailyLogScreen() {
                 />
               </GlassCard>
 
-              {/* Safety Inspection Checklist */}
               <GlassCard style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <ShieldCheck size={20} strokeWidth={1.5} color="#f59e0b" />
@@ -655,7 +630,6 @@ export default function DailyLogScreen() {
                 </View>
               </GlassCard>
 
-              {/* Corrective Actions */}
               <GlassCard style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <AlertTriangle size={20} strokeWidth={1.5} color="#ef4444" />
@@ -692,7 +666,6 @@ export default function DailyLogScreen() {
                 )}
               </GlassCard>
 
-              {/* Incident Log */}
               <GlassCard style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <FileText size={20} strokeWidth={1.5} color="#3b82f6" />
@@ -729,10 +702,8 @@ export default function DailyLogScreen() {
                 )}
               </GlassCard>
 
-              {/* Signatures - Only in site mode */}
               {siteMode && (
                 <>
-                  {/* Superintendent Signature */}
                   <View style={styles.signatureSection}>
                     <View style={styles.signatureHeader}>
                       <IconPod size={40}>
@@ -751,7 +722,6 @@ export default function DailyLogScreen() {
                     />
                   </View>
 
-                  {/* Competent Person Signature */}
                   <View style={styles.signatureSection}>
                     <View style={styles.signatureHeader}>
                       <IconPod size={40}>
@@ -770,7 +740,6 @@ export default function DailyLogScreen() {
                     />
                   </View>
 
-                  {/* Submit Button */}
                   <GlassButton
                     title={saving ? 'Saving...' : existingLog ? 'Update Daily Log' : 'Submit Daily Log'}
                     onPress={handleSubmit}
@@ -785,7 +754,6 @@ export default function DailyLogScreen() {
 
         {!siteMode && <FloatingNav />}
 
-        {/* Previous Log Detail Modal */}
         <Modal
           visible={!!selectedPreviousLog}
           animationType="slide"
@@ -918,11 +886,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+  },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-},
   },
   logoText: {
     ...typography.label,
