@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import database from './index';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
 const LAST_SYNC_KEY = 'blueview_last_sync';
 
 /**
