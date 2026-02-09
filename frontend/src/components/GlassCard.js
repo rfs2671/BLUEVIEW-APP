@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable } from 'react-native';
+import { View, StyleSheet, Pressable, Text } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { colors, borderRadius, spacing } from '../styles/theme';
 
