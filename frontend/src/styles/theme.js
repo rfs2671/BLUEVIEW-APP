@@ -4,6 +4,12 @@
  */
 
 export const colors = {
+   success: '#4ade80',
+  warning: '#fbbf24',
+  error: '#f87171',
+  primary: '#3b82f6',
+};
+
   // Background gradient colors
   background: {
     start: '#050a12',
@@ -61,6 +67,14 @@ export const borderRadius = {
 };
 
 export const typography = {
+  sizes: {
+    xs: 11,
+    sm: 14,
+    md: 16,
+    lg: 18,
+    xl: 24,
+  },
+  
   // Hero/Display text
   hero: {
     fontSize: 48,
