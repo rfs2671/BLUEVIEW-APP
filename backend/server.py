@@ -935,6 +935,26 @@ async def create_company(company_data: CompanyCreate, current_user = Depends(get
     company_dict["id"] = str(result.inserted_id)
     
     return company_dict
+@api_router.delete("/owner/companies/{company_id}")
+async def delete_company(company_id: str, current_user = Depends(get_current_user)):
+    """Delete a company (owner only)"""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    
+    # Check no admins assigned
+    admin_count = await db.users.count_documents({
+        "company_id": company_id, 
+        "role": "admin", 
+        "is_deleted": {"$ne": True}
+    })
+    if admin_count > 0:
+        raise HTTPException(status_code=400, detail="Remove all admins from this company first")
+    
+    result = await db.companies.delete_one({"_id": ObjectId(company_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Company not found")
+    
+    return {"message": "Company deleted successfully"}
 
 @api_router.post("/owner/admins")
 async def create_admin_with_company(admin_data: dict, current_user = Depends(get_current_user)):
@@ -1943,7 +1963,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the router in the main app
 app.include_router(api_router)
 
 @app.on_event("shutdown")
