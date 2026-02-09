@@ -244,7 +244,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   loadingText: {
-    fontSize: typography.sizes.sm,
+    fontSize: 14,
     fontWeight: '600',
     color: colors.text.secondary,
     letterSpacing: 2,
@@ -277,7 +277,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   logoText: {
-    fontSize: typography.sizes.md,
+    fontSize: 16,
     fontWeight: '700',
     color: colors.text.primary,
     letterSpacing: 1,
@@ -293,7 +293,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xl,
   },
   greetingSmall: {
-    fontSize: typography.sizes.xs,
+    fontSize: 11,
     fontWeight: '600',
     color: colors.text.secondary,
     letterSpacing: 1.5,
@@ -311,16 +311,16 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   dayName: {
-    fontSize: typography.sizes.sm,
+    fontSize: 14,
     fontWeight: '600',
     color: colors.text.primary,
   },
   dateDivider: {
-    fontSize: typography.sizes.sm,
+    fontSize: 14,
     color: colors.text.subtle,
   },
   fullDate: {
-    fontSize: typography.sizes.sm,
+    fontSize: 14,
     color: colors.text.secondary,
   },
   statsGrid: {
@@ -341,7 +341,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   statLabel: {
-    fontSize: typography.sizes.xs,
+    fontSize: 11,
     fontWeight: '600',
     color: colors.text.secondary,
     letterSpacing: 1,
@@ -353,7 +353,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xl,
   },
   sectionTitle: {
-    fontSize: typography.sizes.xs,
+    fontSize: 11,
     fontWeight: '600',
     color: colors.text.secondary,
     letterSpacing: 1.5,
