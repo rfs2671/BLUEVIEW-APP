@@ -8,7 +8,7 @@ export const colors = {
   warning: '#fbbf24',
   error: '#f87171',
   primary: '#3b82f6',
-};
+},
 
   // Background gradient colors
   background: {
