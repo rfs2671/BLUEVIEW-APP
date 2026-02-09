@@ -1,3 +1,4 @@
+import { getToken } from '../utils/api';
 import { synchronize } from '@nozbe/watermelondb/sync';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
