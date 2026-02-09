@@ -497,9 +497,12 @@ async def get_table_changes(table_name: str, last_pulled: Optional[datetime], co
 async def sync_pull(request: SyncPullRequest, current_user = Depends(get_current_user)):
     """Pull all changes from server since lastPulledAt"""
     try:
-        company_id = get_user_company_id(current_user)
-        if not company_id:
-            raise HTTPException(status_code=403, detail="Company access required for sync")
+        if current_user.get("role") == "owner":
+            company_id = None  # Owner sees all data
+        else:
+            company_id = get_user_company_id(current_user)
+            if not company_id:
+                raise HTTPException(status_code=403, detail="Company access required for sync")
         
         # Convert milliseconds to datetime
         last_pulled = None
@@ -533,9 +536,12 @@ async def sync_pull(request: SyncPullRequest, current_user = Depends(get_current
 async def sync_push(request: SyncPushRequest, current_user = Depends(get_current_user)):
     """Push local changes to server"""
     try:
-        company_id = get_user_company_id(current_user)
-        if not company_id:
-            raise HTTPException(status_code=403, detail="Company access required for sync")
+        if current_user.get("role") == "owner":
+            company_id = None
+        else:
+            company_id = get_user_company_id(current_user)
+            if not company_id:
+                raise HTTPException(status_code=403, detail="Company access required for sync")
         
         logger.info(f"Sync push request from user {current_user.get('id')}, company {company_id}")
         
@@ -933,8 +939,10 @@ async def create_company(company_data: CompanyCreate, current_user = Depends(get
     
     result = await db.companies.insert_one(company_dict)
     company_dict["id"] = str(result.inserted_id)
+    company_dict.pop("_id", None)
     
     return company_dict
+
 @api_router.delete("/owner/companies/{company_id}")
 async def delete_company(company_id: str, current_user = Depends(get_current_user)):
     """Delete a company (owner only)"""
@@ -1759,167 +1767,28 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
         "today_checkins": today_checkins
     }
     
-    
-    # ==================== SYNC ENDPOINTS ====================
 
-class SyncPullRequest(BaseModel):
-    last_pulled_at: int  # Milliseconds timestamp
-    schema_version: int = 1
 
-class SyncPushRequest(BaseModel):
-    changes: Dict[str, Dict[str, List[Dict]]]  # {table: {created: [], updated: [], deleted: []}}
+# ==================== PROJECT CHECKLISTS ====================
 
-@api_router.post("/sync/pull")
-async def sync_pull(pull_request: SyncPullRequest, current_user = Depends(get_current_user)):
-    """
-    Pull all changes from server since last sync.
-    Returns created, updated, and deleted records for each table.
-    """
-    company_id = get_user_company_id(current_user)
-    last_pulled_at = datetime.fromtimestamp(pull_request.last_pulled_at / 1000, tz=timezone.utc)
+@api_router.get("/projects/{project_id}/checklists")
+async def get_project_checklists(project_id: str, current_user = Depends(get_current_user)):
+    """Get all checklist assignments for a project"""
+    assignments = await db.checklist_assignments.find({
+        "project_id": project_id,
+        "is_deleted": {"$ne": True}
+    }).to_list(1000)
     
-    changes = {
-        "workers": {"created": [], "updated": [], "deleted": []},
-        "projects": {"created": [], "updated": [], "deleted": []},
-        "checkins": {"created": [], "updated": [], "deleted": []},
-        "daily_logs": {"created": [], "updated": [], "deleted": []},
-    }
+    result = []
+    for assignment in assignments:
+        checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+        if checklist:
+            item = serialize_id(dict(assignment))
+            item["checklist_title"] = checklist.get("title", "")
+            item["checklist_items"] = checklist.get("items", [])
+            result.append(item)
     
-    # Helper to fetch changes for a collection
-    async def get_collection_changes(collection_name: str, table_name: str):
-        collection = db[collection_name]
-        
-        # Build query
-        query = {"updated_at": {"$gt": last_pulled_at}}
-        if company_id:
-            query["company_id"] = company_id
-        
-        # Fetch all changed records
-        records = await collection.find(query).to_list(10000)
-        
-        for record in records:
-            serialized = serialize_sync_record(dict(record))
-            
-            # Categorize as created, updated, or deleted
-            created_at = record.get("created_at")
-            updated_at = record.get("updated_at")
-            is_deleted = record.get("is_deleted", False)
-            
-            if is_deleted:
-                changes[table_name]["deleted"].append(serialized)
-            elif created_at and updated_at and abs((created_at - updated_at).total_seconds()) < 1:
-                # Created recently (within 1 second of update)
-                changes[table_name]["created"].append(serialized)
-            else:
-                changes[table_name]["updated"].append(serialized)
-    
-    # Fetch changes for all collections
-    await get_collection_changes("workers", "workers")
-    await get_collection_changes("projects", "projects")
-    await get_collection_changes("checkins", "checkins")
-    await get_collection_changes("daily_logs", "daily_logs")
-    
-    return {
-        "changes": changes,
-        "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)
-    }
-
-@api_router.post("/sync/push")
-async def sync_push(push_request: SyncPushRequest, current_user = Depends(get_current_user)):
-    """
-    Receive changes from device and apply to server.
-    Handles created, updated, and deleted records.
-    """
-    company_id = get_user_company_id(current_user)
-    now = datetime.now(timezone.utc)
-    
-    # Map table names to collections
-    collection_map = {
-        "workers": "workers",
-        "projects": "projects",
-        "checkins": "checkins",
-        "daily_logs": "daily_logs",
-    }
-    
-    for table_name, changes in push_request.changes.items():
-        if table_name not in collection_map:
-            continue
-            
-        collection = db[collection_map[table_name]]
-        
-        # Handle creates
-        for record in changes.get("created", []):
-            # Convert millisecond timestamps back to datetime
-            if "created_at" in record:
-                record["created_at"] = datetime.fromtimestamp(record["created_at"] / 1000, tz=timezone.utc)
-            if "updated_at" in record:
-                record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, tz=timezone.utc)
-            if "check_in_time" in record:
-                record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, tz=timezone.utc)
-            if "timestamp" in record:
-                record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, tz=timezone.utc)
-            
-            # Convert id back to _id
-            if "id" in record:
-                record["_id"] = ObjectId(record["id"])
-                del record["id"]
-            
-            # Add company_id if not present
-            if company_id and "company_id" not in record:
-                record["company_id"] = company_id
-            
-            record["is_deleted"] = False
-            
-            # Upsert (insert or replace)
-            await collection.replace_one(
-                {"_id": record["_id"]},
-                record,
-                upsert=True
-            )
-        
-        # Handle updates
-        for record in changes.get("updated", []):
-            # Convert millisecond timestamps back to datetime
-            if "updated_at" in record:
-                record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, tz=timezone.utc)
-            if "check_in_time" in record:
-                record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, tz=timezone.utc)
-            if "check_out_time" in record:
-                record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, tz=timezone.utc)
-            if "timestamp" in record:
-                record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, tz=timezone.utc)
-            
-            record_id = record.get("id")
-            if not record_id:
-                continue
-            
-            del record["id"]
-            
-            # Update record
-            await collection.update_one(
-                {"_id": ObjectId(record_id)},
-                {"$set": record}
-            )
-        
-        # Handle deletes
-        for record in changes.get("deleted", []):
-            record_id = record.get("id")
-            if not record_id:
-                continue
-            
-            # Soft delete
-            await collection.update_one(
-                {"_id": ObjectId(record_id)},
-                {"$set": {"is_deleted": True, "updated_at": now}}
-            )
-    
-    return {"success": True}
-
-@api_router.get("/sync/timestamp")
-async def sync_timestamp():
-    """Get current server timestamp in milliseconds"""
-    return {"timestamp": int(datetime.now(timezone.utc).timestamp() * 1000)}
-    
+    return result
 
 # ==================== REPORTS ====================
 
@@ -1958,11 +1827,14 @@ app.add_middleware(
         "https://blueview.vercel.app",
         "http://localhost:3000",
         "http://localhost:8000",
+        "http://localhost:8081",
+        "http://localhost:19006",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Include the router in the main app
 app.include_router(api_router)
 
 @app.on_event("shutdown")
@@ -2017,4 +1889,3 @@ async def startup_event():
         logger.info("Upgraded existing admin to owner role")
     
     logger.info("Blueview API started successfully with Sync v2.0")
-
