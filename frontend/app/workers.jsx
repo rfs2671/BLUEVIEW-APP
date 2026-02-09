@@ -204,8 +204,8 @@ useEffect(() => {
                 <WorkerCardSkeleton />
                 <WorkerCardSkeleton />
               </>
-            ) : todaycheckins.length > 0 ? (
-              todayCheckins.map((checkin, index) => {
+            ) : todayCheckIns.length > 0 ? (
+              todayCheckIns.map((checkin, index) => {
                 const workerInfo = getWorkerInfo(checkin);
                 const initials = workerInfo.name
                   .split(' ')
