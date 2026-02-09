@@ -455,10 +455,39 @@ async def require_company_access(current_user = Depends(get_current_user)):
 
 # ==================== SYNC HELPERS ====================
 
-async def get_table_changes(table_name: str, last_pulled: Optional[datetime], company_id: str):
+# WatermelonDB schema columns per table - only these fields should be sent to client
+WATERMELON_COLUMNS = {
+    "workers": {"id", "name", "phone", "trade", "company", "osha_number", "certifications", "backend_id", "created_at", "updated_at", "is_deleted"},
+    "projects": {"id", "name", "address", "status", "start_date", "end_date", "backend_id", "created_at", "updated_at", "is_deleted"},
+    "check_ins": {"id", "worker_id", "project_id", "worker_name", "worker_trade", "worker_company", "project_name", "check_in_time", "check_out_time", "nfc_tag_id", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
+    "daily_logs": {"id", "project_id", "project_name", "date", "weather", "notes", "work_performed", "materials_used", "issues", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
+    "nfc_tags": {"id", "tag_id", "project_id", "project_name", "location", "backend_id", "created_at", "updated_at", "is_deleted"},
+}
+
+def sanitize_for_watermelon(record, table_name):
+    """Remove fields that don't exist in WatermelonDB schema to prevent decorator errors"""
+    allowed = WATERMELON_COLUMNS.get(table_name)
+    if not allowed:
+        return record
+    
+    # Map backend field names to WatermelonDB field names
+    if table_name == "nfc_tags":
+        if "location_description" in record and "location" not in record:
+            record["location"] = record.pop("location_description")
+    
+    return {k: v for k, v in record.items() if k in allowed}
+
+async def get_table_changes(table_name: str, last_pulled: Optional[datetime], company_id: Optional[str]):
     """Get created, updated, and deleted records for a table since last_pulled"""
-    collection = db[table_name]
-    base_query = {"company_id": company_id}
+    # Map WatermelonDB table names to MongoDB collection names
+    collection_name_map = {
+        "check_ins": "checkins",
+    }
+    collection = db[collection_name_map.get(table_name, table_name)]
+    
+    base_query = {}
+    if company_id:
+        base_query["company_id"] = company_id
     
     if last_pulled:
         # Records created since last pull
@@ -486,8 +515,8 @@ async def get_table_changes(table_name: str, last_pulled: Optional[datetime], co
         deleted = []
     
     return {
-        "created": [serialize_sync_record(dict(r)) for r in created],
-        "updated": [serialize_sync_record(dict(r)) for r in updated],
+        "created": [sanitize_for_watermelon(serialize_sync_record(dict(r)), table_name) for r in created],
+        "updated": [sanitize_for_watermelon(serialize_sync_record(dict(r)), table_name) for r in updated],
         "deleted": deleted
     }
 
@@ -511,11 +540,11 @@ async def sync_pull(request: SyncPullRequest, current_user = Depends(get_current
         
         logger.info(f"Sync pull request from user {current_user.get('id')}, company {company_id}, lastPulledAt: {last_pulled}")
         
-        # Get changes for each table
+        # Get changes for each table (use WatermelonDB table names)
         changes = {
             "workers": await get_table_changes("workers", last_pulled, company_id),
             "projects": await get_table_changes("projects", last_pulled, company_id),
-            "check_ins": await get_table_changes("checkins", last_pulled, company_id),
+            "check_ins": await get_table_changes("check_ins", last_pulled, company_id),
             "daily_logs": await get_table_changes("daily_logs", last_pulled, company_id),
             "nfc_tags": await get_table_changes("nfc_tags", last_pulled, company_id),
         }
@@ -2376,4 +2405,3 @@ async def startup_event():
         logger.info("Upgraded existing admin to owner role")
     
     logger.info("Blueview API started successfully with Sync v2.0")
-
