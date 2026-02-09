@@ -84,7 +84,6 @@ export async function syncDatabase() {
       },
 
       // Handle migration conflicts
-      migrationsEnabledAtVersion: 1,
     });
 
     await setLastSyncTimestamp(Date.now());
