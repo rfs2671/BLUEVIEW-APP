@@ -44,13 +44,16 @@ export async function syncDatabase() {
     await synchronize({
       database,
       
-      // Pull changes from server
       pullChanges: async ({ lastPulledAt, schemaVersion, migration }) => {
         const timestamp = lastPulledAt || (await getLastSyncTimestamp());
+        const token = await getToken();
         
         const response = await fetch(`${API_URL}/api/sync/pull`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
           body: JSON.stringify({ 
             lastPulledAt: timestamp,
             schemaVersion,
@@ -63,15 +66,18 @@ export async function syncDatabase() {
         }
 
         const { changes, timestamp: newTimestamp } = await response.json();
-        
         return { changes, timestamp: newTimestamp };
       },
 
-      // Push local changes to server
       pushChanges: async ({ changes, lastPulledAt }) => {
+        const token = await getToken();
+        
         const response = await fetch(`${API_URL}/api/sync/push`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
           body: JSON.stringify({ 
             changes,
             lastPulledAt 
@@ -82,12 +88,9 @@ export async function syncDatabase() {
           throw new Error('Push failed');
         }
       },
-
-      // Handle migration conflicts
     });
 
     await setLastSyncTimestamp(Date.now());
-    
     console.log('✅ Sync successful');
     return { success: true };
     
