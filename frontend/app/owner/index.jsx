@@ -223,11 +223,18 @@ export default function OwnerPortalScreen() {
   };
 
   const confirmDeleteCompany = async () => {
-    // Note: Backend endpoint not created yet, but structure is ready
-    toast.info('Coming Soon', 'Company deletion will be available in next update');
+  try {
+    await apiClient.delete(`/api/owner/companies/${selectedCompany.id}`);
+    setCompanies(companies.filter(c => c.id !== selectedCompany.id));
+    toast.success('Deleted', 'Company deleted successfully');
+  } catch (error) {
+    console.error('Failed to delete company:', error);
+    toast.error('Error', error.response?.data?.detail || 'Could not delete company');
+  } finally {
     setShowDeleteCompanyModal(false);
     setSelectedCompany(null);
-  };
+  }
+};
 
   const handleDeleteAdmin = (admin) => {
     setSelectedAdmin(admin);
