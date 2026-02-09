@@ -66,14 +66,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(34, 197, 94, 0.3)',
   },
   text: {
-    fontSize: typography.sizes.sm,
+    fontSize: typography.small.fontSize,
     fontWeight: '600',
   },
   textOffline: {
-    color: colors.warning,
+    color: colors.status.warning,
   },
   textOnline: {
-    color: colors.success,
+    color: colors.status.success,
   },
   badge: {
     backgroundColor: colors.warning,
