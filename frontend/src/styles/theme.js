@@ -1,14 +1,8 @@
-/**
- * Base44 Theme - Glassmorphism Design System
- * Replicates the soft, frosted, deep-blue aesthetic
- */
-
 export const colors = {
    success: '#4ade80',
   warning: '#fbbf24',
   error: '#f87171',
   primary: '#3b82f6',
-},
 
   // Background gradient colors
   background: {
