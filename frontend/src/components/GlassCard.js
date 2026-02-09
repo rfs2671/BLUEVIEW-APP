@@ -73,7 +73,7 @@ export const StatCard = ({ children, style, onPress }) => {
 /**
  * GlassListItem - Interactive list item with hover support
  */
-export const GlassListItem = ({ children, style, onPress, disabled }) => {
+export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, showBorder, style, onPress, disabled }) => {
   const [isHovered, setIsHovered] = useState(false);
   
   return (
@@ -87,10 +87,20 @@ export const GlassListItem = ({ children, style, onPress, disabled }) => {
         isHovered && styles.listItemHovered,
         pressed && styles.listItemPressed,
         disabled && styles.listItemDisabled,
+        showBorder && styles.listItemBorder,
         style,
       ]}
     >
-      {children}
+      {children || (
+        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+          {leftIcon && <View style={{ marginRight: 12 }}>{leftIcon}</View>}
+          <View style={{ flex: 1 }}>
+            {title && <Text style={{ color: colors.text.primary, fontSize: 16, fontWeight: '500' }}>{title}</Text>}
+            {subtitle && <Text style={{ color: colors.text.muted, fontSize: 13, marginTop: 2 }}>{subtitle}</Text>}
+          </View>
+          {rightIcon && <View style={{ marginLeft: 12 }}>{rightIcon}</View>}
+        </View>
+      )}
     </Pressable>
   );
 };
