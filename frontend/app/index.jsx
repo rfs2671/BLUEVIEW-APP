@@ -14,8 +14,6 @@ import {
   Briefcase,
   Smartphone,
   Cloud,
-  Clock,
-  FileText
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -32,10 +30,10 @@ import { useCheckIns } from '../src/hooks/useCheckIns';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const quickActions = [
-  { title: 'Projects', subtitle: 'Manage job sites', path: '/projects', icon: Building2 },
-  { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers', icon: Users },
-  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log', icon: Clock },
-  { title: 'Reports', subtitle: 'View & download', path: '/reports', icon: FileText },
+  { title: 'Projects', subtitle: 'Manage job sites', path: '/projects' },
+  { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers' },
+  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log' },
+  { title: 'Reports', subtitle: 'View & download', path: '/reports' },
 ];
 
 const adminActions = [
@@ -49,6 +47,7 @@ export default function DashboardScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
   
+  // Use hooks for data - auto-updates, works offline
   const { workers, loading: workersLoading } = useWorkers();
   const { projects, loading: projectsLoading } = useProjects();
   const { checkIns, loading: checkInsLoading, getActiveCheckIns } = useCheckIns();
@@ -59,12 +58,14 @@ export default function DashboardScreen() {
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
   const fullDate = today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
+  // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, authLoading]);
 
+  // Count active check-ins (workers currently on site)
   useEffect(() => {
     const countActiveCheckIns = async () => {
       const active = await getActiveCheckIns();
@@ -153,18 +154,26 @@ export default function DashboardScreen() {
 
               {/* Stats */}
               <View style={styles.statsGrid}>
-                {statItems.map((stat) => {
-                  const Icon = stat.icon;
-                  return (
-                    <StatCard key={stat.label} style={styles.statCard}>
-                      <IconPod size={44} style={styles.statIcon}>
-                        <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                      </IconPod>
-                      <Text style={styles.statValue}>{stat.value}</Text>
-                      <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
-                    </StatCard>
-                  );
-                })}
+                {loading ? (
+                  <>
+                    <StatCardSkeleton />
+                    <StatCardSkeleton />
+                    <StatCardSkeleton />
+                  </>
+                ) : (
+                  statItems.map((stat) => {
+                    const Icon = stat.icon;
+                    return (
+                      <StatCard key={stat.label} style={styles.statCard}>
+                        <IconPod size={44} style={styles.statIcon}>
+                          <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                        </IconPod>
+                        <Text style={styles.statValue}>{stat.value}</Text>
+                        <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+                      </StatCard>
+                    );
+                  })
+                )}
               </View>
 
               {/* Sync Button */}
@@ -175,24 +184,17 @@ export default function DashboardScreen() {
               {/* Quick Actions */}
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
-                <GlassCard style={styles.mainContainerCard}>
-                  <View style={styles.innerGrid}>
-                    {quickActions.map((action) => {
-                      const Icon = action.icon || LayoutGrid;
-                      return (
-                        <Pressable 
-                          key={action.path} 
-                          style={styles.smallBubble}
-                          onPress={() => router.push(action.path)}
-                        >
-                          <IconPod size={42} style={styles.bubbleIcon}>
-                            <Icon size={20} strokeWidth={1.5} color={colors.text.secondary} />
-                          </IconPod>
-                          <Text style={styles.bubbleLabel}>{action.title}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
+                <GlassCard style={styles.actionsCard}>
+                  {quickActions.map((action, index) => (
+                    <GlassListItem
+                      key={action.path}
+                      title={action.title}
+                      subtitle={action.subtitle}
+                      onPress={() => router.push(action.path)}
+                      showBorder={index < quickActions.length - 1}
+                      rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                    />
+                  ))}
                 </GlassCard>
               </View>
 
@@ -200,24 +202,25 @@ export default function DashboardScreen() {
               {user?.role === 'admin' && (
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>ADMIN TOOLS</Text>
-                  <GlassCard style={styles.mainContainerCard}>
-                    <View style={styles.innerGrid}>
-                      {adminActions.map((action) => {
-                        const Icon = action.icon;
-                        return (
-                          <Pressable 
-                            key={action.path} 
-                            style={styles.smallBubble}
-                            onPress={() => router.push(action.path)}
-                          >
-                            <IconPod size={42} style={styles.bubbleIcon}>
-                              <Icon size={20} strokeWidth={1.5} color={colors.text.secondary} />
+                  <GlassCard style={styles.actionsCard}>
+                    {adminActions.map((action, index) => {
+                      const Icon = action.icon;
+                      return (
+                        <GlassListItem
+                          key={action.path}
+                          title={action.title}
+                          subtitle={action.subtitle}
+                          leftIcon={
+                            <IconPod size={36}>
+                              <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
                             </IconPod>
-                            <Text style={styles.bubbleLabel}>{action.title}</Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                          }
+                          onPress={() => router.push(action.path)}
+                          showBorder={index < adminActions.length - 1}
+                          rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                        />
+                      );
+                    })}
                   </GlassCard>
                 </View>
               )}
@@ -232,65 +235,132 @@ export default function DashboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  loadingText: { fontSize: 14, fontWeight: '600', color: colors.text.secondary, letterSpacing: 2 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  logoIcon: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(255, 255, 255, 0.05)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
-  logoText: { fontSize: 16, fontWeight: '700', color: colors.text.primary, letterSpacing: 1 },
-  scrollView: { flex: 1 },
-  scrollContent: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  greetingSection: { marginBottom: spacing.xl },
-  greetingSmall: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.xs },
-  greetingLarge: { fontSize: 32, fontWeight: '700', color: colors.text.primary, marginBottom: spacing.sm },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  dayName: { fontSize: 14, fontWeight: '600', color: colors.text.primary },
-  dateDivider: { fontSize: 14, color: colors.text.subtle },
-  fullDate: { fontSize: 14, color: colors.text.secondary },
-  statsGrid: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xl },
-  statCard: { flex: 1 },
-  statIcon: { marginBottom: spacing.sm },
-  statValue: { fontSize: 28, fontWeight: '700', color: colors.text.primary, marginBottom: 2 },
-  statLabel: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1 },
-  syncSection: { marginBottom: spacing.xl },
-  section: { marginBottom: spacing.xl },
-  sectionTitle: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.md },
-  
-  // Update these specific styles
-  mainContainerCard: {
-    padding: spacing.lg,
+  container: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
   },
-  innerGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: spacing.lg,
-    width: '100%',
-  },
-  smallBubble: {
-    width: '42%',
-    aspectRatio: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.sm,
-  },
-  bubbleIcon: {
-    marginBottom: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-  },
-  bubbleLabel: {
-    color: colors.text.primary,
-    fontSize: 13,
+  loadingText: {
+    fontSize: 14,
     fontWeight: '600',
-    textAlign: 'center',
+    color: colors.text.secondary,
+    letterSpacing: 2,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  logoIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  logoText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text.primary,
+    letterSpacing: 1,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 100,
+  },
+  greetingSection: {
+    marginBottom: spacing.xl,
+  },
+  greetingSmall: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1.5,
+    marginBottom: spacing.xs,
+  },
+  greetingLarge: {
+    fontSize: 32,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  dayName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  dateDivider: {
+    fontSize: 14,
+    color: colors.text.subtle,
+  },
+  fullDate: {
+    fontSize: 14,
+    color: colors.text.secondary,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  statCard: {
+    flex: 1,
+  },
+  statIcon: {
+    marginBottom: spacing.sm,
+  },
+  statValue: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text.primary,
+    marginBottom: 2,
+  },
+  statLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1,
+  },
+  syncSection: {
+    marginBottom: spacing.xl,
+  },
+  section: {
+    marginBottom: spacing.xl,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.text.secondary,
+    letterSpacing: 1.5,
+    marginBottom: spacing.md,
+  },
+  actionsCard: {
+    padding: 0,
+    overflow: 'hidden',
   },
 });
