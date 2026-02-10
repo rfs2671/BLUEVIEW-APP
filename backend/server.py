@@ -2,6 +2,8 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File, Form
+import base64
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -2847,7 +2849,114 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
             "Content-Disposition": f'attachment; filename="daily-log-{log_date}.html"'
         }
     )
+    
+# ==================== PHOTO UPLOADS ====================
 
+@api_router.post("/daily-logs/{log_id}/photos")
+async def upload_daily_log_photo(
+    log_id: str,
+    current_user = Depends(get_current_user),
+    file: UploadFile = File(...),
+    subcontractor_index: int = Form(default=-1),
+    caption: str = Form(default=""),
+):
+    """Upload a photo to a daily log, optionally linked to a subcontractor card"""
+    log = await db.daily_logs.find_one({"_id": ObjectId(log_id), "is_deleted": {"$ne": True}})
+    if not log:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+    
+    role = current_user.get("role")
+    if role == "site_device":
+        raise HTTPException(status_code=403, detail="Site devices cannot upload photos")
+    
+    if role not in ["admin", "owner"]:
+        company_id = get_user_company_id(current_user)
+        log_company = log.get("company_id")
+        user_projects = current_user.get("assigned_projects", [])
+        if company_id != log_company and log.get("project_id") not in user_projects:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+    
+    b64_data = base64.b64encode(content).decode('utf-8')
+    now = datetime.now(timezone.utc)
+    
+    photo_doc = {
+        "daily_log_id": log_id,
+        "project_id": log.get("project_id"),
+        "company_id": log.get("company_id"),
+        "subcontractor_index": subcontractor_index,
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size": len(content),
+        "data": b64_data,
+        "caption": caption,
+        "uploaded_by": current_user.get("id"),
+        "uploaded_by_name": current_user.get("name") or current_user.get("device_name", "Unknown"),
+        "created_at": now,
+        "is_deleted": False,
+    }
+    
+    result = await db.daily_log_photos.insert_one(photo_doc)
+    
+    return {
+        "id": str(result.inserted_id),
+        "filename": file.filename,
+        "size": len(content),
+        "subcontractor_index": subcontractor_index,
+        "caption": caption,
+        "uploaded_by_name": photo_doc["uploaded_by_name"],
+        "created_at": now.isoformat(),
+    }
+
+@api_router.get("/daily-logs/{log_id}/photos")
+async def get_daily_log_photos(log_id: str, current_user = Depends(get_current_user)):
+    """Get all photos for a daily log (metadata only, no base64)"""
+    photos = await db.daily_log_photos.find(
+        {"daily_log_id": log_id, "is_deleted": {"$ne": True}},
+        {"data": 0}
+    ).to_list(1000)
+    return serialize_list(photos)
+
+@api_router.get("/daily-logs/{log_id}/photos/{photo_id}")
+async def get_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
+    """Get a single photo with base64 data"""
+    photo = await db.daily_log_photos.find_one({
+        "_id": ObjectId(photo_id),
+        "daily_log_id": log_id,
+        "is_deleted": {"$ne": True}
+    })
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return serialize_id(photo)
+
+@api_router.get("/daily-logs/{log_id}/photos/{photo_id}/image")
+async def get_daily_log_photo_image(log_id: str, photo_id: str):
+    """Serve photo as raw image binary"""
+    from fastapi.responses import Response
+    photo = await db.daily_log_photos.find_one({
+        "_id": ObjectId(photo_id),
+        "daily_log_id": log_id,
+        "is_deleted": {"$ne": True}
+    })
+    if not photo:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    image_data = base64.b64decode(photo["data"])
+    return Response(content=image_data, media_type=photo.get("content_type", "image/jpeg"))
+
+@api_router.delete("/daily-logs/{log_id}/photos/{photo_id}")
+async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
+    """Delete a photo (soft delete)"""
+    result = await db.daily_log_photos.update_one(
+        {"_id": ObjectId(photo_id), "daily_log_id": log_id},
+        {"$set": {"is_deleted": True}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    return {"message": "Photo deleted"}
+    
 # ==================== ROOT ENDPOINT ====================
 
 @api_router.get("/")
