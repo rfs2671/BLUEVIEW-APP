@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -34,18 +34,11 @@ app = FastAPI(title="Blueview API", version="2.0.0")
 # CORS - must be added immediately after app creation
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=[
-        "https://blue-view.app",
-        "https://www.blue-view.app",
-        "https://blueview.vercel.app",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:8081",
-        "http://localhost:19006",
-    ],
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Create a router with the /api prefix
