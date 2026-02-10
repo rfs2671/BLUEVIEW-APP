@@ -8,18 +8,14 @@ import {
   MapPin,
   LogOut,
   LayoutGrid,
-  ChevronRight,
-  Settings,
   UserCog,
   Briefcase,
   Smartphone,
   Cloud,
   ClipboardList,
-  Clock,
-  FileText,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
+import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
 import { DashboardSkeleton, StatCardSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
@@ -32,13 +28,6 @@ import { useProjects } from '../src/hooks/useProjects';
 import { useCheckIns } from '../src/hooks/useCheckIns';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
-const quickActions = [
-  { title: 'Projects', subtitle: 'Manage job sites', path: '/projects', icon: Building2 },
-  { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers', icon: Users },
-  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log', icon: Clock },
-  { title: 'Reports', subtitle: 'View & download', path: '/reports', icon: FileText },
-];
-
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
   { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
@@ -47,17 +36,21 @@ const adminActions = [
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
 ];
 
-// 2-column grid tile
+// 2-column grid tile — hover/press matches GlassCard.js listItem pattern exactly
 const ActionTile = ({ action, onPress }) => {
-  const [pressed, setPressed] = useState(false);
+  const [isHovered, setIsHovered] = useState(false);
   const Icon = action.icon || LayoutGrid;
 
   return (
     <Pressable
-      onPressIn={() => setPressed(true)}
-      onPressOut={() => setPressed(false)}
+      onHoverIn={() => setIsHovered(true)}
+      onHoverOut={() => setIsHovered(false)}
       onPress={() => onPress(action.path)}
-      style={[styles.tile, pressed && styles.tilePressed]}
+      style={({ pressed }) => [
+        styles.tile,
+        isHovered && styles.tileHovered,
+        pressed && styles.tilePressed,
+      ]}
     >
       <IconPod size={38} style={styles.tileIcon}>
         <Icon size={17} strokeWidth={1.5} color={colors.text.secondary} />
@@ -72,11 +65,11 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
-  
+
   const { workers, loading: workersLoading } = useWorkers();
   const { projects, loading: projectsLoading } = useProjects();
   const { checkIns, loading: checkInsLoading, getActiveCheckIns } = useCheckIns();
-  
+
   const [activeCheckInsCount, setActiveCheckInsCount] = useState(0);
 
   const today = new Date();
@@ -94,10 +87,7 @@ export default function DashboardScreen() {
       const active = await getActiveCheckIns();
       setActiveCheckInsCount(active.length);
     };
-    
-    if (isAuthenticated) {
-      countActiveCheckIns();
-    }
+    if (isAuthenticated) countActiveCheckIns();
   }, [isAuthenticated, checkIns]);
 
   const getUserFirstName = () => {
@@ -129,9 +119,9 @@ export default function DashboardScreen() {
   }
 
   const statItems = [
-    { icon: Users, value: stats.totalWorkers, label: 'Workers' },
-    { icon: Building2, value: stats.activeProjects, label: 'Projects' },
-    { icon: MapPin, value: stats.onSiteNow, label: 'On Site' },
+    { icon: Users,     value: stats.totalWorkers,   label: 'Workers',  path: '/workers'  },
+    { icon: Building2, value: stats.activeProjects, label: 'Projects', path: '/projects' },
+    { icon: MapPin,    value: stats.onSiteNow,       label: 'On Site',  path: '/workers'  },
   ];
 
   return (
@@ -175,7 +165,7 @@ export default function DashboardScreen() {
                 </View>
               </View>
 
-              {/* Stats */}
+              {/* Stats — pressable, navigate on tap */}
               <View style={styles.statsGrid}>
                 {loading ? (
                   <>
@@ -187,7 +177,11 @@ export default function DashboardScreen() {
                   statItems.map((stat) => {
                     const Icon = stat.icon;
                     return (
-                      <StatCard key={stat.label} style={styles.statCard}>
+                      <StatCard
+                        key={stat.label}
+                        style={styles.statCard}
+                        onPress={() => router.push(stat.path)}
+                      >
                         <IconPod size={44} style={styles.statIcon}>
                           <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
                         </IconPod>
@@ -204,23 +198,7 @@ export default function DashboardScreen() {
                 <SyncButton showLabel={true} />
               </View>
 
-              {/* Quick Actions — 2-column grid */}
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
-                <GlassCard style={styles.gridCard}>
-                  <View style={styles.tileGrid}>
-                    {quickActions.map((action) => (
-                      <ActionTile
-                        key={action.path}
-                        action={action}
-                        onPress={(path) => router.push(path)}
-                      />
-                    ))}
-                  </View>
-                </GlassCard>
-              </View>
-
-              {/* Admin Tools — 2-column grid */}
+              {/* Admin Tools — 2-column grid, admin only */}
               {user?.role === 'admin' && (
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>ADMIN TOOLS</Text>
@@ -274,17 +252,11 @@ const styles = StyleSheet.create({
   section: { marginBottom: spacing.xl },
   sectionTitle: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.md },
 
-  // Grid card wrapper
-  gridCard: {
-    padding: spacing.md,
-  },
-  tileGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
+  // Grid
+  gridCard: { padding: spacing.md },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
 
-  // Individual tile — ~48% width so 2 per row with gap
+  // Tile — mirrors listItemHovered / listItemPressed from GlassCard.js
   tile: {
     width: '48%',
     backgroundColor: 'rgba(255,255,255,0.04)',
@@ -294,10 +266,16 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     alignItems: 'flex-start',
     gap: 4,
+    transition: 'all 0.2s ease',
+  },
+  tileHovered: {
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderColor: 'rgba(255,255,255,0.3)',
+    transform: [{ scale: 1.01 }, { translateY: -2 }],
   },
   tilePressed: {
-    backgroundColor: 'rgba(255,255,255,0.09)',
-    borderColor: 'rgba(255,255,255,0.18)',
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
   },
   tileIcon: {
     marginBottom: spacing.xs,
