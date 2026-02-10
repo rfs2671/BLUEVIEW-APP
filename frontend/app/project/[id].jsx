@@ -166,7 +166,14 @@ export default function ProjectDetailScreen() {
 
   const fetchData = async () => {
     try {
-      const projectData = await getProjectById(projectId);
+      let projectData = await getProjectById(projectId);
+      if (!projectData) {
+        try {
+          projectData = await projectsAPI.getById(projectId);
+        } catch (e) {
+          console.error('Failed to fetch project from API:', e);
+        }
+      }
       setProject(projectData);
 
       // Fetch site devices for this project
@@ -487,6 +494,18 @@ export default function ProjectDetailScreen() {
     );
   }
 
+    if (!project) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={styles.container}>
+          <View style={styles.loadingContainer}>
+            <Text style={styles.loadingText}>Project not found</Text>
+            <GlassButton title="Go Back" onPress={() => router.back()} />
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
   const nfcTags = project?.nfc_tags || [];
   const isDropboxConnected = project?.dropbox_enabled && project?.dropbox_folder;
 
