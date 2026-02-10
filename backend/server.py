@@ -28,6 +28,11 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'blueview-secret-key-2024')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24
 
+# Dropbox Configuration
+DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
+DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
+DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2-production.up.railway.app/api/dropbox/callback')
+
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
@@ -1003,25 +1008,25 @@ async def delete_company(company_id: str, current_user = Depends(get_current_use
     
     return {"message": "Company deleted successfully"}
 
+class CreateAdminRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+    company_name: str
+
 @api_router.post("/owner/admins")
-async def create_admin_with_company(admin_data: dict, current_user = Depends(get_current_user)):
+async def create_admin_with_company(admin_data: CreateAdminRequest, current_user = Depends(get_current_user)):
     """Create admin account with company (owner only)"""
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     
-    # Required fields
-    required = ["email", "password", "name", "company_name"]
-    for field in required:
-        if field not in admin_data or not admin_data[field]:
-            raise HTTPException(status_code=400, detail=f"{field} is required")
-    
     # Check if email exists
-    existing_user = await db.users.find_one({"email": admin_data["email"], "is_deleted": {"$ne": True}})
+    existing_user = await db.users.find_one({"email": admin_data.email, "is_deleted": {"$ne": True}})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     # Create company first
-    company_name = admin_data["company_name"]
+    company_name = admin_data.company_name
     existing_company = await db.companies.find_one({"name": company_name, "is_deleted": {"$ne": True}})
     
     now = datetime.now(timezone.utc)
@@ -1041,9 +1046,9 @@ async def create_admin_with_company(admin_data: dict, current_user = Depends(get
     
     # Create admin user
     user_doc = {
-        "email": admin_data["email"],
-        "password": hash_password(admin_data["password"]),
-        "name": admin_data["name"],
+        "email": admin_data.email,
+        "password": hash_password(admin_data.password),
+        "name": admin_data.name,
         "role": "admin",
         "company_id": company_id,
         "company_name": company_name,
@@ -1057,8 +1062,8 @@ async def create_admin_with_company(admin_data: dict, current_user = Depends(get
     
     return {
         "id": str(user_result.inserted_id),
-        "email": admin_data["email"],
-        "name": admin_data["name"],
+        "email": admin_data.email,
+        "name": admin_data.name,
         "company_id": company_id,
         "company_name": company_name,
         "role": "admin",
@@ -2333,6 +2338,515 @@ async def get_reports(current_user = Depends(get_current_user)):
 async def get_project_reports(project_id: str, current_user = Depends(get_current_user)):
     reports = await db.reports.find({"project_id": project_id, "is_deleted": {"$ne": True}}).to_list(1000)
     return serialize_list(reports)
+
+# ==================== DROPBOX INTEGRATION ====================
+
+@api_router.get("/dropbox/status")
+async def get_dropbox_status(current_user = Depends(get_current_user)):
+    """Check if Dropbox is connected for current user's company"""
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        return {"connected": False}
+    
+    connection = await db.dropbox_connections.find_one({
+        "company_id": company_id,
+        "is_deleted": {"$ne": True}
+    })
+    
+    if connection and connection.get("access_token"):
+        return {
+            "connected": True,
+            "account_name": connection.get("account_name", ""),
+            "connected_at": connection.get("connected_at"),
+        }
+    return {"connected": False}
+
+@api_router.get("/dropbox/auth-url")
+async def get_dropbox_auth_url(current_user = Depends(get_current_user)):
+    """Get Dropbox OAuth authorization URL"""
+    state = jwt.encode(
+        {"user_id": current_user.get("id"), "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
+        JWT_SECRET, algorithm=JWT_ALGORITHM
+    )
+    auth_url = (
+        f"https://www.dropbox.com/oauth2/authorize"
+        f"?client_id={DROPBOX_APP_KEY}"
+        f"&redirect_uri={DROPBOX_REDIRECT_URI}"
+        f"&response_type=code"
+        f"&token_access_type=offline"
+        f"&state={state}"
+    )
+    return {"auth_url": auth_url}
+
+@api_router.get("/dropbox/callback")
+async def dropbox_callback(code: str = None, state: str = None, error: str = None):
+    """Handle Dropbox OAuth callback"""
+    from fastapi.responses import HTMLResponse
+    
+    if error:
+        return HTMLResponse(f"<html><body><h2>Dropbox connection failed</h2><p>{error}</p><script>window.close();</script></body></html>")
+    
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state")
+    
+    # Verify state
+    try:
+        payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id = payload["user_id"]
+    except:
+        raise HTTPException(status_code=400, detail="Invalid state")
+    
+    # Exchange code for token
+    async with httpx.AsyncClient() as client_http:
+        token_response = await client_http.post(
+            "https://api.dropboxapi.com/oauth2/token",
+            data={
+                "code": code,
+                "grant_type": "authorization_code",
+                "client_id": DROPBOX_APP_KEY,
+                "client_secret": DROPBOX_APP_SECRET,
+                "redirect_uri": DROPBOX_REDIRECT_URI,
+            }
+        )
+    
+    if token_response.status_code != 200:
+        return HTMLResponse(f"<html><body><h2>Failed to connect</h2><p>{token_response.text}</p><script>window.close();</script></body></html>")
+    
+    token_data = token_response.json()
+    
+    # Get account info
+    async with httpx.AsyncClient() as client_http:
+        account_response = await client_http.post(
+            "https://api.dropboxapi.com/2/users/get_current_account",
+            headers={"Authorization": f"Bearer {token_data['access_token']}"}
+        )
+    
+    account_name = ""
+    if account_response.status_code == 200:
+        account_info = account_response.json()
+        account_name = account_info.get("name", {}).get("display_name", "")
+    
+    # Get user's company
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    company_id = user.get("company_id") if user else None
+    
+    now = datetime.now(timezone.utc)
+    
+    # Store connection
+    await db.dropbox_connections.update_one(
+        {"company_id": company_id},
+        {"$set": {
+            "company_id": company_id,
+            "user_id": user_id,
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data.get("refresh_token"),
+            "account_id": token_data.get("account_id"),
+            "account_name": account_name,
+            "connected_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }},
+        upsert=True
+    )
+    
+    return HTMLResponse("<html><body><h2>Dropbox connected successfully!</h2><p>You can close this window.</p><script>window.opener && window.opener.postMessage('dropbox-connected','*'); setTimeout(()=>window.close(), 2000);</script></body></html>")
+
+@api_router.post("/dropbox/complete-auth")
+async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_user)):
+    """Complete Dropbox OAuth with authorization code (alternative to callback)"""
+    code = data.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Authorization code required")
+    
+    async with httpx.AsyncClient() as client_http:
+        token_response = await client_http.post(
+            "https://api.dropboxapi.com/oauth2/token",
+            data={
+                "code": code,
+                "grant_type": "authorization_code",
+                "client_id": DROPBOX_APP_KEY,
+                "client_secret": DROPBOX_APP_SECRET,
+                "redirect_uri": DROPBOX_REDIRECT_URI,
+            }
+        )
+    
+    if token_response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to exchange code for token")
+    
+    token_data = token_response.json()
+    company_id = get_user_company_id(current_user)
+    now = datetime.now(timezone.utc)
+    
+    # Get account info
+    async with httpx.AsyncClient() as client_http:
+        account_response = await client_http.post(
+            "https://api.dropboxapi.com/2/users/get_current_account",
+            headers={"Authorization": f"Bearer {token_data['access_token']}"}
+        )
+    
+    account_name = ""
+    if account_response.status_code == 200:
+        account_info = account_response.json()
+        account_name = account_info.get("name", {}).get("display_name", "")
+    
+    await db.dropbox_connections.update_one(
+        {"company_id": company_id},
+        {"$set": {
+            "company_id": company_id,
+            "user_id": current_user.get("id"),
+            "access_token": token_data["access_token"],
+            "refresh_token": token_data.get("refresh_token"),
+            "account_id": token_data.get("account_id"),
+            "account_name": account_name,
+            "connected_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }},
+        upsert=True
+    )
+    
+    return {"message": "Dropbox connected successfully", "account_name": account_name}
+
+@api_router.delete("/dropbox/disconnect")
+async def disconnect_dropbox(current_user = Depends(get_current_user)):
+    """Disconnect Dropbox"""
+    company_id = get_user_company_id(current_user)
+    
+    # Revoke token
+    connection = await db.dropbox_connections.find_one({"company_id": company_id})
+    if connection and connection.get("access_token"):
+        try:
+            async with httpx.AsyncClient() as client_http:
+                await client_http.post(
+                    "https://api.dropboxapi.com/2/auth/token/revoke",
+                    headers={"Authorization": f"Bearer {connection['access_token']}"}
+                )
+        except:
+            pass
+    
+    await db.dropbox_connections.update_one(
+        {"company_id": company_id},
+        {"$set": {"is_deleted": True, "access_token": None, "refresh_token": None, "updated_at": datetime.now(timezone.utc)}}
+    )
+    
+    return {"message": "Dropbox disconnected"}
+
+async def get_dropbox_token(company_id: str) -> Optional[str]:
+    """Get valid Dropbox access token, refreshing if needed"""
+    connection = await db.dropbox_connections.find_one({
+        "company_id": company_id,
+        "is_deleted": {"$ne": True}
+    })
+    
+    if not connection or not connection.get("access_token"):
+        return None
+    
+    # Try to use current token, refresh if it fails
+    return connection["access_token"]
+
+async def refresh_dropbox_token(company_id: str) -> Optional[str]:
+    """Refresh Dropbox token"""
+    connection = await db.dropbox_connections.find_one({"company_id": company_id})
+    if not connection or not connection.get("refresh_token"):
+        return None
+    
+    async with httpx.AsyncClient() as client_http:
+        response = await client_http.post(
+            "https://api.dropboxapi.com/oauth2/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": connection["refresh_token"],
+                "client_id": DROPBOX_APP_KEY,
+                "client_secret": DROPBOX_APP_SECRET,
+            }
+        )
+    
+    if response.status_code == 200:
+        token_data = response.json()
+        await db.dropbox_connections.update_one(
+            {"company_id": company_id},
+            {"$set": {"access_token": token_data["access_token"], "updated_at": datetime.now(timezone.utc)}}
+        )
+        return token_data["access_token"]
+    return None
+
+async def dropbox_api_call(company_id: str, method: str, url: str, **kwargs):
+    """Make Dropbox API call with automatic token refresh"""
+    token = await get_dropbox_token(company_id)
+    if not token:
+        raise HTTPException(status_code=400, detail="Dropbox not connected")
+    
+    headers = kwargs.pop("headers", {})
+    headers["Authorization"] = f"Bearer {token}"
+    
+    async with httpx.AsyncClient() as client_http:
+        response = await getattr(client_http, method)(url, headers=headers, **kwargs)
+    
+    # If unauthorized, try refresh
+    if response.status_code == 401:
+        token = await refresh_dropbox_token(company_id)
+        if not token:
+            raise HTTPException(status_code=401, detail="Dropbox token expired. Please reconnect.")
+        headers["Authorization"] = f"Bearer {token}"
+        async with httpx.AsyncClient() as client_http:
+            response = await getattr(client_http, method)(url, headers=headers, **kwargs)
+    
+    return response
+
+@api_router.get("/dropbox/folders")
+async def get_dropbox_folders(path: str = "", current_user = Depends(get_current_user)):
+    """Get Dropbox folders for selection"""
+    company_id = get_user_company_id(current_user)
+    
+    response = await dropbox_api_call(
+        company_id, "post",
+        "https://api.dropboxapi.com/2/files/list_folder",
+        json={"path": path or "", "recursive": False, "include_mounted_folders": True}
+    )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to list folders")
+    
+    data = response.json()
+    folders = [
+        {
+            "name": entry["name"],
+            "path": entry["path_lower"],
+            "id": entry.get("id", ""),
+        }
+        for entry in data.get("entries", [])
+        if entry[".tag"] == "folder"
+    ]
+    
+    return folders
+
+@api_router.post("/projects/{project_id}/link-dropbox")
+async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
+    """Link a Dropbox folder to a project"""
+    folder_path = data.get("folder_path")
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="folder_path required")
+    
+    now = datetime.now(timezone.utc)
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {
+            "dropbox_folder_path": folder_path,
+            "dropbox_linked_at": now,
+            "dropbox_linked_by": current_user.get("id"),
+            "updated_at": now,
+        }}
+    )
+    
+    return {"message": "Dropbox folder linked", "folder_path": folder_path}
+
+@api_router.get("/projects/{project_id}/dropbox-files")
+async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
+    """Get files from project's linked Dropbox folder"""
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    folder_path = project.get("dropbox_folder_path")
+    if not folder_path:
+        return []
+    
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    
+    response = await dropbox_api_call(
+        company_id, "post",
+        "https://api.dropboxapi.com/2/files/list_folder",
+        json={"path": folder_path, "recursive": False}
+    )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to list files")
+    
+    data = response.json()
+    files = []
+    for entry in data.get("entries", []):
+        file_info = {
+            "name": entry["name"],
+            "path": entry["path_lower"],
+            "id": entry.get("id", ""),
+            "type": entry[".tag"],
+        }
+        if entry[".tag"] == "file":
+            file_info["size"] = entry.get("size", 0)
+            file_info["modified"] = entry.get("server_modified", "")
+        files.append(file_info)
+    
+    return files
+
+@api_router.post("/projects/{project_id}/sync-dropbox")
+async def sync_project_dropbox(project_id: str, current_user = Depends(get_current_user)):
+    """Sync/refresh project files from Dropbox"""
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    folder_path = project.get("dropbox_folder_path")
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="No Dropbox folder linked")
+    
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    
+    response = await dropbox_api_call(
+        company_id, "post",
+        "https://api.dropboxapi.com/2/files/list_folder",
+        json={"path": folder_path, "recursive": True}
+    )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to sync files")
+    
+    data = response.json()
+    file_count = len([e for e in data.get("entries", []) if e[".tag"] == "file"])
+    
+    # Update sync timestamp
+    await db.projects.update_one(
+        {"_id": ObjectId(project_id)},
+        {"$set": {"dropbox_last_synced": datetime.now(timezone.utc)}}
+    )
+    
+    return {"message": f"Synced {file_count} files", "file_count": file_count}
+
+@api_router.get("/projects/{project_id}/dropbox-file-url")
+async def get_dropbox_file_url(project_id: str, file_path: str, current_user = Depends(get_current_user)):
+    """Get a temporary download/preview URL for a Dropbox file"""
+    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    company_id = get_user_company_id(current_user) or project.get("company_id")
+    
+    response = await dropbox_api_call(
+        company_id, "post",
+        "https://api.dropboxapi.com/2/files/get_temporary_link",
+        json={"path": file_path}
+    )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail="Failed to get file URL")
+    
+    data = response.json()
+    return {"url": data.get("link", ""), "metadata": data.get("metadata", {})}
+
+# ==================== DAILY LOG PDF EXPORT ====================
+
+@api_router.get("/daily-logs/{log_id}/pdf")
+async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user)):
+    """Generate PDF for a daily log"""
+    from fastapi.responses import Response
+    import io
+    
+    log = await db.daily_logs.find_one({"_id": ObjectId(log_id), "is_deleted": {"$ne": True}})
+    if not log:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+    
+    # Get project info
+    project = None
+    if log.get("project_id"):
+        project = await db.projects.find_one({"_id": ObjectId(log["project_id"])})
+    
+    project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
+    project_address = project.get("address", "") if project else ""
+    
+    # Build simple HTML-based PDF
+    log_date = log.get("date", "N/A")
+    weather = log.get("weather", "N/A")
+    notes = log.get("notes", "")
+    worker_count = log.get("worker_count", 0)
+    created_by = log.get("created_by_name", "Unknown")
+    
+    # Subcontractor cards
+    sub_cards = log.get("subcontractor_cards", []) or []
+    sub_html = ""
+    for card in sub_cards:
+        sub_html += f"""
+        <tr>
+            <td>{card.get('company_name', 'N/A')}</td>
+            <td>{card.get('trade', 'N/A')}</td>
+            <td>{card.get('worker_count', 0)}</td>
+            <td>{card.get('hours', 'N/A')}</td>
+            <td>{card.get('description', '')}</td>
+        </tr>"""
+    
+    # Safety checklist
+    safety = log.get("safety_checklist", {}) or {}
+    safety_html = ""
+    for item_key, item_val in safety.items():
+        status = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
+        note = item_val.get("note", "") if isinstance(item_val, dict) else ""
+        safety_html += f"<tr><td>{item_key}</td><td>{status}</td><td>{note}</td></tr>"
+    
+    corrective = log.get("corrective_actions", "N/A") if not log.get("corrective_actions_na") else "N/A"
+    incident = log.get("incident_log", "N/A") if not log.get("incident_log_na") else "N/A"
+    
+    html_content = f"""
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 40px; color: #333; }}
+            h1 {{ color: #1a5276; border-bottom: 2px solid #1a5276; padding-bottom: 10px; }}
+            h2 {{ color: #2c3e50; margin-top: 25px; }}
+            .header-info {{ display: flex; justify-content: space-between; margin-bottom: 20px; }}
+            .info-box {{ background: #f8f9fa; padding: 12px; border-radius: 6px; margin: 8px 0; }}
+            table {{ width: 100%; border-collapse: collapse; margin: 10px 0; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+            th {{ background: #1a5276; color: white; }}
+            tr:nth-child(even) {{ background: #f2f2f2; }}
+            .footer {{ margin-top: 30px; padding-top: 15px; border-top: 1px solid #ccc; font-size: 12px; color: #888; }}
+            .signature-box {{ border: 1px solid #ddd; padding: 20px; margin: 10px 0; min-height: 60px; }}
+        </style>
+    </head>
+    <body>
+        <h1>Daily Construction Log</h1>
+        <div class="info-box">
+            <strong>Project:</strong> {project_name}<br>
+            <strong>Address:</strong> {project_address}<br>
+            <strong>Date:</strong> {log_date}<br>
+            <strong>Weather:</strong> {weather}<br>
+            <strong>Workers on Site:</strong> {worker_count}<br>
+            <strong>Prepared By:</strong> {created_by}
+        </div>
+        
+        <h2>Notes</h2>
+        <p>{notes or 'No notes recorded.'}</p>
+        
+        <h2>Subcontractor Activity</h2>
+        <table>
+            <tr><th>Company</th><th>Trade</th><th>Workers</th><th>Hours</th><th>Description</th></tr>
+            {sub_html if sub_html else '<tr><td colspan="5">No subcontractor activity recorded.</td></tr>'}
+        </table>
+        
+        <h2>Safety Checklist</h2>
+        <table>
+            <tr><th>Item</th><th>Status</th><th>Notes</th></tr>
+            {safety_html if safety_html else '<tr><td colspan="3">No safety items recorded.</td></tr>'}
+        </table>
+        
+        <h2>Corrective Actions</h2>
+        <p>{corrective}</p>
+        
+        <h2>Incident Log</h2>
+        <p>{incident}</p>
+        
+        <div class="footer">
+            Generated by Blueview Construction Management • {datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p UTC')}
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Return HTML as downloadable file (can be printed to PDF by browser)
+    return Response(
+        content=html_content,
+        media_type="text/html",
+        headers={
+            "Content-Disposition": f'attachment; filename="daily-log-{log_date}.html"'
+        }
+    )
 
 # ==================== ROOT ENDPOINT ====================
 
