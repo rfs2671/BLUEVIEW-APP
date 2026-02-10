@@ -989,12 +989,20 @@ async def create_company(company_data: CompanyCreate, current_user = Depends(get
     
     return company_dict
 
-@api_router.delete("/owner/companies/{company_id}")
-async def delete_company(company_id: str, current_user = Depends(get_current_user)):
-    """Delete a company (owner only)"""
+@api_router.delete("/owner/companies/{company_id}", tags=["Owner"])
+async def hard_delete_company(company_id: str, current_user=Depends(get_current_user)):
+    """Hard delete a company and all its users (owner only)"""
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     
+    # Delete all users belonging to this company
+    await db.users.delete_many({"company_id": company_id})
+    
+    # Delete the company
+    await db.companies.delete_one({"_id": ObjectId(company_id)})
+    
+    return {"message": "Company and all users permanently deleted"}
+
     # Check no admins assigned
     admin_count = await db.users.count_documents({
         "company_id": company_id, 
