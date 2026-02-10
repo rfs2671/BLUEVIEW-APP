@@ -173,8 +173,8 @@ class WorkerCreate(BaseModel):
 class WorkerResponse(BaseModel):
     id: str
     name: str
-    phone: str
-    trade: str
+    phone: Optional[str] = None
+    trade: Optional[str] = None
     company: str
     company_id: Optional[str] = None
     status: str = "active"
