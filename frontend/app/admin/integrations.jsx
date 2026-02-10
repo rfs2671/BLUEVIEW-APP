@@ -86,12 +86,12 @@ export default function AdminIntegrationsScreen() {
   const handleConnectDropbox = async () => {
     setConnecting(true);
     try {
-      const { authorize_url } = await dropboxAPI.getAuthUrl();
+      const { auth_url } = await dropboxAPI.getAuthUrl();
       
       // Open Dropbox OAuth in browser
-      const supported = await Linking.canOpenURL(authorize_url);
+      const supported = await Linking.canOpenURL(auth_url);
       if (supported) {
-        await Linking.openURL(authorize_url);
+        await Linking.openURL(auth_url);
         // Show code input after opening auth URL
         setShowCodeInput(true);
         toast.info('Dropbox Login', 'Complete authorization in browser, then paste the code below');
