@@ -31,6 +31,23 @@ JWT_EXPIRATION_HOURS = 24
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
+# CORS - must be added immediately after app creation
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=[
+        "https://blue-view.app",
+        "https://www.blue-view.app",
+        "https://blueview.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8081",
+        "http://localhost:19006",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
@@ -2333,22 +2350,6 @@ async def root():
 @api_router.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=[
-        "https://blue-view.app",
-        "https://www.blue-view.app", 
-        "https://blueview.vercel.app",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:8081",
-        "http://localhost:19006",
-    ],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Include the router in the main app
 app.include_router(api_router)
