@@ -14,6 +14,9 @@ import {
   Briefcase,
   Smartphone,
   Cloud,
+  ClipboardList,
+  Clock,
+  FileText,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -30,24 +33,46 @@ import { useCheckIns } from '../src/hooks/useCheckIns';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const quickActions = [
-  { title: 'Projects', subtitle: 'Manage job sites', path: '/projects' },
-  { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers' },
-  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log' },
-  { title: 'Reports', subtitle: 'View & download', path: '/reports' },
+  { title: 'Projects', subtitle: 'Manage job sites', path: '/projects', icon: Building2 },
+  { title: 'Workers', subtitle: 'Daily sign-in log', path: '/workers', icon: Users },
+  { title: 'Daily Log', subtitle: 'Create site report', path: '/daily-log', icon: Clock },
+  { title: 'Reports', subtitle: 'View & download', path: '/reports', icon: FileText },
 ];
 
 const adminActions = [
-  { title: 'User Management', subtitle: 'Manage CPs & workers', path: '/admin/users', icon: UserCog },
+  { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
   { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
+  { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
+  { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
 ];
+
+// 2-column grid tile
+const ActionTile = ({ action, onPress }) => {
+  const [pressed, setPressed] = useState(false);
+  const Icon = action.icon || LayoutGrid;
+
+  return (
+    <Pressable
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
+      onPress={() => onPress(action.path)}
+      style={[styles.tile, pressed && styles.tilePressed]}
+    >
+      <IconPod size={38} style={styles.tileIcon}>
+        <Icon size={17} strokeWidth={1.5} color={colors.text.secondary} />
+      </IconPod>
+      <Text style={styles.tileTitle} numberOfLines={1}>{action.title}</Text>
+      <Text style={styles.tileSubtitle} numberOfLines={1}>{action.subtitle}</Text>
+    </Pressable>
+  );
+};
 
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
   
-  // Use hooks for data - auto-updates, works offline
   const { workers, loading: workersLoading } = useWorkers();
   const { projects, loading: projectsLoading } = useProjects();
   const { checkIns, loading: checkInsLoading, getActiveCheckIns } = useCheckIns();
@@ -58,14 +83,12 @@ export default function DashboardScreen() {
   const dayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
   const fullDate = today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-  // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, authLoading]);
 
-  // Count active check-ins (workers currently on site)
   useEffect(() => {
     const countActiveCheckIns = async () => {
       const active = await getActiveCheckIns();
@@ -181,46 +204,36 @@ export default function DashboardScreen() {
                 <SyncButton showLabel={true} />
               </View>
 
-              {/* Quick Actions */}
+              {/* Quick Actions — 2-column grid */}
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
-                <GlassCard style={styles.actionsCard}>
-                  {quickActions.map((action, index) => (
-                    <GlassListItem
-                      key={action.path}
-                      title={action.title}
-                      subtitle={action.subtitle}
-                      onPress={() => router.push(action.path)}
-                      showBorder={index < quickActions.length - 1}
-                      rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
-                    />
-                  ))}
+                <GlassCard style={styles.gridCard}>
+                  <View style={styles.tileGrid}>
+                    {quickActions.map((action) => (
+                      <ActionTile
+                        key={action.path}
+                        action={action}
+                        onPress={(path) => router.push(path)}
+                      />
+                    ))}
+                  </View>
                 </GlassCard>
               </View>
 
-              {/* Admin Actions (if admin) */}
+              {/* Admin Tools — 2-column grid */}
               {user?.role === 'admin' && (
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>ADMIN TOOLS</Text>
-                  <GlassCard style={styles.actionsCard}>
-                    {adminActions.map((action, index) => {
-                      const Icon = action.icon;
-                      return (
-                        <GlassListItem
+                  <GlassCard style={styles.gridCard}>
+                    <View style={styles.tileGrid}>
+                      {adminActions.map((action) => (
+                        <ActionTile
                           key={action.path}
-                          title={action.title}
-                          subtitle={action.subtitle}
-                          leftIcon={
-                            <IconPod size={36}>
-                              <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
-                            </IconPod>
-                          }
-                          onPress={() => router.push(action.path)}
-                          showBorder={index < adminActions.length - 1}
-                          rightIcon={<ChevronRight size={18} strokeWidth={1.5} color={colors.text.subtle} />}
+                          action={action}
+                          onPress={(path) => router.push(path)}
                         />
-                      );
-                    })}
+                      ))}
+                    </View>
                   </GlassCard>
                 </View>
               )}
@@ -235,132 +248,70 @@ export default function DashboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
+  container: { flex: 1 },
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  loadingText: { fontSize: 14, fontWeight: '600', color: colors.text.secondary, letterSpacing: 2 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  logoIcon: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  logoText: { fontSize: 16, fontWeight: '700', color: colors.text.primary, letterSpacing: 1 },
+  scrollView: { flex: 1 },
+  scrollContent: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
+  greetingSection: { marginBottom: spacing.xl },
+  greetingSmall: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.xs },
+  greetingLarge: { fontSize: 32, fontWeight: '700', color: colors.text.primary, marginBottom: spacing.sm },
+  dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  dayName: { fontSize: 14, fontWeight: '600', color: colors.text.primary },
+  dateDivider: { fontSize: 14, color: colors.text.subtle },
+  fullDate: { fontSize: 14, color: colors.text.secondary },
+  statsGrid: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xl },
+  statCard: { flex: 1 },
+  statIcon: { marginBottom: spacing.sm },
+  statValue: { fontSize: 28, fontWeight: '700', color: colors.text.primary, marginBottom: 2 },
+  statLabel: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1 },
+  syncSection: { marginBottom: spacing.xl },
+  section: { marginBottom: spacing.xl },
+  sectionTitle: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.md },
+
+  // Grid card wrapper
+  gridCard: {
+    padding: spacing.md,
   },
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  loadingText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: colors.text.secondary,
-    letterSpacing: 2,
-  },
-  header: {
+  tileGrid: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexWrap: 'wrap',
     gap: spacing.sm,
   },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  logoIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
+
+  // Individual tile — ~48% width so 2 per row with gap
+  tile: {
+    width: '48%',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: borderRadius.xl,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: 'rgba(255,255,255,0.08)',
+    padding: spacing.md,
+    alignItems: 'flex-start',
+    gap: 4,
   },
-  logoText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.text.primary,
-    letterSpacing: 1,
+  tilePressed: {
+    backgroundColor: 'rgba(255,255,255,0.09)',
+    borderColor: 'rgba(255,255,255,0.18)',
   },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: spacing.lg,
-    paddingBottom: 100,
-  },
-  greetingSection: {
-    marginBottom: spacing.xl,
-  },
-  greetingSmall: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.text.secondary,
-    letterSpacing: 1.5,
+  tileIcon: {
     marginBottom: spacing.xs,
+    backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  greetingLarge: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: colors.text.primary,
-    marginBottom: spacing.sm,
-  },
-  dateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  dayName: {
-    fontSize: 14,
+  tileTitle: {
+    fontSize: 13,
     fontWeight: '600',
     color: colors.text.primary,
+    letterSpacing: 0.2,
   },
-  dateDivider: {
-    fontSize: 14,
-    color: colors.text.subtle,
-  },
-  fullDate: {
-    fontSize: 14,
-    color: colors.text.secondary,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    gap: spacing.md,
-    marginBottom: spacing.xl,
-  },
-  statCard: {
-    flex: 1,
-  },
-  statIcon: {
-    marginBottom: spacing.sm,
-  },
-  statValue: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.text.primary,
-    marginBottom: 2,
-  },
-  statLabel: {
+  tileSubtitle: {
     fontSize: 11,
-    fontWeight: '600',
-    color: colors.text.secondary,
-    letterSpacing: 1,
-  },
-  syncSection: {
-    marginBottom: spacing.xl,
-  },
-  section: {
-    marginBottom: spacing.xl,
-  },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.text.secondary,
-    letterSpacing: 1.5,
-    marginBottom: spacing.md,
-  },
-  actionsCard: {
-    padding: 0,
-    overflow: 'hidden',
+    color: colors.text.muted,
+    letterSpacing: 0.1,
   },
 });
