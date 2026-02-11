@@ -277,6 +277,13 @@ class DailyLogCreate(BaseModel):
     incident_log_audit: Optional[Dict] = None
     superintendent_signature: Optional[Dict] = None
     competent_person_signature: Optional[Dict] = None
+    work_performed: Optional[str] = None
+    weather_temp: Optional[str] = None
+    weather_wind: Optional[str] = None
+    weather_condition: Optional[str] = None
+    is_locked: bool = False
+    locked_at: Optional[str] = None
+    locked_by: Optional[str] = None
 
 class DailyLogResponse(BaseModel):
     id: str
@@ -298,6 +305,13 @@ class DailyLogResponse(BaseModel):
     incident_log_audit: Optional[Dict] = None
     superintendent_signature: Optional[Dict] = None
     competent_person_signature: Optional[Dict] = None
+    work_performed: Optional[str] = None
+    weather_temp: Optional[str] = None
+    weather_wind: Optional[str] = None
+    weather_condition: Optional[str] = None
+    is_locked: bool = False
+    locked_at: Optional[str] = None
+    locked_by: Optional[str] = None
 
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
@@ -1789,6 +1803,15 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     log_dict["is_deleted"] = False
+
+    # Prevent duplicate log for same project + date
+    existing = await db.daily_logs.find_one({
+        "project_id": log_data.project_id,
+        "date": log_data.date,
+        "is_deleted": {"$ne": True}
+    })
+    if existing:
+        raise HTTPException(status_code=409, detail="A daily log already exists for this project and date.")
     
     # Get project to inject company_id
     project = await db.projects.find_one({"_id": ObjectId(log_data.project_id), "is_deleted": {"$ne": True}})
@@ -1802,6 +1825,11 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
 
 @api_router.put("/daily-logs/{log_id}")
 async def update_daily_log(log_id: str, update_data: dict, current_user = Depends(get_current_user)):
+    existing = await db.daily_logs.find_one({"_id": ObjectId(log_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Daily log not found")
+    if existing.get("is_locked"):
+        raise HTTPException(status_code=423, detail="This log is locked and cannot be edited.")
     """Update an existing daily log"""
     # Remove fields that shouldn't be updated directly
     update_data.pop("id", None)
@@ -3004,6 +3032,7 @@ async def startup_event():
     await db.projects.create_index([("company_id", 1), ("updated_at", -1)])
     await db.checkins.create_index([("company_id", 1), ("updated_at", -1)])
     await db.daily_logs.create_index([("company_id", 1), ("updated_at", -1)])
+    await db.daily_logs.create_index([("project_id", 1), ("date", 1)], unique=True, sparse=True)
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     
     # Create owner account if doesn't exist
