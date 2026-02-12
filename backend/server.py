@@ -61,6 +61,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ==================== ID HELPER ====================
+
+def to_query_id(id_str: str):
+    if not id_str:
+        return id_str
+    try:
+        return ObjectId(id_str)
+    except Exception:
+        return id_str
+
 # ==================== COMPANY MODEL ====================
 
 class Company(BaseModel):
@@ -75,7 +85,7 @@ class CompanyCreate(BaseModel):
 # ==================== MODELS ====================
 
 def serialize_id(obj):
-    """Convert ObjectId to string"""
+    """Convert MongoDB _id to string id"""
     if obj and '_id' in obj:
         obj['id'] = str(obj['_id'])
         del obj['_id']
@@ -434,7 +444,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         
         # For site devices, fetch from site_devices collection
         if site_mode:
-            device = await db.site_devices.find_one({"_id": ObjectId(user_id)})
+            device = await db.site_devices.find_one({"_id": to_query_id(user_id)})
             if not device:
                 raise HTTPException(status_code=401, detail="Device not found")
             
@@ -444,14 +454,14 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             
             # Get company_id from project
             if device.get("project_id"):
-                project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+                project = await db.projects.find_one({"_id": to_query_id(device["project_id"])})
                 if project:
                     device_data["company_id"] = project.get("company_id")
             
             return device_data
         
         # Regular user
-        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        user = await db.users.find_one({"_id": to_query_id(user_id)})
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
         
@@ -624,36 +634,37 @@ async def sync_push(request: SyncPushRequest, current_user = Depends(get_current
             # Handle creates
             for record in table_changes.get("created", []):
                 try:
-                    # Ensure company_id
                     record["company_id"] = company_id
                     record["is_deleted"] = False
-                    
-                    # Convert timestamps from milliseconds to datetime
+        
+                    if "id" in record:
+                        record["_id"] = record["id"]
+                        del record["id"]
+            
                     if "created_at" in record:
                         record["created_at"] = datetime.fromtimestamp(record["created_at"] / 1000, timezone.utc)
                     else:
                         record["created_at"] = datetime.now(timezone.utc)
-                    
+        
                     if "updated_at" in record:
                         record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, timezone.utc)
                     else:
                         record["updated_at"] = datetime.now(timezone.utc)
-                    
-                    # Convert other datetime fields for check_ins
+        
                     if "check_in_time" in record and isinstance(record["check_in_time"], (int, float)):
                         record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, timezone.utc)
                     if "check_out_time" in record and isinstance(record["check_out_time"], (int, float)):
                         record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, timezone.utc)
                     if "timestamp" in record and isinstance(record["timestamp"], (int, float)):
                         record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
-                    
-                    # Remove id field if present (MongoDB will generate _id)
-                    record.pop("id", None)
-                    
+
                     await collection.insert_one(record)
-                    logger.info(f"Created record in {collection_name}")
+                    logger.info(f"Created record in {collection_name} with ID {record['_id']}")
                 except Exception as e:
-                    logger.error(f"Error creating record in {collection_name}: {str(e)}")
+                    if "E11000" in str(e):
+                        logger.warning(f"Duplicate ID {record.get('_id')} in create, skipping.")
+                    else:
+                        logger.error(f"Error creating record in {collection_name}: {str(e)}")
             
             # Handle updates
             for record in table_changes.get("updated", []):
@@ -676,7 +687,7 @@ async def sync_push(request: SyncPushRequest, current_user = Depends(get_current
                         record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
                     
                     await collection.update_one(
-                        {"_id": ObjectId(record_id), "company_id": company_id},
+                        {"_id": to_query_id(record_id), "company_id": company_id},
                         {"$set": record}
                     )
                     logger.info(f"Updated record in {collection_name}")
@@ -687,7 +698,7 @@ async def sync_push(request: SyncPushRequest, current_user = Depends(get_current
             for record_id in table_changes.get("deleted", []):
                 try:
                     await collection.update_one(
-                        {"_id": ObjectId(record_id), "company_id": company_id},
+                        {"_id": to_query_id(record_id), "company_id": company_id},
                         {"$set": {
                             "is_deleted": True,
                             "updated_at": datetime.now(timezone.utc)
@@ -734,7 +745,7 @@ async def login(credentials: UserLogin):
         # Get company_id from project
         company_id = None
         if device.get("project_id"):
-            project = await db.projects.find_one({"_id": ObjectId(device["project_id"])})
+            project = await db.projects.find_one({"_id": to_query_id(device["project_id"])})
             if project:
                 company_id = project.get("company_id")
         
@@ -785,7 +796,7 @@ async def get_me(current_user = Depends(get_current_user)):
     if user.get("site_mode"):
         project_id = user.get("project_id")
         if project_id:
-            project = await db.projects.find_one({"_id": ObjectId(project_id)})
+            project = await db.projects.find_one({"_id": to_query_id(project_id)})
             if project:
                 user["project_name"] = project.get("name")
                 user["project"] = serialize_id(project)
@@ -845,7 +856,7 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
 
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
 async def get_admin_user_by_id(user_id: str, current_user = Depends(get_current_user)):
-    user = await db.users.find_one({"_id": ObjectId(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
+    user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse(**serialize_id(user))
@@ -860,21 +871,21 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": to_query_id(user_id)},
         {"$set": update_data}
     )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
     
-    user = await db.users.find_one({"_id": ObjectId(user_id)}, {"password": 0})
+    user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**serialize_id(user))
 
 @api_router.delete("/admin/users/{user_id}")
 async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": to_query_id(user_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -884,7 +895,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
 @api_router.post("/admin/users/{user_id}/assign-projects")
 async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_admin_user)):
     result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
+        {"_id": to_query_id(user_id)},
         {"$set": {
             "assigned_projects": project_ids.get("project_ids", []),
             "updated_at": datetime.now(timezone.utc)
@@ -931,7 +942,7 @@ async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(ge
 
 @api_router.get("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
 async def get_subcontractor(sub_id: str, current_user = Depends(get_current_user)):
-    sub = await db.subcontractors.find_one({"_id": ObjectId(sub_id), "is_deleted": {"$ne": True}}, {"password": 0})
+    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not sub:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     return SubcontractorResponse(**serialize_id(sub))
@@ -945,21 +956,21 @@ async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.subcontractors.update_one(
-        {"_id": ObjectId(sub_id)},
+        {"_id": to_query_id(sub_id)},
         {"$set": update_data}
     )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
     
-    sub = await db.subcontractors.find_one({"_id": ObjectId(sub_id)}, {"password": 0})
+    sub = await db.subcontractors.find_one({"_id": to_query_id(sub_id)}, {"password": 0})
     return SubcontractorResponse(**serialize_id(sub))
 
 @api_router.delete("/admin/subcontractors/{sub_id}")
 async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.subcontractors.update_one(
-        {"_id": ObjectId(sub_id)},
+        {"_id": to_query_id(sub_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -1013,7 +1024,7 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     await db.users.delete_many({"company_id": company_id})
     
     # Delete the company
-    await db.companies.delete_one({"_id": ObjectId(company_id)})
+    await db.companies.delete_one({"_id": to_query_id(company_id)})
     
     return {"message": "Company and all users permanently deleted"}
 
@@ -1026,7 +1037,7 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     if admin_count > 0:
         raise HTTPException(status_code=400, detail="Remove all admins from this company first")
     
-    result = await db.companies.delete_one({"_id": ObjectId(company_id)})
+    result = await db.companies.delete_one({"_id": to_query_id(company_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company not found")
     
@@ -1111,7 +1122,7 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     
     # Soft delete
     result = await db.users.update_one(
-        {"_id": ObjectId(admin_id), "role": "admin"},
+        {"_id": to_query_id(admin_id), "role": "admin"},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -1141,13 +1152,13 @@ async def update_admin_account(admin_id: str, admin_data: dict, current_user = D
     update_fields["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.users.update_one(
-        {"_id": ObjectId(admin_id), "role": "admin", "is_deleted": {"$ne": True}},
+        {"_id": to_query_id(admin_id), "role": "admin", "is_deleted": {"$ne": True}},
         {"$set": update_fields}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Admin not found")
     
-    admin = await db.users.find_one({"_id": ObjectId(admin_id)})
+    admin = await db.users.find_one({"_id": to_query_id(admin_id)})
     return serialize_id(admin)
 
 @api_router.post("/admin/migrate-company-data")
@@ -1252,7 +1263,7 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
 
 @api_router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user = Depends(get_current_user)):
-    project = await db.projects.find_one({"_id": ObjectId(project_id), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1269,21 +1280,21 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {"$set": update_data}
     )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
     return ProjectResponse(**serialize_id(project))
 
 @api_router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -1294,7 +1305,7 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
 
 @api_router.get("/projects/{project_id}/nfc-tags")
 async def get_project_nfc_tags(project_id: str, current_user = Depends(get_current_user)):
-    project = await db.projects.find_one({"_id": ObjectId(project_id), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project.get("nfc_tags", [])
@@ -1302,7 +1313,7 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
 @api_router.post("/projects/{project_id}/nfc-tags")
 async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
     # Get project and verify company access
-    project = await db.projects.find_one({"_id": ObjectId(project_id), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1330,7 +1341,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     
     # Also update project's nfc_tags array
     await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {
             "$push": {"nfc_tags": {"tag_id": tag_data.tag_id, "location": tag_data.location_description}},
             "$set": {"updated_at": now}
@@ -1338,7 +1349,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     )
     
     # Fetch updated project
-    updated_project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    updated_project = await db.projects.find_one({"_id": to_query_id(project_id)})
     return {
         "message": "NFC tag registered successfully",
         "tag_id": tag_data.tag_id,
@@ -1357,7 +1368,7 @@ async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depe
     
     # Remove from project's nfc_tags array
     await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {
             "$pull": {"nfc_tags": {"tag_id": tag_id}},
             "$set": {"updated_at": now}
@@ -1375,7 +1386,7 @@ async def get_nfc_tag_info(tag_id: str):
         raise HTTPException(status_code=404, detail="NFC tag not found or inactive")
     
     # Get project info
-    project = await db.projects.find_one({"_id": ObjectId(tag["project_id"]), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(tag["project_id"]), "is_deleted": {"$ne": True}})
     
     return NfcTagInfo(
         tag_id=tag["tag_id"],
@@ -1399,7 +1410,7 @@ async def get_checkin_info(project_id: str, tag_id: str):
         if not tag:
             raise HTTPException(status_code=404, detail="Invalid check-in link")
         
-        project = await db.projects.find_one({"_id": ObjectId(project_id), "is_deleted": {"$ne": True}})
+        project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
         
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1432,7 +1443,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         if not tag:
             raise HTTPException(status_code=404, detail="Invalid check-in")
         
-        project = await db.projects.find_one({"_id": ObjectId(checkin_data.project_id), "is_deleted": {"$ne": True}})
+        project = await db.projects.find_one({"_id": to_query_id(checkin_data.project_id), "is_deleted": {"$ne": True}})
         
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -1575,7 +1586,7 @@ async def register_worker(worker_data: WorkerCreate):
 
 @api_router.get("/workers/{worker_id}", response_model=WorkerResponse)
 async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
-    worker = await db.workers.find_one({"_id": ObjectId(worker_id), "is_deleted": {"$ne": True}})
+    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
     
@@ -1592,21 +1603,21 @@ async def update_worker(worker_id: str, worker_data: dict, current_user = Depend
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.workers.update_one(
-        {"_id": ObjectId(worker_id)},
+        {"_id": to_query_id(worker_id)},
         {"$set": update_data}
     )
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Worker not found")
     
-    worker = await db.workers.find_one({"_id": ObjectId(worker_id)})
+    worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
     return WorkerResponse(**serialize_id(worker))
 
 @api_router.delete("/workers/{worker_id}")
 async def delete_worker(worker_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.workers.update_one(
-        {"_id": ObjectId(worker_id)},
+        {"_id": to_query_id(worker_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -1656,13 +1667,13 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
     """Create a check-in from admin panel"""
     worker = None
     if checkin_data.worker_id:
-        worker = await db.workers.find_one({"_id": ObjectId(checkin_data.worker_id), "is_deleted": {"$ne": True}})
+        worker = await db.workers.find_one({"_id": to_query_id(checkin_data.worker_id), "is_deleted": {"$ne": True}})
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
     
     project = None
     if checkin_data.project_id:
-        project = await db.projects.find_one({"_id": ObjectId(checkin_data.project_id), "is_deleted": {"$ne": True}})
+        project = await db.projects.find_one({"_id": to_query_id(checkin_data.project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1695,7 +1706,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
     # Find worker
     worker = None
     if checkin_data.worker_id:
-        worker = await db.workers.find_one({"_id": ObjectId(checkin_data.worker_id), "is_deleted": {"$ne": True}})
+        worker = await db.workers.find_one({"_id": to_query_id(checkin_data.worker_id), "is_deleted": {"$ne": True}})
     elif checkin_data.phone:
         worker = await db.workers.find_one({"phone": checkin_data.phone, "is_deleted": {"$ne": True}})
     
@@ -1707,9 +1718,9 @@ async def check_in_worker(checkin_data: CheckInCreate):
     if checkin_data.tag_id:
         tag = await db.nfc_tags.find_one({"tag_id": checkin_data.tag_id, "status": "active", "is_deleted": {"$ne": True}})
         if tag:
-            project = await db.projects.find_one({"_id": ObjectId(tag["project_id"]), "is_deleted": {"$ne": True}})
+            project = await db.projects.find_one({"_id": to_query_id(tag["project_id"]), "is_deleted": {"$ne": True}})
     elif checkin_data.project_id:
-        project = await db.projects.find_one({"_id": ObjectId(checkin_data.project_id), "is_deleted": {"$ne": True}})
+        project = await db.projects.find_one({"_id": to_query_id(checkin_data.project_id), "is_deleted": {"$ne": True}})
     
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1750,7 +1761,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
 async def check_out_worker(checkin_id: str, current_user = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     result = await db.checkins.update_one(
-        {"_id": ObjectId(checkin_id)},
+        {"_id": to_query_id(checkin_id)},
         {"$set": {"check_out_time": now, "status": "checked_out", "updated_at": now}}
     )
     if result.matched_count == 0:
@@ -1803,7 +1814,7 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     log_dict["is_deleted"] = False
-
+	
     # Prevent duplicate log for same project + date
     existing = await db.daily_logs.find_one({
         "project_id": log_data.project_id,
@@ -1814,7 +1825,7 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
         raise HTTPException(status_code=409, detail="A daily log already exists for this project and date.")
     
     # Get project to inject company_id
-    project = await db.projects.find_one({"_id": ObjectId(log_data.project_id), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(log_data.project_id), "is_deleted": {"$ne": True}})
     if project:
         log_dict["company_id"] = project.get("company_id")
     
@@ -1825,13 +1836,15 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
 
 @api_router.put("/daily-logs/{log_id}")
 async def update_daily_log(log_id: str, update_data: dict, current_user = Depends(get_current_user)):
-    existing = await db.daily_logs.find_one({"_id": ObjectId(log_id)})
+    """Update an existing daily log"""
+    existing = await db.daily_logs.find_one({"_id": to_query_id(log_id)})
+    
     if not existing:
         raise HTTPException(status_code=404, detail="Daily log not found")
+    
     if existing.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is locked and cannot be edited.")
-    """Update an existing daily log"""
-    # Remove fields that shouldn't be updated directly
+    
     update_data.pop("id", None)
     update_data.pop("_id", None)
     update_data.pop("created_at", None)
@@ -1842,21 +1855,17 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     update_data["updated_by"] = current_user.get("id")
     update_data["updated_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     
-    result = await db.daily_logs.update_one(
-        {"_id": ObjectId(log_id)},
+    await db.daily_logs.update_one(
+        {"_id": to_query_id(log_id)},
         {"$set": update_data}
     )
     
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Daily log not found")
-    
-    # Return updated log
-    log = await db.daily_logs.find_one({"_id": ObjectId(log_id)})
+    log = await db.daily_logs.find_one({"_id": to_query_id(log_id)})
     return serialize_id(log)
 
 @api_router.get("/daily-logs/{log_id}", response_model=DailyLogResponse)
 async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
-    log = await db.daily_logs.find_one({"_id": ObjectId(log_id), "is_deleted": {"$ne": True}})
+    log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
     return DailyLogResponse(**serialize_id(log))
@@ -1891,7 +1900,7 @@ async def get_site_devices(admin = Depends(get_admin_user)):
         device_data = serialize_id(device)
         # Get project name
         if device.get("project_id"):
-            project = await db.projects.find_one({"_id": ObjectId(device["project_id"]), "is_deleted": {"$ne": True}})
+            project = await db.projects.find_one({"_id": to_query_id(device["project_id"]), "is_deleted": {"$ne": True}})
             if project:
                 device_data["project_name"] = project.get("name")
                 # Filter by company
@@ -1909,7 +1918,7 @@ async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_
         raise HTTPException(status_code=400, detail="Username already exists")
     
     # Verify project exists and belongs to admin's company
-    project = await db.projects.find_one({"_id": ObjectId(device_data.project_id), "is_deleted": {"$ne": True}})
+    project = await db.projects.find_one({"_id": to_query_id(device_data.project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -1943,13 +1952,13 @@ async def create_site_device(device_data: SiteDeviceCreate, admin = Depends(get_
 @api_router.get("/admin/site-devices/{device_id}")
 async def get_site_device(device_id: str, admin = Depends(get_admin_user)):
     """Get a specific site device"""
-    device = await db.site_devices.find_one({"_id": ObjectId(device_id), "is_deleted": {"$ne": True}}, {"password": 0})
+    device = await db.site_devices.find_one({"_id": to_query_id(device_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not device:
         raise HTTPException(status_code=404, detail="Site device not found")
     
     device_data = serialize_id(device)
     if device.get("project_id"):
-        project = await db.projects.find_one({"_id": ObjectId(device["project_id"]), "is_deleted": {"$ne": True}})
+        project = await db.projects.find_one({"_id": to_query_id(device["project_id"]), "is_deleted": {"$ne": True}})
         device_data["project_name"] = project.get("name") if project else "Unknown"
     
     return device_data
@@ -1972,7 +1981,7 @@ async def update_site_device(device_id: str, update_data: dict, admin = Depends(
     update_fields["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.site_devices.update_one(
-        {"_id": ObjectId(device_id)},
+        {"_id": to_query_id(device_id)},
         {"$set": update_fields}
     )
     
@@ -1986,7 +1995,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     """Delete a site device"""
     # Soft delete
     result = await db.site_devices.update_one(
-        {"_id": ObjectId(device_id)},
+        {"_id": to_query_id(device_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -2045,7 +2054,7 @@ async def get_project_checklists(project_id: str, current_user = Depends(get_cur
     
     result = []
     for assignment in assignments:
-        checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+        checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
         if checklist:
             item = serialize_id(dict(assignment))
             item["checklist_title"] = checklist.get("title", "")
@@ -2070,7 +2079,7 @@ async def get_checklists(admin = Depends(get_admin_user)):
         serialized = serialize_id(cl)
         # Get creator name
         if cl.get("created_by"):
-            creator = await db.users.find_one({"_id": ObjectId(cl["created_by"])})
+            creator = await db.users.find_one({"_id": to_query_id(cl["created_by"])})
             serialized["created_by_name"] = creator.get("name") if creator else "Unknown"
         result.append(serialized)
     return result
@@ -2113,13 +2122,13 @@ async def create_checklist(checklist_data: ChecklistCreate, admin = Depends(get_
 @api_router.get("/admin/checklists/{checklist_id}")
 async def get_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     """Get a single checklist by ID"""
-    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id), "is_deleted": {"$ne": True}})
+    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}})
     if not checklist:
         raise HTTPException(status_code=404, detail="Checklist not found")
     
     serialized = serialize_id(checklist)
     if checklist.get("created_by"):
-        creator = await db.users.find_one({"_id": ObjectId(checklist["created_by"])})
+        creator = await db.users.find_one({"_id": to_query_id(checklist["created_by"])})
         serialized["created_by_name"] = creator.get("name") if creator else "Unknown"
     
     return serialized
@@ -2145,20 +2154,20 @@ async def update_checklist(checklist_id: str, checklist_data: dict, admin = Depe
     update_fields["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.checklists.update_one(
-        {"_id": ObjectId(checklist_id), "is_deleted": {"$ne": True}},
+        {"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}},
         {"$set": update_fields}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Checklist not found")
     
-    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id)})
+    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id)})
     return serialize_id(checklist)
 
 @api_router.delete("/admin/checklists/{checklist_id}")
 async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     """Soft delete a checklist"""
     result = await db.checklists.update_one(
-        {"_id": ObjectId(checklist_id)},
+        {"_id": to_query_id(checklist_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
@@ -2175,7 +2184,7 @@ async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
 @api_router.post("/admin/checklists/{checklist_id}/assign")
 async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignmentCreate, admin = Depends(get_admin_user)):
     """Assign a checklist to projects and users"""
-    checklist = await db.checklists.find_one({"_id": ObjectId(checklist_id), "is_deleted": {"$ne": True}})
+    checklist = await db.checklists.find_one({"_id": to_query_id(checklist_id), "is_deleted": {"$ne": True}})
     if not checklist:
         raise HTTPException(status_code=404, detail="Checklist not found")
     
@@ -2199,13 +2208,13 @@ async def assign_checklist(checklist_id: str, assignment_data: ChecklistAssignme
             continue
         
         # Get project name
-        project = await db.projects.find_one({"_id": ObjectId(project_id)})
+        project = await db.projects.find_one({"_id": to_query_id(project_id)})
         project_name = project.get("name", "") if project else ""
         
         # Get user details
         assigned_users = []
         for user_id in assignment_data.user_ids:
-            user = await db.users.find_one({"_id": ObjectId(user_id)})
+            user = await db.users.find_one({"_id": to_query_id(user_id)})
             if user:
                 assigned_users.append({"id": user_id, "name": user.get("name", "")})
         
@@ -2269,7 +2278,7 @@ async def get_assigned_checklists(current_user = Depends(get_current_user)):
     
     result = []
     for assignment in assignments:
-        checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+        checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
         if not checklist:
             continue
         
@@ -2293,13 +2302,13 @@ async def get_assigned_checklists(current_user = Depends(get_current_user)):
 async def get_assignment_details(assignment_id: str, current_user = Depends(get_current_user)):
     """Get details of a specific checklist assignment"""
     assignment = await db.checklist_assignments.find_one({
-        "_id": ObjectId(assignment_id),
+        "_id": to_query_id(assignment_id),
         "is_deleted": {"$ne": True}
     })
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     
-    checklist = await db.checklists.find_one({"_id": ObjectId(assignment["checklist_id"])})
+    checklist = await db.checklists.find_one({"_id": to_query_id(assignment["checklist_id"])})
     
     serialized = serialize_id(dict(assignment))
     if checklist:
@@ -2320,7 +2329,7 @@ async def get_assignment_details(assignment_id: str, current_user = Depends(get_
 async def complete_checklist(assignment_id: str, completion_data: ChecklistCompletionUpdate, current_user = Depends(get_current_user)):
     """Submit or update checklist completion"""
     assignment = await db.checklist_assignments.find_one({
-        "_id": ObjectId(assignment_id),
+        "_id": to_query_id(assignment_id),
         "is_deleted": {"$ne": True}
     })
     if not assignment:
@@ -2465,7 +2474,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
         account_name = account_info.get("name", {}).get("display_name", "")
     
     # Get user's company
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    user = await db.users.find_one({"_id": to_query_id(user_id)})
     company_id = user.get("company_id") if user else None
     
     now = datetime.now(timezone.utc)
@@ -2667,7 +2676,7 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
     
     now = datetime.now(timezone.utc)
     await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {"$set": {
             "dropbox_folder_path": folder_path,
             "dropbox_linked_at": now,
@@ -2681,7 +2690,7 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
     """Get files from project's linked Dropbox folder"""
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -2719,7 +2728,7 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 @api_router.post("/projects/{project_id}/sync-dropbox")
 async def sync_project_dropbox(project_id: str, current_user = Depends(get_current_user)):
     """Sync/refresh project files from Dropbox"""
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -2743,7 +2752,7 @@ async def sync_project_dropbox(project_id: str, current_user = Depends(get_curre
     
     # Update sync timestamp
     await db.projects.update_one(
-        {"_id": ObjectId(project_id)},
+        {"_id": to_query_id(project_id)},
         {"$set": {"dropbox_last_synced": datetime.now(timezone.utc)}}
     )
     
@@ -2752,7 +2761,7 @@ async def sync_project_dropbox(project_id: str, current_user = Depends(get_curre
 @api_router.get("/projects/{project_id}/dropbox-file-url")
 async def get_dropbox_file_url(project_id: str, file_path: str, current_user = Depends(get_current_user)):
     """Get a temporary download/preview URL for a Dropbox file"""
-    project = await db.projects.find_one({"_id": ObjectId(project_id)})
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
@@ -2778,14 +2787,14 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     from fastapi.responses import Response
     import io
     
-    log = await db.daily_logs.find_one({"_id": ObjectId(log_id), "is_deleted": {"$ne": True}})
+    log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
     
     # Get project info
     project = None
     if log.get("project_id"):
-        project = await db.projects.find_one({"_id": ObjectId(log["project_id"])})
+        project = await db.projects.find_one({"_id": to_query_id(log["project_id"])})
     
     project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
     project_address = project.get("address", "") if project else ""
@@ -2897,7 +2906,7 @@ async def upload_daily_log_photo(
     caption: str = Form(default=""),
 ):
     """Upload a photo to a daily log, optionally linked to a subcontractor card"""
-    log = await db.daily_logs.find_one({"_id": ObjectId(log_id), "is_deleted": {"$ne": True}})
+    log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
     
@@ -2960,7 +2969,7 @@ async def get_daily_log_photos(log_id: str, current_user = Depends(get_current_u
 async def get_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
     """Get a single photo with base64 data"""
     photo = await db.daily_log_photos.find_one({
-        "_id": ObjectId(photo_id),
+        "_id": to_query_id(photo_id),
         "daily_log_id": log_id,
         "is_deleted": {"$ne": True}
     })
@@ -2973,7 +2982,7 @@ async def get_daily_log_photo_image(log_id: str, photo_id: str):
     """Serve photo as raw image binary"""
     from fastapi.responses import Response
     photo = await db.daily_log_photos.find_one({
-        "_id": ObjectId(photo_id),
+        "_id": to_query_id(photo_id),
         "daily_log_id": log_id,
         "is_deleted": {"$ne": True}
     })
@@ -2986,7 +2995,7 @@ async def get_daily_log_photo_image(log_id: str, photo_id: str):
 async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
     """Delete a photo (soft delete)"""
     result = await db.daily_log_photos.update_one(
-        {"_id": ObjectId(photo_id), "daily_log_id": log_id},
+        {"_id": to_query_id(photo_id), "daily_log_id": log_id},
         {"$set": {"is_deleted": True}}
     )
     if result.matched_count == 0:
