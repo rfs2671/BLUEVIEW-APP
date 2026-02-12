@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>BlueView Check-In</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0e1a;--surface:rgba(255,255,255,0.06);--surface2:rgba(255,255,255,0.1);
+  --border:rgba(255,255,255,0.08);--blue:#3b82f6;--blue-glow:rgba(59,130,246,0.3);
+  --green:#22c55e;--green-glow:rgba(34,197,94,0.25);--red:#ef4444;
+  --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;
+  --radius:16px;--radius-sm:10px;
+}
+html,body{height:100%;overflow-x:hidden}
+body{
+  font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);
+  min-height:100dvh;position:relative;
+}
+body::before{
+  content:'';position:fixed;inset:0;
+  background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(59,130,246,0.12),transparent 70%),
+             radial-gradient(ellipse 60% 40% at 80% 100%,rgba(34,197,94,0.06),transparent);
+  pointer-events:none;z-index:0;
+}
+
+.app{position:relative;z-index:1;max-width:440px;margin:0 auto;padding:16px 16px 40px;min-height:100dvh;display:flex;flex-direction:column}
+
+/* Header */
+.header{text-align:center;padding:20px 0 8px}
+.header .logo{font-size:13px;letter-spacing:4px;font-weight:700;color:var(--blue);font-family:'JetBrains Mono',monospace}
+.header .title{font-size:22px;font-weight:700;margin-top:4px}
+
+/* Site card */
+.site-card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;margin:16px 0;backdrop-filter:blur(20px);
+}
+.site-card .site-name{font-size:17px;font-weight:600}
+.site-card .site-loc{font-size:13px;color:var(--text2);margin-top:2px}
+.site-card .site-co{font-size:12px;color:var(--text3);margin-top:6px;font-family:'JetBrains Mono',monospace;letter-spacing:0.5px}
+
+/* Steps indicator */
+.steps{display:flex;gap:6px;margin:16px 0 20px;padding:0 4px}
+.steps .dot{flex:1;height:4px;border-radius:4px;background:var(--surface2);transition:all .4s}
+.steps .dot.active{background:var(--blue)}
+.steps .dot.done{background:var(--green)}
+
+/* Cards */
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;backdrop-filter:blur(20px);margin-bottom:16px;
+  animation:fadeUp .4s ease;
+}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+
+.card-title{font-size:16px;font-weight:600;margin-bottom:4px}
+.card-desc{font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.5}
+
+/* Inputs */
+.input-group{margin-bottom:14px}
+.input-label{font-size:11px;font-weight:600;letter-spacing:1px;color:var(--text3);margin-bottom:6px;text-transform:uppercase}
+input[type=text],input[type=tel],select{
+  width:100%;padding:13px 14px;background:rgba(255,255,255,0.04);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);font-size:15px;font-family:inherit;
+  transition:border .2s;appearance:none;-webkit-appearance:none;
+}
+input:focus,select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-glow)}
+input::placeholder{color:var(--text3)}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2394a3b8'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:36px}
+select option{background:#1e293b;color:#f1f5f9}
+
+/* Buttons */
+.btn{
+  width:100%;padding:15px;border:none;border-radius:var(--radius-sm);font-size:15px;
+  font-weight:600;font-family:inherit;cursor:pointer;transition:all .2s;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+}
+.btn-primary{background:var(--blue);color:#fff}
+.btn-primary:active{transform:scale(0.98);background:#2563eb}
+.btn-primary:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.btn-success{background:var(--green);color:#fff}
+.btn-success:active{transform:scale(0.98)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-outline:active{background:var(--surface)}
+
+/* Camera */
+.camera-zone{
+  border:2px dashed var(--border);border-radius:var(--radius);padding:40px 20px;
+  text-align:center;cursor:pointer;transition:all .3s;position:relative;overflow:hidden;
+}
+.camera-zone:active{border-color:var(--blue);background:rgba(59,130,246,0.05)}
+.camera-zone .cam-icon{font-size:40px;margin-bottom:8px;display:block}
+.camera-zone .cam-text{font-size:14px;color:var(--text2)}
+.camera-zone .cam-hint{font-size:12px;color:var(--text3);margin-top:4px}
+.camera-zone img{max-width:100%;max-height:200px;border-radius:8px;margin-top:8px}
+#fileInput{display:none}
+
+/* OCR result */
+.ocr-fields{display:grid;gap:10px}
+.ocr-field{background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.15);border-radius:var(--radius-sm);padding:10px 12px}
+.ocr-field .label{font-size:10px;font-weight:600;letter-spacing:1px;color:var(--green);text-transform:uppercase}
+.ocr-field .value{font-size:15px;margin-top:2px;font-weight:500}
+.ocr-field .value.empty{color:var(--text3);font-style:italic;font-weight:400}
+
+/* Checklist */
+.checklist{list-style:none}
+.checklist li{
+  display:flex;align-items:flex-start;gap:12px;padding:12px 0;
+  border-bottom:1px solid var(--border);font-size:14px;line-height:1.4;
+}
+.checklist li:last-child{border-bottom:none}
+.check-box{
+  width:24px;height:24px;min-width:24px;border:2px solid var(--border);border-radius:6px;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .2s;
+  margin-top:1px;
+}
+.check-box.checked{background:var(--green);border-color:var(--green)}
+.check-box.checked::after{content:'✓';color:#fff;font-size:14px;font-weight:700}
+.check-count{font-size:12px;color:var(--text3);margin-top:12px;text-align:center;font-family:'JetBrains Mono',monospace}
+
+/* Success */
+.success-screen{text-align:center;padding:40px 0;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.success-icon{width:80px;height:80px;border-radius:50%;background:var(--green-glow);display:flex;align-items:center;justify-content:center;font-size:40px;margin-bottom:16px;animation:popIn .5s cubic-bezier(0.175,0.885,0.32,1.275)}
+@keyframes popIn{from{transform:scale(0)}to{transform:scale(1)}}
+.success-title{font-size:22px;font-weight:700}
+.success-sub{font-size:14px;color:var(--text2);margin-top:6px;line-height:1.5}
+.success-time{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--blue);margin-top:12px}
+
+/* Returning worker */
+.returning-card{text-align:center;padding:32px 20px}
+.returning-avatar{width:64px;height:64px;border-radius:50%;background:var(--blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;margin:0 auto 12px}
+.returning-name{font-size:20px;font-weight:700}
+.returning-info{font-size:13px;color:var(--text2);margin-top:4px}
+.returning-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);border-radius:20px;padding:4px 12px;font-size:12px;color:var(--green);margin-top:12px;font-weight:500}
+
+/* Loading */
+.spinner{width:20px;height:20px;border:2px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-overlay{position:fixed;inset:0;background:rgba(10,14,26,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:100;gap:12px}
+.loading-overlay .msg{font-size:14px;color:var(--text2)}
+
+/* Error */
+.error-toast{
+  position:fixed;top:16px;left:16px;right:16px;max-width:440px;margin:0 auto;
+  background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.3);
+  border-radius:var(--radius-sm);padding:12px 16px;color:#fca5a5;font-size:13px;
+  z-index:200;animation:fadeUp .3s;display:none;
+}
+
+/* Not me link */
+.not-me{font-size:13px;color:var(--text3);text-align:center;margin-top:12px;cursor:pointer;text-decoration:underline}
+.not-me:active{color:var(--text2)}
+
+/* Phone input for returning */
+.phone-entry{margin:20px 0}
+
+/* Hide sections */
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">BLUEVIEW</div>
+    <div class="title">Worker Check-In</div>
+  </div>
+
+  <!-- Site info (populated by JS) -->
+  <div class="site-card" id="siteCard">
+    <div class="site-name" id="siteName">Loading...</div>
+    <div class="site-loc" id="siteLoc"></div>
+    <div class="site-co" id="siteCo"></div>
+  </div>
+
+  <!-- Error toast -->
+  <div class="error-toast" id="errorToast"></div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay hidden" id="loadingOverlay">
+    <div class="spinner" style="width:32px;height:32px;border-width:3px"></div>
+    <div class="msg" id="loadingMsg">Loading...</div>
+  </div>
+
+  <!-- ========== SCREEN: PHONE ENTRY (first thing) ========== -->
+  <div id="screenPhone">
+    <div class="card">
+      <div class="card-title">Enter Your Phone Number</div>
+      <div class="card-desc">We'll check if you've registered before.</div>
+      <div class="input-group">
+        <div class="input-label">Phone Number</div>
+        <input type="tel" id="phoneInput" placeholder="(555) 123-4567" inputmode="numeric" autocomplete="tel">
+      </div>
+      <button class="btn btn-primary" id="btnPhoneLookup" onclick="lookupWorker()">Continue</button>
+    </div>
+  </div>
+
+  <!-- ========== SCREEN: RETURNING WORKER ========== -->
+  <div id="screenReturning" class="hidden">
+    <div class="card returning-card">
+      <div class="returning-avatar" id="retAvatar"></div>
+      <div class="returning-name" id="retName"></div>
+      <div class="returning-info" id="retInfo"></div>
+      <div class="returning-badge">✓ Registered</div>
+    </div>
+    <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()">
+      ✓ &nbsp;Check In Now
+    </button>
+    <div class="not-me" onclick="notMe()">Not me? Register as new worker</div>
+  </div>
+
+  <!-- ========== SCREEN: NEW WORKER REGISTRATION ========== -->
+  <div id="screenRegister" class="hidden">
+    <!-- Steps -->
+    <div class="steps" id="regSteps">
+      <div class="dot active" data-step="1"></div>
+      <div class="dot" data-step="2"></div>
+      <div class="dot" data-step="3"></div>
+    </div>
+
+    <!-- Step 1: OSHA Card -->
+    <div id="step1">
+      <div class="card">
+        <div class="card-title">📋 OSHA / SST Card</div>
+        <div class="card-desc">Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.</div>
+        <div class="camera-zone" id="cameraZone" onclick="document.getElementById('fileInput').click()">
+          <span class="cam-icon">📸</span>
+          <div class="cam-text">Tap to take photo</div>
+          <div class="cam-hint">or choose from gallery</div>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
+        <div id="ocrResults" class="hidden" style="margin-top:16px">
+          <div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:10px">✓ Card scanned successfully</div>
+          <div class="ocr-fields" id="ocrFields"></div>
+        </div>
+        <div style="margin-top:16px">
+          <div class="input-group">
+            <div class="input-label">Phone Number</div>
+            <input type="tel" id="regPhone" placeholder="(555) 123-4567" inputmode="numeric">
+          </div>
+        </div>
+        <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled>Next: Select Company</button>
+      </div>
+    </div>
+
+    <!-- Step 2: Company Selection -->
+    <div id="step2" class="hidden">
+      <div class="card">
+        <div class="card-title">🏗️ Select Your Company</div>
+        <div class="card-desc">Choose the company you work for on this project.</div>
+        <div class="input-group">
+          <div class="input-label">Company</div>
+          <select id="companySelect">
+            <option value="">Loading companies...</option>
+          </select>
+        </div>
+        <div class="input-group" id="otherCompanyGroup" class="hidden">
+          <div class="input-label">Company Name</div>
+          <input type="text" id="otherCompanyInput" placeholder="Enter company name">
+        </div>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn btn-outline" onclick="goStep(1)" style="flex:1">Back</button>
+          <button class="btn btn-primary" id="btnStep2Next" onclick="goStep(3)" style="flex:2">Next: Safety Orientation</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Safety Orientation -->
+    <div id="step3" class="hidden">
+      <div class="card">
+        <div class="card-title">🛡️ Site Safety Orientation</div>
+        <div class="card-desc">NYC DOB requires all workers to complete a site-specific safety orientation before starting work (§3301.11). Check each item after review.</div>
+        <ul class="checklist" id="safetyChecklist"></ul>
+        <div class="check-count" id="checkCount">0 / 0 completed</div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn btn-outline" onclick="goStep(2)" style="flex:1">Back</button>
+          <button class="btn btn-success" id="btnSubmitReg" onclick="submitRegistration()" disabled style="flex:2">Complete Check-In</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== SCREEN: SUCCESS ========== -->
+  <div id="screenSuccess" class="hidden">
+    <div class="success-screen">
+      <div class="success-icon">✓</div>
+      <div class="success-title" id="successTitle">Checked In!</div>
+      <div class="success-sub" id="successSub"></div>
+      <div class="success-time" id="successTime"></div>
+    </div>
+  </div>
+
+  <!-- ========== SCREEN: ERROR ========== -->
+  <div id="screenError" class="hidden">
+    <div style="text-align:center;padding:60px 20px">
+      <div style="font-size:48px;margin-bottom:12px">⚠️</div>
+      <div style="font-size:18px;font-weight:600" id="errorTitle">Invalid Check-In Link</div>
+      <div style="font-size:14px;color:var(--text2);margin-top:8px" id="errorDesc">This link is not valid. Please contact your supervisor.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== CONFIG ====================
+const API_BASE = window.location.origin + '/api';
+const LS_WORKER_ID = 'bv_worker_id';
+const LS_WORKER_PHONE = 'bv_worker_phone';
+const LS_WORKER_NAME = 'bv_worker_name';
+
+// NYC DOB Site Safety Orientation items (§3301.11)
+const SAFETY_ITEMS = [
+  'Site-specific hazards and hazardous activities have been reviewed',
+  'Emergency procedures, exits, and muster points identified',
+  'Fall protection requirements for this site reviewed',
+  'Required PPE (hard hat, safety glasses, vest, boots, gloves) identified',
+  'Scaffold safety procedures reviewed',
+  'Electrical safety and lockout/tagout procedures reviewed',
+  'Fire protection and hot work permit procedures reviewed',
+  'Housekeeping and material storage requirements reviewed',
+  'Excavation and trenching safety reviewed (if applicable)',
+  'Crane and rigging safety procedures reviewed (if applicable)',
+  'Worker right to refuse unsafe work acknowledged',
+  'Emergency contact numbers and first aid locations identified',
+];
+
+// ==================== STATE ====================
+let projectId = '';
+let tagId = '';
+let siteInfo = null;
+let companies = [];
+let oshaImage = null;  // base64
+let oshaData = null;   // OCR results
+let checkedItems = new Set();
+let returningWorker = null;
+
+// ==================== INIT ====================
+(async function init() {
+  // Parse URL: /checkin/{tag_id} (NFC format) or /checkin/{project_id}/{tag_id}
+  const path = window.location.pathname;
+  const parts = path.split('/').filter(Boolean);
+  
+  const checkinIdx = parts.indexOf('checkin');
+  if (checkinIdx >= 0) {
+    const remaining = parts.slice(checkinIdx + 1);
+    if (remaining.length === 1) {
+      // Format: /checkin/{tag_id} — need to look up project from tag
+      tagId = remaining[0];
+    } else if (remaining.length >= 2) {
+      // Format: /checkin/{project_id}/{tag_id}
+      projectId = remaining[0];
+      tagId = remaining[1];
+    }
+  }
+  
+  // Fallback to query params
+  if (!tagId) {
+    const params = new URLSearchParams(window.location.search);
+    projectId = params.get('project_id') || projectId;
+    tagId = params.get('tag_id') || tagId;
+  }
+
+  if (!tagId) {
+    showScreen('screenError');
+    return;
+  }
+
+  // If no project_id, look up from tag
+  if (!projectId) {
+    try {
+      const tagInfo = await api(`/nfc-tags/${tagId}/info`);
+      projectId = tagInfo.project_id;
+    } catch (e) {
+      showScreen('screenError');
+      document.getElementById('errorDesc').textContent = 'This NFC tag is not registered to any project.';
+      return;
+    }
+  }
+
+  // Load site info
+  try {
+    const res = await api(`/checkin/${projectId}/${tagId}/info`);
+    siteInfo = res;
+    document.getElementById('siteName').textContent = res.project_name;
+    document.getElementById('siteLoc').textContent = res.location || 'Check-In Point';
+    document.getElementById('siteCo').textContent = res.company_name || '';
+  } catch (e) {
+    showScreen('screenError');
+    return;
+  }
+
+  // Load companies in background
+  loadCompanies();
+
+  // Build safety checklist
+  buildSafetyChecklist();
+
+  // Check localStorage for returning worker
+  const savedPhone = localStorage.getItem(LS_WORKER_PHONE);
+  const savedId = localStorage.getItem(LS_WORKER_ID);
+  
+  if (savedPhone && savedId) {
+    // Try lookup
+    try {
+      const lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone });
+      if (lookup.found) {
+        returningWorker = lookup;
+        showReturningScreen(lookup);
+        return;
+      }
+    } catch (e) {
+      // Fall through to phone entry
+    }
+    // Clear stale data
+    localStorage.removeItem(LS_WORKER_ID);
+    localStorage.removeItem(LS_WORKER_PHONE);
+    localStorage.removeItem(LS_WORKER_NAME);
+  }
+
+  // Show phone entry
+  showScreen('screenPhone');
+})();
+
+// ==================== API HELPER ====================
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API_BASE + path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: 'Request failed' }));
+    throw new Error(err.detail || 'Request failed');
+  }
+  return res.json();
+}
+
+// ==================== SCREENS ====================
+function showScreen(id) {
+  ['screenPhone', 'screenReturning', 'screenRegister', 'screenSuccess', 'screenError'].forEach(s => {
+    document.getElementById(s).classList.toggle('hidden', s !== id);
+  });
+}
+
+function showLoading(msg) {
+  document.getElementById('loadingMsg').textContent = msg || 'Loading...';
+  document.getElementById('loadingOverlay').classList.remove('hidden');
+}
+function hideLoading() {
+  document.getElementById('loadingOverlay').classList.add('hidden');
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorToast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 4000);
+}
+
+// ==================== PHONE LOOKUP ====================
+async function lookupWorker() {
+  const phone = cleanPhone(document.getElementById('phoneInput').value);
+  if (phone.length < 10) { showError('Enter a valid phone number (10+ digits)'); return; }
+
+  showLoading('Looking you up...');
+  try {
+    const res = await api('/checkin/lookup-worker', 'POST', { phone });
+    hideLoading();
+    
+    if (res.found) {
+      returningWorker = res;
+      // Save to localStorage
+      localStorage.setItem(LS_WORKER_ID, res.worker_id);
+      localStorage.setItem(LS_WORKER_PHONE, phone);
+      localStorage.setItem(LS_WORKER_NAME, res.name);
+      
+      // Check if oriented for this project
+      const oriented = (res.safety_orientations || []).some(o => o.project_id === projectId);
+      if (oriented) {
+        showReturningScreen(res);
+      } else {
+        // Has OSHA card but needs orientation for this site
+        showReturningScreen(res, true);
+      }
+    } else {
+      // New worker — go to registration
+      document.getElementById('regPhone').value = document.getElementById('phoneInput').value;
+      showScreen('screenRegister');
+    }
+  } catch (e) {
+    hideLoading();
+    showError(e.message);
+  }
+}
+
+function showReturningScreen(worker, needsOrientation = false) {
+  document.getElementById('retAvatar').textContent = (worker.name || 'W').charAt(0).toUpperCase();
+  document.getElementById('retName').textContent = worker.name;
+  document.getElementById('retInfo').textContent = [worker.trade, worker.company].filter(Boolean).join(' • ');
+  
+  if (needsOrientation) {
+    // Show orientation required message
+    document.querySelector('#screenReturning .returning-badge').textContent = '⚠ Safety orientation needed for this site';
+    document.querySelector('#screenReturning .returning-badge').style.background = 'rgba(245,158,11,0.1)';
+    document.querySelector('#screenReturning .returning-badge').style.borderColor = 'rgba(245,158,11,0.2)';
+    document.querySelector('#screenReturning .returning-badge').style.color = '#f59e0b';
+    
+    const btn = document.querySelector('#screenReturning .btn-success');
+    btn.textContent = 'Complete Safety Orientation';
+    btn.onclick = function() {
+      showScreen('screenRegister');
+      goStep(3); // Jump directly to orientation
+    };
+  }
+  
+  showScreen('screenReturning');
+}
+
+function notMe() {
+  localStorage.removeItem(LS_WORKER_ID);
+  localStorage.removeItem(LS_WORKER_PHONE);
+  localStorage.removeItem(LS_WORKER_NAME);
+  returningWorker = null;
+  showScreen('screenPhone');
+  document.getElementById('phoneInput').value = '';
+}
+
+// ==================== QUICK CHECK-IN (returning) ====================
+async function quickCheckIn() {
+  if (!returningWorker) return;
+  showLoading('Checking you in...');
+  try {
+    const res = await api('/checkin/register-and-checkin', 'POST', {
+      project_id: projectId,
+      tag_id: tagId,
+      name: returningWorker.name,
+      phone: localStorage.getItem(LS_WORKER_PHONE),
+      trade: returningWorker.trade,
+      company: returningWorker.company,
+      osha_number: returningWorker.osha_number,
+    });
+    hideLoading();
+    showSuccess(res);
+  } catch (e) {
+    hideLoading();
+    showError(e.message);
+  }
+}
+
+// ==================== OSHA PHOTO ====================
+async function handleOshaPhoto(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  // Show preview
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    oshaImage = e.target.result; // data:image/...;base64,...
+    
+    const zone = document.getElementById('cameraZone');
+    zone.innerHTML = `<img src="${oshaImage}" alt="OSHA Card">`;
+
+    // Send to OCR
+    showLoading('Reading your OSHA card...');
+    try {
+      const contentType = file.type || 'image/jpeg';
+      const res = await api('/checkin/upload-osha', 'POST', {
+        image: oshaImage,
+        content_type: contentType,
+      });
+      oshaData = res;
+      hideLoading();
+      showOcrResults(res);
+      document.getElementById('btnStep1Next').disabled = false;
+    } catch (e) {
+      hideLoading();
+      showError('Could not read card. You can still proceed manually.');
+      oshaData = {};
+      document.getElementById('btnStep1Next').disabled = false;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function showOcrResults(data) {
+  const container = document.getElementById('ocrFields');
+  container.innerHTML = '';
+  
+  const fields = [
+    { key: 'name', label: 'Name' },
+    { key: 'osha_number', label: 'OSHA / DOL #' },
+    { key: 'sst_number', label: 'SST Card #' },
+    { key: 'trade', label: 'Trade' },
+    { key: 'expiration', label: 'Expiration' },
+    { key: 'training_provider', label: 'Training Provider' },
+  ];
+
+  fields.forEach(f => {
+    const val = data[f.key];
+    const div = document.createElement('div');
+    div.className = 'ocr-field';
+    div.innerHTML = `<div class="label">${f.label}</div><div class="value ${val ? '' : 'empty'}">${val || 'Not detected'}</div>`;
+    container.appendChild(div);
+  });
+
+  document.getElementById('ocrResults').classList.remove('hidden');
+}
+
+// ==================== COMPANIES ====================
+async function loadCompanies() {
+  try {
+    companies = await api(`/checkin/${projectId}/companies`);
+    const sel = document.getElementById('companySelect');
+    sel.innerHTML = '<option value="">Select your company</option>';
+    companies.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = c.trade ? `${c.name} (${c.trade})` : c.name;
+      sel.appendChild(opt);
+    });
+    // Add "Other" option
+    const other = document.createElement('option');
+    other.value = '__other__';
+    other.textContent = 'Other (type in)';
+    sel.appendChild(other);
+
+    sel.addEventListener('change', function() {
+      const grp = document.getElementById('otherCompanyGroup');
+      if (this.value === '__other__') {
+        grp.classList.remove('hidden');
+      } else {
+        grp.classList.add('hidden');
+      }
+    });
+  } catch (e) {
+    console.error('Failed to load companies', e);
+  }
+}
+
+// ==================== SAFETY CHECKLIST ====================
+function buildSafetyChecklist() {
+  const ul = document.getElementById('safetyChecklist');
+  ul.innerHTML = '';
+  SAFETY_ITEMS.forEach((item, i) => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div class="check-box" data-idx="${i}" onclick="toggleCheck(this)"></div><span>${item}</span>`;
+    ul.appendChild(li);
+  });
+  updateCheckCount();
+}
+
+function toggleCheck(el) {
+  const idx = parseInt(el.dataset.idx);
+  if (checkedItems.has(idx)) {
+    checkedItems.delete(idx);
+    el.classList.remove('checked');
+  } else {
+    checkedItems.add(idx);
+    el.classList.add('checked');
+  }
+  updateCheckCount();
+}
+
+function updateCheckCount() {
+  const total = SAFETY_ITEMS.length;
+  const done = checkedItems.size;
+  document.getElementById('checkCount').textContent = `${done} / ${total} completed`;
+  document.getElementById('btnSubmitReg').disabled = done < total;
+}
+
+// ==================== STEP NAVIGATION ====================
+function goStep(step) {
+  // Validate before moving forward
+  if (step === 2) {
+    if (!oshaImage && !oshaData) {
+      showError('Please take a photo of your OSHA/SST card');
+      return;
+    }
+  }
+  if (step === 3) {
+    const company = getSelectedCompany();
+    if (!company) {
+      showError('Please select your company');
+      return;
+    }
+  }
+
+  [1, 2, 3].forEach(s => {
+    document.getElementById(`step${s}`).classList.toggle('hidden', s !== step);
+  });
+
+  // Update dots
+  document.querySelectorAll('#regSteps .dot').forEach(dot => {
+    const s = parseInt(dot.dataset.step);
+    dot.classList.toggle('done', s < step);
+    dot.classList.toggle('active', s === step);
+  });
+}
+
+function getSelectedCompany() {
+  const sel = document.getElementById('companySelect');
+  if (sel.value === '__other__') {
+    return document.getElementById('otherCompanyInput').value.trim();
+  }
+  return sel.value;
+}
+
+// ==================== SUBMIT REGISTRATION ====================
+async function submitRegistration() {
+  const company = getSelectedCompany();
+  const phone = cleanPhone(document.getElementById('regPhone').value);
+  const name = oshaData?.name || '';
+  const trade = oshaData?.trade || '';
+  const oshaNumber = oshaData?.osha_number || oshaData?.sst_number || '';
+
+  if (!company) { showError('Please select a company'); return; }
+  if (checkedItems.size < SAFETY_ITEMS.length) { showError('Please complete all safety orientation items'); return; }
+
+  // Build safety orientation dict
+  const orientation = {};
+  SAFETY_ITEMS.forEach((item, i) => {
+    orientation[item] = {
+      checked: checkedItems.has(i),
+      checked_at: new Date().toISOString(),
+    };
+  });
+
+  showLoading('Registering and checking in...');
+  try {
+    const res = await api('/checkin/register-and-checkin', 'POST', {
+      project_id: projectId,
+      tag_id: tagId,
+      name: name || 'Worker',
+      phone: phone,
+      trade: trade,
+      company: company,
+      osha_card_image: oshaImage,
+      osha_data: oshaData,
+      osha_number: oshaNumber,
+      safety_orientation: orientation,
+    });
+
+    // Save to localStorage
+    if (res.worker_id) {
+      localStorage.setItem(LS_WORKER_ID, res.worker_id);
+    }
+    if (phone) {
+      localStorage.setItem(LS_WORKER_PHONE, phone);
+    }
+    localStorage.setItem(LS_WORKER_NAME, name || 'Worker');
+
+    hideLoading();
+    showSuccess(res);
+  } catch (e) {
+    hideLoading();
+    showError(e.message);
+  }
+}
+
+// ==================== SUCCESS ====================
+function showSuccess(res) {
+  document.getElementById('successTitle').textContent = 'Checked In!';
+  document.getElementById('successSub').textContent = `${res.worker_name || 'Worker'}\n${res.project_name || ''}`;
+  document.getElementById('successTime').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  showScreen('screenSuccess');
+}
+
+// ==================== HELPERS ====================
+function cleanPhone(val) {
+  return (val || '').replace(/[^0-9]/g, '');
+}
+
+// Handle Enter key on phone input
+document.getElementById('phoneInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') lookupWorker();
+});
+</script>
+</body>
+</html>
