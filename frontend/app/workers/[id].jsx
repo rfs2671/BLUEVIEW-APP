@@ -9,6 +9,8 @@ import {
   TextInput,
   Alert,
   Platform,
+  Image,
+  Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,6 +27,12 @@ import {
   FileText,
   Calendar,
   Pen,
+  ShieldCheck,
+  CreditCard,
+  ChevronDown,
+  ChevronUp,
+  Check,
+  X,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -35,6 +43,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function WorkerDetailScreen() {
   const router = useRouter();
@@ -64,7 +73,17 @@ export default function WorkerDetailScreen() {
   const [signature, setSignature] = useState(null);
   const [showSignaturePad, setShowSignaturePad] = useState(false);
 
+  // OSHA & Safety Orientation (fetched from API)
+  const [oshaCardImage, setOshaCardImage] = useState(null);
+  const [oshaData, setOshaData] = useState(null);
+  const [safetyOrientations, setSafetyOrientations] = useState([]);
+  const [loadingOsha, setLoadingOsha] = useState(false);
+  const [showOshaCard, setShowOshaCard] = useState(false);
+  const [expandedOrientation, setExpandedOrientation] = useState(null);
+
   const isAdmin = user?.role === 'admin';
+  const isSiteDevice = user?.role === 'site_device';
+  const canViewOsha = isAdmin || isSiteDevice;
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -75,6 +94,9 @@ export default function WorkerDetailScreen() {
   useEffect(() => {
     if (isAuthenticated && workerId) {
       fetchWorker();
+      if (canViewOsha) {
+        fetchOshaData();
+      }
     }
   }, [isAuthenticated, workerId]);
 
@@ -85,7 +107,7 @@ export default function WorkerDetailScreen() {
       setName(workerData.name || '');
       setTrade(workerData.trade || '');
       setCompany(workerData.company || '');
-      setOshaNumber(workerData.oshaNumber || '');
+      setOshaNumber(workerData.oshaNumber || workerData.osha_number || '');
       setCertifications(workerData.certifications || []);
       setSignature(workerData.signature || null);
     } catch (error) {
@@ -93,6 +115,34 @@ export default function WorkerDetailScreen() {
       toast.error('Error', 'Could not load worker details');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchOshaData = async () => {
+    setLoadingOsha(true);
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      const API_URL = await AsyncStorage.getItem('api_url') || 'https://blueview2-production.up.railway.app/api';
+      
+      const res = await fetch(`${API_URL}/workers/${workerId}/osha-card`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setOshaCardImage(data.osha_card_image || null);
+        setOshaData(data.osha_data || null);
+        setSafetyOrientations(data.safety_orientations || []);
+        // Update OSHA number if we got it from API but not from WatermelonDB
+        if (data.osha_number && !oshaNumber) {
+          setOshaNumber(data.osha_number);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch OSHA data:', error);
+      // Non-critical — don't show error toast
+    } finally {
+      setLoadingOsha(false);
     }
   };
 
@@ -114,10 +164,10 @@ export default function WorkerDetailScreen() {
       setWorker({ ...worker, name, trade, company, oshaNumber });
       setEditMode(false);
       toast.success('Saved', 'Worker information updated');
-  }   catch (error) {
+    } catch (error) {
       console.error('Failed to save:', error);
       toast.error('Error', 'Could not save changes');
-  }   finally {
+    } finally {
       setSaving(false);
     }
   };
@@ -161,7 +211,6 @@ export default function WorkerDetailScreen() {
   };
 
   const handleUpdateSignature = () => {
-    // In real app, would open signature canvas
     setSignature({ data: 'signature_data', updated: new Date().toISOString() });
     setShowSignaturePad(false);
     toast.success('Updated', 'Signature saved');
@@ -193,22 +242,22 @@ export default function WorkerDetailScreen() {
             />
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
-            <View style={styles.headerRight}>
-              <OfflineIndicator />
-              {isAdmin && !editMode && (
-                <GlassButton
-                  variant="icon"
-                  icon={<Edit3 size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                  onPress={() => setEditMode(true)}
-            />
-          )}
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />    
-       </View>
-       </View>
+          <View style={styles.headerRight}>
+            <OfflineIndicator />
+            {isAdmin && !editMode && (
+              <GlassButton
+                variant="icon"
+                icon={<Edit3 size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => setEditMode(true)}
+              />
+            )}
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />    
+          </View>
+        </View>
 
         <ScrollView
           style={styles.scrollView}
@@ -265,7 +314,7 @@ export default function WorkerDetailScreen() {
                       setName(worker?.name || '');
                       setTrade(worker?.trade || '');
                       setCompany(worker?.company || '');
-                      setOshaNumber(worker?.osha_number || '');
+                      setOshaNumber(worker?.osha_number || worker?.oshaNumber || '');
                     }}
                     style={styles.cancelBtn}
                   />
@@ -287,15 +336,160 @@ export default function WorkerDetailScreen() {
                   <Text style={styles.infoText}>{company || 'No company'}</Text>
                 </View>
                 
-                {oshaNumber && (
+                {oshaNumber ? (
                   <View style={styles.infoRow}>
                     <FileText size={16} color={colors.text.muted} />
                     <Text style={styles.infoText}>OSHA: {oshaNumber}</Text>
                   </View>
-                )}
+                ) : null}
               </View>
             )}
           </GlassCard>
+
+          {/* OSHA Card Section */}
+          {canViewOsha && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionTitleRow}>
+                  <CreditCard size={20} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={styles.sectionTitle}>OSHA / SST Card</Text>
+                </View>
+              </View>
+
+              {loadingOsha ? (
+                <GlassCard style={styles.emptyCard}>
+                  <ActivityIndicator size="small" color={colors.text.muted} />
+                  <Text style={styles.emptyText}>Loading OSHA data...</Text>
+                </GlassCard>
+              ) : oshaCardImage ? (
+                <GlassCard style={styles.oshaCard}>
+                  <Pressable onPress={() => setShowOshaCard(true)}>
+                    <Image
+                      source={{ uri: oshaCardImage }}
+                      style={styles.oshaCardImage}
+                      resizeMode="contain"
+                    />
+                    <Text style={styles.oshaCardTapHint}>Tap to enlarge</Text>
+                  </Pressable>
+
+                  {oshaData && (
+                    <View style={styles.oshaFields}>
+                      {oshaData.name && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>Name</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.name}</Text>
+                        </View>
+                      )}
+                      {oshaData.osha_number && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>OSHA #</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.osha_number}</Text>
+                        </View>
+                      )}
+                      {oshaData.sst_number && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>SST #</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.sst_number}</Text>
+                        </View>
+                      )}
+                      {oshaData.trade && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>Trade</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.trade}</Text>
+                        </View>
+                      )}
+                      {oshaData.expiration && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>Expires</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.expiration}</Text>
+                        </View>
+                      )}
+                      {oshaData.training_provider && (
+                        <View style={styles.oshaFieldRow}>
+                          <Text style={styles.oshaFieldLabel}>Provider</Text>
+                          <Text style={styles.oshaFieldValue}>{oshaData.training_provider}</Text>
+                        </View>
+                      )}
+                    </View>
+                  )}
+                </GlassCard>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <CreditCard size={32} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyText}>No OSHA card on file</Text>
+                  <Text style={styles.emptySubtext}>Worker will upload during NFC check-in</Text>
+                </GlassCard>
+              )}
+            </View>
+          )}
+
+          {/* Safety Orientations Section */}
+          {canViewOsha && (
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <View style={styles.sectionTitleRow}>
+                  <ShieldCheck size={20} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={styles.sectionTitle}>Safety Orientations</Text>
+                </View>
+              </View>
+
+              {safetyOrientations.length > 0 ? (
+                <View style={styles.orientationList}>
+                  {safetyOrientations.map((orientation, index) => (
+                    <GlassCard key={index} style={styles.orientationItem}>
+                      <Pressable
+                        style={styles.orientationHeader}
+                        onPress={() => setExpandedOrientation(expandedOrientation === index ? null : index)}
+                      >
+                        <View style={styles.orientationInfo}>
+                          <View style={styles.orientationBadge}>
+                            <ShieldCheck size={14} color="#22c55e" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.orientationProject}>
+                              {orientation.project_name || 'Unknown Project'}
+                            </Text>
+                            <Text style={styles.orientationDate}>
+                              {orientation.completed_at
+                                ? new Date(orientation.completed_at).toLocaleDateString()
+                                : 'Date unknown'}
+                            </Text>
+                          </View>
+                        </View>
+                        {expandedOrientation === index ? (
+                          <ChevronUp size={18} color={colors.text.muted} />
+                        ) : (
+                          <ChevronDown size={18} color={colors.text.muted} />
+                        )}
+                      </Pressable>
+
+                      {expandedOrientation === index && orientation.checklist && (
+                        <View style={styles.checklistExpanded}>
+                          {Object.entries(orientation.checklist).map(([item, val], i) => (
+                            <View key={i} style={styles.checklistItem}>
+                              <View style={[
+                                styles.checkIcon,
+                                val?.checked && styles.checkIconChecked,
+                              ]}>
+                                {val?.checked && <Check size={12} color="#fff" />}
+                              </View>
+                              <Text style={styles.checklistItemText}>{item}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      )}
+                    </GlassCard>
+                  ))}
+                </View>
+              ) : (
+                <GlassCard style={styles.emptyCard}>
+                  <ShieldCheck size={32} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={styles.emptyText}>No safety orientations</Text>
+                  <Text style={styles.emptySubtext}>Completed during first NFC check-in at each site</Text>
+                </GlassCard>
+              )}
+            </View>
+          )}
 
           {/* Certifications Section */}
           <View style={styles.section}>
@@ -431,6 +625,32 @@ export default function WorkerDetailScreen() {
             )}
           </View>
         </ScrollView>
+
+        {/* OSHA Card Full Screen Modal */}
+        <Modal
+          visible={showOshaCard}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setShowOshaCard(false)}
+        >
+          <Pressable
+            style={styles.modalOverlay}
+            onPress={() => setShowOshaCard(false)}
+          >
+            <View style={styles.modalContent}>
+              <Pressable style={styles.modalClose} onPress={() => setShowOshaCard(false)}>
+                <X size={24} color="#fff" />
+              </Pressable>
+              {oshaCardImage && (
+                <Image
+                  source={{ uri: oshaCardImage }}
+                  style={styles.modalImage}
+                  resizeMode="contain"
+                />
+              )}
+            </View>
+          </Pressable>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -570,6 +790,133 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text.primary,
   },
+
+  // OSHA Card styles
+  oshaCard: {
+    gap: spacing.md,
+  },
+  oshaCardImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: borderRadius.md,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  oshaCardTapHint: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  oshaFields: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    paddingTop: spacing.md,
+    gap: spacing.sm,
+  },
+  oshaFieldRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  oshaFieldLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.text.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  oshaFieldValue: {
+    fontSize: 14,
+    color: colors.text.primary,
+    fontWeight: '500',
+  },
+
+  // Safety Orientation styles
+  orientationList: {
+    gap: spacing.sm,
+  },
+  orientationItem: {
+    padding: 0,
+    overflow: 'hidden',
+  },
+  orientationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+  },
+  orientationInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+  },
+  orientationBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(34,197,94,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orientationProject: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: colors.text.primary,
+  },
+  orientationDate: {
+    fontSize: 12,
+    color: colors.text.muted,
+    marginTop: 2,
+  },
+  checklistExpanded: {
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    padding: spacing.md,
+    gap: 8,
+  },
+  checklistItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  checkIcon: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  checkIconChecked: {
+    backgroundColor: '#22c55e',
+    borderColor: '#22c55e',
+  },
+  checklistItemText: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    flex: 1,
+    lineHeight: 18,
+  },
+
+  // Empty states
+  emptyCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    gap: spacing.sm,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: colors.text.muted,
+  },
+  emptySubtext: {
+    fontSize: 12,
+    color: colors.text.subtle,
+  },
+
+  // Existing styles
   addForm: {
     marginBottom: spacing.md,
   },
@@ -606,15 +953,6 @@ const styles = StyleSheet.create({
   },
   deleteBtn: {
     padding: spacing.sm,
-  },
-  emptyCard: {
-    alignItems: 'center',
-    paddingVertical: spacing.xl,
-    gap: spacing.sm,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: colors.text.muted,
   },
   signatureCard: {
     alignItems: 'center',
@@ -665,5 +1003,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: spacing.sm,
+  },
+
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '95%',
+    height: '80%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalClose: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    zIndex: 10,
+    padding: 12,
+  },
+  modalImage: {
+    width: '100%',
+    height: '100%',
   },
 });
