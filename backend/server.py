@@ -3332,6 +3332,14 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+@app.get("/checkin/{tag_id}")
+async def serve_checkin_page(tag_id: str):
+    from fastapi.responses import HTMLResponse
+    html_path = Path(__file__).parent / "checkin.html"
+    if not html_path.exists():
+        raise HTTPException(status_code=404, detail="Check-in page not found")
+    return HTMLResponse(content=html_path.read_text(), status_code=200)
+
 # Include the router in the main app
 app.include_router(api_router)
 
