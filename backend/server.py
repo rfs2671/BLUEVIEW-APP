@@ -35,6 +35,9 @@ DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
 DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2-production.up.railway.app/api/dropbox/callback')
 
+# Anthropic API for OSHA OCR
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
@@ -188,6 +191,10 @@ class WorkerResponse(BaseModel):
     company: str
     company_id: Optional[str] = None
     status: str = "active"
+    osha_number: Optional[str] = None
+    osha_data: Optional[Dict] = None
+    osha_card_image: Optional[str] = None
+    safety_orientations: List[Dict] = []
     certifications: List[Dict] = []
     signature: Optional[Dict] = None
     created_at: Optional[datetime] = None
@@ -238,6 +245,21 @@ class PublicCheckInSubmit(BaseModel):
     phone: str
     company: str
     trade: str
+    
+class PublicWorkerRegister(BaseModel):
+    project_id: str
+    tag_id: str
+    company: str  # selected from dropdown
+    osha_card_image: str  # base64 image data
+    safety_orientation: Dict  # {items checked, timestamp}
+
+class OSHAUploadResponse(BaseModel):
+    name: Optional[str] = None
+    osha_number: Optional[str] = None
+    sst_number: Optional[str] = None
+    trade: Optional[str] = None
+    expiration: Optional[str] = None
+    raw_text: Optional[str] = None
     
 # Subcontractor Models
 class SubcontractorCreate(BaseModel):
@@ -1427,7 +1449,288 @@ async def get_checkin_info(project_id: str, tag_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
+@api_router.post("/checkin/upload-osha")
+async def upload_osha_card(file_data: dict):
+    """Public endpoint - OCR an OSHA/SST card photo using Claude AI.
+    Accepts: { "image": "base64_string", "content_type": "image/jpeg" }
+    Returns extracted worker info."""
+    import httpx
+    
+    image_b64 = file_data.get("image")
+    content_type = file_data.get("content_type", "image/jpeg")
+    
+    if not image_b64:
+        raise HTTPException(status_code=400, detail="No image provided")
+    
+    # Strip data URL prefix if present
+    if "," in image_b64:
+        image_b64 = image_b64.split(",", 1)[1]
+    
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        raise HTTPException(status_code=500, detail="AI service not configured")
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 1024,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": content_type,
+                                    "data": image_b64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": "Extract the following from this OSHA/SST card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name\", \"osha_number\": \"OSHA card number or DOL card number\", \"sst_number\": \"SST card number if visible\", \"trade\": \"trade/classification if visible\", \"expiration\": \"expiration date if visible\", \"training_provider\": \"provider name if visible\"}\nIf a field is not visible, set it to null.",
+                            },
+                        ],
+                    }],
+                },
+            )
+        
+        if response.status_code != 200:
+            logger.error(f"Anthropic API error: {response.text}")
+            raise HTTPException(status_code=502, detail="AI processing failed")
+        
+        result = response.json()
+        text = result["content"][0]["text"]
+        
+        # Parse JSON from response
+        import json as json_mod
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+        
+        extracted = json_mod.loads(text)
+        return extracted
+        
+    except json_mod.JSONDecodeError:
+        return {"name": None, "osha_number": None, "sst_number": None, "trade": None, "expiration": None, "raw_text": text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OSHA OCR error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
 
+@api_router.get("/checkin/{project_id}/companies")
+async def get_project_companies(project_id: str):
+    """Public endpoint - get list of companies/subcontractors for a project's company"""
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    company_id = project.get("company_id")
+    
+    # Get subcontractors for this company
+    subs = await db.subcontractors.find(
+        {"company_id": company_id, "is_deleted": {"$ne": True}},
+        {"company_name": 1, "trade": 1}
+    ).to_list(500)
+    
+    companies = [{"name": s.get("company_name"), "trade": s.get("trade")} for s in subs]
+    
+    # Also add the main company name
+    if company_id:
+        main_company = await db.companies.find_one({"_id": to_query_id(company_id)})
+        if main_company:
+            companies.insert(0, {"name": main_company.get("name"), "trade": "General Contractor"})
+    
+    return companies
+    
+@api_router.post("/checkin/register-and-checkin")
+async def register_and_checkin(data: dict):
+    """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
+    project_id = data.get("project_id")
+    tag_id = data.get("tag_id")
+    name = data.get("name")
+    phone = data.get("phone")
+    trade = data.get("trade")
+    company = data.get("company")
+    osha_card_image = data.get("osha_card_image")  # base64
+    osha_data = data.get("osha_data")  # OCR results dict
+    osha_number = data.get("osha_number")
+    safety_orientation = data.get("safety_orientation")  # dict of checked items
+    
+    if not all([project_id, tag_id, name, company]):
+        raise HTTPException(status_code=400, detail="Missing required fields")
+    
+    # Verify tag + project
+    tag = await db.nfc_tags.find_one({
+        "tag_id": tag_id,
+        "project_id": project_id,
+        "status": "active",
+        "is_deleted": {"$ne": True}
+    })
+    if not tag:
+        raise HTTPException(status_code=404, detail="Invalid check-in point")
+    
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    now = datetime.now(timezone.utc)
+    admin_id = project.get("admin_id")
+    company_id = project.get("company_id")
+    
+    # Find or create worker by phone (or by OSHA number if no phone)
+    worker = None
+    if phone:
+        worker = await db.workers.find_one({"phone": phone, "is_deleted": {"$ne": True}})
+    if not worker and osha_number:
+        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
+    
+    if not worker:
+        # Create new worker with full data
+        worker = {
+            "name": name,
+            "phone": phone or "",
+            "trade": trade or "",
+            "company": company,
+            "osha_number": osha_number or "",
+            "osha_data": osha_data,
+            "osha_card_image": osha_card_image,
+            "safety_orientations": [{
+                "project_id": project_id,
+                "project_name": project.get("name"),
+                "checklist": safety_orientation,
+                "completed_at": now.isoformat(),
+            }] if safety_orientation else [],
+            "certifications": [],
+            "signature": None,
+            "admin_id": admin_id,
+            "company_id": company_id,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }
+        result = await db.workers.insert_one(worker)
+        worker["_id"] = result.inserted_id
+    else:
+        # Update existing worker with new OSHA data if provided
+        update_fields = {"updated_at": now}
+        if osha_card_image and not worker.get("osha_card_image"):
+            update_fields["osha_card_image"] = osha_card_image
+        if osha_data:
+            update_fields["osha_data"] = osha_data
+        if osha_number:
+            update_fields["osha_number"] = osha_number
+        if name:
+            update_fields["name"] = name
+        if company:
+            update_fields["company"] = company
+        if trade:
+            update_fields["trade"] = trade
+        
+        # Append safety orientation for this project if not already done
+        if safety_orientation:
+            existing_orientations = worker.get("safety_orientations", [])
+            already_oriented = any(o.get("project_id") == project_id for o in existing_orientations)
+            if not already_oriented:
+                existing_orientations.append({
+                    "project_id": project_id,
+                    "project_name": project.get("name"),
+                    "checklist": safety_orientation,
+                    "completed_at": now.isoformat(),
+                })
+                update_fields["safety_orientations"] = existing_orientations
+        
+        await db.workers.update_one({"_id": worker["_id"]}, {"$set": update_fields})
+    
+    # Create check-in
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    existing_checkin = await db.checkins.find_one({
+        "worker_id": str(worker["_id"]),
+        "project_id": project_id,
+        "check_in_time": {"$gte": today_start},
+        "status": "checked_in",
+        "is_deleted": {"$ne": True}
+    })
+    
+    if existing_checkin:
+        return {
+            "success": True,
+            "message": "Already checked in",
+            "worker_id": str(worker["_id"]),
+            "worker_name": worker.get("name"),
+            "project_name": project.get("name"),
+            "check_in_time": existing_checkin["check_in_time"].isoformat(),
+            "is_new_worker": False,
+        }
+    
+    checkin_record = {
+        "worker_id": str(worker["_id"]),
+        "worker_name": worker.get("name"),
+        "worker_phone": worker.get("phone"),
+        "company": worker.get("company"),
+        "trade": worker.get("trade"),
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "admin_id": admin_id,
+        "company_id": company_id,
+        "tag_id": tag_id,
+        "check_in_time": now,
+        "check_out_time": None,
+        "status": "checked_in",
+        "timestamp": now,
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+    
+    result = await db.checkins.insert_one(checkin_record)
+    
+    return {
+        "success": True,
+        "message": "Registration and check-in successful",
+        "worker_id": str(worker["_id"]),
+        "checkin_id": str(result.inserted_id),
+        "worker_name": worker.get("name"),
+        "project_name": project.get("name"),
+        "check_in_time": now.isoformat(),
+        "is_new_worker": True,
+    }
+@api_router.post("/checkin/lookup-worker")
+async def lookup_worker(data: dict):
+    """Public endpoint - check if worker exists by phone.
+    Used by returning workers to skip registration."""
+    phone = data.get("phone")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone required")
+    
+    worker = await db.workers.find_one(
+        {"phone": phone, "is_deleted": {"$ne": True}},
+        {"osha_card_image": 0}
+    )
+    
+    if not worker:
+        return {"found": False}
+    
+    return {
+        "found": True,
+        "worker_id": str(worker["_id"]),
+        "name": worker.get("name"),
+        "trade": worker.get("trade"),
+        "company": worker.get("company"),
+        "osha_number": worker.get("osha_number"),
+        "has_osha_card": bool(worker.get("osha_card_image")),
+        "safety_orientations": worker.get("safety_orientations", []),
+    }   
+   
 @api_router.post("/checkin/submit")
 async def submit_checkin(checkin_data: PublicCheckInSubmit):
     """Public endpoint - workers check in via this"""
@@ -1584,6 +1887,23 @@ async def register_worker(worker_data: WorkerCreate):
     
     return {"worker_id": str(result.inserted_id), "message": "Worker registered successfully"}
 
+@api_router.get("/workers/{worker_id}/osha-card")
+async def get_worker_osha_card(worker_id: str, current_user = Depends(get_current_user)):
+    """Get worker's OSHA card image and data - for admin and site device"""
+    worker = await db.workers.find_one(
+        {"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}},
+        {"osha_card_image": 1, "osha_data": 1, "osha_number": 1, "safety_orientations": 1, "name": 1}
+    )
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    
+    return {
+        "name": worker.get("name"),
+        "osha_card_image": worker.get("osha_card_image"),
+        "osha_data": worker.get("osha_data"),
+        "osha_number": worker.get("osha_number"),
+        "safety_orientations": worker.get("safety_orientations", []),
+    }
 @api_router.get("/workers/{worker_id}", response_model=WorkerResponse)
 async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
     worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
