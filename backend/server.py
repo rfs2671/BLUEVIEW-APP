@@ -35,9 +35,6 @@ DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
 DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2-production.up.railway.app/api/dropbox/callback')
 
-# Anthropic API for OSHA OCR
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
@@ -1451,73 +1448,61 @@ async def get_checkin_info(project_id: str, tag_id: str):
 
 @api_router.post("/checkin/upload-osha")
 async def upload_osha_card(file_data: dict):
-    """Public endpoint - OCR an OSHA/SST card photo using Claude AI.
-    Accepts: { "image": "base64_string", "content_type": "image/jpeg" }
-    Returns extracted worker info."""
+    """Public endpoint - OCR an OSHA/SST card photo using Gemini AI."""
     import httpx
-    
+    import json as json_mod
+
     image_b64 = file_data.get("image")
     content_type = file_data.get("content_type", "image/jpeg")
-    
+
     if not image_b64:
         raise HTTPException(status_code=400, detail="No image provided")
-    
+
     # Strip data URL prefix if present
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
-    
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not anthropic_key:
+
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
         raise HTTPException(status_code=500, detail="AI service not configured")
-    
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": anthropic_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            response = await http_client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                headers={"Content-Type": "application/json"},
                 json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 1024,
-                    "messages": [{
-                        "role": "user",
-                        "content": [
+                    "contents": [{
+                        "parts": [
                             {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": content_type,
+                                "inlineData": {
+                                    "mimeType": content_type,
                                     "data": image_b64,
-                                },
+                                }
                             },
                             {
-                                "type": "text",
-                                "text": "Extract the following from this OSHA/SST card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name\", \"osha_number\": \"OSHA card number or DOL card number\", \"sst_number\": \"SST card number if visible\", \"trade\": \"trade/classification if visible\", \"expiration\": \"expiration date if visible\", \"training_provider\": \"provider name if visible\"}\nIf a field is not visible, set it to null.",
+                                "text": "Extract the following from this OSHA/SST card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name\", \"osha_number\": \"OSHA card number or DOL card number\", \"sst_number\": \"SST card number if visible\", \"trade\": \"trade/classification if visible\", \"expiration\": \"expiration date if visible\", \"training_provider\": \"provider name if visible\"}\nIf a field is not visible, set it to null."
                             },
-                        ],
-                    }],
+                        ]
+                    }]
                 },
             )
-        
+
         if response.status_code != 200:
-            logger.error(f"Anthropic API error: {response.text}")
+            logger.error(f"Gemini API error: {response.text}")
             raise HTTPException(status_code=502, detail="AI processing failed")
-        
+
         result = response.json()
-        text = result["content"][0]["text"]
-        
+        text = result["candidates"][0]["content"]["parts"][0]["text"]
+
         # Parse JSON from response
-        import json as json_mod
         text = text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-        
+
         extracted = json_mod.loads(text)
         return extracted
-        
+
     except json_mod.JSONDecodeError:
         return {"name": None, "osha_number": None, "sst_number": None, "trade": None, "expiration": None, "raw_text": text}
     except HTTPException:
@@ -3338,6 +3323,18 @@ async def serve_checkin_page(tag_id: str):
     html_path = Path(__file__).parent / "checkin.html"
     if not html_path.exists():
         raise HTTPException(status_code=404, detail="Check-in page not found")
+    return HTMLResponse(content=html_path.read_text(), status_code=200)
+
+@app.get("/checkin/{tag_id}")
+async def serve_checkin_page_short(tag_id: str):
+    from fastapi.responses import HTMLResponse
+    html_path = Path(__file__).parent / "checkin.html"
+    return HTMLResponse(content=html_path.read_text(), status_code=200)
+
+@app.get("/checkin/{project_id}/{tag_id}")
+async def serve_checkin_page_full(project_id: str, tag_id: str):
+    from fastapi.responses import HTMLResponse
+    html_path = Path(__file__).parent / "checkin.html"
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # Include the router in the main app
