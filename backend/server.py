@@ -1549,6 +1549,7 @@ async def register_and_checkin(data: dict):
     osha_data = data.get("osha_data")  # OCR results dict
     osha_number = data.get("osha_number")
     safety_orientation = data.get("safety_orientation")  # dict of checked items
+	signature = data.get("signature")  # base64 PNG
     
     if not all([project_id, tag_id, name, company]):
         raise HTTPException(status_code=400, detail="Missing required fields")
