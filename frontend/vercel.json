@@ -5,6 +5,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/checkin/:path*",
+      "destination": "https://blueview2-production.up.railway.app/checkin/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://blueview2-production.up.railway.app/api/:path*"
+    },
+    {
       "source": "/:path*",
       "destination": "/index.html"
     }
