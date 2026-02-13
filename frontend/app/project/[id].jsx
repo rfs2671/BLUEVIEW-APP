@@ -299,6 +299,7 @@ export default function ProjectDetailScreen() {
           toast.success('Success!', 'NFC tag registered to project');
           setNfcLocation('');
           setShowAddNfcModal(false);
+          await fetchData();
         } catch (error) {
           console.error('Failed to register tag:', error);
           toast.error('Registration Failed', error.response?.data?.detail || 'Could not register tag to project');
