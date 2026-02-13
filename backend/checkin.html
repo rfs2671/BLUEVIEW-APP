@@ -32,7 +32,7 @@ body::before{
 .app{position:relative;z-index:1;max-width:500px;margin:0 auto;padding:20px 20px 40px;min-height:100dvh;display:flex;flex-direction:column;width:100%}
 
 /* Header */
-.header{text-align:center;padding:24px 0 12px}
+.header{text-align:center;padding:24px 0 12px;position:relative}
 .header .logo{font-size:15px;letter-spacing:5px;font-weight:700;color:var(--blue);font-family:'JetBrains Mono',monospace}
 .header .title{font-size:26px;font-weight:700;margin-top:6px}
 
@@ -157,6 +157,15 @@ select option{background:#1e293b;color:#f1f5f9}
 .not-me{font-size:13px;color:var(--text3);text-align:center;margin-top:12px;cursor:pointer;text-decoration:underline}
 .not-me:active{color:var(--text2)}
 
+/* Language toggle */
+.lang-toggle{
+  position:absolute;top:20px;right:20px;
+  background:var(--surface2);border:1px solid var(--border);border-radius:20px;
+  padding:6px 14px;cursor:pointer;font-size:14px;font-weight:600;color:var(--text);
+  transition:all .2s;user-select:none;
+}
+.lang-toggle:active{background:var(--blue);border-color:var(--blue)}
+
 /* Phone input for returning */
 .phone-entry{margin:20px 0}
 
@@ -169,7 +178,10 @@ select option{background:#1e293b;color:#f1f5f9}
   <!-- Header -->
   <div class="header">
     <div class="logo">BLUEVIEW</div>
-    <div class="title">Worker Check-In</div>
+    <div class="title" data-i18n="title">Worker Check-In</div>
+    <div class="lang-toggle" onclick="toggleLang()">
+      <span id="langLabel">ES</span>
+    </div>
   </div>
 
   <!-- Site info (populated by JS) -->
@@ -191,13 +203,13 @@ select option{background:#1e293b;color:#f1f5f9}
   <!-- ========== SCREEN: PHONE ENTRY (first thing) ========== -->
   <div id="screenPhone">
     <div class="card">
-      <div class="card-title">Enter Your Phone Number</div>
-      <div class="card-desc">We'll check if you've registered before.</div>
+      <div class="card-title" data-i18n="phoneTitle">Enter Your Phone Number</div>
+      <div class="card-desc" data-i18n="phoneDesc">We'll check if you've registered before.</div>
       <div class="input-group">
-        <div class="input-label">Phone Number</div>
-        <input type="tel" id="phoneInput" placeholder="(555) 123-4567" inputmode="numeric" autocomplete="tel">
+        <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
+        <input type="tel" id="phoneInput" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric" autocomplete="tel">
       </div>
-      <button class="btn btn-primary" id="btnPhoneLookup" onclick="lookupWorker()">Continue</button>
+      <button class="btn btn-primary" id="btnPhoneLookup" onclick="lookupWorker()" data-i18n="phoneContinue">Continue</button>
     </div>
   </div>
 
@@ -207,12 +219,12 @@ select option{background:#1e293b;color:#f1f5f9}
       <div class="returning-avatar" id="retAvatar"></div>
       <div class="returning-name" id="retName"></div>
       <div class="returning-info" id="retInfo"></div>
-      <div class="returning-badge">✓ Registered</div>
+      <div class="returning-badge" data-i18n="retBadge">✓ Registered</div>
     </div>
-    <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()">
+    <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()" data-i18n="retCheckIn">
       ✓ &nbsp;Check In Now
     </button>
-    <div class="not-me" onclick="notMe()">Not me? Register as new worker</div>
+    <div class="not-me" onclick="notMe()" data-i18n="retNotMe">Not me? Register as new worker</div>
   </div>
 
   <!-- ========== SCREEN: NEW WORKER REGISTRATION ========== -->
@@ -227,12 +239,12 @@ select option{background:#1e293b;color:#f1f5f9}
     <!-- Step 1: OSHA Card -->
     <div id="step1">
       <div class="card">
-        <div class="card-title">📋 OSHA / SST Card</div>
-        <div class="card-desc">Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.</div>
+        <div class="card-title" data-i18n="oshaTitle">📋 OSHA / SST Card</div>
+        <div class="card-desc" data-i18n="oshaDesc">Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.</div>
         <div class="camera-zone" id="cameraZone" onclick="document.getElementById('fileInput').click()">
           <span class="cam-icon">📸</span>
-          <div class="cam-text">Tap to take photo</div>
-          <div class="cam-hint">or choose from gallery</div>
+          <div class="cam-text" data-i18n="camText">Tap to take photo</div>
+          <div class="cam-hint" data-i18n="camHint">or choose from gallery</div>
         </div>
         <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
         <div id="ocrResults" class="hidden" style="margin-top:16px">
@@ -241,32 +253,32 @@ select option{background:#1e293b;color:#f1f5f9}
         </div>
         <div style="margin-top:16px">
           <div class="input-group">
-            <div class="input-label">Phone Number</div>
-            <input type="tel" id="regPhone" placeholder="(555) 123-4567" inputmode="numeric">
+            <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
+            <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
           </div>
         </div>
-        <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled>Next: Select Company</button>
+        <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled data-i18n="nextCompany">Next: Select Company</button>
       </div>
     </div>
 
     <!-- Step 2: Company Selection -->
     <div id="step2" class="hidden">
       <div class="card">
-        <div class="card-title">🏗️ Select Your Company</div>
-        <div class="card-desc">Choose the company you work for on this project.</div>
+        <div class="card-title" data-i18n="companyTitle">🏗️ Select Your Company</div>
+        <div class="card-desc" data-i18n="companyDesc">Choose the company you work for on this project.</div>
         <div class="input-group">
-          <div class="input-label">Company</div>
+          <div class="input-label" data-i18n="companyLabel">Company</div>
           <select id="companySelect">
-            <option value="">Loading companies...</option>
+            <option value="" data-i18n="companyLoading">Loading companies...</option>
           </select>
         </div>
         <div class="input-group" id="otherCompanyGroup" class="hidden">
-          <div class="input-label">Company Name</div>
-          <input type="text" id="otherCompanyInput" placeholder="Enter company name">
+          <div class="input-label" data-i18n="companyNameLabel">Company Name</div>
+          <input type="text" id="otherCompanyInput" data-i18n-placeholder="companyNamePlaceholder" placeholder="Enter company name">
         </div>
         <div style="display:flex;gap:10px;margin-top:4px">
-          <button class="btn btn-outline" onclick="goStep(1)" style="flex:1">Back</button>
-          <button class="btn btn-primary" id="btnStep2Next" onclick="goStep(3)" style="flex:2">Next: Safety Orientation</button>
+          <button class="btn btn-outline" onclick="goStep(1)" style="flex:1" data-i18n="back">Back</button>
+          <button class="btn btn-primary" id="btnStep2Next" onclick="goStep(3)" style="flex:2" data-i18n="nextOrientation">Next: Safety Orientation</button>
         </div>
       </div>
     </div>
@@ -274,13 +286,13 @@ select option{background:#1e293b;color:#f1f5f9}
     <!-- Step 3: Safety Orientation -->
     <div id="step3" class="hidden">
       <div class="card">
-        <div class="card-title">🛡️ Site Safety Orientation</div>
-        <div class="card-desc">NYC DOB requires all workers to complete a site-specific safety orientation before starting work (§3301.11). Check each item after review.</div>
+        <div class="card-title" data-i18n="safetyTitle">🛡️ Site Safety Orientation</div>
+        <div class="card-desc" data-i18n="safetyDesc">NYC DOB requires all workers to complete a site-specific safety orientation before starting work (§3301.11). Check each item after review.</div>
         <ul class="checklist" id="safetyChecklist"></ul>
         <div class="check-count" id="checkCount">0 / 0 completed</div>
         <div style="display:flex;gap:10px;margin-top:16px">
-          <button class="btn btn-outline" onclick="goStep(2)" style="flex:1">Back</button>
-          <button class="btn btn-success" id="btnSubmitReg" onclick="submitRegistration()" disabled style="flex:2">Complete Check-In</button>
+          <button class="btn btn-outline" onclick="goStep(2)" style="flex:1" data-i18n="back">Back</button>
+          <button class="btn btn-success" id="btnSubmitReg" onclick="submitRegistration()" disabled style="flex:2" data-i18n="completeCheckIn">Complete Check-In</button>
         </div>
       </div>
     </div>
@@ -290,7 +302,7 @@ select option{background:#1e293b;color:#f1f5f9}
   <div id="screenSuccess" class="hidden">
     <div class="success-screen">
       <div class="success-icon">✓</div>
-      <div class="success-title" id="successTitle">Checked In!</div>
+      <div class="success-title" id="successTitle" data-i18n="checkedIn">Checked In!</div>
       <div class="success-sub" id="successSub"></div>
       <div class="success-time" id="successTime"></div>
     </div>
@@ -300,34 +312,149 @@ select option{background:#1e293b;color:#f1f5f9}
   <div id="screenError" class="hidden">
     <div style="text-align:center;padding:60px 20px">
       <div style="font-size:48px;margin-bottom:12px">⚠️</div>
-      <div style="font-size:18px;font-weight:600" id="errorTitle">Invalid Check-In Link</div>
-      <div style="font-size:14px;color:var(--text2);margin-top:8px" id="errorDesc">This link is not valid. Please contact your supervisor.</div>
+      <div style="font-size:18px;font-weight:600" id="errorTitle" data-i18n="invalidLink">Invalid Check-In Link</div>
+      <div style="font-size:14px;color:var(--text2);margin-top:8px" id="errorDesc" data-i18n="invalidDesc">This link is not valid. Please contact your supervisor.</div>
     </div>
   </div>
 </div>
 
 <script>
+// ==================== I18N ====================
+let currentLang = 'en';
+
+const TRANSLATIONS = {
+  en: {
+    title: 'Worker Check-In',
+    phoneTitle: 'Enter Your Phone Number',
+    phoneDesc: "We'll check if you've registered before.",
+    phoneLabel: 'Phone Number',
+    phonePlaceholder: '(555) 123-4567',
+    phoneContinue: 'Continue',
+    retBadge: '✓ Registered',
+    retCheckIn: '✓  Check In Now',
+    retNotMe: 'Not me? Register as new worker',
+    oshaTitle: '📋 OSHA / SST Card',
+    oshaDesc: "Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.",
+    camText: 'Tap to take photo',
+    camHint: 'or choose from gallery',
+    nextCompany: 'Next: Select Company',
+    companyTitle: '🏗️ Select Your Company',
+    companyDesc: 'Choose the company you work for on this project.',
+    companyLabel: 'Company',
+    companyLoading: 'Loading companies...',
+    companyNameLabel: 'Company Name',
+    companyNamePlaceholder: 'Enter company name',
+    back: 'Back',
+    nextOrientation: 'Next: Safety Orientation',
+    safetyTitle: '🛡️ Site Safety Orientation',
+    safetyDesc: 'NYC DOB requires all workers to complete a site-specific safety orientation before starting work (§3301.11). Check each item after review.',
+    completeCheckIn: 'Complete Check-In',
+    checkedIn: 'Checked In!',
+    invalidLink: 'Invalid Check-In Link',
+    invalidDesc: 'This link is not valid. Please contact your supervisor.',
+    completed: 'completed',
+    ocrSuccess: '✓ Card scanned successfully',
+    selectCompany: 'Select your company',
+    otherType: 'Other (type in)',
+  },
+  es: {
+    title: 'Registro de Trabajador',
+    phoneTitle: 'Ingrese Su Número de Teléfono',
+    phoneDesc: 'Verificaremos si ya está registrado.',
+    phoneLabel: 'Número de Teléfono',
+    phonePlaceholder: '(555) 123-4567',
+    phoneContinue: 'Continuar',
+    retBadge: '✓ Registrado',
+    retCheckIn: '✓  Registrarse Ahora',
+    retNotMe: '¿No soy yo? Registrarse como nuevo trabajador',
+    oshaTitle: '📋 Tarjeta OSHA / SST',
+    oshaDesc: 'Tome una foto de su tarjeta OSHA-10/30 o SST. La leeremos automáticamente.',
+    camText: 'Toque para tomar foto',
+    camHint: 'o elija de la galería',
+    nextCompany: 'Siguiente: Seleccionar Empresa',
+    companyTitle: '🏗️ Seleccione Su Empresa',
+    companyDesc: 'Elija la empresa para la que trabaja en este proyecto.',
+    companyLabel: 'Empresa',
+    companyLoading: 'Cargando empresas...',
+    companyNameLabel: 'Nombre de la Empresa',
+    companyNamePlaceholder: 'Ingrese nombre de la empresa',
+    back: 'Atrás',
+    nextOrientation: 'Siguiente: Orientación de Seguridad',
+    safetyTitle: '🛡️ Orientación de Seguridad del Sitio',
+    safetyDesc: 'NYC DOB requiere que todos los trabajadores completen una orientación de seguridad específica del sitio antes de comenzar a trabajar (§3301.11). Marque cada elemento después de revisarlo.',
+    completeCheckIn: 'Completar Registro',
+    checkedIn: '¡Registrado!',
+    invalidLink: 'Enlace de Registro Inválido',
+    invalidDesc: 'Este enlace no es válido. Contacte a su supervisor.',
+    completed: 'completado',
+    ocrSuccess: '✓ Tarjeta escaneada exitosamente',
+    selectCompany: 'Seleccione su empresa',
+    otherType: 'Otra (escribir)',
+  },
+};
+
+const SAFETY_ITEMS_I18N = {
+  en: [
+    'Site-specific hazards and hazardous activities have been reviewed',
+    'Emergency procedures, exits, and muster points identified',
+    'Fall protection requirements for this site reviewed',
+    'Required PPE (hard hat, safety glasses, vest, boots, gloves) identified',
+    'Scaffold safety procedures reviewed',
+    'Electrical safety and lockout/tagout procedures reviewed',
+    'Fire protection and hot work permit procedures reviewed',
+    'Housekeeping and material storage requirements reviewed',
+    'Excavation and trenching safety reviewed (if applicable)',
+    'Crane and rigging safety procedures reviewed (if applicable)',
+    'Worker right to refuse unsafe work acknowledged',
+    'Emergency contact numbers and first aid locations identified',
+  ],
+  es: [
+    'Se han revisado los peligros y actividades peligrosas específicas del sitio',
+    'Se identificaron los procedimientos de emergencia, salidas y puntos de reunión',
+    'Se revisaron los requisitos de protección contra caídas para este sitio',
+    'Se identificó el EPP requerido (casco, gafas, chaleco, botas, guantes)',
+    'Se revisaron los procedimientos de seguridad de andamios',
+    'Se revisaron los procedimientos de seguridad eléctrica y bloqueo/etiquetado',
+    'Se revisaron los procedimientos de protección contra incendios y permisos de trabajo en caliente',
+    'Se revisaron los requisitos de limpieza y almacenamiento de materiales',
+    'Se revisó la seguridad de excavación y zanjas (si aplica)',
+    'Se revisaron los procedimientos de seguridad de grúas y aparejos (si aplica)',
+    'Se reconoció el derecho del trabajador a rechazar trabajo inseguro',
+    'Se identificaron los números de contacto de emergencia y ubicaciones de primeros auxilios',
+  ],
+};
+
+function toggleLang() {
+  currentLang = currentLang === 'en' ? 'es' : 'en';
+  document.getElementById('langLabel').textContent = currentLang === 'en' ? 'ES' : 'EN';
+  applyTranslations();
+  // Rebuild checklist with new language
+  buildSafetyChecklist();
+}
+
+function applyTranslations() {
+  const t = TRANSLATIONS[currentLang];
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (t[key]) el.textContent = t[key];
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.getAttribute('data-i18n-placeholder');
+    if (t[key]) el.placeholder = t[key];
+  });
+  // Update check count
+  updateCheckCount();
+}
+
 // ==================== CONFIG ====================
 const API_BASE = window.location.origin + '/api';
 const LS_WORKER_ID = 'bv_worker_id';
 const LS_WORKER_PHONE = 'bv_worker_phone';
 const LS_WORKER_NAME = 'bv_worker_name';
 
-// NYC DOB Site Safety Orientation items (§3301.11)
-const SAFETY_ITEMS = [
-  'Site-specific hazards and hazardous activities have been reviewed',
-  'Emergency procedures, exits, and muster points identified',
-  'Fall protection requirements for this site reviewed',
-  'Required PPE (hard hat, safety glasses, vest, boots, gloves) identified',
-  'Scaffold safety procedures reviewed',
-  'Electrical safety and lockout/tagout procedures reviewed',
-  'Fire protection and hot work permit procedures reviewed',
-  'Housekeeping and material storage requirements reviewed',
-  'Excavation and trenching safety reviewed (if applicable)',
-  'Crane and rigging safety procedures reviewed (if applicable)',
-  'Worker right to refuse unsafe work acknowledged',
-  'Emergency contact numbers and first aid locations identified',
-];
+// NYC DOB Site Safety Orientation items — use SAFETY_ITEMS_I18N[currentLang]
+function getSafetyItems() { return SAFETY_ITEMS_I18N[currentLang]; }
+const SAFETY_ITEMS = SAFETY_ITEMS_I18N.en; // fallback reference
 
 // ==================== STATE ====================
 let projectId = '';
@@ -472,17 +599,17 @@ async function lookupWorker() {
     
     if (res.found) {
       returningWorker = res;
-      // Save to localStorage
-      localStorage.setItem(LS_WORKER_ID, res.worker_id);
-      localStorage.setItem(LS_WORKER_PHONE, phone);
-      localStorage.setItem(LS_WORKER_NAME, res.name);
       
       // Check if oriented for this project
       const oriented = (res.safety_orientations || []).some(o => o.project_id === projectId);
       if (oriented) {
+        // Only save to localStorage if fully registered + oriented
+        localStorage.setItem(LS_WORKER_ID, res.worker_id);
+        localStorage.setItem(LS_WORKER_PHONE, phone);
+        localStorage.setItem(LS_WORKER_NAME, res.name);
         showReturningScreen(res);
       } else {
-        // Has OSHA card but needs orientation for this site
+        // Has OSHA card but needs orientation for this site — don't save yet
         showReturningScreen(res, true);
       }
     } else {
@@ -642,11 +769,13 @@ async function loadCompanies() {
 
 // ==================== SAFETY CHECKLIST ====================
 function buildSafetyChecklist() {
+  const items = getSafetyItems();
   const ul = document.getElementById('safetyChecklist');
   ul.innerHTML = '';
-  SAFETY_ITEMS.forEach((item, i) => {
+  items.forEach((item, i) => {
     const li = document.createElement('li');
-    li.innerHTML = `<div class="check-box" data-idx="${i}" onclick="toggleCheck(this)"></div><span>${item}</span>`;
+    const isChecked = checkedItems.has(i);
+    li.innerHTML = `<div class="check-box${isChecked ? ' checked' : ''}" data-idx="${i}" onclick="toggleCheck(this)"></div><span>${item}</span>`;
     ul.appendChild(li);
   });
   updateCheckCount();
@@ -665,9 +794,10 @@ function toggleCheck(el) {
 }
 
 function updateCheckCount() {
-  const total = SAFETY_ITEMS.length;
+  const total = getSafetyItems().length;
   const done = checkedItems.size;
-  document.getElementById('checkCount').textContent = `${done} / ${total} completed`;
+  const t = TRANSLATIONS[currentLang];
+  document.getElementById('checkCount').textContent = `${done} / ${total} ${t.completed}`;
   document.getElementById('btnSubmitReg').disabled = done < total;
 }
 
@@ -719,9 +849,9 @@ async function submitRegistration() {
   if (!company) { showError('Please select a company'); return; }
   if (checkedItems.size < SAFETY_ITEMS.length) { showError('Please complete all safety orientation items'); return; }
 
-  // Build safety orientation dict
+  // Build safety orientation dict (always use English labels for API)
   const orientation = {};
-  SAFETY_ITEMS.forEach((item, i) => {
+  SAFETY_ITEMS_I18N.en.forEach((item, i) => {
     orientation[item] = {
       checked: checkedItems.has(i),
       checked_at: new Date().toISOString(),
