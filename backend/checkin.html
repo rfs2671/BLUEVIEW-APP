@@ -234,6 +234,7 @@ select option{background:#1e293b;color:#f1f5f9}
       <div class="dot active" data-step="1"></div>
       <div class="dot" data-step="2"></div>
       <div class="dot" data-step="3"></div>
+      <div class="dot" data-step="4"></div>
     </div>
 
     <!-- Step 1: OSHA Card -->
@@ -248,10 +249,18 @@ select option{background:#1e293b;color:#f1f5f9}
         </div>
         <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
         <div id="ocrResults" class="hidden" style="margin-top:16px">
-          <div style="font-size:13px;font-weight:600;color:var(--green);margin-bottom:10px">✓ Card scanned successfully</div>
+          <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned successfully</div>
           <div class="ocr-fields" id="ocrFields"></div>
         </div>
         <div style="margin-top:16px">
+          <div class="input-group">
+            <div class="input-label" data-i18n="nameLabel">Full Name</div>
+            <input type="text" id="regName" data-i18n-placeholder="namePlaceholder" placeholder="John Smith" autocomplete="name">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="tradeLabel">Trade</div>
+            <input type="text" id="regTrade" data-i18n-placeholder="tradePlaceholder" placeholder="Carpenter, Electrician, etc.">
+          </div>
           <div class="input-group">
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
@@ -292,6 +301,22 @@ select option{background:#1e293b;color:#f1f5f9}
         <div class="check-count" id="checkCount">0 / 0 completed</div>
         <div style="display:flex;gap:10px;margin-top:16px">
           <button class="btn btn-outline" onclick="goStep(2)" style="flex:1" data-i18n="back">Back</button>
+          <button class="btn btn-primary" id="btnStep3Next" onclick="goStep(4)" disabled style="flex:2" data-i18n="nextSignature">Next: Sign</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Signature -->
+    <div id="step4" class="hidden">
+      <div class="card">
+        <div class="card-title" data-i18n="sigTitle">✍️ Signature</div>
+        <div class="card-desc" data-i18n="sigDesc">By signing below, I confirm that I have reviewed and understand all safety orientation items above.</div>
+        <canvas id="sigCanvas" width="600" height="200" style="width:100%;height:150px;border:2px solid var(--border);border-radius:var(--radius-sm);background:rgba(255,255,255,0.03);touch-action:none;cursor:crosshair"></canvas>
+        <div style="display:flex;justify-content:flex-end;margin-top:8px">
+          <button class="btn btn-outline" onclick="clearSignature()" style="width:auto;padding:8px 16px;font-size:14px" data-i18n="clearSig">Clear</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px">
+          <button class="btn btn-outline" onclick="goStep(3)" style="flex:1" data-i18n="back">Back</button>
           <button class="btn btn-success" id="btnSubmitReg" onclick="submitRegistration()" disabled style="flex:2" data-i18n="completeCheckIn">Complete Check-In</button>
         </div>
       </div>
@@ -356,6 +381,14 @@ const TRANSLATIONS = {
     ocrSuccess: '✓ Card scanned successfully',
     selectCompany: 'Select your company',
     otherType: 'Other (type in)',
+    nameLabel: 'Full Name',
+    namePlaceholder: 'John Smith',
+    tradeLabel: 'Trade',
+    tradePlaceholder: 'Carpenter, Electrician, etc.',
+    nextSignature: 'Next: Sign',
+    sigTitle: '✍️ Signature',
+    sigDesc: 'By signing below, I confirm that I have reviewed and understand all safety orientation items above.',
+    clearSig: 'Clear',
   },
   es: {
     title: 'Registro de Trabajador',
@@ -390,6 +423,14 @@ const TRANSLATIONS = {
     ocrSuccess: '✓ Tarjeta escaneada exitosamente',
     selectCompany: 'Seleccione su empresa',
     otherType: 'Otra (escribir)',
+    nameLabel: 'Nombre Completo',
+    namePlaceholder: 'Juan Pérez',
+    tradeLabel: 'Oficio',
+    tradePlaceholder: 'Carpintero, Electricista, etc.',
+    nextSignature: 'Siguiente: Firmar',
+    sigTitle: '✍️ Firma',
+    sigDesc: 'Al firmar abajo, confirmo que he revisado y entiendo todos los elementos de orientación de seguridad mencionados.',
+    clearSig: 'Borrar',
   },
 };
 
@@ -465,6 +506,7 @@ let oshaImage = null;  // base64
 let oshaData = null;   // OCR results
 let checkedItems = new Set();
 let returningWorker = null;
+let signatureData = null; // base64 PNG of signature
 
 // ==================== INIT ====================
 (async function init() {
@@ -734,6 +776,10 @@ function showOcrResults(data) {
   });
 
   document.getElementById('ocrResults').classList.remove('hidden');
+  
+  // Auto-fill name and trade from OCR
+  if (data.name) document.getElementById('regName').value = data.name;
+  if (data.trade) document.getElementById('regTrade').value = data.trade;
 }
 
 // ==================== COMPANIES ====================
@@ -798,7 +844,7 @@ function updateCheckCount() {
   const done = checkedItems.size;
   const t = TRANSLATIONS[currentLang];
   document.getElementById('checkCount').textContent = `${done} / ${total} ${t.completed}`;
-  document.getElementById('btnSubmitReg').disabled = done < total;
+  document.getElementById('btnStep3Next').disabled = done < total;
 }
 
 // ==================== STEP NAVIGATION ====================
@@ -818,7 +864,7 @@ function goStep(step) {
     }
   }
 
-  [1, 2, 3].forEach(s => {
+  [1, 2, 3, 4].forEach(s => {
     document.getElementById(`step${s}`).classList.toggle('hidden', s !== step);
   });
 
@@ -828,6 +874,9 @@ function goStep(step) {
     dot.classList.toggle('done', s < step);
     dot.classList.toggle('active', s === step);
   });
+
+  // Init signature canvas when showing step 4
+  if (step === 4) initSignaturePad();
 }
 
 function getSelectedCompany() {
@@ -842,12 +891,14 @@ function getSelectedCompany() {
 async function submitRegistration() {
   const company = getSelectedCompany();
   const phone = cleanPhone(document.getElementById('regPhone').value);
-  const name = oshaData?.name || '';
-  const trade = oshaData?.trade || '';
+  const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
+  const trade = document.getElementById('regTrade').value.trim() || oshaData?.trade || '';
   const oshaNumber = oshaData?.osha_number || oshaData?.sst_number || '';
 
-  if (!company) { showError('Please select a company'); return; }
-  if (checkedItems.size < SAFETY_ITEMS.length) { showError('Please complete all safety orientation items'); return; }
+  if (!name) { showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name'); return; }
+  if (!company) { showError(currentLang === 'es' ? 'Seleccione una empresa' : 'Please select a company'); return; }
+  if (checkedItems.size < getSafetyItems().length) { showError(currentLang === 'es' ? 'Complete todos los elementos de orientación' : 'Please complete all safety orientation items'); return; }
+  if (!signatureData) { showError(currentLang === 'es' ? 'Se requiere firma' : 'Signature required'); return; }
 
   // Build safety orientation dict (always use English labels for API)
   const orientation = {};
@@ -858,12 +909,12 @@ async function submitRegistration() {
     };
   });
 
-  showLoading('Registering and checking in...');
+  showLoading(currentLang === 'es' ? 'Registrando...' : 'Registering and checking in...');
   try {
     const res = await api('/checkin/register-and-checkin', 'POST', {
       project_id: projectId,
       tag_id: tagId,
-      name: name || 'Worker',
+      name: name,
       phone: phone,
       trade: trade,
       company: company,
@@ -871,6 +922,7 @@ async function submitRegistration() {
       osha_data: oshaData,
       osha_number: oshaNumber,
       safety_orientation: orientation,
+      signature: signatureData,
     });
 
     // Save to localStorage
@@ -907,6 +959,85 @@ function cleanPhone(val) {
 document.getElementById('phoneInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') lookupWorker();
 });
+
+// ==================== SIGNATURE PAD ====================
+let sigCtx = null;
+let sigDrawing = false;
+let sigHasStroke = false;
+
+function initSignaturePad() {
+  const canvas = document.getElementById('sigCanvas');
+  if (!canvas) return;
+  sigCtx = canvas.getContext('2d');
+  
+  // Set canvas resolution to match display size
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * 2;
+  canvas.height = rect.height * 2;
+  sigCtx.scale(2, 2);
+  sigCtx.strokeStyle = '#f1f5f9';
+  sigCtx.lineWidth = 2.5;
+  sigCtx.lineCap = 'round';
+  sigCtx.lineJoin = 'round';
+  
+  // Remove old listeners
+  canvas.replaceWith(canvas.cloneNode(true));
+  const newCanvas = document.getElementById('sigCanvas');
+  sigCtx = newCanvas.getContext('2d');
+  const r = newCanvas.getBoundingClientRect();
+  newCanvas.width = r.width * 2;
+  newCanvas.height = r.height * 2;
+  sigCtx.scale(2, 2);
+  sigCtx.strokeStyle = '#f1f5f9';
+  sigCtx.lineWidth = 2.5;
+  sigCtx.lineCap = 'round';
+  sigCtx.lineJoin = 'round';
+  
+  function getPos(e) {
+    const rect = newCanvas.getBoundingClientRect();
+    const touch = e.touches ? e.touches[0] : e;
+    return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+  }
+  
+  newCanvas.addEventListener('pointerdown', (e) => {
+    sigDrawing = true;
+    const pos = getPos(e);
+    sigCtx.beginPath();
+    sigCtx.moveTo(pos.x, pos.y);
+    e.preventDefault();
+  });
+  
+  newCanvas.addEventListener('pointermove', (e) => {
+    if (!sigDrawing) return;
+    const pos = getPos(e);
+    sigCtx.lineTo(pos.x, pos.y);
+    sigCtx.stroke();
+    sigHasStroke = true;
+    e.preventDefault();
+  });
+  
+  newCanvas.addEventListener('pointerup', () => {
+    sigDrawing = false;
+    if (sigHasStroke) {
+      signatureData = newCanvas.toDataURL('image/png');
+      document.getElementById('btnSubmitReg').disabled = false;
+    }
+  });
+  
+  newCanvas.addEventListener('pointerleave', () => {
+    sigDrawing = false;
+  });
+}
+
+function clearSignature() {
+  const canvas = document.getElementById('sigCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  sigHasStroke = false;
+  signatureData = null;
+  document.getElementById('btnSubmitReg').disabled = true;
+}
 </script>
 </body>
 </html>
