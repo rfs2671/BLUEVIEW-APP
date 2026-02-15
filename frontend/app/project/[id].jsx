@@ -115,6 +115,7 @@ export default function ProjectDetailScreen() {
   const [scanningNfc, setScanningNfc] = useState(false);
   const [nfcSupported, setNfcSupported] = useState(false);
   const [nfcEnabled, setNfcEnabled] = useState(false);
+  const [nfcTags, setNfcTags] = useState([]);
 
   // Site devices management
   const [siteDevices, setSiteDevices] = useState([]);
