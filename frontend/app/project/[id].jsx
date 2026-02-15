@@ -508,7 +508,6 @@ export default function ProjectDetailScreen() {
       </AnimatedBackground>
     );
   }
-  const nfcTags = project?.nfc_tags || [];
   const isDropboxConnected = project?.dropbox_enabled && project?.dropbox_folder;
 
   return (
