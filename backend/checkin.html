@@ -469,7 +469,6 @@ function toggleLang() {
   currentLang = currentLang === 'en' ? 'es' : 'en';
   document.getElementById('langLabel').textContent = currentLang === 'en' ? 'ES' : 'EN';
   applyTranslations();
-  // Rebuild checklist with new language
   buildSafetyChecklist();
 }
 
@@ -483,7 +482,6 @@ function applyTranslations() {
     const key = el.getAttribute('data-i18n-placeholder');
     if (t[key]) el.placeholder = t[key];
   });
-  // Update check count
   updateCheckCount();
 }
 
@@ -493,24 +491,48 @@ const LS_WORKER_ID = 'bv_worker_id';
 const LS_WORKER_PHONE = 'bv_worker_phone';
 const LS_WORKER_NAME = 'bv_worker_name';
 
-// NYC DOB Site Safety Orientation items — use SAFETY_ITEMS_I18N[currentLang]
 function getSafetyItems() { return SAFETY_ITEMS_I18N[currentLang]; }
-const SAFETY_ITEMS = SAFETY_ITEMS_I18N.en; // fallback reference
+const SAFETY_ITEMS = SAFETY_ITEMS_I18N.en;
 
 // ==================== STATE ====================
 let projectId = '';
 let tagId = '';
 let siteInfo = null;
 let companies = [];
-let oshaImage = null;  // base64
-let oshaData = null;   // OCR results
+let oshaImage = null;
+let oshaData = null;
 let checkedItems = new Set();
 let returningWorker = null;
-let signatureData = null; // base64 PNG of signature
+let signatureData = null;
+
+// ==================== PHONE FORMATTING ====================
+function formatPhoneDisplay(val) {
+  const digits = val.replace(/\D/g, '');
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return digits.slice(0,3) + '-' + digits.slice(3);
+  return digits.slice(0,3) + '-' + digits.slice(3,6) + '-' + digits.slice(6,10);
+}
+
+// Auto-format phone inputs as user types
+function setupPhoneFormatting(input) {
+  input.addEventListener('input', function(e) {
+    const cursor = this.selectionStart;
+    const oldLen = this.value.length;
+    const digits = this.value.replace(/\D/g, '').slice(0, 10);
+    this.value = formatPhoneDisplay(digits);
+    // Adjust cursor position
+    const newLen = this.value.length;
+    const diff = newLen - oldLen;
+    this.setSelectionRange(cursor + diff, cursor + diff);
+  });
+}
 
 // ==================== INIT ====================
 (async function init() {
-  // Parse URL: /checkin/{tag_id} (NFC format) or /checkin/{project_id}/{tag_id}
+  // Setup phone formatting on all phone inputs
+  setupPhoneFormatting(document.getElementById('phoneInput'));
+  setupPhoneFormatting(document.getElementById('regPhone'));
+
   const path = window.location.pathname;
   const parts = path.split('/').filter(Boolean);
   
@@ -518,16 +540,13 @@ let signatureData = null; // base64 PNG of signature
   if (checkinIdx >= 0) {
     const remaining = parts.slice(checkinIdx + 1);
     if (remaining.length === 1) {
-      // Format: /checkin/{tag_id} — need to look up project from tag
       tagId = remaining[0];
     } else if (remaining.length >= 2) {
-      // Format: /checkin/{project_id}/{tag_id}
       projectId = remaining[0];
       tagId = remaining[1];
     }
   }
   
-  // Fallback to query params
   if (!tagId) {
     const params = new URLSearchParams(window.location.search);
     projectId = params.get('project_id') || projectId;
@@ -539,7 +558,6 @@ let signatureData = null; // base64 PNG of signature
     return;
   }
 
-  // If no project_id, look up from tag
   if (!projectId) {
     try {
       const tagInfo = await api(`/nfc-tags/${tagId}/info`);
@@ -551,7 +569,6 @@ let signatureData = null; // base64 PNG of signature
     }
   }
 
-  // Load site info
   try {
     const res = await api(`/checkin/${projectId}/${tagId}/info`);
     siteInfo = res;
@@ -563,18 +580,13 @@ let signatureData = null; // base64 PNG of signature
     return;
   }
 
-  // Load companies in background
   loadCompanies();
-
-  // Build safety checklist
   buildSafetyChecklist();
 
-  // Check localStorage for returning worker
   const savedPhone = localStorage.getItem(LS_WORKER_PHONE);
   const savedId = localStorage.getItem(LS_WORKER_ID);
   
   if (savedPhone && savedId) {
-    // Try lookup
     try {
       const lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone });
       if (lookup.found) {
@@ -582,16 +594,12 @@ let signatureData = null; // base64 PNG of signature
         showReturningScreen(lookup);
         return;
       }
-    } catch (e) {
-      // Fall through to phone entry
-    }
-    // Clear stale data
+    } catch (e) {}
     localStorage.removeItem(LS_WORKER_ID);
     localStorage.removeItem(LS_WORKER_PHONE);
     localStorage.removeItem(LS_WORKER_NAME);
   }
 
-  // Show phone entry
   showScreen('screenPhone');
 })();
 
@@ -641,22 +649,17 @@ async function lookupWorker() {
     
     if (res.found) {
       returningWorker = res;
-      
-      // Check if oriented for this project
       const oriented = (res.safety_orientations || []).some(o => o.project_id === projectId);
       if (oriented) {
-        // Only save to localStorage if fully registered + oriented
         localStorage.setItem(LS_WORKER_ID, res.worker_id);
         localStorage.setItem(LS_WORKER_PHONE, phone);
         localStorage.setItem(LS_WORKER_NAME, res.name);
         showReturningScreen(res);
       } else {
-        // Has OSHA card but needs orientation for this site — don't save yet
         showReturningScreen(res, true);
       }
     } else {
-      // New worker — go to registration
-      document.getElementById('regPhone').value = document.getElementById('phoneInput').value;
+      document.getElementById('regPhone').value = formatPhoneDisplay(phone);
       showScreen('screenRegister');
     }
   } catch (e) {
@@ -671,7 +674,6 @@ function showReturningScreen(worker, needsOrientation = false) {
   document.getElementById('retInfo').textContent = [worker.trade, worker.company].filter(Boolean).join(' • ');
   
   if (needsOrientation) {
-    // Show orientation required message
     document.querySelector('#screenReturning .returning-badge').textContent = '⚠ Safety orientation needed for this site';
     document.querySelector('#screenReturning .returning-badge').style.background = 'rgba(245,158,11,0.1)';
     document.querySelector('#screenReturning .returning-badge').style.borderColor = 'rgba(245,158,11,0.2)';
@@ -681,7 +683,7 @@ function showReturningScreen(worker, needsOrientation = false) {
     btn.textContent = 'Complete Safety Orientation';
     btn.onclick = function() {
       showScreen('screenRegister');
-      goStep(3); // Jump directly to orientation
+      goStep(3);
     };
   }
   
@@ -724,16 +726,14 @@ async function handleOshaPhoto(input) {
   const file = input.files[0];
   if (!file) return;
 
-  // Show preview
   const reader = new FileReader();
   reader.onload = async function(e) {
-    oshaImage = e.target.result; // data:image/...;base64,...
+    oshaImage = e.target.result;
     
     const zone = document.getElementById('cameraZone');
-    zone.innerHTML = `<img src="${oshaImage}" alt="OSHA Card">`;
+    zone.innerHTML = '<img src="' + oshaImage + '" alt="OSHA Card">';
 
-    // Send to OCR
-    showLoading('Reading your OSHA card...');
+    showLoading('Reading your card...');
     try {
       const contentType = file.type || 'image/jpeg';
       const res = await api('/checkin/upload-osha', 'POST', {
@@ -746,9 +746,12 @@ async function handleOshaPhoto(input) {
       document.getElementById('btnStep1Next').disabled = false;
     } catch (e) {
       hideLoading();
-      showError('Could not read card. You can still proceed manually.');
+      showError('Could not read card. Please fill in your details manually.');
       oshaData = {};
       document.getElementById('btnStep1Next').disabled = false;
+      // Highlight name field so worker knows to fill it
+      document.getElementById('regName').style.borderColor = '#f59e0b';
+      document.getElementById('regName').focus();
     }
   };
   reader.readAsDataURL(file);
@@ -760,41 +763,37 @@ function showOcrResults(data) {
   
   const fields = [
     { key: 'name', label: 'Name' },
-    { key: 'osha_number', label: 'OSHA / DOL #' },
-    { key: 'sst_number', label: 'SST Card #' },
-    { key: 'trade', label: 'Trade' },
+    { key: 'sst_number', label: 'Card ID #' },
+    { key: 'issued', label: 'Issued' },
     { key: 'expiration', label: 'Expiration' },
-    { key: 'training_provider', label: 'Training Provider' },
   ];
 
   fields.forEach(f => {
     const val = data[f.key];
     const div = document.createElement('div');
     div.className = 'ocr-field';
-    div.innerHTML = `<div class="label">${f.label}</div><div class="value ${val ? '' : 'empty'}">${val || 'Not detected'}</div>`;
+    div.innerHTML = '<div class="label">' + f.label + '</div><div class="value ' + (val ? '' : 'empty') + '">' + (val || 'Not detected') + '</div>';
     container.appendChild(div);
   });
 
   document.getElementById('ocrResults').classList.remove('hidden');
   
-  // Auto-fill name and trade from OCR
+  // Auto-fill name from OCR (trade is NOT on card)
   if (data.name) document.getElementById('regName').value = data.name;
-  if (data.trade) document.getElementById('regTrade').value = data.trade;
 }
 
 // ==================== COMPANIES ====================
 async function loadCompanies() {
   try {
-    companies = await api(`/checkin/${projectId}/companies`);
+    companies = await api('/checkin/' + projectId + '/companies');
     const sel = document.getElementById('companySelect');
     sel.innerHTML = '<option value="">Select your company</option>';
     companies.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.name;
-      opt.textContent = c.trade ? `${c.name} (${c.trade})` : c.name;
+      opt.textContent = c.trade ? c.name + ' (' + c.trade + ')' : c.name;
       sel.appendChild(opt);
     });
-    // Add "Other" option
     const other = document.createElement('option');
     other.value = '__other__';
     other.textContent = 'Other (type in)';
@@ -821,7 +820,7 @@ function buildSafetyChecklist() {
   items.forEach((item, i) => {
     const li = document.createElement('li');
     const isChecked = checkedItems.has(i);
-    li.innerHTML = `<div class="check-box${isChecked ? ' checked' : ''}" data-idx="${i}" onclick="toggleCheck(this)"></div><span>${item}</span>`;
+    li.innerHTML = '<div class="check-box' + (isChecked ? ' checked' : '') + '" data-idx="' + i + '" onclick="toggleCheck(this)"></div><span>' + item + '</span>';
     ul.appendChild(li);
   });
   updateCheckCount();
@@ -843,14 +842,21 @@ function updateCheckCount() {
   const total = getSafetyItems().length;
   const done = checkedItems.size;
   const t = TRANSLATIONS[currentLang];
-  document.getElementById('checkCount').textContent = `${done} / ${total} ${t.completed}`;
+  document.getElementById('checkCount').textContent = done + ' / ' + total + ' ' + t.completed;
   document.getElementById('btnStep3Next').disabled = done < total;
 }
 
 // ==================== STEP NAVIGATION ====================
 function goStep(step) {
-  // Validate before moving forward
   if (step === 2) {
+    // Validate name before leaving step 1
+    const name = document.getElementById('regName').value.trim();
+    if (!name) {
+      showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name');
+      document.getElementById('regName').style.borderColor = '#f59e0b';
+      document.getElementById('regName').focus();
+      return;
+    }
     if (!oshaImage && !oshaData) {
       showError('Please take a photo of your OSHA/SST card');
       return;
@@ -865,17 +871,15 @@ function goStep(step) {
   }
 
   [1, 2, 3, 4].forEach(s => {
-    document.getElementById(`step${s}`).classList.toggle('hidden', s !== step);
+    document.getElementById('step' + s).classList.toggle('hidden', s !== step);
   });
 
-  // Update dots
   document.querySelectorAll('#regSteps .dot').forEach(dot => {
     const s = parseInt(dot.dataset.step);
     dot.classList.toggle('done', s < step);
     dot.classList.toggle('active', s === step);
   });
 
-  // Init signature canvas when showing step 4
   if (step === 4) initSignaturePad();
 }
 
@@ -892,15 +896,14 @@ async function submitRegistration() {
   const company = getSelectedCompany();
   const phone = cleanPhone(document.getElementById('regPhone').value);
   const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
-  const trade = document.getElementById('regTrade').value.trim() || oshaData?.trade || '';
-  const oshaNumber = oshaData?.osha_number || oshaData?.sst_number || '';
+  const trade = document.getElementById('regTrade').value.trim() || '';
+  const oshaNumber = oshaData?.sst_number || '';
 
   if (!name) { showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name'); return; }
   if (!company) { showError(currentLang === 'es' ? 'Seleccione una empresa' : 'Please select a company'); return; }
   if (checkedItems.size < getSafetyItems().length) { showError(currentLang === 'es' ? 'Complete todos los elementos de orientación' : 'Please complete all safety orientation items'); return; }
   if (!signatureData) { showError(currentLang === 'es' ? 'Se requiere firma' : 'Signature required'); return; }
 
-  // Build safety orientation dict (always use English labels for API)
   const orientation = {};
   SAFETY_ITEMS_I18N.en.forEach((item, i) => {
     orientation[item] = {
@@ -925,7 +928,6 @@ async function submitRegistration() {
       signature: signatureData,
     });
 
-    // Save to localStorage
     if (res.worker_id) {
       localStorage.setItem(LS_WORKER_ID, res.worker_id);
     }
@@ -944,8 +946,8 @@ async function submitRegistration() {
 
 // ==================== SUCCESS ====================
 function showSuccess(res) {
-  document.getElementById('successTitle').textContent = 'Checked In!';
-  document.getElementById('successSub').textContent = `${res.worker_name || 'Worker'}\n${res.project_name || ''}`;
+  document.getElementById('successTitle').textContent = currentLang === 'es' ? '¡Registrado!' : 'Checked In!';
+  document.getElementById('successSub').textContent = (res.worker_name || 'Worker') + '\n' + (res.project_name || '');
   document.getElementById('successTime').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   showScreen('screenSuccess');
 }
@@ -955,7 +957,6 @@ function cleanPhone(val) {
   return (val || '').replace(/[^0-9]/g, '');
 }
 
-// Handle Enter key on phone input
 document.getElementById('phoneInput').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') lookupWorker();
 });
@@ -970,7 +971,6 @@ function initSignaturePad() {
   if (!canvas) return;
   sigCtx = canvas.getContext('2d');
   
-  // Set canvas resolution to match display size
   const rect = canvas.getBoundingClientRect();
   canvas.width = rect.width * 2;
   canvas.height = rect.height * 2;
@@ -980,7 +980,6 @@ function initSignaturePad() {
   sigCtx.lineCap = 'round';
   sigCtx.lineJoin = 'round';
   
-  // Remove old listeners
   canvas.replaceWith(canvas.cloneNode(true));
   const newCanvas = document.getElementById('sigCanvas');
   sigCtx = newCanvas.getContext('2d');
