@@ -115,7 +115,14 @@ def serialize_sync_record(record):
     
     return record
 
-# Auth Models
+def format_phone(phone: str) -> str:
+    """Format a 10-digit phone number as XXX-XXX-XXXX"""
+    digits = ''.join(c for c in (phone or '') if c.isdigit())
+    if len(digits) == 11 and digits[0] == '1':
+        digits = digits[1:]  # strip leading 1
+    if len(digits) == 10:
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
+    return phone or ""
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -1553,6 +1560,10 @@ async def register_and_checkin(data: dict):
     if not all([project_id, tag_id, name, company]):
         raise HTTPException(status_code=400, detail="Missing required fields")
     
+    # Format phone number
+    if phone:
+        phone = format_phone(phone)
+    
     # Verify tag + project
     tag = await db.nfc_tags.find_one({
         "tag_id": tag_id,
@@ -1574,7 +1585,9 @@ async def register_and_checkin(data: dict):
     # Find or create worker by phone (or by OSHA number if no phone)
     worker = None
     if phone:
-        worker = await db.workers.find_one({"phone": phone, "is_deleted": {"$ne": True}})
+        raw_digits = ''.join(c for c in phone if c.isdigit())
+        formatted = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
     if not worker and osha_number:
         worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
     
@@ -1699,8 +1712,12 @@ async def lookup_worker(data: dict):
     if not phone:
         raise HTTPException(status_code=400, detail="Phone required")
     
+    # Search by both raw digits and formatted version
+    raw_digits = ''.join(c for c in phone if c.isdigit())
+    formatted = format_phone(raw_digits)
+    
     worker = await db.workers.find_one(
-        {"phone": phone, "is_deleted": {"$ne": True}},
+        {"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}},
         {"osha_card_image": 0}
     )
     
@@ -1722,6 +1739,9 @@ async def lookup_worker(data: dict):
 async def submit_checkin(checkin_data: PublicCheckInSubmit):
     """Public endpoint - workers check in via this"""
     try:
+        # Format phone number
+        checkin_data.phone = format_phone(checkin_data.phone)
+        
         # Verify tag
         tag = await db.nfc_tags.find_one({
             "tag_id": checkin_data.tag_id,
@@ -1743,7 +1763,9 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         now = datetime.now(timezone.utc)
         
         # Find or create worker
-        worker = await db.workers.find_one({"phone": checkin_data.phone, "is_deleted": {"$ne": True}})
+        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
+        formatted_phone = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
         
         if not worker:
             new_worker = {
