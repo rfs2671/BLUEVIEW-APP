@@ -252,9 +252,8 @@ class PublicWorkerRegister(BaseModel):
 
 class OSHAUploadResponse(BaseModel):
     name: Optional[str] = None
-    osha_number: Optional[str] = None
     sst_number: Optional[str] = None
-    trade: Optional[str] = None
+    issued: Optional[str] = None
     expiration: Optional[str] = None
     raw_text: Optional[str] = None
     
@@ -1481,7 +1480,7 @@ async def upload_osha_card(file_data: dict):
                                 }
                             },
                             {
-                                "text": "Extract the following from this OSHA/SST card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name\", \"osha_number\": \"OSHA card number or DOL card number\", \"sst_number\": \"SST card number if visible\", \"trade\": \"trade/classification if visible\", \"expiration\": \"expiration date if visible\", \"training_provider\": \"provider name if visible\"}\nIf a field is not visible, set it to null."
+                                "text": "Extract the following from this SST/OSHA safety training card image. The card typically has a name, an ID number, an issued date, and an expiration date. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name on card\", \"sst_number\": \"the ID number or card number shown on the card\", \"issued\": \"issued date if visible\", \"expiration\": \"expiration date if visible\"}\nIf a field is not visible, set it to null."
                             },
                         ]
                     }]
@@ -1504,7 +1503,7 @@ async def upload_osha_card(file_data: dict):
         return extracted
 
     except json_mod.JSONDecodeError:
-        return {"name": None, "osha_number": None, "sst_number": None, "trade": None, "expiration": None, "raw_text": text}
+        return {"name": None, "sst_number": None, "issued": None, "expiration": None, "raw_text": text}
     except HTTPException:
         raise
     except Exception as e:
@@ -1662,6 +1661,8 @@ async def register_and_checkin(data: dict):
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_phone": worker.get("phone"),
+        "worker_company": worker.get("company"),
+        "worker_trade": worker.get("trade"),
         "company": worker.get("company"),
         "trade": worker.get("trade"),
         "project_id": project_id,
@@ -1806,6 +1807,8 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "worker_id": str(worker["_id"]),
             "worker_name": worker.get("name"),
             "worker_phone": worker.get("phone"),
+            "worker_company": worker.get("company"),
+            "worker_trade": worker.get("trade"),
             "company": worker.get("company"),
             "trade": worker.get("trade"),
             "project_id": checkin_data.project_id,
@@ -2086,7 +2089,19 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
         "status": "checked_in",
         "is_deleted": {"$ne": True}
     }).to_list(1000)
-    return serialize_list(checkins)
+    
+    # Populate missing worker_name from workers collection
+    results = []
+    for c in checkins:
+        s = serialize_id(c)
+        if not s.get("worker_name") and s.get("worker_id"):
+            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            if worker:
+                s["worker_name"] = worker.get("name", "Unknown Worker")
+                s["worker_company"] = s.get("worker_company") or worker.get("company")
+                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        results.append(s)
+    return results
 
 @api_router.get("/checkins/project/{project_id}/today")
 async def get_today_project_checkins(project_id: str, current_user = Depends(get_current_user)):
@@ -2096,7 +2111,19 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
         "check_in_time": {"$gte": today_start},
         "is_deleted": {"$ne": True}
     }).to_list(1000)
-    return serialize_list(checkins)
+    
+    # Populate missing worker_name from workers collection
+    results = []
+    for c in checkins:
+        s = serialize_id(c)
+        if not s.get("worker_name") and s.get("worker_id"):
+            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            if worker:
+                s["worker_name"] = worker.get("name", "Unknown Worker")
+                s["worker_company"] = s.get("worker_company") or worker.get("company")
+                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        results.append(s)
+    return results
 
 # ==================== DAILY LOGS ====================
 
