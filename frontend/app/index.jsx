@@ -274,8 +274,8 @@ const styles = StyleSheet.create({
     transform: [{ scale: 1.01 }, { translateY: -2 }],
   },
   tilePressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.99 }],
+    opacity: 0.6,
+    transform: [{ scale: 0.95 }],
   },
   tileIcon: {
     marginBottom: spacing.xs,
