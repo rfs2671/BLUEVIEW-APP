@@ -547,6 +547,25 @@ function compressImage(dataUrl, maxWidth, quality) {
   });
 }
 
+function cropImage(dataUrl, box) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = function() {
+      const x = Math.round(img.width * box[1] / 1000);
+      const y = Math.round(img.height * box[0] / 1000);
+      const w = Math.round(img.width * (box[3] - box[1]) / 1000);
+      const h = Math.round(img.height * (box[2] - box[0]) / 1000);
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.8));
+    };
+    img.src = dataUrl;
+  });
+}
+  
 // ==================== INIT ====================
 (async function init() {
   // Setup phone formatting on all phone inputs
@@ -764,6 +783,10 @@ async function handleOshaPhoto(input) {
         content_type: 'image/jpeg',
       });
       oshaData = res;
+      if (res.box_2d && res.box_2d.length === 4) {
+        oshaImage = await cropImage(oshaImage, res.box_2d);
+        document.querySelector('#cameraZone img').src = oshaImage;
+      }
       hideLoading();
       showOcrResults(res);
       document.getElementById('btnStep1Next').disabled = false;
