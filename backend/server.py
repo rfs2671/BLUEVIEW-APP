@@ -200,7 +200,7 @@ class WorkerResponse(BaseModel):
     osha_card_image: Optional[str] = None
     safety_orientations: List[Dict] = []
     certifications: List[Dict] = []
-	signature: Optional[Dict | str] = None
+    signature: Optional[Dict | str] = None
     created_at: Optional[datetime] = None
 
 # Check-In Models
@@ -1613,7 +1613,7 @@ async def register_and_checkin(data: dict):
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
-			"signature": signature,
+            "signature": signature,
             "safety_orientations": [{
                 "project_id": project_id,
                 "project_name": project.get("name"),
