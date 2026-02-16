@@ -1,6 +1,4 @@
 import { useState, useEffect } from 'react';
-import { Q } from '@nozbe/watermelondb';
-import database from '../database';
 import { workersAPI } from '../utils/api';
 
 export function useWorkers() {
@@ -8,97 +6,57 @@ export function useWorkers() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const workersCollection = database.get('workers');
-    
-    const subscription = workersCollection
-      .query(
-        Q.where('is_deleted', false),
-        Q.sortBy('name', Q.asc)
-      )
-      .observe()
-      .subscribe(workers => {
-        setWorkers(workers);
-        setLoading(false);
-      });
-
-    return () => subscription.unsubscribe();
+    fetchWorkers();
   }, []);
 
+  const fetchWorkers = async () => {
+    try {
+      setLoading(true);
+      const data = await workersAPI.getAll();
+      setWorkers(data || []);
+    } catch (error) {
+      console.error('Failed to fetch workers:', error);
+      setWorkers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const createWorker = async (workerData) => {
-    await database.write(async () => {
-      await database.get('workers').create(worker => {
-        worker.name = workerData.name;
-        worker.phone = workerData.phone || '';
-        worker.trade = workerData.trade || '';
-        worker.company = workerData.company || '';
-        worker.oshaNumber = workerData.osha_number || '';
-        worker.certificationsJSON = JSON.stringify(workerData.certifications || []);
-        worker.backendId = workerData._id || '';
-        worker.isDeleted = false;
-        worker.syncStatus = 'pending';
-      });
-    });
+    const newWorker = await workersAPI.create(workerData);
+    await fetchWorkers(); // Refresh list
+    return newWorker;
   };
 
   const updateWorker = async (workerId, updates) => {
-    await database.write(async () => {
-      const worker = await database.get('workers').find(workerId);
-      await worker.update(w => {
-        if (updates.name !== undefined) w.name = updates.name;
-        if (updates.phone !== undefined) w.phone = updates.phone;
-        if (updates.trade !== undefined) w.trade = updates.trade;
-        if (updates.company !== undefined) w.company = updates.company;
-        if (updates.osha_number !== undefined) w.oshaNumber = updates.osha_number;
-        if (updates.certifications !== undefined) {
-          w.certificationsJSON = JSON.stringify(updates.certifications);
-        }
-      });
-    });
+    await workersAPI.update(workerId, updates);
+    await fetchWorkers(); // Refresh list
   };
 
   const deleteWorker = async (workerId) => {
-    await database.write(async () => {
-      const worker = await database.get('workers').find(workerId);
-      await worker.update(w => {
-        w.isDeleted = true;
-      });
-    });
+    await workersAPI.delete(workerId);
+    await fetchWorkers(); // Refresh list
   };
 
   const getWorkerById = async (workerId) => {
     try {
-      // 1. Try local storage first
-      return await database.get('workers').find(workerId);
+      return await workersAPI.getById(workerId);
     } catch (error) {
-      console.log('Worker not found locally, fetching from API...');
-      try {
-        // 2. Fallback to live API if local record doesn't exist yet
-        const remoteWorker = await workersAPI.getById(workerId);
-        return {
-          ...remoteWorker,
-          // Normalize field names to match what the UI expects
-          oshaNumber: remoteWorker.osha_number || remoteWorker.oshaNumber,
-          certifications: remoteWorker.certifications || JSON.parse(remoteWorker.certificationsJSON || '[]')
-        };
-      } catch (apiError) {
-        console.error('Worker not found in DB or API:', apiError);
-        return null;
-      }
+      console.error('Worker not found:', error);
+      return null;
     }
   };
 
   const searchWorkers = async (query) => {
-    const results = await database.get('workers')
-      .query(
-        Q.where('is_deleted', false),
-        Q.or(
-          Q.where('name', Q.like(`%${Q.sanitizeLikeString(query)}%`)),
-          Q.where('company', Q.like(`%${Q.sanitizeLikeString(query)}%`)),
-          Q.where('trade', Q.like(`%${Q.sanitizeLikeString(query)}%`))
-        )
-      )
-      .fetch();
-    return results;
+    // Client-side search since we have all workers
+    if (!query) return workers;
+    
+    const lowerQuery = query.toLowerCase();
+    return workers.filter(w => 
+      w.name?.toLowerCase().includes(lowerQuery) ||
+      w.company?.toLowerCase().includes(lowerQuery) ||
+      w.trade?.toLowerCase().includes(lowerQuery)
+    );
   };
 
   return {
@@ -109,5 +67,6 @@ export function useWorkers() {
     deleteWorker,
     getWorkerById,
     searchWorkers,
+    refreshWorkers: fetchWorkers,
   };
 }
