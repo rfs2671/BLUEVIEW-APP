@@ -28,7 +28,7 @@ db = client[os.environ['DB_NAME']]
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'blueview-secret-key-2024')
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+JWT_EXPIRATION_HOURS = 720
 
 # Dropbox Configuration
 DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
@@ -2031,6 +2031,9 @@ async def get_all_checkins(current_user = Depends(get_current_user)):
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
                 s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+                s["name"] = s["worker_name"]
+                s["company"] = s["worker_company"]
+                s["trade"] = s["worker_trade"]
         results.append(s)
     return results
 
