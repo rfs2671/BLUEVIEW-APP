@@ -520,10 +520,30 @@ function setupPhoneFormatting(input) {
     const oldLen = this.value.length;
     const digits = this.value.replace(/\D/g, '').slice(0, 10);
     this.value = formatPhoneDisplay(digits);
-    // Adjust cursor position
     const newLen = this.value.length;
     const diff = newLen - oldLen;
     this.setSelectionRange(cursor + diff, cursor + diff);
+  });
+}
+
+// ==================== IMAGE COMPRESSION ====================
+function compressImage(dataUrl, maxWidth, quality) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = function() {
+      let w = img.width, h = img.height;
+      if (w > maxWidth) {
+        h = Math.round(h * maxWidth / w);
+        w = maxWidth;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
   });
 }
 
@@ -728,17 +748,20 @@ async function handleOshaPhoto(input) {
 
   const reader = new FileReader();
   reader.onload = async function(e) {
-    oshaImage = e.target.result;
+    const rawImage = e.target.result;
+    
+    // Compress: max 1200px wide, JPEG 70% quality (~100-200KB)
+    const compressed = await compressImage(rawImage, 1200, 0.7);
+    oshaImage = compressed;
     
     const zone = document.getElementById('cameraZone');
-    zone.innerHTML = '<img src="' + oshaImage + '" alt="OSHA Card">';
+    zone.innerHTML = '<img src="' + compressed + '" alt="OSHA Card">';
 
     showLoading('Reading your card...');
     try {
-      const contentType = file.type || 'image/jpeg';
       const res = await api('/checkin/upload-osha', 'POST', {
-        image: oshaImage,
-        content_type: contentType,
+        image: compressed,
+        content_type: 'image/jpeg',
       });
       oshaData = res;
       hideLoading();
@@ -749,7 +772,6 @@ async function handleOshaPhoto(input) {
       showError('Could not read card. Please fill in your details manually.');
       oshaData = {};
       document.getElementById('btnStep1Next').disabled = false;
-      // Highlight name field so worker knows to fill it
       document.getElementById('regName').style.borderColor = '#f59e0b';
       document.getElementById('regName').focus();
     }
@@ -1018,7 +1040,7 @@ function initSignaturePad() {
   newCanvas.addEventListener('pointerup', () => {
     sigDrawing = false;
     if (sigHasStroke) {
-      signatureData = newCanvas.toDataURL('image/png');
+      signatureData = newCanvas.toDataURL('image/jpeg', 0.5);
       document.getElementById('btnSubmitReg').disabled = false;
     }
   });
