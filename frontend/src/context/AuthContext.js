@@ -3,6 +3,24 @@ import { authAPI, getToken, getStoredUser, setStoredUser, clearAuth } from '../u
 
 const AuthContext = createContext(null);
 
+// Helper to decode JWT payload in React Native
+const decodeToken = (token) => {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    // Using global.atob for RN compatibility
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch (e) {
+    return null;
+  }
+};
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -20,18 +38,31 @@ export const AuthProvider = ({ children }) => {
       const token = await getToken();
       const storedUser = await getStoredUser();
 
+      // 1. Check if token exists and has valid JWT structure (3 parts)
+      if (!token || token.split('.').length !== 3) {
+        throw new Error('Invalid or missing token format');
+      }
+
+      // 2. Check Expiration (Auto-Cleanup)
+      const payload = decodeToken(token);
+      if (payload && payload.exp && payload.exp * 1000 < Date.now()) {
+        console.log('Session expired - performing auto-cleanup');
+        throw new Error('Token expired');
+      }
+
       if (token && storedUser) {
-        // Validate token by fetching current user
+        // 3. Validate with Backend
         const userData = await authAPI.getMe();
         const normalizedUser = {
           ...userData,
           full_name: userData.full_name || userData.name,
         };
+        
         setUser(normalizedUser);
         await setStoredUser(normalizedUser);
         setIsAuthenticated(true);
         
-        // Check if site mode
+        // Check site mode
         if (userData.site_mode) {
           setSiteMode(true);
           setSiteProject({
@@ -45,8 +76,8 @@ export const AuthProvider = ({ children }) => {
         }
       }
     } catch (error) {
-      console.error('Session validation failed:', error);
-      await clearAuth();
+      console.error('Auth cleanup triggered:', error.message);
+      await clearAuth(); // Removes token and user from storage via api utility
       setUser(null);
       setIsAuthenticated(false);
       setSiteMode(false);
@@ -57,10 +88,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   const login = async (email, password) => {
-    // Login returns only token, so we need to fetch user data separately
+    // Login returns token, utility handles storage
     await authAPI.login(email, password);
     
-    // Fetch user data using the token
+    // Fetch fresh user data using the new token
     const userData = await authAPI.getMe();
     const normalizedUser = {
       ...userData,
@@ -71,7 +102,6 @@ export const AuthProvider = ({ children }) => {
     await setStoredUser(normalizedUser);
     setIsAuthenticated(true);
     
-    // Check if site mode
     if (userData.site_mode) {
       setSiteMode(true);
       setSiteProject({
@@ -88,11 +118,16 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    await authAPI.logout();
-    setUser(null);
-    setIsAuthenticated(false);
-    setSiteMode(false);
-    setSiteProject(null);
+    try {
+      await authAPI.logout();
+    } catch (e) {
+      console.error('Logout API call failed, clearing local state anyway');
+    } finally {
+      setUser(null);
+      setIsAuthenticated(false);
+      setSiteMode(false);
+      setSiteProject(null);
+    }
   };
 
   return (
