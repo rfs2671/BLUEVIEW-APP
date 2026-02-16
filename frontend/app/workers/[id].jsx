@@ -82,7 +82,7 @@ export default function WorkerDetailScreen() {
   const [showOshaCard, setShowOshaCard] = useState(false);
   const [expandedOrientation, setExpandedOrientation] = useState(null);
 
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
   const isSiteDevice = user?.role === 'site_device';
   const canViewOsha = isAdmin || isSiteDevice;
 
@@ -101,53 +101,41 @@ export default function WorkerDetailScreen() {
     }
   }, [isAuthenticated, workerId]);
 
-const fetchOshaData = async () => {
-    setLoadingOsha(true);
+  const fetchWorker = async () => {
     try {
-      // Use centralized API to ensure 'blueview_token' is used automatically
-      const data = await workersAPI.getOshaCard(workerId);
-      
-      setOshaCardImage(data.osha_card_image || null);
-      setOshaData(data.osha_data || null);
-      setSafetyOrientations(data.safety_orientations || []);
-      
-      // Update OSHA number if received from API but missing locally
-      if (data.osha_number && !oshaNumber) {
-        setOshaNumber(data.osha_number);
-      }
+      const workerData = await getWorkerById(workerId);
+      setWorker(workerData);
+      setName(workerData.name || '');
+      setTrade(workerData.trade || '');
+      setCompany(workerData.company || '');
+      setOshaNumber(workerData.osha_number || workerData.oshaNumber || '');
+      setCertifications(workerData.certifications || []);
+      setSignature(workerData.signature || null);
     } catch (error) {
-      console.error('Failed to fetch OSHA data:', error);
-      // api.js handles 401/clearAuth automatically
+      console.error('Failed to fetch worker:', error);
+      toast.error('Error', 'Could not load worker details');
     } finally {
-      setLoadingOsha(false);
+      setLoading(false);
     }
   };
 
   const fetchOshaData = async () => {
     setLoadingOsha(true);
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      const API_URL = await AsyncStorage.getItem('api_url') || 'https://blueview2-production.up.railway.app/api';
+      // Use centralized API utility to handle tokens and headers automatically
+      const data = await workersAPI.getOshaCard(workerId);
       
-      const res = await fetch(`${API_URL}/workers/${workerId}/osha-card`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      setOshaCardImage(data.osha_card_image || null);
+      setOshaData(data.osha_data || null);
+      setSafetyOrientations(data.safety_orientations || []);
       
-      if (res.ok) {
-        const data = await res.json();
-        setOshaCardImage(data.osha_card_image || null);
-        setOshaData(data.osha_data || null);
-        setSafetyOrientations(data.safety_orientations || []);
-        // Update OSHA number if we got it from API but not from WatermelonDB
-        if (data.osha_number && !oshaNumber) {
-          setOshaNumber(data.osha_number);
-        }
+      if (data.osha_number && !oshaNumber) {
+        setOshaNumber(data.osha_number);
       }
     } catch (error) {
       console.error('Failed to fetch OSHA data:', error);
-      // Non-critical — don't show error toast
     } finally {
-      setLoadingOsha(false);
+      setLoading(false);
     }
   };
 
@@ -237,7 +225,6 @@ const fetchOshaData = async () => {
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
-        {/* Header */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
             <GlassButton
@@ -269,7 +256,6 @@ const fetchOshaData = async () => {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Worker Profile Card */}
           <GlassCard style={styles.profileCard}>
             <View style={styles.avatarContainer}>
               <View style={styles.avatar}>
@@ -351,7 +337,6 @@ const fetchOshaData = async () => {
             )}
           </GlassCard>
 
-          {/* OSHA Card Section */}
           {canViewOsha && (
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -428,7 +413,6 @@ const fetchOshaData = async () => {
             </View>
           )}
 
-          {/* Safety Orientations Section */}
           {canViewOsha && (
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
@@ -496,7 +480,6 @@ const fetchOshaData = async () => {
             </View>
           )}
 
-          {/* Certifications Section */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleRow}>
@@ -568,7 +551,6 @@ const fetchOshaData = async () => {
             )}
           </View>
 
-          {/* Digital Signature Section */}
           <View style={styles.section}>
             <View style={styles.sectionHeader}>
               <View style={styles.sectionTitleRow}>
@@ -616,7 +598,7 @@ const fetchOshaData = async () => {
                     Signature pad would appear here
                   </Text>
                 </View>
-                <View style={styles.signaturePadActions}>
+                <div style={styles.signaturePadActions}>
                   <GlassButton
                     title="Cancel"
                     onPress={() => setShowSignaturePad(false)}
@@ -625,13 +607,12 @@ const fetchOshaData = async () => {
                     title="Save Signature"
                     onPress={handleUpdateSignature}
                   />
-                </View>
+                </div>
               </GlassCard>
             )}
           </View>
         </ScrollView>
 
-        {/* OSHA Card Full Screen Modal */}
         <Modal
           visible={showOshaCard}
           transparent={true}
@@ -795,8 +776,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: colors.text.primary,
   },
-
-  // OSHA Card styles
   oshaCard: {
     gap: spacing.md,
   },
@@ -835,8 +814,6 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     fontWeight: '500',
   },
-
-  // Safety Orientation styles
   orientationList: {
     gap: spacing.sm,
   },
@@ -905,8 +882,6 @@ const styles = StyleSheet.create({
     flex: 1,
     lineHeight: 18,
   },
-
-  // Empty states
   emptyCard: {
     alignItems: 'center',
     paddingVertical: spacing.xl,
@@ -920,8 +895,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.text.subtle,
   },
-
-  // Existing styles
   addForm: {
     marginBottom: spacing.md,
   },
@@ -1009,8 +982,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: spacing.sm,
   },
-
-  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.9)',
