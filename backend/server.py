@@ -1991,7 +1991,18 @@ async def get_all_checkins(current_user = Depends(get_current_user)):
     if company_id:
         query["company_id"] = company_id
     checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
-    return serialize_list(checkins)
+    
+    results = []
+    for c in checkins:
+        s = serialize_id(c)
+        if not s.get("worker_name") and s.get("worker_id"):
+            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            if worker:
+                s["worker_name"] = worker.get("name", "Unknown Worker")
+                s["worker_company"] = s.get("worker_company") or worker.get("company")
+                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        results.append(s)
+    return results
 
 @api_router.post("/checkins")
 async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get_current_user)):
@@ -2102,7 +2113,18 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
 @api_router.get("/checkins/project/{project_id}")
 async def get_project_checkins(project_id: str, current_user = Depends(get_current_user)):
     checkins = await db.checkins.find({"project_id": project_id, "is_deleted": {"$ne": True}}).to_list(1000)
-    return serialize_list(checkins)
+    
+    results = []
+    for c in checkins:
+        s = serialize_id(c)
+        if not s.get("worker_name") and s.get("worker_id"):
+            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            if worker:
+                s["worker_name"] = worker.get("name", "Unknown Worker")
+                s["worker_company"] = s.get("worker_company") or worker.get("company")
+                s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        results.append(s)
+    return results
 
 @api_router.get("/checkins/project/{project_id}/active")
 async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user)):
