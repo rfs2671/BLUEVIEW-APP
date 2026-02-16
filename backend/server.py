@@ -1487,7 +1487,7 @@ async def upload_osha_card(file_data: dict):
                                 }
                             },
                             {
-                                "text": "Extract the following from this SST/OSHA safety training card image. The card typically has a name, an ID number, an issued date, and an expiration date. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name on card\", \"sst_number\": \"the ID number or card number shown on the card\", \"issued\": \"issued date if visible\", \"expiration\": \"expiration date if visible\"}\nIf a field is not visible, set it to null."
+								"text": "Extract the following from this SST/OSHA safety training card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name on card\", \"sst_number\": \"the ID number or card number shown on the card\", \"issued\": \"issued date if visible\", \"expiration\": \"expiration date if visible\", \"box_2d\": [ymin, xmin, ymax, xmax]}\nIf a field is not visible, set it to null. 'box_2d' should be the normalized coordinates (0-1000) tightly framing the card. Return the JSON object only."
                             },
                         ]
                     }]
