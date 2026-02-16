@@ -2433,12 +2433,13 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
         query["company_id"] = company_id
     
     total_workers = await db.workers.count_documents(query)
+
+    on_site_query = {**query, "status": "checked_in"}
+    unique_on_site = await db.checkins.distinct("worker_id", on_site_query)
+    on_site_now = len(unique_on_site)
     
     project_query = {**query, "status": "active"}
     total_projects = await db.projects.count_documents(project_query)
-    
-    checkin_query = {**query, "status": "checked_in"}
-    on_site_now = await db.checkins.count_documents(checkin_query)
     
     today_query = {**query, "check_in_time": {"$gte": today_start}}
     today_checkins = await db.checkins.count_documents(today_query)
