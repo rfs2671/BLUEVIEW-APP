@@ -1,3 +1,4 @@
+import { workersAPI } from '../../src/utils/api';
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -100,21 +101,25 @@ export default function WorkerDetailScreen() {
     }
   }, [isAuthenticated, workerId]);
 
-  const fetchWorker = async () => {
+const fetchOshaData = async () => {
+    setLoadingOsha(true);
     try {
-      const workerData = await getWorkerById(workerId);
-      setWorker(workerData);
-      setName(workerData.name || '');
-      setTrade(workerData.trade || '');
-      setCompany(workerData.company || '');
-      setOshaNumber(workerData.oshaNumber || workerData.osha_number || '');
-      setCertifications(workerData.certifications || []);
-      setSignature(workerData.signature || null);
+      // Use centralized API to ensure 'blueview_token' is used automatically
+      const data = await workersAPI.getOshaCard(workerId);
+      
+      setOshaCardImage(data.osha_card_image || null);
+      setOshaData(data.osha_data || null);
+      setSafetyOrientations(data.safety_orientations || []);
+      
+      // Update OSHA number if received from API but missing locally
+      if (data.osha_number && !oshaNumber) {
+        setOshaNumber(data.osha_number);
+      }
     } catch (error) {
-      console.error('Failed to fetch worker:', error);
-      toast.error('Error', 'Could not load worker details');
+      console.error('Failed to fetch OSHA data:', error);
+      // api.js handles 401/clearAuth automatically
     } finally {
-      setLoading(false);
+      setLoadingOsha(false);
     }
   };
 
