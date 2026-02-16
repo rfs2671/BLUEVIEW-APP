@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Q } from '@nozbe/watermelondb';
 import database from '../database';
+import { workersAPI } from '../utils/api';
 
 export function useWorkers() {
   const [workers, setWorkers] = useState([]);
@@ -9,7 +10,6 @@ export function useWorkers() {
   useEffect(() => {
     const workersCollection = database.get('workers');
     
-    // Subscribe to workers (auto-updates on changes)
     const subscription = workersCollection
       .query(
         Q.where('is_deleted', false),
@@ -24,7 +24,6 @@ export function useWorkers() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Create worker
   const createWorker = async (workerData) => {
     await database.write(async () => {
       await database.get('workers').create(worker => {
@@ -41,7 +40,6 @@ export function useWorkers() {
     });
   };
 
-  // Update worker
   const updateWorker = async (workerId, updates) => {
     await database.write(async () => {
       const worker = await database.get('workers').find(workerId);
@@ -58,7 +56,6 @@ export function useWorkers() {
     });
   };
 
-  // Delete worker (soft delete)
   const deleteWorker = async (workerId) => {
     await database.write(async () => {
       const worker = await database.get('workers').find(workerId);
@@ -68,17 +65,28 @@ export function useWorkers() {
     });
   };
 
-  // Get worker by ID
   const getWorkerById = async (workerId) => {
     try {
+      // 1. Try local storage first
       return await database.get('workers').find(workerId);
     } catch (error) {
-      console.error('Worker not found:', error);
-      return null;
+      console.log('Worker not found locally, fetching from API...');
+      try {
+        // 2. Fallback to live API if local record doesn't exist yet
+        const remoteWorker = await workersAPI.getById(workerId);
+        return {
+          ...remoteWorker,
+          // Normalize field names to match what the UI expects
+          oshaNumber: remoteWorker.osha_number || remoteWorker.oshaNumber,
+          certifications: remoteWorker.certifications || JSON.parse(remoteWorker.certificationsJSON || '[]')
+        };
+      } catch (apiError) {
+        console.error('Worker not found in DB or API:', apiError);
+        return null;
+      }
     }
   };
 
-  // Search workers
   const searchWorkers = async (query) => {
     const results = await database.get('workers')
       .query(
