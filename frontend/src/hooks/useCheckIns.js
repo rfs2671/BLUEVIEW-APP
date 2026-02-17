@@ -7,23 +7,6 @@ export function useCheckIns() {
   const [checkIns, setCheckIns] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const checkInsCollection = database.get('check_ins');
-    
-    const subscription = checkInsCollection
-      .query(
-        Q.where('is_deleted', false),
-        Q.sortBy('check_in_time', Q.desc)
-      )
-      .observe()
-      .subscribe(checkIns => {
-        setCheckIns(checkIns);
-        setLoading(false);
-      });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
   // Create check-in - API FIRST, then sync to WatermelonDB
   const createCheckIn = async (checkInData) => {
     try {
