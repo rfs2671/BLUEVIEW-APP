@@ -182,7 +182,8 @@ export const workersAPI = {
   create: async (workerData) => {
     const response = await apiClient.post('/api/workers', workerData);
     return response.data;
-
+  },
+    
   update: async (workerId, workerData) => {
     const response = await apiClient.put(`/api/workers/${workerId}`, workerData);
     return response.data;
