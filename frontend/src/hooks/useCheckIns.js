@@ -1,26 +1,20 @@
 import { useState, useEffect } from 'react';
 import { Q } from '@nozbe/watermelondb';
 import database from '../database';
+import { checkinsAPI } from '../utils/api';
 
-export function useCheckIns(projectId = null) {
+export function useCheckIns() {
   const [checkIns, setCheckIns] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const checkInsCollection = database.get('check_ins');
     
-    // Build query
-    const queryConditions = [Q.where('is_deleted', false)];
-    
-    if (projectId) {
-      queryConditions.push(Q.where('project_id', projectId));
-    }
-    
-    queryConditions.push(Q.sortBy('check_in_time', Q.desc));
-
-    // Subscribe to check-ins (auto-updates on changes)
     const subscription = checkInsCollection
-      .query(...queryConditions)
+      .query(
+        Q.where('is_deleted', false),
+        Q.sortBy('check_in_time', Q.desc)
+      )
       .observe()
       .subscribe(checkIns => {
         setCheckIns(checkIns);
@@ -28,78 +22,147 @@ export function useCheckIns(projectId = null) {
       });
 
     return () => subscription.unsubscribe();
-  }, [projectId]);
+  }, []);
 
-  // Create check-in
+  // Create check-in - API FIRST, then sync to WatermelonDB
   const createCheckIn = async (checkInData) => {
-    await database.write(async () => {
-      await database.get('check_ins').create(checkIn => {
-        checkIn.workerId = checkInData.worker_id || '';
-        checkIn.projectId = checkInData.project_id || '';
-        checkIn.workerName = checkInData.worker_name || '';
-        checkIn.workerTrade = checkInData.worker_trade || '';
-        checkIn.workerCompany = checkInData.worker_company || '';
-        checkIn.projectName = checkInData.project_name || '';
-        checkIn.checkInTime = checkInData.check_in_time 
-          ? new Date(checkInData.check_in_time).getTime() 
-          : Date.now();
-        checkIn.checkOutTime = checkInData.check_out_time 
-          ? new Date(checkInData.check_out_time).getTime() 
-          : null;
-        checkIn.nfcTagId = checkInData.nfc_tag_id || '';
-        checkIn.backendId = checkInData._id || '';
-        checkIn.isDeleted = false;
-        checkIn.syncStatus = 'pending';
+    try {
+      // 1. Call backend API
+      const result = await checkinsAPI.checkIn(checkInData);
+      
+      // 2. Save to WatermelonDB for offline access
+      await database.write(async () => {
+        await database.get('check_ins').create(checkIn => {
+          checkIn.workerId = result.worker_id || checkInData.worker_id;
+          checkIn.projectId = result.project_id || checkInData.project_id;
+          checkIn.workerName = result.worker_name || '';
+          checkIn.workerTrade = checkInData.worker_trade || '';
+          checkIn.workerCompany = checkInData.worker_company || '';
+          checkIn.projectName = result.project_name || '';
+          checkIn.checkInTime = result.timestamp ? new Date(result.timestamp).getTime() : Date.now();
+          checkIn.checkOutTime = null;
+          checkIn.nfcTagId = checkInData.tag_id || '';
+          checkIn.backendId = result.id || '';
+          checkIn.isDeleted = false;
+          checkIn.syncStatus = 'synced';
+        });
       });
-    });
+
+      return result;
+    } catch (error) {
+      console.error('Check-in failed:', error);
+      
+      // If API fails (offline), save to WatermelonDB and queue for sync
+      await database.write(async () => {
+        await database.get('check_ins').create(checkIn => {
+          checkIn.workerId = checkInData.worker_id || '';
+          checkIn.projectId = checkInData.project_id || '';
+          checkIn.workerName = checkInData.worker_name || '';
+          checkIn.workerTrade = checkInData.worker_trade || '';
+          checkIn.workerCompany = checkInData.worker_company || '';
+          checkIn.projectName = checkInData.project_name || '';
+          checkIn.checkInTime = Date.now();
+          checkIn.checkOutTime = null;
+          checkIn.nfcTagId = checkInData.tag_id || '';
+          checkIn.backendId = '';
+          checkIn.isDeleted = false;
+          checkIn.syncStatus = 'pending';
+        });
+      });
+
+      throw error;
+    }
   };
 
-  // Check out
+  // Check out - API FIRST
   const checkOut = async (checkInId) => {
-    await database.write(async () => {
-      const checkIn = await database.get('check_ins').find(checkInId);
-      await checkIn.update(c => {
-        c.checkOutTime = Date.now();
-        c.syncStatus = 'pending';
+    try {
+      // 1. Call backend API
+      await checkinsAPI.checkOut(checkInId);
+      
+      // 2. Update WatermelonDB
+      await database.write(async () => {
+        const checkIn = await database.get('check_ins').find(checkInId);
+        await checkIn.update(c => {
+          c.checkOutTime = Date.now();
+          c.syncStatus = 'synced';
+        });
       });
-    });
+    } catch (error) {
+      console.error('Check-out failed:', error);
+      
+      // If API fails, update locally and queue for sync
+      await database.write(async () => {
+        const checkIn = await database.get('check_ins').find(checkInId);
+        await checkIn.update(c => {
+          c.checkOutTime = Date.now();
+          c.syncStatus = 'pending';
+        });
+      });
+
+      throw error;
+    }
   };
 
-  // Get active check-ins (not checked out)
+  // Get active check-ins - FROM API, sync to WatermelonDB
   const getActiveCheckIns = async (projectId = null) => {
-    const queryConditions = [
-      Q.where('is_deleted', false),
-      Q.where('check_out_time', null)
-    ];
-    
-    if (projectId) {
-      queryConditions.push(Q.where('project_id', projectId));
+    try {
+      const apiCheckIns = await checkinsAPI.getActiveByProject(projectId);
+      
+      // Sync to WatermelonDB
+      await syncCheckInsToLocal(apiCheckIns);
+      
+      return apiCheckIns;
+    } catch (error) {
+      console.error('Failed to fetch active check-ins from API, using local:', error);
+      
+      // Fallback to local
+      const queryConditions = [
+        Q.where('is_deleted', false),
+        Q.where('check_out_time', null)
+      ];
+      
+      if (projectId) {
+        queryConditions.push(Q.where('project_id', projectId));
+      }
+      
+      return await database.get('check_ins')
+        .query(...queryConditions)
+        .fetch();
     }
-    
-    return await database.get('check_ins')
-      .query(...queryConditions)
-      .fetch();
   };
 
-  // Get today's check-ins
+  // Get today's check-ins - FROM API, sync to WatermelonDB
   const getTodayCheckIns = async (projectId = null) => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    
-    const queryConditions = [
-      Q.where('is_deleted', false),
-      Q.where('check_in_time', Q.gte(todayStart.getTime()))
-    ];
-    
-    if (projectId) {
-      queryConditions.push(Q.where('project_id', projectId));
+    try {
+      const apiCheckIns = await checkinsAPI.getTodayByProject(projectId);
+      
+      // Sync to WatermelonDB
+      await syncCheckInsToLocal(apiCheckIns);
+      
+      return apiCheckIns;
+    } catch (error) {
+      console.error('Failed to fetch today check-ins from API, using local:', error);
+      
+      // Fallback to local
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      
+      const queryConditions = [
+        Q.where('is_deleted', false),
+        Q.where('check_in_time', Q.gte(todayStart.getTime()))
+      ];
+      
+      if (projectId) {
+        queryConditions.push(Q.where('project_id', projectId));
+      }
+      
+      queryConditions.push(Q.sortBy('check_in_time', Q.desc));
+      
+      return await database.get('check_ins')
+        .query(...queryConditions)
+        .fetch();
     }
-    
-    queryConditions.push(Q.sortBy('check_in_time', Q.desc));
-    
-    return await database.get('check_ins')
-      .query(...queryConditions)
-      .fetch();
   };
 
   // Get check-ins by worker
@@ -120,6 +183,56 @@ export function useCheckIns(projectId = null) {
       await checkIn.update(c => {
         c.isDeleted = true;
       });
+    });
+  };
+
+  // Helper: Sync API check-ins to WatermelonDB
+  const syncCheckInsToLocal = async (apiCheckIns) => {
+    if (!Array.isArray(apiCheckIns) || apiCheckIns.length === 0) return;
+
+    await database.write(async () => {
+      for (const apiCheckIn of apiCheckIns) {
+        const backendId = apiCheckIn._id || apiCheckIn.id;
+        
+        // Check if already exists locally
+        const existing = await database.get('check_ins')
+          .query(Q.where('backend_id', backendId))
+          .fetch();
+
+        if (existing.length === 0) {
+          // Create new
+          await database.get('check_ins').create(checkIn => {
+            checkIn.workerId = apiCheckIn.worker_id || '';
+            checkIn.projectId = apiCheckIn.project_id || '';
+            checkIn.workerName = apiCheckIn.worker_name || '';
+            checkIn.workerTrade = apiCheckIn.worker_trade || '';
+            checkIn.workerCompany = apiCheckIn.worker_company || '';
+            checkIn.projectName = apiCheckIn.project_name || '';
+            checkIn.checkInTime = apiCheckIn.check_in_time 
+              ? new Date(apiCheckIn.check_in_time).getTime() 
+              : Date.now();
+            checkIn.checkOutTime = apiCheckIn.check_out_time 
+              ? new Date(apiCheckIn.check_out_time).getTime() 
+              : null;
+            checkIn.nfcTagId = apiCheckIn.nfc_tag_id || '';
+            checkIn.backendId = backendId;
+            checkIn.isDeleted = false;
+            checkIn.syncStatus = 'synced';
+          });
+        } else {
+          // Update existing
+          await existing[0].update(checkIn => {
+            checkIn.workerName = apiCheckIn.worker_name || checkIn.workerName;
+            checkIn.workerTrade = apiCheckIn.worker_trade || checkIn.workerTrade;
+            checkIn.workerCompany = apiCheckIn.worker_company || checkIn.workerCompany;
+            checkIn.projectName = apiCheckIn.project_name || checkIn.projectName;
+            if (apiCheckIn.check_out_time) {
+              checkIn.checkOutTime = new Date(apiCheckIn.check_out_time).getTime();
+            }
+            checkIn.syncStatus = 'synced';
+          });
+        }
+      }
     });
   };
 
