@@ -23,9 +23,7 @@ import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { useWorkers } from '../src/hooks/useWorkers';
-import { useProjects } from '../src/hooks/useProjects';
-import { useCheckIns } from '../src/hooks/useCheckIns';
+import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const adminActions = [
@@ -39,24 +37,21 @@ const adminActions = [
 // 2-column grid tile — hover/press matches GlassCard.js listItem pattern exactly
 const ActionTile = ({ action, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const Icon = action.icon || LayoutGrid;
-
+  const Icon = action.icon;
   return (
     <Pressable
+      onPress={onPress}
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
-      onPress={() => onPress(action.path)}
-      style={({ pressed }) => [
-        styles.tile,
-        isHovered && styles.tileHovered,
-        pressed && styles.tilePressed,
-      ]}
+      style={[styles.actionTile, isHovered && styles.actionTileHovered]}
     >
-      <IconPod size={38} style={styles.tileIcon}>
-        <Icon size={17} strokeWidth={1.5} color={colors.text.secondary} />
+      <IconPod size={40} style={styles.actionIcon}>
+        <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
-      <Text style={styles.tileTitle} numberOfLines={1}>{action.title}</Text>
-      <Text style={styles.tileSubtitle} numberOfLines={1}>{action.subtitle}</Text>
+      <View style={styles.actionText}>
+        <Text style={styles.actionTitle}>{action.title}</Text>
+        <Text style={styles.actionSubtitle}>{action.subtitle}</Text>
+      </View>
     </Pressable>
   );
 };
@@ -66,15 +61,10 @@ export default function DashboardScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
-  const { workers, loading: workersLoading } = useWorkers();
-  const { projects, loading: projectsLoading } = useProjects();
-  const { checkIns, loading: checkInsLoading, getActiveCheckIns } = useCheckIns();
-
-  const [activeCheckInsCount, setActiveCheckInsCount] = useState(0);
-
-  const today = new Date();
-  const dayName = today.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase();
-  const fullDate = today.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  const [loading, setLoading] = useState(true);
+  const [workers, setWorkers] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [activeCheckIns, setActiveCheckIns] = useState([]);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -83,15 +73,48 @@ export default function DashboardScreen() {
   }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
-    const countActiveCheckIns = async () => {
-      const active = await getActiveCheckIns();
-      setActiveCheckInsCount(active.length);
-    };
-    if (isAuthenticated) countActiveCheckIns();
-  }, [isAuthenticated, checkIns]);
+    if (isAuthenticated) {
+      fetchData();
+    }
+  }, [isAuthenticated]);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      
+      // Fetch from API only
+      const [workersData, projectsData, activeCheckInsData] = await Promise.all([
+        workersAPI.getAll(),
+        projectsAPI.getAll(),
+        checkinsAPI.getAll(),
+      ]);
+
+      setWorkers(Array.isArray(workersData) ? workersData : []);
+      setProjects(Array.isArray(projectsData) ? projectsData : []);
+      
+      // Filter for active (not checked out) check-ins
+      const active = Array.isArray(activeCheckInsData) 
+        ? activeCheckInsData.filter(c => !c.check_out_time && !c.checkout_time)
+        : [];
+      setActiveCheckIns(active);
+    } catch (error) {
+      console.error('Failed to fetch dashboard data:', error);
+      toast.error('Error', 'Could not load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+  const fullDate = new Date().toLocaleDateString('en-US', { 
+    month: 'long', 
+    day: 'numeric', 
+    year: 'numeric' 
+  });
 
   const getUserFirstName = () => {
-    if (user?.full_name) return user.full_name.split(' ')[0];
+    if (user?.first_name) return user.first_name;
+    if (user?.display_name) return user.display_name.split(' ')[0];
     if (user?.name) return user.name.split(' ')[0];
     if (user?.email) return user.email.split('@')[0];
     return 'User';
@@ -102,12 +125,10 @@ export default function DashboardScreen() {
     router.replace('/login');
   };
 
-  const loading = workersLoading || projectsLoading || checkInsLoading;
-
   const stats = {
     totalWorkers: workers.length,
     activeProjects: projects.filter(p => p.status === 'active' || !p.status).length,
-    onSiteNow: activeCheckInsCount,
+    onSiteNow: activeCheckIns.length,
   };
 
   if (authLoading) {
@@ -167,53 +188,47 @@ export default function DashboardScreen() {
 
               {/* Stats — pressable, navigate on tap */}
               <View style={styles.statsGrid}>
-                {loading ? (
+                {loading ?
                   <>
                     <StatCardSkeleton />
                     <StatCardSkeleton />
                     <StatCardSkeleton />
                   </>
-                ) : (
+                :
                   statItems.map((stat) => {
                     const Icon = stat.icon;
                     return (
-                      <StatCard
-                        key={stat.label}
-                        style={styles.statCard}
-                        onPress={() => router.push(stat.path)}
-                      >
-                        <IconPod size={44} style={styles.statIcon}>
-                          <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                        </IconPod>
-                        <Text style={styles.statValue}>{stat.value}</Text>
-                        <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
-                      </StatCard>
+                      <Pressable key={stat.label} onPress={() => router.push(stat.path)}>
+                        <StatCard style={styles.statCard}>
+                          <IconPod size={44} style={styles.statIcon}>
+                            <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                          </IconPod>
+                          <Text style={styles.statValue}>{stat.value}</Text>
+                          <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+                        </StatCard>
+                      </Pressable>
                     );
                   })
-                )}
+                }
               </View>
 
               {/* Sync Button */}
-              <View style={styles.syncSection}>
-                <SyncButton showLabel={true} />
-              </View>
+              <SyncButton onSyncComplete={fetchData} />
 
-              {/* Admin Tools — 2-column grid, admin only */}
-              {user?.role === 'admin' && (
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>ADMIN TOOLS</Text>
-                  <GlassCard style={styles.gridCard}>
-                    <View style={styles.tileGrid}>
-                      {adminActions.map((action) => (
-                        <ActionTile
-                          key={action.path}
-                          action={action}
-                          onPress={(path) => router.push(path)}
-                        />
-                      ))}
-                    </View>
-                  </GlassCard>
-                </View>
+              {/* Admin Tools - Only show for admin/owner */}
+              {(user?.role === 'admin' || user?.role === 'owner') && (
+                <>
+                  <Text style={styles.sectionLabel}>ADMIN TOOLS</Text>
+                  <View style={styles.adminGrid}>
+                    {adminActions.map((action) => (
+                      <ActionTile
+                        key={action.title}
+                        action={action}
+                        onPress={() => router.push(action.path)}
+                      />
+                    ))}
+                  </View>
+                </>
               )}
             </>
           )}
@@ -226,70 +241,164 @@ export default function DashboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  loadingText: { fontSize: 14, fontWeight: '600', color: colors.text.secondary, letterSpacing: 2 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  logoIcon: { width: 32, height: 32, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  logoText: { fontSize: 16, fontWeight: '700', color: colors.text.primary, letterSpacing: 1 },
-  scrollView: { flex: 1 },
-  scrollContent: { paddingHorizontal: spacing.lg, paddingBottom: 100 },
-  greetingSection: { marginBottom: spacing.xl },
-  greetingSmall: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.xs },
-  greetingLarge: { fontSize: 32, fontWeight: '700', color: colors.text.primary, marginBottom: spacing.sm },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  dayName: { fontSize: 14, fontWeight: '600', color: colors.text.primary },
-  dateDivider: { fontSize: 14, color: colors.text.subtle },
-  fullDate: { fontSize: 14, color: colors.text.secondary },
-  statsGrid: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xl },
-  statCard: { flex: 1 },
-  statIcon: { marginBottom: spacing.sm },
-  statValue: { fontSize: 28, fontWeight: '700', color: colors.text.primary, marginBottom: 2 },
-  statLabel: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1 },
-  syncSection: { marginBottom: spacing.xl },
-  section: { marginBottom: spacing.xl },
-  sectionTitle: { fontSize: 11, fontWeight: '600', color: colors.text.secondary, letterSpacing: 1.5, marginBottom: spacing.md },
-
-  // Grid
-  gridCard: { padding: spacing.md },
-  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-
-  // Tile — mirrors listItemHovered / listItemPressed from GlassCard.js
-  tile: {
-    width: '48%',
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    padding: spacing.md,
-    alignItems: 'flex-start',
-    gap: 4,
-    transition: 'all 0.2s ease',
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: colors.background.primary,
   },
-  tileHovered: {
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderColor: 'rgba(255,255,255,0.3)',
-    transform: [{ scale: 1.01 }, { translateY: -2 }],
+  loadingText: {
+    fontFamily: typography.medium,
+    fontSize: 14,
+    color: colors.text.muted,
+    letterSpacing: 2,
   },
-  tilePressed: {
-    opacity: 0.6,
-    transform: [{ scale: 0.95 }],
+  container: {
+    flex: 1,
   },
-  tileIcon: {
-    marginBottom: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
-  tileTitle: {
-    fontSize: 13,
-    fontWeight: '600',
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  logoIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.glass.light,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoText: {
+    fontFamily: typography.semibold,
+    fontSize: 16,
     color: colors.text.primary,
-    letterSpacing: 0.2,
+    letterSpacing: 1.5,
   },
-  tileSubtitle: {
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.xxl,
+  },
+  greetingSection: {
+    marginTop: spacing.lg,
+    marginBottom: spacing.xl,
+  },
+  greetingSmall: {
+    fontFamily: typography.regular,
     fontSize: 11,
     color: colors.text.muted,
-    letterSpacing: 0.1,
+    letterSpacing: 1.5,
+    marginBottom: spacing.xs,
+  },
+  greetingLarge: {
+    fontFamily: typography.semibold,
+    fontSize: 32,
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+  },
+  dateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  dayName: {
+    fontFamily: typography.medium,
+    fontSize: 13,
+    color: colors.text.secondary,
+  },
+  dateDivider: {
+    fontFamily: typography.regular,
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  fullDate: {
+    fontFamily: typography.regular,
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    marginBottom: spacing.xl,
+  },
+  statCard: {
+    flex: 1,
+    minHeight: 120,
+  },
+  statIcon: {
+    marginBottom: spacing.sm,
+  },
+  statValue: {
+    fontFamily: typography.semibold,
+    fontSize: 28,
+    color: colors.text.primary,
+    marginBottom: spacing.xs,
+  },
+  statLabel: {
+    fontFamily: typography.medium,
+    fontSize: 10,
+    color: colors.text.muted,
+    letterSpacing: 1,
+  },
+  sectionLabel: {
+    fontFamily: typography.medium,
+    fontSize: 11,
+    color: colors.text.muted,
+    letterSpacing: 1.5,
+    marginBottom: spacing.md,
+    marginTop: spacing.md,
+  },
+  adminGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
+  },
+  actionTile: {
+    flex: 1,
+    minWidth: '47%',
+    backgroundColor: colors.glass.card,
+    borderRadius: borderRadius.lg,
+    padding: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border.subtle,
+  },
+  actionTileHovered: {
+    backgroundColor: colors.glass.cardHover,
+    borderColor: colors.border.medium,
+  },
+  actionIcon: {
+    flexShrink: 0,
+  },
+  actionText: {
+    flex: 1,
+  },
+  actionTitle: {
+    fontFamily: typography.medium,
+    fontSize: 14,
+    color: colors.text.primary,
+    marginBottom: 2,
+  },
+  actionSubtitle: {
+    fontFamily: typography.regular,
+    fontSize: 11,
+    color: colors.text.muted,
   },
 });
