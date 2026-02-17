@@ -6,24 +6,6 @@ export function useProjects() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const projectsCollection = database.get('projects');
-    
-    // Subscribe to projects (auto-updates on changes)
-    const subscription = projectsCollection
-      .query(
-        Q.where('is_deleted', false),
-        Q.sortBy('name', Q.asc)
-      )
-      .observe()
-      .subscribe(projects => {
-        setProjects(projects);
-        setLoading(false);
-      });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
   // Create project
   const createProject = async (projectData) => {
     await database.write(async () => {
