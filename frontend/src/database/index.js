@@ -1,3 +1,20 @@
+if (typeof window !== 'undefined') {
+  if (!window.crypto) {
+    window.crypto = {};
+  }
+  if (!window.crypto.subtle) {
+    // Create a minimal polyfill that WatermelonDB can use
+    window.crypto.subtle = {
+      digest: async (algorithm, data) => {
+        // Fallback implementation using a simple hash
+        const msgBuffer = new TextEncoder().encode(JSON.stringify(data));
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        return hashBuffer;
+      }
+    };
+  }
+}
+
 import { Database } from '@nozbe/watermelondb'
 import LokiJSAdapter from '@nozbe/watermelondb/adapters/lokijs'
 import schema from './schema'
