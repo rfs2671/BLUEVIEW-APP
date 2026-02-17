@@ -6,30 +6,6 @@ export function useDailyLogs(projectId = null) {
   const [dailyLogs, setDailyLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const dailyLogsCollection = database.get('daily_logs');
-    
-    // Build query
-    const queryConditions = [Q.where('is_deleted', false)];
-    
-    if (projectId) {
-      queryConditions.push(Q.where('project_id', projectId));
-    }
-    
-    queryConditions.push(Q.sortBy('date', Q.desc));
-
-    // Subscribe to daily logs (auto-updates on changes)
-    const subscription = dailyLogsCollection
-      .query(...queryConditions)
-      .observe()
-      .subscribe(logs => {
-        setDailyLogs(logs);
-        setLoading(false);
-      });
-
-    return () => subscription.unsubscribe();
-  }, [projectId]);
-
   // Create daily log
   const createDailyLog = async (logData) => {
     await database.write(async () => {
