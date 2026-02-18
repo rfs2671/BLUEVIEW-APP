@@ -20,7 +20,13 @@ export const colors = {
     card: 'rgba(255, 255, 255, 0.06)',
     cardHover: 'rgba(255, 255, 255, 0.10)',
   },
-  
+
+  border: {
+    subtle: 'rgba(255, 255, 255, 0.1)',
+    medium: 'rgba(255, 255, 255, 0.2)',
+    strong: 'rgba(255, 255, 255, 0.3)',
+  },
+   
   // Text colors
   text: {
     primary: 'rgba(255, 255, 255, 0.9)',
