@@ -1,16 +1,3 @@
-if (typeof window !== 'undefined' && (!window.crypto || !window.crypto.subtle)) {
-  if (!window.crypto) window.crypto = {};
-  window.crypto.subtle = {
-    digest: async () => new ArrayBuffer(32)
-  };
-  if (!window.crypto.getRandomValues) {
-    window.crypto.getRandomValues = (arr) => {
-      for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
-      return arr;
-    };
-  }
-}
-
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
