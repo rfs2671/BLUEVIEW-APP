@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Q } from '@nozbe/watermelondb';
 import database from '../database';
 import { checkinsAPI } from '../utils/api';
+
+const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
 
 export function useCheckIns() {
   const [checkIns, setCheckIns] = useState([]);
