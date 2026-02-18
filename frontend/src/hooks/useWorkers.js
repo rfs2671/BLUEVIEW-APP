@@ -3,6 +3,7 @@ import { workersAPI } from '../utils/api';
 import database from '../database';
 import { Q } from '@nozbe/watermelondb';
 import { addToQueue } from '../utils/offlineQueue';
+import { Platform } from 'react-native';
 
 export function useWorkers() {
   const [workers, setWorkers] = useState([]);
@@ -21,7 +22,9 @@ export function useWorkers() {
       setWorkers(data || []);
       
       // 2. Sync to WatermelonDB for offline access
-      await syncWorkersToLocal(data);
+      if (Platform.OS !== 'web') {
+        await syncWorkersToLocal(data);
+      }
     } catch (error) {
       console.error('Failed to fetch from API, using local cache:', error);
       
