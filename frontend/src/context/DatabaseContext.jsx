@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import { DatabaseProvider as WatermelonProvider } from '@nozbe/watermelondb/DatabaseProvider';
 import database from '../database';
 import { syncDatabase, setupAutoSync } from '../database/sync';
@@ -22,24 +23,15 @@ export function DatabaseProvider({ children }) {
     const initialize = async () => {
       try {
         console.log('🗄️ Initializing database...');
-        
-        // Database is already initialized via import
-        // Just mark as ready
         setIsInitialized(true);
+
+        autoSyncUnsubscribe = Platform.OS !== 'web' ? setupAutoSync() : null;
+        autoQueueUnsubscribe = Platform.OS !== 'web' ? setupAutoQueueProcessing() : null;
         
-        // Setup auto-sync when coming online
-        autoSyncUnsubscribe = setupAutoSync();
-        
-        // Setup auto-queue processing
-        autoQueueUnsubscribe = setupAutoQueueProcessing();
-        
-        // Initial sync if online
-        if (isOnline) {
+        if (Platform.OS !== 'web' && isOnline) {
           console.log('📶 Online - performing initial sync...');
           await performSync();
-        } else {
-          console.log('📵 Offline - skipping initial sync');
-        }
+      }
         
         // Update queue status
         const status = await getQueueStatus();
