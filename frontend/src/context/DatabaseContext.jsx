@@ -1,10 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Platform } from 'react-native';
-import { DatabaseProvider as WatermelonProvider } from '@nozbe/watermelondb/DatabaseProvider';
 import database from '../database';
 import { syncDatabase, setupAutoSync } from '../database/sync';
 import { setupAutoQueueProcessing, getQueueStatus } from '../utils/offlineQueue';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
+
+const WatermelonProvider = Platform.OS !== 'web' 
+  ? require('@nozbe/watermelondb/DatabaseProvider').DatabaseProvider 
+  : ({ children }) => children;
 
 const DatabaseContext = createContext({});
 
