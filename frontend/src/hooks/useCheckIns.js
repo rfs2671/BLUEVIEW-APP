@@ -93,7 +93,9 @@ export function useCheckIns() {
       const apiCheckIns = await checkinsAPI.getActiveByProject(projectId);
       
       // Sync to WatermelonDB
-      await syncCheckInsToLocal(apiCheckIns);
+      if (Platform.OS !== 'web') {
+        await syncCheckInsToLocal(apiCheckIns);
+      }
       
       return apiCheckIns;
     } catch (error) {
@@ -121,7 +123,9 @@ export function useCheckIns() {
       const apiCheckIns = await checkinsAPI.getTodayByProject(projectId);
       
       // Sync to WatermelonDB
-      await syncCheckInsToLocal(apiCheckIns);
+     if (Platform.OS !== 'web') {
+       await syncCheckInsToLocal(apiCheckIns);
+     }
       
       return apiCheckIns;
     } catch (error) {
