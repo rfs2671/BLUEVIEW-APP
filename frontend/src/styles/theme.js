@@ -17,6 +17,8 @@ export const colors = {
     backgroundHover: 'rgba(255, 255, 255, 0.12)',
     border: 'rgba(255, 255, 255, 0.15)',
     borderHover: 'rgba(255, 255, 255, 0.3)',
+    card: 'rgba(255, 255, 255, 0.06)',
+    cardHover: 'rgba(255, 255, 255, 0.10)',
   },
   
   // Text colors
@@ -35,6 +37,12 @@ export const colors = {
     errorBg: 'rgba(248, 113, 113, 0.1)',
     warning: '#fbbf24',
     warningBg: 'rgba(251, 191, 36, 0.2)',
+  },
+
+  border: {
+    subtle: 'rgba(255, 255, 255, 0.1)',
+    medium: 'rgba(255, 255, 255, 0.2)',
+    strong: 'rgba(255, 255, 255, 0.3)',
   },
   
   // Accent
