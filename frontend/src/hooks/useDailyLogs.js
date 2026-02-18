@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import database from '../database';
+import { Platform } from 'react-native'
 
 const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
 
