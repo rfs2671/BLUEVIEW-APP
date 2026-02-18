@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Q } from '@nozbe/watermelondb';
 import database from '../database';
+
+const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
 
 export function useDailyLogs(projectId = null) {
   const [dailyLogs, setDailyLogs] = useState([]);
