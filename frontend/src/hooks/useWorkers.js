@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { workersAPI } from '../utils/api';
 import database from '../database';
-import { Q } from '@nozbe/watermelondb';
 import { addToQueue } from '../utils/offlineQueue';
 import { Platform } from 'react-native';
+
+const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
 
 export function useWorkers() {
   const [workers, setWorkers] = useState([]);
