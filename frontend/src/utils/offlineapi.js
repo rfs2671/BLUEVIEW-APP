@@ -5,8 +5,9 @@
  */
 import NetInfo from '@react-native-community/netinfo';
 import database from '../database';
-import { Q } from '@nozbe/watermelondb';
 import { addToQueue } from './offlineQueue';
+
+const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
 
 /**
  * Check if device is online
