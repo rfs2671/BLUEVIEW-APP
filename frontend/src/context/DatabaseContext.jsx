@@ -110,15 +110,18 @@ export function DatabaseProvider({ children }) {
     // Show loading state while initializing
     return null; // Or a loading spinner component
   }
-
+  
   return (
-    <DatabaseContext.Provider value={value}>
+  <DatabaseContext.Provider value={value}>
+    {Platform.OS === 'web' ? (
+      children
+    ) : (
       <WatermelonProvider database={database}>
         {children}
       </WatermelonProvider>
-    </DatabaseContext.Provider>
-  );
-}
+    )}
+  </DatabaseContext.Provider>
+);
 
 // Custom hook to use database context
 export function useDatabase() {
