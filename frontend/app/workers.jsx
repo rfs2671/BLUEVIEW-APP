@@ -225,7 +225,6 @@ export default function WorkersScreen() {
                         router.push(`/workers/${workerId}`);
                       }
                     }}
-                    onPress={() => router.push(`/workers/${checkin.worker_id || checkin._id || checkin.id}`)}
                   >
                     {/* Time */}
                     <View style={styles.timeSection}>
