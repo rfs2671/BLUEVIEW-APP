@@ -40,7 +40,6 @@ export default function WorkersScreen() {
   const { projects, loading: projectsLoading } = useProjects();
   const { getTodayCheckIns } = useCheckIns();
   const [todayCheckIns, setTodayCheckIns] = useState([]);
-  const loading = workersLoading || projectsLoading;
 
   const formatTime = (isoString) => {
     if (!isoString) return '--:--';
