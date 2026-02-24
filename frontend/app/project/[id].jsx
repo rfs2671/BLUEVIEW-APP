@@ -177,6 +177,14 @@ export default function ProjectDetailScreen() {
       }
       setProject(projectData);
 
+        try {
+          const tags = await projectsAPI.getNfcTags(projectId);
+          setNfcTags(Array.isArray(tags) ? tags : []);
+        } catch (e) {
+      // fallback to embedded array on project doc
+         setNfcTags(projectData?.nfc_tags || []);
+        }
+
       // Fetch site devices for this project
       if (isAdmin) {
         try {
