@@ -122,8 +122,12 @@ export function useCheckIns() {
   // Get today's check-ins - FROM API, sync to WatermelonDB
   const getTodayCheckIns = async (projectId = null) => {
     try {
-      const apiCheckIns = await checkinsAPI.getTodayByProject(projectId);
-      
+      let apiCheckIns;
+      if (projectId) {
+        apiCheckIns = await checkinsAPI.getTodayByProject(projectId);
+      } else {
+        apiCheckIns = await checkinsAPI.getAll();
+      }      
       // Sync to WatermelonDB
      if (Platform.OS !== 'web') {
        await syncCheckInsToLocal(apiCheckIns);
