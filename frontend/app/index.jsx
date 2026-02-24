@@ -198,7 +198,7 @@ export default function DashboardScreen() {
                   statItems.map((stat) => {
                     const Icon = stat.icon;
                     return (
-                      <Pressable key={stat.label} onPress={() => router.push(stat.path)}>
+                      <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
                         <StatCard style={styles.statCard}>
                           <IconPod size={44} style={styles.statIcon}>
                             <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
@@ -293,6 +293,9 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.xxl,
+    maxWidth: 800,
+    width: '100%',
+    alignSelf: 'center',
   },
   greetingSection: {
     marginTop: spacing.lg,
@@ -339,6 +342,7 @@ const styles = StyleSheet.create({
   statCard: {
     flex: 1,
     minHeight: 120,
+    width: '100%',
   },
   statIcon: {
     marginBottom: spacing.sm,
