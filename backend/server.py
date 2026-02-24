@@ -2164,6 +2164,7 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
     checkins = await db.checkins.find({
         "project_id": project_id,
         "status": "checked_in",
+		"check_in_time": {"$gte": today_start},
         "is_deleted": {"$ne": True}
     }).to_list(1000)
     
