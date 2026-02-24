@@ -35,7 +35,8 @@ export default function WorkersScreen() {
   const [selectedDate, setSelectedDate] = useState(new Date());
 
 // Use hooks for data
-  const { workers, loading: workersLoading } = useWorkers();
+  const [checkInsLoading, setCheckInsLoading] = useState(true);
+  const loading = checkInsLoading;
   const { projects, loading: projectsLoading } = useProjects();
   const { getTodayCheckIns } = useCheckIns();
   const [todayCheckIns, setTodayCheckIns] = useState([]);
@@ -79,12 +80,14 @@ export default function WorkersScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch today's check-ins
-useEffect(() => {
+  // Fetch today's check-insuseEffect(() => {
+  useEffect(() => {
   const fetchCheckIns = async () => {
     if (isAuthenticated) {
+      setCheckInsLoading(true);
       const checkIns = await getTodayCheckIns();
-      setTodayCheckIns(checkIns);
+      setTodayCheckIns(Array.isArray(checkIns) ? checkIns : []);
+      setCheckInsLoading(false);
     }
   };
   fetchCheckIns();
