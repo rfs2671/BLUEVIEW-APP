@@ -105,7 +105,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   innerContainer: {
-    width: '100%'
+    width: '100%',
     maxWidth: 700,
     borderRadius: borderRadius.full,
     overflow: 'hidden',
