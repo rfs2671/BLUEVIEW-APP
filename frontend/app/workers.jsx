@@ -217,6 +217,12 @@ useEffect(() => {
                   <GlassListItem 
                     key={checkin._id || checkin.id || index} 
                     style={styles.checkinCard}
+                    onPress={() => {
+                      const workerId = checkin.worker_id;
+                      if (workerId) {
+                        router.push(`/workers/${workerId}`);
+                      }
+                    }}
                     onPress={() => router.push(`/workers/${checkin.worker_id || checkin._id || checkin.id}`)}
                   >
                     {/* Time */}
