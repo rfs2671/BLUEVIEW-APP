@@ -76,6 +76,9 @@ export const AuthProvider = ({ children }) => {
             id: storedUser.project_id,
             name: storedUser.project_name,
           });
+        } else {
+          setSiteMode(false);
+          setSiteProject(null);
         }
     } catch (error) {
       console.error('Auth cleanup triggered:', error.message);
