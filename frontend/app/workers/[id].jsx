@@ -131,6 +131,7 @@ export default function WorkerDetailScreen() {
       setOshaCardImage(data.osha_card_image || null);
       setOshaData(data.osha_data || null);
       setSafetyOrientations(data.safety_orientations || []);
+      setSignature(data.signature || null);
       
       if (data.osha_number && !oshaNumber) {
         setOshaNumber(data.osha_number);
