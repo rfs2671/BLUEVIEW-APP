@@ -32,7 +32,7 @@ export default function WorkersScreen() {
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
-  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(() => new Date());
 
 // Use hooks for data
   const [checkInsLoading, setCheckInsLoading] = useState(true);
