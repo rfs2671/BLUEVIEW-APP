@@ -66,15 +66,17 @@ export const AuthProvider = ({ children }) => {
         if (userData.site_mode) {
           setSiteMode(true);
           setSiteProject({
-            id: userData.project_id,
-            name: userData.project_name,
+            id: userData.project_id || storedUser?.project_id,
+            name: userData.project_name || storedUser?.project_name,
             ...userData.project
           });
-        } else {
-          setSiteMode(false);
-          setSiteProject(null);
+        } else if (storedUser?.site_mode) {
+          setSiteMode(true);
+          setSiteProject({
+            id: storedUser.project_id,
+            name: storedUser.project_name,
+          });
         }
-      }
     } catch (error) {
       console.error('Auth cleanup triggered:', error.message);
       await clearAuth(); // Removes token and user from storage via api utility
