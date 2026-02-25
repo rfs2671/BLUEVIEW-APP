@@ -139,12 +139,15 @@ export function useCheckIns() {
       console.error('Failed to fetch today check-ins from API, using local:', error);
       
       // Fallback to local
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      
+      const dayStart = new Date(date);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(date);
+      dayEnd.setHours(23, 59, 59, 999);
+
       const queryConditions = [
         Q.where('is_deleted', false),
-        Q.where('check_in_time', Q.gte(todayStart.getTime()))
+        Q.where('check_in_time', Q.gte(dayStart.getTime())),
+        Q.where('check_in_time', Q.lte(dayEnd.getTime()))
       ];
       
       if (projectId) {
