@@ -94,10 +94,11 @@ export default function WorkerDetailScreen() {
 
   useEffect(() => {
     if (isAuthenticated && workerId) {
-      fetchWorker();
+      fetchWorker().then(() => {
       if (canViewOsha) {
         fetchOshaData();
-      }
+        }
+      });
     }
   }, [isAuthenticated, workerId]);
 
