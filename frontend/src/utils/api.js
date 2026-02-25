@@ -188,6 +188,11 @@ export const workersAPI = {
     const response = await apiClient.post('/api/workers', workerData);
     return response.data;
   },
+
+  getOshaCard: async (workerId) => {
+    const response = await apiClient.get(`/api/workers/${workerId}/osha-card`);
+    return response.data;
+  },
     
   update: async (workerId, workerData) => {
     const response = await apiClient.put(`/api/workers/${workerId}`, workerData);
