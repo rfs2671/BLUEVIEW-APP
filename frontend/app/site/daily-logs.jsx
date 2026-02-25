@@ -85,15 +85,15 @@ export default function SiteDailyLogsScreen() {
   });
 
   useEffect(() => {
-    if (!authLoading) {
+    if (!authLoading && isAuthenticated !== undefined) {
       if (!isAuthenticated) {
         router.replace('/login');
-      } else if (!siteMode) {
+      } else if (isAuthenticated && !siteMode && siteProject === null) {
         router.replace('/');
       }
     }
-  }, [isAuthenticated, authLoading, siteMode]);
-
+  }, [isAuthenticated, authLoading, siteMode, siteProject]);
+  
   useEffect(() => {
     if (isAuthenticated && siteMode && siteProject?.id) {
       fetchLogs();
