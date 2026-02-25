@@ -102,8 +102,11 @@ export default function WorkerDetailScreen() {
   }, [isAuthenticated, workerId]);
 
   const fetchWorker = async () => {
-    try {
-      const workerData = await getWorkerById(workerId);
+  try {
+    let workerData = await getWorkerById(workerId);
+    if (!workerData || !workerData.signature) {
+      workerData = await workersAPI.getById(workerId);
+    }
       setWorker(workerData);
       setName(workerData.name || '');
       setTrade(workerData.trade || '');
@@ -115,7 +118,7 @@ export default function WorkerDetailScreen() {
       console.error('Failed to fetch worker:', error);
       toast.error('Error', 'Could not load worker details');
     } finally {
-      setLoading(false);
+      setLoading(false);  // ← this one, not setLoadingOsha
     }
   };
 
