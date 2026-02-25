@@ -213,7 +213,13 @@ export const checkinsAPI = {
     const response = await apiClient.get('/api/checkins');
     return response.data;
   },
-
+  
+  getByDate: async (date) => {
+    const dateStr = date.toISOString().split('T')[0];
+    const response = await apiClient.get(`/api/checkins?date=${dateStr}`);
+    return response.data;
+  },
+  
   getTodayByProject: async (projectId) => {
     const response = await apiClient.get(`/api/checkins/project/${projectId}/today`);
     return response.data;
