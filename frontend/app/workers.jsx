@@ -79,7 +79,7 @@ export default function WorkersScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch today's check-insuseEffect(() => {
+  // Fetch today's check-ins
   useEffect(() => {
   const fetchCheckIns = async () => {
     if (isAuthenticated) {
@@ -207,80 +207,92 @@ export default function WorkersScreen() {
                 <WorkerCardSkeleton />
               </>
             ) : todayCheckIns.length > 0 ? (
-              todayCheckIns.map((checkin, index) => {
-                const workerInfo = getWorkerInfo(checkin);
-                const initials = workerInfo.name
-                  .split(' ')
-                  .map((n) => n[0])
-                  .join('')
-                  .toUpperCase();
+              Object.entries(
+                todayCheckIns.reduce((acc, checkin) => {
+                  const info = getWorkerInfo(checkin);
+                  if (!acc[info.company]) acc[info.company] = [];
+                  acc[info.company].push(checkin);
+                  return acc;
+                }, {})
+              ).map(([company, companyCheckins]) => (
+                <View key={company}>
+                  <Text style={styles.companyHeader}>{company}</Text>
+                  {companyCheckins.map((checkin, index) => {
+                    const workerInfo = getWorkerInfo(checkin);
+                    const initials = workerInfo.name
+                      .split(' ')
+                      .map((n) => n[0])
+                      .join('')
+                      .toUpperCase();
 
-                return (
-                  <GlassListItem 
-                    key={checkin._id || checkin.id || index} 
-                    style={styles.checkinCard}
-                    onPress={() => {
-                      const workerId = checkin.worker_id;
-                      if (workerId) {
-                        router.push(`/workers/${workerId}`);
-                      }
-                    }}
-                  >
-                    {/* Time */}
-                    <View style={styles.timeSection}>
-                      <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
-                      {workerInfo.checkOutTime && (
-                        <Text style={styles.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
-                      )}
-                    </View>
+                    return (
+                      <GlassListItem
+                        key={checkin._id || checkin.id || index}
+                        style={styles.checkinCard}
+                        onPress={() => {
+                          const workerId = checkin.worker_id;
+                          if (workerId) {
+                            router.push(`/workers/${workerId}`);
+                          }
+                        }}
+                      >
+                        {/* Time */}
+                        <View style={styles.timeSection}>
+                          <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
+                          {workerInfo.checkOutTime && (
+                            <Text style={styles.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
+                          )}
+                        </View>
 
-                    <View style={styles.divider} />
+                        <View style={styles.divider} />
 
-                    {/* Worker Info */}
-                    <View style={styles.workerInfo}>
-                      <View style={styles.workerHeader}>
-                        <View style={styles.avatar}>
-                          <Text style={styles.avatarText}>{initials}</Text>
+                        {/* Worker Info */}
+                        <View style={styles.workerInfo}>
+                          <View style={styles.workerHeader}>
+                            <View style={styles.avatar}>
+                              <Text style={styles.avatarText}>{initials}</Text>
+                            </View>
+                            <View style={styles.workerDetails}>
+                              <Text style={styles.workerName}>{workerInfo.name}</Text>
+                              <Text style={styles.workerTrade}>{workerInfo.trade}</Text>
+                            </View>
+                          </View>
+                          <View style={styles.workerMeta}>
+                            <View style={styles.metaItem}>
+                              <MapPin size={12} strokeWidth={1.5} color={colors.text.subtle} />
+                              <Text style={styles.metaText}>{workerInfo.project}</Text>
+                            </View>
+                            <View style={styles.metaItem}>
+                              <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
+                              <Text style={styles.metaText}>{workerInfo.company}</Text>
+                            </View>
+                          </View>
                         </View>
-                        <View style={styles.workerDetails}>
-                          <Text style={styles.workerName}>{workerInfo.name}</Text>
-                          <Text style={styles.workerTrade}>{workerInfo.trade}</Text>
-                        </View>
-                      </View>
-                      <View style={styles.workerMeta}>
-                        <View style={styles.metaItem}>
-                          <MapPin size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                          <Text style={styles.metaText}>{workerInfo.project}</Text>
-                        </View>
-                        <View style={styles.metaItem}>
-                          <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                          <Text style={styles.metaText}>{workerInfo.company}</Text>
-                        </View>
-                      </View>
-                    </View>
 
-                    {/* Status */}
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        !workerInfo.checkOutTime && styles.statusActive,
-                      ]}
-                    >
-                      {!workerInfo.checkOutTime ? (
-                        <>
-                          <View style={styles.statusDot} />
-                          <Text style={styles.statusText}>ON-SITE</Text>
-                        </>
-                      ) : (
-                        <>
-                          <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                          <Text style={[styles.statusText, styles.statusDone]}>DONE</Text>
-                        </>
-                      )}
-                    </View>
-                  </GlassListItem>
-                );
-              })
+                        {/* Status */}
+                        <View
+                          style={[
+                            styles.statusBadge,
+                            !workerInfo.checkOutTime && styles.statusActive,
+                          ]}
+                        >
+                          {!workerInfo.checkOutTime ? (
+                            <>
+                              <View style={styles.statusDot} />
+                              <Text style={styles.statusText}>ON-SITE</Text>
+                            </>
+                          ) : (
+                            <>
+                              <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
+                              <Text style={[styles.statusText, styles.statusDone]}>DONE</Text>
+                            </>
+                          )}
+                        </View>
+                      </GlassListItem>
+                    );
+                  })}
+                </View>
+              ))
             ) : (
               <View style={styles.emptyState}>
                 <Users size={48} strokeWidth={1} color={colors.text.subtle} />
@@ -399,6 +411,16 @@ const styles = StyleSheet.create({
   },
   checkinsList: {
     gap: spacing.sm,
+  },
+  companyHeader: {
+    color: colors.text.muted,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1.5,
+    textTransform: 'uppercase',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginTop: 8,
   },
   checkinCard: {
     backgroundColor: colors.glass.background,
