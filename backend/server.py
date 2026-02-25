@@ -2015,12 +2015,16 @@ async def create_worker(worker_data: WorkerCreate, current_user = Depends(get_cu
     return WorkerResponse(**worker_dict)
 
 @api_router.get("/checkins")
-async def get_all_checkins(current_user = Depends(get_current_user)):
+async def get_all_checkins(date: str = None, current_user = Depends(get_current_user)):
     """Get all check-ins for the user's company"""
     company_id = get_user_company_id(current_user)
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
+    if date:
+        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
+        query["check_in_time"] = {"$gte": day_start, "$lte": day_end}
     checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
     
     results = []
@@ -2162,13 +2166,14 @@ async def get_project_checkins(project_id: str, current_user = Depends(get_curre
 
 @api_router.get("/checkins/project/{project_id}/active")
 async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user)):
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     checkins = await db.checkins.find({
         "project_id": project_id,
         "status": "checked_in",
-		"check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start},
         "is_deleted": {"$ne": True}
     }).to_list(1000)
-    
+	
     # Populate missing worker_name from workers collection
     results = []
     for c in checkins:
