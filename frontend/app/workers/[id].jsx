@@ -209,7 +209,7 @@ export default function WorkerDetailScreen() {
   };
 
   const handleUpdateSignature = () => {
-    setSignature({ data: 'signature_data', updated: new Date().toISOString() });
+    setSignature({ data: 'signature_data', signed_at: new Date().toISOString() });
     setShowSignaturePad(false);
     toast.success('Updated', 'Signature saved');
   };
@@ -567,10 +567,17 @@ export default function WorkerDetailScreen() {
             <GlassCard style={styles.signatureCard}>\
               {signature ? (
                 <>
-                  <View style={styles.signaturePreview}>
-                    {typeof signature === 'string' && (
-                      <Image source={{ uri: signature }} style={{ width: '100%', height: 150 }} resizeMode="contain" />
-                    )}
+<View style={styles.signaturePreview}>
+                    {(() => {
+                      const sigUri = typeof signature === 'string'
+                        ? signature
+                        : signature?.data
+                          ? `data:image/png;base64,${signature.data}`
+                          : null;
+                      return sigUri ? (
+                        <Image source={{ uri: sigUri }} style={{ width: '100%', height: 150 }} resizeMode="contain" />
+                      ) : null;
+                    })()}
                     <Text style={styles.signatureText}>✍️ Signature on file</Text>
                     <Text style={styles.signatureDate}>
                       Updated: {signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString() : 'On file'}
