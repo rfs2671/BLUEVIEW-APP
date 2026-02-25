@@ -96,7 +96,7 @@ export default function WorkersScreen() {
   const uniqueCompanies = new Set(todayCheckIns.map((c) => c.workerCompany)).size;
 
   const getWorkerInfo = (checkin) => ({
-    name: checkin.worker_name || checkin.name || 'Unknown Worker',
+    name: checkin.worker_name || checkin.worker?.name || checkin.name || 'Unknown Worker',
     trade: checkin.worker_trade || checkin.trade || 'General',
     company: checkin.worker_company || checkin.company || 'Unknown Company',
     project: checkin.project_name || 'Unknown Project',
