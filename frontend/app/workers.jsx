@@ -84,7 +84,7 @@ export default function WorkersScreen() {
   const fetchCheckIns = async () => {
     if (isAuthenticated) {
       setCheckInsLoading(true);
-      const checkIns = await getTodayCheckIns();
+      const checkIns = await getTodayCheckIns(null, selectedDate);
       setTodayCheckIns(Array.isArray(checkIns) ? checkIns : []);
       setCheckInsLoading(false);
     }
