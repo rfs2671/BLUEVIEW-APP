@@ -80,6 +80,7 @@ export const AuthProvider = ({ children }) => {
           setSiteMode(false);
           setSiteProject(null);
         }
+      }
     } catch (error) {
       console.error('Auth cleanup triggered:', error.message);
       await clearAuth(); // Removes token and user from storage via api utility
