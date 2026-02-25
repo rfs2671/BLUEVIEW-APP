@@ -563,13 +563,16 @@ export default function WorkerDetailScreen() {
               </View>
             </View>
 
-            <GlassCard style={styles.signatureCard}>
+            <GlassCard style={styles.signatureCard}>\
               {signature ? (
                 <>
                   <View style={styles.signaturePreview}>
+                    {typeof signature === 'string' && (
+                      <Image source={{ uri: signature }} style={{ width: '100%', height: 150 }} resizeMode="contain" />
+                    )}
                     <Text style={styles.signatureText}>✍️ Signature on file</Text>
                     <Text style={styles.signatureDate}>
-                      Updated: {new Date(signature.updated).toLocaleDateString()}
+                      Updated: {signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString() : 'On file'}
                     </Text>
                   </View>
                   {isAdmin && (
