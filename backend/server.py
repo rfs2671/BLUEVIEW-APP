@@ -1915,8 +1915,8 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
     """Get worker's OSHA card image and data - for admin and site device"""
     worker = await db.workers.find_one(
         {"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}},
-        {"osha_card_image": 1, "osha_data": 1, "osha_number": 1, "safety_orientations": 1, "name": 1, "company_id": 1}
-    )
+		{"osha_card_image": 1, "osha_data": 1, "osha_number": 1, "safety_orientations": 1, "name": 1, "company_id": 1, "signature": 1}
+	)
     if not worker:
         raise HTTPException(status_code=404, detail="Worker not found")
     
@@ -1944,6 +1944,7 @@ async def get_worker_osha_card(worker_id: str, current_user = Depends(get_curren
         "osha_data": worker.get("osha_data"),
         "osha_number": worker.get("osha_number"),
         "safety_orientations": worker.get("safety_orientations", []),
+		"signature": worker.get("signature"),
     }
 @api_router.get("/workers/{worker_id}", response_model=WorkerResponse)
 async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
