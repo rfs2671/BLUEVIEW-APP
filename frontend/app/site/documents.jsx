@@ -58,15 +58,16 @@ export default function SiteDocumentsScreen() {
   const [files, setFiles] = useState([]);
 
   useEffect(() => {
-    if (!authLoading) {
-      if (!isAuthenticated) {
-        router.replace('/login');
-      } else if (!siteMode) {
-        router.replace('/');
-      }
+  if (!authLoading && isAuthenticated !== undefined) {
+    if (!isAuthenticated) {
+      router.replace('/login');
+    } else if (isAuthenticated && !siteMode && siteProject === null) {
+      // Only redirect if we're sure siteMode resolved
+      router.replace('/');
     }
-  }, [isAuthenticated, authLoading, siteMode]);
-
+  }
+}, [isAuthenticated, authLoading, siteMode, siteProject]);
+  
   useEffect(() => {
     if (isAuthenticated && siteMode && siteProject?.id) {
       fetchDocuments();
