@@ -30,16 +30,16 @@ export default function SiteCheckInsScreen() {
   const [checkins, setCheckins] = useState([]);
   const [stats, setStats] = useState({ total: 0, active: 0 });
 
-  // Redirect if not authenticated or not in site mode
   useEffect(() => {
-    if (!authLoading) {
-      if (!isAuthenticated) {
-        router.replace('/login');
-      } else if (!siteMode) {
-        router.replace('/');
-      }
+  if (!authLoading && isAuthenticated !== undefined) {
+    if (!isAuthenticated) {
+      router.replace('/login');
+    } else if (isAuthenticated && !siteMode && siteProject === null) {
+      // Only redirect if we're sure siteMode resolved
+      router.replace('/');
     }
-  }, [isAuthenticated, authLoading, siteMode]);
+  }
+}, [isAuthenticated, authLoading, siteMode, siteProject]);
 
   // Fetch data
   useEffect(() => {
