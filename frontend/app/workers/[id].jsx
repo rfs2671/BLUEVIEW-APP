@@ -118,7 +118,7 @@ export default function WorkerDetailScreen() {
       console.error('Failed to fetch worker:', error);
       toast.error('Error', 'Could not load worker details');
     } finally {
-      setLoading(false);  // ← this one, not setLoadingOsha
+      setLoading(false);
     }
   };
 
@@ -138,7 +138,7 @@ export default function WorkerDetailScreen() {
     } catch (error) {
       console.error('Failed to fetch OSHA data:', error);
     } finally {
-      setLoading(false);
+      setLoadingOsha(false);
     }
   };
 
