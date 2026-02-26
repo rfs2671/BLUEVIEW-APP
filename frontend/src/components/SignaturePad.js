@@ -94,7 +94,7 @@ const SignaturePad = ({
       return (
         <View key={pathIndex} style={StyleSheet.absoluteFill}>
           <svg width="100%" height="100%" style={{ position: 'absolute' }}>
-            <path d={d} stroke="#4ade80" strokeWidth="2" fill="none" strokeLinecap="round" />
+            <path d={d} stroke="#000000" strokeWidth="2" fill="none" strokeLinecap="round" />
           </svg>
         </View>
       );
@@ -117,7 +117,7 @@ const SignaturePad = ({
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <PenTool size={16} strokeWidth={1.5} color={isSigned ? '#4ade80' : colors.text.muted} />
+          <PenTool size={16} strokeWidth={1.5} color="#999999" />
           <Text style={styles.title}>{title}</Text>
         </View>
         {isSigned && signatureData?.signed_at && (
@@ -177,7 +177,7 @@ const SignaturePad = ({
                       <path
                         key={pathIndex}
                         d={d}
-                        stroke="#4ade80"
+                        stroke="#000000"
                         strokeWidth="2"
                         fill="none"
                         strokeLinecap="round"
@@ -309,7 +309,7 @@ const styles = StyleSheet.create({
   },
   signatureArea: {
     height: 150,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: '#ffffff',
     borderRadius: borderRadius.lg,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -318,8 +318,8 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   signatureAreaSigned: {
-    borderColor: 'rgba(74, 222, 128, 0.3)',
-    backgroundColor: 'rgba(74, 222, 128, 0.05)',
+    borderColor: 'rgba(0,0,0,0.2)',
+    backgroundColor: '#ffffff',
     borderStyle: 'solid',
   },
   placeholder: {
@@ -330,7 +330,7 @@ const styles = StyleSheet.create({
   },
   placeholderText: {
     fontSize: 14,
-    color: colors.text.subtle,
+    color: '#999999',
   },
   signedContent: {
     flex: 1,
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
   },
   signedText: {
     fontSize: 24,
-    color: '#4ade80',
+    color: '#000000',
     fontWeight: '300',
   },
   signedBadge: {
