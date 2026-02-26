@@ -84,8 +84,11 @@ export default function SiteCheckInsScreen() {
 
   const formatTime = (dateStr) => {
     if (!dateStr) return '--:--';
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    return new Date(dateStr).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
   };
 
   const getWorkerInfo = (checkin) => ({
