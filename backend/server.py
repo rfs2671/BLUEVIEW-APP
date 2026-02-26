@@ -89,6 +89,9 @@ def serialize_id(obj):
     if obj and '_id' in obj:
         obj['id'] = str(obj['_id'])
         del obj['_id']
+    for key, val in obj.items():
+        if isinstance(val, datetime):
+            obj[key] = val.isoformat()
     return obj
 
 def serialize_list(items):
