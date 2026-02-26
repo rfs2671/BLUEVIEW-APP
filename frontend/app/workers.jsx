@@ -96,12 +96,12 @@ export default function WorkersScreen() {
   const uniqueCompanies = new Set(todayCheckIns.map((c) => c.workerCompany)).size;
 
   const getWorkerInfo = (checkin) => ({
-    name: checkin.worker_name || checkin.workerName || checkin.worker?.name || checkin.name || 'Unknown Worker',
-    trade: checkin.worker_trade || checkin.trade || 'General',
-    company: checkin.worker_company || checkin.company || 'Unknown Company',
-    project: checkin.project_name || 'Unknown Project',
-    checkInTime: checkin.check_in_time || checkin.checkin_time,
-    checkOutTime: checkin.check_out_time || checkin.checkout_time,
+    name: checkin.worker_name || checkin.workerName || checkin.name || 'Unknown Worker',
+    trade: checkin.worker_trade || checkin.workerTrade || checkin.trade || 'General',
+    company: checkin.worker_company || checkin.workerCompany || checkin.company || 'Unknown Company',
+    project: checkin.project_name || checkin.projectName || 'Unknown Project',
+    checkInTime: checkin.check_in_time || checkin.checkInTime || checkin.checkin_time,
+    checkOutTime: checkin.check_out_time || checkin.checkOutTime || checkin.checkout_time,
   });
 
   const handleLogout = async () => {
