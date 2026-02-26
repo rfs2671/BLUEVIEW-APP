@@ -583,13 +583,6 @@ export default function WorkerDetailScreen() {
                       Updated: {signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString() : 'On file'}
                     </Text>
                   </View>
-                  {isAdmin && (
-                    <GlassButton
-                      title="Update Signature"
-                      icon={<Edit3 size={16} color={colors.text.primary} />}
-                      onPress={() => setShowSignaturePad(true)}
-                    />
-                  )}
                 </>
               ) : (
                 <>
