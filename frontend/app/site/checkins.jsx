@@ -89,11 +89,12 @@ export default function SiteCheckInsScreen() {
   };
 
   const getWorkerInfo = (checkin) => ({
-    name: checkin.worker_name || checkin.worker?.name || 'Unknown Worker',
-    trade: checkin.worker?.trade || checkin.trade || 'General',
-    company: checkin.worker?.company_name || checkin.company || 'N/A',
-    checkInTime: checkin.check_in_time || checkin.timestamp,
-    checkOutTime: checkin.check_out_time,
+    name: checkin.worker_name || checkin.workerName || checkin.name || 'Unknown Worker',
+    trade: checkin.worker_trade || checkin.workerTrade || checkin.trade || 'General',
+    company: checkin.worker_company || checkin.workerCompany || checkin.company || 'Unknown Company',
+    project: checkin.project_name || checkin.projectName || 'Unknown Project',
+    checkInTime: checkin.check_in_time || checkin.checkInTime || checkin.checkin_time,
+    checkOutTime: checkin.check_out_time || checkin.checkOutTime || checkin.checkout_time,
   });
 
   return (
