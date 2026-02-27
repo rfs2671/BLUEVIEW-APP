@@ -89,9 +89,6 @@ def serialize_id(obj):
     if obj and '_id' in obj:
         obj['id'] = str(obj['_id'])
         del obj['_id']
-    for key, val in obj.items():
-        if isinstance(val, datetime):
-            obj[key] = val.isoformat()
     return obj
 
 def serialize_list(items):
@@ -424,6 +421,28 @@ class ChecklistCompletionResponse(BaseModel):
     item_completions: Dict[str, Dict[str, Any]]
     progress: Dict[str, int]
     last_updated: datetime
+
+# ==================== LOGBOOK MODELS ====================
+
+class LogbookCreate(BaseModel):
+    project_id: str
+    log_type: str  # scaffold_maintenance, toolbox_talk, preshift_signin, osha_log, daily_jobsite
+    date: str  # YYYY-MM-DD
+    data: Dict[str, Any]  # flexible per log type
+    cp_signature: Optional[Dict] = None
+    cp_name: Optional[str] = None
+    status: str = "draft"  # draft, submitted
+
+class LogbookUpdate(BaseModel):
+    data: Optional[Dict[str, Any]] = None
+    cp_signature: Optional[Dict] = None
+    cp_name: Optional[str] = None
+    status: Optional[str] = None
+
+class CPProfileUpdate(BaseModel):
+    cp_name: Optional[str] = None
+    cp_signature: Optional[Dict] = None  # {paths, signed_at}
+    cp_title: Optional[str] = None
 
 # ==================== SYNC MODELS ====================
 
@@ -3423,6 +3442,285 @@ async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depe
         raise HTTPException(status_code=404, detail="Photo not found")
     return {"message": "Photo deleted"}
     
+# ==================== CP PROFILE ENDPOINTS ====================
+
+@api_router.get("/cp/profile")
+async def get_cp_profile(current_user = Depends(get_current_user)):
+    """Get CP profile including saved signature"""
+    user_id = current_user.get("id")
+    user = await db.users.find_one({"_id": to_query_id(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "cp_name": user.get("cp_name") or user.get("name"),
+        "cp_title": user.get("cp_title", "Competent Person"),
+        "cp_signature": user.get("cp_signature"),
+        "has_signature": bool(user.get("cp_signature")),
+    }
+
+@api_router.put("/cp/profile")
+async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_current_user)):
+    """Save CP name and signature - called on first login"""
+    user_id = current_user.get("id")
+    now = datetime.now(timezone.utc)
+    update = {"updated_at": now}
+    if data.cp_name is not None:
+        update["cp_name"] = data.cp_name
+    if data.cp_signature is not None:
+        update["cp_signature"] = data.cp_signature
+    if data.cp_title is not None:
+        update["cp_title"] = data.cp_title
+    await db.users.update_one({"_id": to_query_id(user_id)}, {"$set": update})
+    return {"message": "CP profile updated"}
+
+# ==================== LOGBOOK ENDPOINTS ====================
+
+@api_router.get("/logbooks/project/{project_id}")
+async def get_project_logbooks(
+    project_id: str,
+    log_type: Optional[str] = None,
+    date: Optional[str] = None,
+    current_user = Depends(get_current_user)
+):
+    """Get all logbooks for a project, optionally filtered by type and date"""
+    company_id = get_user_company_id(current_user)
+    query = {
+        "project_id": project_id,
+        "is_deleted": {"$ne": True}
+    }
+    if company_id:
+        query["company_id"] = company_id
+    if log_type:
+        query["log_type"] = log_type
+    if date:
+        query["date"] = date
+    logbooks = await db.logbooks.find(query).sort("date", -1).to_list(500)
+    return [serialize_id(lb) for lb in logbooks]
+
+@api_router.get("/logbooks/{logbook_id}")
+async def get_logbook(logbook_id: str, current_user = Depends(get_current_user)):
+    """Get a single logbook entry"""
+    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    return serialize_id(logbook)
+
+@api_router.post("/logbooks")
+async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
+    """Create a new logbook entry"""
+    company_id = get_user_company_id(current_user)
+    now = datetime.now(timezone.utc)
+
+    # Verify project exists
+    project = await db.projects.find_one({"_id": to_query_id(data.project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Check for existing entry same type+date (upsert logic)
+    existing = await db.logbooks.find_one({
+        "project_id": data.project_id,
+        "log_type": data.log_type,
+        "date": data.date,
+        "is_deleted": {"$ne": True}
+    })
+    if existing:
+        # Update existing
+        await db.logbooks.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {
+                "data": data.data,
+                "cp_signature": data.cp_signature,
+                "cp_name": data.cp_name,
+                "status": data.status,
+                "updated_at": now,
+            }}
+        )
+        updated = await db.logbooks.find_one({"_id": existing["_id"]})
+        return serialize_id(updated)
+
+    doc = {
+        "project_id": data.project_id,
+        "project_name": project.get("name", ""),
+        "company_id": company_id,
+        "log_type": data.log_type,
+        "date": data.date,
+        "data": data.data,
+        "cp_signature": data.cp_signature,
+        "cp_name": data.cp_name,
+        "status": data.status,
+        "created_by": current_user.get("id"),
+        "created_by_name": current_user.get("name"),
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+    result = await db.logbooks.insert_one(doc)
+    created = await db.logbooks.find_one({"_id": result.inserted_id})
+    return serialize_id(created)
+
+@api_router.put("/logbooks/{logbook_id}")
+async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = Depends(get_current_user)):
+    """Update an existing logbook entry"""
+    now = datetime.now(timezone.utc)
+    update = {"updated_at": now}
+    if data.data is not None:
+        update["data"] = data.data
+    if data.cp_signature is not None:
+        update["cp_signature"] = data.cp_signature
+    if data.cp_name is not None:
+        update["cp_name"] = data.cp_name
+    if data.status is not None:
+        update["status"] = data.status
+    result = await db.logbooks.update_one({"_id": to_query_id(logbook_id)}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    updated = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    return serialize_id(updated)
+
+@api_router.delete("/logbooks/{logbook_id}")
+async def delete_logbook(logbook_id: str, current_user = Depends(get_current_user)):
+    """Soft delete a logbook entry"""
+    await db.logbooks.update_one(
+        {"_id": to_query_id(logbook_id)},
+        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": "Logbook deleted"}
+
+@api_router.get("/logbooks/project/{project_id}/notifications")
+async def get_logbook_notifications(project_id: str, current_user = Depends(get_current_user)):
+    """
+    Returns alerts for CP:
+    - Workers who haven't had toolbox talk this week
+    - New workers since last week without orientation
+    """
+    now = datetime.now(timezone.utc)
+    # Start of current week (Monday)
+    days_since_monday = now.weekday()
+    week_start = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_str = week_start.strftime("%Y-%m-%d")
+
+    # Get all workers checked into this project this week
+    checkins_this_week = await db.checkins.find({
+        "project_id": project_id,
+        "check_in_time": {"$gte": week_start},
+        "is_deleted": {"$ne": True}
+    }).to_list(1000)
+
+    worker_ids_this_week = list(set(c.get("worker_id") for c in checkins_this_week if c.get("worker_id")))
+
+    # Get toolbox talk entries this week for this project
+    toolbox_this_week = await db.logbooks.find({
+        "project_id": project_id,
+        "log_type": "toolbox_talk",
+        "date": {"$gte": week_start_str},
+        "is_deleted": {"$ne": True}
+    }).to_list(100)
+
+    # Collect worker IDs already covered in toolbox this week
+    covered_worker_ids = set()
+    for tb in toolbox_this_week:
+        attendees = tb.get("data", {}).get("attendees", [])
+        for a in attendees:
+            if a.get("worker_id"):
+                covered_worker_ids.add(a["worker_id"])
+
+    # Missing workers = on site this week but not in toolbox
+    missing_toolbox = []
+    for wid in worker_ids_this_week:
+        if wid not in covered_worker_ids:
+            worker = await db.workers.find_one({"_id": to_query_id(wid)})
+            if worker:
+                missing_toolbox.append({
+                    "worker_id": wid,
+                    "worker_name": worker.get("name"),
+                    "company": worker.get("company"),
+                })
+
+    return {
+        "missing_toolbox_talk": missing_toolbox,
+        "week_start": week_start_str,
+    }
+
+@api_router.get("/logbooks/project/{project_id}/scaffold-info")
+async def get_scaffold_info(project_id: str, current_user = Depends(get_current_user)):
+    """Get saved scaffold info for a project (remembered after first entry)"""
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {
+        "scaffold_erector": project.get("scaffold_erector", ""),
+        "permit_number": project.get("permit_number", ""),
+        "installation_date": project.get("installation_date", ""),
+        "expiration_date": project.get("expiration_date", ""),
+        "shed_type": project.get("shed_type", ""),
+        "scaffold_height": project.get("scaffold_height", ""),
+        "num_platforms": project.get("num_platforms", ""),
+        "drawings_on_site": project.get("drawings_on_site", True),
+        "renters_name": project.get("renters_name", ""),
+        "phone": project.get("scaffold_phone", ""),
+    }
+
+@api_router.put("/logbooks/project/{project_id}/scaffold-info")
+async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_user = Depends(get_current_user)):
+    """Save scaffold info to project so it's remembered"""
+    update = {
+        "scaffold_erector": data.get("scaffold_erector"),
+        "permit_number": data.get("permit_number"),
+        "installation_date": data.get("installation_date"),
+        "expiration_date": data.get("expiration_date"),
+        "shed_type": data.get("shed_type"),
+        "scaffold_height": data.get("scaffold_height"),
+        "num_platforms": data.get("num_platforms"),
+        "drawings_on_site": data.get("drawings_on_site"),
+        "renters_name": data.get("renters_name"),
+        "scaffold_phone": data.get("phone"),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    # Remove None values
+    update = {k: v for k, v in update.items() if v is not None}
+    await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
+    return {"message": "Scaffold info saved"}
+
+@api_router.get("/logbooks/project/{project_id}/checkins-today")
+async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user)):
+    """Get all workers checked in to a project on a given date (for auto-populating log books)"""
+    now = datetime.now(timezone.utc)
+    target_date = date or now.strftime("%Y-%m-%d")
+
+    # Parse date
+    try:
+        day_start = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        day_end = day_start.replace(hour=23, minute=59, second=59)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    checkins = await db.checkins.find({
+        "project_id": project_id,
+        "check_in_time": {"$gte": day_start, "$lte": day_end},
+        "is_deleted": {"$ne": True}
+    }).to_list(500)
+
+    # Enrich with worker data
+    result = []
+    seen_workers = set()
+    for c in checkins:
+        wid = c.get("worker_id")
+        if wid in seen_workers:
+            continue
+        seen_workers.add(wid)
+        worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
+        result.append({
+            "worker_id": wid,
+            "worker_name": c.get("worker_name") or (worker.get("name") if worker else "Unknown"),
+            "company": c.get("worker_company") or (worker.get("company") if worker else ""),
+            "trade": c.get("worker_trade") or (worker.get("trade") if worker else ""),
+            "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
+            "osha_number": worker.get("osha_number") if worker else "",
+            "certifications": worker.get("certifications", []) if worker else [],
+        })
+
+    return result
+
 # ==================== ROOT ENDPOINT ====================
 
 @api_router.get("/")
@@ -3484,6 +3782,8 @@ async def startup_event():
     await db.daily_logs.create_index([("company_id", 1), ("updated_at", -1)])
     await db.daily_logs.create_index([("project_id", 1), ("date", 1)], unique=True, sparse=True)
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
+    await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])
+    await db.logbooks.create_index([("company_id", 1), ("date", -1)])
     
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
