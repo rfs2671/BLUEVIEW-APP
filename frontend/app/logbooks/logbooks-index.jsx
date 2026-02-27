@@ -23,13 +23,13 @@ import {
   Calendar,
   Bell,
 } from 'lucide-react-native';
-import AnimatedBackground from '../src/components/AnimatedBackground';
-import { GlassCard, IconPod } from '../src/components/GlassCard';
-import GlassButton from '../src/components/GlassButton';
-import { useToast } from '../src/components/Toast';
-import { useAuth } from '../src/context/AuthContext';
-import { projectsAPI, logbooksAPI, cpProfileAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import AnimatedBackground from '../../src/components/AnimatedBackground';
+import { GlassCard, IconPod } from '../../src/components/GlassCard';
+import GlassButton from '../../src/components/GlassButton';
+import { useToast } from '../../src/components/Toast';
+import { useAuth } from '../../src/context/AuthContext';
+import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
+import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const LOG_TYPES = [
   {
