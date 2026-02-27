@@ -51,14 +51,26 @@ export function useProjects() {
 
   // Get project by ID
   const getProjectById = async (projectId) => {
+  try {
+    return await database.get('projects').find(projectId);
+  } catch (error) {
     try {
-      return await database.get('projects').find(projectId);
-    } catch (error) {
-      console.error('Project not found:', error);
+      const results = await database.get('projects')
+        .query(Q.where('backend_id', projectId))
+        .fetch();
+      if (results.length > 0) return results[0];
+    } catch (e) {
+    }
+    try {
+      const { projectsAPI } = require('../utils/api');
+      return await projectsAPI.getById(projectId);
+    } catch (e) {
+      console.error('Project not found anywhere:', e);
       return null;
+      }
     }
   };
-
+ 
   // Get active projects
   const getActiveProjects = async () => {
     return await database.get('projects')
