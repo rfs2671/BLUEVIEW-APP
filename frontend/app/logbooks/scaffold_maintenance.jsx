@@ -228,7 +228,7 @@ export default function ScaffoldMaintenanceLog() {
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.back()}
+              onPress={() => router.push('/logbooks')}
             />
             <View>
               <Text style={styles.headerTitle}>Scaffold Maintenance Log</Text>
