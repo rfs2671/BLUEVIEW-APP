@@ -548,11 +548,6 @@ export const checklistsAPI = {
   },
 };
 
-/**
- * Logbook APIs
- * Add this to frontend/src/utils/api.js before "export default apiClient;"
- */
-
 export const logbooksAPI = {
   // Get all logbooks for a project
   getByProject: async (projectId, logType = null, date = null) => {
