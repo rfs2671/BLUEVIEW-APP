@@ -548,4 +548,80 @@ export const checklistsAPI = {
   },
 };
 
+/**
+ * Logbook APIs
+ * Add this to frontend/src/utils/api.js before "export default apiClient;"
+ */
+
+export const logbooksAPI = {
+  // Get all logbooks for a project
+  getByProject: async (projectId, logType = null, date = null) => {
+    const params = {};
+    if (logType) params.log_type = logType;
+    if (date) params.date = date;
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}`, { params });
+    return response.data;
+  },
+
+  // Get single logbook
+  getById: async (logbookId) => {
+    const response = await apiClient.get(`/api/logbooks/${logbookId}`);
+    return response.data;
+  },
+
+  // Create or update logbook (backend auto-upserts same type+date)
+  create: async (data) => {
+    const response = await apiClient.post('/api/logbooks', data);
+    return response.data;
+  },
+
+  // Update logbook
+  update: async (logbookId, data) => {
+    const response = await apiClient.put(`/api/logbooks/${logbookId}`, data);
+    return response.data;
+  },
+
+  // Delete logbook
+  delete: async (logbookId) => {
+    const response = await apiClient.delete(`/api/logbooks/${logbookId}`);
+    return response.data;
+  },
+
+  // Get notifications (missing toolbox talks etc)
+  getNotifications: async (projectId) => {
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
+    return response.data;
+  },
+
+  // Get/save scaffold info for project
+  getScaffoldInfo: async (projectId) => {
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}/scaffold-info`);
+    return response.data;
+  },
+
+  saveScaffoldInfo: async (projectId, data) => {
+    const response = await apiClient.put(`/api/logbooks/project/${projectId}/scaffold-info`, data);
+    return response.data;
+  },
+
+  // Get workers checked in today (for auto-populating logs)
+  getCheckinsForDate: async (projectId, date = null) => {
+    const params = date ? { date } : {};
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}/checkins-today`, { params });
+    return response.data;
+  },
+};
+
+export const cpProfileAPI = {
+  getProfile: async () => {
+    const response = await apiClient.get('/api/cp/profile');
+    return response.data;
+  },
+
+  updateProfile: async (data) => {
+    const response = await apiClient.put('/api/cp/profile', data);
+    return response.data;
+  },
+};
+
 export default apiClient;
