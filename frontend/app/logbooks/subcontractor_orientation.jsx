@@ -232,7 +232,7 @@ export default function SubcontractorOrientation() {
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.back()}
+              onPress={() => router.push('/logbooks')}
             />
             <View>
               <Text style={styles.headerTitle}>Subcontractor Safety Orientation</Text>
