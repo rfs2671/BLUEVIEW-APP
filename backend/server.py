@@ -1683,6 +1683,41 @@ async def register_and_checkin(data: dict):
         
         await db.workers.update_one({"_id": worker["_id"]}, {"$set": update_fields})
     
+    # Save orientation as a proper logbook document so CP can view/sign it
+    if safety_orientation:
+        worker_id_str = str(worker["_id"])
+        existing_orient_log = await db.logbooks.find_one({
+            "log_type": "subcontractor_orientation",
+            "project_id": project_id,
+            "data.worker_id": worker_id_str,
+            "is_deleted": {"$ne": True},
+        })
+        if not existing_orient_log:
+            await db.logbooks.insert_one({
+                "log_type": "subcontractor_orientation",
+                "project_id": project_id,
+                "project_name": project.get("name", ""),
+                "company_id": company_id,
+                "date": now.strftime("%Y-%m-%d"),
+                "status": "draft",  # CP must add signature to submit
+                "cp_signature": None,
+                "cp_name": None,
+                "data": {
+                    "worker_id": worker_id_str,
+                    "worker_name": name,
+                    "worker_company": company,
+                    "worker_trade": trade or "",
+                    "osha_number": osha_number or "",
+                    "worker_signature": signature,
+                    "checklist": safety_orientation,
+                    "completed_at": now.isoformat(),
+                    "orientation_number": None,
+                },
+                "created_at": now,
+                "updated_at": now,
+                "is_deleted": False,
+            })
+    
     # Create check-in
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     existing_checkin = await db.checkins.find_one({
