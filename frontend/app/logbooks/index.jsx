@@ -1,0 +1,579 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  LogOut,
+  ClipboardList,
+  HardHat,
+  ShieldCheck,
+  Users,
+  BookOpen,
+  Building2,
+  ChevronRight,
+  AlertCircle,
+  CheckCircle,
+  ChevronDown,
+  Calendar,
+  Bell,
+} from 'lucide-react-native';
+import AnimatedBackground from '../src/components/AnimatedBackground';
+import { GlassCard, IconPod } from '../src/components/GlassCard';
+import GlassButton from '../src/components/GlassButton';
+import { useToast } from '../src/components/Toast';
+import { useAuth } from '../src/context/AuthContext';
+import { projectsAPI, logbooksAPI, cpProfileAPI } from '../src/utils/api';
+import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+
+const LOG_TYPES = [
+  {
+    key: 'scaffold_maintenance',
+    label: 'Scaffold Maintenance Log',
+    subtitle: 'NYC DOB — Daily inspection required',
+    icon: HardHat,
+    color: '#f59e0b',
+    bg: 'rgba(245, 158, 11, 0.15)',
+  },
+  {
+    key: 'toolbox_talk',
+    label: 'Tool Box Talk',
+    subtitle: 'OSHA — Weekly per company',
+    icon: BookOpen,
+    color: '#3b82f6',
+    bg: 'rgba(59, 130, 246, 0.15)',
+  },
+  {
+    key: 'preshift_signin',
+    label: 'Pre-Shift Safety Meeting',
+    subtitle: 'Daily sign-in with all workers',
+    icon: Users,
+    color: '#4ade80',
+    bg: 'rgba(74, 222, 128, 0.15)',
+  },
+  {
+    key: 'subcontractor_orientation',
+    label: 'Subcontractor Safety Orientation',
+    subtitle: 'One-time per worker per project',
+    icon: ShieldCheck,
+    color: '#8b5cf6',
+    bg: 'rgba(139, 92, 246, 0.15)',
+  },
+  {
+    key: 'osha_log',
+    label: 'OSHA Log Book',
+    subtitle: 'Worker certifications register',
+    icon: ClipboardList,
+    color: '#06b6d4',
+    bg: 'rgba(6, 182, 212, 0.15)',
+  },
+  {
+    key: 'daily_jobsite',
+    label: 'Daily Jobsite Log',
+    subtitle: 'NYC DOB 3301-02 — Daily',
+    icon: Building2,
+    color: '#ef4444',
+    bg: 'rgba(239, 68, 68, 0.15)',
+  },
+];
+
+export default function LogBooksScreen() {
+  const router = useRouter();
+  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const toast = useToast();
+
+  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState([]);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [todayLogs, setTodayLogs] = useState({});
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [] });
+  const [cpProfile, setCpProfile] = useState(null);
+
+  const today = new Date().toISOString().split('T')[0];
+  const todayFormatted = new Date().toLocaleDateString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+  });
+
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      router.replace('/login');
+    }
+  }, [isAuthenticated, authLoading]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchInitial();
+    }
+  }, [isAuthenticated]);
+
+  const fetchInitial = async () => {
+    setLoading(true);
+    try {
+      const [projectsData, profile] = await Promise.all([
+        projectsAPI.getAll().catch(() => []),
+        cpProfileAPI.getProfile().catch(() => null),
+      ]);
+      const projectList = Array.isArray(projectsData) ? projectsData : [];
+      setProjects(projectList);
+      setCpProfile(profile);
+
+      // No signature yet — send to setup
+      if (profile && !profile.has_signature) {
+        router.push('/cp-setup');
+        return;
+      }
+
+      // Auto-select first assigned project
+      const assigned = projectList.filter(p =>
+        !user?.assigned_projects?.length ||
+        user.assigned_projects.includes(p.id || p._id)
+      );
+      if (assigned.length > 0) {
+        setSelectedProject(assigned[0]);
+        await fetchProjectData(assigned[0]._id || assigned[0].id);
+      }
+    } catch (error) {
+      console.error('Failed to fetch logbooks data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchProjectData = async (projectId) => {
+    try {
+      const [logs, notifs] = await Promise.all([
+        logbooksAPI.getByProject(projectId, null, today).catch(() => []),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [] })),
+      ]);
+      const logMap = {};
+      (Array.isArray(logs) ? logs : []).forEach(log => {
+        logMap[log.log_type] = log;
+      });
+      setTodayLogs(logMap);
+      setNotifications(notifs);
+    } catch (error) {
+      console.error('Failed to fetch project logbooks:', error);
+    }
+  };
+
+  const handleProjectSelect = async (project) => {
+    setSelectedProject(project);
+    setShowProjectPicker(false);
+    setTodayLogs({});
+    await fetchProjectData(project._id || project.id);
+  };
+
+  const handleOpenLog = (logType) => {
+    if (!selectedProject) {
+      toast.warning('Select Project', 'Please select a project first');
+      return;
+    }
+    const projectId = selectedProject._id || selectedProject.id;
+    router.push(`/logbooks/${logType}?projectId=${projectId}&date=${today}`);
+  };
+
+  const getLogStatus = (logTypeKey) => {
+    const log = todayLogs[logTypeKey];
+    if (!log) return 'pending';
+    if (log.status === 'submitted') return 'submitted';
+    return 'draft';
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
+
+  const missingToolbox = notifications?.missing_toolbox_talk || [];
+
+  const StatusBadge = ({ status }) => {
+    if (status === 'submitted') {
+      return (
+        <View style={[styles.badge, styles.badgeSubmitted]}>
+          <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
+          <Text style={[styles.badgeText, styles.badgeTextSubmitted]}>Done</Text>
+        </View>
+      );
+    }
+    if (status === 'draft') {
+      return (
+        <View style={[styles.badge, styles.badgeDraft]}>
+          <Text style={[styles.badgeText, styles.badgeTextDraft]}>Draft</Text>
+        </View>
+      );
+    }
+    return (
+      <View style={[styles.badge, styles.badgePending]}>
+        <Text style={[styles.badgeText, styles.badgeTextPending]}>Pending</Text>
+      </View>
+    );
+  };
+
+  return (
+    <AnimatedBackground>
+      <SafeAreaView style={styles.container} edges={['top']}>
+
+        {/* Header — logo + logout only. No back arrow. This is the CP home screen. */}
+        <View style={styles.header}>
+          <Text style={styles.logoText}>BLUEVIEW</Text>
+          <GlassButton
+            variant="icon"
+            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+            onPress={handleLogout}
+          />
+        </View>
+
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.titleSection}>
+            <Text style={styles.titleLabel}>COMPLIANCE</Text>
+            <Text style={styles.titleText}>Log Books</Text>
+            <View style={styles.dateRow}>
+              <Calendar size={14} strokeWidth={1.5} color={colors.text.muted} />
+              <Text style={styles.dateText}>{todayFormatted}</Text>
+            </View>
+          </View>
+
+          {/* CP signature banner */}
+          {cpProfile?.has_signature ? (
+            <GlassCard style={styles.cpBanner}>
+              <View style={styles.cpBannerRow}>
+                <ShieldCheck size={16} strokeWidth={1.5} color="#3b82f6" />
+                <Text style={styles.cpBannerText}>
+                  Signing as{' '}
+                  <Text style={styles.cpBannerName}>{cpProfile.cp_name}</Text>
+                  {cpProfile.cp_title ? ` · ${cpProfile.cp_title}` : ''}
+                </Text>
+                <Pressable onPress={() => router.push('/cp-setup')}>
+                  <Text style={styles.cpBannerEdit}>Edit</Text>
+                </Pressable>
+              </View>
+            </GlassCard>
+          ) : (
+            <Pressable onPress={() => router.push('/cp-setup')}>
+              <GlassCard style={styles.setupBanner}>
+                <View style={styles.setupBannerRow}>
+                  <AlertCircle size={18} strokeWidth={1.5} color="#f59e0b" />
+                  <View style={styles.setupBannerText}>
+                    <Text style={styles.setupBannerTitle}>Signature Required</Text>
+                    <Text style={styles.setupBannerSub}>
+                      Set up your CP signature to auto-sign log books
+                    </Text>
+                  </View>
+                  <ChevronRight size={18} strokeWidth={1.5} color={colors.text.muted} />
+                </View>
+              </GlassCard>
+            </Pressable>
+          )}
+
+          {/* Project selector */}
+          <Pressable
+            style={styles.projectSelector}
+            onPress={() => setShowProjectPicker(!showProjectPicker)}
+          >
+            <View style={styles.projectSelectorLeft}>
+              <IconPod size={40}>
+                <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
+              </IconPod>
+              <View>
+                <Text style={styles.projectSelectorLabel}>PROJECT</Text>
+                <Text style={styles.projectSelectorName}>
+                  {selectedProject?.name || 'Select a project'}
+                </Text>
+              </View>
+            </View>
+            <ChevronDown
+              size={18}
+              strokeWidth={1.5}
+              color={colors.text.muted}
+              style={{ transform: [{ rotate: showProjectPicker ? '180deg' : '0deg' }] }}
+            />
+          </Pressable>
+
+          {showProjectPicker && (
+            <GlassCard style={styles.projectDropdown}>
+              {projects.map((p) => (
+                <Pressable
+                  key={p._id || p.id}
+                  style={[
+                    styles.projectOption,
+                    (p._id || p.id) === (selectedProject?._id || selectedProject?.id) &&
+                      styles.projectOptionActive,
+                  ]}
+                  onPress={() => handleProjectSelect(p)}
+                >
+                  <Text style={styles.projectOptionText}>{p.name}</Text>
+                  {(p._id || p.id) === (selectedProject?._id || selectedProject?.id) && (
+                    <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                  )}
+                </Pressable>
+              ))}
+            </GlassCard>
+          )}
+
+          {/* Missing toolbox talk alert */}
+          {missingToolbox.length > 0 && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <Bell size={16} strokeWidth={1.5} color="#f59e0b" />
+                <Text style={styles.notifTitle}>
+                  {missingToolbox.length} worker
+                  {missingToolbox.length > 1 ? 's' : ''} missing Tool Box Talk this week
+                </Text>
+              </View>
+              {missingToolbox.slice(0, 3).map((w, i) => (
+                <Text key={i} style={styles.notifWorker}>
+                  • {w.worker_name} ({w.company})
+                </Text>
+              ))}
+              {missingToolbox.length > 3 && (
+                <Text style={styles.notifMore}>+{missingToolbox.length - 3} more</Text>
+              )}
+              <GlassButton
+                title="Open Tool Box Talk"
+                onPress={() => handleOpenLog('toolbox_talk')}
+                style={styles.notifBtn}
+              />
+            </GlassCard>
+          )}
+
+          {/* Log book rows */}
+          {loading ? (
+            <View style={styles.loadingCenter}>
+              <ActivityIndicator size="large" color={colors.text.primary} />
+              <Text style={styles.loadingText}>Loading log books...</Text>
+            </View>
+          ) : (
+            <View style={styles.logList}>
+              <Text style={styles.sectionLabel}>TODAY'S LOG BOOKS</Text>
+              {LOG_TYPES.map((logType) => {
+                const Icon = logType.icon;
+                const status = getLogStatus(logType.key);
+                return (
+                  <Pressable
+                    key={logType.key}
+                    onPress={() => handleOpenLog(logType.key)}
+                    style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
+                  >
+                    <View style={[styles.logIcon, { backgroundColor: logType.bg }]}>
+                      <Icon size={22} strokeWidth={1.5} color={logType.color} />
+                    </View>
+                    <View style={styles.logInfo}>
+                      <Text style={styles.logLabel}>{logType.label}</Text>
+                      <Text style={styles.logSubtitle}>{logType.subtitle}</Text>
+                    </View>
+                    <View style={styles.logRight}>
+                      <StatusBadge status={status} />
+                      <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* Completion bar */}
+          {!loading && selectedProject && (
+            <GlassCard style={styles.summaryCard}>
+              <Text style={styles.summaryTitle}>Today's Completion</Text>
+              <View style={styles.summaryRow}>
+                {(() => {
+                  const submitted = LOG_TYPES.filter(
+                    lt => getLogStatus(lt.key) === 'submitted'
+                  ).length;
+                  const total = LOG_TYPES.length;
+                  const pct = Math.round((submitted / total) * 100);
+                  return (
+                    <>
+                      <View style={styles.summaryBar}>
+                        <View style={[styles.summaryBarFill, { width: `${pct}%` }]} />
+                      </View>
+                      <Text style={styles.summaryCount}>{submitted}/{total}</Text>
+                    </>
+                  );
+                })()}
+              </View>
+            </GlassCard>
+          )}
+        </ScrollView>
+
+      </SafeAreaView>
+    </AnimatedBackground>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  logoText: { ...typography.label, color: colors.text.muted, letterSpacing: 2 },
+  scrollView: { flex: 1 },
+  scrollContent: {
+    padding: spacing.lg,
+    paddingBottom: spacing.xxl,
+    maxWidth: 720,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  titleSection: { marginBottom: spacing.lg },
+  titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
+  titleText: {
+    fontSize: 42,
+    fontWeight: '200',
+    color: colors.text.primary,
+    letterSpacing: -1,
+    marginBottom: spacing.sm,
+  },
+  dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  dateText: { fontSize: 13, color: colors.text.muted },
+  cpBanner: {
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+    backgroundColor: 'rgba(59, 130, 246, 0.08)',
+    borderColor: 'rgba(59, 130, 246, 0.2)',
+  },
+  cpBannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  cpBannerText: { flex: 1, fontSize: 13, color: colors.text.secondary },
+  cpBannerName: { color: colors.text.primary, fontWeight: '500' },
+  cpBannerEdit: { fontSize: 12, color: '#3b82f6', fontWeight: '500' },
+  setupBanner: {
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.25)',
+  },
+  setupBannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  setupBannerText: { flex: 1 },
+  setupBannerTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b' },
+  setupBannerSub: { fontSize: 12, color: colors.text.muted },
+  projectSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    marginBottom: spacing.sm,
+  },
+  projectSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  projectSelectorLabel: { ...typography.label, color: colors.text.muted, marginBottom: 2 },
+  projectSelectorName: { fontSize: 15, color: colors.text.primary, fontWeight: '500' },
+  projectDropdown: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
+  projectOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
+  },
+  projectOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
+  projectOptionText: { fontSize: 15, color: colors.text.primary },
+  notifCard: {
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.25)',
+  },
+  notifHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
+  notifWorker: {
+    fontSize: 13,
+    color: colors.text.secondary,
+    marginBottom: 2,
+    paddingLeft: spacing.sm,
+  },
+  notifMore: {
+    fontSize: 12,
+    color: colors.text.muted,
+    paddingLeft: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  notifBtn: { marginTop: spacing.sm },
+  loadingCenter: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  loadingText: { fontSize: 14, color: colors.text.muted },
+  sectionLabel: {
+    ...typography.label,
+    color: colors.text.muted,
+    marginBottom: spacing.md,
+    marginTop: spacing.sm,
+  },
+  logList: { gap: spacing.sm, marginBottom: spacing.lg },
+  logCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.xl,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  logCardPressed: { opacity: 0.8 },
+  logIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logInfo: { flex: 1 },
+  logLabel: { fontSize: 15, fontWeight: '500', color: colors.text.primary, marginBottom: 2 },
+  logSubtitle: { fontSize: 12, color: colors.text.muted },
+  logRight: { alignItems: 'flex-end', gap: spacing.xs },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: borderRadius.full,
+  },
+  badgeSubmitted: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
+  badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
+  badgePending: { backgroundColor: 'rgba(255,255,255,0.06)' },
+  badgeText: { fontSize: 11, fontWeight: '500' },
+  badgeTextSubmitted: { color: '#4ade80' },
+  badgeTextDraft: { color: '#fbbf24' },
+  badgeTextPending: { color: colors.text.muted },
+  summaryCard: { padding: spacing.md },
+  summaryTitle: { fontSize: 13, color: colors.text.muted, marginBottom: spacing.sm },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  summaryBar: {
+    flex: 1,
+    height: 6,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  summaryBarFill: { height: '100%', backgroundColor: '#4ade80', borderRadius: 3 },
+  summaryCount: { fontSize: 14, fontWeight: '500', color: colors.text.secondary },
+});
