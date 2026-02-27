@@ -13,7 +13,7 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 /**
  * Routing logic after login:
- // *   site_mode  → /site
+ *   site_mode  → /site
  *   role=cp    → /logbooks   (CP's entire app is logbooks)
  *   everyone else → /        (admin dashboard)
  */
