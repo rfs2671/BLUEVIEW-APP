@@ -8,24 +8,20 @@ import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider } from '../src/components/Toast';
 
-/**
- * AppShell reads ThemeContext so it re-renders on toggle.
- * The `key={themeKey}` on the Stack forces a full remount of all
- * screens whenever the theme changes — this is the only reliable
- * way to make module-level StyleSheet.create() calls pick up new
- * colors without modifying every screen file.
- */
 function AppShell() {
   const { isDark, themeKey } = useTheme();
+  const bg = isDark ? '#050a12' : '#e8f0fb';
 
   return (
-    <View style={styles.container}>
+    // key={themeKey} on this View forces React to fully unmount + remount
+    // the entire subtree including all screens, so module-level
+    // StyleSheet.create() calls re-run with the newly mutated colors.
+    <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <Stack
-        key={themeKey}
         screenOptions={{
           headerShown: false,
-          contentStyle: { backgroundColor: isDark ? '#050a12' : '#e8f0fb' },
+          contentStyle: { backgroundColor: bg },
           animation: 'fade',
         }}
       />
@@ -50,8 +46,5 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    overflow: 'hidden',
-  },
+  container: { flex: 1, overflow: 'hidden' },
 });
