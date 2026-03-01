@@ -1,18 +1,16 @@
-// ─── Dark palette (original app colors — unchanged) ────────────────────────
+// ─── Dark palette ────────────────────────────────────────────────────────────
 const _dark = {
   success: '#4ade80',
   warning: '#fbbf24',
   error:   '#f87171',
   primary: '#3b82f6',
 
-  // Background gradient colors
   background: {
     start:  '#050a12',
     middle: '#0A1929',
     end:    '#050a12',
   },
 
-  // Glass card colors
   glass: {
     background:      'rgba(255, 255, 255, 0.08)',
     backgroundHover: 'rgba(255, 255, 255, 0.12)',
@@ -28,7 +26,6 @@ const _dark = {
     strong: 'rgba(255, 255, 255, 0.3)',
   },
 
-  // Text colors
   text: {
     primary:   'rgba(255, 255, 255, 0.9)',
     secondary: 'rgba(255, 255, 255, 0.6)',
@@ -36,7 +33,6 @@ const _dark = {
     subtle:    'rgba(255, 255, 255, 0.3)',
   },
 
-  // Status colors
   status: {
     success:   '#4ade80',
     successBg: 'rgba(74, 222, 128, 0.2)',
@@ -46,17 +42,11 @@ const _dark = {
     warningBg: 'rgba(251, 191, 36, 0.2)',
   },
 
-  // UI surface / nav tints
-  surface:   '#050a12',
-  statusBar: 'light',
-  blurTint:  'dark',
-
-  // Accent
   white:       '#ffffff',
   transparent: 'transparent',
 };
 
-// ─── Light palette ──────────────────────────────────────────────────────────
+// ─── Light palette ───────────────────────────────────────────────────────────
 const _light = {
   success: '#16a34a',
   warning: '#d97706',
@@ -100,15 +90,11 @@ const _light = {
     warningBg: 'rgba(217, 119, 6, 0.12)',
   },
 
-  surface:   '#e8f0fb',
-  statusBar: 'dark',
-  blurTint:  'light',
-
   white:       '#ffffff',
   transparent: 'transparent',
 };
 
-// ─── Deep-assign helper ─────────────────────────────────────────────────────
+// ─── Deep-assign helper ──────────────────────────────────────────────────────
 function _deepAssign(target, source) {
   for (const key of Object.keys(source)) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
@@ -120,21 +106,20 @@ function _deepAssign(target, source) {
   }
 }
 
-// ─── THE mutable live colors object ────────────────────────────────────────
-// Starts as dark (original default). ThemeContext calls applyTheme() to swap.
+// ─── Mutable colors object — starts dark, mutated by applyTheme() ────────────
 export const colors = {};
 _deepAssign(colors, _dark);
 
 /**
- * Called by ThemeContext when the user toggles the theme.
- * Mutates colors in-place → every existing import gets the new values
- * on next render without any changes to screen files.
+ * Called by ThemeContext.toggleTheme() before screens remount.
+ * Mutates colors in-place so every StyleSheet.create() that runs
+ * during remount reads the correct new palette.
  */
 export function applyTheme(mode) {
   _deepAssign(colors, mode === 'light' ? _light : _dark);
 }
 
-// ─── Static design tokens (completely unchanged) ───────────────────────────
+// ─── Static tokens (unchanged from original) ─────────────────────────────────
 export const spacing = {
   xs: 4,
   sm: 8,
@@ -154,63 +139,15 @@ export const borderRadius = {
 };
 
 export const typography = {
-  sizes: {
-    xs: 11,
-    sm: 14,
-    md: 16,
-    lg: 18,
-    xl: 24,
-  },
-
-  // Hero/Display text
-  hero: {
-    fontSize: 48,
-    fontWeight: '200',
-    letterSpacing: -1,
-  },
-  // Large headings
-  h1: {
-    fontSize: 36,
-    fontWeight: '300',
-    letterSpacing: -0.5,
-  },
-  // Section headings
-  h2: {
-    fontSize: 24,
-    fontWeight: '400',
-  },
-  // Card titles
-  h3: {
-    fontSize: 18,
-    fontWeight: '500',
-  },
-  // Body text
-  body: {
-    fontSize: 16,
-    fontWeight: '400',
-  },
-  // Small text
-  small: {
-    fontSize: 14,
-    fontWeight: '400',
-  },
-  // Labels (uppercase tracking)
-  label: {
-    fontSize: 11,
-    fontWeight: '500',
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-  },
-  // Stats numbers
-  stat: {
-    fontSize: 36,
-    fontWeight: '200',
-  },
+  sizes: { xs: 11, sm: 14, md: 16, lg: 18, xl: 24 },
+  hero:  { fontSize: 48, fontWeight: '200', letterSpacing: -1 },
+  h1:    { fontSize: 36, fontWeight: '300', letterSpacing: -0.5 },
+  h2:    { fontSize: 24, fontWeight: '400' },
+  h3:    { fontSize: 18, fontWeight: '500' },
+  body:  { fontSize: 16, fontWeight: '400' },
+  small: { fontSize: 14, fontWeight: '400' },
+  label: { fontSize: 11, fontWeight: '500', letterSpacing: 2, textTransform: 'uppercase' },
+  stat:  { fontSize: 36, fontWeight: '200' },
 };
 
-export default {
-  colors,
-  spacing,
-  borderRadius,
-  typography,
-};
+export default { colors, spacing, borderRadius, typography };
