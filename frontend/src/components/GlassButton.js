@@ -27,7 +27,7 @@ const GlassButton = ({
         onHoverOut={() => setIsHovered(false)}
         style={({ pressed }) => [
           styles.iconButton,
-          isHovered && styles.hovered,
+          isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
           pressed && styles.pressed,
           disabled && styles.disabled,
           style,
@@ -50,7 +50,7 @@ const GlassButton = ({
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
         styles.button,
-        isHovered && styles.hovered,
+        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover, transform: [{ scale: 1.03 }] },
         pressed && styles.pressed,
         disabled && styles.disabled,
         style,
@@ -109,11 +109,6 @@ const styles = StyleSheet.create({
   },
   iconRight: {
     marginLeft: spacing.sm,
-  },
-  hovered: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-    transform: [{ scale: 1.03 }],
   },
   pressed: {
     opacity: 0.8,
