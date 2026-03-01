@@ -24,12 +24,12 @@ const GlassInput = ({
   const [isHovered, setIsHovered] = useState(false);
 
   return (
-    <View 
+    <View
       style={[
-        styles.container, 
-        isHovered && styles.hovered,
-        isFocused && styles.focused,
-        style
+        styles.container,
+        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
+        isFocused && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.border.strong },
+        style,
       ]}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
@@ -71,14 +71,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     position: 'relative',
     transition: 'all 0.2s ease',
-  },
-  hovered: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  focused: {
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
   },
   input: {
     flex: 1,
