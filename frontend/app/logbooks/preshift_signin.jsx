@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  ArrowLeft, Users, CheckCircle, XCircle, Save, Plus, Calendar,
+  ArrowLeft, Users, CheckCircle, XCircle, Save, Plus, Calendar, Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -17,12 +17,22 @@ import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
+/**
+ * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
+ * - auto_filled: true  → worker came from today's check-ins (name/company/osha locked)
+ * - auto_filled: false → manually added row (all fields editable)
+ * - worker_signature   → the signature the worker drew when they signed in via NFC/QR
+ */
 const EMPTY_WORKER = () => ({
   worker_id: null,
   name: '',
-  had_injury: null,   // null | 'yes' | 'no'
+  company: '',
+  osha_number: '',
+  worker_signature: null,
+  had_injury: null,    // null | 'yes' | 'no'
   inspected_ppe: null, // null | 'yes' | 'no'
   signed: false,
+  auto_filled: false,
 });
 
 export default function PreShiftSignIn() {
@@ -47,7 +57,7 @@ export default function PreShiftSignIn() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, profile, checkins, existingLogs] = await Promise.all([
+      const [projectData, checkins, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, 'preshift_signin', date).catch(() => []),
@@ -55,7 +65,10 @@ export default function PreShiftSignIn() {
 
       if (projectData) {
         setProjectLocation(projectData.address || projectData.location || '');
+        // Pre-fill company from project data if available
+        if (projectData.company) setCompany(projectData.company);
       }
+
       const checkinList = Array.isArray(checkins) ? checkins : [];
 
       const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
@@ -65,6 +78,7 @@ export default function PreShiftSignIn() {
         if (d.company) setCompany(d.company);
         if (d.project_location) setProjectLocation(d.project_location);
         if (d.workers && d.workers.length > 0) {
+          // Saved log already has full worker data — use it
           setWorkers(d.workers);
         } else {
           buildWorkerList(checkinList);
@@ -81,6 +95,11 @@ export default function PreShiftSignIn() {
     }
   };
 
+  /**
+   * Builds the worker list from today's check-ins.
+   * Captures: name, company, osha_number, and worker_signature — all locked (read-only).
+   * Pads to at least 5 rows with empty editable rows.
+   */
   const buildWorkerList = (checkins) => {
     if (checkins.length === 0) {
       setWorkers(Array.from({ length: 5 }, EMPTY_WORKER));
@@ -89,11 +108,15 @@ export default function PreShiftSignIn() {
     const list = checkins.map((c) => ({
       worker_id: c.worker_id,
       name: c.worker_name || '',
+      company: c.company || '',
+      osha_number: c.osha_number || '',
+      worker_signature: c.worker_signature || c.signature || null,
       had_injury: null,
       inspected_ppe: null,
       signed: false,
+      auto_filled: true, // Lock identity fields — came from sign-in system
     }));
-    // Pad to at least 5 rows
+    // Pad with empty manual rows
     while (list.length < 5) list.push(EMPTY_WORKER());
     setWorkers(list);
   };
@@ -238,36 +261,111 @@ export default function PreShiftSignIn() {
               Workers auto-populated from today's check-ins. Complete each column.
             </Text>
 
-            {/* Column Headers */}
-            <View style={styles.tableHeader}>
-              <Text style={[styles.colHeader, { flex: 3 }]}>First & Last Name</Text>
-              <Text style={[styles.colHeader, { flex: 2, textAlign: 'center' }]}>Injury / Incident Last Time?</Text>
-              <Text style={[styles.colHeader, { flex: 2, textAlign: 'center' }]}>Inspected PPE Today?</Text>
-            </View>
-
             {workers.map((worker, index) => (
-              <View key={index} style={styles.workerRow}>
-                <View style={{ flex: 3 }}>
-                  <TextInput
-                    style={styles.nameInput}
-                    value={worker.name}
-                    onChangeText={(v) => updateWorker(index, 'name', v)}
-                    placeholder={`${index + 1}.`}
-                    placeholderTextColor={colors.text.subtle}
-                  />
+              <View key={index} style={styles.workerCard}>
+
+                {/* Row number + lock badge */}
+                <View style={styles.workerCardHeader}>
+                  <Text style={styles.workerIndex}>{index + 1}</Text>
+                  {worker.auto_filled && (
+                    <View style={styles.autoFilledBadge}>
+                      <Lock size={10} strokeWidth={2} color="#60a5fa" />
+                      <Text style={styles.autoFilledText}>Auto-filled</Text>
+                    </View>
+                  )}
                 </View>
-                <View style={[styles.ynCell, { flex: 2 }]}>
-                  <YesNoToggle
-                    value={worker.had_injury}
-                    onChange={(v) => updateWorker(index, 'had_injury', v)}
-                  />
+
+                {/* Name */}
+                <View style={styles.workerField}>
+                  <Text style={styles.workerFieldLabel}>NAME</Text>
+                  {worker.auto_filled ? (
+                    <Text style={styles.workerFieldValueLocked}>{worker.name || '—'}</Text>
+                  ) : (
+                    <TextInput
+                      style={styles.workerFieldInput}
+                      value={worker.name}
+                      onChangeText={(v) => updateWorker(index, 'name', v)}
+                      placeholder="First & Last Name"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                  )}
                 </View>
-                <View style={[styles.ynCell, { flex: 2 }]}>
-                  <YesNoToggle
-                    value={worker.inspected_ppe}
-                    onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
-                  />
+
+                {/* Company */}
+                <View style={styles.workerField}>
+                  <Text style={styles.workerFieldLabel}>COMPANY</Text>
+                  {worker.auto_filled ? (
+                    <Text style={styles.workerFieldValueLocked}>{worker.company || '—'}</Text>
+                  ) : (
+                    <TextInput
+                      style={styles.workerFieldInput}
+                      value={worker.company}
+                      onChangeText={(v) => updateWorker(index, 'company', v)}
+                      placeholder="Company name"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                  )}
                 </View>
+
+                {/* OSHA Number */}
+                <View style={styles.workerField}>
+                  <Text style={styles.workerFieldLabel}>OSHA #</Text>
+                  {worker.auto_filled ? (
+                    <Text style={styles.workerFieldValueLocked}>
+                      {worker.osha_number || <Text style={styles.workerFieldEmpty}>—</Text>}
+                    </Text>
+                  ) : (
+                    <TextInput
+                      style={styles.workerFieldInput}
+                      value={worker.osha_number}
+                      onChangeText={(v) => updateWorker(index, 'osha_number', v)}
+                      placeholder="OSHA card number"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                  )}
+                </View>
+
+                {/* Worker Signature */}
+                <View style={styles.workerField}>
+                  <Text style={styles.workerFieldLabel}>WORKER SIGNATURE</Text>
+                  {worker.worker_signature ? (
+                    <View style={styles.sigContainer}>
+                      <Image
+                        source={{ uri: worker.worker_signature }}
+                        style={styles.sigImage}
+                        resizeMode="contain"
+                      />
+                      <View style={styles.sigSignedBadge}>
+                        <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
+                        <Text style={styles.sigSignedText}>Signed</Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={styles.sigMissing}>
+                      <XCircle size={14} strokeWidth={1.5} color={colors.text.subtle} />
+                      <Text style={styles.sigMissingText}>Not signed</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Y/N Questions */}
+                <View style={styles.ynBlock}>
+                  <View style={styles.ynItem}>
+                    <Text style={styles.ynLabel}>Injury / Incident last time?</Text>
+                    <YesNoToggle
+                      value={worker.had_injury}
+                      onChange={(v) => updateWorker(index, 'had_injury', v)}
+                    />
+                  </View>
+                  <View style={styles.ynItem}>
+                    <Text style={styles.ynLabel}>Inspected PPE today?</Text>
+                    <YesNoToggle
+                      value={worker.inspected_ppe}
+                      onChange={(v) => updateWorker(index, 'inspected_ppe', v)}
+                    />
+                  </View>
+                </View>
+
               </View>
             ))}
 
@@ -310,14 +408,14 @@ export default function PreShiftSignIn() {
               style={styles.draftBtn}
             />
             <GlassButton
-              title={saving ? 'Submitting...' : 'Submit & Sign'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
+              title={saving ? 'Submitting...' : 'Submit'}
+              icon={<CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              disabled={!cpSignature || filledWorkers.length === 0}
               style={styles.submitBtn}
             />
           </View>
+
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>
@@ -326,39 +424,31 @@ export default function PreShiftSignIn() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
-  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
+  headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, flex: 1 },
   headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 11, color: colors.text.muted },
+  headerSub: { fontSize: 12, color: colors.text.muted },
   countBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
-    backgroundColor: 'rgba(59,130,246,0.15)',
-    borderRadius: borderRadius.full,
-    paddingHorizontal: spacing.md,
+    gap: 4,
+    backgroundColor: 'rgba(96,165,250,0.15)',
+    paddingHorizontal: spacing.sm,
     paddingVertical: 4,
+    borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(59,130,246,0.3)',
+    borderColor: 'rgba(96,165,250,0.3)',
   },
-  countText: { fontSize: 14, fontWeight: '600', color: '#60a5fa' },
+  countText: { fontSize: 13, fontWeight: '700', color: '#60a5fa' },
   scrollView: { flex: 1 },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 100,
-    maxWidth: 720,
-    width: '100%',
-    alignSelf: 'center',
-  },
+  scrollContent: { paddingHorizontal: spacing.md, paddingBottom: spacing.xl * 2 },
   dateCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -388,54 +478,134 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius: borderRadius.sm,
   },
-  tableHeader: {
-    flexDirection: 'row',
-    paddingBottom: spacing.sm,
-    marginBottom: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.1)',
+
+  // Worker card layout — one card per worker instead of a flat table row
+  workerCard: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.07)',
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
-  colHeader: {
-    fontSize: 10,
-    fontWeight: '600',
+  workerCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: spacing.sm,
+  },
+  workerIndex: {
+    fontSize: 11,
+    fontWeight: '700',
     color: colors.text.muted,
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 1,
   },
-  workerRow: {
+  autoFilledBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(96,165,250,0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(96,165,250,0.25)',
+  },
+  autoFilledText: { fontSize: 10, color: '#60a5fa', fontWeight: '600' },
+
+  workerField: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.04)',
     gap: spacing.sm,
+    minHeight: 36,
   },
-  nameInput: {
-    fontSize: 13,
+  workerFieldLabel: {
+    width: 110,
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.text.muted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  workerFieldValueLocked: {
+    flex: 1,
+    fontSize: 14,
     color: colors.text.primary,
-    paddingVertical: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    fontWeight: '500',
+  },
+  workerFieldEmpty: {
+    color: colors.text.subtle,
+  },
+  workerFieldInput: {
+    flex: 1,
+    fontSize: 14,
+    color: colors.text.primary,
+    padding: spacing.xs,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderRadius: borderRadius.sm,
   },
-  ynCell: { alignItems: 'center', justifyContent: 'center' },
+
+  // Signature display inside worker card
+  sigContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  sigImage: {
+    width: 120,
+    height: 36,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: borderRadius.sm,
+  },
+  sigSignedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  sigSignedText: { fontSize: 11, color: '#4ade80', fontWeight: '600' },
+  sigMissing: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  sigMissingText: { fontSize: 12, color: colors.text.subtle, fontStyle: 'italic' },
+
+  // Y/N block
+  ynBlock: {
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  ynItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  ynLabel: { flex: 1, fontSize: 12, color: colors.text.secondary },
   ynRow: { flexDirection: 'row', gap: 4 },
   ynBtn: {
-    width: 30,
-    height: 28,
+    width: 32,
+    height: 26,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
-  ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: 'rgba(74,222,128,0.4)' },
-  ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: 'rgba(239,68,68,0.4)' },
-  ynText: { fontSize: 12, fontWeight: '700', color: colors.text.muted },
+  ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: '#4ade80' },
+  ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' },
+  ynText: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
   ynTextYes: { color: '#4ade80' },
-  ynTextNo: { color: '#f87171' },
-  addRowBtn: { marginTop: spacing.md },
+  ynTextNo: { color: '#ef4444' },
+
+  addRowBtn: { marginTop: spacing.sm, alignSelf: 'flex-start' },
   totalRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -445,27 +615,15 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.1)',
   },
-  totalLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: colors.text.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  totalValue: { fontSize: 20, fontWeight: '300', color: colors.text.primary },
-  autoSignBadge: {
+  totalLabel: { fontSize: 11, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+  totalValue: { fontSize: 22, fontWeight: '800', color: colors.text.primary },
+
+  actions: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    marginBottom: spacing.md,
-    padding: spacing.sm,
-    backgroundColor: 'rgba(74,222,128,0.08)',
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.2)',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    marginBottom: spacing.xl,
   },
-  autoSignText: { fontSize: 12, color: '#4ade80' },
-  actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
-  submitBtn: { flex: 2, backgroundColor: 'rgba(74,222,128,0.15)', borderColor: 'rgba(74,222,128,0.3)' },
+  submitBtn: { flex: 1 },
 });
