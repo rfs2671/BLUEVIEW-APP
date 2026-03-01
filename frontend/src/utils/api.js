@@ -106,12 +106,12 @@ export const authAPI = {
       email,
       password,
     });
-    
+
     // Store token (API returns 'token' not 'access_token')
     if (response.data.token) {
       await setToken(response.data.token);
     }
-    
+
     return response.data;
   },
 
@@ -123,17 +123,17 @@ export const authAPI = {
   logout: async () => {
     await clearAuth();
   },
+
+  updateProfile: async (data) => {
+    const response = await apiClient.put('/api/auth/profile', data);
+    return response.data;
+  },
+
+  updatePassword: async (data) => {
+    const response = await apiClient.put('/api/auth/password', data);
+    return response.data;
+  },
 };
-
-updateProfile: async (data) => {
-  const response = await apiClient.put('/api/auth/profile', data);
-  return response.data;
-},
-
-updatePassword: async (data) => {
-  const response = await apiClient.put('/api/auth/password', data);
-  return response.data;
-},
 
 /**
  * Projects APIs
@@ -203,7 +203,7 @@ export const workersAPI = {
     const response = await apiClient.get(`/api/workers/${workerId}/osha-card`);
     return response.data;
   },
-    
+
   update: async (workerId, workerData) => {
     const response = await apiClient.put(`/api/workers/${workerId}`, workerData);
     return response.data;
@@ -223,13 +223,13 @@ export const checkinsAPI = {
     const response = await apiClient.get('/api/checkins');
     return response.data;
   },
-  
+
   getByDate: async (date) => {
     const dateStr = date.toISOString().split('T')[0];
     const response = await apiClient.get(`/api/checkins?date=${dateStr}`);
     return response.data;
   },
-  
+
   getTodayByProject: async (projectId) => {
     const response = await apiClient.get(`/api/checkins/project/${projectId}/today`);
     return response.data;
@@ -297,31 +297,26 @@ export const dailyLogsAPI = {
  * Dropbox APIs
  */
 export const dropboxAPI = {
-  // Get Dropbox connection status
   getStatus: async () => {
     const response = await apiClient.get('/api/dropbox/status');
     return response.data;
   },
 
-  // Get OAuth authorization URL
   getAuthUrl: async () => {
     const response = await apiClient.get('/api/dropbox/auth-url');
     return response.data;
   },
 
-  // Complete OAuth flow with authorization code
   completeAuth: async (code) => {
     const response = await apiClient.post('/api/dropbox/complete-auth', { code });
     return response.data;
   },
 
-  // Disconnect Dropbox
   disconnect: async () => {
     const response = await apiClient.delete('/api/dropbox/disconnect');
     return response.data;
   },
 
-  // Link Dropbox folder to project
   linkToProject: async (projectId, folderPath) => {
     const response = await apiClient.post(`/api/projects/${projectId}/link-dropbox`, {
       folder_path: folderPath,
@@ -329,13 +324,11 @@ export const dropboxAPI = {
     return response.data;
   },
 
-  // Get Dropbox files for a project
   getProjectFiles: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/dropbox-files`);
     return response.data;
   },
 
-  // Get user's Dropbox folders for selection
   getFolders: async (path = '') => {
     const response = await apiClient.get('/api/dropbox/folders', {
       params: { path },
@@ -343,13 +336,11 @@ export const dropboxAPI = {
     return response.data;
   },
 
-  // Sync project files from Dropbox
   syncProject: async (projectId) => {
     const response = await apiClient.post(`/api/projects/${projectId}/sync-dropbox`);
     return response.data;
   },
 
-  // Get file download/preview URL
   getFileUrl: async (projectId, filePath) => {
     const response = await apiClient.get(`/api/projects/${projectId}/dropbox-file-url`, {
       params: { file_path: filePath },
@@ -396,84 +387,9 @@ export const adminUsersAPI = {
 };
 
 /**
- * Admin Subcontractors APIs
- */
-export const adminSubcontractorsAPI = {
-  getAll: async () => {
-    const response = await apiClient.get('/api/admin/subcontractors');
-    return response.data;
-  },
-
-  getById: async (subId) => {
-    const response = await apiClient.get(`/api/admin/subcontractors/${subId}`);
-    return response.data;
-  },
-
-  create: async (subData) => {
-    const response = await apiClient.post('/api/admin/subcontractors', subData);
-    return response.data;
-  },
-
-  update: async (subId, subData) => {
-    const response = await apiClient.put(`/api/admin/subcontractors/${subId}`, subData);
-    return response.data;
-  },
-
-  delete: async (subId) => {
-    const response = await apiClient.delete(`/api/admin/subcontractors/${subId}`);
-    return response.data;
-  },
-};
-
-/**
- * NFC Check-In APIs
- */
-export const nfcAPI = {
-  // Get NFC tag info (no auth required - used on worker check-in)
-  getTagInfo: async (tagId) => {
-    const response = await apiClient.get(`/api/nfc-tags/${tagId}/info`);
-    return response.data;
-  },
-
-  // Link NFC tag to project (admin only)
-  linkToProject: async (projectId, tagId, locationDescription) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, {
-      tag_id: tagId,
-      location_description: locationDescription,
-    });
-    return response.data;
-  },
-
-  // Unlink NFC tag from project (admin only)
-  unlinkFromProject: async (projectId, tagId) => {
-    const response = await apiClient.delete(`/api/projects/${projectId}/nfc-tags/${tagId}`);
-    return response.data;
-  },
-
-  // Get project NFC tags
-  getProjectTags: async (projectId) => {
-    const response = await apiClient.get(`/api/projects/${projectId}/nfc-tags`);
-    return response.data;
-  },
-
-  // Process check-in (no auth - used by workers)
-  checkIn: async (checkinData) => {
-    const response = await apiClient.post('/api/checkin', checkinData);
-    return response.data;
-  },
-
-  // Register new worker (no auth)
-  registerWorker: async (workerData) => {
-    const response = await apiClient.post('/api/workers/register', workerData);
-    return response.data;
-  },
-};
-
-/**
  * Owner Portal APIs
  */
 export const ownerAPI = {
-  // Get all admin accounts
   getAdmins: async () => {
     const response = await apiClient.get('/api/owner/admins');
     return response.data;
@@ -499,7 +415,6 @@ export const ownerAPI = {
  * Checklists APIs
  */
 export const checklistsAPI = {
-  // Admin - Manage checklists
   getAll: async () => {
     const response = await apiClient.get('/api/admin/checklists');
     return response.data;
@@ -535,13 +450,11 @@ export const checklistsAPI = {
     return response.data;
   },
 
-  // Project - Get checklists for project
   getByProject: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/checklists`);
     return response.data;
   },
 
-  // User - Get assigned checklists
   getAssigned: async () => {
     const response = await apiClient.get('/api/checklists/assigned');
     return response.data;
@@ -559,7 +472,6 @@ export const checklistsAPI = {
 };
 
 export const logbooksAPI = {
-  // Get all logbooks for a project
   getByProject: async (projectId, logType = null, date = null) => {
     const params = {};
     if (logType) params.log_type = logType;
@@ -568,37 +480,31 @@ export const logbooksAPI = {
     return response.data;
   },
 
-  // Get single logbook
   getById: async (logbookId) => {
     const response = await apiClient.get(`/api/logbooks/${logbookId}`);
     return response.data;
   },
 
-  // Create or update logbook (backend auto-upserts same type+date)
   create: async (data) => {
     const response = await apiClient.post('/api/logbooks', data);
     return response.data;
   },
 
-  // Update logbook
   update: async (logbookId, data) => {
     const response = await apiClient.put(`/api/logbooks/${logbookId}`, data);
     return response.data;
   },
 
-  // Delete logbook
   delete: async (logbookId) => {
     const response = await apiClient.delete(`/api/logbooks/${logbookId}`);
     return response.data;
   },
 
-  // Get notifications (missing toolbox talks etc)
   getNotifications: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
     return response.data;
   },
 
-  // Get/save scaffold info for project
   getScaffoldInfo: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/scaffold-info`);
     return response.data;
@@ -609,7 +515,6 @@ export const logbooksAPI = {
     return response.data;
   },
 
-  // Get workers checked in today (for auto-populating logs)
   getCheckinsForDate: async (projectId, date = null) => {
     const params = date ? { date } : {};
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/checkins-today`, { params });
