@@ -1,24 +1,25 @@
-export const colors = {
-   success: '#4ade80',
+// ─── Dark palette (original app colors — unchanged) ────────────────────────
+const _dark = {
+  success: '#4ade80',
   warning: '#fbbf24',
-  error: '#f87171',
+  error:   '#f87171',
   primary: '#3b82f6',
 
   // Background gradient colors
   background: {
-    start: '#050a12',
+    start:  '#050a12',
     middle: '#0A1929',
-    end: '#050a12',
+    end:    '#050a12',
   },
-  
+
   // Glass card colors
   glass: {
-    background: 'rgba(255, 255, 255, 0.08)',
+    background:      'rgba(255, 255, 255, 0.08)',
     backgroundHover: 'rgba(255, 255, 255, 0.12)',
-    border: 'rgba(255, 255, 255, 0.15)',
-    borderHover: 'rgba(255, 255, 255, 0.3)',
-    card: 'rgba(255, 255, 255, 0.06)',
-    cardHover: 'rgba(255, 255, 255, 0.10)',
+    border:          'rgba(255, 255, 255, 0.15)',
+    borderHover:     'rgba(255, 255, 255, 0.3)',
+    card:            'rgba(255, 255, 255, 0.06)',
+    cardHover:       'rgba(255, 255, 255, 0.10)',
   },
 
   border: {
@@ -26,36 +27,114 @@ export const colors = {
     medium: 'rgba(255, 255, 255, 0.2)',
     strong: 'rgba(255, 255, 255, 0.3)',
   },
-   
+
   // Text colors
   text: {
-    primary: 'rgba(255, 255, 255, 0.9)',
+    primary:   'rgba(255, 255, 255, 0.9)',
     secondary: 'rgba(255, 255, 255, 0.6)',
-    muted: 'rgba(255, 255, 255, 0.4)',
-    subtle: 'rgba(255, 255, 255, 0.3)',
+    muted:     'rgba(255, 255, 255, 0.4)',
+    subtle:    'rgba(255, 255, 255, 0.3)',
   },
-  
+
   // Status colors
   status: {
-    success: '#4ade80',
+    success:   '#4ade80',
     successBg: 'rgba(74, 222, 128, 0.2)',
-    error: '#f87171',
-    errorBg: 'rgba(248, 113, 113, 0.1)',
-    warning: '#fbbf24',
+    error:     '#f87171',
+    errorBg:   'rgba(248, 113, 113, 0.1)',
+    warning:   '#fbbf24',
     warningBg: 'rgba(251, 191, 36, 0.2)',
   },
 
-  border: {
-    subtle: 'rgba(255, 255, 255, 0.1)',
-    medium: 'rgba(255, 255, 255, 0.2)',
-    strong: 'rgba(255, 255, 255, 0.3)',
-  },
-  
+  // UI surface / nav tints
+  surface:   '#050a12',
+  statusBar: 'light',
+  blurTint:  'dark',
+
   // Accent
-  white: '#ffffff',
+  white:       '#ffffff',
   transparent: 'transparent',
 };
 
+// ─── Light palette ──────────────────────────────────────────────────────────
+const _light = {
+  success: '#16a34a',
+  warning: '#d97706',
+  error:   '#dc2626',
+  primary: '#2563eb',
+
+  background: {
+    start:  '#e8f0fb',
+    middle: '#f0f5ff',
+    end:    '#e8f0fb',
+  },
+
+  glass: {
+    background:      'rgba(0, 0, 0, 0.04)',
+    backgroundHover: 'rgba(0, 0, 0, 0.07)',
+    border:          'rgba(0, 0, 0, 0.12)',
+    borderHover:     'rgba(0, 0, 0, 0.25)',
+    card:            'rgba(0, 0, 0, 0.03)',
+    cardHover:       'rgba(0, 0, 0, 0.06)',
+  },
+
+  border: {
+    subtle: 'rgba(0, 0, 0, 0.08)',
+    medium: 'rgba(0, 0, 0, 0.15)',
+    strong: 'rgba(0, 0, 0, 0.25)',
+  },
+
+  text: {
+    primary:   'rgba(0, 0, 0, 0.90)',
+    secondary: 'rgba(0, 0, 0, 0.60)',
+    muted:     'rgba(0, 0, 0, 0.40)',
+    subtle:    'rgba(0, 0, 0, 0.25)',
+  },
+
+  status: {
+    success:   '#16a34a',
+    successBg: 'rgba(22, 163, 74, 0.12)',
+    error:     '#dc2626',
+    errorBg:   'rgba(220, 38, 38, 0.08)',
+    warning:   '#d97706',
+    warningBg: 'rgba(217, 119, 6, 0.12)',
+  },
+
+  surface:   '#e8f0fb',
+  statusBar: 'dark',
+  blurTint:  'light',
+
+  white:       '#ffffff',
+  transparent: 'transparent',
+};
+
+// ─── Deep-assign helper ─────────────────────────────────────────────────────
+function _deepAssign(target, source) {
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
+      if (!target[key] || typeof target[key] !== 'object') target[key] = {};
+      _deepAssign(target[key], source[key]);
+    } else {
+      target[key] = source[key];
+    }
+  }
+}
+
+// ─── THE mutable live colors object ────────────────────────────────────────
+// Starts as dark (original default). ThemeContext calls applyTheme() to swap.
+export const colors = {};
+_deepAssign(colors, _dark);
+
+/**
+ * Called by ThemeContext when the user toggles the theme.
+ * Mutates colors in-place → every existing import gets the new values
+ * on next render without any changes to screen files.
+ */
+export function applyTheme(mode) {
+  _deepAssign(colors, mode === 'light' ? _light : _dark);
+}
+
+// ─── Static design tokens (completely unchanged) ───────────────────────────
 export const spacing = {
   xs: 4,
   sm: 8,
@@ -82,7 +161,7 @@ export const typography = {
     lg: 18,
     xl: 24,
   },
-  
+
   // Hero/Display text
   hero: {
     fontSize: 48,
