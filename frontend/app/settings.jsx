@@ -30,12 +30,12 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { authAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
-  const { isDark, toggleTheme } = useTheme();
+  const { isDark, toggleTheme, colors } = useTheme();
   const toast = useToast();
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
