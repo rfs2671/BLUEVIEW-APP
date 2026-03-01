@@ -125,6 +125,16 @@ export const authAPI = {
   },
 };
 
+updateProfile: async (data) => {
+  const response = await apiClient.put('/api/auth/profile', data);
+  return response.data;
+},
+
+updatePassword: async (data) => {
+  const response = await apiClient.put('/api/auth/password', data);
+  return response.data;
+},
+
 /**
  * Projects APIs
  */
