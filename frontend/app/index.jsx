@@ -9,7 +9,6 @@ import {
   LogOut,
   LayoutGrid,
   UserCog,
-  Briefcase,
   Smartphone,
   Cloud,
   ClipboardList,
@@ -28,7 +27,6 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
-  { title: 'Subcontractors', subtitle: 'Company accounts', path: '/admin/subcontractors', icon: Briefcase },
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
@@ -292,7 +290,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.xxl,
+    paddingBottom: 140,
     maxWidth: 800,
     width: '100%',
     alignSelf: 'center',
