@@ -46,48 +46,53 @@ const _dark = {
   transparent: 'transparent',
 };
 
-// ─── Light palette ───────────────────────────────────────────────────────────
+// ─── Light palette (Blueview) ────────────────────────────────────────────────
+// Background:  #EEF4FB with subtle blue radial hints
+// Surfaces:    White (#FFF) glass cards with light blue borders
+// Text:        Dark navy #0A1929
+// Primary:     Vibrant deep blue #1565C0
+// ─────────────────────────────────────────────────────────────────────────────
 const _light = {
-  success: '#16a34a',
-  warning: '#d97706',
-  error:   '#dc2626',
-  primary: '#2563eb',
+  success: '#2E7D32',
+  warning: '#E65100',
+  error:   '#C62828',
+  primary: '#1565C0',
 
   background: {
-    start:  '#e8f0fb',
-    middle: '#f0f5ff',
-    end:    '#e8f0fb',
+    start:  '#EEF4FB',
+    middle: '#F4F8FD',
+    end:    '#EEF4FB',
   },
 
   glass: {
-    background:      'rgba(0, 0, 0, 0.04)',
-    backgroundHover: 'rgba(0, 0, 0, 0.07)',
-    border:          'rgba(0, 0, 0, 0.12)',
-    borderHover:     'rgba(0, 0, 0, 0.25)',
-    card:            'rgba(0, 0, 0, 0.03)',
-    cardHover:       'rgba(0, 0, 0, 0.06)',
+    background:      'rgba(255, 255, 255, 0.70)',
+    backgroundHover: 'rgba(255, 255, 255, 0.85)',
+    border:          'rgba(255, 255, 255, 0.80)',
+    borderHover:     'rgba(21, 101, 192, 0.30)',
+    card:            'rgba(255, 255, 255, 0.60)',
+    cardHover:       'rgba(255, 255, 255, 0.80)',
   },
 
   border: {
-    subtle: 'rgba(0, 0, 0, 0.08)',
-    medium: 'rgba(0, 0, 0, 0.15)',
-    strong: 'rgba(0, 0, 0, 0.25)',
+    subtle: 'rgba(10, 25, 41, 0.08)',
+    medium: 'rgba(10, 25, 41, 0.15)',
+    strong: 'rgba(10, 25, 41, 0.25)',
   },
 
   text: {
-    primary:   'rgba(0, 0, 0, 0.90)',
-    secondary: 'rgba(0, 0, 0, 0.60)',
-    muted:     'rgba(0, 0, 0, 0.40)',
-    subtle:    'rgba(0, 0, 0, 0.25)',
+    primary:   'rgba(10, 25, 41, 0.90)',
+    secondary: 'rgba(10, 25, 41, 0.55)',
+    muted:     'rgba(10, 25, 41, 0.40)',
+    subtle:    'rgba(10, 25, 41, 0.25)',
   },
 
   status: {
-    success:   '#16a34a',
-    successBg: 'rgba(22, 163, 74, 0.12)',
-    error:     '#dc2626',
-    errorBg:   'rgba(220, 38, 38, 0.08)',
-    warning:   '#d97706',
-    warningBg: 'rgba(217, 119, 6, 0.12)',
+    success:   '#2E7D32',
+    successBg: 'rgba(46, 125, 50, 0.12)',
+    error:     '#C62828',
+    errorBg:   'rgba(198, 40, 40, 0.08)',
+    warning:   '#E65100',
+    warningBg: 'rgba(230, 81, 0, 0.10)',
   },
 
   white:       '#ffffff',
