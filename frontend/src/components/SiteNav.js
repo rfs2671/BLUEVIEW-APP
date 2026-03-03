@@ -1,23 +1,17 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable, Text } from 'react-native';
+import { View, StyleSheet, Pressable, Text, ScrollView } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { BlurView } from 'expo-blur';
-import {
-  Users,
-  ClipboardList,
-  FolderOpen,
-} from 'lucide-react-native';
+import { LayoutDashboard, Users, FileText } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const siteNavItems = [
-  { path: '/site/checkins', icon: Users, label: 'Check-Ins' },
-  { path: '/site/daily-logs', icon: ClipboardList, label: 'Daily Logs' },
-  { path: '/site/documents', icon: FolderOpen, label: 'Documents' },
+  { path: '/site', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/site/workers', icon: Users, label: 'Workers' },
+  { path: '/site/documents', icon: FileText, label: 'Documents' },
 ];
 
-/**
- * SiteNavItem - Individual nav button with hover support
- */
 const SiteNavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const Icon = item.icon;
@@ -29,12 +23,12 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && styles.navItemActive,
-        isHovered && !isActive && styles.navItemHovered,
+        isActive && { backgroundColor: colors.glass.backgroundHover },
+        isHovered && !isActive && { backgroundColor: colors.glass.background },
       ]}
     >
       <Icon
-        size={20}
+        size={18}
         strokeWidth={1.5}
         color={isActive || isHovered ? colors.text.primary : colors.text.muted}
       />
@@ -57,10 +51,11 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
 const SiteNav = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const { isDark } = useTheme();
 
   return (
     <View style={styles.container}>
-      <BlurView intensity={40} tint="dark" style={styles.blur}>
+      <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
         <View style={styles.nav}>
           {siteNavItems.map((item) => {
             const isActive = pathname === item.path || pathname.startsWith(item.path);
@@ -117,12 +112,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     borderRadius: borderRadius.lg,
     transition: 'all 0.2s ease',
-  },
-  navItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-  },
-  navItemHovered: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
   },
   navLabel: {
     fontSize: 14,
