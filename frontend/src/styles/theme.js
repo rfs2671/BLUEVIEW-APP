@@ -47,10 +47,15 @@ const _dark = {
 };
 
 // ─── Light palette (Blueview) ────────────────────────────────────────────────
-// Background:  #EEF4FB with subtle blue radial hints
-// Surfaces:    White (#FFF) glass cards with light blue borders
-// Text:        Dark navy #0A1929
-// Primary:     Vibrant deep blue #1565C0
+//
+// Design reference (from screenshot):
+//   • Page bg:  #EEF4FB  — soft cool blue
+//   • Cards:    White with soft blue-grey borders  (rgba(180, 200, 220, 0.5))
+//   • Stat pods inside cards: slightly off-white fill, same border style
+//   • Text:     Dark navy #0A1929  with muted variants
+//   • Primary:  Deep blue #1565C0  for icons & accents
+//   • Borders are VISIBLE — soft blue-grey, not invisible white
+//
 // ─────────────────────────────────────────────────────────────────────────────
 const _light = {
   success: '#2E7D32',
@@ -60,35 +65,37 @@ const _light = {
 
   background: {
     start:  '#EEF4FB',
-    middle: '#F4F8FD',
+    middle: '#F2F7FD',
     end:    '#EEF4FB',
   },
 
+  // Glass: white surfaces with blue-grey borders that actually show
   glass: {
-    background:      'rgba(255, 255, 255, 0.70)',
-    backgroundHover: 'rgba(255, 255, 255, 0.85)',
-    border:          'rgba(255, 255, 255, 0.80)',
-    borderHover:     'rgba(21, 101, 192, 0.30)',
+    background:      'rgba(255, 255, 255, 0.75)',
+    backgroundHover: 'rgba(255, 255, 255, 0.90)',
+    border:          'rgba(170, 195, 220, 0.50)',
+    borderHover:     'rgba(21, 101, 192, 0.35)',
     card:            'rgba(255, 255, 255, 0.60)',
-    cardHover:       'rgba(255, 255, 255, 0.80)',
+    cardHover:       'rgba(255, 255, 255, 0.85)',
   },
 
+  // Structural borders — subtle blue-grey
   border: {
-    subtle: 'rgba(10, 25, 41, 0.08)',
-    medium: 'rgba(10, 25, 41, 0.15)',
-    strong: 'rgba(10, 25, 41, 0.25)',
+    subtle: 'rgba(160, 185, 210, 0.30)',
+    medium: 'rgba(140, 170, 200, 0.40)',
+    strong: 'rgba(120, 155, 190, 0.55)',
   },
 
   text: {
     primary:   'rgba(10, 25, 41, 0.90)',
-    secondary: 'rgba(10, 25, 41, 0.55)',
-    muted:     'rgba(10, 25, 41, 0.40)',
-    subtle:    'rgba(10, 25, 41, 0.25)',
+    secondary: 'rgba(10, 25, 41, 0.50)',
+    muted:     'rgba(10, 25, 41, 0.38)',
+    subtle:    'rgba(10, 25, 41, 0.22)',
   },
 
   status: {
     success:   '#2E7D32',
-    successBg: 'rgba(46, 125, 50, 0.12)',
+    successBg: 'rgba(46, 125, 50, 0.10)',
     error:     '#C62828',
     errorBg:   'rgba(198, 40, 40, 0.08)',
     warning:   '#E65100',
