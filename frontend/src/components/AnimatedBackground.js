@@ -25,6 +25,11 @@ const AnimatedBackground = ({ children }) => {
     outputRange: [-100, height + 100],
   });
 
+  // In dark mode: subtle white scanline. In light mode: subtle blue scanline.
+  const scanlineColor = isDark
+    ? 'rgba(255, 255, 255, 0.02)'
+    : 'rgba(0, 120, 255, 0.03)';
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background.start }]}>
       <LinearGradient
@@ -38,7 +43,7 @@ const AnimatedBackground = ({ children }) => {
         style={[styles.scanline, { transform: [{ translateY: scanlineTranslateY }] }]}
       >
         <LinearGradient
-          colors={['transparent', 'rgba(255,255,255,0.02)', 'transparent']}
+          colors={['transparent', scanlineColor, 'transparent']}
           style={styles.scanlineGradient}
         />
       </Animated.View>
