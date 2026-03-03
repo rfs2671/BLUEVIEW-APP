@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import { View, StyleSheet, Pressable, Text } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 /**
  * GlassCard - Glassmorphism card component with hover support
  */
 export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true, variant = 'default' }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
   const CardWrapper = onPress ? Pressable : View;
   
   const cardProps = onPress ? {
@@ -20,7 +22,6 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
   };
   
   // Use higher opacity for modals
-  const contentStyle = variant === 'modal' ? styles.contentModal : styles.content;
   const blurIntensity = variant === 'modal' ? 80 : intensity;
   
   return (
@@ -32,10 +33,18 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
         isHovered && hoverEffect && styles.cardHovered,
       ]}
     >
-      <BlurView intensity={blurIntensity} tint="dark" style={styles.blur}>
-        <View style={contentStyle}>{children}</View>
+      <BlurView intensity={blurIntensity} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
+        <View style={[
+          styles.content,
+          variant === 'modal' && { backgroundColor: 'transparent' },
+        ]}>
+          {children}
+        </View>
       </BlurView>
-      <View style={[styles.border, isHovered && hoverEffect && styles.borderHovered]} />
+      <View style={[
+        styles.border,
+        isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
+      ]} />
     </CardWrapper>
   );
 };
@@ -62,7 +71,11 @@ export const StatCard = ({ children, style, onPress }) => {
       style={[
         styles.statContainer,
         style,
-        isHovered && styles.statHovered,
+        isHovered && {
+          backgroundColor: colors.glass.backgroundHover,
+          borderColor: colors.glass.borderHover,
+          transform: [{ scale: 1.03 }, { translateY: -4 }],
+        },
       ]}
     >
       <View style={styles.statContent}>{children}</View>
@@ -84,7 +97,11 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
         styles.listItem,
-        isHovered && styles.listItemHovered,
+        isHovered && {
+          backgroundColor: colors.glass.backgroundHover,
+          borderColor: colors.glass.borderHover,
+          transform: [{ scale: 1.01 }, { translateY: -2 }],
+        },
         pressed && styles.listItemPressed,
         disabled && styles.listItemDisabled,
         showBorder && styles.listItemBorder,
@@ -129,10 +146,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.glass.background,
     padding: spacing.xl,
   },
-  contentModal: {
-    backgroundColor: 'rgba(255, 255, 255, 0.0)',
-    padding: spacing.xl,
-  },
   border: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: borderRadius.xxl,
@@ -140,9 +153,6 @@ const styles = StyleSheet.create({
     borderColor: colors.glass.border,
     pointerEvents: 'none',
     transition: 'all 0.2s ease',
-  },
-  borderHovered: {
-    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   cardHovered: {
     transform: [{ scale: 1.01 }],
@@ -154,11 +164,6 @@ const styles = StyleSheet.create({
     borderColor: colors.glass.border,
     overflow: 'hidden',
     transition: 'all 0.2s ease',
-  },
-  statHovered: {
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
-    borderColor: 'rgba(255, 255, 255, 0.35)',
-    transform: [{ scale: 1.03 }, { translateY: -4 }],
   },
   statContent: {
     padding: spacing.lg,
@@ -181,11 +186,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     transition: 'all 0.2s ease',
-  },
-  listItemHovered: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    transform: [{ scale: 1.01 }, { translateY: -2 }],
   },
   listItemPressed: {
     opacity: 0.85,
