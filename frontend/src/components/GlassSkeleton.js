@@ -26,14 +26,17 @@ export const GlassSkeleton = ({ width, height, style, borderRadiusValue = border
   return (
     <View
       style={[
-        styles.skeleton,
-        { width, height, borderRadius: borderRadiusValue },
+        { width, height, borderRadius: borderRadiusValue, backgroundColor: colors.glass.card, overflow: 'hidden' },
         style,
       ]}
     >
       <Animated.View
         style={[
-          styles.shimmer,
+          {
+            ...StyleSheet.absoluteFillObject,
+            backgroundColor: colors.glass.background,
+            width: 100,
+          },
           { transform: [{ translateX }] },
         ]}
       />
@@ -60,33 +63,24 @@ export const ProjectCardSkeleton = () => (
     <View style={styles.row}>
       <GlassSkeleton width={52} height={52} borderRadiusValue={borderRadius.full} />
       <View style={styles.projectInfo}>
-        <GlassSkeleton width={180} height={20} style={styles.mb8} />
-        <GlassSkeleton width={120} height={14} />
+        <GlassSkeleton width={160} height={18} style={styles.mb4} />
+        <GlassSkeleton width={100} height={12} />
       </View>
-      <GlassSkeleton width={60} height={32} borderRadiusValue={borderRadius.full} />
     </View>
   </View>
 );
 
 /**
- * WorkerCardSkeleton - Skeleton for worker/checkin cards
+ * WorkerCardSkeleton - Skeleton for worker cards
  */
 export const WorkerCardSkeleton = () => (
   <View style={styles.workerCard}>
     <View style={styles.row}>
-      <GlassSkeleton width={60} height={40} />
-      <View style={styles.divider} />
+      <GlassSkeleton width={40} height={40} borderRadiusValue={borderRadius.full} />
       <View style={styles.workerInfo}>
-        <View style={[styles.row, styles.mb8]}>
-          <GlassSkeleton width={40} height={40} borderRadiusValue={borderRadius.full} />
-          <View style={{ marginLeft: spacing.sm }}>
-            <GlassSkeleton width={120} height={16} style={styles.mb4} />
-            <GlassSkeleton width={80} height={12} />
-          </View>
-        </View>
-        <GlassSkeleton width={180} height={12} />
+        <GlassSkeleton width={120} height={16} style={styles.mb4} />
+        <GlassSkeleton width={80} height={12} />
       </View>
-      <GlassSkeleton width={80} height={32} borderRadiusValue={borderRadius.full} />
     </View>
   </View>
 );
@@ -96,30 +90,21 @@ export const WorkerCardSkeleton = () => (
  */
 export const DashboardSkeleton = () => (
   <View style={styles.dashboardSkeleton}>
-    <View style={styles.mb24}>
-      <GlassSkeleton width={80} height={12} style={styles.mb8} />
-      <GlassSkeleton width={150} height={16} />
-    </View>
-    <GlassSkeleton width={180} height={48} style={styles.mb8} />
-    <GlassSkeleton width={220} height={16} style={styles.mb32} />
     <View style={styles.statsRow}>
       <StatCardSkeleton />
-      <StatCardSkeleton />
+      <View style={styles.divider} />
       <StatCardSkeleton />
     </View>
+    <View style={styles.mb32} />
+    <ProjectCardSkeleton />
+    <ProjectCardSkeleton />
+    <WorkerCardSkeleton />
+    <WorkerCardSkeleton />
+    <WorkerCardSkeleton />
   </View>
 );
 
 const styles = StyleSheet.create({
-  skeleton: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    overflow: 'hidden',
-  },
-  shimmer: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    width: 100,
-  },
   statCard: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
