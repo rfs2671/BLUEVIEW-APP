@@ -20,6 +20,13 @@ const _dark = {
     cardHover:       'rgba(255, 255, 255, 0.10)',
   },
 
+  shadow: {
+    color:   'rgba(0, 0, 0, 0.3)',
+    offset:  { width: 0, height: 4 },
+    opacity: 0.3,
+    radius:  12,
+  },
+
   border: {
     subtle: 'rgba(255, 255, 255, 0.1)',
     medium: 'rgba(255, 255, 255, 0.2)',
@@ -46,15 +53,29 @@ const _dark = {
   transparent: 'transparent',
 };
 
-// ─── Light palette (Blueview) ────────────────────────────────────────────────
+// ─── Light palette (Blueview — exact CSS spec) ──────────────────────────────
 //
-// Design reference (from screenshot):
-//   • Page bg:  #EEF4FB  — soft cool blue
-//   • Cards:    White with soft blue-grey borders  (rgba(180, 200, 220, 0.5))
-//   • Stat pods inside cards: slightly off-white fill, same border style
-//   • Text:     Dark navy #0A1929  with muted variants
-//   • Primary:  Deep blue #1565C0  for icons & accents
-//   • Borders are VISIBLE — soft blue-grey, not invisible white
+//  globals.css background:
+//    base #D6E4F7  +  linear-gradient(180deg, #d0dcf0 0%, #D6E4F7 50%, #ccd8ee 100%)
+//    + radial-gradient(ellipse at top,  rgba(21,101,192,0.08) …)
+//    + radial-gradient(ellipse at bottom, rgba(2,119,189,0.06) …)
+//
+//  Cards / boxes:
+//    bg-white/85  backdrop-blur-2xl
+//    border border-blue-200/60        → #BFDBFE at 60% → rgba(191,219,254,0.60)
+//    shadow-xl shadow-blue-900/15     → #1e3a5f-ish at 15%
+//    hover:border-blue-300            → #93C5FD
+//
+//  Text:
+//    primary  #0A1929
+//    muted    #0A1929/50, #0A1929/40
+//
+//  Primary / accent:  #1565C0
+//    icon bg:  bg-[#1565C0]/10
+//
+//  Nav bar:
+//    bg-white/90  backdrop-blur-2xl  border-blue-200/60
+//    active: bg-blue-50 (#EFF6FF)
 //
 // ─────────────────────────────────────────────────────────────────────────────
 const _light = {
@@ -63,33 +84,47 @@ const _light = {
   error:   '#C62828',
   primary: '#1565C0',
 
+  // linear-gradient(180deg, #d0dcf0 0%, #D6E4F7 50%, #ccd8ee 100%)
   background: {
-    start:  '#EEF4FB',
-    middle: '#F2F7FD',
-    end:    '#EEF4FB',
+    start:  '#d0dcf0',
+    middle: '#D6E4F7',
+    end:    '#ccd8ee',
   },
 
-  // Glass: white surfaces with blue-grey borders that actually show
+  // ── Glass surfaces ─────────────────────────────────────────────────────────
+  //  bg-white/85                         → rgba(255,255,255,0.85)
+  //  border border-blue-200/60           → rgba(191,219,254,0.60)
+  //  hover:border-blue-300               → #93C5FD
+  //  shadow-xl shadow-blue-900/15        → mapped in shadow token below
   glass: {
-    background:      'rgba(255, 255, 255, 0.75)',
-    backgroundHover: 'rgba(255, 255, 255, 0.90)',
-    border:          'rgba(170, 195, 220, 0.50)',
-    borderHover:     'rgba(21, 101, 192, 0.35)',
-    card:            'rgba(255, 255, 255, 0.60)',
-    cardHover:       'rgba(255, 255, 255, 0.85)',
+    background:      'rgba(255, 255, 255, 0.85)',
+    backgroundHover: 'rgba(255, 255, 255, 0.95)',
+    border:          'rgba(191, 219, 254, 0.60)',   // border-blue-200/60
+    borderHover:     'rgba(147, 197, 253, 1.0)',     // border-blue-300
+    card:            'rgba(255, 255, 255, 0.80)',
+    cardHover:       'rgba(255, 255, 255, 0.92)',
   },
 
-  // Structural borders — subtle blue-grey
+  // shadow-xl shadow-blue-900/15  → blue-900 is #1e3a8a
+  shadow: {
+    color:   'rgba(30, 58, 138, 0.15)',
+    offset:  { width: 0, height: 8 },
+    opacity: 0.15,
+    radius:  24,
+  },
+
+  // Structural borders (blue-200 variants)
   border: {
-    subtle: 'rgba(160, 185, 210, 0.30)',
-    medium: 'rgba(140, 170, 200, 0.40)',
-    strong: 'rgba(120, 155, 190, 0.55)',
+    subtle: 'rgba(191, 219, 254, 0.40)',   // blue-200/40
+    medium: 'rgba(191, 219, 254, 0.60)',   // blue-200/60
+    strong: 'rgba(147, 197, 253, 0.70)',   // blue-300/70
   },
 
+  // Text: #0A1929 at varying opacities
   text: {
-    primary:   'rgba(10, 25, 41, 0.90)',
-    secondary: 'rgba(10, 25, 41, 0.50)',
-    muted:     'rgba(10, 25, 41, 0.38)',
+    primary:   '#0A1929',                            // full
+    secondary: 'rgba(10, 25, 41, 0.50)',             // /50
+    muted:     'rgba(10, 25, 41, 0.40)',             // /40
     subtle:    'rgba(10, 25, 41, 0.22)',
   },
 
