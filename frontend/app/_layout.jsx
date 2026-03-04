@@ -10,7 +10,7 @@ import { ToastProvider } from '../src/components/Toast';
 
 function AppShell() {
   const { isDark, themeKey } = useTheme();
-  const bg = isDark ? '#050a12' : '#EEF4FB';
+  const bg = isDark ? '#050a12' : '#D6E4F7';
 
   return (
     // key={themeKey} on this View forces React to fully unmount + remount
