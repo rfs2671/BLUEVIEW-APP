@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
@@ -27,6 +28,9 @@ function glassShadow() {
 
 /**
  * GlassCard - Glassmorphism card component with hover support
+ *
+ * Light mode: bg-gradient-to-br from-white/85 to-blue-100/70
+ * Dark  mode: flat rgba(255,255,255,0.08)
  */
 export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true, variant = 'default' }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -44,6 +48,12 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
 
   const blurIntensity = variant === 'modal' ? 80 : intensity;
 
+  // Light mode gradient: from-white/85 → to-blue-100/70
+  const lightGradientColors = [
+    colors.glass.background,                             // rgba(255,255,255,0.85)
+    colors.glass.cardGradientEnd || colors.glass.background,  // rgba(219,234,254,0.70)
+  ];
+
   return (
     <CardWrapper
       {...cardProps}
@@ -55,12 +65,25 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
       ]}
     >
       <BlurView intensity={blurIntensity} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-        <View style={[
-          styles.content,
-          variant === 'modal' && { backgroundColor: 'transparent' },
-        ]}>
-          {children}
-        </View>
+        {isDark || variant === 'modal' ? (
+          /* Dark mode / modal: flat bg */
+          <View style={[
+            styles.content,
+            { backgroundColor: variant === 'modal' ? 'transparent' : colors.glass.background },
+          ]}>
+            {children}
+          </View>
+        ) : (
+          /* Light mode: gradient bg from white/85 → blue-100/70 */
+          <LinearGradient
+            colors={lightGradientColors}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.content}
+          >
+            {children}
+          </LinearGradient>
+        )}
       </BlurView>
       <View style={[
         styles.border,
@@ -72,9 +95,13 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
 
 /**
  * StatCard - Statistics card with glass effect and hover support
+ *
+ * Light mode: gradient bg from white/85 → blue-100/70
+ * Dark  mode: flat glass background
  */
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
   const CardWrapper = onPress ? Pressable : View;
 
   const cardProps = onPress ? {
@@ -85,6 +112,11 @@ export const StatCard = ({ children, style, onPress }) => {
     onMouseEnter: () => setIsHovered(true),
     onMouseLeave: () => setIsHovered(false),
   };
+
+  const lightGradientColors = [
+    colors.glass.background,
+    colors.glass.cardGradientEnd || colors.glass.background,
+  ];
 
   return (
     <CardWrapper
@@ -100,7 +132,18 @@ export const StatCard = ({ children, style, onPress }) => {
         },
       ]}
     >
-      <View style={styles.statContent}>{children}</View>
+      {isDark ? (
+        <View style={[styles.statContent, { backgroundColor: colors.glass.background }]}>{children}</View>
+      ) : (
+        <LinearGradient
+          colors={lightGradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.statContent}
+        >
+          {children}
+        </LinearGradient>
+      )}
     </CardWrapper>
   );
 };
@@ -151,19 +194,12 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
  * Light mode: bg-[#1565C0]/10, border-[#1565C0]/20, icon color #1565C0
  * Dark  mode: transparent bg, glass border, icon color text.secondary
  *
- * Automatically re-colors child icons to colors.iconPod.iconColor unless
- * the child explicitly opts out via the `preserveColor` prop.
- *
- * Uses React.Children.map to clone lucide-react-native icons (or any
- * element accepting a `color` prop) with the theme-appropriate color.
+ * Automatically re-colors child icons to colors.iconPod.iconColor.
  */
 export const IconPod = ({ children, size = 52, style }) => {
   const themedChildren = React.Children.map(children, (child) => {
-    // Only clone valid React elements that accept a color prop (icons)
     if (!React.isValidElement(child)) return child;
-    // Skip if the child has preserveColor set to opt out of auto-coloring
     if (child.props.preserveColor) return child;
-    // Clone with the theme's iconPod color
     return React.cloneElement(child, {
       color: colors.iconPod.iconColor,
     });
@@ -197,7 +233,6 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.xxl,
   },
   content: {
-    backgroundColor: colors.glass.background,
     padding: spacing.xl,
   },
   border: {
@@ -212,7 +247,6 @@ const styles = StyleSheet.create({
     transform: [{ scale: 1.01 }],
   },
   statContainer: {
-    backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -227,7 +261,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    // backgroundColor and borderColor set inline from colors.iconPod tokens
   },
   listItem: {
     backgroundColor: colors.glass.background,
