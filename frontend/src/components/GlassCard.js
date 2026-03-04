@@ -216,8 +216,65 @@ export const GlassListItem = ({
   const [isHovered, setIsHovered] = useState(false);
   const { isDark } = useTheme();
 
-  const baseStyle = isDark ? styles.listItemDark : styles.listItemLight;
+  const defaultContent = (
+    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+      {leftIcon && (
+        <View style={{ marginRight: 12 }}>{leftIcon}</View>
+      )}
+      <View style={{ flex: 1 }}>
+        {title && (
+          <Text
+            style={{
+              color: colors.text.primary,
+              fontSize: 16,
+              fontWeight: '500',
+            }}
+          >
+            {title}
+          </Text>
+        )}
+        {subtitle && (
+          <Text
+            style={{ color: colors.text.muted, fontSize: 13, marginTop: 2 }}
+          >
+            {subtitle}
+          </Text>
+        )}
+      </View>
+      {rightIcon && (
+        <View style={{ marginLeft: 12 }}>{rightIcon}</View>
+      )}
+    </View>
+  );
 
+  if (isDark) {
+    /* ── DARK — original with border ────────────────────────────────────── */
+    return (
+      <Pressable
+        onPress={onPress}
+        disabled={disabled}
+        onHoverIn={() => setIsHovered(true)}
+        onHoverOut={() => setIsHovered(false)}
+        style={({ pressed }) => [
+          styles.listItemDark,
+          glassShadow(),
+          isHovered && {
+            backgroundColor: colors.glass.backgroundHover,
+            borderColor: colors.glass.borderHover,
+            transform: [{ scale: 1.01 }, { translateY: -2 }],
+          },
+          pressed && styles.listItemPressed,
+          disabled && styles.listItemDisabled,
+          showBorder && styles.listItemBorder,
+          style,
+        ]}
+      >
+        {children || defaultContent}
+      </Pressable>
+    );
+  }
+
+  /* ── LIGHT — gradient fill, no border ───────────────────────────────── */
   return (
     <Pressable
       onPress={onPress}
@@ -225,49 +282,25 @@ export const GlassListItem = ({
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
-        baseStyle,
+        styles.listItemLight,
         glassShadow(),
         isHovered && {
-          backgroundColor: colors.glass.backgroundHover,
-          ...(isDark && { borderColor: colors.glass.borderHover }),
           transform: [{ scale: 1.01 }, { translateY: -2 }],
         },
         pressed && styles.listItemPressed,
         disabled && styles.listItemDisabled,
-        showBorder && styles.listItemBorder,
         style,
       ]}
     >
-      {children || (
-        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-          {leftIcon && (
-            <View style={{ marginRight: 12 }}>{leftIcon}</View>
-          )}
-          <View style={{ flex: 1 }}>
-            {title && (
-              <Text
-                style={{
-                  color: colors.text.primary,
-                  fontSize: 16,
-                  fontWeight: '500',
-                }}
-              >
-                {title}
-              </Text>
-            )}
-            {subtitle && (
-              <Text
-                style={{ color: colors.text.muted, fontSize: 13, marginTop: 2 }}
-              >
-                {subtitle}
-              </Text>
-            )}
-          </View>
-          {rightIcon && (
-            <View style={{ marginLeft: 12 }}>{rightIcon}</View>
-          )}
-        </View>
-      )}
+      <LinearGradient
+        colors={LIGHT_GRADIENT}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View style={styles.listItemContent}>
+        {children || defaultContent}
+      </View>
     </Pressable>
   );
 };
@@ -386,14 +419,16 @@ const styles = StyleSheet.create({
 
   /* ── GlassListItem — light (NO border) ──────────────────────────────────── */
   listItemLight: {
-    backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 0,
+    overflow: 'hidden',
+    transition: 'all 0.2s ease',
+  },
+  listItemContent: {
     padding: spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    transition: 'all 0.2s ease',
   },
 
   listItemPressed: {
