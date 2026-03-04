@@ -39,6 +39,9 @@ DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2
 app = FastAPI(title="Blueview API", version="2.0.0")
 
 # CORS - must be added immediately after app creation
+# Use both: the standard middleware for preflight (OPTIONS) requests,
+# plus a raw middleware that guarantees headers on ALL responses
+# including 500s and validation errors that bypass CORSMiddleware.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,6 +50,21 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["*"],
 )
+
+@app.middleware("http")
+async def add_cors_headers(request, call_next):
+    """Fallback: ensure CORS headers are present even on error responses."""
+    try:
+        response = await call_next(request)
+    except Exception:
+        # If something truly blows up, still send CORS headers
+        from fastapi.responses import JSONResponse
+        response = JSONResponse({"detail": "Internal server error"}, status_code=500)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Expose-Headers"] = "*"
+    return response
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
