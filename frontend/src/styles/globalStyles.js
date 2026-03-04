@@ -73,13 +73,15 @@ export const globalStyles = StyleSheet.create({
   },
   
   // Icon pod (circular icon container)
+  // Light: bg-[#1565C0]/10, border-[#1565C0]/20
+  // Dark:  transparent, border from glass
   iconPod: {
     width: 52,
     height: 52,
     borderRadius: borderRadius.full,
-    backgroundColor: 'transparent',
+    backgroundColor: colors.iconPod.background,
     borderWidth: 1,
-    borderColor: colors.glass.border,
+    borderColor: colors.iconPod.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -119,58 +121,6 @@ export const globalStyles = StyleSheet.create({
     ...typography.label,
     color: colors.text.muted,
   },
-  
-  textStat: {
-    ...typography.stat,
-    color: colors.text.primary,
-  },
-  
-  textMuted: {
-    color: colors.text.muted,
-  },
-  
-  // Layout helpers
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  
-  spaceBetween: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  
-  center: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  
-  // Spacing helpers
-  mb4: { marginBottom: spacing.xs },
-  mb8: { marginBottom: spacing.sm },
-  mb16: { marginBottom: spacing.md },
-  mb24: { marginBottom: spacing.lg },
-  mb32: { marginBottom: spacing.xl },
-  
-  mt4: { marginTop: spacing.xs },
-  mt8: { marginTop: spacing.sm },
-  mt16: { marginTop: spacing.md },
-  mt24: { marginTop: spacing.lg },
-  
-  mr8: { marginRight: spacing.sm },
-  mr16: { marginRight: spacing.md },
-  
-  ml8: { marginLeft: spacing.sm },
-  ml16: { marginLeft: spacing.md },
-  
-  p16: { padding: spacing.md },
-  p24: { padding: spacing.lg },
-  p32: { padding: spacing.xl },
-  
-  gap8: { gap: spacing.sm },
-  gap16: { gap: spacing.md },
-  gap24: { gap: spacing.lg },
 });
 
 export default globalStyles;
