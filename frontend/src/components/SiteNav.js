@@ -14,7 +14,11 @@ const siteNavItems = [
 
 const SiteNavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
   const Icon = item.icon;
+
+  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
+  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -23,8 +27,8 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && { backgroundColor: colors.glass.backgroundHover },
-        isHovered && !isActive && { backgroundColor: colors.glass.background },
+        isActive && { backgroundColor: activeBg },
+        isHovered && !isActive && { backgroundColor: hoverBg },
       ]}
     >
       <Icon
@@ -46,17 +50,19 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
 };
 
 /**
- * SiteNav - Bottom navigation for site mode (only 3 screens)
+ * SiteNav - Bottom navigation for site mode
  */
 const SiteNav = () => {
   const router = useRouter();
   const pathname = usePathname();
   const { isDark } = useTheme();
 
+  const navBg = isDark ? colors.glass.background : 'rgba(255, 255, 255, 0.90)';
+
   return (
     <View style={styles.container}>
       <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-        <View style={styles.nav}>
+        <View style={[styles.nav, { backgroundColor: navBg }]}>
           {siteNavItems.map((item) => {
             const isActive = pathname === item.path || pathname.startsWith(item.path);
             return (
@@ -95,7 +101,6 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     gap: spacing.sm,
-    backgroundColor: colors.glass.background,
   },
   border: {
     ...StyleSheet.absoluteFillObject,
