@@ -2,12 +2,17 @@
  * SignaturePad.js
  * Place at: frontend/src/components/SignaturePad.js
  *
- * FIX: Moved styles into buildStyles(colors, isDark) so they use current
- * theme colors. Hardcoded rgba(255,255,255,...) replaced with theme-aware values.
+ * FIXES:
+ *  #5 — Confirm button was always disabled because PanResponder captured
+ *        a stale `currentPath` closure (always []) so paths never accumulated.
+ *        Fixed with pathsRef + currentPathRef for mutable state inside PanResponder.
+ *  #5b — Name input used prompt() which doesn't work on native. Replaced with
+ *         an inline TextInput that's always visible when not signed.
+ *  Theme — buildStyles(colors, isDark) pattern for light mode text.
  */
 
-import React, { useRef, useState, useEffect } from 'react';
-import { View, StyleSheet, Text, Pressable, PanResponder } from 'react-native';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
+import { View, StyleSheet, Text, Pressable, PanResponder, TextInput } from 'react-native';
 import { Trash2, Check, PenTool } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -29,40 +34,59 @@ const SignaturePad = ({
   const [isSigned, setIsSigned] = useState(!!existingSignature);
   const [signatureData, setSignatureData] = useState(existingSignature);
   const containerRef = useRef(null);
-  const [containerLayout, setContainerLayout] = useState({ x: 0, y: 0, width: 0, height: 0 });
+
+  // ── Refs to avoid stale closures in PanResponder ──
+  const pathsRef = useRef([]);
+  const currentPathRef = useRef([]);
+  const isSignedRef = useRef(!!existingSignature);
+  const disabledRef = useRef(disabled);
+
+  useEffect(() => { disabledRef.current = disabled; }, [disabled]);
+  useEffect(() => { isSignedRef.current = isSigned; }, [isSigned]);
 
   useEffect(() => {
     if (existingSignature) {
       setIsSigned(true);
       setSignatureData(existingSignature);
+      isSignedRef.current = true;
     }
   }, [existingSignature]);
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => !disabled && !isSigned,
-      onMoveShouldSetPanResponder: () => !disabled && !isSigned,
+      onStartShouldSetPanResponder: () => !disabledRef.current && !isSignedRef.current,
+      onMoveShouldSetPanResponder: () => !disabledRef.current && !isSignedRef.current,
       onPanResponderGrant: (evt) => {
         const { locationX, locationY } = evt.nativeEvent;
-        setCurrentPath([{ x: locationX, y: locationY }]);
+        const newPoint = [{ x: locationX, y: locationY }];
+        currentPathRef.current = newPoint;
+        setCurrentPath(newPoint);
       },
       onPanResponderMove: (evt) => {
         const { locationX, locationY } = evt.nativeEvent;
-        setCurrentPath((prev) => [...prev, { x: locationX, y: locationY }]);
+        const updated = [...currentPathRef.current, { x: locationX, y: locationY }];
+        currentPathRef.current = updated;
+        setCurrentPath(updated);
       },
       onPanResponderRelease: () => {
-        if (currentPath.length > 0) {
-          setPaths((prev) => [...prev, currentPath]);
-          setCurrentPath([]);
+        if (currentPathRef.current.length > 0) {
+          const newPaths = [...pathsRef.current, currentPathRef.current];
+          pathsRef.current = newPaths;
+          setPaths(newPaths);
         }
+        currentPathRef.current = [];
+        setCurrentPath([]);
       },
     })
   ).current;
 
   const handleClear = () => {
+    pathsRef.current = [];
+    currentPathRef.current = [];
     setPaths([]);
     setCurrentPath([]);
     setIsSigned(false);
+    isSignedRef.current = false;
     setSignatureData(null);
     if (onSignatureCapture) {
       onSignatureCapture(null);
@@ -70,18 +94,19 @@ const SignaturePad = ({
   };
 
   const handleConfirm = () => {
-    if (paths.length === 0 || !signerName?.trim()) {
+    if (pathsRef.current.length === 0 || !signerName?.trim()) {
       return;
     }
 
     const timestamp = new Date().toISOString();
     const signature = {
-      paths: paths,
+      paths: pathsRef.current,
       signer_name: signerName,
       signed_at: timestamp,
     };
 
     setIsSigned(true);
+    isSignedRef.current = true;
     setSignatureData(signature);
 
     if (onSignatureCapture) {
@@ -122,6 +147,8 @@ const SignaturePad = ({
     });
   };
 
+  const canConfirm = paths.length > 0 && signerName?.trim();
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -134,39 +161,31 @@ const SignaturePad = ({
         )}
       </View>
 
-      {/* Name Input */}
+      {/* Name Input — inline TextInput instead of prompt() */}
       <View style={styles.nameSection}>
         <Text style={styles.label}>PRINTED NAME</Text>
-        <View style={styles.nameInput}>
-          <Text
-            style={[
-              styles.nameText,
-              !signerName && styles.namePlaceholder,
-              isSigned && styles.nameTextSigned,
-            ]}
-          >
-            {signerName || 'Enter name...'}
-          </Text>
-          {!isSigned && !disabled && (
-            <Pressable
-              onPress={() => {
-                const name = prompt('Enter signer name:');
-                if (name && onNameChange) {
-                  onNameChange(name);
-                }
-              }}
-              style={styles.editNameBtn}
-            >
-              <Text style={styles.editNameText}>Edit</Text>
-            </Pressable>
-          )}
-        </View>
+        {isSigned || disabled ? (
+          <View style={styles.nameDisplay}>
+            <Text style={[styles.nameText, isSigned && styles.nameTextSigned]}>
+              {signerName || 'No name'}
+            </Text>
+          </View>
+        ) : (
+          <TextInput
+            style={styles.nameTextInput}
+            value={signerName || ''}
+            onChangeText={(text) => onNameChange && onNameChange(text)}
+            placeholder="Enter your name..."
+            placeholderTextColor={colors.text.muted}
+            autoCapitalize="words"
+            autoCorrect={false}
+          />
+        )}
       </View>
 
       {/* Signature Area */}
       <View
         ref={containerRef}
-        onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
         style={[styles.signatureArea, isSigned && styles.signatureAreaSigned]}
         {...(isSigned ? {} : panResponder.panHandlers)}
       >
@@ -235,9 +254,9 @@ const SignaturePad = ({
                 style={[
                   styles.actionBtn,
                   styles.confirmBtn,
-                  (paths.length === 0 || !signerName?.trim()) && styles.actionBtnDisabled,
+                  !canConfirm && styles.actionBtnDisabled,
                 ]}
-                disabled={paths.length === 0 || !signerName?.trim()}
+                disabled={!canConfirm}
               >
                 <Check size={16} strokeWidth={1.5} color="#fff" />
                 <Text style={styles.confirmText}>Confirm Signature</Text>
@@ -245,6 +264,11 @@ const SignaturePad = ({
             </>
           )}
         </View>
+      )}
+
+      {/* Hint if name is missing */}
+      {!isSigned && paths.length > 0 && !signerName?.trim() && (
+        <Text style={styles.hintText}>Enter your name above to enable confirm</Text>
       )}
     </View>
   );
@@ -287,10 +311,7 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       marginBottom: spacing.xs,
     },
-    nameInput: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
+    nameDisplay: {
       backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
       borderRadius: borderRadius.md,
       padding: spacing.sm,
@@ -299,22 +320,17 @@ function buildStyles(colors, isDark) {
       fontSize: 15,
       color: colors.text.primary,
     },
-    namePlaceholder: {
-      color: colors.text.muted,
-      fontStyle: 'italic',
-    },
     nameTextSigned: {
       fontWeight: '500',
     },
-    editNameBtn: {
-      paddingHorizontal: spacing.sm,
-      paddingVertical: spacing.xs,
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.06)',
-      borderRadius: borderRadius.sm,
-    },
-    editNameText: {
-      fontSize: 12,
-      color: colors.text.secondary,
+    nameTextInput: {
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      borderRadius: borderRadius.md,
+      padding: spacing.sm,
+      fontSize: 15,
+      color: colors.text.primary,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
     },
     signatureArea: {
       height: 150,
@@ -392,7 +408,7 @@ function buildStyles(colors, isDark) {
       borderColor: colors.glass.border,
     },
     actionBtnDisabled: {
-      opacity: 0.5,
+      opacity: 0.4,
     },
     actionText: {
       fontSize: 14,
@@ -423,6 +439,12 @@ function buildStyles(colors, isDark) {
     clearText: {
       fontSize: 14,
       color: '#ef4444',
+    },
+    hintText: {
+      fontSize: 12,
+      color: '#f59e0b',
+      textAlign: 'center',
+      marginTop: spacing.sm,
     },
   });
 }
