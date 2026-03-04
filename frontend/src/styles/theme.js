@@ -40,10 +40,11 @@ const _dark = {
     subtle:    'rgba(255, 255, 255, 0.3)',
   },
 
-  // Dark mode: icon pods are transparent with glass border (unchanged)
+  // Dark mode: transparent pod, muted icon — matches existing behavior
   iconPod: {
     background: 'transparent',
     border:     'rgba(255, 255, 255, 0.15)',
+    iconColor:  'rgba(255, 255, 255, 0.6)',           // same as text.secondary
   },
 
   status: {
@@ -137,10 +138,11 @@ const _light = {
   },
 
   // ── Icon pod (circular icon containers) ────────────────────────────────────
-  //  bg-[#1565C0]/10  border-[#1565C0]/20
+  //  bg-[#1565C0]/10  border-[#1565C0]/20  icon color: #1565C0
   iconPod: {
     background: 'rgba(21, 101, 192, 0.10)',   // bg-[#1565C0]/10
     border:     'rgba(21, 101, 192, 0.20)',   // border-[#1565C0]/20
+    iconColor:  '#1565C0',                     // primary blue
   },
 
   status: {
