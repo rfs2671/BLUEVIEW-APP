@@ -22,6 +22,7 @@ import OfflineIndicator from '../src/components/OfflineIndicator';
 import SyncButton from '../src/components/SyncButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
+import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
@@ -32,7 +33,7 @@ const adminActions = [
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
 ];
 
-// 2-column grid tile — hover/press matches GlassCard.js listItem pattern exactly
+// 2-column grid tile
 const ActionTile = ({ action, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const Icon = action.icon;
@@ -57,6 +58,7 @@ const ActionTile = ({ action, onPress }) => {
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isDark } = useTheme();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -79,19 +81,14 @@ export default function DashboardScreen() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch from API only
       const [workersData, projectsData, activeCheckInsData] = await Promise.all([
         workersAPI.getAll(),
         projectsAPI.getAll(),
         checkinsAPI.getByDate(new Date()),
       ]);
-
       setWorkers(Array.isArray(workersData) ? workersData : []);
       setProjects(Array.isArray(projectsData) ? projectsData : []);
-      
-      // Filter for active (not checked out) check-ins
-      const active = Array.isArray(activeCheckInsData) 
+      const active = Array.isArray(activeCheckInsData)
         ? activeCheckInsData.filter(c => !c.check_out_time && !c.checkout_time)
         : [];
       setActiveCheckIns(active);
@@ -104,10 +101,10 @@ export default function DashboardScreen() {
   };
 
   const dayName = new Date().toLocaleDateString('en-US', { weekday: 'long' });
-  const fullDate = new Date().toLocaleDateString('en-US', { 
-    month: 'long', 
-    day: 'numeric', 
-    year: 'numeric' 
+  const fullDate = new Date().toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
   });
 
   const getUserFirstName = () => {
@@ -116,6 +113,10 @@ export default function DashboardScreen() {
     if (user?.name) return user.name.split(' ')[0];
     if (user?.email) return user.email.split('@')[0];
     return 'User';
+  };
+
+  const getUserEmail = () => {
+    return user?.email || '';
   };
 
   const handleLogout = async () => {
@@ -137,20 +138,68 @@ export default function DashboardScreen() {
     );
   }
 
+  // Stat labels differ between modes
   const statItems = [
-    { icon: Users,     value: stats.totalWorkers,   label: 'Workers',  path: '/workers'  },
-    { icon: Building2, value: stats.activeProjects, label: 'Projects', path: '/projects' },
-    { icon: MapPin,    value: stats.onSiteNow,       label: 'On Site',  path: '/workers'  },
+    { icon: Users,     value: stats.totalWorkers,  label: isDark ? 'Workers' : 'Active Workers', path: '/workers'  },
+    { icon: Building2, value: stats.activeProjects, label: isDark ? 'Projects' : 'Live Projects',  path: '/projects' },
+    { icon: MapPin,    value: stats.onSiteNow,      label: isDark ? 'On Site' : 'On Site Now',    path: '/workers'  },
   ];
+
+  // ── Shared admin tools block ────────────────────────────────────────────────
+  const renderAdminTools = () => {
+    if (user?.role !== 'admin' && user?.role !== 'owner') return null;
+    return (
+      <>
+        <Text style={styles.sectionLabel}>ADMIN TOOLS</Text>
+        <View style={styles.adminGrid}>
+          {adminActions.map((action) => (
+            <ActionTile
+              key={action.title}
+              action={action}
+              onPress={() => router.push(action.path)}
+            />
+          ))}
+        </View>
+      </>
+    );
+  };
+
+  // ── Shared stats row ────────────────────────────────────────────────────────
+  const renderStats = () => (
+    <View style={styles.statsGrid}>
+      {statItems.map((stat) => {
+        const Icon = stat.icon;
+        return (
+          <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
+            <StatCard style={styles.statCard}>
+              <IconPod size={44} style={styles.statIcon}>
+                <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+              </IconPod>
+              <Text style={styles.statValue}>{stat.value}</Text>
+              <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+            </StatCard>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
-        {/* Header */}
+        {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <View style={styles.logoIcon}>
-              <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
+            <View style={[
+              styles.logoIcon,
+              { backgroundColor: isDark ? colors.glass.background : colors.iconPod.background },
+            ]}>
+              <LayoutGrid
+                size={20}
+                strokeWidth={1.5}
+                color={isDark ? colors.text.primary : colors.primary}
+                preserveColor
+              />
             </View>
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
@@ -164,6 +213,7 @@ export default function DashboardScreen() {
           </View>
         </View>
 
+        {/* ── Scroll content ──────────────────────────────────────────────── */}
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
@@ -171,9 +221,11 @@ export default function DashboardScreen() {
         >
           {loading ? (
             <DashboardSkeleton />
-          ) : (
+          ) : isDark ? (
+            /* ══════════════════════════════════════════════════════════════
+               DARK MODE — original flat layout (unchanged)
+               ══════════════════════════════════════════════════════════════ */
             <>
-              {/* Greeting */}
               <View style={styles.greetingSection}>
                 <Text style={styles.greetingSmall}>WELCOME BACK</Text>
                 <Text style={styles.greetingLarge}>{getUserFirstName()}</Text>
@@ -184,50 +236,35 @@ export default function DashboardScreen() {
                 </View>
               </View>
 
-              {/* Stats — pressable, navigate on tap */}
-              <View style={styles.statsGrid}>
-                {loading ?
-                  <>
-                    <StatCardSkeleton />
-                    <StatCardSkeleton />
-                    <StatCardSkeleton />
-                  </>
-                :
-                  statItems.map((stat) => {
-                    const Icon = stat.icon;
-                    return (
-                      <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
-                        <StatCard style={styles.statCard}>
-                          <IconPod size={44} style={styles.statIcon}>
-                            <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                          </IconPod>
-                          <Text style={styles.statValue}>{stat.value}</Text>
-                          <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
-                        </StatCard>
-                      </Pressable>
-                    );
-                  })
-                }
-              </View>
+              {renderStats()}
 
-              {/* Sync Button */}
               <SyncButton onSyncComplete={fetchData} />
 
-              {/* Admin Tools - Only show for admin/owner */}
-              {(user?.role === 'admin' || user?.role === 'owner') && (
-                <>
-                  <Text style={styles.sectionLabel}>ADMIN TOOLS</Text>
-                  <View style={styles.adminGrid}>
-                    {adminActions.map((action) => (
-                      <ActionTile
-                        key={action.title}
-                        action={action}
-                        onPress={() => router.push(action.path)}
-                      />
-                    ))}
-                  </View>
-                </>
-              )}
+              {renderAdminTools()}
+            </>
+          ) : (
+            /* ══════════════════════════════════════════════════════════════
+               LIGHT MODE — hero card layout (target design)
+               ══════════════════════════════════════════════════════════════ */
+            <>
+              <GlassCard style={styles.heroCard}>
+                {/* Date on top */}
+                <Text style={styles.heroDay}>{dayName.toUpperCase()}</Text>
+                <Text style={styles.heroDate}>{fullDate}</Text>
+
+                {/* Big name */}
+                <Text style={styles.heroName}>{getUserFirstName()}</Text>
+
+                {/* Email */}
+                <Text style={styles.heroEmail}>{getUserEmail()}</Text>
+
+                {/* Stats inside the card */}
+                {renderStats()}
+              </GlassCard>
+
+              <SyncButton onSyncComplete={fetchData} />
+
+              {renderAdminTools()}
             </>
           )}
         </ScrollView>
@@ -238,6 +275,9 @@ export default function DashboardScreen() {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════════
+   STYLES
+   ═══════════════════════════════════════════════════════════════════════════════ */
 const styles = StyleSheet.create({
   loadingContainer: {
     flex: 1,
@@ -254,10 +294,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+
+  /* ── Header: space-between, logo left / logout right ────────────────────── */
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
@@ -275,9 +317,9 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: borderRadius.md,
-    backgroundColor: colors.glass.light,
     alignItems: 'center',
     justifyContent: 'center',
+    // backgroundColor set inline (isDark conditional)
   },
   logoText: {
     fontFamily: typography.semibold,
@@ -285,16 +327,20 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     letterSpacing: 1.5,
   },
+
+  /* ── Scroll ─────────────────────────────────────────────────────────────── */
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     paddingHorizontal: spacing.lg,
     paddingBottom: 140,
-    maxWidth: 800,
+    maxWidth: 1200,
     width: '100%',
     alignSelf: 'center',
   },
+
+  /* ── Dark mode: original flat greeting ─────────────────────────────────── */
   greetingSection: {
     marginTop: spacing.lg,
     marginBottom: spacing.xl,
@@ -332,6 +378,43 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.text.muted,
   },
+
+  /* ── Light mode: hero card ─────────────────────────────────────────────── */
+  heroCard: {
+    marginTop: spacing.md,
+    marginBottom: spacing.xl,
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.xl,
+  },
+  heroDay: {
+    fontFamily: typography.medium,
+    fontSize: 11,
+    color: colors.text.muted,
+    letterSpacing: 1.5,
+    marginBottom: spacing.xs,
+  },
+  heroDate: {
+    fontFamily: typography.regular,
+    fontSize: 14,
+    color: colors.text.secondary,
+    marginBottom: spacing.lg,
+  },
+  heroName: {
+    fontFamily: typography.semibold,
+    fontSize: 48,
+    fontWeight: '200',
+    color: colors.text.primary,
+    letterSpacing: -1,
+    marginBottom: spacing.xs,
+  },
+  heroEmail: {
+    fontFamily: typography.regular,
+    fontSize: 14,
+    color: colors.text.muted,
+    marginBottom: spacing.xl,
+  },
+
+  /* ── Stats row ─────────────────────────────────────────────────────────── */
   statsGrid: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -357,6 +440,8 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
     letterSpacing: 1,
   },
+
+  /* ── Section label ─────────────────────────────────────────────────────── */
   sectionLabel: {
     fontFamily: typography.medium,
     fontSize: 11,
@@ -365,6 +450,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
     marginTop: spacing.md,
   },
+
+  /* ── Admin grid ────────────────────────────────────────────────────────── */
   adminGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -372,7 +459,7 @@ const styles = StyleSheet.create({
   },
   actionTile: {
     flex: 1,
-    minWidth: '47%',
+    minWidth: '22%',
     backgroundColor: colors.glass.card,
     borderRadius: borderRadius.lg,
     padding: spacing.lg,
