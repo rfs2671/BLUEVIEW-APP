@@ -40,6 +40,12 @@ const _dark = {
     subtle:    'rgba(255, 255, 255, 0.3)',
   },
 
+  // Dark mode: icon pods are transparent with glass border (unchanged)
+  iconPod: {
+    background: 'transparent',
+    border:     'rgba(255, 255, 255, 0.15)',
+  },
+
   status: {
     success:   '#4ade80',
     successBg: 'rgba(74, 222, 128, 0.2)',
@@ -61,7 +67,7 @@ const _dark = {
 //    + radial-gradient(ellipse at bottom, rgba(2,119,189,0.06) …)
 //
 //  Cards / boxes:
-//    bg-white/85  backdrop-blur-2xl
+//    bg-gradient-to-br from-white/85 to-blue-100/70
 //    border border-blue-200/60        → #BFDBFE at 60% → rgba(191,219,254,0.60)
 //    shadow-xl shadow-blue-900/15     → #1e3a5f-ish at 15%
 //    hover:border-blue-300            → #93C5FD
@@ -72,6 +78,7 @@ const _dark = {
 //
 //  Primary / accent:  #1565C0
 //    icon bg:  bg-[#1565C0]/10
+//    icon border: border-[#1565C0]/20
 //
 //  Nav bar:
 //    bg-white/90  backdrop-blur-2xl  border-blue-200/60
@@ -92,17 +99,18 @@ const _light = {
   },
 
   // ── Glass surfaces ─────────────────────────────────────────────────────────
-  //  bg-white/85                         → rgba(255,255,255,0.85)
+  //  bg-gradient-to-br from-white/85 to-blue-100/70
   //  border border-blue-200/60           → rgba(191,219,254,0.60)
   //  hover:border-blue-300               → #93C5FD
   //  shadow-xl shadow-blue-900/15        → mapped in shadow token below
   glass: {
-    background:      'rgba(255, 255, 255, 0.85)',
+    background:      'rgba(255, 255, 255, 0.85)',   // from-white/85
     backgroundHover: 'rgba(255, 255, 255, 0.95)',
     border:          'rgba(191, 219, 254, 0.60)',   // border-blue-200/60
     borderHover:     'rgba(147, 197, 253, 1.0)',     // border-blue-300
-    card:            'rgba(255, 255, 255, 0.80)',
+    card:            'rgba(255, 255, 255, 0.80)',   // bg-white/80 (Recent Activity cards)
     cardHover:       'rgba(255, 255, 255, 0.92)',
+    cardGradientEnd: 'rgba(219, 234, 254, 0.70)',   // to-blue-100/70 (#DBEAFE at 70%)
   },
 
   // shadow-xl shadow-blue-900/15  → blue-900 is #1e3a8a
@@ -126,6 +134,13 @@ const _light = {
     secondary: 'rgba(10, 25, 41, 0.50)',             // /50
     muted:     'rgba(10, 25, 41, 0.40)',             // /40
     subtle:    'rgba(10, 25, 41, 0.22)',
+  },
+
+  // ── Icon pod (circular icon containers) ────────────────────────────────────
+  //  bg-[#1565C0]/10  border-[#1565C0]/20
+  iconPod: {
+    background: 'rgba(21, 101, 192, 0.10)',   // bg-[#1565C0]/10
+    border:     'rgba(21, 101, 192, 0.20)',   // border-[#1565C0]/20
   },
 
   status: {
