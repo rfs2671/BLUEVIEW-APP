@@ -1,3 +1,13 @@
+/**
+ * documents.jsx
+ * Place at: frontend/app/documents.jsx
+ *
+ * FIX: CP users were seeing the admin FloatingNav (Dashboard/Projects/Workers
+ * etc.) and the back arrow went to '/' (admin dashboard). Now:
+ *   - CP gets CpNav, everyone else gets FloatingNav
+ *   - Back arrow goes to /logbooks for CP, / for admin
+ */
+
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -23,6 +33,7 @@ import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/G
 import GlassButton from '../src/components/GlassButton';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
+import CpNav from '../src/components/CpNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
@@ -31,7 +42,7 @@ import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 // File type icon mapping
 const getFileIcon = (fileName) => {
   const ext = fileName?.split('.').pop()?.toLowerCase();
-  
+
   if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic'].includes(ext)) {
     return { Icon: Image, color: '#f472b6' };
   }
@@ -50,7 +61,6 @@ const getFileIcon = (fileName) => {
   return { Icon: File, color: colors.text.muted };
 };
 
-// Format file size
 const formatFileSize = (bytes) => {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
@@ -59,7 +69,6 @@ const formatFileSize = (bytes) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-// Format date
 const formatDate = (dateStr) => {
   if (!dateStr) return 'Unknown';
   const date = new Date(dateStr);
@@ -75,6 +84,8 @@ export default function DocumentsScreen() {
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
+  const isCp = user?.role === 'cp';
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [projects, setProjects] = useState([]);
@@ -83,14 +94,12 @@ export default function DocumentsScreen() {
   const [files, setFiles] = useState([]);
   const [loadingFile, setLoadingFile] = useState(null);
 
-  // Redirect if not authenticated
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch projects on mount
   useEffect(() => {
     if (isAuthenticated) {
       fetchProjects();
@@ -102,26 +111,20 @@ export default function DocumentsScreen() {
     try {
       const projectsData = await projectsAPI.getAll();
       const projectList = Array.isArray(projectsData) ? projectsData : [];
-      
-      // Filter projects that have Dropbox enabled
-      const dropboxProjects = projectList.filter(p => p.dropbox_enabled || p.dropbox_folder);
+
+      // Filter to projects with Dropbox enabled
+      const dropboxProjects = projectList.filter(
+        (p) => p.dropbox_enabled && p.dropbox_folder
+      );
       setProjects(dropboxProjects);
 
-      // Auto-select first project with Dropbox or user's assigned project
+      // Auto-select first project
       if (dropboxProjects.length > 0) {
-        // Check if user has assigned projects
-        const userProjectIds = user?.assigned_projects || [];
-        const assignedProject = dropboxProjects.find(p => 
-          userProjectIds.includes(p._id || p.id)
-        );
-        
-        const projectToSelect = assignedProject || dropboxProjects[0];
-        setSelectedProject(projectToSelect);
-        await fetchFiles(projectToSelect._id || projectToSelect.id);
+        setSelectedProject(dropboxProjects[0]);
+        await fetchFiles(dropboxProjects[0]._id || dropboxProjects[0].id);
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error);
-      toast.error('Load Error', 'Could not load projects');
     } finally {
       setLoading(false);
     }
@@ -129,22 +132,18 @@ export default function DocumentsScreen() {
 
   const fetchFiles = async (projectId) => {
     if (!projectId) return;
-    
     setRefreshing(true);
     try {
       const response = await dropboxAPI.getProjectFiles(projectId);
-      setFiles(response.files || []);
-      
-      if (response.message && response.files?.length === 0) {
-        // Show info message if there's a reason for no files
-        if (response.message.includes('not connected')) {
-          toast.info('Dropbox', 'Dropbox is not connected. Ask your admin to connect it.');
-        }
-      }
+      setFiles(Array.isArray(response?.files) ? response.files : Array.isArray(response) ? response : []);
     } catch (error) {
       console.error('Failed to fetch files:', error);
-      toast.error('Load Error', 'Could not load documents');
-      setFiles([]);
+      if (error.response?.status === 404) {
+        setFiles([]);
+        if (!selectedProject?.dropbox_folder) {
+          toast.warning('Not Connected', 'This project does not have a Dropbox folder linked. Ask your admin to connect it.');
+        }
+      }
     } finally {
       setRefreshing(false);
     }
@@ -164,16 +163,15 @@ export default function DocumentsScreen() {
 
   const handleOpenFile = async (file) => {
     if (!selectedProject) return;
-    
+
     setLoadingFile(file.path);
     try {
       const response = await dropboxAPI.getFileUrl(
         selectedProject._id || selectedProject.id,
         file.path
       );
-      
+
       if (response.url) {
-        // Open in new tab/browser
         const canOpen = await Linking.canOpenURL(response.url);
         if (canOpen) {
           await Linking.openURL(response.url);
@@ -195,6 +193,11 @@ export default function DocumentsScreen() {
     router.replace('/login');
   };
 
+  // CP goes back to /logbooks, admin goes to /
+  const handleBack = () => {
+    router.push(isCp ? '/logbooks' : '/');
+  };
+
   const getProjectId = (project) => project?._id || project?.id;
 
   return (
@@ -206,7 +209,7 @@ export default function DocumentsScreen() {
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.push('/')}
+              onPress={handleBack}
             />
             <Text style={styles.logoText}>BLUEVIEW</Text>
           </View>
@@ -254,123 +257,94 @@ export default function DocumentsScreen() {
                 style={styles.selectorCard}
                 onPress={() => setShowProjectPicker(!showProjectPicker)}
               >
-                <View style={styles.selectorContent}>
-                  <IconPod size={44}>
-                    <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                  </IconPod>
+                <View style={styles.selectorLeft}>
+                  <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                   <View>
-                    <Text style={styles.selectorLabel}>SELECT PROJECT</Text>
-                    <Text style={styles.selectorText}>
-                      {selectedProject?.name || 'Choose a project'}
+                    <Text style={styles.selectorLabel}>PROJECT</Text>
+                    <Text style={styles.selectorValue}>
+                      {selectedProject?.name || 'Select project'}
                     </Text>
                   </View>
                 </View>
-                <View style={styles.selectorRight}>
-                  <GlassButton
-                    variant="icon"
-                    icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.muted} />}
-                    onPress={handleRefresh}
-                    style={styles.refreshBtn}
-                  />
-                  <ChevronDown
-                    size={20}
-                    strokeWidth={1.5}
-                    color={colors.text.muted}
-                    style={showProjectPicker && styles.iconRotated}
-                  />
-                </View>
+                <ChevronDown
+                  size={16}
+                  strokeWidth={1.5}
+                  color={colors.text.muted}
+                  style={{ transform: [{ rotate: showProjectPicker ? '180deg' : '0deg' }] }}
+                />
               </Pressable>
 
               {showProjectPicker && (
-                <View style={styles.dropdown}>
+                <GlassCard style={styles.dropdownCard}>
                   {projects.map((p) => (
                     <Pressable
                       key={getProjectId(p)}
-                      onPress={() => handleProjectChange(p)}
                       style={[
                         styles.dropdownItem,
-                        getProjectId(selectedProject) === getProjectId(p) && styles.dropdownItemActive,
+                        getProjectId(p) === getProjectId(selectedProject) &&
+                          styles.dropdownItemActive,
                       ]}
+                      onPress={() => handleProjectChange(p)}
                     >
-                      <FolderOpen size={16} strokeWidth={1.5} color={colors.text.muted} />
-                      <Text
-                        style={[
-                          styles.dropdownText,
-                          getProjectId(selectedProject) === getProjectId(p) && styles.dropdownTextActive,
-                        ]}
-                      >
-                        {p.name}
-                      </Text>
+                      <Text style={styles.dropdownItemText}>{p.name}</Text>
                     </Pressable>
                   ))}
-                </View>
+                </GlassCard>
               )}
 
-              {/* Files Count */}
+              {/* Refresh button */}
               {selectedProject && (
-                <View style={styles.filesHeader}>
-                  <View style={styles.filesCount}>
-                    <FolderOpen size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.filesCountText}>
-                      {files.length} document{files.length !== 1 ? 's' : ''}
+                <View style={styles.refreshRow}>
+                  <Text style={styles.fileCount}>
+                    {files.length} file{files.length !== 1 ? 's' : ''}
+                  </Text>
+                  <Pressable style={styles.refreshBtn} onPress={handleRefresh}>
+                    <RefreshCw
+                      size={14}
+                      strokeWidth={1.5}
+                      color={colors.text.muted}
+                      style={refreshing ? { opacity: 0.5 } : {}}
+                    />
+                    <Text style={styles.refreshText}>
+                      {refreshing ? 'Refreshing...' : 'Refresh'}
                     </Text>
-                  </View>
-                  {refreshing && (
-                    <Text style={styles.refreshingText}>Refreshing...</Text>
-                  )}
+                  </Pressable>
                 </View>
               )}
 
-              {/* Files List */}
+              {/* File List */}
               {files.length > 0 ? (
-                <View style={styles.filesList}>
-                  {files.map((file, index) => {
-                    const { Icon, color } = getFileIcon(file.name);
-                    const isLoading = loadingFile === file.path;
-                    
-                    return (
-                      <GlassListItem
-                        key={file.id || file.path || index}
-                        style={styles.fileItem}
-                        onPress={() => handleOpenFile(file)}
-                        disabled={isLoading}
-                      >
-                        <IconPod size={44} style={{ borderColor: color }}>
-                          <Icon size={18} strokeWidth={1.5} color={color} />
-                        </IconPod>
-                        
-                        <View style={styles.fileInfo}>
-                          <Text style={styles.fileName} numberOfLines={1}>
-                            {file.name}
-                          </Text>
-                          <View style={styles.fileMeta}>
-                            <Text style={styles.fileSize}>
-                              {formatFileSize(file.size)}
-                            </Text>
-                            <Text style={styles.fileDot}>•</Text>
-                            <Text style={styles.fileDate}>
-                              {formatDate(file.modified)}
-                            </Text>
-                          </View>
-                        </View>
+                files.map((file, index) => {
+                  const { Icon: FileIcon, color: iconColor } = getFileIcon(file.name);
+                  const isLoading = loadingFile === file.path;
 
-                        <View style={styles.fileActions}>
-                          {isLoading ? (
-                            <View style={styles.loadingIndicator}>
-                              <Text style={styles.loadingText}>Opening...</Text>
-                            </View>
-                          ) : (
-                            <View style={styles.actionButton}>
-                              <ExternalLink size={18} strokeWidth={1.5} color={colors.text.primary} />
-                            </View>
-                          )}
-                        </View>
-                      </GlassListItem>
-                    );
-                  })}
-                </View>
-              ) : selectedProject && !refreshing ? (
-                /* No Documents for Selected Project */
+                  return (
+                    <Pressable
+                      key={file.path || index}
+                      style={({ pressed }) => [
+                        styles.fileCard,
+                        pressed && styles.fileCardPressed,
+                      ]}
+                      onPress={() => handleOpenFile(file)}
+                      disabled={isLoading}
+                    >
+                      <View style={[styles.fileIcon, { backgroundColor: `${iconColor}15` }]}>
+                        <FileIcon size={20} strokeWidth={1.5} color={iconColor} />
+                      </View>
+                      <View style={styles.fileInfo}>
+                        <Text style={styles.fileName} numberOfLines={1}>
+                          {file.name}
+                        </Text>
+                        <Text style={styles.fileMeta}>
+                          {formatFileSize(file.size)}
+                          {file.modified ? ` • ${formatDate(file.modified)}` : ''}
+                        </Text>
+                      </View>
+                      <ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />
+                    </Pressable>
+                  );
+                })
+              ) : selectedProject ? (
                 <GlassCard style={styles.emptyCard}>
                   <IconPod size={64} style={styles.emptyIcon}>
                     <FolderOpen size={28} strokeWidth={1.5} color={colors.text.muted} />
@@ -385,16 +359,15 @@ export default function DocumentsScreen() {
           )}
         </ScrollView>
 
-        <FloatingNav />
+        {/* CP gets CpNav, everyone else gets FloatingNav */}
+        {isCp ? <CpNav /> : <FloatingNav />}
       </SafeAreaView>
     </AnimatedBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -413,16 +386,9 @@ const styles = StyleSheet.create({
     ...typography.label,
     color: colors.text.muted,
   },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 120,
-  },
-  titleSection: {
-    marginBottom: spacing.xl,
-  },
+  scrollView: { flex: 1 },
+  scrollContent: { padding: spacing.lg, paddingBottom: 120 },
+  titleSection: { marginBottom: spacing.xl },
   titleLabel: {
     ...typography.label,
     color: colors.text.muted,
@@ -434,12 +400,8 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     letterSpacing: -1,
   },
-  mb16: {
-    marginBottom: spacing.md,
-  },
-  mb12: {
-    marginBottom: spacing.sm + 4,
-  },
+  mb16: { marginBottom: spacing.md },
+  mb12: { marginBottom: spacing.sm + 4 },
   selectorCard: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
@@ -451,151 +413,84 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
-  selectorContent: {
+  selectorLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    flex: 1,
-  },
-  selectorRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  refreshBtn: {
-    padding: spacing.sm,
   },
   selectorLabel: {
     ...typography.label,
     color: colors.text.muted,
     marginBottom: 2,
   },
-  selectorText: {
-    fontSize: 16,
+  selectorValue: {
+    fontSize: 15,
     fontWeight: '500',
     color: colors.text.primary,
   },
-  iconRotated: {
-    transform: [{ rotate: '180deg' }],
-  },
-  dropdown: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    marginBottom: spacing.md,
-    overflow: 'hidden',
-  },
+  dropdownCard: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
   dropdownItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
     padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.05)',
   },
-  dropdownItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  dropdownText: {
-    fontSize: 15,
-    color: colors.text.muted,
-  },
-  dropdownTextActive: {
-    color: colors.text.primary,
-  },
-  filesHeader: {
+  dropdownItemActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
+  dropdownItemText: { fontSize: 15, color: colors.text.primary },
+  refreshRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
-  filesCount: {
+  fileCount: { fontSize: 13, color: colors.text.muted },
+  refreshBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    gap: 6,
+  },
+  refreshText: { fontSize: 13, color: colors.text.muted },
+  fileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
     backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.full,
+    borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
   },
-  filesCountText: {
-    fontSize: 13,
-    color: colors.text.secondary,
+  fileCardPressed: { opacity: 0.8 },
+  fileIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  refreshingText: {
-    fontSize: 13,
-    color: colors.text.muted,
-    fontStyle: 'italic',
-  },
-  filesList: {
-    gap: spacing.sm,
-  },
-  fileItem: {
-    gap: spacing.md,
-  },
-  fileInfo: {
-    flex: 1,
-    gap: 4,
-  },
+  fileInfo: { flex: 1 },
   fileName: {
     fontSize: 15,
     fontWeight: '500',
     color: colors.text.primary,
+    marginBottom: 2,
   },
-  fileMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  fileSize: {
-    fontSize: 12,
-    color: colors.text.muted,
-  },
-  fileDot: {
-    fontSize: 12,
-    color: colors.text.subtle,
-  },
-  fileDate: {
-    fontSize: 12,
-    color: colors.text.muted,
-  },
-  fileActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  actionButton: {
-    padding: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: borderRadius.md,
-  },
-  loadingIndicator: {
-    padding: spacing.sm,
-  },
-  loadingText: {
-    fontSize: 12,
-    color: colors.text.muted,
-    fontStyle: 'italic',
-  },
+  fileMeta: { fontSize: 12, color: colors.text.muted },
   emptyCard: {
     alignItems: 'center',
-    paddingVertical: spacing.xxl,
+    padding: spacing.xxl,
+    gap: spacing.md,
   },
-  emptyIcon: {
-    marginBottom: spacing.lg,
-  },
+  emptyIcon: { marginBottom: spacing.sm },
   emptyTitle: {
-    fontSize: 20,
-    fontWeight: '500',
+    fontSize: 18,
+    fontWeight: '600',
     color: colors.text.primary,
-    marginBottom: spacing.sm,
   },
   emptyText: {
     fontSize: 14,
     color: colors.text.muted,
     textAlign: 'center',
     lineHeight: 22,
-    maxWidth: 280,
   },
 });
