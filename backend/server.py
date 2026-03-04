@@ -791,13 +791,13 @@ async def login(credentials: UserLogin):
     user = await db.users.find_one({"email": credentials.email})
     if user and verify_password(credentials.password, user.get("password", "")):
         token = create_token(
-            str(user["_id"]),
-            user["email"],
+            str(user["_id"]), 
+            user["email"], 
             user.get("role", "worker"),
             company_id=user.get("company_id")
         )
         return TokenResponse(token=token)
-
+    
     # Try site device login (username matches email field in login)
     device = await db.site_devices.find_one({"username": credentials.email, "is_active": True})
     if device and verify_password(credentials.password, device.get("password", "")):
@@ -806,26 +806,25 @@ async def login(credentials: UserLogin):
             {"_id": device["_id"]},
             {"$set": {"last_login": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
         )
-
+        
         # Get company_id from project
         company_id = None
         if device.get("project_id"):
             project = await db.projects.find_one({"_id": to_query_id(device["project_id"])})
             if project:
                 company_id = project.get("company_id")
-
+        
         token = create_token(
-            str(device["_id"]),
-            device["username"],
+            str(device["_id"]), 
+            device["username"], 
             "site_device",
             site_mode=True,
             project_id=device.get("project_id"),
             company_id=company_id
         )
         return TokenResponse(token=token)
-
+    
     raise HTTPException(status_code=401, detail="Invalid credentials")
-
 
 @api_router.post("/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate):
@@ -833,7 +832,7 @@ async def register(user_data: UserCreate):
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-
+    
     user_dict = user_data.model_dump()
     user_dict["password"] = hash_password(user_dict["password"])
     now = datetime.now(timezone.utc)
@@ -841,51 +840,29 @@ async def register(user_data: UserCreate):
     user_dict["updated_at"] = now
     user_dict["assigned_projects"] = []
     user_dict["is_deleted"] = False
-
+    
     # If no company_id provided, this is invalid (except for testing)
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
         raise HTTPException(status_code=400, detail="Company ID required")
-
+    
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
     del user_dict["password"]
-
+    
     return UserResponse(**user_dict)
 
-
 @api_router.get("/auth/me")
-async def get_me(current_user=Depends(get_current_user)):
+async def get_me(current_user = Depends(get_current_user)):
     user = dict(current_user)
     if "password" in user:
         del user["password"]
 
-    # For site devices, include project info
-    if user.get("site_mode"):
-        project_id = user.get("project_id")
-        if project_id:
-            project = await db.projects.find_one({"_id": to_query_id(project_id)})
-            if project:
-                user["project_name"] = project.get("name")
-                user["project"] = serialize_id(project)
-
-        return {
-            "id": user.get("id"),
-            "name": user.get("device_name", "Site Device"),
-            "username": user.get("username"),
-            "role": "site_device",
-            "site_mode": True,
-            "project_id": user.get("project_id"),
-            "project_name": user.get("project_name"),
-            "project": user.get("project"),
-            "company_id": user.get("company_id")
-        }
-
-    return user
-
-
 @api_router.put("/auth/profile")
 async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_current_user)):
-    """Update the authenticated user's display name. Available to all roles."""
+    """
+    Update the authenticated user's display name.
+    Available to all roles (admin, owner, cp, worker).
+    """
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Name cannot be empty")
@@ -895,7 +872,7 @@ async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_cu
         {"_id": to_query_id(current_user["id"])},
         {"$set": {
             "name": name,
-            "full_name": name,
+            "full_name": name,      # kept in sync so /auth/me returns both consistently
             "updated_at": now,
         }}
     )
@@ -909,7 +886,12 @@ async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_cu
 
 @api_router.put("/auth/password")
 async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_current_user)):
-    """Change the authenticated user's own password. Admin and owner only."""
+    """
+    Change the authenticated user's own password.
+    Restricted to admin and owner roles only.
+    Verifies current password before accepting the new one.
+    """
+    # Role guard — only admin / owner can use this endpoint
     role = current_user.get("role")
     if role not in ("admin", "owner"):
         raise HTTPException(
@@ -917,15 +899,18 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
             detail="Only admins and owners can change passwords through this endpoint"
         )
 
-    # Re-fetch to get the password hash (get_current_user strips it)
+    # Fetch the stored hash — get_current_user already stripped the password
+    # field, so we must re-query the DB for it here.
     user_doc = await db.users.find_one({"_id": to_query_id(current_user["id"])})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Verify the current password using your existing helper
     stored_hash = user_doc.get("password", "")
     if not verify_password(body.current_password, stored_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
+    # Enforce a minimum length
     if len(body.new_password) < 6:
         raise HTTPException(status_code=422, detail="New password must be at least 6 characters")
 
@@ -940,6 +925,29 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 
     logger.info(f"User {current_user['id']} (role={role}) changed their password")
     return {"message": "Password updated successfully"}
+    
+    # For site devices, include project info
+    if user.get("site_mode"):
+        project_id = user.get("project_id")
+        if project_id:
+            project = await db.projects.find_one({"_id": to_query_id(project_id)})
+            if project:
+                user["project_name"] = project.get("name")
+                user["project"] = serialize_id(project)
+        
+        return {
+            "id": user.get("id"),
+            "name": user.get("device_name", "Site Device"),
+            "username": user.get("username"),
+            "role": "site_device",
+            "site_mode": True,
+            "project_id": user.get("project_id"),
+            "project_name": user.get("project_name"),
+            "project": user.get("project"),
+            "company_id": user.get("company_id")
+        }
+    
+    return user
 
 # ==================== ADMIN USER MANAGEMENT ====================
 
@@ -3738,8 +3746,17 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
                     "company": worker.get("company"),
                 })
 
+    # Count orientation docs that haven't been CP-signed yet
+    unsigned_orientations = await db.logbooks.count_documents({
+        "project_id": project_id,
+        "log_type": "subcontractor_orientation",
+        "status": {"$ne": "submitted"},
+        "is_deleted": {"$ne": True},
+    })
+
     return {
         "missing_toolbox_talk": missing_toolbox,
+        "unsigned_orientations": unsigned_orientations,
         "week_start": week_start_str,
     }
 
@@ -3760,6 +3777,7 @@ async def get_scaffold_info(project_id: str, current_user = Depends(get_current_
         "drawings_on_site": project.get("drawings_on_site", True),
         "renters_name": project.get("renters_name", ""),
         "phone": project.get("scaffold_phone", ""),
+        "scaffold_erected": project.get("scaffold_erected", False),
     }
 
 @api_router.put("/logbooks/project/{project_id}/scaffold-info")
@@ -3776,6 +3794,7 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
         "drawings_on_site": data.get("drawings_on_site"),
         "renters_name": data.get("renters_name"),
         "scaffold_phone": data.get("phone"),
+        "scaffold_erected": data.get("scaffold_erected"),
         "updated_at": datetime.now(timezone.utc),
     }
     # Remove None values
