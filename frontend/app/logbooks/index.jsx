@@ -26,27 +26,22 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
+import CpNav from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const LOG_TYPES = [
   {
-    key: 'scaffold_maintenance',
-    label: 'Scaffold Maintenance Log',
-    subtitle: 'NYC DOB — Daily inspection required',
-    icon: HardHat,
-    color: '#f59e0b',
-    bg: 'rgba(245, 158, 11, 0.15)',
-  },
-  {
-    key: 'toolbox_talk',
-    label: 'Tool Box Talk',
-    subtitle: 'OSHA — Weekly per company',
-    icon: BookOpen,
-    color: '#3b82f6',
-    bg: 'rgba(59, 130, 246, 0.15)',
+    key: 'daily_jobsite',
+    label: 'Daily Jobsite Log',
+    subtitle: 'NYC DOB 3301-02 — Daily',
+    icon: Building2,
+    color: '#ef4444',
+    bg: 'rgba(239, 68, 68, 0.15)',
+    visibility: 'always',
   },
   {
     key: 'preshift_signin',
@@ -55,14 +50,34 @@ const LOG_TYPES = [
     icon: Users,
     color: '#4ade80',
     bg: 'rgba(74, 222, 128, 0.15)',
+    visibility: 'always',
+  },
+  {
+    key: 'scaffold_maintenance',
+    label: 'Scaffold Maintenance Log',
+    subtitle: 'NYC DOB — Daily while scaffold is up',
+    icon: HardHat,
+    color: '#f59e0b',
+    bg: 'rgba(245, 158, 11, 0.15)',
+    visibility: 'scaffold',
+  },
+  {
+    key: 'toolbox_talk',
+    label: 'Tool Box Talk',
+    subtitle: 'OSHA — Weekly per company',
+    icon: BookOpen,
+    color: '#3b82f6',
+    bg: 'rgba(59, 130, 246, 0.15)',
+    visibility: 'weekly',
   },
   {
     key: 'subcontractor_orientation',
     label: 'Subcontractor Safety Orientation',
-    subtitle: 'One-time per worker per project',
+    subtitle: 'First-time workers only',
     icon: ShieldCheck,
     color: '#8b5cf6',
     bg: 'rgba(139, 92, 246, 0.15)',
+    visibility: 'first_time',
   },
   {
     key: 'osha_log',
@@ -71,20 +86,14 @@ const LOG_TYPES = [
     icon: ClipboardList,
     color: '#06b6d4',
     bg: 'rgba(6, 182, 212, 0.15)',
-  },
-  {
-    key: 'daily_jobsite',
-    label: 'Daily Jobsite Log',
-    subtitle: 'NYC DOB 3301-02 — Daily',
-    icon: Building2,
-    color: '#ef4444',
-    bg: 'rgba(239, 68, 68, 0.15)',
+    visibility: 'always',
   },
 ];
 
 export default function LogBooksScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isDark, colors } = useTheme();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -92,13 +101,21 @@ export default function LogBooksScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
-  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [] });
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0 });
   const [cpName, setCpName] = useState('');
+
+  // Scaffold state: persisted per-project
+  const [scaffoldActive, setScaffoldActive] = useState(false);
+  // Toolbox talk weekly tracking
+  const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
 
   const today = new Date().toISOString().split('T')[0];
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
+
+  // Build styles INSIDE the component so they use current theme colors
+  const styles = buildStyles(colors, isDark);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -119,10 +136,10 @@ export default function LogBooksScreen() {
       const projectList = Array.isArray(projectsData) ? projectsData : [];
       setProjects(projectList);
 
-      // Load saved CP name for display banner (non-blocking, no redirect)
-      cpProfileAPI.getProfile().then(p => { if (p?.cp_name) setCpName(p.cp_name); }).catch(() => {});
+      cpProfileAPI.getProfile()
+        .then(p => { if (p?.cp_name) setCpName(p.cp_name); })
+        .catch(() => {});
 
-      // Auto-select first assigned project
       const assigned = projectList.filter(p =>
         !user?.assigned_projects?.length ||
         user.assigned_projects.includes(p.id || p._id)
@@ -140,16 +157,27 @@ export default function LogBooksScreen() {
 
   const fetchProjectData = async (projectId) => {
     try {
-      const [logs, notifs] = await Promise.all([
+      const [logs, notifs, scaffoldInfo] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
-        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [] })),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0 })),
+        logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
       ]);
+
       const logMap = {};
       (Array.isArray(logs) ? logs : []).forEach(log => {
         logMap[log.log_type] = log;
       });
       setTodayLogs(logMap);
       setNotifications(notifs);
+
+      // Scaffold: active if scaffold_erected is true
+      const isScaffoldUp = scaffoldInfo?.scaffold_erected === true
+        || (scaffoldInfo?.scaffold_erector && scaffoldInfo?.scaffold_erected !== false)
+        || false;
+      setScaffoldActive(isScaffoldUp);
+
+      // Toolbox: done this week if submitted today (backend tracks weekly)
+      setToolboxDoneThisWeek(logMap['toolbox_talk']?.status === 'submitted');
     } catch (error) {
       console.error('Failed to fetch project logbooks:', error);
     }
@@ -183,7 +211,47 @@ export default function LogBooksScreen() {
     router.replace('/login');
   };
 
+  /** Toggle scaffold erected state for this project */
+  const handleToggleScaffold = async () => {
+    if (!selectedProject) return;
+    const projectId = selectedProject._id || selectedProject.id;
+    const next = !scaffoldActive;
+    setScaffoldActive(next);
+    try {
+      await logbooksAPI.saveScaffoldInfo(projectId, { scaffold_erected: next });
+      toast.success(
+        next ? 'Scaffold Active' : 'Scaffold Removed',
+        next ? 'Scaffold log will now appear daily' : 'Scaffold log hidden until re-activated',
+      );
+    } catch (e) {
+      setScaffoldActive(!next); // rollback
+      toast.error('Error', 'Could not update scaffold status');
+    }
+  };
+
+  /** Which logbooks should appear today? */
+  const getVisibleLogTypes = () => {
+    return LOG_TYPES.filter((lt) => {
+      switch (lt.visibility) {
+        case 'always':
+          return true;
+        case 'scaffold':
+          return scaffoldActive;
+        case 'weekly':
+          return !toolboxDoneThisWeek;
+        case 'first_time': {
+          const hasUnsigned = (notifications?.unsigned_orientations || 0) > 0;
+          const notSubmittedToday = todayLogs['subcontractor_orientation']?.status !== 'submitted';
+          return hasUnsigned || notSubmittedToday;
+        }
+        default:
+          return true;
+      }
+    });
+  };
+
   const missingToolbox = notifications?.missing_toolbox_talk || [];
+  const visibleLogs = getVisibleLogTypes();
 
   const StatusBadge = ({ status }) => {
     if (status === 'submitted') {
@@ -211,8 +279,7 @@ export default function LogBooksScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
-
-        {/* Header — logo + logout only. No back arrow. This is the CP home screen. */}
+        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.logoText}>BLUEVIEW</Text>
           <GlassButton
@@ -236,7 +303,7 @@ export default function LogBooksScreen() {
             </View>
           </View>
 
-          {/* CP name banner — shown after first signature, auto-filled from profile */}
+          {/* CP name banner */}
           {cpName ? (
             <GlassCard style={styles.cpBanner}>
               <View style={styles.cpBannerRow}>
@@ -293,20 +360,42 @@ export default function LogBooksScreen() {
             </GlassCard>
           )}
 
+          {/* ── Scaffold toggle card ── */}
+          {selectedProject && (
+            <GlassCard style={styles.scaffoldToggleCard}>
+              <View style={styles.scaffoldToggleRow}>
+                <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.scaffoldToggleTitle}>Scaffolding / Overhead Shed</Text>
+                  <Text style={styles.scaffoldToggleDesc}>
+                    {scaffoldActive
+                      ? 'Active — daily inspection required'
+                      : 'Not active — toggle ON when erected'}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={handleToggleScaffold}
+                  style={[styles.toggleBtn, scaffoldActive && styles.toggleBtnActive]}
+                >
+                  <Text style={[styles.toggleBtnText, scaffoldActive && styles.toggleBtnTextActive]}>
+                    {scaffoldActive ? 'ON' : 'N/A'}
+                  </Text>
+                </Pressable>
+              </View>
+            </GlassCard>
+          )}
+
           {/* Missing toolbox talk alert */}
           {missingToolbox.length > 0 && (
             <GlassCard style={styles.notifCard}>
               <View style={styles.notifHeader}>
                 <Bell size={16} strokeWidth={1.5} color="#f59e0b" />
                 <Text style={styles.notifTitle}>
-                  {missingToolbox.length} worker
-                  {missingToolbox.length > 1 ? 's' : ''} missing Tool Box Talk this week
+                  {missingToolbox.length} worker{missingToolbox.length > 1 ? 's' : ''} missing Tool Box Talk this week
                 </Text>
               </View>
               {missingToolbox.slice(0, 3).map((w, i) => (
-                <Text key={i} style={styles.notifWorker}>
-                  • {w.worker_name} ({w.company})
-                </Text>
+                <Text key={i} style={styles.notifWorker}>• {w.worker_name} ({w.company})</Text>
               ))}
               {missingToolbox.length > 3 && (
                 <Text style={styles.notifMore}>+{missingToolbox.length - 3} more</Text>
@@ -319,7 +408,7 @@ export default function LogBooksScreen() {
             </GlassCard>
           )}
 
-          {/* Log book rows */}
+          {/* Log book cards — FILTERED by visibility rules */}
           {loading ? (
             <View style={styles.loadingCenter}>
               <ActivityIndicator size="large" color={colors.text.primary} />
@@ -328,29 +417,57 @@ export default function LogBooksScreen() {
           ) : (
             <View style={styles.logList}>
               <Text style={styles.sectionLabel}>TODAY'S LOG BOOKS</Text>
-              {LOG_TYPES.map((logType) => {
-                const Icon = logType.icon;
-                const status = getLogStatus(logType.key);
-                return (
-                  <Pressable
-                    key={logType.key}
-                    onPress={() => handleOpenLog(logType.key)}
-                    style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
-                  >
-                    <View style={[styles.logIcon, { backgroundColor: logType.bg }]}>
-                      <Icon size={22} strokeWidth={1.5} color={logType.color} />
-                    </View>
-                    <View style={styles.logInfo}>
-                      <Text style={styles.logLabel}>{logType.label}</Text>
-                      <Text style={styles.logSubtitle}>{logType.subtitle}</Text>
-                    </View>
-                    <View style={styles.logRight}>
-                      <StatusBadge status={status} />
-                      <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    </View>
-                  </Pressable>
-                );
-              })}
+
+              {visibleLogs.length === 0 ? (
+                <GlassCard style={styles.emptyCard}>
+                  <CheckCircle size={32} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={styles.emptyText}>All caught up! No logbooks needed right now.</Text>
+                </GlassCard>
+              ) : (
+                visibleLogs.map((logType) => {
+                  const Icon = logType.icon;
+                  const status = getLogStatus(logType.key);
+                  return (
+                    <Pressable
+                      key={logType.key}
+                      onPress={() => handleOpenLog(logType.key)}
+                      style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
+                    >
+                      <View style={[styles.logIcon, { backgroundColor: logType.bg }]}>
+                        <Icon size={22} strokeWidth={1.5} color={logType.color} />
+                      </View>
+                      <View style={styles.logInfo}>
+                        <Text style={styles.logLabel}>{logType.label}</Text>
+                        <Text style={styles.logSubtitle}>{logType.subtitle}</Text>
+                      </View>
+                      <View style={styles.logRight}>
+                        <StatusBadge status={status} />
+                        <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
+
+              {/* Show completed toolbox talk as dimmed card (still accessible) */}
+              {toolboxDoneThisWeek && (
+                <Pressable
+                  onPress={() => handleOpenLog('toolbox_talk')}
+                  style={({ pressed }) => [styles.logCard, styles.logCardDone, pressed && styles.logCardPressed]}
+                >
+                  <View style={[styles.logIcon, { backgroundColor: 'rgba(59, 130, 246, 0.15)' }]}>
+                    <BookOpen size={22} strokeWidth={1.5} color="#3b82f6" />
+                  </View>
+                  <View style={styles.logInfo}>
+                    <Text style={styles.logLabel}>Tool Box Talk</Text>
+                    <Text style={styles.logSubtitle}>Completed this week</Text>
+                  </View>
+                  <View style={styles.logRight}>
+                    <StatusBadge status="submitted" />
+                    <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+                  </View>
+                </Pressable>
+              )}
             </View>
           )}
 
@@ -360,11 +477,9 @@ export default function LogBooksScreen() {
               <Text style={styles.summaryTitle}>Today's Completion</Text>
               <View style={styles.summaryRow}>
                 {(() => {
-                  const submitted = LOG_TYPES.filter(
-                    lt => getLogStatus(lt.key) === 'submitted'
-                  ).length;
-                  const total = LOG_TYPES.length;
-                  const pct = Math.round((submitted / total) * 100);
+                  const submitted = LOG_TYPES.filter(lt => getLogStatus(lt.key) === 'submitted').length;
+                  const total = visibleLogs.length;
+                  const pct = total > 0 ? Math.round((submitted / total) * 100) : 0;
                   return (
                     <>
                       <View style={styles.summaryBar}>
@@ -379,163 +494,140 @@ export default function LogBooksScreen() {
           )}
         </ScrollView>
 
+        <CpNav />
       </SafeAreaView>
     </AnimatedBackground>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
-  },
-  logoText: { ...typography.label, color: colors.text.muted, letterSpacing: 2 },
-  scrollView: { flex: 1 },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xxl,
-    maxWidth: 720,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  titleSection: { marginBottom: spacing.lg },
-  titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
-  titleText: {
-    fontSize: 42,
-    fontWeight: '200',
-    color: colors.text.primary,
-    letterSpacing: -1,
-    marginBottom: spacing.sm,
-  },
-  dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  dateText: { fontSize: 13, color: colors.text.muted },
-  cpBanner: {
-    padding: spacing.sm,
-    marginBottom: spacing.sm,
-    backgroundColor: 'rgba(59, 130, 246, 0.08)',
-    borderColor: 'rgba(59, 130, 246, 0.2)',
-  },
-  cpBannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  cpBannerText: { flex: 1, fontSize: 13, color: colors.text.secondary },
-  cpBannerName: { color: colors.text.primary, fontWeight: '500' },
+/**
+ * Theme-aware styles — rebuilt each render so light/dark values are current.
+ */
+function buildStyles(colors, isDark) {
+  const divider = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
 
-  projectSelector: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: spacing.md,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    marginBottom: spacing.sm,
-  },
-  projectSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  projectSelectorLabel: { ...typography.label, color: colors.text.muted, marginBottom: 2 },
-  projectSelectorName: { fontSize: 15, color: colors.text.primary, fontWeight: '500' },
-  projectDropdown: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
-  projectOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  projectOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
-  projectOptionText: { fontSize: 15, color: colors.text.primary },
-  notifCard: {
-    marginBottom: spacing.md,
-    padding: spacing.md,
-    backgroundColor: 'rgba(245, 158, 11, 0.08)',
-    borderColor: 'rgba(245, 158, 11, 0.25)',
-  },
-  notifHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
-  notifWorker: {
-    fontSize: 13,
-    color: colors.text.secondary,
-    marginBottom: 2,
-    paddingLeft: spacing.sm,
-  },
-  notifMore: {
-    fontSize: 12,
-    color: colors.text.muted,
-    paddingLeft: spacing.sm,
-    marginBottom: spacing.sm,
-  },
-  notifBtn: { marginTop: spacing.sm },
-  loadingCenter: {
-    alignItems: 'center',
-    paddingVertical: spacing.xxl,
-    gap: spacing.md,
-  },
-  loadingText: { fontSize: 14, color: colors.text.muted },
-  sectionLabel: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.md,
-    marginTop: spacing.sm,
-  },
-  logList: { gap: spacing.sm, marginBottom: spacing.lg },
-  logCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    padding: spacing.md,
-    gap: spacing.md,
-  },
-  logCardPressed: { opacity: 0.8 },
-  logIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: borderRadius.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  logInfo: { flex: 1 },
-  logLabel: { fontSize: 15, fontWeight: '500', color: colors.text.primary, marginBottom: 2 },
-  logSubtitle: { fontSize: 12, color: colors.text.muted },
-  logRight: { alignItems: 'flex-end', gap: spacing.xs },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 3,
-    borderRadius: borderRadius.full,
-  },
-  badgeSubmitted: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
-  badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
-  badgePending: { backgroundColor: 'rgba(255,255,255,0.06)' },
-  badgeText: { fontSize: 11, fontWeight: '500' },
-  badgeTextSubmitted: { color: '#4ade80' },
-  badgeTextDraft: { color: '#fbbf24' },
-  badgeTextPending: { color: colors.text.muted },
-  summaryCard: { padding: spacing.md },
-  summaryTitle: { fontSize: 13, color: colors.text.muted, marginBottom: spacing.sm },
-  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  summaryBar: {
-    flex: 1,
-    height: 6,
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  summaryBarFill: { height: '100%', backgroundColor: '#4ade80', borderRadius: 3 },
-  summaryCount: { fontSize: 14, fontWeight: '500', color: colors.text.secondary },
-});
+  return StyleSheet.create({
+    container: { flex: 1 },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+    },
+    logoText: {
+      ...typography.label,
+      fontSize: 18,
+      color: colors.text.primary,
+      letterSpacing: 6,
+    },
+    scrollView: { flex: 1 },
+    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
+    titleSection: { marginBottom: spacing.lg },
+    titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
+    titleText: { fontSize: 32, fontWeight: '200', color: colors.text.primary, marginBottom: spacing.xs },
+    dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+    dateText: { fontSize: 13, color: colors.text.muted },
+
+    cpBanner: { padding: spacing.md, marginBottom: spacing.sm },
+    cpBannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    cpBannerText: { fontSize: 14, color: colors.text.secondary },
+    cpBannerName: { color: colors.text.primary, fontWeight: '500' },
+
+    projectSelector: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      padding: spacing.md,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.xl,
+      borderWidth: 1, borderColor: colors.glass.border,
+      marginBottom: spacing.sm,
+    },
+    projectSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    projectSelectorLabel: { ...typography.label, color: colors.text.muted, marginBottom: 2 },
+    projectSelectorName: { fontSize: 15, color: colors.text.primary, fontWeight: '500' },
+    projectDropdown: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
+    projectOption: {
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      padding: spacing.md,
+      borderBottomWidth: 1, borderBottomColor: divider,
+    },
+    projectOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
+    projectOptionText: { fontSize: 15, color: colors.text.primary },
+
+    // ── Scaffold toggle ──
+    scaffoldToggleCard: { padding: spacing.md, marginBottom: spacing.sm },
+    scaffoldToggleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    scaffoldToggleTitle: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
+    scaffoldToggleDesc: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
+    toggleBtn: {
+      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
+      borderRadius: borderRadius.md,
+      borderWidth: 1, borderColor: colors.border.medium,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)',
+    },
+    toggleBtnActive: {
+      backgroundColor: 'rgba(245, 158, 11, 0.2)',
+      borderColor: 'rgba(245, 158, 11, 0.5)',
+    },
+    toggleBtnText: { fontSize: 12, fontWeight: '600', color: colors.text.muted },
+    toggleBtnTextActive: { color: '#f59e0b' },
+
+    notifCard: {
+      marginBottom: spacing.md, padding: spacing.md,
+      backgroundColor: 'rgba(245, 158, 11, 0.08)',
+      borderColor: 'rgba(245, 158, 11, 0.25)',
+    },
+    notifHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+    notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
+    notifWorker: { fontSize: 13, color: colors.text.secondary, marginBottom: 2, paddingLeft: spacing.sm },
+    notifMore: { fontSize: 12, color: colors.text.muted, paddingLeft: spacing.sm, marginBottom: spacing.sm },
+    notifBtn: { marginTop: spacing.sm },
+
+    loadingCenter: { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.md },
+    loadingText: { fontSize: 14, color: colors.text.muted },
+    sectionLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.md, marginTop: spacing.sm },
+    logList: { gap: spacing.sm, marginBottom: spacing.lg },
+
+    logCard: {
+      flexDirection: 'row', alignItems: 'center',
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.xl,
+      borderWidth: 1, borderColor: colors.glass.border,
+      padding: spacing.md, gap: spacing.md,
+    },
+    logCardDone: { opacity: 0.5 },
+    logCardPressed: { opacity: 0.8 },
+    logIcon: { width: 48, height: 48, borderRadius: borderRadius.lg, alignItems: 'center', justifyContent: 'center' },
+    logInfo: { flex: 1 },
+    logLabel: { fontSize: 15, fontWeight: '500', color: colors.text.primary, marginBottom: 2 },
+    logSubtitle: { fontSize: 12, color: colors.text.muted },
+    logRight: { alignItems: 'flex-end', gap: spacing.xs },
+
+    badge: {
+      flexDirection: 'row', alignItems: 'center', gap: 4,
+      paddingHorizontal: spacing.sm, paddingVertical: 3,
+      borderRadius: borderRadius.full,
+    },
+    badgeSubmitted: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
+    badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
+    badgePending: { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
+    badgeText: { fontSize: 11, fontWeight: '500' },
+    badgeTextSubmitted: { color: '#4ade80' },
+    badgeTextDraft: { color: '#fbbf24' },
+    badgeTextPending: { color: colors.text.muted },
+
+    emptyCard: { alignItems: 'center', padding: spacing.xl, gap: spacing.md },
+    emptyText: { fontSize: 14, color: colors.text.muted, textAlign: 'center' },
+
+    summaryCard: { padding: spacing.md },
+    summaryTitle: { fontSize: 13, color: colors.text.muted, marginBottom: spacing.sm },
+    summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    summaryBar: {
+      flex: 1, height: 6,
+      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+      borderRadius: 3, overflow: 'hidden',
+    },
+    summaryBarFill: { height: '100%', backgroundColor: '#4ade80', borderRadius: 3 },
+    summaryCount: { fontSize: 14, fontWeight: '500', color: colors.text.secondary },
+  });
+}
