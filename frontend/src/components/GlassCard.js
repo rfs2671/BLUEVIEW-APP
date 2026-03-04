@@ -1,3 +1,14 @@
+/**
+ * GlassCard.js
+ * Place at: frontend/src/components/GlassCard.js
+ *
+ * FIX #1: Light mode gradient not filling the box.
+ *   - containerLight now has backgroundColor fallback so there's never a gap
+ *   - Removed BlurView from light mode (it was creating a translucent layer
+ *     that showed the page background through the edges)
+ *   - Gradient + content are direct children of the container
+ */
+
 import React, { useState } from 'react';
 import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
@@ -5,9 +16,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
-/**
- * Helper: returns platform shadow styles from the colors.shadow token.
- */
 function glassShadow() {
   if (!colors.shadow) return {};
   const s = colors.shadow;
@@ -25,10 +33,9 @@ function glassShadow() {
   };
 }
 
-/* ── Light-mode gradient colours ────────────────────────────────────────────── */
 const LIGHT_GRADIENT = [
-  'rgba(255, 255, 255, 0.92)',           // white-ish at top
-  'rgba(219, 234, 254, 0.65)',           // blue-100 at bottom
+  'rgba(255, 255, 255, 0.92)',
+  'rgba(219, 234, 254, 0.65)',
 ];
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -60,7 +67,7 @@ export const GlassCard = ({
   const blurIntensity = variant === 'modal' ? 80 : intensity;
 
   if (isDark) {
-    /* ── DARK MODE — original implementation, unchanged ─────────────────── */
+    /* ── DARK MODE — unchanged ─────────────────────────────────────────── */
     return (
       <CardWrapper
         {...cardProps}
@@ -81,26 +88,26 @@ export const GlassCard = ({
               styles.contentPadded,
               {
                 backgroundColor:
-                  variant === 'modal' ? 'transparent' : colors.glass.background,
+                  variant === 'modal'
+                    ? 'transparent'
+                    : colors.glass.background,
               },
             ]}
           >
             {children}
           </View>
         </BlurView>
-        {/* Border overlay */}
         <View
           style={[
             styles.borderOverlay,
-            isHovered &&
-              hoverEffect && { borderColor: colors.glass.borderHover },
+            isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
           ]}
         />
       </CardWrapper>
     );
   }
 
-  /* ── LIGHT MODE — gradient fills the entire card, no border ──────────── */
+  /* ── LIGHT MODE — gradient fills entire card edge-to-edge ─────────────── */
   return (
     <CardWrapper
       {...cardProps}
@@ -113,16 +120,11 @@ export const GlassCard = ({
     >
       <LinearGradient
         colors={LIGHT_GRADIENT}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0.3, y: 1 }}
+        style={styles.gradientFill}
       />
-      <BlurView
-        intensity={blurIntensity}
-        tint="light"
-        style={StyleSheet.absoluteFillObject}
-      />
-      {/* Content sits on top of gradient + blur */}
+      {/* Content sits directly on top of gradient — no BlurView gap */}
       <View style={styles.contentPadded}>{children}</View>
     </CardWrapper>
   );
@@ -148,7 +150,6 @@ export const StatCard = ({ children, style, onPress }) => {
       };
 
   if (isDark) {
-    /* ── DARK ───────────────────────────────────────────────────────────── */
     return (
       <CardWrapper
         {...cardProps}
@@ -175,7 +176,6 @@ export const StatCard = ({ children, style, onPress }) => {
     );
   }
 
-  /* ── LIGHT — gradient fills edge-to-edge, no border ──────────────────── */
   return (
     <CardWrapper
       {...cardProps}
@@ -190,118 +190,12 @@ export const StatCard = ({ children, style, onPress }) => {
     >
       <LinearGradient
         colors={LIGHT_GRADIENT}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0.3, y: 1 }}
+        style={styles.gradientFill}
       />
       <View style={styles.statPadded}>{children}</View>
     </CardWrapper>
-  );
-};
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   GlassListItem
-   ═══════════════════════════════════════════════════════════════════════════════ */
-export const GlassListItem = ({
-  children,
-  title,
-  subtitle,
-  leftIcon,
-  rightIcon,
-  showBorder,
-  style,
-  onPress,
-  disabled,
-}) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
-
-  const defaultContent = (
-    <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-      {leftIcon && (
-        <View style={{ marginRight: 12 }}>{leftIcon}</View>
-      )}
-      <View style={{ flex: 1 }}>
-        {title && (
-          <Text
-            style={{
-              color: colors.text.primary,
-              fontSize: 16,
-              fontWeight: '500',
-            }}
-          >
-            {title}
-          </Text>
-        )}
-        {subtitle && (
-          <Text
-            style={{ color: colors.text.muted, fontSize: 13, marginTop: 2 }}
-          >
-            {subtitle}
-          </Text>
-        )}
-      </View>
-      {rightIcon && (
-        <View style={{ marginLeft: 12 }}>{rightIcon}</View>
-      )}
-    </View>
-  );
-
-  if (isDark) {
-    /* ── DARK — original with border ────────────────────────────────────── */
-    return (
-      <Pressable
-        onPress={onPress}
-        disabled={disabled}
-        onHoverIn={() => setIsHovered(true)}
-        onHoverOut={() => setIsHovered(false)}
-        style={({ pressed }) => [
-          styles.listItemDark,
-          glassShadow(),
-          isHovered && {
-            backgroundColor: colors.glass.backgroundHover,
-            borderColor: colors.glass.borderHover,
-            transform: [{ scale: 1.01 }, { translateY: -2 }],
-          },
-          pressed && styles.listItemPressed,
-          disabled && styles.listItemDisabled,
-          showBorder && styles.listItemBorder,
-          style,
-        ]}
-      >
-        {children || defaultContent}
-      </Pressable>
-    );
-  }
-
-  /* ── LIGHT — gradient fill, no border ───────────────────────────────── */
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      onHoverIn={() => setIsHovered(true)}
-      onHoverOut={() => setIsHovered(false)}
-      style={({ pressed }) => [
-        styles.listItemLight,
-        glassShadow(),
-        isHovered && {
-          transform: [{ scale: 1.01 }, { translateY: -2 }],
-        },
-        pressed && styles.listItemPressed,
-        disabled && styles.listItemDisabled,
-        style,
-      ]}
-    >
-      <LinearGradient
-        colors={LIGHT_GRADIENT}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
-        style={StyleSheet.absoluteFillObject}
-      />
-      <View style={styles.listItemContent}>
-        {children || defaultContent}
-      </View>
-    </Pressable>
   );
 };
 
@@ -336,6 +230,50 @@ export const IconPod = ({ children, size = 52, style }) => {
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════
+   GlassListItem
+   ═══════════════════════════════════════════════════════════════════════════════ */
+export const GlassListItem = ({
+  children,
+  title,
+  subtitle,
+  leftIcon,
+  rightIcon,
+  showBorder,
+  style,
+  onPress,
+  disabled,
+}) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
+
+  const baseStyle = isDark ? styles.listItemDark : styles.listItemLight;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      onHoverIn={() => setIsHovered(true)}
+      onHoverOut={() => setIsHovered(false)}
+      style={({ pressed }) => [
+        baseStyle,
+        style,
+        isHovered && { backgroundColor: isDark ? colors.glass.backgroundHover : 'rgba(255,255,255,0.95)' },
+        pressed && styles.listItemPressed,
+        disabled && styles.listItemDisabled,
+      ]}
+    >
+      {leftIcon && <View style={{ marginRight: spacing.md }}>{leftIcon}</View>}
+      <View style={{ flex: 1 }}>
+        {title && <Text style={{ fontSize: 16, fontWeight: '500', color: colors.text.primary }}>{title}</Text>}
+        {subtitle && <Text style={{ fontSize: 13, color: colors.text.muted, marginTop: 2 }}>{subtitle}</Text>}
+        {children}
+      </View>
+      {rightIcon && <View style={{ marginLeft: spacing.md }}>{rightIcon}</View>}
+    </Pressable>
+  );
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════════
    STYLES
    ═══════════════════════════════════════════════════════════════════════════════ */
 const styles = StyleSheet.create({
@@ -364,7 +302,14 @@ const styles = StyleSheet.create({
     borderRadius: borderRadius.xxl,
     overflow: 'hidden',
     position: 'relative',
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',  // ← fallback so no gap shows
     transition: 'all 0.2s ease',
+  },
+
+  /* ── Gradient fill — used in light mode cards ───────────────────────────── */
+  gradientFill: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: borderRadius.xxl,
   },
 
   /* ── GlassCard — shared ─────────────────────────────────────────────────── */
@@ -384,10 +329,11 @@ const styles = StyleSheet.create({
     transition: 'all 0.2s ease',
   },
 
-  /* ── StatCard — light (NO border) ───────────────────────────────────────── */
+  /* ── StatCard — light ───────────────────────────────────────────────────── */
   statLight: {
     borderRadius: borderRadius.xl,
     overflow: 'hidden',
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
     transition: 'all 0.2s ease',
   },
 
@@ -417,18 +363,16 @@ const styles = StyleSheet.create({
     transition: 'all 0.2s ease',
   },
 
-  /* ── GlassListItem — light (NO border) ──────────────────────────────────── */
+  /* ── GlassListItem — light ──────────────────────────────────────────────── */
   listItemLight: {
+    backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 0,
-    overflow: 'hidden',
-    transition: 'all 0.2s ease',
-  },
-  listItemContent: {
     padding: spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    transition: 'all 0.2s ease',
   },
 
   listItemPressed: {
