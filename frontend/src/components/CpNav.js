@@ -1,27 +1,35 @@
+/**
+ * CpNav.js
+ * Place at: frontend/src/components/CpNav.js
+ *
+ * FIX #2: Removed the "Log Books" tab (/logbooks/books) because /logbooks
+ * IS the dashboard. Having both "Dashboard" and "Log Books" point to the
+ * same content was confusing. Now: Dashboard, Documents, Settings.
+ */
+
 import React from 'react';
 import { View, StyleSheet, Pressable, Text } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { BlurView } from 'expo-blur';
-import { LayoutDashboard, BookOpen, FolderOpen, Settings } from 'lucide-react-native';
+import { LayoutDashboard, FolderOpen, Settings } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
 const CP_NAV_ITEMS = [
-  { path: '/logbooks',       icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/logbooks/books', icon: BookOpen,        label: 'Log Books' },
-  { path: '/documents',      icon: FolderOpen,      label: 'Documents' },
-  { path: '/settings',       icon: Settings,        label: 'Settings'  },
+  { path: '/logbooks',  icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/documents', icon: FolderOpen,      label: 'Documents' },
+  { path: '/settings',  icon: Settings,        label: 'Settings'  },
 ];
 
-const NavItem = ({ item, isActive, onPress }) => {
+const NavItem = ({ item, isActive, onPress, colors: c }) => {
   const Icon = item.icon;
   return (
     <Pressable
       onPress={onPress}
       style={[styles.navItem, isActive && styles.navItemActive]}
     >
-      <Icon size={18} strokeWidth={1.5} color={isActive ? colors.text.primary : colors.text.muted} />
-      <Text style={[styles.navLabel, { color: isActive ? colors.text.primary : colors.text.muted }]}>
+      <Icon size={18} strokeWidth={1.5} color={isActive ? c.text.primary : c.text.muted} />
+      <Text style={[styles.navLabel, { color: isActive ? c.text.primary : c.text.muted }]}>
         {item.label}
       </Text>
     </Pressable>
@@ -31,26 +39,26 @@ const NavItem = ({ item, isActive, onPress }) => {
 const CpNav = () => {
   const router   = useRouter();
   const pathname = usePathname();
-  const { isDark } = useTheme();
+  const { isDark, colors: c } = useTheme();
 
   return (
     <View style={styles.container}>
       <View style={styles.innerContainer}>
         <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-          <View style={[styles.blurContent, { backgroundColor: colors.glass.background }]}>
+          <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : 'rgba(255,255,255,0.90)' }]}>
             <View style={styles.nav}>
               {CP_NAV_ITEMS.map((item) => {
                 const isActive =
                   pathname === item.path ||
-                  (item.path === '/logbooks/books' &&
-                   pathname.startsWith('/logbooks/') &&
-                   pathname !== '/logbooks');
+                  (item.path === '/logbooks' &&
+                   pathname.startsWith('/logbooks/'));
                 return (
                   <NavItem
                     key={item.path}
                     item={item}
                     isActive={isActive}
                     onPress={() => router.push(item.path)}
+                    colors={c}
                   />
                 );
               })}
