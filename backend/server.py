@@ -874,6 +874,7 @@ async def get_me(current_user = Depends(get_current_user)):
     user = dict(current_user)
     if "password" in user:
         del user["password"]
+    return user
 
 @api_router.put("/auth/profile")
 async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_current_user)):
