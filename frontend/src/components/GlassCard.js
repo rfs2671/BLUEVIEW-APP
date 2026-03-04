@@ -147,9 +147,21 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
 
 /**
  * IconPod - Circular icon container
+ *
+ * Light mode: bg-[#1565C0]/10, border-[#1565C0]/20   (from colors.iconPod)
+ * Dark  mode: transparent bg,  border from glass.border (from colors.iconPod)
  */
 export const IconPod = ({ children, size = 52, style }) => (
-  <View style={[styles.iconPod, { width: size, height: size }, style]}>
+  <View style={[
+    styles.iconPod,
+    {
+      width: size,
+      height: size,
+      backgroundColor: colors.iconPod.background,
+      borderColor: colors.iconPod.border,
+    },
+    style,
+  ]}>
     {children}
   </View>
 );
@@ -193,11 +205,10 @@ const styles = StyleSheet.create({
   },
   iconPod: {
     borderRadius: borderRadius.full,
-    backgroundColor: 'transparent',
     borderWidth: 1,
-    borderColor: colors.glass.border,
     alignItems: 'center',
     justifyContent: 'center',
+    // backgroundColor and borderColor set inline from colors.iconPod tokens
   },
   listItem: {
     backgroundColor: colors.glass.background,
