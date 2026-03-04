@@ -148,23 +148,42 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
 /**
  * IconPod - Circular icon container
  *
- * Light mode: bg-[#1565C0]/10, border-[#1565C0]/20   (from colors.iconPod)
- * Dark  mode: transparent bg,  border from glass.border (from colors.iconPod)
+ * Light mode: bg-[#1565C0]/10, border-[#1565C0]/20, icon color #1565C0
+ * Dark  mode: transparent bg, glass border, icon color text.secondary
+ *
+ * Automatically re-colors child icons to colors.iconPod.iconColor unless
+ * the child explicitly opts out via the `preserveColor` prop.
+ *
+ * Uses React.Children.map to clone lucide-react-native icons (or any
+ * element accepting a `color` prop) with the theme-appropriate color.
  */
-export const IconPod = ({ children, size = 52, style }) => (
-  <View style={[
-    styles.iconPod,
-    {
-      width: size,
-      height: size,
-      backgroundColor: colors.iconPod.background,
-      borderColor: colors.iconPod.border,
-    },
-    style,
-  ]}>
-    {children}
-  </View>
-);
+export const IconPod = ({ children, size = 52, style }) => {
+  const themedChildren = React.Children.map(children, (child) => {
+    // Only clone valid React elements that accept a color prop (icons)
+    if (!React.isValidElement(child)) return child;
+    // Skip if the child has preserveColor set to opt out of auto-coloring
+    if (child.props.preserveColor) return child;
+    // Clone with the theme's iconPod color
+    return React.cloneElement(child, {
+      color: colors.iconPod.iconColor,
+    });
+  });
+
+  return (
+    <View style={[
+      styles.iconPod,
+      {
+        width: size,
+        height: size,
+        backgroundColor: colors.iconPod.background,
+        borderColor: colors.iconPod.border,
+      },
+      style,
+    ]}>
+      {themedChildren}
+    </View>
+  );
+};
 
 const styles = StyleSheet.create({
   container: {
