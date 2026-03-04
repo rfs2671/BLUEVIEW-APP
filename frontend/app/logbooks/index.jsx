@@ -103,10 +103,7 @@ export default function LogBooksScreen() {
   const [todayLogs, setTodayLogs] = useState({});
   const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0 });
   const [cpName, setCpName] = useState('');
-
-  // Scaffold state: persisted per-project
   const [scaffoldActive, setScaffoldActive] = useState(false);
-  // Toolbox talk weekly tracking
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
 
   const today = new Date().toISOString().split('T')[0];
@@ -114,7 +111,6 @@ export default function LogBooksScreen() {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
   });
 
-  // Build styles INSIDE the component so they use current theme colors
   const styles = buildStyles(colors, isDark);
 
   useEffect(() => {
@@ -124,9 +120,7 @@ export default function LogBooksScreen() {
   }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchInitial();
-    }
+    if (isAuthenticated) fetchInitial();
   }, [isAuthenticated]);
 
   const fetchInitial = async () => {
@@ -164,19 +158,14 @@ export default function LogBooksScreen() {
       ]);
 
       const logMap = {};
-      (Array.isArray(logs) ? logs : []).forEach(log => {
-        logMap[log.log_type] = log;
-      });
+      (Array.isArray(logs) ? logs : []).forEach(log => { logMap[log.log_type] = log; });
       setTodayLogs(logMap);
       setNotifications(notifs);
 
-      // Scaffold: active if scaffold_erected is true
       const isScaffoldUp = scaffoldInfo?.scaffold_erected === true
         || (scaffoldInfo?.scaffold_erector && scaffoldInfo?.scaffold_erected !== false)
         || false;
       setScaffoldActive(isScaffoldUp);
-
-      // Toolbox: done this week if submitted today (backend tracks weekly)
       setToolboxDoneThisWeek(logMap['toolbox_talk']?.status === 'submitted');
     } catch (error) {
       console.error('Failed to fetch project logbooks:', error);
@@ -211,7 +200,6 @@ export default function LogBooksScreen() {
     router.replace('/login');
   };
 
-  /** Toggle scaffold erected state for this project */
   const handleToggleScaffold = async () => {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
@@ -224,28 +212,23 @@ export default function LogBooksScreen() {
         next ? 'Scaffold log will now appear daily' : 'Scaffold log hidden until re-activated',
       );
     } catch (e) {
-      setScaffoldActive(!next); // rollback
+      setScaffoldActive(!next);
       toast.error('Error', 'Could not update scaffold status');
     }
   };
 
-  /** Which logbooks should appear today? */
   const getVisibleLogTypes = () => {
     return LOG_TYPES.filter((lt) => {
       switch (lt.visibility) {
-        case 'always':
-          return true;
-        case 'scaffold':
-          return scaffoldActive;
-        case 'weekly':
-          return !toolboxDoneThisWeek;
+        case 'always': return true;
+        case 'scaffold': return scaffoldActive;
+        case 'weekly': return !toolboxDoneThisWeek;
         case 'first_time': {
           const hasUnsigned = (notifications?.unsigned_orientations || 0) > 0;
           const notSubmittedToday = todayLogs['subcontractor_orientation']?.status !== 'submitted';
           return hasUnsigned || notSubmittedToday;
         }
-        default:
-          return true;
+        default: return true;
       }
     });
   };
@@ -294,96 +277,101 @@ export default function LogBooksScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.titleSection}>
+          {/* ═══ SINGLE HERO CARD: title + CP banner + project + scaffold ═══ */}
+          <GlassCard style={styles.heroCard}>
+            {/* Title section */}
             <Text style={styles.titleLabel}>COMPLIANCE</Text>
             <Text style={styles.titleText}>Log Books</Text>
             <View style={styles.dateRow}>
               <Calendar size={14} strokeWidth={1.5} color={colors.text.muted} />
               <Text style={styles.dateText}>{todayFormatted}</Text>
             </View>
-          </View>
 
-          {/* CP name banner */}
-          {cpName ? (
-            <GlassCard style={styles.cpBanner}>
+            {/* CP name banner */}
+            {cpName ? (
               <View style={styles.cpBannerRow}>
                 <ShieldCheck size={16} strokeWidth={1.5} color="#3b82f6" />
                 <Text style={styles.cpBannerText}>
                   Signing as <Text style={styles.cpBannerName}>{cpName}</Text>
                 </Text>
               </View>
-            </GlassCard>
-          ) : null}
+            ) : null}
 
-          {/* Project selector */}
-          <Pressable
-            style={styles.projectSelector}
-            onPress={() => setShowProjectPicker(!showProjectPicker)}
-          >
-            <View style={styles.projectSelectorLeft}>
-              <IconPod size={40}>
-                <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
-              <View>
-                <Text style={styles.projectSelectorLabel}>PROJECT</Text>
-                <Text style={styles.projectSelectorName}>
-                  {selectedProject?.name || 'Select a project'}
-                </Text>
-              </View>
-            </View>
-            <ChevronDown
-              size={18}
-              strokeWidth={1.5}
-              color={colors.text.muted}
-              style={{ transform: [{ rotate: showProjectPicker ? '180deg' : '0deg' }] }}
-            />
-          </Pressable>
+            {/* Divider */}
+            <View style={styles.heroDivider} />
 
-          {showProjectPicker && (
-            <GlassCard style={styles.projectDropdown}>
-              {projects.map((p) => (
-                <Pressable
-                  key={p._id || p.id}
-                  style={[
-                    styles.projectOption,
-                    (p._id || p.id) === (selectedProject?._id || selectedProject?.id) &&
-                      styles.projectOptionActive,
-                  ]}
-                  onPress={() => handleProjectSelect(p)}
-                >
-                  <Text style={styles.projectOptionText}>{p.name}</Text>
-                  {(p._id || p.id) === (selectedProject?._id || selectedProject?.id) && (
-                    <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
-                  )}
-                </Pressable>
-              ))}
-            </GlassCard>
-          )}
-
-          {/* ── Scaffold toggle card ── */}
-          {selectedProject && (
-            <GlassCard style={styles.scaffoldToggleCard}>
-              <View style={styles.scaffoldToggleRow}>
-                <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.scaffoldToggleTitle}>Scaffolding / Overhead Shed</Text>
-                  <Text style={styles.scaffoldToggleDesc}>
-                    {scaffoldActive
-                      ? 'Active — daily inspection required'
-                      : 'Not active — toggle ON when erected'}
+            {/* Project selector */}
+            <Pressable
+              style={styles.projectSelector}
+              onPress={() => setShowProjectPicker(!showProjectPicker)}
+            >
+              <View style={styles.projectSelectorLeft}>
+                <IconPod size={40}>
+                  <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                </IconPod>
+                <View>
+                  <Text style={styles.projectSelectorLabel}>PROJECT</Text>
+                  <Text style={styles.projectSelectorName}>
+                    {selectedProject?.name || 'Select a project'}
                   </Text>
                 </View>
-                <Pressable
-                  onPress={handleToggleScaffold}
-                  style={[styles.toggleBtn, scaffoldActive && styles.toggleBtnActive]}
-                >
-                  <Text style={[styles.toggleBtnText, scaffoldActive && styles.toggleBtnTextActive]}>
-                    {scaffoldActive ? 'ON' : 'N/A'}
-                  </Text>
-                </Pressable>
               </View>
-            </GlassCard>
-          )}
+              <ChevronDown
+                size={18}
+                strokeWidth={1.5}
+                color={colors.text.muted}
+                style={{ transform: [{ rotate: showProjectPicker ? '180deg' : '0deg' }] }}
+              />
+            </Pressable>
+
+            {/* Project dropdown — inside the hero card */}
+            {showProjectPicker && (
+              <View style={styles.projectDropdown}>
+                {projects.map((p) => (
+                  <Pressable
+                    key={p._id || p.id}
+                    style={[
+                      styles.projectOption,
+                      (p._id || p.id) === (selectedProject?._id || selectedProject?.id) &&
+                        styles.projectOptionActive,
+                    ]}
+                    onPress={() => handleProjectSelect(p)}
+                  >
+                    <Text style={styles.projectOptionText}>{p.name}</Text>
+                    {(p._id || p.id) === (selectedProject?._id || selectedProject?.id) && (
+                      <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                    )}
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {/* Scaffold toggle — inside the hero card */}
+            {selectedProject && (
+              <>
+                <View style={styles.heroDivider} />
+                <View style={styles.scaffoldToggleRow}>
+                  <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.scaffoldToggleTitle}>Scaffolding / Overhead Shed</Text>
+                    <Text style={styles.scaffoldToggleDesc}>
+                      {scaffoldActive
+                        ? 'Active — daily inspection required'
+                        : 'Not active — toggle ON when erected'}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={handleToggleScaffold}
+                    style={[styles.toggleBtn, scaffoldActive && styles.toggleBtnActive]}
+                  >
+                    <Text style={[styles.toggleBtnText, scaffoldActive && styles.toggleBtnTextActive]}>
+                      {scaffoldActive ? 'ON' : 'N/A'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </GlassCard>
 
           {/* Missing toolbox talk alert */}
           {missingToolbox.length > 0 && (
@@ -408,7 +396,7 @@ export default function LogBooksScreen() {
             </GlassCard>
           )}
 
-          {/* Log book cards — FILTERED by visibility rules */}
+          {/* Log book cards */}
           {loading ? (
             <View style={styles.loadingCenter}>
               <ActivityIndicator size="large" color={colors.text.primary} />
@@ -449,7 +437,6 @@ export default function LogBooksScreen() {
                 })
               )}
 
-              {/* Show completed toolbox talk as dimmed card (still accessible) */}
               {toolboxDoneThisWeek && (
                 <Pressable
                   onPress={() => handleOpenLog('toolbox_talk')}
@@ -500,52 +487,51 @@ export default function LogBooksScreen() {
   );
 }
 
-/**
- * Theme-aware styles — rebuilt each render so light/dark values are current.
- */
 function buildStyles(colors, isDark) {
   const divider = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
 
   return StyleSheet.create({
     container: { flex: 1 },
     header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
+      flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
     },
     logoText: {
-      ...typography.label,
-      fontSize: 18,
-      color: colors.text.primary,
-      letterSpacing: 6,
+      ...typography.label, fontSize: 18, color: colors.text.primary, letterSpacing: 6,
     },
     scrollView: { flex: 1 },
     scrollContent: { padding: spacing.lg, paddingBottom: 120 },
-    titleSection: { marginBottom: spacing.lg },
+
+    // ── Hero card (single merged card) ──
+    heroCard: { marginBottom: spacing.md },
     titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
     titleText: { fontSize: 32, fontWeight: '200', color: colors.text.primary, marginBottom: spacing.xs },
     dateRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     dateText: { fontSize: 13, color: colors.text.muted },
 
-    cpBanner: { padding: spacing.md, marginBottom: spacing.sm },
-    cpBannerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    cpBannerRow: {
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+      marginTop: spacing.md,
+    },
     cpBannerText: { fontSize: 14, color: colors.text.secondary },
     cpBannerName: { color: colors.text.primary, fontWeight: '500' },
 
+    heroDivider: {
+      height: 1, backgroundColor: divider,
+      marginVertical: spacing.md,
+    },
+
     projectSelector: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-      padding: spacing.md,
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.xl,
-      borderWidth: 1, borderColor: colors.glass.border,
-      marginBottom: spacing.sm,
+      paddingVertical: spacing.sm,
     },
     projectSelectorLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     projectSelectorLabel: { ...typography.label, color: colors.text.muted, marginBottom: 2 },
     projectSelectorName: { fontSize: 15, color: colors.text.primary, fontWeight: '500' },
-    projectDropdown: { marginBottom: spacing.md, padding: 0, overflow: 'hidden' },
+    projectDropdown: {
+      marginTop: spacing.sm, borderRadius: borderRadius.lg, overflow: 'hidden',
+      borderWidth: 1, borderColor: divider,
+    },
     projectOption: {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
       padding: spacing.md,
@@ -554,8 +540,7 @@ function buildStyles(colors, isDark) {
     projectOptionActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
     projectOptionText: { fontSize: 15, color: colors.text.primary },
 
-    // ── Scaffold toggle ──
-    scaffoldToggleCard: { padding: spacing.md, marginBottom: spacing.sm },
+    // ── Scaffold toggle (inside hero card) ──
     scaffoldToggleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     scaffoldToggleTitle: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
     scaffoldToggleDesc: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
@@ -574,8 +559,7 @@ function buildStyles(colors, isDark) {
 
     notifCard: {
       marginBottom: spacing.md, padding: spacing.md,
-      backgroundColor: 'rgba(245, 158, 11, 0.08)',
-      borderColor: 'rgba(245, 158, 11, 0.25)',
+      backgroundColor: 'rgba(245, 158, 11, 0.08)', borderColor: 'rgba(245, 158, 11, 0.25)',
     },
     notifHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
@@ -605,8 +589,7 @@ function buildStyles(colors, isDark) {
 
     badge: {
       flexDirection: 'row', alignItems: 'center', gap: 4,
-      paddingHorizontal: spacing.sm, paddingVertical: 3,
-      borderRadius: borderRadius.full,
+      paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: borderRadius.full,
     },
     badgeSubmitted: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
     badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
