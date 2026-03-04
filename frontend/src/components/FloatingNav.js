@@ -48,7 +48,6 @@ const navItems = [
  * - Light / Dark mode toggle — wired to ThemeContext
  */
 const SettingsModal = ({ visible, onClose, user, onToast }) => {
-  // ─── USE THEME CONTEXT instead of local state ───────────────────────────────
   const { isDark, toggleTheme } = useTheme();
 
   const [name, setName] = useState(user?.full_name || user?.name || '');
@@ -105,7 +104,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
     }
   };
 
-  // ─── Theme-aware inline input style ─────────────────────────────────────────
+  // Theme-aware input style
   const inputStyle = {
     backgroundColor: colors.glass.background,
     borderWidth: 1,
@@ -197,7 +196,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
                 {saving
                   ? <ActivityIndicator size="small" color={colors.text.primary} />
                   : <>
-                      <Check size={15} strokeWidth={2} color={colors.text.primary} />
+                      <Check size={15} strokeWidth={2} color={colors.primary} />
                       <Text style={[modalStyles.saveBtnText, { color: colors.primary }]}>Save Name</Text>
                     </>}
               </Pressable>
@@ -251,7 +250,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
                     {savingPassword
                       ? <ActivityIndicator size="small" color={colors.text.primary} />
                       : <>
-                          <Check size={15} strokeWidth={2} color={colors.text.primary} />
+                          <Check size={15} strokeWidth={2} color={colors.primary} />
                           <Text style={[modalStyles.saveBtnText, { color: colors.primary }]}>
                             Update Password
                           </Text>
@@ -270,95 +269,35 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
 };
 
 const modalStyles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-  },
-  sheet: {
-    maxHeight: '80%',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    overflow: 'hidden',
-  },
-  blurFill: {
-    padding: spacing.lg,
-  },
-  handle: {
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: spacing.md,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.lg,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: '600',
-  },
-  closeBtn: {
-    padding: 4,
-  },
-  scroll: {},
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 1.5,
-    marginBottom: spacing.sm,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.lg,
-  },
-  rowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  rowText: {
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  iconRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-  fieldLabel: {
-    fontSize: 12,
-  },
-  saveBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 11,
-    marginTop: 4,
-  },
-  saveBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
+  overlay:   { flex: 1, justifyContent: 'flex-end' },
+  backdrop:  { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  sheet:     { maxHeight: '80%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  blurFill:  { padding: spacing.lg },
+  handle:    { width: 36, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: spacing.md },
+  header:    { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg },
+  title:     { fontSize: 20, fontWeight: '600' },
+  closeBtn:  { padding: 4 },
+  scroll:    {},
+  sectionLabel: { fontSize: 11, fontWeight: '600', letterSpacing: 1.5, marginBottom: spacing.sm },
+  row:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.lg },
+  rowLeft:   { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  rowText:   { fontSize: 15, fontWeight: '500' },
+  iconRow:   { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  fieldLabel:{ fontSize: 12 },
+  saveBtn:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderRadius: 12, paddingVertical: 11, marginTop: 4 },
+  saveBtnText: { fontSize: 14, fontWeight: '600' },
 });
 
 // ─── NavItem ─────────────────────────────────────────────────────────────────
 
 const NavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
   const Icon = item.icon;
+
+  // active: bg-blue-50 (#EFF6FF) in light, rgba(255,255,255,0.15) in dark
+  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
+  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -367,8 +306,8 @@ const NavItem = ({ item, isActive, onPress }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && styles.navItemActive,
-        isHovered && !isActive && styles.navItemHovered,
+        isActive && { backgroundColor: activeBg },
+        isHovered && !isActive && { backgroundColor: hoverBg },
       ]}
     >
       <Icon
@@ -393,6 +332,10 @@ const NavItem = ({ item, isActive, onPress }) => {
 
 const SettingsNavItem = ({ onPress, isActive }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
+
+  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
+  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -401,8 +344,8 @@ const SettingsNavItem = ({ onPress, isActive }) => {
       onHoverOut={() => setIsHovered(false)}
       style={[
         styles.navItem,
-        isActive && styles.navItemActive,
-        isHovered && !isActive && styles.navItemHovered,
+        isActive && { backgroundColor: activeBg },
+        isHovered && !isActive && { backgroundColor: hoverBg },
       ]}
     >
       <Settings
@@ -422,6 +365,12 @@ const SettingsNavItem = ({ onPress, isActive }) => {
 
 // ─── FloatingNav ──────────────────────────────────────────────────────────────
 
+/**
+ * Nav bar spec (light):
+ *   bg-white/90  backdrop-blur-2xl  rounded-[28px]
+ *   border border-blue-200/60
+ *   shadow-xl shadow-blue-900/10
+ */
 const FloatingNav = () => {
   const router = useRouter();
   const pathname = usePathname();
@@ -435,12 +384,24 @@ const FloatingNav = () => {
     }
   };
 
+  // bg-white/90 in light, glass.background in dark
+  const navBg = isDark
+    ? colors.glass.background
+    : 'rgba(255, 255, 255, 0.90)';
+
   return (
     <>
       <View style={styles.container}>
-        <View style={styles.innerContainer}>
+        <View style={[styles.innerContainer, !isDark && {
+          // shadow-xl shadow-blue-900/10
+          shadowColor: 'rgba(30, 58, 138, 0.10)',
+          shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.1,
+          shadowRadius: 24,
+          elevation: 8,
+        }]}>
           <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-            <View style={styles.blurContent}>
+            <View style={[styles.blurContent, { backgroundColor: navBg }]}>
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -461,7 +422,7 @@ const FloatingNav = () => {
                   })}
 
                   {/* Separator */}
-                  <View style={styles.separator} />
+                  <View style={[styles.separator, { backgroundColor: colors.border.subtle }]} />
 
                   {/* Settings button */}
                   <SettingsNavItem
@@ -504,9 +465,7 @@ const styles = StyleSheet.create({
   blur: {
     borderRadius: borderRadius.full,
   },
-  blurContent: {
-    backgroundColor: colors.glass.background,
-  },
+  blurContent: {},
   scrollView: {
     flexGrow: 0,
   },
@@ -522,7 +481,6 @@ const styles = StyleSheet.create({
   separator: {
     width: 1,
     height: 20,
-    backgroundColor: colors.border.subtle,
     marginHorizontal: 4,
   },
   border: {
@@ -540,12 +498,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.lg,
     transition: 'all 0.2s ease',
-  },
-  navItemActive: {
-    backgroundColor: colors.glass.backgroundHover,
-  },
-  navItemHovered: {
-    backgroundColor: colors.glass.background,
   },
   navLabel: {
     fontSize: 13,
