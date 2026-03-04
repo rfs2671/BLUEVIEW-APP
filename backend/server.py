@@ -3821,6 +3821,89 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
     return {"message": "Scaffold info saved"}
 
+@api_router.get("/weather")
+async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, address: Optional[str] = None):
+    """
+    Get current weather using OpenWeather API.
+    Pass lat/lng directly, or address for geocoding.
+    Falls back to NYC (40.7128, -74.0060) if no location provided.
+    """
+    api_key = os.environ.get('OPENWEATHER_API_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Weather API key not configured")
+
+    latitude = lat or 40.7128
+    longitude = lng or -74.0060
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # If address provided but no lat/lng, geocode via OpenWeather
+            if address and not lat:
+                geo_url = (
+                    f"https://api.openweathermap.org/geo/1.0/direct"
+                    f"?q={address}&limit=1&appid={api_key}"
+                )
+                geo_res = await client.get(geo_url)
+                if geo_res.status_code == 200:
+                    geo_data = geo_res.json()
+                    if geo_data and len(geo_data) > 0:
+                        latitude = geo_data[0].get("lat", latitude)
+                        longitude = geo_data[0].get("lon", longitude)
+
+            # Fetch current weather from OpenWeather
+            weather_url = (
+                f"https://api.openweathermap.org/data/2.5/weather"
+                f"?lat={latitude}&lon={longitude}"
+                f"&units=imperial&appid={api_key}"
+            )
+            res = await client.get(weather_url)
+            if res.status_code != 200:
+                logger.error(f"OpenWeather API error: {res.status_code} {res.text}")
+                raise HTTPException(status_code=502, detail="Weather API unavailable")
+
+            data = res.json()
+            main = data.get("main", {})
+            wind = data.get("wind", {})
+            weather_list = data.get("weather", [{}])
+            weather_main = weather_list[0].get("main", "") if weather_list else ""
+            weather_desc = weather_list[0].get("description", "") if weather_list else ""
+
+            # Map OpenWeather main condition to our app's weather options
+            condition_map = {
+                "Clear": "Sunny",
+                "Clouds": "Cloudy",
+                "Rain": "Rainy",
+                "Drizzle": "Rainy",
+                "Thunderstorm": "Stormy",
+                "Snow": "Snow",
+                "Mist": "Fog",
+                "Fog": "Fog",
+                "Haze": "Fog",
+                "Smoke": "Fog",
+                "Dust": "Windy",
+                "Sand": "Windy",
+                "Squall": "Windy",
+                "Tornado": "Stormy",
+            }
+            condition = condition_map.get(weather_main, "Cloudy")
+
+            # Check if it's very windy (> 20 mph) regardless of condition
+            wind_speed = wind.get("speed", 0)
+            if wind_speed > 20 and condition not in ("Stormy", "Snow", "Rainy"):
+                condition = "Windy"
+
+            return {
+                "temperature": main.get("temp"),
+                "feels_like": main.get("feels_like"),
+                "humidity": main.get("humidity"),
+                "wind_speed": wind_speed,
+                "condition": condition,
+                "description": weather_desc,
+            }
+    except httpx.RequestError as e:
+        logger.error(f"Weather fetch failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not fetch weather data")
+
 @api_router.get("/logbooks/project/{project_id}/checkins-today")
 async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user)):
     """Get all workers checked in to a project on a given date (for auto-populating log books)"""
