@@ -1,7 +1,3 @@
-/**
- * Centralized API Utility for Blueview
- * Handles all API requests with JWT authentication
- */
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -530,6 +526,17 @@ export const cpProfileAPI = {
 
   updateProfile: async (data) => {
     const response = await apiClient.put('/api/cp/profile', data);
+    return response.data;
+  },
+};
+
+export const weatherAPI = {
+  getCurrent: async (lat = null, lng = null, address = null) => {
+    const params = {};
+    if (lat) params.lat = lat;
+    if (lng) params.lng = lng;
+    if (address) params.address = address;
+    const response = await apiClient.get('/api/weather', { params });
     return response.data;
   },
 };
