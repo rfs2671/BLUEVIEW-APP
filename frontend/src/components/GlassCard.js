@@ -48,10 +48,10 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
 
   const blurIntensity = variant === 'modal' ? 80 : intensity;
 
-  // Light mode gradient: from-white/85 → to-blue-100/70
+  // Light mode gradient: top-to-bottom, white/90 → blue-100/70
   const lightGradientColors = [
-    colors.glass.background,                             // rgba(255,255,255,0.85)
-    colors.glass.cardGradientEnd || colors.glass.background,  // rgba(219,234,254,0.70)
+    'rgba(255, 255, 255, 0.90)',                              // whiter at top
+    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',   // blue-100/70 at bottom
   ];
 
   return (
@@ -77,8 +77,8 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
           /* Light mode: gradient bg from white/85 → blue-100/70 */
           <LinearGradient
             colors={lightGradientColors}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
+            start={{ x: 0.5, y: 0 }}
+            end={{ x: 0.5, y: 1 }}
             style={styles.content}
           >
             {children}
@@ -114,8 +114,8 @@ export const StatCard = ({ children, style, onPress }) => {
   };
 
   const lightGradientColors = [
-    colors.glass.background,
-    colors.glass.cardGradientEnd || colors.glass.background,
+    'rgba(255, 255, 255, 0.90)',                         // slightly whiter at top
+    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',  // blue-100/70 at bottom
   ];
 
   return (
@@ -137,9 +137,9 @@ export const StatCard = ({ children, style, onPress }) => {
       ) : (
         <LinearGradient
           colors={lightGradientColors}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.statContent}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={styles.statContentFill}
         >
           {children}
         </LinearGradient>
@@ -255,6 +255,11 @@ const styles = StyleSheet.create({
   },
   statContent: {
     padding: spacing.lg,
+  },
+  statContentFill: {
+    padding: spacing.lg,
+    flex: 1,
+    minHeight: 1,
   },
   iconPod: {
     borderRadius: borderRadius.full,
