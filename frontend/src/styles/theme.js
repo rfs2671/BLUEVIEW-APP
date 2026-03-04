@@ -40,7 +40,6 @@ const _dark = {
     subtle:    'rgba(255, 255, 255, 0.3)',
   },
 
-  // Dark mode: transparent pod, muted icon — matches existing behavior
   iconPod: {
     background: 'transparent',
     border:     'rgba(255, 255, 255, 0.15)',
@@ -62,28 +61,14 @@ const _dark = {
 
 // ─── Light palette (Blueview — exact CSS spec) ──────────────────────────────
 //
-//  globals.css background:
-//    base #D6E4F7  +  linear-gradient(180deg, #d0dcf0 0%, #D6E4F7 50%, #ccd8ee 100%)
-//    + radial-gradient(ellipse at top,  rgba(21,101,192,0.08) …)
-//    + radial-gradient(ellipse at bottom, rgba(2,119,189,0.06) …)
-//
 //  Cards / boxes:
 //    bg-gradient-to-br from-white/85 to-blue-100/70
-//    border border-blue-200/60        → #BFDBFE at 60% → rgba(191,219,254,0.60)
-//    shadow-xl shadow-blue-900/15     → #1e3a5f-ish at 15%
+//    border border-blue-200/60        → rgba(191,219,254,0.60)
+//    shadow-xl shadow-blue-900/15
 //    hover:border-blue-300            → #93C5FD
 //
-//  Text:
-//    primary  #0A1929
-//    muted    #0A1929/50, #0A1929/40
-//
-//  Primary / accent:  #1565C0
-//    icon bg:  bg-[#1565C0]/10
-//    icon border: border-[#1565C0]/20
-//
-//  Nav bar:
-//    bg-white/90  backdrop-blur-2xl  border-blue-200/60
-//    active: bg-blue-50 (#EFF6FF)
+//  Icon pods:
+//    bg-[#1565C0]/10  border-[#1565C0]/20  icon: #1565C0
 //
 // ─────────────────────────────────────────────────────────────────────────────
 const _light = {
@@ -92,29 +77,22 @@ const _light = {
   error:   '#C62828',
   primary: '#1565C0',
 
-  // linear-gradient(180deg, #d0dcf0 0%, #D6E4F7 50%, #ccd8ee 100%)
   background: {
     start:  '#d0dcf0',
     middle: '#D6E4F7',
     end:    '#ccd8ee',
   },
 
-  // ── Glass surfaces ─────────────────────────────────────────────────────────
-  //  bg-gradient-to-br from-white/85 to-blue-100/70
-  //  border border-blue-200/60           → rgba(191,219,254,0.60)
-  //  hover:border-blue-300               → #93C5FD
-  //  shadow-xl shadow-blue-900/15        → mapped in shadow token below
   glass: {
     background:      'rgba(255, 255, 255, 0.85)',   // from-white/85
     backgroundHover: 'rgba(255, 255, 255, 0.95)',
     border:          'rgba(191, 219, 254, 0.60)',   // border-blue-200/60
     borderHover:     'rgba(147, 197, 253, 1.0)',     // border-blue-300
-    card:            'rgba(255, 255, 255, 0.80)',   // bg-white/80 (Recent Activity cards)
+    card:            'rgba(255, 255, 255, 0.80)',   // bg-white/80
     cardHover:       'rgba(255, 255, 255, 0.92)',
     cardGradientEnd: 'rgba(219, 234, 254, 0.70)',   // to-blue-100/70 (#DBEAFE at 70%)
   },
 
-  // shadow-xl shadow-blue-900/15  → blue-900 is #1e3a8a
   shadow: {
     color:   'rgba(30, 58, 138, 0.15)',
     offset:  { width: 0, height: 8 },
@@ -122,23 +100,19 @@ const _light = {
     radius:  24,
   },
 
-  // Structural borders (blue-200 variants)
   border: {
     subtle: 'rgba(191, 219, 254, 0.40)',   // blue-200/40
     medium: 'rgba(191, 219, 254, 0.60)',   // blue-200/60
     strong: 'rgba(147, 197, 253, 0.70)',   // blue-300/70
   },
 
-  // Text: #0A1929 at varying opacities
   text: {
-    primary:   '#0A1929',                            // full
-    secondary: 'rgba(10, 25, 41, 0.50)',             // /50
-    muted:     'rgba(10, 25, 41, 0.40)',             // /40
+    primary:   '#0A1929',
+    secondary: 'rgba(10, 25, 41, 0.50)',
+    muted:     'rgba(10, 25, 41, 0.40)',
     subtle:    'rgba(10, 25, 41, 0.22)',
   },
 
-  // ── Icon pod (circular icon containers) ────────────────────────────────────
-  //  bg-[#1565C0]/10  border-[#1565C0]/20  icon color: #1565C0
   iconPod: {
     background: 'rgba(21, 101, 192, 0.10)',   // bg-[#1565C0]/10
     border:     'rgba(21, 101, 192, 0.20)',   // border-[#1565C0]/20
@@ -174,16 +148,11 @@ function _deepAssign(target, source) {
 export const colors = {};
 _deepAssign(colors, _dark);
 
-/**
- * Called by ThemeContext.toggleTheme() before screens remount.
- * Mutates colors in-place so every StyleSheet.create() that runs
- * during remount reads the correct new palette.
- */
 export function applyTheme(mode) {
   _deepAssign(colors, mode === 'light' ? _light : _dark);
 }
 
-// ─── Static tokens (unchanged from original) ─────────────────────────────────
+// ─── Static tokens ───────────────────────────────────────────────────────────
 export const spacing = {
   xs: 4,
   sm: 8,
