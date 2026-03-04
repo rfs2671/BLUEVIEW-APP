@@ -84,7 +84,7 @@ export default function DashboardScreen() {
       const [workersData, projectsData, activeCheckInsData] = await Promise.all([
         workersAPI.getAll(),
         projectsAPI.getAll(),
-        checkinsAPI.getAll(),
+        checkinsAPI.getByDate(new Date()),
       ]);
 
       setWorkers(Array.isArray(workersData) ? workersData : []);
