@@ -1,3 +1,11 @@
+/**
+ * login.jsx
+ * Place at: frontend/app/login.jsx
+ *
+ * FIX: authLoading state now renders inside AnimatedBackground with Blueview
+ * logo + spinner. Previously was a bare <View> with white text on white bg.
+ */
+
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -11,12 +19,6 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
 
-/**
- * Routing logic after login:
- *   site_mode  → /site
- *   role=cp    → /logbooks   (CP's entire app is logbooks)
- *   everyone else → /        (admin dashboard)
- */
 function getRedirectPath(userData) {
   if (userData.site_mode) return '/site';
   if (userData.role === 'cp') return '/logbooks';
@@ -34,7 +36,6 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Redirect if already authenticated (e.g. app restart with valid session)
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
       if (siteMode) {
@@ -76,12 +77,18 @@ export default function LoginScreen() {
     }
   };
 
+  // FIX: branded splash instead of bare white View
   if (authLoading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.text.primary} />
-        <Text style={styles.loadingText}>LOADING</Text>
-      </View>
+      <AnimatedBackground>
+        <View style={styles.loadingContainer}>
+          <View style={styles.logoIcon}>
+            <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
+          </View>
+          <Text style={styles.logoTextLoading}>BLUEVIEW</Text>
+          <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
+        </View>
+      </AnimatedBackground>
     );
   }
 
@@ -142,11 +149,10 @@ export default function LoginScreen() {
 
               <GlassButton
                 title={loading ? 'Signing in...' : 'Sign In'}
-                icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color="#fff" /> : null}
+                icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
                 onPress={handleSubmit}
                 loading={loading}
-                disabled={loading}
-                style={styles.loginBtn}
+                style={styles.submitBtn}
               />
             </View>
           </GlassCard>
@@ -157,79 +163,72 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.background?.start || '#0a0a0a',
-    gap: spacing.md,
-  },
-  loadingText: {
-    color: colors.text.muted,
-    fontSize: 12,
-    letterSpacing: 2,
-    fontWeight: '600',
-  },
   container: { flex: 1 },
   content: {
     flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,
+    maxWidth: 440,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   logoContainer: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.xxl,
+    marginBottom: spacing.xl,
   },
   logoIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    width: 48,
+    height: 48,
+    borderRadius: borderRadius.lg,
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: spacing.sm,
   },
   logoText: {
+    ...typography.label,
     fontSize: 18,
-    fontWeight: '700',
     color: colors.text.primary,
-    letterSpacing: 3,
+    letterSpacing: 6,
   },
-  card: {
-    width: '100%',
-    maxWidth: 400,
-    padding: spacing.xl,
+  logoTextLoading: {
+    ...typography.label,
+    fontSize: 18,
+    color: colors.text.primary,
+    letterSpacing: 6,
+    marginTop: spacing.sm,
   },
+  card: { padding: spacing.xl },
   welcomeSection: { marginBottom: spacing.xl },
   welcomeLabel: {
-    fontSize: 11,
-    fontWeight: '600',
+    ...typography.label,
     color: colors.text.muted,
-    letterSpacing: 2,
     marginBottom: spacing.xs,
   },
   welcomeTitle: {
     fontSize: 32,
     fontWeight: '200',
     color: colors.text.primary,
-    letterSpacing: -0.5,
   },
   form: { gap: spacing.md },
   inputGroup: { gap: spacing.xs },
   inputLabel: {
-    fontSize: 11,
-    fontWeight: '600',
+    ...typography.label,
     color: colors.text.muted,
-    letterSpacing: 1,
   },
   errorText: {
     fontSize: 13,
-    color: '#f87171',
+    color: colors.error || '#f87171',
     textAlign: 'center',
   },
-  loginBtn: {
+  submitBtn: {
     marginTop: spacing.sm,
   },
 });
