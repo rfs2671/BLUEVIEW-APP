@@ -1,8 +1,29 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Pressable, Text } from 'react-native';
+import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+
+/**
+ * Helper: returns platform shadow styles from the colors.shadow token.
+ * On web uses boxShadow, on native uses the shadow* props.
+ */
+function glassShadow() {
+  if (!colors.shadow) return {};
+  const s = colors.shadow;
+  if (Platform.OS === 'web') {
+    return {
+      boxShadow: `${s.offset.width}px ${s.offset.height}px ${s.radius}px ${s.color}`,
+    };
+  }
+  return {
+    shadowColor:   s.color,
+    shadowOffset:  s.offset,
+    shadowOpacity: s.opacity,
+    shadowRadius:  s.radius,
+    elevation:     6,
+  };
+}
 
 /**
  * GlassCard - Glassmorphism card component with hover support
@@ -11,7 +32,7 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
   const [isHovered, setIsHovered] = useState(false);
   const { isDark } = useTheme();
   const CardWrapper = onPress ? Pressable : View;
-  
+
   const cardProps = onPress ? {
     onPress,
     onHoverIn: () => setIsHovered(true),
@@ -20,15 +41,15 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
     onMouseEnter: () => hoverEffect && setIsHovered(true),
     onMouseLeave: () => hoverEffect && setIsHovered(false),
   };
-  
-  // Use higher opacity for modals
+
   const blurIntensity = variant === 'modal' ? 80 : intensity;
-  
+
   return (
     <CardWrapper
       {...cardProps}
       style={[
         styles.container,
+        glassShadow(),
         style,
         isHovered && hoverEffect && styles.cardHovered,
       ]}
@@ -55,7 +76,7 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const CardWrapper = onPress ? Pressable : View;
-  
+
   const cardProps = onPress ? {
     onPress,
     onHoverIn: () => setIsHovered(true),
@@ -64,12 +85,13 @@ export const StatCard = ({ children, style, onPress }) => {
     onMouseEnter: () => setIsHovered(true),
     onMouseLeave: () => setIsHovered(false),
   };
-  
+
   return (
     <CardWrapper
       {...cardProps}
       style={[
         styles.statContainer,
+        glassShadow(),
         style,
         isHovered && {
           backgroundColor: colors.glass.backgroundHover,
@@ -88,7 +110,7 @@ export const StatCard = ({ children, style, onPress }) => {
  */
 export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, showBorder, style, onPress, disabled }) => {
   const [isHovered, setIsHovered] = useState(false);
-  
+
   return (
     <Pressable
       onPress={onPress}
@@ -97,6 +119,7 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
         styles.listItem,
+        glassShadow(),
         isHovered && {
           backgroundColor: colors.glass.backgroundHover,
           borderColor: colors.glass.borderHover,
