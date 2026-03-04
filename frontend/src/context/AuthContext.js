@@ -1,14 +1,23 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+/**
+ * AuthContext.js
+ * Place at: frontend/src/context/AuthContext.js
+ *
+ * FIXES:
+ *  1. Network errors during /me validation → fall back to stored user (offline)
+ *  2. Only 401 → clear auth (token invalid)
+ *  3. isValidatingRef prevents 401 interceptor from racing with validateSession
+ *  4. isLoading stays true until validateSession fully resolves
+ */
+
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { authAPI, getToken, getStoredUser, setStoredUser, clearAuth } from '../utils/api';
 
 const AuthContext = createContext(null);
 
-// Helper to decode JWT payload in React Native
 const decodeToken = (token) => {
   try {
     const base64Url = token.split('.')[1];
     const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    // Using global.atob for RN compatibility
     const jsonPayload = decodeURIComponent(
       atob(base64)
         .split('')
@@ -28,22 +37,23 @@ export const AuthProvider = ({ children }) => {
   const [siteMode, setSiteMode] = useState(false);
   const [siteProject, setSiteProject] = useState(null);
 
-  // Check for stored auth on mount
+  // Guard: when true, the 401 interceptor should NOT wipe auth
+  const isValidatingRef = useRef(false);
+
   useEffect(() => {
     validateSession();
   }, []);
 
   const validateSession = async () => {
+    isValidatingRef.current = true;
     try {
       const token = await getToken();
       const storedUser = await getStoredUser();
 
-      // 1. Check if token exists and has valid JWT structure (3 parts)
       if (!token || token.split('.').length !== 3) {
         throw new Error('Invalid or missing token format');
       }
 
-      // 2. Check Expiration (Auto-Cleanup)
       const payload = decodeToken(token);
       if (payload && payload.exp && payload.exp * 1000 < Date.now()) {
         console.log('Session expired - performing auto-cleanup');
@@ -51,75 +61,98 @@ export const AuthProvider = ({ children }) => {
       }
 
       if (token && storedUser) {
-        // 3. Validate with Backend
-        const userData = await authAPI.getMe();
-        const normalizedUser = {
-          ...userData,
-          full_name: userData.full_name || userData.name,
-        };
-        
-        setUser(normalizedUser);
-        await setStoredUser(normalizedUser);
-        setIsAuthenticated(true);
-        
-        // Check site mode
-        if (userData.site_mode) {
-          setSiteMode(true);
-          setSiteProject({
-            id: userData.project_id || storedUser?.project_id,
-            name: userData.project_name || storedUser?.project_name,
-            ...userData.project
-          });
-        } else if (storedUser?.site_mode) {
-          setSiteMode(true);
-          setSiteProject({
-            id: storedUser.project_id,
-            name: storedUser.project_name,
-          });
-        } else {
-          setSiteMode(false);
-          setSiteProject(null);
+        try {
+          const userData = await authAPI.getMe();
+          const normalizedUser = {
+            ...userData,
+            full_name: userData.full_name || userData.name,
+          };
+
+          setUser(normalizedUser);
+          await setStoredUser(normalizedUser);
+          setIsAuthenticated(true);
+
+          if (userData.site_mode) {
+            setSiteMode(true);
+            setSiteProject({
+              id: userData.project_id || storedUser?.project_id,
+              name: userData.project_name || storedUser?.project_name,
+              ...userData.project,
+            });
+          } else if (storedUser?.site_mode) {
+            setSiteMode(true);
+            setSiteProject({
+              id: storedUser.project_id,
+              name: storedUser.project_name,
+            });
+          } else {
+            setSiteMode(false);
+            setSiteProject(null);
+          }
+        } catch (apiError) {
+          // 401 = token genuinely invalid → wipe and go to login
+          if (apiError?.response?.status === 401) {
+            throw new Error('Token rejected by server');
+          }
+
+          // Network / 500 / timeout → trust stored user for offline use
+          console.log('Network error during validation, using stored user:', apiError.message);
+          const normalizedUser = {
+            ...storedUser,
+            full_name: storedUser.full_name || storedUser.name,
+          };
+          setUser(normalizedUser);
+          setIsAuthenticated(true);
+
+          if (storedUser?.site_mode) {
+            setSiteMode(true);
+            setSiteProject({
+              id: storedUser.project_id,
+              name: storedUser.project_name,
+            });
+          }
         }
+      } else {
+        throw new Error('No stored session');
       }
     } catch (error) {
       console.error('Auth cleanup triggered:', error.message);
-      await clearAuth(); // Removes token and user from storage via api utility
+      await clearAuth();
       setUser(null);
       setIsAuthenticated(false);
       setSiteMode(false);
       setSiteProject(null);
     } finally {
+      isValidatingRef.current = false;
       setIsLoading(false);
     }
   };
 
   const login = async (email, password) => {
-    // Login returns token, utility handles storage
     await authAPI.login(email, password);
-    
-    // Fetch fresh user data using the new token
+
     const userData = await authAPI.getMe();
     const normalizedUser = {
       ...userData,
       full_name: userData.full_name || userData.name,
     };
-    
+
     setUser(normalizedUser);
     await setStoredUser(normalizedUser);
     setIsAuthenticated(true);
-    
+
     if (userData.site_mode) {
       setSiteMode(true);
       setSiteProject({
         id: userData.project_id,
         name: userData.project_name,
-        ...userData.project
+        ...userData.project,
       });
     } else {
       setSiteMode(false);
       setSiteProject(null);
     }
-    
+
     return normalizedUser;
   };
 
@@ -147,6 +180,7 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         validateSession,
+        _isValidatingRef: isValidatingRef,
       }}
     >
       {children}
