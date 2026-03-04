@@ -1,11 +1,17 @@
+/**
+ * SignaturePad.js
+ * Place at: frontend/src/components/SignaturePad.js
+ *
+ * FIX: Moved styles into buildStyles(colors, isDark) so they use current
+ * theme colors. Hardcoded rgba(255,255,255,...) replaced with theme-aware values.
+ */
+
 import React, { useRef, useState, useEffect } from 'react';
 import { View, StyleSheet, Text, Pressable, PanResponder } from 'react-native';
 import { Trash2, Check, PenTool } from 'lucide-react-native';
-import { colors, spacing, borderRadius, typography } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius, typography } from '../styles/theme';
 
-/**
- * SignaturePad - A drawable signature component
- */
 const SignaturePad = ({
   onSignatureCapture,
   signerName,
@@ -15,6 +21,9 @@ const SignaturePad = ({
   disabled = false,
   existingSignature = null,
 }) => {
+  const { isDark, colors } = useTheme();
+  const styles = buildStyles(colors, isDark);
+
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
   const [isSigned, setIsSigned] = useState(!!existingSignature);
@@ -141,7 +150,6 @@ const SignaturePad = ({
           {!isSigned && !disabled && (
             <Pressable
               onPress={() => {
-                // In a real app, this would open a text input modal
                 const name = prompt('Enter signer name:');
                 if (name && onNameChange) {
                   onNameChange(name);
@@ -242,179 +250,181 @@ const SignaturePad = ({
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.xl,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    padding: spacing.lg,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: spacing.md,
-  },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  title: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.primary,
-  },
-  timestamp: {
-    fontSize: 12,
-    color: colors.text.muted,
-  },
-  nameSection: {
-    marginBottom: spacing.md,
-  },
-  label: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.xs,
-  },
-  nameInput: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: borderRadius.md,
-    padding: spacing.sm,
-  },
-  nameText: {
-    fontSize: 15,
-    color: colors.text.primary,
-  },
-  namePlaceholder: {
-    color: colors.text.muted,
-    fontStyle: 'italic',
-  },
-  nameTextSigned: {
-    fontWeight: '500',
-  },
-  editNameBtn: {
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderRadius: borderRadius.sm,
-  },
-  editNameText: {
-    fontSize: 12,
-    color: colors.text.secondary,
-  },
-  signatureArea: {
-    height: 150,
-    backgroundColor: '#ffffff',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    borderStyle: 'dashed',
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  signatureAreaSigned: {
-    borderColor: 'rgba(0,0,0,0.2)',
-    backgroundColor: '#ffffff',
-    borderStyle: 'solid',
-  },
-  placeholder: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-  },
-  placeholderText: {
-    fontSize: 14,
-    color: '#999999',
-  },
-  signedContent: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  signaturePreview: {
-    width: '100%',
-    height: '100%',
-    position: 'absolute',
-  },
-  signedText: {
-    fontSize: 24,
-    color: '#000000',
-    fontWeight: '300',
-  },
-  signedBadge: {
-    position: 'absolute',
-    bottom: spacing.sm,
-    right: spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 4,
-    borderRadius: borderRadius.full,
-  },
-  signedBadgeText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#4ade80',
-    letterSpacing: 0.5,
-  },
-  actions: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  actionBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-  },
-  actionBtnDisabled: {
-    opacity: 0.5,
-  },
-  actionText: {
-    fontSize: 14,
-    color: colors.text.muted,
-  },
-  confirmBtn: {
-    flex: 2,
-    backgroundColor: '#4ade80',
-    borderColor: '#4ade80',
-  },
-  confirmText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#fff',
-  },
-  clearBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    paddingVertical: spacing.md,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    borderRadius: borderRadius.lg,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  clearText: {
-    fontSize: 14,
-    color: '#ef4444',
-  },
-});
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
+    container: {
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.xl,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      padding: spacing.lg,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: spacing.md,
+    },
+    titleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    title: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.text.primary,
+    },
+    timestamp: {
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+    nameSection: {
+      marginBottom: spacing.md,
+    },
+    label: {
+      ...typography.label,
+      color: colors.text.muted,
+      marginBottom: spacing.xs,
+    },
+    nameInput: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      borderRadius: borderRadius.md,
+      padding: spacing.sm,
+    },
+    nameText: {
+      fontSize: 15,
+      color: colors.text.primary,
+    },
+    namePlaceholder: {
+      color: colors.text.muted,
+      fontStyle: 'italic',
+    },
+    nameTextSigned: {
+      fontWeight: '500',
+    },
+    editNameBtn: {
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.06)',
+      borderRadius: borderRadius.sm,
+    },
+    editNameText: {
+      fontSize: 12,
+      color: colors.text.secondary,
+    },
+    signatureArea: {
+      height: 150,
+      backgroundColor: '#ffffff',
+      borderRadius: borderRadius.lg,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      borderStyle: 'dashed',
+      overflow: 'hidden',
+      position: 'relative',
+    },
+    signatureAreaSigned: {
+      borderColor: 'rgba(0,0,0,0.2)',
+      backgroundColor: '#ffffff',
+      borderStyle: 'solid',
+    },
+    placeholder: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.sm,
+    },
+    placeholderText: {
+      fontSize: 14,
+      color: '#999999',
+    },
+    signedContent: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    signaturePreview: {
+      width: '100%',
+      height: '100%',
+      position: 'absolute',
+    },
+    signedText: {
+      fontSize: 24,
+      color: '#000000',
+      fontWeight: '300',
+    },
+    signedBadge: {
+      position: 'absolute',
+      bottom: spacing.sm,
+      right: spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: 'rgba(74, 222, 128, 0.15)',
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 4,
+      borderRadius: borderRadius.full,
+    },
+    signedBadgeText: {
+      fontSize: 10,
+      fontWeight: '600',
+      color: '#4ade80',
+      letterSpacing: 0.5,
+    },
+    actions: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    actionBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.xs,
+      paddingVertical: spacing.md,
+      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      borderRadius: borderRadius.lg,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    actionBtnDisabled: {
+      opacity: 0.5,
+    },
+    actionText: {
+      fontSize: 14,
+      color: colors.text.muted,
+    },
+    confirmBtn: {
+      flex: 2,
+      backgroundColor: '#4ade80',
+      borderColor: '#4ade80',
+    },
+    confirmText: {
+      fontSize: 14,
+      fontWeight: '500',
+      color: '#fff',
+    },
+    clearBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.xs,
+      paddingVertical: spacing.md,
+      backgroundColor: 'rgba(239, 68, 68, 0.1)',
+      borderRadius: borderRadius.lg,
+      borderWidth: 1,
+      borderColor: 'rgba(239, 68, 68, 0.3)',
+    },
+    clearText: {
+      fontSize: 14,
+      color: '#ef4444',
+    },
+  });
+}
 
 export default SignaturePad;
