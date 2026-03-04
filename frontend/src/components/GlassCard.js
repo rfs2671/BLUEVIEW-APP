@@ -7,7 +7,6 @@ import { useTheme } from '../context/ThemeContext';
 
 /**
  * Helper: returns platform shadow styles from the colors.shadow token.
- * On web uses boxShadow, on native uses the shadow* props.
  */
 function glassShadow() {
   if (!colors.shadow) return {};
@@ -27,10 +26,10 @@ function glassShadow() {
 }
 
 /**
- * GlassCard - Glassmorphism card component with hover support
+ * GlassCard - Glassmorphism card component
  *
- * Light mode: bg-gradient-to-br from-white/85 to-blue-100/70
- * Dark  mode: flat rgba(255,255,255,0.08)
+ * Light mode: vertical gradient (white/90 → blue-100/70), NO border, soft shadow
+ * Dark  mode: flat bg, 1px border, unchanged
  */
 export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffect = true, variant = 'default' }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -48,10 +47,9 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
 
   const blurIntensity = variant === 'modal' ? 80 : intensity;
 
-  // Light mode gradient: top-to-bottom, white/90 → blue-100/70
   const lightGradientColors = [
-    'rgba(255, 255, 255, 0.90)',                              // whiter at top
-    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',   // blue-100/70 at bottom
+    'rgba(255, 255, 255, 0.90)',
+    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',
   ];
 
   return (
@@ -66,7 +64,6 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
     >
       <BlurView intensity={blurIntensity} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
         {isDark || variant === 'modal' ? (
-          /* Dark mode / modal: flat bg */
           <View style={[
             styles.content,
             { backgroundColor: variant === 'modal' ? 'transparent' : colors.glass.background },
@@ -74,7 +71,6 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
             {children}
           </View>
         ) : (
-          /* Light mode: gradient bg from white/85 → blue-100/70 */
           <LinearGradient
             colors={lightGradientColors}
             start={{ x: 0.5, y: 0 }}
@@ -85,19 +81,22 @@ export const GlassCard = ({ children, style, onPress, intensity = 20, hoverEffec
           </LinearGradient>
         )}
       </BlurView>
-      <View style={[
-        styles.border,
-        isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
-      ]} />
+      {/* Border overlay — dark mode only */}
+      {isDark && (
+        <View style={[
+          styles.borderOverlay,
+          isHovered && hoverEffect && { borderColor: colors.glass.borderHover },
+        ]} />
+      )}
     </CardWrapper>
   );
 };
 
 /**
- * StatCard - Statistics card with glass effect and hover support
+ * StatCard - Statistics card
  *
- * Light mode: gradient bg from white/85 → blue-100/70
- * Dark  mode: flat glass background
+ * Light mode: vertical gradient, NO border
+ * Dark  mode: flat bg, 1px border
  */
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -114,32 +113,34 @@ export const StatCard = ({ children, style, onPress }) => {
   };
 
   const lightGradientColors = [
-    'rgba(255, 255, 255, 0.90)',                         // slightly whiter at top
-    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',  // blue-100/70 at bottom
+    'rgba(255, 255, 255, 0.90)',
+    colors.glass.cardGradientEnd || 'rgba(219, 234, 254, 0.70)',
   ];
 
   return (
     <CardWrapper
       {...cardProps}
       style={[
-        styles.statContainer,
+        isDark ? styles.statContainerDark : styles.statContainerLight,
         glassShadow(),
         style,
         isHovered && {
           backgroundColor: colors.glass.backgroundHover,
-          borderColor: colors.glass.borderHover,
+          ...(isDark && { borderColor: colors.glass.borderHover }),
           transform: [{ scale: 1.03 }, { translateY: -4 }],
         },
       ]}
     >
       {isDark ? (
-        <View style={[styles.statContent, { backgroundColor: colors.glass.background }]}>{children}</View>
+        <View style={[styles.statContent, { backgroundColor: colors.glass.background }]}>
+          {children}
+        </View>
       ) : (
         <LinearGradient
           colors={lightGradientColors}
           start={{ x: 0.5, y: 0 }}
           end={{ x: 0.5, y: 1 }}
-          style={styles.statContentFill}
+          style={styles.statContent}
         >
           {children}
         </LinearGradient>
@@ -149,10 +150,11 @@ export const StatCard = ({ children, style, onPress }) => {
 };
 
 /**
- * GlassListItem - Interactive list item with hover support
+ * GlassListItem - Interactive list item
  */
 export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, showBorder, style, onPress, disabled }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const { isDark } = useTheme();
 
   return (
     <Pressable
@@ -161,11 +163,11 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
       style={({ pressed }) => [
-        styles.listItem,
+        isDark ? styles.listItemDark : styles.listItemLight,
         glassShadow(),
         isHovered && {
           backgroundColor: colors.glass.backgroundHover,
-          borderColor: colors.glass.borderHover,
+          ...(isDark && { borderColor: colors.glass.borderHover }),
           transform: [{ scale: 1.01 }, { translateY: -2 }],
         },
         pressed && styles.listItemPressed,
@@ -190,9 +192,6 @@ export const GlassListItem = ({ children, title, subtitle, leftIcon, rightIcon, 
 
 /**
  * IconPod - Circular icon container
- *
- * Light mode: bg-[#1565C0]/10, border-[#1565C0]/20, icon color #1565C0
- * Dark  mode: transparent bg, glass border, icon color text.secondary
  *
  * Automatically re-colors child icons to colors.iconPod.iconColor.
  */
@@ -222,6 +221,7 @@ export const IconPod = ({ children, size = 52, style }) => {
 };
 
 const styles = StyleSheet.create({
+  /* ── GlassCard ──────────────────────────────────────────────────────────── */
   container: {
     borderRadius: borderRadius.xxl,
     overflow: 'hidden',
@@ -235,7 +235,7 @@ const styles = StyleSheet.create({
   content: {
     padding: spacing.xl,
   },
-  border: {
+  borderOverlay: {
     ...StyleSheet.absoluteFillObject,
     borderRadius: borderRadius.xxl,
     borderWidth: 1,
@@ -246,32 +246,49 @@ const styles = StyleSheet.create({
   cardHovered: {
     transform: [{ scale: 1.01 }],
   },
-  statContainer: {
+
+  /* ── StatCard ───────────────────────────────────────────────────────────── */
+  statContainerDark: {
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
     overflow: 'hidden',
     transition: 'all 0.2s ease',
   },
+  statContainerLight: {
+    borderRadius: borderRadius.xl,
+    borderWidth: 0,
+    overflow: 'hidden',
+    transition: 'all 0.2s ease',
+  },
   statContent: {
     padding: spacing.lg,
   },
-  statContentFill: {
-    padding: spacing.lg,
-    flex: 1,
-    minHeight: 1,
-  },
+
+  /* ── IconPod ────────────────────────────────────────────────────────────── */
   iconPod: {
     borderRadius: borderRadius.full,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  listItem: {
+
+  /* ── GlassListItem ─────────────────────────────────────────────────────── */
+  listItemDark: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
+    padding: spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    transition: 'all 0.2s ease',
+  },
+  listItemLight: {
+    backgroundColor: colors.glass.background,
+    borderRadius: borderRadius.xl,
+    borderWidth: 0,
     padding: spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
