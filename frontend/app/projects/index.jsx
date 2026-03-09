@@ -32,6 +32,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+// ── FIX #3: Import AddressAutocomplete ──
+import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 
 export default function ProjectsScreen() {
   const router = useRouter();
@@ -43,7 +45,8 @@ export default function ProjectsScreen() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [projects, setProjects] = useState([]);
-  const [newProject, setNewProject] = useState({ name: '', location: '' });
+  // ── FIX #3: Single address field instead of name + location ──
+  const [newProject, setNewProject] = useState({ address: '' });
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -73,27 +76,31 @@ export default function ProjectsScreen() {
     }
   };
 
+  // ── FIX #3: Search also matches against address field ──
   const filteredProjects = projects.filter(
     (p) =>
       (p.name?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+      (p.address?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
       (p.location?.toLowerCase() || '').includes(searchQuery.toLowerCase())
   );
 
+  // ── FIX #3: Send address as name + address + location ──
   const handleAddProject = async () => {
-    if (!newProject.name.trim() || !newProject.location.trim()) {
-      toast.warning('Validation Error', 'Please fill in all fields');
+    if (!newProject.address.trim()) {
+      toast.warning('Validation Error', 'Please enter a project address');
       return;
     }
 
     setCreating(true);
     try {
       const createdProject = await projectsAPI.create({
-        name: newProject.name,
-        location: newProject.location,
+        name: newProject.address,
+        address: newProject.address,
+        location: newProject.address,
       });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ name: '', location: '' });
+      setNewProject({ address: '' });
       setShowAddModal(false);
       toast.success('Success', 'Project created successfully');
     } catch (error) {
@@ -193,8 +200,9 @@ export default function ProjectsScreen() {
                     <Text style={styles.projectName}>{project.name}</Text>
                     <View style={styles.projectLocation}>
                       <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
+                      {/* ── FIX #3: Show address first, fall back to location ── */}
                       <Text style={styles.projectLocationText}>
-                        {project.location || 'No location'}
+                        {project.address || project.location || 'No location'}
                       </Text>
                     </View>
                   </View>
@@ -269,22 +277,15 @@ export default function ProjectsScreen() {
                   />
                 </View>
 
+                {/* ── FIX #3: Single address autocomplete replaces name + location ── */}
                 <View style={styles.modalForm}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>PROJECT NAME</Text>
-                    <GlassInput
-                      value={newProject.name}
-                      onChangeText={(text) => setNewProject({ ...newProject, name: text })}
-                      placeholder="Downtown Tower Phase 2"
-                    />
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>LOCATION</Text>
-                    <GlassInput
-                      value={newProject.location}
-                      onChangeText={(text) => setNewProject({ ...newProject, location: text })}
-                      placeholder="New York, NY"
+                  <View style={[styles.inputGroup, { zIndex: 100 }]}>
+                    <Text style={styles.inputLabel}>PROJECT ADDRESS</Text>
+                    <AddressAutocomplete
+                      value={newProject.address}
+                      onChangeText={(text) => setNewProject({ ...newProject, address: text })}
+                      onSelect={({ address }) => setNewProject({ ...newProject, address })}
+                      placeholder="Start typing an address..."
                     />
                   </View>
 
@@ -385,7 +386,6 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
-    backgroundColor: colors.glass.background,
     borderRadius: borderRadius.full,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -397,17 +397,14 @@ const styles = StyleSheet.create({
   statusBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
-    backgroundColor: colors.glass.background,
     borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
   statusActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
   },
   statusText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
     color: colors.text.muted,
   },
@@ -416,45 +413,48 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
   },
   emptyState: {
     alignItems: 'center',
-    paddingVertical: spacing.xxl * 2,
+    paddingVertical: spacing.xxl,
     gap: spacing.md,
   },
   emptyText: {
-    fontSize: 16,
+    fontSize: 15,
     color: colors.text.muted,
+    textAlign: 'center',
   },
+  // Modal
   modalOverlay: {
     flex: 1,
-    justifyContent: 'flex-end',
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
   },
   modalContent: {
+    flex: 1,
+    justifyContent: 'flex-end',
     padding: spacing.lg,
   },
   modalCard: {
-    maxWidth: 500,
-    alignSelf: 'center',
-    width: '100%',
+    padding: spacing.xl,
   },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
   },
   modalTitle: {
     fontSize: 20,
-    fontWeight: '300',
+    fontWeight: '500',
     color: colors.text.primary,
   },
   modalForm: {
-    gap: spacing.md,
+    gap: spacing.lg,
   },
   inputGroup: {
     gap: spacing.sm,
@@ -464,6 +464,6 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
   },
   createButton: {
-    marginTop: spacing.sm,
+    marginTop: spacing.md,
   },
 });
