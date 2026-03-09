@@ -1397,7 +1397,7 @@ async def get_projects(current_user = Depends(get_current_user)):
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
 	
-	if project_dict.get("address") and (not project_dict.get("name") or project_dict["name"] == project_dict["address"]):
+    if project_dict.get("address") and (not project_dict.get("name") or project_dict["name"] == project_dict["address"]):
         project_dict["name"] = project_dict["address"]
     if project_dict.get("name") and not project_dict.get("address"):
         project_dict["address"] = project_dict.get("location") or project_dict["name"]
