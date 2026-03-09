@@ -1,21 +1,50 @@
-/**
- * SignaturePad.js
- * Place at: frontend/src/components/SignaturePad.js
- *
- * FIXES:
- *  #5 — Confirm button was always disabled because PanResponder captured
- *        a stale `currentPath` closure (always []) so paths never accumulated.
- *        Fixed with pathsRef + currentPathRef for mutable state inside PanResponder.
- *  #5b — Name input used prompt() which doesn't work on native. Replaced with
- *         an inline TextInput that's always visible when not signed.
- *  Theme — buildStyles(colors, isDark) pattern for light mode text.
- */
-
 import React, { useRef, useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, Text, Pressable, PanResponder, TextInput } from 'react-native';
+import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } from 'react-native';
 import { Trash2, Check, PenTool } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+
+/**
+ * Renders a set of paths as tiny absolutely-positioned dots inside a container.
+ * Works identically on web and native — no SVG needed.
+ */
+function PathRenderer({ paths, strokeColor = '#000000', strokeWidth = 2 }) {
+  if (!paths || paths.length === 0) return null;
+
+  return (
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
+      {paths.map((path, pathIndex) => {
+        if (!path || path.length < 2) return null;
+        // Draw line segments as small View rectangles
+        return path.slice(1).map((point, i) => {
+          const prev = path[i];
+          const dx = point.x - prev.x;
+          const dy = point.y - prev.y;
+          const length = Math.sqrt(dx * dx + dy * dy);
+          if (length === 0) return null;
+          const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+
+          return (
+            <View
+              key={`${pathIndex}-${i}`}
+              style={{
+                position: 'absolute',
+                left: prev.x,
+                top: prev.y - strokeWidth / 2,
+                width: length + 1,
+                height: strokeWidth,
+                backgroundColor: strokeColor,
+                borderRadius: strokeWidth / 2,
+                transform: [{ rotate: `${angle}deg` }],
+                transformOrigin: 'left center',
+              }}
+            />
+          );
+        });
+      })}
+    </View>
+  );
+}
 
 const SignaturePad = ({
   onSignatureCapture,
@@ -73,98 +102,66 @@ const SignaturePad = ({
           const newPaths = [...pathsRef.current, currentPathRef.current];
           pathsRef.current = newPaths;
           setPaths(newPaths);
+          currentPathRef.current = [];
+          setCurrentPath([]);
         }
-        currentPathRef.current = [];
-        setCurrentPath([]);
       },
     })
   ).current;
 
-  const handleClear = () => {
+  const handleClear = useCallback(() => {
     pathsRef.current = [];
     currentPathRef.current = [];
     setPaths([]);
     setCurrentPath([]);
     setIsSigned(false);
-    isSignedRef.current = false;
     setSignatureData(null);
-    if (onSignatureCapture) {
-      onSignatureCapture(null);
-    }
-  };
-
-  const handleConfirm = () => {
-    if (pathsRef.current.length === 0 || !signerName?.trim()) {
-      return;
-    }
-
-    const timestamp = new Date().toISOString();
-    const signature = {
-      paths: pathsRef.current,
-      signer_name: signerName,
-      signed_at: timestamp,
-    };
-
-    setIsSigned(true);
-    isSignedRef.current = true;
-    setSignatureData(signature);
-
-    if (onSignatureCapture) {
-      onSignatureCapture(signature);
-    }
-  };
-
-  const renderPaths = () => {
-    const allPaths = [...paths, currentPath].filter((p) => p.length > 0);
-
-    return allPaths.map((path, pathIndex) => {
-      if (path.length < 2) return null;
-
-      let d = `M ${path[0].x} ${path[0].y}`;
-      for (let i = 1; i < path.length; i++) {
-        d += ` L ${path[i].x} ${path[i].y}`;
-      }
-
-      return (
-        <View key={pathIndex} style={StyleSheet.absoluteFill}>
-          <svg width="100%" height="100%" style={{ position: 'absolute' }}>
-            <path d={d} stroke="#000000" strokeWidth="2" fill="none" strokeLinecap="round" />
-          </svg>
-        </View>
-      );
-    });
-  };
-
-  const formatTimestamp = (timestamp) => {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
+    isSignedRef.current = false;
+    onSignatureCapture?.(null);
+  }, [onSignatureCapture]);
 
   const canConfirm = paths.length > 0 && signerName?.trim();
 
+  const handleConfirm = useCallback(() => {
+    if (!canConfirm) return;
+
+    const sigData = {
+      paths: pathsRef.current,
+      signerName: signerName?.trim(),
+      timestamp: new Date().toISOString(),
+    };
+
+    setSignatureData(sigData);
+    setIsSigned(true);
+    isSignedRef.current = true;
+    onSignatureCapture?.(sigData);
+  }, [canConfirm, signerName, onSignatureCapture]);
+
+  // ── Render active drawing paths (current stroke + completed strokes) ──
+  const renderPaths = () => {
+    const allPaths = currentPath.length > 0 ? [...paths, currentPath] : paths;
+    return <PathRenderer paths={allPaths} strokeColor="#000000" strokeWidth={2} />;
+  };
+
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
         <View style={styles.titleRow}>
-          <PenTool size={16} strokeWidth={1.5} color="#999999" />
+          <PenTool size={16} strokeWidth={1.5} color={colors.text.muted} />
           <Text style={styles.title}>{title}</Text>
         </View>
-        {isSigned && signatureData?.signed_at && (
-          <Text style={styles.timestamp}>{formatTimestamp(signatureData.signed_at)}</Text>
+        {isSigned && signatureData?.timestamp && (
+          <Text style={styles.timestamp}>
+            {new Date(signatureData.timestamp).toLocaleTimeString()}
+          </Text>
         )}
       </View>
 
-      {/* Name Input — inline TextInput instead of prompt() */}
+      {/* Name Input */}
       <View style={styles.nameSection}>
-        <Text style={styles.label}>PRINTED NAME</Text>
-        {isSigned || disabled ? (
+        <Text style={styles.label}>SIGNER NAME</Text>
+        {isSigned ? (
           <View style={styles.nameDisplay}>
             <Text style={[styles.nameText, isSigned && styles.nameTextSigned]}>
               {signerName || 'No name'}
@@ -193,25 +190,11 @@ const SignaturePad = ({
           <View style={styles.signedContent}>
             {signatureData?.paths ? (
               <View style={styles.signaturePreview}>
-                <svg width="100%" height="100%">
-                  {signatureData.paths.map((path, pathIndex) => {
-                    if (path.length < 2) return null;
-                    let d = `M ${path[0].x} ${path[0].y}`;
-                    for (let i = 1; i < path.length; i++) {
-                      d += ` L ${path[i].x} ${path[i].y}`;
-                    }
-                    return (
-                      <path
-                        key={pathIndex}
-                        d={d}
-                        stroke="#000000"
-                        strokeWidth="2"
-                        fill="none"
-                        strokeLinecap="round"
-                      />
-                    );
-                  })}
-                </svg>
+                <PathRenderer
+                  paths={signatureData.paths}
+                  strokeColor="#000000"
+                  strokeWidth={2}
+                />
               </View>
             ) : (
               <Text style={styles.signedText}>✓ Signed</Text>
