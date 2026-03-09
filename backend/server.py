@@ -3835,7 +3835,38 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
     update = {k: v for k, v in update.items() if v is not None}
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
     return {"message": "Scaffold info saved"}
+# ==================== GOOGLE PLACES AUTOCOMPLETE ====================
 
+@api_router.get("/places/autocomplete")
+async def places_autocomplete(input: str, types: str = "address", current_user = Depends(get_current_user)):
+    """Proxy Google Places Autocomplete to avoid exposing API key on client."""
+    if not GOOGLE_PLACES_API_KEY:
+        raise HTTPException(status_code=501, detail="Google Places API key not configured")
+    
+    if not input or len(input) < 2:
+        return {"predictions": []}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://maps.googleapis.com/maps/api/place/autocomplete/json",
+                params={
+                    "input": input,
+                    "types": types,
+                    "components": "country:us",
+                    "key": GOOGLE_PLACES_API_KEY,
+                },
+                timeout=5.0,
+            )
+            data = response.json()
+            if data.get("status") != "OK" and data.get("status") != "ZERO_RESULTS":
+                logger.warning(f"Places API error: {data.get('status')} - {data.get('error_message', '')}")
+            
+            return {"predictions": data.get("predictions", [])}
+    except httpx.RequestError as e:
+        logger.error(f"Places API request failed: {e}")
+        raise HTTPException(status_code=502, detail="Could not reach Google Places API")
+		
 @api_router.get("/weather")
 async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, address: Optional[str] = None):
     """
