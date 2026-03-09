@@ -2195,7 +2195,7 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
 
 @api_router.post("/checkins")
 async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get_current_user)):
-    """Create a check-in from admin panel"""
+    \"\"\"Create a check-in from admin panel — with duplicate prevention\"\"\"
     worker = None
     if checkin_data.worker_id:
         worker = await db.workers.find_one({"_id": to_query_id(checkin_data.worker_id), "is_deleted": {"$ne": True}})
@@ -2209,7 +2209,22 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         raise HTTPException(status_code=404, detail="Project not found")
     
     now = datetime.now(timezone.utc)
-    checkin_record = {
+    
+    # ── FIX #1: Prevent duplicate check-in for same worker+project today ──
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    existing_checkin = await db.checkins.find_one({
+        "worker_id": str(worker["_id"]),
+        "project_id": str(project["_id"]),
+        "check_in_time": {"$gte": today_start},
+        "status": "checked_in",
+        "is_deleted": {"$ne": True}
+    })
+    
+    if existing_checkin:
+        # Return the EXISTING record instead of creating a duplicate
+        existing_data = serialize_id(existing_checkin)
+        return existing_data
+		    checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_company": worker.get("company"),
@@ -3940,6 +3955,7 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
             "osha_number": worker.get("osha_number") if worker else "",
             "certifications": worker.get("certifications", []) if worker else [],
+            "worker_signature": worker.get("signature") if worker else None,
         })
 
     return result
