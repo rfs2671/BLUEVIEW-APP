@@ -1396,6 +1396,12 @@ async def get_projects(current_user = Depends(get_current_user)):
 @api_router.post("/projects", response_model=ProjectResponse)
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
+	
+	if project_dict.get("address") and (not project_dict.get("name") or project_dict["name"] == project_dict["address"]):
+        project_dict["name"] = project_dict["address"]
+    if project_dict.get("name") and not project_dict.get("address"):
+        project_dict["address"] = project_dict.get("location") or project_dict["name"]
+    
     now = datetime.now(timezone.utc)
     project_dict["created_at"] = now
     project_dict["updated_at"] = now
@@ -2221,10 +2227,10 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
     })
     
     if existing_checkin:
-        # Return the EXISTING record instead of creating a duplicate
         existing_data = serialize_id(existing_checkin)
         return existing_data
-		    checkin_record = {
+
+	checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_company": worker.get("company"),
