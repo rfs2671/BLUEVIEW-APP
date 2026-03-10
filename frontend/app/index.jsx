@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, useWindowDimensions } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -34,7 +34,7 @@ const adminActions = [
 ];
 
 // 2-column grid tile
-const ActionTile = ({ action, onPress }) => {
+const ActionTile = ({ action, onPress, tileWidth }) => {
   const [isHovered, setIsHovered] = useState(false);
   const Icon = action.icon;
   return (
@@ -42,15 +42,17 @@ const ActionTile = ({ action, onPress }) => {
       onPress={onPress}
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
-      style={[styles.actionTile, { backgroundColor: colors.glass.background, borderColor: colors.glass.border }, isHovered && styles.actionTileHovered]}
+      style={[
+        styles.actionTile,
+        { width: tileWidth, backgroundColor: colors.glass.background, borderColor: colors.glass.border },
+        isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
+      ]}
     >
       <IconPod size={40} style={styles.actionIcon}>
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
-      <View style={styles.actionText}>
-        <Text style={[styles.actionTitle, { color: colors.text.primary }]}>{action.title}</Text>
-        <Text style={[styles.actionSubtitle, { color: colors.text.muted }]}>{action.subtitle}</Text>
-      </View>
+      <Text style={[styles.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
+      <Text style={[styles.actionSubtitle, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
     </Pressable>
   );
 };
@@ -145,6 +147,11 @@ export default function DashboardScreen() {
     { icon: MapPin,    value: stats.onSiteNow,      label: isDark ? 'On Site' : 'On Site Now',    path: '/workers'  },
   ];
 
+const { width: screenWidth } = useWindowDimensions();
+  const tilePadding = spacing.lg * 2; // scrollContent horizontal padding
+  const tileGap = spacing.sm;
+  const tileWidth = (screenWidth - tilePadding - tileGap) / 2;
+
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
     if (user?.role !== 'admin' && user?.role !== 'owner') return null;
@@ -157,6 +164,7 @@ export default function DashboardScreen() {
               key={action.title}
               action={action}
               onPress={() => router.push(action.path)}
+              tileWidth={tileWidth}
             />
           ))}
         </View>
@@ -176,7 +184,7 @@ export default function DashboardScreen() {
                 <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
               <Text style={[styles.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
-              <Text style={[styles.statLabel, { color: colors.text.muted }]}>{stat.label.toUpperCase()}</Text>
+              <Text style={[styles.statLabel, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{stat.label.toUpperCase()}</Text>
             </StatCard>
           </Pressable>
         );
@@ -236,7 +244,9 @@ export default function DashboardScreen() {
                 </View>
               </View>
 
-              {renderStats()}
+              <GlassCard style={styles.darkStatsCard}>
+                {renderStats()}
+              </GlassCard>
 
               <SyncButton onSyncComplete={fetchData} />
 
@@ -430,16 +440,21 @@ const styles = StyleSheet.create({
   },
   statValue: {
     fontFamily: typography.semibold,
-    fontSize: 22,
-    color: colors.text.primary,
+    fontSize: 28,
     marginBottom: spacing.xs,
   },
   statLabel: {
     fontFamily: typography.medium,
-    fontSize: 9,
-    color: colors.text.muted,
+    fontSize: 11,
     letterSpacing: 0.5,
     textAlign: 'center',
+    paddingHorizontal: spacing.xs,
+  },
+  darkStatsCard: {
+    marginTop: spacing.lg,
+    marginBottom: spacing.xl,
+    paddingVertical: spacing.lg,
+    paddingHorizontal: spacing.sm,
   },
 
   /* ── Section label ─────────────────────────────────────────────────────── */
@@ -460,35 +475,24 @@ const styles = StyleSheet.create({
     rowGap: spacing.sm,
   },
   actionTile: {
-    width: '49%',
     borderRadius: borderRadius.lg,
     padding: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: spacing.sm,
+    gap: spacing.xs,
     borderWidth: 1,
   },
-  actionTileHovered: {
-    backgroundColor: colors.glass.cardHover,
-    borderColor: colors.border.medium,
-  },
   actionIcon: {
-    flexShrink: 0,
-  },
-  actionText: {
-    alignItems: 'center',
+    marginBottom: spacing.xs,
   },
   actionTitle: {
     fontFamily: typography.medium,
-    fontSize: 13,
-    color: colors.text.primary,
-    marginBottom: 2,
+    fontSize: 14,
     textAlign: 'center',
   },
   actionSubtitle: {
     fontFamily: typography.regular,
-    fontSize: 10,
-    color: colors.text.muted,
+    fontSize: 11,
     textAlign: 'center',
   },
 });
