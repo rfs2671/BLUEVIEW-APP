@@ -197,11 +197,11 @@ export default function ProjectsScreen() {
                   </IconPod>
 
                   <View style={styles.projectInfo}>
-                    <Text style={styles.projectName}>{project.name}</Text>
+                    <Text style={[styles.projectName, { color: colors.text.primary }]}>{project.name}</Text>
                     <View style={styles.projectLocation}>
                       <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                       {/* ── FIX #3: Show address first, fall back to location ── */}
-                      <Text style={styles.projectLocationText}>
+                      <Text style={[styles.projectLocationText, { color: colors.text.muted }]}>
                         {project.address || project.location || 'No location'}
                       </Text>
                     </View>
@@ -345,7 +345,6 @@ const styles = StyleSheet.create({
   titleText: {
     fontSize: 48,
     fontWeight: '200',
-    color: colors.text.primary,
     letterSpacing: -1,
   },
   searchRow: {
@@ -368,7 +367,6 @@ const styles = StyleSheet.create({
   projectName: {
     fontSize: 17,
     fontWeight: '500',
-    color: colors.text.primary,
     marginBottom: spacing.xs,
   },
   projectLocation: {
@@ -378,7 +376,6 @@ const styles = StyleSheet.create({
   },
   projectLocationText: {
     fontSize: 14,
-    color: colors.text.muted,
   },
   nfcBadge: {
     flexDirection: 'row',
@@ -461,7 +458,6 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     ...typography.label,
-    color: colors.text.muted,
   },
   createButton: {
     marginTop: spacing.md,
