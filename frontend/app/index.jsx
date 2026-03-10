@@ -42,7 +42,7 @@ const ActionTile = ({ action, onPress }) => {
       onPress={onPress}
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
-      style={[styles.actionTile, isHovered && styles.actionTileHovered]}
+      style={[styles.actionTile, { backgroundColor: colors.glass.background, borderColor: colors.glass.border }, isHovered && styles.actionTileHovered]}
     >
       <IconPod size={40} style={styles.actionIcon}>
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
@@ -461,14 +461,12 @@ const styles = StyleSheet.create({
   actionTile: {
     width: '48%',
     flexGrow: 0,
-    backgroundColor: colors.glass.card,
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     flexDirection: 'column',
     alignItems: 'center',
     gap: spacing.sm,
     borderWidth: 1,
-    borderColor: colors.border.subtle,
   },
   actionTileHovered: {
     backgroundColor: colors.glass.cardHover,
