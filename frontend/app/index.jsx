@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, useWindowDimensions } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -147,10 +147,10 @@ export default function DashboardScreen() {
     { icon: MapPin,    value: stats.onSiteNow,      label: isDark ? 'On Site' : 'On Site Now',    path: '/workers'  },
   ];
 
-const { width: screenWidth } = useWindowDimensions();
-  const tilePadding = spacing.lg * 2; // scrollContent horizontal padding
+  const screenWidth = Dimensions.get('window').width;
+  const tilePadding = spacing.lg * 2;
   const tileGap = spacing.sm;
-  const tileWidth = (screenWidth - tilePadding - tileGap) / 2;
+  const tileWidth = Math.min((screenWidth - tilePadding - tileGap) / 2, 300);;
 
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
