@@ -81,7 +81,7 @@ export default function ToolboxTalkLog() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, profile, checkins, existingLogs] = await Promise.all([
+      const [projectData, checkins, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, 'toolbox_talk', date).catch(() => []),
@@ -90,13 +90,6 @@ export default function ToolboxTalkLog() {
       if (projectData) {
         setProject(projectData);
         setLocation(projectData.address || projectData.location || '');
-      }
-
-      if (profile) {
-        setCpProfile(profile);
-        setCpName(profile.cp_name || '');
-        setPerformedBy(profile.cp_name || '');
-        if (profile.cp_signature) setCpSignature(profile.cp_signature);
       }
 
       // Build attendee list from check-ins
