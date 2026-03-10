@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft, Building2, CheckCircle, Save, Plus, Calendar,
-  HardHat, Truck, AlertTriangle, Users, Clipboard, CloudSun,
+  HardHat, Truck, AlertTriangle, Users, Clipboard, CloudSun, Camera, X, ImageIcon,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -18,8 +18,10 @@ import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
-const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
+import * as ImagePicker from 'expo-image-picker';
 
+const MAX_PHOTOS_PER_ACTIVITY = 5;
+const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
 const EQUIPMENT_ITEMS = [
   { key: 'elevator', label: 'Elevator' },
   { key: 'compressor', label: 'Compressor' },
@@ -47,6 +49,7 @@ const EMPTY_ACTIVITY = () => ({
   num_workers: '',
   work_description: '',
   work_locations: '',
+  photos: [],
 });
 
 const EMPTY_OBSERVATION = () => ({
@@ -170,6 +173,71 @@ export default function DailyJobsiteLog() {
 
   const updateActivity = (index, field, value) => {
     setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
+  };
+
+  const pickActivityPhoto = async (activityIndex) => {
+    const current = activities[activityIndex].photos || [];
+    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
+      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+      return;
+    }
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      toast.error('Permission Denied', 'Camera roll access is required to upload photos');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.6,
+      base64: true,
+      allowsMultipleSelection: true,
+      selectionLimit: MAX_PHOTOS_PER_ACTIVITY - current.length,
+    });
+    if (result.canceled) return;
+    const newPhotos = (result.assets || []).map((asset) => ({
+      uri: asset.uri,
+      base64: asset.base64,
+      timestamp: new Date().toISOString(),
+    }));
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== activityIndex) return a;
+      return { ...a, photos: [...(a.photos || []), ...newPhotos].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+    }));
+  };
+
+  const takeActivityPhoto = async (activityIndex) => {
+    const current = activities[activityIndex].photos || [];
+    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
+      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+      return;
+    }
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      toast.error('Permission Denied', 'Camera access is required to take photos');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.6,
+      base64: true,
+    });
+    if (result.canceled) return;
+    const asset = result.assets[0];
+    const newPhoto = {
+      uri: asset.uri,
+      base64: asset.base64,
+      timestamp: new Date().toISOString(),
+    };
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== activityIndex) return a;
+      return { ...a, photos: [...(a.photos || []), newPhoto].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+    }));
+  };
+
+  const removeActivityPhoto = (activityIndex, photoIndex) => {
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== activityIndex) return a;
+      return { ...a, photos: (a.photos || []).filter((_, pi) => pi !== photoIndex) };
+    }));
   };
 
   const addActivity = () => setActivities(prev => [...prev, EMPTY_ACTIVITY()]);
@@ -363,12 +431,46 @@ export default function DailyJobsiteLog() {
                   <TextInput style={styles.activityInput} value={act.work_description}
                     onChangeText={(v) => updateActivity(i, 'work_description', v)}
                     placeholder="Work performed..." placeholderTextColor={colors.text.subtle} />
-                </View>
                 <View style={styles.activityField}>
                   <Text style={styles.activityLabel}>WORK LOCATIONS</Text>
                   <TextInput style={styles.activityInput} value={act.work_locations}
                     onChangeText={(v) => updateActivity(i, 'work_locations', v)}
                     placeholder="Floors, areas..." placeholderTextColor={colors.text.subtle} />
+                </View>
+
+                {/* Photos */}
+                <View style={styles.photosSection}>
+                  <View style={styles.photosHeader}>
+                    <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={styles.activityLabel}>PHOTOS ({(act.photos || []).length}/{MAX_PHOTOS_PER_ACTIVITY})</Text>
+                  </View>
+                  {(act.photos || []).length > 0 && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoScroll}>
+                      {(act.photos || []).map((photo, pi) => (
+                        <View key={pi} style={styles.photoThumb}>
+                          <Image
+                            source={{ uri: photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri }}
+                            style={styles.photoImage}
+                          />
+                          <Pressable style={styles.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
+                            <X size={12} strokeWidth={2} color="#fff" />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
+                  {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
+                    <View style={styles.photoActions}>
+                      <Pressable style={styles.photoBtn} onPress={() => takeActivityPhoto(i)}>
+                        <Camera size={16} strokeWidth={1.5} color={colors.primary} />
+                        <Text style={styles.photoBtnText}>Take Photo</Text>
+                      </Pressable>
+                      <Pressable style={styles.photoBtn} onPress={() => pickActivityPhoto(i)}>
+                        <ImageIcon size={16} strokeWidth={1.5} color={colors.primary} />
+                        <Text style={styles.photoBtnText}>Gallery</Text>
+                      </Pressable>
+                    </View>
+                  )}
                 </View>
               </View>
             ))}
@@ -555,4 +657,21 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, marginBottom: spacing.xl },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 1, backgroundColor: '#4ade80', borderColor: '#4ade80' },
+  photosSection: { gap: spacing.xs, marginTop: spacing.xs },
+  photosHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  photoScroll: { marginTop: spacing.xs },
+  photoThumb: { width: 72, height: 72, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative' },
+  photoImage: { width: 72, height: 72, borderRadius: borderRadius.md },
+  photoRemove: {
+    position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
+    backgroundColor: 'rgba(248,113,113,0.9)', alignItems: 'center', justifyContent: 'center',
+  },
+  photoActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  photoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)',
+    backgroundColor: 'rgba(59,130,246,0.08)',
+  },
+  photoBtnText: { fontSize: 12, fontWeight: '500', color: colors.primary },
 });
