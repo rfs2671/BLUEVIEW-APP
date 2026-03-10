@@ -99,7 +99,7 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
       </GlassButton>
       
       <View style={styles.info}>
-        <Text style={styles.infoText}>
+        <Text style={[styles.infoText, { color: colors.text.secondary }]}>
           Last sync: {getLastSyncText()}
         </Text>
         {queueStatus.size > 0 && (
@@ -121,7 +121,6 @@ const styles = StyleSheet.create({
   },
   infoText: {
     fontSize: typography.sizes.sm,
-    color: colors.text.secondary,
   },
   queueText: {
     fontSize: typography.sizes.xs,
