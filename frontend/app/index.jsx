@@ -125,7 +125,7 @@ export default function DashboardScreen() {
   };
 
   const stats = {
-    totalWorkers: workers.length,
+    totalWorkers: activeCheckIns.length,
     activeProjects: projects.filter(p => p.status === 'active' || !p.status).length,
     onSiteNow: activeCheckIns.length,
   };
