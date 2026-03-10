@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { WifiOff, Wifi } from 'lucide-react-native';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
-import { useDatabase } from '../context/DatabaseContext';
+import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { colors, spacing, typography } from '../styles/theme';
 
 export default function OfflineIndicator() {
