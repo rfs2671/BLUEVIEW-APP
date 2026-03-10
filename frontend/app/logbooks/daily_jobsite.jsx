@@ -661,9 +661,9 @@ const styles = StyleSheet.create({
   submitBtn: { flex: 1, backgroundColor: '#4ade80', borderColor: '#4ade80' },
   photosSection: { gap: spacing.xs, marginTop: spacing.xs },
   photosHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  photoScroll: { marginTop: spacing.xs },
-  photoThumb: { width: 72, height: 72, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative' },
-  photoImage: { width: 72, height: 72, borderRadius: borderRadius.md },
+  photoScroll: { marginTop: spacing.xs, paddingTop: 8, paddingBottom: 4 },
+  photoThumb: { width: 80, height: 80, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative', overflow: 'visible' },
+  photoImage: { width: 80, height: 80, borderRadius: borderRadius.md },
   photoRemove: {
     position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
     backgroundColor: 'rgba(248,113,113,0.9)', alignItems: 'center', justifyContent: 'center',
