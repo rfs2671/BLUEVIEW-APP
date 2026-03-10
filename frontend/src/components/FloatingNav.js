@@ -318,7 +318,7 @@ const NavItem = ({ item, isActive, onPress }) => {
       <Text
         style={[
           styles.navLabel,
-          (isActive || isHovered) && styles.navLabelActive,
+          { color: (isActive || isHovered) ? colors.text.primary : colors.text.muted },
         ]}
         numberOfLines={1}
       >
@@ -354,7 +354,7 @@ const SettingsNavItem = ({ onPress, isActive }) => {
         color={isActive || isHovered ? colors.text.primary : colors.text.muted}
       />
       <Text
-        style={[styles.navLabel, (isActive || isHovered) && styles.navLabelActive]}
+        style={[styles.navLabel, { color: (isActive || isHovered) ? colors.text.primary : colors.text.muted }]}
         numberOfLines={1}
       >
         Settings
