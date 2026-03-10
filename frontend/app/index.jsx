@@ -430,15 +430,16 @@ const styles = StyleSheet.create({
   },
   statValue: {
     fontFamily: typography.semibold,
-    fontSize: 28,
+    fontSize: 22,
     color: colors.text.primary,
     marginBottom: spacing.xs,
   },
   statLabel: {
     fontFamily: typography.medium,
-    fontSize: 10,
+    fontSize: 9,
     color: colors.text.muted,
-    letterSpacing: 1,
+    letterSpacing: 0.5,
+    textAlign: 'center',
   },
 
   /* ── Section label ─────────────────────────────────────────────────────── */
@@ -455,17 +456,17 @@ const styles = StyleSheet.create({
   adminGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   actionTile: {
-    flex: 1,
-    minWidth: '22%',
+    width: '48%',
+    flexGrow: 0,
     backgroundColor: colors.glass.card,
     borderRadius: borderRadius.lg,
-    padding: spacing.lg,
-    flexDirection: 'row',
+    padding: spacing.md,
+    flexDirection: 'column',
     alignItems: 'center',
-    gap: spacing.md,
+    gap: spacing.sm,
     borderWidth: 1,
     borderColor: colors.border.subtle,
   },
@@ -481,13 +482,15 @@ const styles = StyleSheet.create({
   },
   actionTitle: {
     fontFamily: typography.medium,
-    fontSize: 14,
+    fontSize: 13,
     color: colors.text.primary,
     marginBottom: 2,
+    textAlign: 'center',
   },
   actionSubtitle: {
     fontFamily: typography.regular,
-    fontSize: 11,
+    fontSize: 10,
     color: colors.text.muted,
+    textAlign: 'center',
   },
 });
