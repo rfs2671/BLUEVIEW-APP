@@ -48,8 +48,8 @@ const ActionTile = ({ action, onPress }) => {
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
       <View style={styles.actionText}>
-        <Text style={styles.actionTitle}>{action.title}</Text>
-        <Text style={styles.actionSubtitle}>{action.subtitle}</Text>
+        <Text style={[styles.actionTitle, { color: colors.text.primary }]}>{action.title}</Text>
+        <Text style={[styles.actionSubtitle, { color: colors.text.muted }]}>{action.subtitle}</Text>
       </View>
     </Pressable>
   );
@@ -150,7 +150,7 @@ export default function DashboardScreen() {
     if (user?.role !== 'admin' && user?.role !== 'owner') return null;
     return (
       <>
-        <Text style={styles.sectionLabel}>ADMIN TOOLS</Text>
+        <Text style={[styles.sectionLabel, { color: colors.text.muted }]}>ADMIN TOOLS</Text>
         <View style={styles.adminGrid}>
           {adminActions.map((action) => (
             <ActionTile
@@ -175,8 +175,8 @@ export default function DashboardScreen() {
               <IconPod size={44} style={styles.statIcon}>
                 <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={styles.statValue}>{stat.value}</Text>
-              <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+              <Text style={[styles.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
+              <Text style={[styles.statLabel, { color: colors.text.muted }]}>{stat.label.toUpperCase()}</Text>
             </StatCard>
           </Pressable>
         );
@@ -201,7 +201,7 @@ export default function DashboardScreen() {
                 preserveColor
               />
             </View>
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={[styles.logoText, { color: colors.text.primary }]}>BLUEVIEW</Text>
           </View>
           <View style={styles.headerRight}>
             <OfflineIndicator />
@@ -227,8 +227,8 @@ export default function DashboardScreen() {
                ══════════════════════════════════════════════════════════════ */
             <>
               <View style={styles.greetingSection}>
-                <Text style={styles.greetingSmall}>WELCOME BACK</Text>
-                <Text style={styles.greetingLarge}>{getUserFirstName()}</Text>
+                <Text style={[styles.greetingSmall, { color: colors.text.muted }]}>WELCOME BACK</Text>
+                <Text style={[styles.greetingLarge, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
                 <View style={styles.dateRow}>
                   <Text style={styles.dayName}>{dayName}</Text>
                   <Text style={styles.dateDivider}>•</Text>
@@ -249,15 +249,15 @@ export default function DashboardScreen() {
             <>
               <GlassCard style={styles.heroCard}>
                 {/* Date on top */}
-                <Text style={styles.heroDay}>{dayName.toUpperCase()}</Text>
-                <Text style={styles.heroDate}>{fullDate}</Text>
+                <Text style={[styles.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
+                <Text style={[styles.heroDate, { color: colors.text.secondary }]}>{fullDate}</Text>
 
                 {/* Big name */}
-                <Text style={styles.heroName}>{getUserFirstName()}</Text>
+                <Text style={[styles.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
 
                 {/* Email */}
-                <Text style={styles.heroEmail}>{getUserEmail()}</Text>
-
+                <Text style={[styles.heroEmail, { color: colors.text.muted }]}>{getUserEmail()}</Text>
+                
                 {/* Stats inside the card */}
                 {renderStats()}
               </GlassCard>
