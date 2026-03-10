@@ -2201,7 +2201,7 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
 
 @api_router.post("/checkins")
 async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get_current_user)):
-    \"\"\"Create a check-in from admin panel — with duplicate prevention\"\"\"
+    """Create a check-in from admin panel — with duplicate prevention"""
     worker = None
     if checkin_data.worker_id:
         worker = await db.workers.find_one({"_id": to_query_id(checkin_data.worker_id), "is_deleted": {"$ne": True}})
@@ -2230,7 +2230,7 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         existing_data = serialize_id(existing_checkin)
         return existing_data
 
-	checkin_record = {
+    checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_company": worker.get("company"),
