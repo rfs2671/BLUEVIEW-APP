@@ -456,15 +456,15 @@ const styles = StyleSheet.create({
   adminGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: spacing.sm,
+    justifyContent: 'space-between',
+    rowGap: spacing.sm,
   },
   actionTile: {
-    width: '48%',
-    flexGrow: 0,
+    width: '49%',
     borderRadius: borderRadius.lg,
-    padding: spacing.md,
-    flexDirection: 'column',
+    padding: spacing.lg,
     alignItems: 'center',
+    justifyContent: 'center',
     gap: spacing.sm,
     borderWidth: 1,
   },
@@ -476,7 +476,7 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   actionText: {
-    flex: 1,
+    alignItems: 'center',
   },
   actionTitle: {
     fontFamily: typography.medium,
