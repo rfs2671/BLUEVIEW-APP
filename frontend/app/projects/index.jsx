@@ -266,8 +266,8 @@ export default function ProjectsScreen() {
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowAddModal(false)} />
-            <View style={styles.modalContent}>
-              <GlassCard variant="modal" style={styles.modalCard}>
+            <View style={[styles.modalContent, { overflow: 'visible' }]}>
+              <GlassCard variant="modal" style={[styles.modalCard, { overflow: 'visible' }]}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>New Project</Text>
                   <GlassButton
