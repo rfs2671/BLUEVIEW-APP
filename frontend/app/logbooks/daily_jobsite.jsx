@@ -431,6 +431,8 @@ export default function DailyJobsiteLog() {
                   <TextInput style={styles.activityInput} value={act.work_description}
                     onChangeText={(v) => updateActivity(i, 'work_description', v)}
                     placeholder="Work performed..." placeholderTextColor={colors.text.subtle} />
+                </View>
+                
                 <View style={styles.activityField}>
                   <Text style={styles.activityLabel}>WORK LOCATIONS</Text>
                   <TextInput style={styles.activityInput} value={act.work_locations}
