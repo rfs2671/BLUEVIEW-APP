@@ -30,11 +30,14 @@ import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
 
 const DROPBOX_BLUE = '#0061FF';
 
 export default function ProjectDropboxSettingsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
@@ -187,16 +190,16 @@ export default function ProjectDropboxSettingsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -206,45 +209,45 @@ export default function ProjectDropboxSettingsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>PROJECT SETTINGS</Text>
-            <Text style={styles.titleText}>{project?.name || 'Loading...'}</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>PROJECT SETTINGS</Text>
+            <Text style={s.titleText}>{project?.name || 'Loading...'}</Text>
           </View>
 
           {loading ? (
-            <View style={styles.loadingContainer}>
+            <View style={s.loadingContainer}>
               <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} />
             </View>
           ) : !dropboxStatus.connected ? (
-            <GlassCard style={styles.notConnectedCard}>
+            <GlassCard style={s.notConnectedCard}>
               <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
-              <Text style={styles.notConnectedTitle}>Dropbox Not Connected</Text>
-              <Text style={styles.notConnectedDesc}>
+              <Text style={s.notConnectedTitle}>Dropbox Not Connected</Text>
+              <Text style={s.notConnectedDesc}>
                 Connect your Dropbox account in Admin Settings to enable file sync.
               </Text>
               <GlassButton
                 title="Go to Admin Settings"
                 onPress={() => router.push('/admin/integrations')}
-                style={styles.goToAdminBtn}
+                style={s.goToAdminBtn}
               />
             </GlassCard>
           ) : (
             <>
               {/* Enable Toggle */}
-              <GlassCard style={styles.toggleCard}>
-                <View style={styles.toggleRow}>
-                  <View style={styles.toggleInfo}>
-                    <View style={styles.toggleIcon}>
+              <GlassCard style={s.toggleCard}>
+                <View style={s.toggleRow}>
+                  <View style={s.toggleInfo}>
+                    <View style={s.toggleIcon}>
                       <Cloud size={24} strokeWidth={1.5} color={DROPBOX_BLUE} />
                     </View>
                     <View>
-                      <Text style={styles.toggleTitle}>Enable Dropbox</Text>
-                      <Text style={styles.toggleDesc}>Sync files for this project</Text>
+                      <Text style={s.toggleTitle}>Enable Dropbox</Text>
+                      <Text style={s.toggleDesc}>Sync files for this project</Text>
                     </View>
                   </View>
                   <Switch
@@ -256,15 +259,15 @@ export default function ProjectDropboxSettingsScreen() {
                   />
                 </View>
                 {!isAdmin && (
-                  <Text style={styles.adminOnlyHint}>Admin access required to modify settings</Text>
+                  <Text style={s.adminOnlyHint}>Admin access required to modify settings</Text>
                 )}
               </GlassCard>
 
               {/* Folder Selection */}
               {dropboxEnabled && (
                 <>
-                  <GlassCard style={styles.folderCard}>
-                    <Text style={styles.cardLabel}>LINKED FOLDER</Text>
+                  <GlassCard style={s.folderCard}>
+                    <Text style={s.cardLabel}>LINKED FOLDER</Text>
                     
                     {selectedFolder ? (
                       <Pressable
@@ -274,16 +277,16 @@ export default function ProjectDropboxSettingsScreen() {
                         } : undefined}
                         disabled={!isAdmin}
                         style={({ pressed }) => [
-                          styles.selectedFolder,
-                          pressed && isAdmin && styles.selectedFolderPressed,
+                          s.selectedFolder,
+                          pressed && isAdmin && s.selectedFolderPressed,
                         ]}
                       >
                         <IconPod size={44}>
                           <FolderOpen size={20} strokeWidth={1.5} color={DROPBOX_BLUE} />
                         </IconPod>
-                        <View style={styles.folderInfo}>
-                          <Text style={styles.folderPath}>{selectedFolder}</Text>
-                          <Text style={styles.folderMeta}>{fileCount} files synced</Text>
+                        <View style={s.folderInfo}>
+                          <Text style={s.folderPath}>{selectedFolder}</Text>
+                          <Text style={s.folderMeta}>{fileCount} files synced</Text>
                         </View>
                         {isAdmin && <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />}
                       </Pressable>
@@ -297,15 +300,15 @@ export default function ProjectDropboxSettingsScreen() {
                         }}
                       />
                     ) : (
-                      <Text style={styles.noFolderText}>No folder linked yet</Text>
+                      <Text style={s.noFolderText}>No folder linked yet</Text>
                     )}
                   </GlassCard>
 
                   {/* Sync Status */}
                   {selectedFolder && (
-                    <GlassCard style={styles.syncCard}>
-                      <View style={styles.syncHeader}>
-                        <Text style={styles.cardLabel}>SYNC STATUS</Text>
+                    <GlassCard style={s.syncCard}>
+                      <View style={s.syncHeader}>
+                        <Text style={s.cardLabel}>SYNC STATUS</Text>
                         <GlassButton
                           title={syncing ? 'Syncing...' : 'Sync Now'}
                           icon={
@@ -313,7 +316,7 @@ export default function ProjectDropboxSettingsScreen() {
                               size={16}
                               strokeWidth={1.5}
                               color={colors.text.primary}
-                              style={syncing && styles.spinningIcon}
+                              style={syncing && s.spinningIcon}
                             />
                           }
                           onPress={handleSync}
@@ -322,23 +325,23 @@ export default function ProjectDropboxSettingsScreen() {
                         />
                       </View>
 
-                      <View style={styles.syncStats}>
-                        <View style={styles.syncStat}>
+                      <View style={s.syncStats}>
+                        <View style={s.syncStat}>
                           <Clock size={18} strokeWidth={1.5} color={colors.text.muted} />
                           <View>
-                            <Text style={styles.syncStatLabel}>Last Synced</Text>
-                            <Text style={styles.syncStatValue}>
+                            <Text style={s.syncStatLabel}>Last Synced</Text>
+                            <Text style={s.syncStatValue}>
                               {lastSynced
                                 ? new Date(lastSynced).toLocaleString()
                                 : 'Never'}
                             </Text>
                           </View>
                         </View>
-                        <View style={styles.syncStat}>
+                        <View style={s.syncStat}>
                           <FileText size={18} strokeWidth={1.5} color={colors.text.muted} />
                           <View>
-                            <Text style={styles.syncStatLabel}>Files</Text>
-                            <Text style={styles.syncStatValue}>{fileCount}</Text>
+                            <Text style={s.syncStatLabel}>Files</Text>
+                            <Text style={s.syncStatValue}>{fileCount}</Text>
                           </View>
                         </View>
                       </View>
@@ -348,7 +351,7 @@ export default function ProjectDropboxSettingsScreen() {
                         title="View Construction Plans"
                         icon={<FileText size={18} strokeWidth={1.5} color={colors.text.primary} />}
                         onPress={() => router.push(`/projects/${projectId}/construction-plans`)}
-                        style={styles.viewFilesBtn}
+                        style={s.viewFilesBtn}
                       />
                     </GlassCard>
                   )}
@@ -357,9 +360,9 @@ export default function ProjectDropboxSettingsScreen() {
 
               {/* Folder Picker Modal - Admin only */}
               {showFolderPicker && isAdmin && (
-                <GlassCard style={styles.folderPicker}>
-                  <View style={styles.folderPickerHeader}>
-                    <Text style={styles.folderPickerTitle}>Select Folder</Text>
+                <GlassCard style={s.folderPicker}>
+                  <View style={s.folderPickerHeader}>
+                    <Text style={s.folderPickerTitle}>Select Folder</Text>
                     <GlassButton
                       variant="icon"
                       icon={<ChevronLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -368,14 +371,14 @@ export default function ProjectDropboxSettingsScreen() {
                   </View>
 
                   {/* Current Path */}
-                  <View style={styles.currentPathRow}>
+                  <View style={s.currentPathRow}>
                     {currentPath && (
-                      <Pressable onPress={navigateUp} style={styles.backBtn}>
+                      <Pressable onPress={navigateUp} style={s.backBtn}>
                         <ChevronLeft size={18} strokeWidth={1.5} color={colors.text.muted} />
-                        <Text style={styles.backText}>Back</Text>
+                        <Text style={s.backText}>Back</Text>
                       </Pressable>
                     )}
-                    <Text style={styles.currentPathText}>
+                    <Text style={s.currentPathText}>
                       {currentPath || '/ (Root)'}
                     </Text>
                   </View>
@@ -384,12 +387,12 @@ export default function ProjectDropboxSettingsScreen() {
                   <Pressable
                     onPress={() => handleSelectFolder(currentPath || '/')}
                     style={({ pressed }) => [
-                      styles.selectCurrentBtn,
-                      pressed && styles.selectCurrentBtnPressed,
+                      s.selectCurrentBtn,
+                      pressed && s.selectCurrentBtnPressed,
                     ]}
                   >
                     <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
-                    <Text style={styles.selectCurrentText}>Select This Folder</Text>
+                    <Text style={s.selectCurrentText}>Select This Folder</Text>
                   </Pressable>
 
                   {/* Folder List */}
@@ -397,26 +400,26 @@ export default function ProjectDropboxSettingsScreen() {
                     <ActivityIndicator
                       size="small"
                       color={colors.text.primary}
-                      style={styles.foldersLoading}
+                      style={s.foldersLoading}
                     />
                   ) : (
-                    <View style={styles.foldersList}>
+                    <View style={s.foldersList}>
                       {folders.map((folder, index) => (
                         <Pressable
                           key={folder.path || index}
                           onPress={() => navigateToFolder(folder.path)}
                           style={({ pressed }) => [
-                            styles.folderItem,
-                            pressed && styles.folderItemPressed,
+                            s.folderItem,
+                            pressed && s.folderItemPressed,
                           ]}
                         >
                           <Folder size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
-                          <Text style={styles.folderName}>{folder.name}</Text>
+                          <Text style={s.folderName}>{folder.name}</Text>
                           <ChevronRight size={16} strokeWidth={1.5} color={colors.text.subtle} />
                         </Pressable>
                       ))}
                       {folders.length === 0 && (
-                        <Text style={styles.noFolders}>No subfolders</Text>
+                        <Text style={s.noFolders}>No subfolders</Text>
                       )}
                     </View>
                   )}
@@ -430,7 +433,8 @@ export default function ProjectDropboxSettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -690,3 +694,4 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.lg,
   },
 });
+}
