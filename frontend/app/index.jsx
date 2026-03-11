@@ -24,7 +24,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
@@ -43,16 +43,16 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
       onHoverIn={() => setIsHovered(true)}
       onHoverOut={() => setIsHovered(false)}
       style={[
-        styles.actionTile,
+        s.actionTile,
         { width: tileWidth, backgroundColor: colors.glass.background, borderColor: colors.glass.border },
         isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
       ]}
     >
-      <IconPod size={40} style={styles.actionIcon}>
+      <IconPod size={40} style={s.actionIcon}>
         <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
       </IconPod>
-      <Text style={[styles.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
-      <Text style={[styles.actionSubtitle, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
+      <Text style={[s.actionTitle, { color: colors.text.primary }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.title}</Text>
+      <Text style={[s.actionSubtitle, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{action.subtitle}</Text>
     </Pressable>
   );
 };
@@ -60,7 +60,8 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
-  const { isDark } = useTheme();
+  const { isDark, colors } = useTheme();
+  const s = buildStyles(colors, isDark);
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -134,8 +135,8 @@ export default function DashboardScreen() {
 
   if (authLoading) {
     return (
-      <View style={styles.loadingContainer}>
-        <Text style={styles.loadingText}>LOADING</Text>
+      <View style={s.loadingContainer}>
+        <Text style={s.loadingText}>LOADING</Text>
       </View>
     );
   }
@@ -157,8 +158,8 @@ export default function DashboardScreen() {
     if (user?.role !== 'admin' && user?.role !== 'owner') return null;
     return (
       <>
-        <Text style={[styles.sectionLabel, { color: colors.text.muted }]}>ADMIN TOOLS</Text>
-        <View style={styles.adminGrid}>
+        <Text style={[s.sectionLabel, { color: colors.text.muted }]}>ADMIN TOOLS</Text>
+        <View style={s.adminGrid}>
           {adminActions.map((action) => (
             <ActionTile
               key={action.title}
@@ -174,17 +175,17 @@ export default function DashboardScreen() {
 
   // ── Shared stats row ────────────────────────────────────────────────────────
   const renderStats = () => (
-    <View style={styles.statsGrid}>
+    <View style={s.statsGrid}>
       {statItems.map((stat) => {
         const Icon = stat.icon;
         return (
           <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
-            <StatCard style={styles.statCard}>
-              <IconPod size={44} style={styles.statIcon}>
+            <StatCard style={s.statCard}>
+              <IconPod size={44} style={s.statIcon}>
                 <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={[styles.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
-              <Text style={[styles.statLabel, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{stat.label.toUpperCase()}</Text>
+              <Text style={[s.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
+              <Text style={[s.statLabel, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{stat.label.toUpperCase()}</Text>
             </StatCard>
           </Pressable>
         );
@@ -194,12 +195,12 @@ export default function DashboardScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* ── Header ──────────────────────────────────────────────────────── */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <View style={[
-              styles.logoIcon,
+              s.logoIcon,
               { backgroundColor: isDark ? colors.glass.background : colors.iconPod.background },
             ]}>
               <LayoutGrid
@@ -209,9 +210,9 @@ export default function DashboardScreen() {
                 preserveColor
               />
             </View>
-            <Text style={[styles.logoText, { color: colors.text.primary }]}>BLUEVIEW</Text>
+            <Text style={[s.logoText, { color: colors.text.primary }]}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <OfflineIndicator />
             <GlassButton
               variant="icon"
@@ -223,8 +224,8 @@ export default function DashboardScreen() {
 
         {/* ── Scroll content ──────────────────────────────────────────────── */}
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {loading ? (
@@ -234,17 +235,17 @@ export default function DashboardScreen() {
                DARK MODE — original flat layout (unchanged)
                ══════════════════════════════════════════════════════════════ */
             <>
-              <View style={styles.greetingSection}>
-                <Text style={[styles.greetingSmall, { color: colors.text.muted }]}>WELCOME BACK</Text>
-                <Text style={[styles.greetingLarge, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
-                <View style={styles.dateRow}>
-                  <Text style={styles.dayName}>{dayName}</Text>
-                  <Text style={styles.dateDivider}>•</Text>
-                  <Text style={styles.fullDate}>{fullDate}</Text>
+              <View style={s.greetingSection}>
+                <Text style={[s.greetingSmall, { color: colors.text.muted }]}>WELCOME BACK</Text>
+                <Text style={[s.greetingLarge, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
+                <View style={s.dateRow}>
+                  <Text style={s.dayName}>{dayName}</Text>
+                  <Text style={s.dateDivider}>•</Text>
+                  <Text style={s.fullDate}>{fullDate}</Text>
                 </View>
               </View>
 
-              <GlassCard style={styles.darkStatsCard}>
+              <GlassCard style={s.darkStatsCard}>
                 {renderStats()}
               </GlassCard>
 
@@ -257,16 +258,16 @@ export default function DashboardScreen() {
                LIGHT MODE — hero card layout (target design)
                ══════════════════════════════════════════════════════════════ */
             <>
-              <GlassCard style={styles.heroCard}>
+              <GlassCard style={s.heroCard}>
                 {/* Date on top */}
-                <Text style={[styles.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
-                <Text style={[styles.heroDate, { color: colors.text.secondary }]}>{fullDate}</Text>
+                <Text style={[s.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
+                <Text style={[s.heroDate, { color: colors.text.secondary }]}>{fullDate}</Text>
 
                 {/* Big name */}
-                <Text style={[styles.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
+                <Text style={[s.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
 
                 {/* Email */}
-                <Text style={[styles.heroEmail, { color: colors.text.muted }]}>{getUserEmail()}</Text>
+                <Text style={[s.heroEmail, { color: colors.text.muted }]}>{getUserEmail()}</Text>
                 
                 {/* Stats inside the card */}
                 {renderStats()}
@@ -288,7 +289,8 @@ export default function DashboardScreen() {
 /* ═══════════════════════════════════════════════════════════════════════════════
    STYLES
    ═══════════════════════════════════════════════════════════════════════════════ */
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -495,4 +497,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
   },
-});
+  });
+}
