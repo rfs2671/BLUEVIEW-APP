@@ -28,9 +28,12 @@ import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { checklistsAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 export default function ChecklistsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -167,36 +170,36 @@ export default function ChecklistsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.header}>
+          <View style={s.header}>
             <IconPod size={48}>
               <ClipboardList size={24} strokeWidth={1.5} color="#4ade80" />
             </IconPod>
-            <View style={styles.headerText}>
-              <Text style={styles.headerLabel}>MY</Text>
-              <Text style={styles.headerTitle}>Checklists</Text>
+            <View style={s.headerText}>
+              <Text style={s.headerLabel}>MY</Text>
+              <Text style={s.headerTitle}>Checklists</Text>
             </View>
           </View>
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} style={s.mb16} />
+              <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} style={s.mb16} />
               <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} />
             </>
           ) : assignments.length === 0 ? (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <AlertCircle size={48} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.emptyTitle}>No Checklists</Text>
-              <Text style={styles.emptyText}>You don't have any assigned checklists yet</Text>
+              <Text style={s.emptyTitle}>No Checklists</Text>
+              <Text style={s.emptyText}>You don't have any assigned checklists yet</Text>
             </GlassCard>
           ) : (
-            <View style={styles.assignmentsList}>
+            <View style={s.assignmentsList}>
               {assignments.map((assignment) => {
                 const progress = getProgress(assignment);
                 const complete = isComplete(assignment);
@@ -205,14 +208,14 @@ export default function ChecklistsScreen() {
                   <Pressable
                     key={assignment.id}
                     onPress={() => handleOpenChecklist(assignment)}
-                    style={styles.assignmentCard}
+                    style={s.assignmentCard}
                   >
-                    <GlassCard style={[styles.card, complete && styles.cardComplete]}>
-                      <View style={styles.cardHeader}>
-                        <View style={styles.cardInfo}>
-                          <Text style={styles.cardTitle}>{assignment.checklist?.title}</Text>
+                    <GlassCard style={[s.card, complete && s.cardComplete]}>
+                      <View style={s.cardHeader}>
+                        <View style={s.cardInfo}>
+                          <Text style={s.cardTitle}>{assignment.checklist?.title}</Text>
                           {assignment.checklist?.description && (
-                            <Text style={styles.cardDescription} numberOfLines={2}>
+                            <Text style={s.cardDescription} numberOfLines={2}>
                               {assignment.checklist.description}
                             </Text>
                           )}
@@ -224,26 +227,26 @@ export default function ChecklistsScreen() {
                         )}
                       </View>
 
-                      <View style={styles.cardMeta}>
-                        <View style={styles.metaItem}>
+                      <View style={s.cardMeta}>
+                        <View style={s.metaItem}>
                           <Briefcase size={14} strokeWidth={1.5} color={colors.text.muted} />
-                          <Text style={styles.metaText}>{assignment.project_name}</Text>
+                          <Text style={s.metaText}>{assignment.project_name}</Text>
                         </View>
                       </View>
 
-                      <View style={styles.progressSection}>
-                        <View style={styles.progressInfo}>
-                          <Text style={styles.progressText}>
+                      <View style={s.progressSection}>
+                        <View style={s.progressInfo}>
+                          <Text style={s.progressText}>
                             {progress.completed}/{progress.total} items
                           </Text>
-                          <Text style={styles.progressPercent}>{progress.percentage}%</Text>
+                          <Text style={s.progressPercent}>{progress.percentage}%</Text>
                         </View>
-                        <View style={styles.progressBar}>
+                        <View style={s.progressBar}>
                           <View
                             style={[
-                              styles.progressFill,
+                              s.progressFill,
                               { width: `${progress.percentage}%` },
-                              complete && styles.progressComplete,
+                              complete && s.progressComplete,
                             ]}
                           />
                         </View>
@@ -265,37 +268,37 @@ export default function ChecklistsScreen() {
           transparent
           onRequestClose={handleClose}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <View style={styles.modalHeaderLeft}>
-                  <Text style={styles.modalTitle}>{selectedAssignment?.checklist?.title}</Text>
-                  <Text style={styles.modalSubtitle}>{selectedAssignment?.project_name}</Text>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <View style={s.modalHeaderLeft}>
+                  <Text style={s.modalTitle}>{selectedAssignment?.checklist?.title}</Text>
+                  <Text style={s.modalSubtitle}>{selectedAssignment?.project_name}</Text>
                 </View>
                 <Pressable onPress={handleClose}>
                   <X size={24} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+              <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
                 {selectedAssignment?.checklist?.items.map((item, index) => {
                   const isChecked = itemCompletions[item.id]?.checked || false;
 
                   return (
-                    <View key={item.id} style={styles.checklistItem}>
+                    <View key={item.id} style={s.checklistItem}>
                       <Pressable
                         onPress={() => toggleItemCheck(item.id)}
-                        style={styles.itemHeader}
+                        style={s.itemHeader}
                       >
-                        <View style={styles.itemLeft}>
-                          <View style={styles.checkIconContainer}>
+                        <View style={s.itemLeft}>
+                          <View style={s.checkIconContainer}>
                             {isChecked ? (
                               <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
                             ) : (
                               <Circle size={24} strokeWidth={1.5} color={colors.text.muted} />
                             )}
                           </View>
-                          <Text style={[styles.itemText, isChecked && styles.itemTextChecked]}>
+                          <Text style={[s.itemText, isChecked && s.itemTextChecked]}>
                             {item.text}
                           </Text>
                         </View>
@@ -303,7 +306,7 @@ export default function ChecklistsScreen() {
 
                       {isChecked && (
                         <TextInput
-                          style={styles.noteInput}
+                          style={s.noteInput}
                           value={itemCompletions[item.id]?.note || ''}
                           onChangeText={(text) => updateItemNote(item.id, text)}
                           onBlur={() => handleSave()}
@@ -317,7 +320,7 @@ export default function ChecklistsScreen() {
                 })}
               </ScrollView>
 
-              <View style={styles.modalFooter}>
+              <View style={s.modalFooter}>
                 <GlassButton
                   variant="primary"
                   title="Done"
@@ -333,7 +336,8 @@ export default function ChecklistsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   scrollView: { flex: 1 },
   scrollContent: { padding: spacing.lg, paddingBottom: 120 },
@@ -379,3 +383,4 @@ const styles = StyleSheet.create({
   noteInput: { marginTop: spacing.md, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14, minHeight: 60, textAlignVertical: 'top' },
   modalFooter: { padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.glass.border },
 });
+}
