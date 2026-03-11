@@ -490,6 +490,8 @@ export default function SubcontractorOrientation() {
  * Separate component so each card can have its own signature state.
  */
 function OrientationSignaturePanel({ onSign }) {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave: innerAutoSave } = useCpProfile();
   const [saving, setSaving] = useState(false);
 
