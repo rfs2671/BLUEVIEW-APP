@@ -41,6 +41,7 @@ export default function ReportSettingsScreen() {
   const [project, setProject] = useState(null);
   const [emailList, setEmailList] = useState([]);
   const [newEmail, setNewEmail] = useState('');
+  const [sendTime, setSendTime] = useState('18:00');
 
   const isAdmin = user?.role === 'admin';
 
@@ -62,6 +63,7 @@ export default function ReportSettingsScreen() {
       const projectData = await projectsAPI.getById(projectId);
       setProject(projectData);
       setEmailList(projectData.report_email_list || []);
+      setSendTime(projectData.report_send_time || '18:00');
     } catch (error) {
       console.error('Failed to fetch project:', error);
       toast.error('Error', 'Could not load project settings');
@@ -118,6 +120,7 @@ export default function ReportSettingsScreen() {
     try {
       await projectsAPI.update(projectId, {
         report_email_list: emailList,
+        report_send_time: sendTime,
       });
       toast.success('Saved', 'Report settings updated successfully');
     } catch (error) {
@@ -211,7 +214,7 @@ export default function ReportSettingsScreen() {
             </IconPod>
             <Text style={styles.infoTitle}>Auto-Send Reports</Text>
             <Text style={styles.infoText}>
-              Daily reports for this project will be automatically sent to all email addresses in this list.
+              Daily reports for this project will be automatically sent to all email addresses in this list at the scheduled time.
             </Text>
           </GlassCard>
 
@@ -267,6 +270,30 @@ export default function ReportSettingsScreen() {
               </Text>
             </GlassCard>
           )}
+           {/* Send Time */}
+          <Text style={styles.sectionLabel}>SEND TIME (EST)</Text>
+          <GlassCard style={styles.addEmailCard}>
+            <Text style={styles.sectionTitle}>Daily Report Time</Text>
+            <View style={styles.timeRow}>
+              {['06:00', '12:00', '15:00', '17:00', '18:00', '19:00', '20:00', '21:00'].map((time) => (
+                <Pressable
+                  key={time}
+                  onPress={() => setSendTime(time)}
+                  style={[
+                    styles.timeOption,
+                    sendTime === time && styles.timeOptionActive,
+                  ]}
+                >
+                  <Text style={[
+                    styles.timeOptionText,
+                    sendTime === time && styles.timeOptionTextActive,
+                  ]}>
+                    {parseInt(time) > 12 ? `${parseInt(time) - 12}:${time.split(':')[1]} PM` : parseInt(time) === 12 ? '12:00 PM' : `${parseInt(time)}:${time.split(':')[1]} AM`}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </GlassCard>
 
           {/* Save Button */}
           <GlassButton
@@ -454,6 +481,32 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 280,
     lineHeight: 20,
+  },
+  timeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  timeOption: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
+  },
+  timeOptionActive: {
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+    borderColor: '#3b82f6',
+  },
+  timeOptionText: {
+    fontSize: 13,
+    color: colors.text.muted,
+  },
+  timeOptionTextActive: {
+    color: '#3b82f6',
+    fontWeight: '600',
   },
   saveButton: {
     marginTop: spacing.md,
