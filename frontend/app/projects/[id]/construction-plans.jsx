@@ -37,7 +37,8 @@ import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 
@@ -73,6 +74,8 @@ const formatFileSize = (bytes) => {
 };
 
 export default function ConstructionPlansScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
