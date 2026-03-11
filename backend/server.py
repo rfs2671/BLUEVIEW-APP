@@ -4308,10 +4308,12 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    # CRITICAL: Return updated project to confirm persistence
     updated_project = await db.projects.find_one({"_id": project_id_obj})
     return {
         "message": "Report settings saved successfully",
+        "report_email_list": updated_project.get("report_email_list", []),
+        "report_send_time": updated_project.get("report_send_time", "18:00"),
+    }
 
 @api_router.get("/reports/project/{project_id}/history")
 async def get_report_history(
