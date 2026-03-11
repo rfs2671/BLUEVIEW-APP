@@ -640,5 +640,3 @@ function buildStyles(colors, isDark) {
     },
   });
 }
-
-export default ReportSettingsScreen;
