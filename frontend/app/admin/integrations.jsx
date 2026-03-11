@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  styleSheet,
+  StyleSheet,
   ScrollView,
   Pressable,
   Linking,
@@ -30,7 +30,7 @@ import GlassButton from '../../src/components/GlassButton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../src/utils/api';
-import { spacing, borderRadius, typography } from '../../src/s./theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 
 // Dropbox brand color
@@ -38,7 +38,7 @@ const DROPBOX_BLUE = '#0061FF';
 
 export default function AdminIntegrationsScreen() {
   const { colors, isDark } = useTheme();
-  const s = builds.(colors, isDark);
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
@@ -450,7 +450,7 @@ export default function AdminIntegrationsScreen() {
 }
 
 function builds.(colors, isDark) {
-  return s.heet.create({
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
