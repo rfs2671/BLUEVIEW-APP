@@ -10,11 +10,14 @@ import {
 } from 'react-native';
 import { MapPin } from 'lucide-react-native';
 import apiClient from '../utils/api';
-import { colors, spacing, borderRadius, typography } from '../styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 const DEBOUNCE_MS = 350;
 
 export default function AddressAutocomplete({
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   value = '',
   onChangeText,
   onSelect,
@@ -67,11 +70,11 @@ export default function AddressAutocomplete({
   };
 
   return (
-    <View style={[styles.container, style]}>
-      <View style={styles.inputRow}>
-        <MapPin size={16} strokeWidth={1.5} color={colors.text.muted} style={styles.icon} />
+    <View style={[s.container, style]}>
+      <View style={s.inputRow}>
+        <MapPin size={16} strokeWidth={1.5} color={colors.text.muted} style={s.icon} />
         <TextInput
-          style={styles.input}
+          style={s.input}
           value={value}
           onChangeText={handleChangeText}
           placeholder={placeholder}
@@ -86,11 +89,11 @@ export default function AddressAutocomplete({
             setTimeout(() => setShowDropdown(false), 200);
           }}
         />
-        {loading && <ActivityIndicator size="small" color={colors.text.muted} style={styles.spinner} />}
+        {loading && <ActivityIndicator size="small" color={colors.text.muted} style={s.spinner} />}
       </View>
 
       {showDropdown && suggestions.length > 0 && (
-        <View style={styles.dropdown}>
+        <View style={s.dropdown}>
           <FlatList
             data={suggestions}
             keyExtractor={(item, index) => item.place_id || `suggestion-${index}`}
@@ -98,15 +101,15 @@ export default function AddressAutocomplete({
             nestedScrollEnabled
             renderItem={({ item }) => (
               <Pressable
-                style={styles.suggestionRow}
+                style={s.suggestionRow}
                 onPress={() => handleSelect(item)}
               >
                 <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
-                <View style={styles.suggestionTextWrap}>
-                  <Text style={styles.suggestionMain} numberOfLines={1}>
+                <View style={s.suggestionTextWrap}>
+                  <Text style={s.suggestionMain} numberOfLines={1}>
                     {item.structured_formatting?.main_text || item.description?.split(',')[0] || item.description}
                   </Text>
-                  <Text style={styles.suggestionSecondary} numberOfLines={1}>
+                  <Text style={s.suggestionSecondary} numberOfLines={1}>
                     {item.structured_formatting?.secondary_text ||
                       item.description?.split(',').slice(1).join(',').trim() ||
                       ''}
@@ -121,7 +124,8 @@ export default function AddressAutocomplete({
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     position: 'relative',
     zIndex: 100,
@@ -188,5 +192,5 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
 });
-
+}
 
