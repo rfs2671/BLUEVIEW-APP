@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,8 +8,9 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  RefreshControl,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -20,6 +21,7 @@ import {
   Save,
   Building2,
   AlertCircle,
+  RotateCw,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../../src/components/GlassCard';
@@ -39,14 +41,30 @@ export default function ReportSettingsScreen() {
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
+  // NEW: Track saved state for UI feedback
+  const lastSavedRef = useRef(null);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [project, setProject] = useState(null);
   const [emailList, setEmailList] = useState([]);
   const [newEmail, setNewEmail] = useState('');
   const [sendTime, setSendTime] = useState('18:00');
+  
+  // NEW: Track if there are unsaved changes
+  const [hasChanges, setHasChanges] = useState(false);
 
   const isAdmin = user?.role === 'admin';
+
+  // NEW: Refetch whenever screen comes into focus to catch any backend updates
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isAuthenticated && projectId) {
+        fetchProject();
+      }
+    }, [isAuthenticated, projectId])
+  );
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -54,24 +72,44 @@ export default function ReportSettingsScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  useEffect(() => {
-    if (isAuthenticated && projectId) {
-      fetchProject();
-    }
-  }, [isAuthenticated, projectId]);
-
   const fetchProject = async () => {
     setLoading(true);
     try {
       const projectData = await projectsAPI.getById(projectId);
+      if (!projectData) {
+        throw new Error('Project not found on server');
+      }
+      
       setProject(projectData);
-      setEmailList(projectData.report_email_list || []);
-      setSendTime(projectData.report_send_time || '18:00');
+      // CRITICAL: Use the backend data as source of truth
+      const backendEmailList = projectData.report_email_list || [];
+      const backendSendTime = projectData.report_send_time || '18:00';
+      
+      setEmailList(backendEmailList);
+      setSendTime(backendSendTime);
+      setHasChanges(false);
+      lastSavedRef.current = {
+        emailList: backendEmailList,
+        sendTime: backendSendTime,
+      };
     } catch (error) {
       console.error('Failed to fetch project:', error);
       toast.error('Error', 'Could not load project settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // NEW: Refresh handler for pull-to-refresh
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await fetchProject();
+      toast.success('Refreshed', 'Report settings reloaded');
+    } catch (error) {
+      toast.error('Refresh Failed', 'Could not reload settings');
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -95,14 +133,18 @@ export default function ReportSettingsScreen() {
       return;
     }
 
-    setEmailList([...emailList, trimmedEmail]);
+    const newList = [...emailList, trimmedEmail];
+    setEmailList(newList);
     setNewEmail('');
+    setHasChanges(true);
     toast.success('Added', 'Email added to list');
   };
 
   const handleRemoveEmail = (emailToRemove) => {
     const confirmRemove = () => {
-      setEmailList(emailList.filter(email => email !== emailToRemove));
+      const newList = emailList.filter(email => email !== emailToRemove);
+      setEmailList(newList);
+      setHasChanges(true);
       toast.success('Removed', 'Email removed from list');
     };
 
@@ -119,22 +161,69 @@ export default function ReportSettingsScreen() {
   };
 
   const handleSave = async () => {
+    if (!hasChanges) {
+      toast.info('No Changes', 'Settings are already saved');
+      return;
+    }
+
     setSaving(true);
     try {
-      await projectsAPI.update(projectId, {
+      // CRITICAL: Send to correct endpoint with proper error handling
+      const response = await projectsAPI.update(projectId, {
         report_email_list: emailList,
         report_send_time: sendTime,
       });
+
+      if (!response) {
+        throw new Error('No response from server');
+      }
+
+      // CRITICAL: Update saved reference ONLY on successful response
+      lastSavedRef.current = {
+        emailList: emailList,
+        sendTime: sendTime,
+      };
+      
+      setHasChanges(false);
       toast.success('Saved', 'Report settings updated successfully');
+      
+      // CRITICAL: Refetch to confirm backend persisted the data
+      await fetchProject();
     } catch (error) {
       console.error('Failed to save settings:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not save settings');
+      const errorMsg = error.response?.data?.detail || error.message || 'Could not save settings';
+      toast.error('Save Failed', errorMsg);
+      
+      // NEW: Don't clear hasChanges on failure; user can retry
     } finally {
       setSaving(false);
     }
   };
 
+  const handleSendTimeChange = (newTime) => {
+    setSendTime(newTime);
+    setHasChanges(true);
+  };
+
   const handleLogout = async () => {
+    if (hasChanges) {
+      return Alert.alert(
+        'Unsaved Changes',
+        'You have unsaved changes. Save before logging out?',
+        [
+          { text: 'Discard', onPress: () => logoutUser() },
+          { text: 'Save & Logout', onPress: async () => {
+            await handleSave();
+            await logoutUser();
+          }},
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
+    }
+    await logoutUser();
+  };
+
+  const logoutUser = async () => {
     await logout();
     router.replace('/login');
   };
@@ -186,17 +275,26 @@ export default function ReportSettingsScreen() {
             />
             <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
+          <View style={s.headerRight}>
+            <GlassButton
+              variant="icon"
+              icon={<RotateCw size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleRefresh}
+              loading={refreshing}
+            />
+            <GlassButton
+              variant="icon"
+              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLogout}
+            />
+          </View>
         </View>
 
         <ScrollView
           style={s.scrollView}
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
         >
           {/* Title */}
           <View style={s.titleSection}>
@@ -209,6 +307,13 @@ export default function ReportSettingsScreen() {
               </View>
             )}
           </View>
+
+          {/* Unsaved Changes Warning */}
+          {hasChanges && (
+            <GlassCard style={[s.warningCard, { borderColor: '#f59e0b', borderWidth: 1 }]}>
+              <Text style={s.warningText}>⚠ You have unsaved changes</Text>
+            </GlassCard>
+          )}
 
           {/* Description */}
           <GlassCard style={s.infoCard}>
@@ -273,7 +378,8 @@ export default function ReportSettingsScreen() {
               </Text>
             </GlassCard>
           )}
-           {/* Send Time */}
+
+          {/* Send Time */}
           <Text style={s.sectionLabel}>SEND TIME (EST)</Text>
           <GlassCard style={s.addEmailCard}>
             <Text style={s.sectionTitle}>Daily Report Time</Text>
@@ -281,7 +387,7 @@ export default function ReportSettingsScreen() {
               {['06:00', '12:00', '15:00', '17:00', '18:00', '19:00', '20:00', '21:00'].map((time) => (
                 <Pressable
                   key={time}
-                  onPress={() => setSendTime(time)}
+                  onPress={() => handleSendTimeChange(time)}
                   style={[
                     s.timeOption,
                     sendTime === time && s.timeOptionActive,
@@ -304,6 +410,7 @@ export default function ReportSettingsScreen() {
             icon={<Save size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={handleSave}
             loading={saving}
+            disabled={!hasChanges || saving}
             style={s.saveButton}
           />
         </ScrollView>
@@ -314,206 +421,224 @@ export default function ReportSettingsScreen() {
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.md,
-  },
-  loadingText: {
-    color: colors.text.muted,
-    fontSize: 14,
-  },
-  accessDenied: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
-    gap: spacing.md,
-  },
-  accessDeniedTitle: {
-    fontSize: 22,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginTop: spacing.md,
-  },
-  accessDeniedDesc: {
-    fontSize: 14,
-    color: colors.text.muted,
-    textAlign: 'center',
-  },
-  returnBtn: {
-    marginTop: spacing.lg,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  logoText: {
-    ...typography.label,
-    color: colors.text.muted,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: spacing.lg,
-    paddingBottom: 120,
-  },
-  titleSection: {
-    marginBottom: spacing.xl,
-  },
-  titleLabel: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.sm,
-  },
-  titleText: {
-    fontSize: 48,
-    fontWeight: '200',
-    color: colors.text.primary,
-    letterSpacing: -1,
-    marginBottom: spacing.md,
-  },
-  projectBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    alignSelf: 'flex-start',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-  },
-  projectName: {
-    fontSize: 14,
-    color: colors.text.primary,
-  },
-  infoCard: {
-    alignItems: 'center',
-    paddingVertical: spacing.xl,
-    marginBottom: spacing.lg,
-  },
-  infoTitle: {
-    fontSize: 18,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginTop: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  infoText: {
-    fontSize: 14,
-    color: colors.text.muted,
-    textAlign: 'center',
-    maxWidth: 320,
-    lineHeight: 20,
-  },
-  addEmailCard: {
-    marginBottom: spacing.lg,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginBottom: spacing.md,
-  },
-  addEmailRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    alignItems: 'flex-end',
-  },
-  emailInput: {
-    flex: 1,
-  },
-  sectionLabel: {
-    ...typography.label,
-    color: colors.text.muted,
-    marginBottom: spacing.md,
-    paddingHorizontal: spacing.xs,
-  },
-  emailList: {
-    gap: spacing.sm,
-    marginBottom: spacing.xl,
-  },
-  emailCard: {
-    padding: spacing.md,
-  },
-  emailRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  emailText: {
-    flex: 1,
-    fontSize: 15,
-    color: colors.text.primary,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  deleteBtn: {
-    padding: spacing.sm,
-  },
-  emptyCard: {
-    alignItems: 'center',
-    paddingVertical: spacing.xxl,
-    gap: spacing.sm,
-    marginBottom: spacing.xl,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '500',
-    color: colors.text.primary,
-    marginTop: spacing.md,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: colors.text.muted,
-    textAlign: 'center',
-    maxWidth: 280,
-    lineHeight: 20,
-  },
-  timeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginTop: spacing.sm,
-  },
-  timeOption: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    backgroundColor: colors.glass.background,
-  },
-  timeOptionActive: {
-    backgroundColor: 'rgba(59, 130, 246, 0.2)',
-    borderColor: '#3b82f6',
-  },
-  timeOptionText: {
-    fontSize: 13,
-    color: colors.text.muted,
-  },
-  timeOptionTextActive: {
-    color: '#3b82f6',
-    fontWeight: '600',
-  },
-  saveButton: {
-    marginTop: spacing.md,
-  },
-});
+    container: {
+      flex: 1,
+    },
+    loadingContainer: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.md,
+    },
+    loadingText: {
+      color: colors.text.muted,
+      fontSize: 14,
+    },
+    accessDenied: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: spacing.xl,
+      gap: spacing.md,
+    },
+    accessDeniedTitle: {
+      fontSize: 22,
+      fontWeight: '500',
+      color: colors.text.primary,
+      marginTop: spacing.md,
+    },
+    accessDeniedDesc: {
+      fontSize: 14,
+      color: colors.text.muted,
+      textAlign: 'center',
+    },
+    returnBtn: {
+      marginTop: spacing.lg,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      borderBottomWidth: 1,
+      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    },
+    headerLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+    },
+    headerRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    logoText: {
+      ...typography.label,
+      color: colors.text.muted,
+    },
+    scrollView: {
+      flex: 1,
+    },
+    scrollContent: {
+      padding: spacing.lg,
+      paddingBottom: 120,
+    },
+    titleSection: {
+      marginBottom: spacing.xl,
+    },
+    titleLabel: {
+      ...typography.label,
+      color: colors.text.muted,
+      marginBottom: spacing.sm,
+    },
+    titleText: {
+      fontSize: 48,
+      fontWeight: '200',
+      color: colors.text.primary,
+      letterSpacing: -1,
+      marginBottom: spacing.md,
+    },
+    projectBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      alignSelf: 'flex-start',
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    projectName: {
+      fontSize: 14,
+      color: colors.text.primary,
+    },
+    warningCard: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      marginBottom: spacing.lg,
+      backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    },
+    warningText: {
+      fontSize: 14,
+      color: '#f59e0b',
+      fontWeight: '500',
+    },
+    infoCard: {
+      alignItems: 'center',
+      paddingVertical: spacing.xl,
+      marginBottom: spacing.lg,
+    },
+    infoTitle: {
+      fontSize: 18,
+      fontWeight: '500',
+      color: colors.text.primary,
+      marginTop: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    infoText: {
+      fontSize: 14,
+      color: colors.text.muted,
+      textAlign: 'center',
+      maxWidth: 320,
+      lineHeight: 20,
+    },
+    addEmailCard: {
+      marginBottom: spacing.lg,
+    },
+    sectionTitle: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.text.primary,
+      marginBottom: spacing.md,
+    },
+    addEmailRow: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+      alignItems: 'flex-end',
+    },
+    emailInput: {
+      flex: 1,
+    },
+    sectionLabel: {
+      ...typography.label,
+      color: colors.text.muted,
+      marginBottom: spacing.md,
+      paddingHorizontal: spacing.xs,
+    },
+    emailList: {
+      gap: spacing.sm,
+      marginBottom: spacing.xl,
+    },
+    emailCard: {
+      padding: spacing.md,
+    },
+    emailRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+    },
+    emailText: {
+      flex: 1,
+      fontSize: 15,
+      color: colors.text.primary,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    },
+    deleteBtn: {
+      padding: spacing.sm,
+    },
+    emptyCard: {
+      alignItems: 'center',
+      paddingVertical: spacing.xxl,
+      gap: spacing.sm,
+      marginBottom: spacing.xl,
+    },
+    emptyTitle: {
+      fontSize: 18,
+      fontWeight: '500',
+      color: colors.text.primary,
+      marginTop: spacing.md,
+    },
+    emptyText: {
+      fontSize: 14,
+      color: colors.text.muted,
+      textAlign: 'center',
+      maxWidth: 280,
+      lineHeight: 20,
+    },
+    timeRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.sm,
+    },
+    timeOption: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      backgroundColor: colors.glass.background,
+    },
+    timeOptionActive: {
+      backgroundColor: 'rgba(59, 130, 246, 0.2)',
+      borderColor: '#3b82f6',
+    },
+    timeOptionText: {
+      fontSize: 13,
+      color: colors.text.muted,
+    },
+    timeOptionTextActive: {
+      color: '#3b82f6',
+      fontWeight: '600',
+    },
+    saveButton: {
+      marginTop: spacing.md,
+    },
+  });
 }
+
+export default ReportSettingsScreen;
