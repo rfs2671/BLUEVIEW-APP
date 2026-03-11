@@ -43,10 +43,13 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function WorkerDetailScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: workerId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
@@ -217,10 +220,10 @@ export default function WorkerDetailScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading worker...</Text>
+            <Text style={s.loadingText}>Loading worker...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -229,17 +232,17 @@ export default function WorkerDetailScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+      <SafeAreaView style={s.container} edges={['top']}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <OfflineIndicator />
             {isAdmin && !editMode && (
               <GlassButton
@@ -257,24 +260,24 @@ export default function WorkerDetailScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <GlassCard style={styles.profileCard}>
-            <View style={styles.avatarContainer}>
-              <View style={styles.avatar}>
-                <Text style={styles.avatarText}>{name?.charAt(0) || 'W'}</Text>
+          <GlassCard style={s.profileCard}>
+            <View style={s.avatarContainer}>
+              <View style={s.avatar}>
+                <Text style={s.avatarText}>{name?.charAt(0) || 'W'}</Text>
               </View>
               {editMode && (
-                <View style={styles.editBadge}>
+                <View style={s.editBadge}>
                   <Edit3 size={12} color="#fff" />
                 </View>
               )}
             </View>
 
             {editMode ? (
-              <View style={styles.editForm}>
+              <View style={s.editForm}>
                 <GlassInput
                   value={name}
                   onChangeText={setName}
@@ -285,24 +288,24 @@ export default function WorkerDetailScreen() {
                   value={trade}
                   onChangeText={setTrade}
                   placeholder="Trade"
-                  style={styles.inputSpacing}
+                  style={s.inputSpacing}
                 />
                 <GlassInput
                   value={company}
                   onChangeText={setCompany}
                   placeholder="Company"
                   leftIcon={<Building2 size={18} color={colors.text.subtle} />}
-                  style={styles.inputSpacing}
+                  style={s.inputSpacing}
                 />
                 <GlassInput
                   value={oshaNumber}
                   onChangeText={setOshaNumber}
                   placeholder="OSHA Number"
                   leftIcon={<FileText size={18} color={colors.text.subtle} />}
-                  style={styles.inputSpacing}
+                  style={s.inputSpacing}
                 />
                 
-                <View style={styles.editActions}>
+                <View style={s.editActions}>
                   <GlassButton
                     title="Cancel"
                     onPress={() => {
@@ -312,7 +315,7 @@ export default function WorkerDetailScreen() {
                       setCompany(worker?.company || '');
                       setOshaNumber(worker?.osha_number || worker?.oshaNumber || '');
                     }}
-                    style={styles.cancelBtn}
+                    style={s.cancelBtn}
                   />
                   <GlassButton
                     title="Save Changes"
@@ -323,19 +326,19 @@ export default function WorkerDetailScreen() {
                 </View>
               </View>
             ) : (
-              <View style={styles.profileInfo}>
-                <Text style={styles.workerName}>{name}</Text>
-                <Text style={styles.workerTrade}>{trade || 'No trade specified'}</Text>
+              <View style={s.profileInfo}>
+                <Text style={s.workerName}>{name}</Text>
+                <Text style={s.workerTrade}>{trade || 'No trade specified'}</Text>
                 
-                <View style={styles.infoRow}>
+                <View style={s.infoRow}>
                   <Building2 size={16} color={colors.text.muted} />
-                  <Text style={styles.infoText}>{company || 'No company'}</Text>
+                  <Text style={s.infoText}>{company || 'No company'}</Text>
                 </View>
                 
                 {oshaNumber ? (
-                  <View style={styles.infoRow}>
+                  <View style={s.infoRow}>
                     <FileText size={16} color={colors.text.muted} />
-                    <Text style={styles.infoText}>OSHA: {oshaNumber}</Text>
+                    <Text style={s.infoText}>OSHA: {oshaNumber}</Text>
                   </View>
                 ) : null}
               </View>
@@ -343,107 +346,107 @@ export default function WorkerDetailScreen() {
           </GlassCard>
 
           {canViewOsha && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
+            <View style={s.section}>
+              <View style={s.sectionHeader}>
+                <View style={s.sectionTitleRow}>
                   <CreditCard size={20} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.sectionTitle}>OSHA / SST Card</Text>
+                  <Text style={s.sectionTitle}>OSHA / SST Card</Text>
                 </View>
               </View>
 
               {loadingOsha ? (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <ActivityIndicator size="small" color={colors.text.muted} />
-                  <Text style={styles.emptyText}>Loading OSHA data...</Text>
+                  <Text style={s.emptyText}>Loading OSHA data...</Text>
                 </GlassCard>
               ) : oshaCardImage ? (
-                <GlassCard style={styles.oshaCard}>
+                <GlassCard style={s.oshaCard}>
                   <Pressable onPress={() => setShowOshaCard(true)}>
                     <Image
                       source={{ uri: oshaCardImage }}
-                      style={styles.oshaCardImage}
+                      style={s.oshaCardImage}
                       resizeMode="contain"
                     />
-                    <Text style={styles.oshaCardTapHint}>Tap to enlarge</Text>
+                    <Text style={s.oshaCardTapHint}>Tap to enlarge</Text>
                   </Pressable>
 
                   {oshaData && (
-                    <View style={styles.oshaFields}>
+                    <View style={s.oshaFields}>
                       {oshaData.name && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>Name</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.name}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>Name</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.name}</Text>
                         </View>
                       )}
                       {oshaData.osha_number && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>OSHA #</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.osha_number}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>OSHA #</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.osha_number}</Text>
                         </View>
                       )}
                       {oshaData.sst_number && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>SST #</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.sst_number}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>SST #</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.sst_number}</Text>
                         </View>
                       )}
                       {oshaData.trade && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>Trade</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.trade}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>Trade</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.trade}</Text>
                         </View>
                       )}
                       {oshaData.expiration && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>Expires</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.expiration}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>Expires</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.expiration}</Text>
                         </View>
                       )}
                       {oshaData.training_provider && (
-                        <View style={styles.oshaFieldRow}>
-                          <Text style={styles.oshaFieldLabel}>Provider</Text>
-                          <Text style={styles.oshaFieldValue}>{oshaData.training_provider}</Text>
+                        <View style={s.oshaFieldRow}>
+                          <Text style={s.oshaFieldLabel}>Provider</Text>
+                          <Text style={s.oshaFieldValue}>{oshaData.training_provider}</Text>
                         </View>
                       )}
                     </View>
                   )}
                 </GlassCard>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <CreditCard size={32} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No OSHA card on file</Text>
-                  <Text style={styles.emptySubtext}>Worker will upload during NFC check-in</Text>
+                  <Text style={s.emptyText}>No OSHA card on file</Text>
+                  <Text style={s.emptySubtext}>Worker will upload during NFC check-in</Text>
                 </GlassCard>
               )}
             </View>
           )}
 
           {canViewOsha && (
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={styles.sectionTitleRow}>
+            <View style={s.section}>
+              <View style={s.sectionHeader}>
+                <View style={s.sectionTitleRow}>
                   <ShieldCheck size={20} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.sectionTitle}>Safety Orientations</Text>
+                  <Text style={s.sectionTitle}>Safety Orientations</Text>
                 </View>
               </View>
 
               {safetyOrientations.length > 0 ? (
-                <View style={styles.orientationList}>
+                <View style={s.orientationList}>
                   {safetyOrientations.map((orientation, index) => (
-                    <GlassCard key={index} style={styles.orientationItem}>
+                    <GlassCard key={index} style={s.orientationItem}>
                       <Pressable
-                        style={styles.orientationHeader}
+                        style={s.orientationHeader}
                         onPress={() => setExpandedOrientation(expandedOrientation === index ? null : index)}
                       >
-                        <View style={styles.orientationInfo}>
-                          <View style={styles.orientationBadge}>
+                        <View style={s.orientationInfo}>
+                          <View style={s.orientationBadge}>
                             <ShieldCheck size={14} color="#22c55e" />
                           </View>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.orientationProject}>
+                            <Text style={s.orientationProject}>
                               {orientation.project_name || 'Unknown Project'}
                             </Text>
-                            <Text style={styles.orientationDate}>
+                            <Text style={s.orientationDate}>
                               {orientation.completed_at
                                 ? new Date(orientation.completed_at).toLocaleDateString()
                                 : 'Date unknown'}
@@ -458,16 +461,16 @@ export default function WorkerDetailScreen() {
                       </Pressable>
 
                       {expandedOrientation === index && orientation.checklist && (
-                        <View style={styles.checklistExpanded}>
+                        <View style={s.checklistExpanded}>
                           {Object.entries(orientation.checklist).map(([item, val], i) => (
-                            <View key={i} style={styles.checklistItem}>
+                            <View key={i} style={s.checklistItem}>
                               <View style={[
-                                styles.checkIcon,
-                                val?.checked && styles.checkIconChecked,
+                                s.checkIcon,
+                                val?.checked && s.checkIconChecked,
                               ]}>
                                 {val?.checked && <Check size={12} color="#fff" />}
                               </View>
-                              <Text style={styles.checklistItemText}>{item}</Text>
+                              <Text style={s.checklistItemText}>{item}</Text>
                             </View>
                           ))}
                         </View>
@@ -476,20 +479,20 @@ export default function WorkerDetailScreen() {
                   ))}
                 </View>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <ShieldCheck size={32} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No safety orientations</Text>
-                  <Text style={styles.emptySubtext}>Completed during first NFC check-in at each site</Text>
+                  <Text style={s.emptyText}>No safety orientations</Text>
+                  <Text style={s.emptySubtext}>Completed during first NFC check-in at each site</Text>
                 </GlassCard>
               )}
             </View>
           )}
 
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
+          <View style={s.section}>
+            <View style={s.sectionHeader}>
+              <View style={s.sectionTitleRow}>
                 <Award size={20} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.sectionTitle}>Certifications</Text>
+                <Text style={s.sectionTitle}>Certifications</Text>
               </View>
               {isAdmin && (
                 <GlassButton
@@ -501,7 +504,7 @@ export default function WorkerDetailScreen() {
             </View>
 
             {showAddCert && (
-              <GlassCard style={styles.addForm}>
+              <GlassCard style={s.addForm}>
                 <GlassInput
                   value={newCertName}
                   onChangeText={setNewCertName}
@@ -512,9 +515,9 @@ export default function WorkerDetailScreen() {
                   onChangeText={setNewCertExpiry}
                   placeholder="Expiry date (optional)"
                   leftIcon={<Calendar size={18} color={colors.text.subtle} />}
-                  style={styles.inputSpacing}
+                  style={s.inputSpacing}
                 />
-                <View style={styles.addFormButtons}>
+                <View style={s.addFormButtons}>
                   <GlassButton
                     title="Cancel"
                     onPress={() => setShowAddCert(false)}
@@ -528,20 +531,20 @@ export default function WorkerDetailScreen() {
             )}
 
             {certifications.length > 0 ? (
-              <View style={styles.certList}>
+              <View style={s.certList}>
                 {certifications.map((cert, index) => (
-                  <View key={index} style={styles.certItem}>
+                  <View key={index} style={s.certItem}>
                     <IconPod size={40}>
                       <Award size={18} strokeWidth={1.5} color="#f59e0b" />
                     </IconPod>
-                    <View style={styles.certInfo}>
-                      <Text style={styles.certName}>{cert.name}</Text>
+                    <View style={s.certInfo}>
+                      <Text style={s.certName}>{cert.name}</Text>
                       {cert.expiry && (
-                        <Text style={styles.certExpiry}>Expires: {cert.expiry}</Text>
+                        <Text style={s.certExpiry}>Expires: {cert.expiry}</Text>
                       )}
                     </View>
                     {isAdmin && (
-                      <Pressable onPress={() => handleDeleteCertification(index)} style={styles.deleteBtn}>
+                      <Pressable onPress={() => handleDeleteCertification(index)} style={s.deleteBtn}>
                         <Trash2 size={16} strokeWidth={1.5} color={colors.status.error} />
                       </Pressable>
                     )}
@@ -549,25 +552,25 @@ export default function WorkerDetailScreen() {
                 ))}
               </View>
             ) : (
-              <GlassCard style={styles.emptyCard}>
+              <GlassCard style={s.emptyCard}>
                 <Award size={32} strokeWidth={1} color={colors.text.subtle} />
-                <Text style={styles.emptyText}>No certifications</Text>
+                <Text style={s.emptyText}>No certifications</Text>
               </GlassCard>
             )}
           </View>
 
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
+          <View style={s.section}>
+            <View style={s.sectionHeader}>
+              <View style={s.sectionTitleRow}>
                 <Pen size={20} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.sectionTitle}>Digital Signature</Text>
+                <Text style={s.sectionTitle}>Digital Signature</Text>
               </View>
             </View>
 
-            <GlassCard style={styles.signatureCard}>\
+            <GlassCard style={s.signatureCard}>\
               {signature ? (
                 <>
-<View style={styles.signaturePreview}>
+<View style={s.signaturePreview}>
                     {(() => {
                       const sigUri = typeof signature === 'string'
                         ? signature
@@ -578,15 +581,15 @@ export default function WorkerDetailScreen() {
                         <Image source={{ uri: sigUri }} style={{ width: '100%', height: 150 }} resizeMode="contain" />
                       ) : null;
                     })()}
-                    <Text style={styles.signatureText}>✍️ Signature on file</Text>
-                    <Text style={styles.signatureDate}>
+                    <Text style={s.signatureText}>✍️ Signature on file</Text>
+                    <Text style={s.signatureDate}>
                       Updated: {signature?.signed_at ? new Date(signature.signed_at).toLocaleDateString() : 'On file'}
                     </Text>
                   </View>
                 </>
               ) : (
                 <>
-                  <Text style={styles.noSignatureText}>No signature on file</Text>
+                  <Text style={s.noSignatureText}>No signature on file</Text>
                   {isAdmin && (
                     <GlassButton
                       title="Add Signature"
@@ -599,14 +602,14 @@ export default function WorkerDetailScreen() {
             </GlassCard>
 
             {showSignaturePad && (
-              <GlassCard style={styles.signaturePad}>
-                <Text style={styles.signaturePadTitle}>Draw Signature</Text>
-                <View style={styles.signatureCanvas}>
-                  <Text style={styles.signatureCanvasPlaceholder}>
+              <GlassCard style={s.signaturePad}>
+                <Text style={s.signaturePadTitle}>Draw Signature</Text>
+                <View style={s.signatureCanvas}>
+                  <Text style={s.signatureCanvasPlaceholder}>
                     Signature pad would appear here
                   </Text>
                 </View>
-                <div style={styles.signaturePadActions}>
+                <div style={s.signaturePadActions}>
                   <GlassButton
                     title="Cancel"
                     onPress={() => setShowSignaturePad(false)}
@@ -628,17 +631,17 @@ export default function WorkerDetailScreen() {
           onRequestClose={() => setShowOshaCard(false)}
         >
           <Pressable
-            style={styles.modalOverlay}
+            style={s.modalOverlay}
             onPress={() => setShowOshaCard(false)}
           >
-            <View style={styles.modalContent}>
-              <Pressable style={styles.modalClose} onPress={() => setShowOshaCard(false)}>
+            <View style={s.modalContent}>
+              <Pressable style={s.modalClose} onPress={() => setShowOshaCard(false)}>
                 <X size={24} color="#fff" />
               </Pressable>
               {oshaCardImage && (
                 <Image
                   source={{ uri: oshaCardImage }}
-                  style={styles.modalImage}
+                  style={s.modalImage}
                   resizeMode="contain"
                 />
               )}
@@ -650,7 +653,8 @@ export default function WorkerDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -1014,3 +1018,4 @@ const styles = StyleSheet.create({
     height: '100%',
   },
 });
+}
