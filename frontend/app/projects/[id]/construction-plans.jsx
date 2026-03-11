@@ -74,8 +74,6 @@ const formatFileSize = (bytes) => {
 export default function ConstructionPlansScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
