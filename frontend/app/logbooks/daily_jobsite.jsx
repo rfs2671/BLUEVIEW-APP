@@ -179,7 +179,7 @@ export default function DailyJobsiteLog() {
   };
 
   const pickActivityPhoto = async (activityIndex) => {
-    const current = activities[activityIndex].photos || [];
+    const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
       return;
@@ -209,7 +209,7 @@ export default function DailyJobsiteLog() {
   };
 
   const takeActivityPhoto = async (activityIndex) => {
-    const current = activities[activityIndex].photos || [];
+    const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
       return;
@@ -219,14 +219,22 @@ export default function DailyJobsiteLog() {
       toast.error('Permission Denied', 'Camera access is required to take photos');
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 0.3,
-      base64: true,
-      exif: false,
-      allowsEditing: false,
-    });
-    if (result.canceled) return;
-    const asset = result.assets[0];
+    let result;
+    try {
+      result = await ImagePicker.launchCameraAsync({
+        quality: 0.3,
+        base64: true,
+        exif: false,
+        allowsEditing: false,
+      });
+    } catch (err) {
+      console.error('Camera launch failed:', err);
+      toast.error('Camera Error', 'Could not open camera. Please check permissions in device settings.');
+      return;
+    }
+    if (!result || result.canceled) return;
+    const asset = result.assets?.[0];
+    if (!asset) return;
     const newPhoto = {
       uri: asset.uri,
       base64: asset.base64,
