@@ -14,8 +14,8 @@ import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TABS = [
   { key: 'daily_jobsite', label: 'Daily Jobsite', icon: ClipboardList, color: '#3b82f6' },
