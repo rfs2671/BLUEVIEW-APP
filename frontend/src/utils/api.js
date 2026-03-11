@@ -511,6 +511,11 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  getSubmitted: async (projectId) => {
+    const response = await apiClient.get(`/api/logbooks/project/${projectId}/submitted`);
+    return response.data;
+  },
+
   getCheckinsForDate: async (projectId, date = null) => {
     const params = date ? { date } : {};
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/checkins-today`, { params });
