@@ -3512,9 +3512,10 @@ async def upload_daily_log_photo(
     if not log:
         raise HTTPException(status_code=404, detail="Daily log not found")
     
+    # CRITICAL FIX: CP role CAN upload photos. Only site_device (read-only) cannot.
     role = current_user.get("role")
     if role == "site_device":
-        raise HTTPException(status_code=403, detail="Site devices cannot upload photos")
+        raise HTTPException(status_code=403, detail="Site devices (read-only) cannot upload photos")
     
     if role not in ["admin", "owner"]:
         company_id = get_user_company_id(current_user)
@@ -4262,14 +4263,156 @@ async def get_submitted_logbooks(project_id: str, current_user = Depends(get_cur
 
 @api_router.put("/projects/{project_id}/report-settings")
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):
-    """Update report email list + send time."""
-    update = {"updated_at": datetime.now(timezone.utc)}
-    if "report_email_list" in data:
-        update["report_email_list"] = data["report_email_list"]
-    if "report_send_time" in data:
+    """Update report email list + send time with validation."""
+    # Verify user is admin
+    user_role = current_user.get("role")
+    if user_role not in ["admin", "owner"]:
+        raise HTTPException(status_code=403, detail="Only admins can modify report settings")
+    
+    # Validate project exists
+    project_id_obj = to_query_id(project_id)
+    project = await db.projects.find_one({"_id": project_id_obj})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check multi-tenancy: admin must be in same company as project
+    if user_role == "admin":
+        company_id = current_user.get("company_id")
+        if project.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Cannot modify projects outside your company")
+    
+    # Build update dict only with provided fields
+    now = datetime.now(timezone.utc)
+    update = {"updated_at": now}
+    
+    if "report_email_list" in data and data["report_email_list"] is not None:
+        update["report_email_list"] = [email.lower() for email in data["report_email_list"]]
+    
+    if "report_send_time" in data and data["report_send_time"] is not None:
         update["report_send_time"] = data["report_send_time"]
-    await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
-    return {"message": "Report settings saved"}
+    
+    # Perform update
+    result = await db.projects.update_one(
+        {"_id": project_id_obj},
+        {"$set": update}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # CRITICAL: Return updated project to confirm persistence
+    updated_project = await db.projects.find_one({"_id": project_id_obj})
+    return {
+        "message": "Report settings saved successfully",
+		@api_router.get("/projects/{project_id}")
+async def get_project(project_id: str, current_user = Depends(get_current_user)):
+    """Get a project by ID with all settings including report_email_list and report_send_time"""
+    project_id_obj = to_query_id(project_id)
+    project = await db.projects.find_one({"_id": project_id_obj})
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Check access
+    if current_user.get("role") == "admin":
+        if project.get("company_id") != current_user.get("company_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Return all project fields including report settings
+    result = serialize_id(project)
+    result["report_email_list"] = project.get("report_email_list", [])
+    result["report_send_time"] = project.get("report_send_time", "18:00")
+    return result
+
+
+@api_router.get("/reports/project/{project_id}/history")
+async def get_report_history(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    limit: int = Query(30, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+):
+    """Get report send history for a project (admin view)."""
+    # Verify admin/owner
+    role = current_user.get("role")
+    if role not in ["admin", "owner"]:
+        raise HTTPException(status_code=403, detail="Only admins can view report history")
+    
+    # Verify project exists and user has access
+    project_id_obj = to_query_id(project_id)
+    project = await db.projects.find_one({"_id": project_id_obj})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Get report emails (automatic scheduler sends)
+    history = await db.report_emails.find({
+        "project_id": project_id
+    }).sort("date", -1).skip(skip).limit(limit).to_list(limit)
+    
+    total = await db.report_emails.count_documents({"project_id": project_id})
+    
+    return {
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "history": [serialize_id(h) for h in history],
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+    }
+
+
+@api_router.get("/reports/project/{project_id}/logs")
+async def get_submitted_logs(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    log_type: Optional[str] = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """Get submitted logbook entries for a project (admin view)."""
+    # Verify admin
+    role = current_user.get("role")
+    if role not in ["admin", "owner"]:
+        raise HTTPException(status_code=403, detail="Only admins can view logs")
+    
+    # Verify project
+    project_id_obj = to_query_id(project_id)
+    project = await db.projects.find_one({"_id": project_id_obj})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Build query
+    query = {
+        "project_id": project_id,
+        "status": "submitted",
+        "is_deleted": {"$ne": True}
+    }
+    
+    if date:
+        query["date"] = date
+    
+    if log_type:
+        query["log_type"] = log_type
+    
+    logs = await db.logbooks.find(query).sort("date", -1).limit(limit).to_list(limit)
+    
+    return {
+        "project_id": project_id,
+        "logs": [serialize_id(log) for log in logs],
+        "filters": {
+            "date": date,
+            "log_type": log_type,
+        }
+    }
+        "report_email_list": updated_project.get("report_email_list", []),
+        "report_send_time": updated_project.get("report_send_time", "18:00"),
+    }
 
 # ==================== REPORT EMAIL SCHEDULER ====================
 
