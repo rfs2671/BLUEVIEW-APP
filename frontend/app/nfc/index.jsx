@@ -27,12 +27,15 @@ import { useCheckIns } from '../../src/hooks/useCheckIns';
 import { useProjects } from '../../src/hooks/useProjects';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import apiClient from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 const WORKER_PROFILE_KEY = 'blueview_worker_profile';
 const WORKER_ID_KEY = 'blueview_worker_id';
 
 export default function NfcCheckInScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { tag: tagId, projectId } = useLocalSearchParams();
   const toast = useToast();
@@ -179,10 +182,10 @@ export default function NfcCheckInScreen() {
   if (status === 'loading') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.centerContent}>
+        <SafeAreaView style={s.container}>
+          <View style={s.centerContent}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Detecting site...</Text>
+            <Text style={s.loadingText}>Detecting site...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -193,17 +196,17 @@ export default function NfcCheckInScreen() {
   if (status === 'error') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.centerContent}>
-            <View style={styles.errorIcon}>
+        <SafeAreaView style={s.container}>
+          <View style={s.centerContent}>
+            <View style={s.errorIcon}>
               <XCircle size={80} strokeWidth={1.5} color={colors.status.error} />
             </View>
-            <Text style={styles.errorTitle}>Check-In Failed</Text>
-            <Text style={styles.errorMessage}>{errorMessage}</Text>
+            <Text style={s.errorTitle}>Check-In Failed</Text>
+            <Text style={s.errorMessage}>{errorMessage}</Text>
             <GlassButton
               title="Try Again"
               onPress={() => router.back()}
-              style={styles.actionBtn}
+              style={s.actionBtn}
             />
           </View>
         </SafeAreaView>
@@ -215,26 +218,26 @@ export default function NfcCheckInScreen() {
   if (status === 'register') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-          <View style={styles.registerContent}>
+        <SafeAreaView style={s.container} edges={['top', 'bottom']}>
+          <View style={s.registerContent}>
             {/* Site Info */}
             {tagInfo && (
-              <GlassCard style={styles.siteCard}>
-                <View style={styles.siteIcon}>
+              <GlassCard style={s.siteCard}>
+                <View style={s.siteIcon}>
                   <MapPin size={24} strokeWidth={1.5} color="#10b981" />
                 </View>
-                <Text style={styles.siteName}>{tagInfo.project_name || 'Job Site'}</Text>
-                <Text style={styles.siteLocation}>{tagInfo.location_description || 'Check-In Point'}</Text>
+                <Text style={s.siteName}>{tagInfo.project_name || 'Job Site'}</Text>
+                <Text style={s.siteLocation}>{tagInfo.location_description || 'Check-In Point'}</Text>
               </GlassCard>
             )}
 
             {/* Registration Form */}
-            <GlassCard style={styles.formCard}>
-              <View style={styles.formHeader}>
+            <GlassCard style={s.formCard}>
+              <View style={s.formHeader}>
                 <User size={24} strokeWidth={1.5} color={colors.text.primary} />
-                <Text style={styles.formTitle}>Worker Registration</Text>
+                <Text style={s.formTitle}>Worker Registration</Text>
               </View>
-              <Text style={styles.formDesc}>
+              <Text style={s.formDesc}>
                 First time here? Register to check in automatically next time.
               </Text>
 
@@ -243,25 +246,25 @@ export default function NfcCheckInScreen() {
                 onChangeText={setFormPhone}
                 placeholder="Phone Number"
                 keyboardType="phone-pad"
-                style={styles.input}
+                style={s.input}
               />
               <GlassInput
                 value={formName}
                 onChangeText={setFormName}
                 placeholder="Full Name"
-                style={styles.input}
+                style={s.input}
               />
               <GlassInput
                 value={formTrade}
                 onChangeText={setFormTrade}
                 placeholder="Trade (e.g., Electrician, Carpenter)"
-                style={styles.input}
+                style={s.input}
               />
               <GlassInput
                 value={formCompany}
                 onChangeText={setFormCompany}
                 placeholder="Company Name"
-                style={styles.input}
+                style={s.input}
               />
 
               <GlassButton
@@ -269,7 +272,7 @@ export default function NfcCheckInScreen() {
                 onPress={handleRegister}
                 loading={registering}
                 disabled={registering}
-                style={styles.registerBtn}
+                style={s.registerBtn}
               />
             </GlassCard>
           </View>
@@ -282,14 +285,14 @@ export default function NfcCheckInScreen() {
   if (status === 'checking_in') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.centerContent}>
-            <Animated.View style={[styles.checkingIcon, { transform: [{ scale: pulseAnim }] }]}>
+        <SafeAreaView style={s.container}>
+          <View style={s.centerContent}>
+            <Animated.View style={[s.checkingIcon, { transform: [{ scale: pulseAnim }] }]}>
               <Nfc size={60} strokeWidth={1} color="#3b82f6" />
             </Animated.View>
-            <Text style={styles.checkingTitle}>Checking you in...</Text>
-            <Text style={styles.checkingName}>{workerProfile?.name || 'Worker'}</Text>
-            <ActivityIndicator size="large" color="#3b82f6" style={styles.spinner} />
+            <Text style={s.checkingTitle}>Checking you in...</Text>
+            <Text style={s.checkingName}>{workerProfile?.name || 'Worker'}</Text>
+            <ActivityIndicator size="large" color="#3b82f6" style={s.spinner} />
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -300,19 +303,19 @@ export default function NfcCheckInScreen() {
   if (status === 'success') {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.centerContent}>
-            <View style={styles.successIcon}>
+        <SafeAreaView style={s.container}>
+          <View style={s.centerContent}>
+            <View style={s.successIcon}>
               <CheckCircle size={100} strokeWidth={1.5} color="#10b981" />
             </View>
-            <Text style={styles.successTitle}>Checked In!</Text>
-            <Text style={styles.successMessage}>All books signed.</Text>
+            <Text style={s.successTitle}>Checked In!</Text>
+            <Text style={s.successMessage}>All books signed.</Text>
             
             {checkInResult && (
-              <GlassCard style={styles.resultCard}>
-                <Text style={styles.resultName}>{checkInResult.worker_name || workerProfile?.name}</Text>
-                <Text style={styles.resultProject}>{checkInResult.project_name || tagInfo?.project_name}</Text>
-                <Text style={styles.resultTime}>
+              <GlassCard style={s.resultCard}>
+                <Text style={s.resultName}>{checkInResult.worker_name || workerProfile?.name}</Text>
+                <Text style={s.resultProject}>{checkInResult.project_name || tagInfo?.project_name}</Text>
+                <Text style={s.resultTime}>
                   {new Date(checkInResult.timestamp || Date.now()).toLocaleTimeString('en-US', {
                     hour: '2-digit',
                     minute: '2-digit',
@@ -321,7 +324,7 @@ export default function NfcCheckInScreen() {
               </GlassCard>
             )}
 
-            <Text style={styles.autoCloseText}>This page will close automatically...</Text>
+            <Text style={s.autoCloseText}>This page will close automatically...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -331,7 +334,8 @@ export default function NfcCheckInScreen() {
   return null;
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -492,3 +496,4 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 });
+}
