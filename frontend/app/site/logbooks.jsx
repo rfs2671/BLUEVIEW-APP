@@ -368,3 +368,4 @@ function buildStyles(colors, isDark) {
   workerName: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
   workerDetail: { fontSize: 12, color: colors.text.muted },
 });
+}
