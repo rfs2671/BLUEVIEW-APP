@@ -10,20 +10,20 @@ import {
 } from 'react-native';
 import { MapPin } from 'lucide-react-native';
 import apiClient from '../utils/api';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 const DEBOUNCE_MS = 350;
 
 export default function AddressAutocomplete({
-  const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
   value = '',
   onChangeText,
   onSelect,
   placeholder = 'Start typing an address...',
   style,
 }) {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const [suggestions, setSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
