@@ -440,12 +440,12 @@ const styles = StyleSheet.create({
   },
   statValue: {
     fontFamily: typography.semibold,
-    fontSize: 28,
+    fontSize: 32,
     marginBottom: spacing.xs,
   },
   statLabel: {
     fontFamily: typography.medium,
-    fontSize: 11,
+    fontSize: 12,
     letterSpacing: 0.5,
     textAlign: 'center',
     paddingHorizontal: spacing.xs,
