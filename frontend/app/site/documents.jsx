@@ -40,7 +40,7 @@ const getFileIcon = (filename) => {
   if (['pdf'].includes(ext)) return { Icon: FileText, color: '#ef4444' };
   if (['doc', 'docx'].includes(ext)) return { Icon: FileText, color: '#3b82f6' };
   if (['xls', 'xlsx'].includes(ext)) return { Icon: FileText, color: '#22c55e' };
-  return { Icon: File, color: colors.text.muted };
+  return { Icon: File, color: color: '#94a3b8' };
 };
 
 const formatFileSize = (bytes) => {
