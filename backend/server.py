@@ -201,6 +201,8 @@ class ProjectUpdate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: Optional[str] = None
+    report_email_list: Optional[List[str]] = None
+    report_send_time: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -214,6 +216,8 @@ class ProjectResponse(BaseModel):
     dropbox_folder: Optional[str] = None
     dropbox_enabled: bool = False
     created_at: Optional[datetime] = None
+    report_email_list: List[str] = []
+    report_send_time: str = "18:00"
 
 # Worker Models
 class WorkerCreate(BaseModel):
@@ -1449,6 +1453,10 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
+    
+    # Normalize email list to lowercase if present
+    if "report_email_list" in update_data and update_data["report_email_list"] is not None:
+        update_data["report_email_list"] = [e.lower() for e in update_data["report_email_list"]]
     
     result = await db.projects.update_one(
         {"_id": to_query_id(project_id)},
@@ -4304,26 +4312,6 @@ async def update_report_settings(project_id: str, data: dict, current_user = Dep
     updated_project = await db.projects.find_one({"_id": project_id_obj})
     return {
         "message": "Report settings saved successfully",
-		@api_router.get("/projects/{project_id}")
-async def get_project(project_id: str, current_user = Depends(get_current_user)):
-    """Get a project by ID with all settings including report_email_list and report_send_time"""
-    project_id_obj = to_query_id(project_id)
-    project = await db.projects.find_one({"_id": project_id_obj})
-    
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    
-    # Check access
-    if current_user.get("role") == "admin":
-        if project.get("company_id") != current_user.get("company_id"):
-            raise HTTPException(status_code=403, detail="Access denied")
-    
-    # Return all project fields including report settings
-    result = serialize_id(project)
-    result["report_email_list"] = project.get("report_email_list", [])
-    result["report_send_time"] = project.get("report_send_time", "18:00")
-    return result
-
 
 @api_router.get("/reports/project/{project_id}/history")
 async def get_report_history(
