@@ -1,13 +1,3 @@
-/**
- * documents.jsx
- * Place at: frontend/app/documents.jsx
- *
- * FIX: CP users were seeing the admin FloatingNav (Dashboard/Projects/Workers
- * etc.) and the back arrow went to '/' (admin dashboard). Now:
- *   - CP gets CpNav, everyone else gets FloatingNav
- *   - Back arrow goes to /logbooks for CP, / for admin
- */
-
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -37,7 +27,8 @@ import CpNav from '../src/components/CpNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 // File type icon mapping
 const getFileIcon = (fileName) => {
@@ -80,6 +71,8 @@ const formatDate = (dateStr) => {
 };
 
 export default function DocumentsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -202,16 +195,16 @@ export default function DocumentsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={handleBack}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -221,31 +214,31 @@ export default function DocumentsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>PROJECT</Text>
-            <Text style={styles.titleText}>Documents</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>PROJECT</Text>
+            <Text style={s.titleText}>Documents</Text>
           </View>
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={70} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
-              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
+              <GlassSkeleton width="100%" height={70} borderRadiusValue={borderRadius.xl} style={s.mb16} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={s.mb12} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={s.mb12} />
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
             </>
           ) : projects.length === 0 ? (
             /* No Projects with Dropbox */
-            <GlassCard style={styles.emptyCard}>
-              <IconPod size={80} style={styles.emptyIcon}>
+            <GlassCard style={s.emptyCard}>
+              <IconPod size={80} style={s.emptyIcon}>
                 <Cloud size={32} strokeWidth={1.5} color={colors.text.muted} />
               </IconPod>
-              <Text style={styles.emptyTitle}>No Documents Available</Text>
-              <Text style={styles.emptyText}>
+              <Text style={s.emptyTitle}>No Documents Available</Text>
+              <Text style={s.emptyText}>
                 No projects have Dropbox folders linked yet.{'\n'}
                 Contact your administrator to set up document access.
               </Text>
@@ -254,14 +247,14 @@ export default function DocumentsScreen() {
             <>
               {/* Project Selector */}
               <Pressable
-                style={styles.selectorCard}
+                style={s.selectorCard}
                 onPress={() => setShowProjectPicker(!showProjectPicker)}
               >
-                <View style={styles.selectorLeft}>
+                <View style={s.selectorLeft}>
                   <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                   <View>
-                    <Text style={styles.selectorLabel}>PROJECT</Text>
-                    <Text style={styles.selectorValue}>
+                    <Text style={s.selectorLabel}>PROJECT</Text>
+                    <Text style={s.selectorValue}>
                       {selectedProject?.name || 'Select project'}
                     </Text>
                   </View>
@@ -275,18 +268,18 @@ export default function DocumentsScreen() {
               </Pressable>
 
               {showProjectPicker && (
-                <GlassCard style={styles.dropdownCard}>
+                <GlassCard style={s.dropdownCard}>
                   {projects.map((p) => (
                     <Pressable
                       key={getProjectId(p)}
                       style={[
-                        styles.dropdownItem,
+                        s.dropdownItem,
                         getProjectId(p) === getProjectId(selectedProject) &&
-                          styles.dropdownItemActive,
+                          s.dropdownItemActive,
                       ]}
                       onPress={() => handleProjectChange(p)}
                     >
-                      <Text style={styles.dropdownItemText}>{p.name}</Text>
+                      <Text style={s.dropdownItemText}>{p.name}</Text>
                     </Pressable>
                   ))}
                 </GlassCard>
@@ -294,18 +287,18 @@ export default function DocumentsScreen() {
 
               {/* Refresh button */}
               {selectedProject && (
-                <View style={styles.refreshRow}>
-                  <Text style={styles.fileCount}>
+                <View style={s.refreshRow}>
+                  <Text style={s.fileCount}>
                     {files.length} file{files.length !== 1 ? 's' : ''}
                   </Text>
-                  <Pressable style={styles.refreshBtn} onPress={handleRefresh}>
+                  <Pressable style={s.refreshBtn} onPress={handleRefresh}>
                     <RefreshCw
                       size={14}
                       strokeWidth={1.5}
                       color={colors.text.muted}
                       style={refreshing ? { opacity: 0.5 } : {}}
                     />
-                    <Text style={styles.refreshText}>
+                    <Text style={s.refreshText}>
                       {refreshing ? 'Refreshing...' : 'Refresh'}
                     </Text>
                   </Pressable>
@@ -322,20 +315,20 @@ export default function DocumentsScreen() {
                     <Pressable
                       key={file.path || index}
                       style={({ pressed }) => [
-                        styles.fileCard,
-                        pressed && styles.fileCardPressed,
+                        s.fileCard,
+                        pressed && s.fileCardPressed,
                       ]}
                       onPress={() => handleOpenFile(file)}
                       disabled={isLoading}
                     >
-                      <View style={[styles.fileIcon, { backgroundColor: `${iconColor}15` }]}>
+                      <View style={[s.fileIcon, { backgroundColor: `${iconColor}15` }]}>
                         <FileIcon size={20} strokeWidth={1.5} color={iconColor} />
                       </View>
-                      <View style={styles.fileInfo}>
-                        <Text style={styles.fileName} numberOfLines={1}>
+                      <View style={s.fileInfo}>
+                        <Text style={s.fileName} numberOfLines={1}>
                           {file.name}
                         </Text>
-                        <Text style={styles.fileMeta}>
+                        <Text style={s.fileMeta}>
                           {formatFileSize(file.size)}
                           {file.modified ? ` • ${formatDate(file.modified)}` : ''}
                         </Text>
@@ -345,12 +338,12 @@ export default function DocumentsScreen() {
                   );
                 })
               ) : selectedProject ? (
-                <GlassCard style={styles.emptyCard}>
-                  <IconPod size={64} style={styles.emptyIcon}>
+                <GlassCard style={s.emptyCard}>
+                  <IconPod size={64} style={s.emptyIcon}>
                     <FolderOpen size={28} strokeWidth={1.5} color={colors.text.muted} />
                   </IconPod>
-                  <Text style={styles.emptyTitle}>No Documents</Text>
-                  <Text style={styles.emptyText}>
+                  <Text style={s.emptyTitle}>No Documents</Text>
+                  <Text style={s.emptyText}>
                     No documents have been uploaded to this project's Dropbox folder yet.
                   </Text>
                 </GlassCard>
@@ -366,7 +359,8 @@ export default function DocumentsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   header: {
     flexDirection: 'row',
@@ -494,3 +488,4 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
 });
+}
