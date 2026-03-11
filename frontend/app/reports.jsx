@@ -19,9 +19,12 @@ import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI } from '../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 export default function ReportsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -116,16 +119,16 @@ export default function ReportsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -135,35 +138,35 @@ export default function ReportsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>DAILY FIELD</Text>
-            <Text style={styles.titleText}>Reports</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>DAILY FIELD</Text>
+            <Text style={s.titleText}>Reports</Text>
           </View>
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xxl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xxl} style={s.mb16} />
               <GlassSkeleton width="100%" height={280} borderRadiusValue={borderRadius.xxl} />
             </>
           ) : (
             <>
               {/* Project Selector */}
               <Pressable
-                style={styles.selectorCard}
+                style={s.selectorCard}
                 onPress={() => setShowProjectPicker(!showProjectPicker)}
               >
-                <View style={styles.selectorContent}>
+                <View style={s.selectorContent}>
                   <IconPod size={44}>
                     <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                   </IconPod>
                   <View>
-                    <Text style={styles.selectorLabel}>SELECT PROJECT</Text>
-                    <Text style={styles.selectorText}>
+                    <Text style={s.selectorLabel}>SELECT PROJECT</Text>
+                    <Text style={s.selectorText}>
                       {selectedProject?.name || 'Choose a project'}
                     </Text>
                   </View>
@@ -172,53 +175,53 @@ export default function ReportsScreen() {
                   size={20}
                   strokeWidth={1.5}
                   color={colors.text.muted}
-                  style={showProjectPicker && styles.iconRotated}
+                  style={showProjectPicker && s.iconRotated}
                 />
               </Pressable>
 
               {showProjectPicker && (
-                <View style={styles.dropdown}>
+                <View style={s.dropdown}>
                   {projects.map((project) => (
                     <Pressable
                       key={project._id || project.id}
                       style={[
-                        styles.dropdownItem,
+                        s.dropdownItem,
                         (project._id || project.id) === (selectedProject?._id || selectedProject?.id) &&
-                          styles.dropdownItemActive,
+                          s.dropdownItemActive,
                       ]}
                       onPress={() => handleProjectChange(project)}
                     >
-                      <Text style={styles.dropdownText}>{project.name}</Text>
+                      <Text style={s.dropdownText}>{project.name}</Text>
                     </Pressable>
                   ))}
                 </View>
               )}
 
               {/* Report Card */}
-              <GlassCard style={styles.reportCard}>
-                <View style={styles.reportHeader}>
+              <GlassCard style={s.reportCard}>
+                <View style={s.reportHeader}>
                   <IconPod size={52}>
                     <FileText size={22} strokeWidth={1.5} color={colors.text.secondary} />
                   </IconPod>
-                  <Text style={styles.reportTitle}>Daily Field Report</Text>
-                  <Text style={styles.reportSubtitle}>
+                  <Text style={s.reportTitle}>Daily Field Report</Text>
+                  <Text style={s.reportSubtitle}>
                     {selectedProject?.name || 'No project selected'}
                   </Text>
                 </View>
 
                 {dailyLogs.length > 0 && (
-                  <View style={styles.logsCountBadge}>
-                    <Text style={styles.logsCountText}>
+                  <View style={s.logsCountBadge}>
+                    <Text style={s.logsCountText}>
                       {dailyLogs.length} log{dailyLogs.length !== 1 ? 's' : ''} available
                     </Text>
                   </View>
                 )}
 
-                <View style={styles.featuresGrid}>
+                <View style={s.featuresGrid}>
                   {reportFeatures.map((feature) => (
-                    <View key={feature} style={styles.featureItem}>
+                    <View key={feature} style={s.featureItem}>
                       <Check size={14} strokeWidth={1.5} color={colors.text.muted} />
-                      <Text style={styles.featureText}>{feature}</Text>
+                      <Text style={s.featureText}>{feature}</Text>
                     </View>
                   ))}
                 </View>
@@ -229,40 +232,40 @@ export default function ReportsScreen() {
                   onPress={handleGenerateReport}
                   loading={generating}
                   disabled={!selectedProject || dailyLogs.length === 0}
-                  style={styles.downloadButton}
+                  style={s.downloadButton}
                 />
               </GlassCard>
 
               {/* Daily Logs List */}
               {dailyLogs.length > 0 && (
-                <View style={styles.logsSection}>
-                  <View style={styles.logsHeader}>
+                <View style={s.logsSection}>
+                  <View style={s.logsHeader}>
                     <IconPod size={44}>
                       <FileText size={18} strokeWidth={1.5} color={colors.text.secondary} />
                     </IconPod>
-                    <Text style={styles.logsTitle}>Recent Daily Logs</Text>
+                    <Text style={s.logsTitle}>Recent Daily Logs</Text>
                   </View>
                   {dailyLogs.slice(0, 5).map((log, index) => (
-                    <View key={log._id || log.id || index} style={styles.logItem}>
-                      <Text style={styles.logDate}>
+                    <View key={log._id || log.id || index} style={s.logItem}>
+                      <Text style={s.logDate}>
                         {new Date(log.date || log.created_at).toLocaleDateString('en-US', {
                           month: 'short',
                           day: 'numeric',
                           year: 'numeric',
                         })}
                       </Text>
-                      <Text style={styles.logDivider}>•</Text>
-                      <Text style={styles.logWeather}>{log.weather || 'No weather'}</Text>
+                      <Text style={s.logDivider}>•</Text>
+                      <Text style={s.logWeather}>{log.weather || 'No weather'}</Text>
                       <View
                         style={[
-                          styles.logStatus,
-                          log.status === 'submitted' && styles.logStatusSubmitted,
+                          s.logStatus,
+                          log.status === 'submitted' && s.logStatusSubmitted,
                         ]}
                       >
                         <Text
                           style={[
-                            styles.logStatusText,
-                            log.status === 'submitted' && styles.logStatusTextSubmitted,
+                            s.logStatusText,
+                            log.status === 'submitted' && s.logStatusTextSubmitted,
                           ]}
                         >
                           {log.status || 'draft'}
@@ -282,8 +285,9 @@ export default function ReportsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
+    container: {
     flex: 1,
   },
   header: {
@@ -494,3 +498,4 @@ const styles = StyleSheet.create({
     color: '#4ade80',
   },
 });
+}
