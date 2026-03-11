@@ -168,8 +168,8 @@ export default function ReportSettingsScreen() {
 
     setSaving(true);
     try {
-      // CRITICAL: Send to correct endpoint with proper error handling
-      const response = await projectsAPI.update(projectId, {
+
+      const response = await projectsAPI.updateReportSettings(projectId, {
         report_email_list: emailList,
         report_send_time: sendTime,
       });
