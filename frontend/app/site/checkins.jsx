@@ -493,3 +493,4 @@ function buildStyles(colors, isDark) {
     maxWidth: 260,
   },
 });
+}
