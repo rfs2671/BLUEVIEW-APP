@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { TextInput, View, StyleSheet } from 'react-native';
-import { colors, borderRadius, spacing } from '../styles/theme';
+import { borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
 const GlassInput = ({
@@ -18,6 +18,8 @@ const GlassInput = ({
   numberOfLines = 1,
   ...props
 }) => {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
 
