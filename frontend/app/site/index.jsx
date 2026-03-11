@@ -15,9 +15,12 @@ import GlassButton from '../../src/components/GlassButton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 export default function SiteDeviceHomeScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
@@ -77,15 +80,15 @@ export default function SiteDeviceHomeScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
-            <View style={styles.siteBadge}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
+            <View style={s.siteBadge}>
               <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-              <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
+              <Text style={s.siteBadgeText}>SITE DEVICE</Text>
             </View>
-            <Text style={styles.projectName} numberOfLines={1}>
+            <Text style={s.projectName} numberOfLines={1}>
               {siteProject?.name || 'Project'}
             </Text>
           </View>
@@ -97,22 +100,22 @@ export default function SiteDeviceHomeScreen() {
         </View>
 
         {/* Main Content */}
-        <View style={styles.content}>
+        <View style={s.content}>
           {/* Top Row: Log Books + Documents */}
-          <View style={styles.topRow}>
+          <View style={s.topRow}>
             {/* Log Books Button */}
             <Pressable
-              style={styles.buttonCard}
+              style={s.buttonCard}
               onPress={() => handleNavigate('/site/logbooks')}
             >
-              <GlassCard style={styles.buttonInner}>
-                <View style={[styles.iconContainer, { backgroundColor: 'rgba(59, 130, 246, 0.2)' }]}>
+              <GlassCard style={s.buttonInner}>
+                <View style={[s.iconContainer, { backgroundColor: 'rgba(59, 130, 246, 0.2)' }]}>
                   <ClipboardList size={64} strokeWidth={1.5} color="#3b82f6" />
                 </View>
-                <Text style={styles.buttonLabel}>Log Books</Text>
+                <Text style={s.buttonLabel}>Log Books</Text>
                 {!loading && todayLogsCount > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText}>{todayLogsCount} today</Text>
+                  <View style={s.badge}>
+                    <Text style={s.badgeText}>{todayLogsCount} today</Text>
                   </View>
                 )}
               </GlassCard>
@@ -120,31 +123,31 @@ export default function SiteDeviceHomeScreen() {
 
             {/* Documents Button */}
             <Pressable
-              style={styles.buttonCard}
+              style={s.buttonCard}
               onPress={() => handleNavigate('/site/documents')}
             >
-              <GlassCard style={styles.buttonInner}>
-                <View style={[styles.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
+              <GlassCard style={s.buttonInner}>
+                <View style={[s.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
                   <FolderOpen size={64} strokeWidth={1.5} color="#f59e0b" />
                 </View>
-                <Text style={styles.buttonLabel}>Documents</Text>
+                <Text style={s.buttonLabel}>Documents</Text>
               </GlassCard>
             </Pressable>
           </View>
 
           {/* Bottom Row: Worker Sign In (Larger) */}
           <Pressable
-            style={styles.largeButtonCard}
+            style={s.largeButtonCard}
             onPress={() => handleNavigate('/site/checkins')}
           >
-            <GlassCard style={styles.largeButtonInner}>
-              <View style={[styles.largeIconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
+            <GlassCard style={s.largeButtonInner}>
+              <View style={[s.largeIconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
                 <UserCheck size={80} strokeWidth={1.5} color="#4ade80" />
               </View>
-              <Text style={styles.largeButtonLabel}>Worker Sign In</Text>
+              <Text style={s.largeButtonLabel}>Worker Sign In</Text>
               {!loading && workersOnSite > 0 && (
-                <View style={styles.largeBadge}>
-                  <Text style={styles.largeBadgeText}>{workersOnSite} on site</Text>
+                <View style={s.largeBadge}>
+                  <Text style={s.largeBadgeText}>{workersOnSite} on site</Text>
                 </View>
               )}
             </GlassCard>
@@ -155,7 +158,8 @@ export default function SiteDeviceHomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -286,3 +290,4 @@ const styles = StyleSheet.create({
     color: '#4ade80',
   },
 });
+}
