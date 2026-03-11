@@ -1,11 +1,3 @@
-/**
- * login.jsx
- * Place at: frontend/app/login.jsx
- *
- * FIX: authLoading state now renders inside AnimatedBackground with Blueview
- * logo + spinner. Previously was a bare <View> with white text on white bg.
- */
-
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -17,7 +9,8 @@ import GlassInput from '../src/components/GlassInput';
 import GlassButton from '../src/components/GlassButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 function getRedirectPath(userData) {
   if (userData.site_mode) return '/site';
@@ -26,6 +19,8 @@ function getRedirectPath(userData) {
 }
 
 export default function LoginScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { login, isAuthenticated, isLoading: authLoading, siteMode, user } = useAuth();
   const toast = useToast();
@@ -81,11 +76,11 @@ export default function LoginScreen() {
   if (authLoading) {
     return (
       <AnimatedBackground>
-        <View style={styles.loadingContainer}>
-          <View style={styles.logoIcon}>
+        <View style={s.loadingContainer}>
+          <View style={s.logoIcon}>
             <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
           </View>
-          <Text style={styles.logoTextLoading}>BLUEVIEW</Text>
+          <Text style={s.logoTextLoading}>BLUEVIEW</Text>
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
       </AnimatedBackground>
@@ -94,25 +89,25 @@ export default function LoginScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container}>
-        <View style={styles.content}>
+      <SafeAreaView style={s.container}>
+        <View style={s.content}>
           {/* Logo */}
-          <View style={styles.logoContainer}>
-            <View style={styles.logoIcon}>
+          <View style={s.logoContainer}>
+            <View style={s.logoIcon}>
               <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
             </View>
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
 
-          <GlassCard style={styles.card}>
-            <View style={styles.welcomeSection}>
-              <Text style={styles.welcomeLabel}>WELCOME TO</Text>
-              <Text style={styles.welcomeTitle}>Blueview</Text>
+          <GlassCard style={s.card}>
+            <View style={s.welcomeSection}>
+              <Text style={s.welcomeLabel}>WELCOME TO</Text>
+              <Text style={s.welcomeTitle}>Blueview</Text>
             </View>
 
-            <View style={styles.form}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>EMAIL</Text>
+            <View style={s.form}>
+              <View style={s.inputGroup}>
+                <Text style={s.inputLabel}>EMAIL</Text>
                 <GlassInput
                   value={email}
                   onChangeText={setEmail}
@@ -123,8 +118,8 @@ export default function LoginScreen() {
                 />
               </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>PASSWORD</Text>
+              <View style={s.inputGroup}>
+                <Text style={s.inputLabel}>PASSWORD</Text>
                 <GlassInput
                   value={password}
                   onChangeText={setPassword}
@@ -144,7 +139,7 @@ export default function LoginScreen() {
               </View>
 
               {error ? (
-                <Text style={styles.errorText}>{error}</Text>
+                <Text style={s.errorText}>{error}</Text>
               ) : null}
 
               <GlassButton
@@ -152,7 +147,7 @@ export default function LoginScreen() {
                 icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
                 onPress={handleSubmit}
                 loading={loading}
-                style={styles.submitBtn}
+                style={s.submitBtn}
               />
             </View>
           </GlassCard>
@@ -162,8 +157,9 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
+    container: { flex: 1 },
   content: {
     flex: 1,
     justifyContent: 'center',
@@ -232,3 +228,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
   },
 });
+}
