@@ -39,8 +39,6 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
-import { useTheme } from '../../../src/context/ThemeContext';
-
 
 const DROPBOX_BLUE = '#0061FF';
 
