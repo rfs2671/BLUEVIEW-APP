@@ -28,9 +28,12 @@ import GlassInput from '../../../src/components/GlassInput';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { projectsAPI } from '../../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
 
 export default function ReportSettingsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
@@ -139,17 +142,17 @@ export default function ReportSettingsScreen() {
   if (!isAdmin) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.accessDenied}>
+        <SafeAreaView style={s.container}>
+          <View style={s.accessDenied}>
             <AlertCircle size={56} strokeWidth={1} color={colors.status.error} />
-            <Text style={styles.accessDeniedTitle}>Admin Access Required</Text>
-            <Text style={styles.accessDeniedDesc}>
+            <Text style={s.accessDeniedTitle}>Admin Access Required</Text>
+            <Text style={s.accessDeniedDesc}>
               Only administrators can modify report settings.
             </Text>
             <GlassButton
               title="Go Back"
               onPress={() => router.back()}
-              style={styles.returnBtn}
+              style={s.returnBtn}
             />
           </View>
         </SafeAreaView>
@@ -160,10 +163,10 @@ export default function ReportSettingsScreen() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading settings...</Text>
+            <Text style={s.loadingText}>Loading settings...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -172,16 +175,16 @@ export default function ReportSettingsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -191,44 +194,44 @@ export default function ReportSettingsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>PROJECT SETTINGS</Text>
-            <Text style={styles.titleText}>Report Email List</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>PROJECT SETTINGS</Text>
+            <Text style={s.titleText}>Report Email List</Text>
             {project && (
-              <View style={styles.projectBadge}>
+              <View style={s.projectBadge}>
                 <Building2 size={14} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.projectName}>{project.name}</Text>
+                <Text style={s.projectName}>{project.name}</Text>
               </View>
             )}
           </View>
 
           {/* Description */}
-          <GlassCard style={styles.infoCard}>
+          <GlassCard style={s.infoCard}>
             <IconPod size={44}>
               <Mail size={18} strokeWidth={1.5} color="#3b82f6" />
             </IconPod>
-            <Text style={styles.infoTitle}>Auto-Send Reports</Text>
-            <Text style={styles.infoText}>
+            <Text style={s.infoTitle}>Auto-Send Reports</Text>
+            <Text style={s.infoText}>
               Daily reports for this project will be automatically sent to all email addresses in this list at the scheduled time.
             </Text>
           </GlassCard>
 
           {/* Add Email Input */}
-          <GlassCard style={styles.addEmailCard}>
-            <Text style={styles.sectionTitle}>Add Email Address</Text>
-            <View style={styles.addEmailRow}>
+          <GlassCard style={s.addEmailCard}>
+            <Text style={s.sectionTitle}>Add Email Address</Text>
+            <View style={s.addEmailRow}>
               <GlassInput
                 value={newEmail}
                 onChangeText={setNewEmail}
                 placeholder="email@example.com"
                 keyboardType="email-address"
                 autoCapitalize="none"
-                style={styles.emailInput}
+                style={s.emailInput}
                 onSubmitEditing={handleAddEmail}
               />
               <GlassButton
@@ -240,20 +243,20 @@ export default function ReportSettingsScreen() {
           </GlassCard>
 
           {/* Email List */}
-          <Text style={styles.sectionLabel}>
+          <Text style={s.sectionLabel}>
             EMAIL LIST ({emailList.length})
           </Text>
 
           {emailList.length > 0 ? (
-            <View style={styles.emailList}>
+            <View style={s.emailList}>
               {emailList.map((email, index) => (
-                <GlassCard key={index} style={styles.emailCard}>
-                  <View style={styles.emailRow}>
+                <GlassCard key={index} style={s.emailCard}>
+                  <View style={s.emailRow}>
                     <Mail size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.emailText}>{email}</Text>
+                    <Text style={s.emailText}>{email}</Text>
                     <Pressable
                       onPress={() => handleRemoveEmail(email)}
-                      style={styles.deleteBtn}
+                      style={s.deleteBtn}
                     >
                       <Trash2 size={16} color={colors.status.error} />
                     </Pressable>
@@ -262,31 +265,31 @@ export default function ReportSettingsScreen() {
               ))}
             </View>
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <Mail size={40} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={styles.emptyTitle}>No Email Addresses</Text>
-              <Text style={styles.emptyText}>
+              <Text style={s.emptyTitle}>No Email Addresses</Text>
+              <Text style={s.emptyText}>
                 Add email addresses to receive automatic daily reports for this project.
               </Text>
             </GlassCard>
           )}
            {/* Send Time */}
-          <Text style={styles.sectionLabel}>SEND TIME (EST)</Text>
-          <GlassCard style={styles.addEmailCard}>
-            <Text style={styles.sectionTitle}>Daily Report Time</Text>
-            <View style={styles.timeRow}>
+          <Text style={s.sectionLabel}>SEND TIME (EST)</Text>
+          <GlassCard style={s.addEmailCard}>
+            <Text style={s.sectionTitle}>Daily Report Time</Text>
+            <View style={s.timeRow}>
               {['06:00', '12:00', '15:00', '17:00', '18:00', '19:00', '20:00', '21:00'].map((time) => (
                 <Pressable
                   key={time}
                   onPress={() => setSendTime(time)}
                   style={[
-                    styles.timeOption,
-                    sendTime === time && styles.timeOptionActive,
+                    s.timeOption,
+                    sendTime === time && s.timeOptionActive,
                   ]}
                 >
                   <Text style={[
-                    styles.timeOptionText,
-                    sendTime === time && styles.timeOptionTextActive,
+                    s.timeOptionText,
+                    sendTime === time && s.timeOptionTextActive,
                   ]}>
                     {parseInt(time) > 12 ? `${parseInt(time) - 12}:${time.split(':')[1]} PM` : parseInt(time) === 12 ? '12:00 PM' : `${parseInt(time)}:${time.split(':')[1]} AM`}
                   </Text>
@@ -301,7 +304,7 @@ export default function ReportSettingsScreen() {
             icon={<Save size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={handleSave}
             loading={saving}
-            style={styles.saveButton}
+            style={s.saveButton}
           />
         </ScrollView>
       </SafeAreaView>
@@ -309,7 +312,8 @@ export default function ReportSettingsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -512,3 +516,4 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
   },
 });
+}
