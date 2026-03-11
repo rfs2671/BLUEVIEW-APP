@@ -31,11 +31,14 @@ import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 
 export default function ProjectsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -131,16 +134,16 @@ export default function ProjectsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -150,19 +153,19 @@ export default function ProjectsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>MANAGE</Text>
-            <Text style={styles.titleText}>Projects</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>MANAGE</Text>
+            <Text style={s.titleText}>Projects</Text>
           </View>
 
           {/* Search & Add */}
-          <View style={styles.searchRow}>
-            <View style={styles.searchContainer}>
+          <View style={s.searchRow}>
+            <View style={s.searchContainer}>
               <GlassInput
                 value={searchQuery}
                 onChangeText={setSearchQuery}
@@ -178,7 +181,7 @@ export default function ProjectsScreen() {
           </View>
 
           {/* Projects List */}
-          <View style={styles.projectsList}>
+          <View style={s.projectsList}>
             {loading ? (
               <>
                 <ProjectCardSkeleton />
@@ -190,41 +193,41 @@ export default function ProjectsScreen() {
                 <GlassListItem
                   key={getProjectId(project)}
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
-                  style={styles.projectCard}
+                  style={s.projectCard}
                 >
                   <IconPod>
                     <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
                   </IconPod>
 
-                  <View style={styles.projectInfo}>
-                    <Text style={[styles.projectName, { color: colors.text.primary }]}>{project.name}</Text>
-                    <View style={styles.projectLocation}>
+                  <View style={s.projectInfo}>
+                    <Text style={[s.projectName, { color: colors.text.primary }]}>{project.name}</Text>
+                    <View style={s.projectLocation}>
                       <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                       {/* ── FIX #3: Show address first, fall back to location ── */}
-                      <Text style={[styles.projectLocationText, { color: colors.text.muted }]}>
+                      <Text style={[s.projectLocationText, { color: colors.text.muted }]}>
                         {project.address || project.location || 'No location'}
                       </Text>
                     </View>
                   </View>
 
                   {project.nfc_tags?.length > 0 && (
-                    <View style={styles.nfcBadge}>
+                    <View style={s.nfcBadge}>
                       <Wifi size={14} strokeWidth={1.5} color={colors.text.muted} />
-                      <Text style={styles.nfcText}>{project.nfc_tags.length} NFC</Text>
+                      <Text style={s.nfcText}>{project.nfc_tags.length} NFC</Text>
                     </View>
                   )}
 
                   {project.status && (
                     <View
                       style={[
-                        styles.statusBadge,
-                        project.status === 'active' && styles.statusActive,
+                        s.statusBadge,
+                        project.status === 'active' && s.statusActive,
                       ]}
                     >
                       <Text
                         style={[
-                          styles.statusText,
-                          project.status === 'active' && styles.statusTextActive,
+                          s.statusText,
+                          project.status === 'active' && s.statusTextActive,
                         ]}
                       >
                         {project.status.toUpperCase()}
@@ -234,7 +237,7 @@ export default function ProjectsScreen() {
 
                   <Pressable
                     onPress={() => handleDeleteProject(getProjectId(project))}
-                    style={styles.deleteButton}
+                    style={s.deleteButton}
                     hitSlop={10}
                   >
                     <Trash2 size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -242,9 +245,9 @@ export default function ProjectsScreen() {
                 </GlassListItem>
               ))
             ) : (
-              <View style={styles.emptyState}>
+              <View style={s.emptyState}>
                 <Building2 size={48} strokeWidth={1} color={colors.text.subtle} />
-                <Text style={styles.emptyText}>
+                <Text style={s.emptyText}>
                   {searchQuery ? 'No projects match your search' : 'No projects found'}
                 </Text>
               </View>
@@ -263,13 +266,13 @@ export default function ProjectsScreen() {
         >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.modalOverlay}
+            style={s.modalOverlay}
           >
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowAddModal(false)} />
-            <View style={[styles.modalContent, { overflow: 'visible' }]}>
-              <GlassCard variant="modal" style={[styles.modalCard, { overflow: 'visible' }]}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>New Project</Text>
+            <Pressable style={s.modalBackdrop} onPress={() => setShowAddModal(false)} />
+            <View style={[s.modalContent, { overflow: 'visible' }]}>
+              <GlassCard variant="modal" style={[s.modalCard, { overflow: 'visible' }]}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>New Project</Text>
                   <GlassButton
                     variant="icon"
                     icon={<X size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -278,9 +281,9 @@ export default function ProjectsScreen() {
                 </View>
 
                 {/* ── FIX #3: Single address autocomplete replaces name + location ── */}
-                <View style={styles.modalForm}>
-                  <View style={[styles.inputGroup, { zIndex: 100 }]}>
-                    <Text style={styles.inputLabel}>PROJECT ADDRESS</Text>
+                <View style={s.modalForm}>
+                  <View style={[s.inputGroup, { zIndex: 100 }]}>
+                    <Text style={s.inputLabel}>PROJECT ADDRESS</Text>
                     <AddressAutocomplete
                       value={newProject.address}
                       onChangeText={(text) => setNewProject({ ...newProject, address: text })}
@@ -293,7 +296,7 @@ export default function ProjectsScreen() {
                     title="Create Project"
                     onPress={handleAddProject}
                     loading={creating}
-                    style={styles.createButton}
+                    style={s.createButton}
                   />
                 </View>
               </GlassCard>
@@ -305,7 +308,8 @@ export default function ProjectsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -462,4 +466,5 @@ const styles = StyleSheet.create({
   createButton: {
     marginTop: spacing.md,
   },
-});
+  });
+}
