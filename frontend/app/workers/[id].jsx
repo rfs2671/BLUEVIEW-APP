@@ -44,7 +44,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { useTheme } from '../../src/context/ThemeContext';/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function WorkerDetailScreen() {
