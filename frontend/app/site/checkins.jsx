@@ -84,10 +84,13 @@ export default function SiteCheckInsScreen() {
 
   const formatTime = (dateStr) => {
     if (!dateStr) return '--:--';
-    return new Date(dateStr).toLocaleTimeString('en-US', {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '--:--';
+    return d.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       hour12: true,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
   };
 
