@@ -16,8 +16,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 import * as ImagePicker from 'expo-image-picker';
 
