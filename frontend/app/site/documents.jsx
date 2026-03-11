@@ -25,7 +25,8 @@ import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 const dropboxAPI = {
   getProjectFiles: async (projectId) => {
@@ -50,6 +51,8 @@ const formatFileSize = (bytes) => {
 };
 
 export default function SiteDocumentsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
@@ -96,20 +99,20 @@ export default function SiteDocumentsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/site')}
             />
-            <View style={styles.siteBadge}>
+            <View style={s.siteBadge}>
               <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-              <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
+              <Text style={s.siteBadgeText}>SITE DEVICE</Text>
             </View>
-            <Text style={styles.projectName} numberOfLines={1}>
+            <Text style={s.projectName} numberOfLines={1}>
               {siteProject?.name || 'Project'}
             </Text>
           </View>
@@ -121,36 +124,36 @@ export default function SiteDocumentsScreen() {
         </View>
 
         {/* Title */}
-        <View style={styles.titleSection}>
-          <Text style={styles.titleLabel}>PROJECT</Text>
-          <Text style={styles.titleText}>Documents</Text>
+        <View style={s.titleSection}>
+          <Text style={s.titleLabel}>PROJECT</Text>
+          <Text style={s.titleText}>Documents</Text>
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {loading ? (
-            <View style={styles.loadingContainer}>
+            <View style={s.loadingContainer}>
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
             </View>
           ) : files.length > 0 ? (
-            <View style={styles.filesList}>
+            <View style={s.filesList}>
               {files.map((file, index) => {
                 const { Icon, color } = getFileIcon(file.name);
                 return (
-                  <GlassCard key={index} style={styles.fileCard}>
-                    <View style={styles.fileIcon}>
+                  <GlassCard key={index} style={s.fileCard}>
+                    <View style={s.fileIcon}>
                       <Icon size={24} strokeWidth={1.5} color={color} />
                     </View>
-                    <View style={styles.fileInfo}>
-                      <Text style={styles.fileName} numberOfLines={1}>
+                    <View style={s.fileInfo}>
+                      <Text style={s.fileName} numberOfLines={1}>
                         {file.name}
                       </Text>
-                      <Text style={styles.fileSize}>{formatFileSize(file.size)}</Text>
+                      <Text style={s.fileSize}>{formatFileSize(file.size)}</Text>
                     </View>
                     <Download size={20} strokeWidth={1.5} color={colors.text.muted} />
                   </GlassCard>
@@ -158,10 +161,10 @@ export default function SiteDocumentsScreen() {
               })}
             </View>
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={styles.emptyText}>No Documents</Text>
-              <Text style={styles.emptySubtext}>Documents will appear here when added</Text>
+              <Text style={s.emptyText}>No Documents</Text>
+              <Text style={s.emptySubtext}>Documents will appear here when added</Text>
             </GlassCard>
           )}
         </ScrollView>
@@ -278,3 +281,4 @@ const styles = StyleSheet.create({
     color: colors.text.subtle,
   },
 });
+}
