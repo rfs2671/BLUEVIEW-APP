@@ -8,8 +8,8 @@ import { useTheme } from '../context/ThemeContext';
 
 const siteNavItems = [
   { path: '/site', icon: LayoutDashboard, label: 'Dashboard' },
+  { path: '/site/logbooks', icon: FileText, label: 'Log Books' },
   { path: '/site/workers', icon: Users, label: 'Workers' },
-  { path: '/site/documents', icon: FileText, label: 'Documents' },
 ];
 
 const SiteNavItem = ({ item, isActive, onPress }) => {
