@@ -18,9 +18,12 @@ import { GlassSkeleton, StatCardSkeleton } from '../../src/components/GlassSkele
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 export default function SiteCheckInsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
@@ -103,20 +106,20 @@ export default function SiteCheckInsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-  <View style={styles.headerLeft}>
+        <View style={s.header}>
+  <View style={s.headerLeft}>
     <GlassButton
       variant="icon"
       icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
       onPress={() => router.push('/site')}
     />
-    <View style={styles.siteBadge}>
+    <View style={s.siteBadge}>
       <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-      <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
+      <Text style={s.siteBadgeText}>SITE DEVICE</Text>
     </View>
-    <Text style={styles.projectName} numberOfLines={1}>
+    <Text style={s.projectName} numberOfLines={1}>
       {siteProject?.name || 'Project'}
     </Text>
   </View>
@@ -128,43 +131,43 @@ export default function SiteCheckInsScreen() {
 </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <View style={styles.titleRow}>
-              <Text style={styles.titleLabel}>TODAY'S</Text>
+          <View style={s.titleSection}>
+            <View style={s.titleRow}>
+              <Text style={s.titleLabel}>TODAY'S</Text>
               <GlassButton
                 variant="icon"
                 icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.muted} />}
                 onPress={handleRefresh}
-                style={styles.refreshBtn}
+                style={s.refreshBtn}
               />
             </View>
-            <Text style={styles.titleText}>Check-Ins</Text>
+            <Text style={s.titleText}>Check-Ins</Text>
           </View>
 
           {/* Stats */}
-          <View style={styles.statsRow}>
+          <View style={s.statsRow}>
             {loading ? (
               <>
-                <StatCardSkeleton style={styles.statCard} />
-                <StatCardSkeleton style={styles.statCard} />
+                <StatCardSkeleton style={s.statCard} />
+                <StatCardSkeleton style={s.statCard} />
               </>
             ) : (
               <>
-                <StatCard style={styles.statCard}>
-                  <Text style={styles.statLabel}>TOTAL TODAY</Text>
-                  <Text style={styles.statValue}>{stats.total}</Text>
+                <StatCard style={s.statCard}>
+                  <Text style={s.statLabel}>TOTAL TODAY</Text>
+                  <Text style={s.statValue}>{stats.total}</Text>
                 </StatCard>
-                <StatCard style={styles.statCard}>
-                  <View style={styles.activeIndicator}>
-                    <View style={styles.activeDot} />
-                    <Text style={styles.statLabel}>ON-SITE NOW</Text>
+                <StatCard style={s.statCard}>
+                  <View style={s.activeIndicator}>
+                    <View style={s.activeDot} />
+                    <Text style={s.statLabel}>ON-SITE NOW</Text>
                   </View>
-                  <Text style={[styles.statValue, styles.activeValue]}>{stats.active}</Text>
+                  <Text style={[s.statValue, s.activeValue]}>{stats.active}</Text>
                 </StatCard>
               </>
             )}
@@ -173,12 +176,12 @@ export default function SiteCheckInsScreen() {
           {/* Check-ins List */}
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
-              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={s.mb12} />
+              <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} style={s.mb12} />
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
             </>
           ) : checkins.length > 0 ? (
-            <View style={styles.checkinsList}>
+            <View style={s.checkinsList}>
               {checkins.map((checkin, index) => {
                 const workerInfo = getWorkerInfo(checkin);
                 const initials = workerInfo.name
@@ -190,33 +193,33 @@ export default function SiteCheckInsScreen() {
                 return (
                   <GlassListItem 
                     key={checkin._id || checkin.id || index} 
-                    style={styles.checkinCard}
+                    style={s.checkinCard}
                   >
                     {/* Time */}
-                    <View style={styles.timeSection}>
-                      <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
+                    <View style={s.timeSection}>
+                      <Text style={s.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
                       {workerInfo.checkOutTime && (
-                        <Text style={styles.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
+                        <Text style={s.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
                       )}
                     </View>
 
-                    <View style={styles.divider} />
+                    <View style={s.divider} />
 
                     {/* Worker Info */}
-                    <View style={styles.workerInfo}>
-                      <View style={styles.workerHeader}>
-                        <View style={styles.avatar}>
-                          <Text style={styles.avatarText}>{initials}</Text>
+                    <View style={s.workerInfo}>
+                      <View style={s.workerHeader}>
+                        <View style={s.avatar}>
+                          <Text style={s.avatarText}>{initials}</Text>
                         </View>
-                        <View style={styles.workerDetails}>
-                          <Text style={styles.workerName}>{workerInfo.name}</Text>
-                          <Text style={styles.workerTrade}>{workerInfo.trade}</Text>
+                        <View style={s.workerDetails}>
+                          <Text style={s.workerName}>{workerInfo.name}</Text>
+                          <Text style={s.workerTrade}>{workerInfo.trade}</Text>
                         </View>
                       </View>
-                      <View style={styles.workerMeta}>
-                        <View style={styles.metaItem}>
+                      <View style={s.workerMeta}>
+                        <View style={s.metaItem}>
                           <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                          <Text style={styles.metaText}>{workerInfo.company}</Text>
+                          <Text style={s.metaText}>{workerInfo.company}</Text>
                         </View>
                       </View>
                     </View>
@@ -224,19 +227,19 @@ export default function SiteCheckInsScreen() {
                     {/* Status */}
                     <View
                       style={[
-                        styles.statusBadge,
-                        !workerInfo.checkOutTime && styles.statusActive,
+                        s.statusBadge,
+                        !workerInfo.checkOutTime && s.statusActive,
                       ]}
                     >
                       {!workerInfo.checkOutTime ? (
                         <>
-                          <View style={styles.statusDot} />
-                          <Text style={styles.statusText}>ON-SITE</Text>
+                          <View style={s.statusDot} />
+                          <Text style={s.statusText}>ON-SITE</Text>
                         </>
                       ) : (
                         <>
                           <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                          <Text style={[styles.statusText, styles.statusDone]}>DONE</Text>
+                          <Text style={[s.statusText, s.statusDone]}>DONE</Text>
                         </>
                       )}
                     </View>
@@ -245,12 +248,12 @@ export default function SiteCheckInsScreen() {
               })}
             </View>
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <IconPod size={64}>
                 <Users size={28} strokeWidth={1.5} color={colors.text.muted} />
               </IconPod>
-              <Text style={styles.emptyTitle}>No Check-Ins Today</Text>
-              <Text style={styles.emptyText}>
+              <Text style={s.emptyTitle}>No Check-Ins Today</Text>
+              <Text style={s.emptyText}>
                 Workers will appear here when they check in to this project.
               </Text>
             </GlassCard>
@@ -262,7 +265,8 @@ export default function SiteCheckInsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
