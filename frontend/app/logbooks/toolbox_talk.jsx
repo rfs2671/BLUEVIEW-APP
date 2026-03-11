@@ -15,7 +15,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 const TOPICS = {
   'PPE': [
@@ -53,6 +54,8 @@ const TOPICS = {
 };
 
 export default function ToolboxTalkLog() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -215,8 +218,8 @@ export default function ToolboxTalkLog() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container} edges={['top']}>
-          <View style={styles.loadingCenter}>
+        <SafeAreaView style={s.container} edges={['top']}>
+          <View style={s.loadingCenter}>
             <ActivityIndicator size="large" color={colors.text.primary} />
           </View>
         </SafeAreaView>
@@ -226,35 +229,35 @@ export default function ToolboxTalkLog() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+      <SafeAreaView style={s.container} edges={['top']}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/logbooks')}
             />
             <View>
-              <Text style={styles.headerTitle}>Tool Box Talk</Text>
-              <Text style={styles.headerSub}>OSHA — Weekly Safety Meeting</Text>
+              <Text style={s.headerTitle}>Tool Box Talk</Text>
+              <Text style={s.headerSub}>OSHA — Weekly Safety Meeting</Text>
             </View>
           </View>
-          <View style={styles.statRow}>
-            <View style={styles.statBadge}>
-              <Text style={styles.statText}>{checkedCount} topics</Text>
+          <View style={s.statRow}>
+            <View style={s.statBadge}>
+              <Text style={s.statText}>{checkedCount} topics</Text>
             </View>
-            <View style={styles.statBadge}>
-              <Text style={styles.statText}>{signedCount} signed</Text>
+            <View style={s.statBadge}>
+              <Text style={s.statText}>{signedCount} signed</Text>
             </View>
           </View>
         </View>
 
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
 
           {/* Date */}
-          <GlassCard style={styles.dateCard}>
+          <GlassCard style={s.dateCard}>
             <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-            <Text style={styles.dateText}>
+            <Text style={s.dateText}>
               {new Date(date + 'T12:00:00').toLocaleDateString('en-US', {
                 weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
               })}
@@ -262,8 +265,8 @@ export default function ToolboxTalkLog() {
           </GlassCard>
 
           {/* Header Info */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionHeader}>Meeting Information</Text>
+          <GlassCard style={s.section}>
+            <Text style={s.sectionHeader}>Meeting Information</Text>
             {[
               { label: 'Location', value: location, setter: setLocation },
               { label: 'Company Name', value: companyName, setter: setCompanyName },
@@ -271,10 +274,10 @@ export default function ToolboxTalkLog() {
               { label: 'Time', value: meetingTime, setter: setMeetingTime },
               { label: 'Performed By (CP)', value: performedBy, setter: setPerformedBy },
             ].map((f) => (
-              <View key={f.label} style={styles.fieldRow}>
-                <Text style={styles.fieldLabel}>{f.label}</Text>
+              <View key={f.label} style={s.fieldRow}>
+                <Text style={s.fieldLabel}>{f.label}</Text>
                 <TextInput
-                  style={styles.fieldInput}
+                  style={s.fieldInput}
                   value={f.value}
                   onChangeText={f.setter}
                   placeholder="—"
@@ -285,25 +288,25 @@ export default function ToolboxTalkLog() {
           </GlassCard>
 
           {/* Topics Grid */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionHeader}>Topics Covered</Text>
-            <Text style={styles.sectionSubtitle}>Check all topics discussed in this meeting</Text>
+          <GlassCard style={s.section}>
+            <Text style={s.sectionHeader}>Topics Covered</Text>
+            <Text style={s.sectionSubtitle}>Check all topics discussed in this meeting</Text>
             {Object.entries(TOPICS).map(([category, items]) => (
-              <View key={category} style={styles.topicCategory}>
-                <Text style={styles.topicCategoryLabel}>{category}</Text>
-                <View style={styles.topicGrid}>
+              <View key={category} style={s.topicCategory}>
+                <Text style={s.topicCategoryLabel}>{category}</Text>
+                <View style={s.topicGrid}>
                   {items.map((item) => {
                     const isChecked = !!checkedTopics[item.key];
                     return (
                       <Pressable
                         key={item.key}
                         onPress={() => toggleTopic(item.key)}
-                        style={[styles.topicItem, isChecked && styles.topicItemActive]}
+                        style={[s.topicItem, isChecked && s.topicItemActive]}
                       >
-                        <View style={[styles.topicCheckbox, isChecked && styles.topicCheckboxActive]}>
+                        <View style={[s.topicCheckbox, isChecked && s.topicCheckboxActive]}>
                           {isChecked && <Check size={12} strokeWidth={2.5} color="#fff" />}
                         </View>
-                        <Text style={[styles.topicLabel, isChecked && styles.topicLabelActive]}>
+                        <Text style={[s.topicLabel, isChecked && s.topicLabelActive]}>
                           {item.label}
                         </Text>
                       </Pressable>
@@ -315,34 +318,34 @@ export default function ToolboxTalkLog() {
           </GlassCard>
 
           {/* Worker Sign-In */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.sectionHeader}>Attendees</Text>
-              <Text style={styles.attendeeCount}>{attendees.length} workers</Text>
+              <Text style={s.sectionHeader}>Attendees</Text>
+              <Text style={s.attendeeCount}>{attendees.length} workers</Text>
             </View>
-            <Text style={styles.sectionSubtitle}>
+            <Text style={s.sectionSubtitle}>
               Workers auto-populated from today's check-ins. Tap to mark as signed.
             </Text>
 
             {/* Table Header */}
-            <View style={styles.tableHeader}>
-              <Text style={[styles.tableHeaderText, { flex: 2 }]}>Name</Text>
-              <Text style={[styles.tableHeaderText, { flex: 2 }]}>Company</Text>
-              <Text style={[styles.tableHeaderText, { flex: 1, textAlign: 'center' }]}>Signed</Text>
+            <View style={s.tableHeader}>
+              <Text style={[s.tableHeaderText, { flex: 2 }]}>Name</Text>
+              <Text style={[s.tableHeaderText, { flex: 2 }]}>Company</Text>
+              <Text style={[s.tableHeaderText, { flex: 1, textAlign: 'center' }]}>Signed</Text>
             </View>
 
             {attendees.map((attendee, index) => (
-              <View key={index} style={styles.attendeeRow}>
+              <View key={index} style={s.attendeeRow}>
                 <TextInput
-                  style={[styles.attendeeInput, { flex: 2 }]}
+                  style={[s.attendeeInput, { flex: 2 }]}
                   value={attendee.name}
                   onChangeText={(v) => updateAttendee(index, 'name', v)}
                   placeholder="Name"
                   placeholderTextColor={colors.text.subtle}
                 />
                 <TextInput
-                  style={[styles.attendeeInput, { flex: 2 }]}
+                  style={[s.attendeeInput, { flex: 2 }]}
                   value={attendee.company}
                   onChangeText={(v) => updateAttendee(index, 'company', v)}
                   placeholder="Company"
@@ -350,11 +353,11 @@ export default function ToolboxTalkLog() {
                 />
                 <Pressable
                   onPress={() => toggleAttendeeSign(index)}
-                  style={[styles.signedToggle, attendee.signed && styles.signedToggleActive]}
+                  style={[s.signedToggle, attendee.signed && s.signedToggleActive]}
                 >
                   {attendee.signed
                     ? <CheckCircle size={20} strokeWidth={1.5} color="#4ade80" />
-                    : <View style={styles.unsignedCircle} />
+                    : <View style={s.unsignedCircle} />
                   }
                 </Pressable>
               </View>
@@ -363,15 +366,15 @@ export default function ToolboxTalkLog() {
             <GlassButton
               title="+ Add Worker"
               onPress={addAttendee}
-              style={styles.addWorkerBtn}
+              style={s.addWorkerBtn}
             />
           </GlassCard>
 
           {/* CP Signature */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <BookOpen size={16} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={styles.sectionHeader}>Performed By — CP Signature</Text>
+              <Text style={s.sectionHeader}>Performed By — CP Signature</Text>
             </View>
             <SignaturePad
               title="Competent Person Signature"
@@ -383,13 +386,13 @@ export default function ToolboxTalkLog() {
           </GlassCard>
 
           {/* Actions */}
-          <View style={styles.actions}>
+          <View style={s.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
               icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => handleSave('draft')}
               loading={saving}
-              style={styles.draftBtn}
+              style={s.draftBtn}
             />
             <GlassButton
               title={saving ? 'Submitting...' : 'Submit & Sign'}
@@ -397,7 +400,7 @@ export default function ToolboxTalkLog() {
               onPress={() => handleSave('submitted')}
               loading={saving}
               disabled={!cpSignature || attendees.length === 0}
-              style={styles.submitBtn}
+              style={s.submitBtn}
             />
           </View>
         </ScrollView>
@@ -406,7 +409,8 @@ export default function ToolboxTalkLog() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
@@ -568,3 +572,4 @@ const styles = StyleSheet.create({
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },
 });
+}
