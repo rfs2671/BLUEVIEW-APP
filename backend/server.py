@@ -4253,6 +4253,79 @@ async def get_combined_report(project_id: str, date: str, current_user = Depends
     html = await generate_combined_report(project_id, date)
     return HTMLResponse(content=html)
 
+
+@api_router.get("/reports/project/{project_id}/preview/{date}")
+async def get_report_preview(project_id: str, date: str, current_user = Depends(get_current_user)):
+    """Get report preview metadata for a date — shows what has been filled so far (midday check).
+    Returns summary of logbooks, checkins, daily log status without full HTML."""
+    role = current_user.get("role")
+    if role not in ["admin", "owner"]:
+        raise HTTPException(status_code=403, detail="Only admins can preview reports")
+
+    project_id_obj = to_query_id(project_id)
+    project = await db.projects.find_one({"_id": project_id_obj})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if role == "admin" and project.get("company_id") != current_user.get("company_id"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Gather all data for the date
+    logbooks = await db.logbooks.find({
+        "project_id": project_id,
+        "date": date,
+        "is_deleted": {"$ne": True},
+    }).to_list(100)
+
+    daily_log = await db.daily_logs.find_one({
+        "project_id": project_id,
+        "date": date,
+        "is_deleted": {"$ne": True},
+    })
+
+    day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    checkin_count = await db.checkins.count_documents({
+        "project_id": project_id,
+        "check_in_time": {"$gte": day_start, "$lt": day_end},
+        "is_deleted": {"$ne": True},
+    })
+
+    # Build summary of what sections are filled
+    logbook_summary = []
+    for lb in logbooks:
+        logbook_summary.append({
+            "log_type": lb.get("log_type"),
+            "status": lb.get("status", "draft"),
+            "has_signature": bool(lb.get("cp_signature")),
+            "cp_name": lb.get("cp_name"),
+            "updated_at": lb.get("updated_at").isoformat() if isinstance(lb.get("updated_at"), datetime) else str(lb.get("updated_at", "")),
+        })
+
+    # Check if report was already sent today
+    already_sent = await db.report_emails.find_one({
+        "project_id": project_id,
+        "date": date,
+    })
+
+    return {
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "date": date,
+        "checkin_count": checkin_count,
+        "logbooks": logbook_summary,
+        "has_daily_log": bool(daily_log),
+        "daily_log_status": daily_log.get("status") if daily_log else None,
+        "daily_log_weather": daily_log.get("weather") if daily_log else None,
+        "daily_log_worker_count": daily_log.get("worker_count", 0) if daily_log else 0,
+        "subcontractor_count": len(daily_log.get("subcontractor_cards", []) or []) if daily_log else 0,
+        "report_already_sent": bool(already_sent),
+        "report_sent_at": already_sent.get("sent_at").isoformat() if already_sent and isinstance(already_sent.get("sent_at"), datetime) else None,
+        "report_send_time": project.get("report_send_time", "18:00"),
+        "report_email_list": project.get("report_email_list", []),
+    }
+
+
 @api_router.get("/logbooks/project/{project_id}/submitted")
 async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user)):
     """Get all submitted logbook entries grouped by date. For site device inspector view."""
