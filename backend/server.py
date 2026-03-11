@@ -1,6 +1,9 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import resend
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Form
 import base64
@@ -37,6 +40,12 @@ DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2
 
 # Google Places
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+
+# Resend (email)
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+
+# Report scheduler
+scheduler = AsyncIOScheduler()
 
 # Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
@@ -4030,11 +4039,254 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     html_path = Path(__file__).parent / "checkin.html"
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
+# ==================== COMBINED REPORT GENERATOR ====================
+
+async def generate_combined_report(project_id: str, date: str) -> str:
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = project.get("name", "Unknown") if project else "Unknown"
+    project_address = project.get("address", "") if project else ""
+
+    logbooks = await db.logbooks.find({
+        "project_id": project_id,
+        "date": date,
+        "is_deleted": {"$ne": True},
+    }).to_list(100)
+
+    daily_log = await db.daily_logs.find_one({
+        "project_id": project_id,
+        "date": date,
+        "is_deleted": {"$ne": True},
+    })
+
+    day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    day_end = day_start + timedelta(days=1)
+    checkins = await db.checkins.find({
+        "project_id": project_id,
+        "check_in_time": {"$gte": day_start, "$lt": day_end},
+        "is_deleted": {"$ne": True},
+    }).to_list(500)
+
+    checkin_count = len(checkins)
+
+    # --- Daily Jobsite (CP) ---
+    daily_jobsite = next((l for l in logbooks if l.get("log_type") == "daily_jobsite"), None)
+    jobsite_html = ""
+    if daily_jobsite:
+        d = daily_jobsite.get("data", {})
+        activities = d.get("activities", [])
+        act_rows = ""
+        for act in activities:
+            photos_html = ""
+            for photo in (act.get("photos") or []):
+                if photo.get("base64"):
+                    photos_html += f'<img src="data:image/jpeg;base64,{photo["base64"]}" style="width:120px;height:90px;object-fit:cover;border-radius:4px;margin:2px;" />'
+            act_rows += f"""
+            <tr>
+                <td>{act.get('crew_id', '')}</td>
+                <td>{act.get('company', '')}</td>
+                <td>{act.get('num_workers', '')}</td>
+                <td>{act.get('work_description', '')}</td>
+                <td>{act.get('work_locations', '')}</td>
+                <td>{photos_html}</td>
+            </tr>"""
+
+        equip = d.get("equipment_on_site", {})
+        equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
+        check = d.get("checklist_items", {})
+        check_list = ", ".join(k.replace("_", " ").title() for k, v in check.items() if v)
+
+        obs_rows = ""
+        for obs in d.get("observations", []):
+            obs_rows += f"<tr><td>{obs.get('description', '')}</td><td>{obs.get('responsible_party', '')}</td><td>{obs.get('remedy', '')}</td></tr>"
+
+        jobsite_html = f"""
+        <h2>Daily Jobsite Log (NYC DOB 3301-02)</h2>
+        <div class="info-box">
+            <strong>Weather:</strong> {d.get('weather', 'N/A')} {d.get('weather_temp', '')}<br>
+            <strong>Description:</strong> {d.get('general_description', 'N/A')}
+        </div>
+        <h3>Activity Details</h3>
+        <table>
+            <tr><th>Crew</th><th>Company</th><th>Workers</th><th>Description</th><th>Location</th><th>Photos</th></tr>
+            {act_rows or '<tr><td colspan="6">No activities</td></tr>'}
+        </table>
+        <p><strong>Equipment:</strong> {equip_list or 'None'}</p>
+        <p><strong>Inspected:</strong> {check_list or 'None'}</p>
+        {'<h3>Safety Observations</h3><table><tr><th>Description</th><th>Responsible</th><th>Remedy</th></tr>' + obs_rows + '</table>' if obs_rows else ''}
+        <p><strong>CP:</strong> {daily_jobsite.get('cp_name', 'N/A')}</p>
+        """
+
+    # --- Toolbox Talk ---
+    toolbox = next((l for l in logbooks if l.get("log_type") == "toolbox_talk"), None)
+    toolbox_html = ""
+    if toolbox:
+        td = toolbox.get("data", {})
+        topics = td.get("checked_topics", {})
+        topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
+        att_rows = ""
+        for a in td.get("attendees", []):
+            att_rows += f'<tr><td>{a.get("name", "")}</td><td>{a.get("company", "")}</td><td>{"✓" if a.get("signed") else "—"}</td></tr>'
+        toolbox_html = f"""
+        <h2>Tool Box Talk</h2>
+        <div class="info-box">
+            <strong>Location:</strong> {td.get('location', 'N/A')}<br>
+            <strong>Company:</strong> {td.get('company_name', 'N/A')}<br>
+            <strong>Performed By:</strong> {td.get('performed_by', 'N/A')}<br>
+            <strong>Time:</strong> {td.get('meeting_time', 'N/A')}
+        </div>
+        <p><strong>Topics:</strong> {topic_list or 'None'}</p>
+        <table><tr><th>Name</th><th>Company</th><th>Signed</th></tr>
+        {att_rows or '<tr><td colspan="3">No attendees</td></tr>'}</table>
+        """
+
+    # --- Pre-Shift Sign-In ---
+    preshift = next((l for l in logbooks if l.get("log_type") == "preshift_signin"), None)
+    preshift_html = ""
+    if preshift:
+        pd = preshift.get("data", {})
+        w_rows = ""
+        for w in pd.get("workers", []):
+            if w.get("name", "").strip():
+                w_rows += f'<tr><td>{w.get("name", "")}</td><td>{w.get("company", "")}</td><td>{w.get("osha_number", "")}</td><td>{w.get("had_injury") or "—"}</td><td>{w.get("inspected_ppe") or "—"}</td></tr>'
+        preshift_html = f"""
+        <h2>Pre-Shift Sign-In</h2>
+        <table><tr><th>Name</th><th>Company</th><th>OSHA #</th><th>Injury</th><th>PPE</th></tr>
+        {w_rows or '<tr><td colspan="5">No workers</td></tr>'}</table>
+        <p><strong>CP:</strong> {preshift.get('cp_name', 'N/A')}</p>
+        """
+
+    # --- Site Device Log ---
+    site_html = ""
+    if daily_log:
+        site_html = f"""
+        <h2>Site Superintendent Log</h2>
+        <div class="info-box">
+            <strong>Weather:</strong> {daily_log.get('weather', 'N/A')}<br>
+            <strong>Workers:</strong> {daily_log.get('worker_count', 0)}<br>
+            <strong>Notes:</strong> {daily_log.get('notes', 'N/A')}
+        </div>
+        """
+
+    html = f"""
+    <html>
+    <head><style>
+        body {{ font-family: Arial, sans-serif; margin: 30px; color: #333; font-size: 14px; }}
+        h1 {{ color: #1565C0; border-bottom: 2px solid #1565C0; padding-bottom: 8px; }}
+        h2 {{ color: #2c3e50; margin-top: 30px; border-bottom: 1px solid #ddd; padding-bottom: 5px; }}
+        .info-box {{ background: #f8f9fa; padding: 12px; border-radius: 6px; margin: 10px 0; border-left: 3px solid #1565C0; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background: #1565C0; color: white; }}
+        tr:nth-child(even) {{ background: #f2f2f2; }}
+        .footer {{ margin-top: 40px; padding-top: 15px; border-top: 1px solid #ccc; font-size: 11px; color: #888; text-align: center; }}
+    </style></head>
+    <body>
+        <h1>Daily Construction Report</h1>
+        <div class="info-box">
+            <strong>Project:</strong> {project_name}<br>
+            <strong>Address:</strong> {project_address}<br>
+            <strong>Date:</strong> {date}<br>
+            <strong>Workers Checked In:</strong> {checkin_count}
+        </div>
+        {jobsite_html}
+        {toolbox_html}
+        {preshift_html}
+        {site_html}
+        <div class="footer">Generated by Blueview &bull; {datetime.now(timezone.utc).strftime('%B %d, %Y %I:%M %p UTC')}</div>
+    </body>
+    </html>
+    """
+    return html
+
+@api_router.get("/reports/project/{project_id}/date/{date}")
+async def get_combined_report(project_id: str, date: str, current_user = Depends(get_current_user)):
+    """Generate combined daily report for a project+date."""
+    from fastapi.responses import HTMLResponse
+    html = await generate_combined_report(project_id, date)
+    return HTMLResponse(content=html)
+
+@api_router.get("/logbooks/project/{project_id}/submitted")
+async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user)):
+    """Get all submitted logbook entries grouped by date. For site device inspector view."""
+    logbooks = await db.logbooks.find({
+        "project_id": project_id,
+        "status": "submitted",
+        "is_deleted": {"$ne": True},
+    }).sort("date", -1).to_list(1000)
+    by_date = {}
+    for log in logbooks:
+        d = log.get("date", "unknown")
+        if d not in by_date:
+            by_date[d] = []
+        by_date[d].append(serialize_id(dict(log)))
+    return {"dates": by_date}
+
+@api_router.put("/projects/{project_id}/report-settings")
+async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):
+    """Update report email list + send time."""
+    update = {"updated_at": datetime.now(timezone.utc)}
+    if "report_email_list" in data:
+        update["report_email_list"] = data["report_email_list"]
+    if "report_send_time" in data:
+        update["report_send_time"] = data["report_send_time"]
+    await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
+    return {"message": "Report settings saved"}
+
+# ==================== REPORT EMAIL SCHEDULER ====================
+
+async def check_and_send_reports():
+    """Called every minute. Sends report emails for projects whose send time matches now."""
+    if not RESEND_API_KEY:
+        return
+    now = datetime.now(timezone.utc)
+    est_now = now + timedelta(hours=-5)
+    current_time = est_now.strftime("%H:%M")
+    today = est_now.strftime("%Y-%m-%d")
+
+    projects_due = await db.projects.find({
+        "report_send_time": current_time,
+        "report_email_list": {"$exists": True, "$ne": []},
+        "is_deleted": {"$ne": True},
+    }).to_list(100)
+
+    if not projects_due:
+        return
+
+    resend.api_key = RESEND_API_KEY
+    for project in projects_due:
+        project_id = str(project["_id"])
+        project_name = project.get("name", "Project")
+        email_list = project.get("report_email_list", [])
+        if not email_list:
+            continue
+        already_sent = await db.report_emails.find_one({"project_id": project_id, "date": today})
+        if already_sent:
+            continue
+        try:
+            html = await generate_combined_report(project_id, today)
+            resend.emails.send({
+                "from": "Blueview Reports <reports@blueview.app>",
+                "to": email_list,
+                "subject": f"Daily Report - {project_name} - {today}",
+                "html": html,
+            })
+            await db.report_emails.insert_one({
+                "project_id": project_id,
+                "date": today,
+                "sent_at": now,
+                "recipients": email_list,
+            })
+            logger.info(f"Report sent for {project_name} to {len(email_list)} recipients")
+        except Exception as e:
+            logger.error(f"Failed to send report for {project_name}: {e}")
+
 # Include the router in the main app
 app.include_router(api_router)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if scheduler.running:
+        scheduler.shutdown()
     client.close()
 
 # Startup event to create indexes and seed data
@@ -4087,4 +4339,13 @@ async def startup_event():
         )
         logger.info("Upgraded existing admin to owner role")
     
+    # Start report email scheduler
+    scheduler.add_job(
+        check_and_send_reports,
+        CronTrigger(minute='*'),
+        id='report_email_scheduler',
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info("📧 Report email scheduler started")
     logger.info("Blueview API started successfully with Sync v2.0")
