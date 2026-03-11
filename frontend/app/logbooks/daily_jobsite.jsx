@@ -217,8 +217,10 @@ export default function DailyJobsiteLog() {
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
-      quality: 0.6,
+      quality: 0.3,
       base64: true,
+      exif: false,
+      allowsEditing: false,
     });
     if (result.canceled) return;
     const asset = result.assets[0];
