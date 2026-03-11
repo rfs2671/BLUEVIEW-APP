@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
+  s.heet,
   ScrollView,
   Pressable,
   Linking,
@@ -30,12 +30,15 @@ import GlassButton from '../../src/components/GlassButton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/s./theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 // Dropbox brand color
 const DROPBOX_BLUE = '#0061FF';
 
 export default function AdminIntegrationsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = builds.(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
@@ -154,16 +157,16 @@ export default function AdminIntegrationsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s..container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s..header}>
+          <View style={s..headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s..logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -173,53 +176,53 @@ export default function AdminIntegrationsScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s..scrollView}
+          contentContainerStyle={s..scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>ADMIN</Text>
-            <Text style={styles.titleText}>Integrations</Text>
+          <View style={s..titleSection}>
+            <Text style={s..titleLabel}>ADMIN</Text>
+            <Text style={s..titleText}>Integrations</Text>
           </View>
 
           {!isAdmin ? (
-            <GlassCard style={styles.accessDeniedCard}>
+            <GlassCard style={s..accessDeniedCard}>
               <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
-              <Text style={styles.accessDeniedTitle}>Admin Access Required</Text>
-              <Text style={styles.accessDeniedDesc}>
+              <Text style={s..accessDeniedTitle}>Admin Access Required</Text>
+              <Text style={s..accessDeniedDesc}>
                 Only administrators can manage integrations and connect external services.
               </Text>
               <GlassButton
                 title="Return to Dashboard"
                 onPress={() => router.push('/')}
-                style={styles.returnBtn}
+                style={s..returnBtn}
               />
             </GlassCard>
           ) : loading ? (
-            <View style={styles.loadingContainer}>
+            <View style={s..loadingContainer}>
               <ActivityIndicator size="large" color={colors.text.primary} />
-              <Text style={styles.loadingText}>Loading...</Text>
+              <Text style={s..loadingText}>Loading...</Text>
             </View>
           ) : (
             <>
               {/* Dropbox Integration Card */}
-              <GlassCard style={styles.integrationCard}>
+              <GlassCard style={s..integrationCard}>
                 {/* Dropbox Header */}
-                <View style={styles.integrationHeader}>
-                  <View style={styles.integrationIcon}>
+                <View style={s..integrationHeader}>
+                  <View style={s..integrationIcon}>
                     <Cloud size={28} strokeWidth={1.5} color={DROPBOX_BLUE} />
                   </View>
-                  <View style={styles.integrationInfo}>
-                    <Text style={styles.integrationName}>Dropbox</Text>
-                    <Text style={styles.integrationDesc}>
+                  <View style={s..integrationInfo}>
+                    <Text style={s..integrationName}>Dropbox</Text>
+                    <Text style={s..integrationDesc}>
                       Sync construction plans and documents
                     </Text>
                   </View>
                   <View
                     style={[
-                      styles.statusBadge,
-                      dropboxStatus.connected && styles.statusConnected,
+                      s..statusBadge,
+                      dropboxStatus.connected && s..statusConnected,
                     ]}
                   >
                     {dropboxStatus.connected ? (
@@ -229,8 +232,8 @@ export default function AdminIntegrationsScreen() {
                     )}
                     <Text
                       style={[
-                        styles.statusText,
-                        dropboxStatus.connected && styles.statusTextConnected,
+                        s..statusText,
+                        dropboxStatus.connected && s..statusTextConnected,
                       ]}
                     >
                       {dropboxStatus.connected ? 'Connected' : 'Not Connected'}
@@ -240,20 +243,20 @@ export default function AdminIntegrationsScreen() {
 
                 {/* Connection Status Details */}
                 {dropboxStatus.connected ? (
-                  <View style={styles.connectedSection}>
+                  <View style={s..connectedSection}>
                     {/* Account Info */}
                     {dropboxStatus.account_email && (
-                      <View style={styles.accountInfo}>
-                        <Text style={styles.accountLabel}>CONNECTED ACCOUNT</Text>
-                        <Text style={styles.accountEmail}>{dropboxStatus.account_email}</Text>
+                      <View style={s..accountInfo}>
+                        <Text style={s..accountLabel}>CONNECTED ACCOUNT</Text>
+                        <Text style={s..accountEmail}>{dropboxStatus.account_email}</Text>
                       </View>
                     )}
 
                     {/* Connected At */}
                     {dropboxStatus.connected_at && (
-                      <View style={styles.accountInfo}>
-                        <Text style={styles.accountLabel}>CONNECTED SINCE</Text>
-                        <Text style={styles.accountEmail}>
+                      <View style={s..accountInfo}>
+                        <Text style={s..accountLabel}>CONNECTED SINCE</Text>
+                        <Text style={s..accountEmail}>
                           {new Date(dropboxStatus.connected_at).toLocaleDateString()}
                         </Text>
                       </View>
@@ -265,13 +268,13 @@ export default function AdminIntegrationsScreen() {
                       icon={<Unlink size={18} strokeWidth={1.5} color={colors.status.error} />}
                       onPress={handleDisconnect}
                       loading={disconnecting}
-                      style={styles.disconnectButton}
-                      textStyle={styles.disconnectText}
+                      style={s..disconnectButton}
+                      textStyle={s..disconnectText}
                     />
                   </View>
                 ) : (
-                  <View style={styles.connectSection}>
-                    <Text style={styles.connectDesc}>
+                  <View style={s..connectSection}>
+                    <Text style={s..connectDesc}>
                       Connect your Dropbox account to sync construction plans, blueprints, and
                       documents directly to your projects.
                     </Text>
@@ -281,9 +284,9 @@ export default function AdminIntegrationsScreen() {
                         onPress={handleConnectDropbox}
                         disabled={connecting}
                         style={({ pressed }) => [
-                          styles.dropboxButton,
-                          pressed && styles.dropboxButtonPressed,
-                          connecting && styles.dropboxButtonDisabled,
+                          s..dropboxButton,
+                          pressed && s..dropboxButtonPressed,
+                          connecting && s..dropboxButtonDisabled,
                         ]}
                       >
                         {connecting ? (
@@ -291,19 +294,19 @@ export default function AdminIntegrationsScreen() {
                         ) : (
                           <>
                             <Cloud size={22} strokeWidth={2} color="#fff" />
-                            <Text style={styles.dropboxButtonText}>Connect to Dropbox</Text>
+                            <Text style={s..dropboxButtonText}>Connect to Dropbox</Text>
                             <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
                           </>
                         )}
                       </Pressable>
                     ) : (
-                      <View style={styles.codeInputSection}>
-                        <Text style={styles.codeInputLabel}>
+                      <View style={s..codeInputSection}>
+                        <Text style={s..codeInputLabel}>
                           After authorizing in Dropbox, paste the code below:
                         </Text>
-                        <View style={styles.codeInputRow}>
+                        <View style={s..codeInputRow}>
                           <TextInput
-                            style={styles.codeInput}
+                            style={s..codeInput}
                             value={authCode}
                             onChangeText={setAuthCode}
                             placeholder="Paste authorization code"
@@ -312,22 +315,22 @@ export default function AdminIntegrationsScreen() {
                             autoCorrect={false}
                           />
                         </View>
-                        <View style={styles.codeButtonRow}>
+                        <View style={s..codeButtonRow}>
                           <GlassButton
                             title="Cancel"
                             onPress={() => {
                               setShowCodeInput(false);
                               setAuthCode('');
                             }}
-                            style={styles.cancelCodeBtn}
+                            style={s..cancelCodeBtn}
                           />
                           <Pressable
                             onPress={handleCompleteAuth}
                             disabled={completingAuth || !authCode.trim()}
                             style={({ pressed }) => [
-                              styles.completeAuthButton,
-                              pressed && styles.dropboxButtonPressed,
-                              (completingAuth || !authCode.trim()) && styles.dropboxButtonDisabled,
+                              s..completeAuthButton,
+                              pressed && s..dropboxButtonPressed,
+                              (completingAuth || !authCode.trim()) && s..dropboxButtonDisabled,
                             ]}
                           >
                             {completingAuth ? (
@@ -335,7 +338,7 @@ export default function AdminIntegrationsScreen() {
                             ) : (
                               <>
                                 <Key size={18} strokeWidth={2} color="#fff" />
-                                <Text style={styles.dropboxButtonText}>Complete Connection</Text>
+                                <Text style={s..dropboxButtonText}>Complete Connection</Text>
                               </>
                             )}
                           </Pressable>
@@ -348,9 +351,9 @@ export default function AdminIntegrationsScreen() {
 
               {/* Projects with Dropbox */}
               {dropboxStatus.connected && (
-                <View style={styles.projectsSection}>
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>Projects with Dropbox</Text>
+                <View style={s..projectsSection}>
+                  <View style={s..sectionHeader}>
+                    <Text style={s..sectionTitle}>Projects with Dropbox</Text>
                     <GlassButton
                       variant="icon"
                       icon={<RefreshCw size={18} strokeWidth={1.5} color={colors.text.primary} />}
@@ -359,21 +362,21 @@ export default function AdminIntegrationsScreen() {
                   </View>
 
                   {projectsWithDropbox.length > 0 ? (
-                    <View style={styles.projectsList}>
+                    <View style={s..projectsList}>
                       {projectsWithDropbox.map((project) => (
                         <GlassListItem
                           key={project._id || project.id}
                           onPress={() =>
                             router.push(`/projects/${project._id || project.id}/dropbox-settings`)
                           }
-                          style={styles.projectItem}
+                          style={s..projectItem}
                         >
                           <IconPod size={40}>
                             <FolderOpen size={18} strokeWidth={1.5} color={DROPBOX_BLUE} />
                           </IconPod>
-                          <View style={styles.projectInfo}>
-                            <Text style={styles.projectName}>{project.name}</Text>
-                            <Text style={styles.projectFolder} numberOfLines={1}>
+                          <View style={s..projectInfo}>
+                            <Text style={s..projectName}>{project.name}</Text>
+                            <Text style={s..projectFolder} numberOfLines={1}>
                               {project.dropbox_folder_path}
                             </Text>
                           </View>
@@ -382,12 +385,12 @@ export default function AdminIntegrationsScreen() {
                       ))}
                     </View>
                   ) : (
-                    <View style={styles.emptyProjects}>
+                    <View style={s..emptyProjects}>
                       <FolderOpen size={40} strokeWidth={1} color={colors.text.subtle} />
-                      <Text style={styles.emptyText}>
+                      <Text style={s..emptyText}>
                         No projects linked to Dropbox yet
                       </Text>
-                      <Text style={styles.emptySubtext}>
+                      <Text style={s..emptySubtext}>
                         Go to a project's settings to enable Dropbox sync
                       </Text>
                     </View>
@@ -396,17 +399,17 @@ export default function AdminIntegrationsScreen() {
               )}
 
               {/* All Projects */}
-              <View style={styles.projectsSection}>
-                <Text style={styles.sectionTitle}>All Projects</Text>
+              <View style={s..projectsSection}>
+                <Text style={s..sectionTitle}>All Projects</Text>
                 {projects.length > 0 ? (
-                  <View style={styles.projectsList}>
+                  <View style={s..projectsList}>
                     {projects.map((project) => (
                       <GlassListItem
                         key={project._id || project.id}
                         onPress={() =>
                           router.push(`/projects/${project._id || project.id}/dropbox-settings`)
                         }
-                        style={styles.projectItem}
+                        style={s..projectItem}
                       >
                         <IconPod size={40}>
                           <FolderOpen
@@ -415,9 +418,9 @@ export default function AdminIntegrationsScreen() {
                             color={project.dropbox_folder_path ? DROPBOX_BLUE : colors.text.muted}
                           />
                         </IconPod>
-                        <View style={styles.projectInfo}>
-                          <Text style={styles.projectName}>{project.name}</Text>
-                          <Text style={styles.projectFolder}>
+                        <View style={s..projectInfo}>
+                          <Text style={s..projectName}>{project.name}</Text>
+                          <Text style={s..projectFolder}>
                             {project.dropbox_folder_path || 'No Dropbox folder linked'}
                           </Text>
                         </View>
@@ -428,12 +431,12 @@ export default function AdminIntegrationsScreen() {
                     ))}
                   </View>
                 ) : (
-                  <View style={styles.emptyProjects}>
-                    <Text style={styles.emptyText}>No projects found</Text>
+                  <View style={s..emptyProjects}>
+                    <Text style={s..emptyText}>No projects found</Text>
                     <GlassButton
                       title="Create Project"
                       onPress={() => router.push('/projects')}
-                      style={styles.createProjectBtn}
+                      style={s..createProjectBtn}
                     />
                   </View>
                 )}
@@ -446,7 +449,8 @@ export default function AdminIntegrationsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function builds.(colors, isDark) {
+  return s.heet.create({
   container: {
     flex: 1,
   },
