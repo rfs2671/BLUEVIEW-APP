@@ -35,6 +35,8 @@ const adminActions = [
 
 // 2-column grid tile
 const ActionTile = ({ action, onPress, tileWidth }) => {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const [isHovered, setIsHovered] = useState(false);
   const Icon = action.icon;
   return (
