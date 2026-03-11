@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  s.heet,
+  styleSheet,
   ScrollView,
   Pressable,
   Linking,
