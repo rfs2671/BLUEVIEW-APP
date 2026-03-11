@@ -30,9 +30,12 @@ import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, workersAPI, checkinsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 export default function CheckInScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -141,10 +144,10 @@ export default function CheckInScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading...</Text>
+            <Text style={s.loadingText}>Loading...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -153,16 +156,16 @@ export default function CheckInScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -172,52 +175,52 @@ export default function CheckInScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>WORKER</Text>
-            <Text style={styles.titleText}>Check-In</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>WORKER</Text>
+            <Text style={s.titleText}>Check-In</Text>
           </View>
 
           {/* Project Selection */}
-          <GlassCard style={styles.projectCard}>
-            <Text style={styles.cardLabel}>SELECT PROJECT</Text>
+          <GlassCard style={s.projectCard}>
+            <Text style={s.cardLabel}>SELECT PROJECT</Text>
             {project ? (
               <Pressable 
                 onPress={() => setProject(null)}
-                style={styles.selectedProject}
+                style={s.selectedProject}
               >
                 <IconPod size={44}>
                   <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
                 </IconPod>
-                <View style={styles.projectInfo}>
-                  <Text style={styles.projectName}>{project.name}</Text>
-                  <Text style={styles.projectLocation}>{project.location || project.address}</Text>
+                <View style={s.projectInfo}>
+                  <Text style={s.projectName}>{project.name}</Text>
+                  <Text style={s.projectLocation}>{project.location || project.address}</Text>
                 </View>
-                <View style={styles.qrBadge}>
+                <View style={s.qrBadge}>
                   <QrCode size={20} strokeWidth={1.5} color={colors.text.muted} />
                 </View>
               </Pressable>
             ) : (
-              <View style={styles.projectList}>
+              <View style={s.projectList}>
                 {projects.map((proj) => (
                   <Pressable
                     key={proj._id || proj.id}
                     onPress={() => handleSelectProject(proj)}
                     style={({ pressed }) => [
-                      styles.projectItem,
-                      pressed && styles.projectItemPressed,
+                      s.projectItem,
+                      pressed && s.projectItemPressed,
                     ]}
                   >
                     <Building2 size={18} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.projectItemName}>{proj.name}</Text>
+                    <Text style={s.projectItemName}>{proj.name}</Text>
                   </Pressable>
                 ))}
                 {projects.length === 0 && (
-                  <Text style={styles.emptyText}>No projects available</Text>
+                  <Text style={s.emptyText}>No projects available</Text>
                 )}
               </View>
             )}
@@ -227,36 +230,36 @@ export default function CheckInScreen() {
           {project && (
             <>
               {/* Manual Check-In */}
-              <GlassCard style={styles.methodCard}>
-                <View style={styles.methodHeader}>
+              <GlassCard style={s.methodCard}>
+                <View style={s.methodHeader}>
                   <IconPod size={44}>
                     <UserCheck size={20} strokeWidth={1.5} color="#3b82f6" />
                   </IconPod>
-                  <View style={styles.methodInfo}>
-                    <Text style={styles.methodTitle}>Manual Check-In</Text>
-                    <Text style={styles.methodDesc}>Select worker from list</Text>
+                  <View style={s.methodInfo}>
+                    <Text style={s.methodTitle}>Manual Check-In</Text>
+                    <Text style={s.methodDesc}>Select worker from list</Text>
                   </View>
                 </View>
 
                 {/* Selected Worker */}
                 {selectedWorker ? (
-                  <View style={styles.selectedWorker}>
-                    <View style={styles.workerAvatar}>
-                      <Text style={styles.workerInitial}>
+                  <View style={s.selectedWorker}>
+                    <View style={s.workerAvatar}>
+                      <Text style={s.workerInitial}>
                         {selectedWorker.name?.charAt(0) || 'W'}
                       </Text>
                     </View>
-                    <View style={styles.workerInfo}>
-                      <Text style={styles.workerName}>{selectedWorker.name}</Text>
-                      <Text style={styles.workerTrade}>
+                    <View style={s.workerInfo}>
+                      <Text style={s.workerName}>{selectedWorker.name}</Text>
+                      <Text style={s.workerTrade}>
                         {selectedWorker.trade} • {selectedWorker.company || 'No company'}
                       </Text>
                     </View>
                     <Pressable 
                       onPress={() => setSelectedWorker(null)}
-                      style={styles.changeBtn}
+                      style={s.changeBtn}
                     >
-                      <Text style={styles.changeBtnText}>Change</Text>
+                      <Text style={s.changeBtnText}>Change</Text>
                     </Pressable>
                   </View>
                 ) : (
@@ -264,14 +267,14 @@ export default function CheckInScreen() {
                     title="Select Worker"
                     icon={<Users size={18} strokeWidth={1.5} color={colors.text.primary} />}
                     onPress={() => setShowWorkerPicker(true)}
-                    style={styles.selectWorkerBtn}
+                    style={s.selectWorkerBtn}
                   />
                 )}
 
                 {/* Time Display */}
-                <View style={styles.timeDisplay}>
+                <View style={s.timeDisplay}>
                   <Clock size={16} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.timeText}>Check-in time: {currentTime}</Text>
+                  <Text style={s.timeText}>Check-in time: {currentTime}</Text>
                 </View>
 
                 {/* Check In Button */}
@@ -282,29 +285,29 @@ export default function CheckInScreen() {
                   loading={checkingIn}
                   disabled={!selectedWorker || checkingIn}
                   style={[
-                    styles.checkInBtn,
-                    (!selectedWorker || checkingIn) && styles.checkInBtnDisabled,
+                    s.checkInBtn,
+                    (!selectedWorker || checkingIn) && s.checkInBtnDisabled,
                   ]}
-                  textStyle={styles.checkInBtnText}
+                  textStyle={s.checkInBtnText}
                 />
               </GlassCard>
 
               {/* NFC Check-In */}
-              <GlassCard style={styles.methodCard}>
-                <View style={styles.methodHeader}>
+              <GlassCard style={s.methodCard}>
+                <View style={s.methodHeader}>
                   <IconPod size={44}>
                     <Nfc size={20} strokeWidth={1.5} color="#10b981" />
                   </IconPod>
-                  <View style={styles.methodInfo}>
-                    <Text style={styles.methodTitle}>NFC Tag Scan</Text>
-                    <Text style={styles.methodDesc}>Tap worker's NFC badge</Text>
+                  <View style={s.methodInfo}>
+                    <Text style={s.methodTitle}>NFC Tag Scan</Text>
+                    <Text style={s.methodDesc}>Tap worker's NFC badge</Text>
                   </View>
                 </View>
                 <GlassButton
                   title="Scan NFC Tag"
                   icon={<Nfc size={18} strokeWidth={1.5} color={colors.text.primary} />}
                   onPress={handleNfcCheckIn}
-                  style={styles.nfcBtn}
+                  style={s.nfcBtn}
                 />
               </GlassCard>
             </>
@@ -312,9 +315,9 @@ export default function CheckInScreen() {
 
           {/* Worker Picker Modal */}
           {showWorkerPicker && (
-            <GlassCard style={styles.workerPicker}>
-              <View style={styles.pickerHeader}>
-                <Text style={styles.pickerTitle}>Select Worker</Text>
+            <GlassCard style={s.workerPicker}>
+              <View style={s.pickerHeader}>
+                <Text style={s.pickerTitle}>Select Worker</Text>
                 <GlassButton
                   variant="icon"
                   icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -329,7 +332,7 @@ export default function CheckInScreen() {
                 leftIcon={<Search size={18} strokeWidth={1.5} color={colors.text.subtle} />}
               />
 
-              <ScrollView style={styles.workerList} nestedScrollEnabled>
+              <ScrollView style={s.workerList} nestedScrollEnabled>
                 {filteredWorkers.map((worker) => (
                   <Pressable
                     key={worker._id || worker.id}
@@ -338,25 +341,25 @@ export default function CheckInScreen() {
                       setShowWorkerPicker(false);
                     }}
                     style={({ pressed }) => [
-                      styles.workerItem,
-                      pressed && styles.workerItemPressed,
+                      s.workerItem,
+                      pressed && s.workerItemPressed,
                     ]}
                   >
-                    <View style={styles.workerItemAvatar}>
-                      <Text style={styles.workerItemInitial}>
+                    <View style={s.workerItemAvatar}>
+                      <Text style={s.workerItemInitial}>
                         {worker.name?.charAt(0) || 'W'}
                       </Text>
                     </View>
-                    <View style={styles.workerItemInfo}>
-                      <Text style={styles.workerItemName}>{worker.name}</Text>
-                      <Text style={styles.workerItemTrade}>
+                    <View style={s.workerItemInfo}>
+                      <Text style={s.workerItemName}>{worker.name}</Text>
+                      <Text style={s.workerItemTrade}>
                         {worker.trade || 'Worker'} • {worker.company || 'No company'}
                       </Text>
                     </View>
                   </Pressable>
                 ))}
                 {filteredWorkers.length === 0 && (
-                  <Text style={styles.emptyText}>No workers found</Text>
+                  <Text style={s.emptyText}>No workers found</Text>
                 )}
               </ScrollView>
             </GlassCard>
@@ -367,7 +370,8 @@ export default function CheckInScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -626,3 +630,4 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.lg,
   },
 });
+}
