@@ -15,8 +15,8 @@ import GlassButton from '../../src/components/GlassButton';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteDeviceHomeScreen() {
   const { colors, isDark } = useTheme();
