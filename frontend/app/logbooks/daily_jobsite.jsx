@@ -16,7 +16,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 import * as ImagePicker from 'expo-image-picker';
 
@@ -60,6 +61,8 @@ const EMPTY_OBSERVATION = () => ({
 });
 
 export default function DailyJobsiteLog() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -307,8 +310,8 @@ export default function DailyJobsiteLog() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container} edges={['top']}>
-          <View style={styles.loadingCenter}>
+        <SafeAreaView style={s.container} edges={['top']}>
+          <View style={s.loadingCenter}>
             <ActivityIndicator size="large" color={colors.text.primary} />
           </View>
         </SafeAreaView>
@@ -318,32 +321,32 @@ export default function DailyJobsiteLog() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/logbooks')}
             />
             <View>
-              <Text style={styles.headerTitle}>Daily Jobsite Log</Text>
-              <Text style={styles.headerSub}>NYC DOB 3301-02</Text>
+              <Text style={s.headerTitle}>Daily Jobsite Log</Text>
+              <Text style={s.headerSub}>NYC DOB 3301-02</Text>
             </View>
           </View>
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Date */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.sectionTitle}>
+              <Text style={s.sectionTitle}>
                 {new Date(date).toLocaleDateString('en-US', {
                   weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
                 })}
@@ -352,32 +355,32 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* Project Info — FIX #2: Full address, read-only */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionTitle}>Project Information</Text>
-            <View style={styles.fieldRow}>
-              <Text style={styles.fieldLabel}>Address</Text>
-              <Text style={styles.fieldValueReadonly}>{projectAddress || 'No address on file'}</Text>
+          <GlassCard style={s.section}>
+            <Text style={s.sectionTitle}>Project Information</Text>
+            <View style={s.fieldRow}>
+              <Text style={s.fieldLabel}>Address</Text>
+              <Text style={s.fieldValueReadonly}>{projectAddress || 'No address on file'}</Text>
             </View>
 
             {/* Weather — FIX #1: Auto-filled from API */}
-            <View style={styles.fieldRowVertical}>
-              <View style={styles.weatherHeader}>
-                <Text style={styles.fieldLabel}>Weather</Text>
+            <View style={s.fieldRowVertical}>
+              <View style={s.weatherHeader}>
+                <Text style={s.fieldLabel}>Weather</Text>
                 {weatherTemp ? (
-                  <Text style={styles.weatherAuto}>
+                  <Text style={s.weatherAuto}>
                     {weatherTemp}{weatherWind ? ` • ${weatherWind}` : ''}
                   </Text>
                 ) : null}
                 {weatherLoading && <ActivityIndicator size="small" color={colors.primary} />}
               </View>
-              <View style={styles.weatherRow}>
+              <View style={s.weatherRow}>
                 {WEATHER_OPTIONS.map((w) => (
                   <Pressable
                     key={w}
                     onPress={() => setWeather(weather === w ? '' : w)}
-                    style={[styles.weatherBtn, weather === w && styles.weatherBtnActive]}
+                    style={[s.weatherBtn, weather === w && s.weatherBtnActive]}
                   >
-                    <Text style={[styles.weatherBtnText, weather === w && styles.weatherBtnTextActive]}>{w}</Text>
+                    <Text style={[s.weatherBtnText, weather === w && s.weatherBtnTextActive]}>{w}</Text>
                   </Pressable>
                 ))}
               </View>
@@ -385,10 +388,10 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* General Description */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionTitle}>General Description of Today's Activities</Text>
+          <GlassCard style={s.section}>
+            <Text style={s.sectionTitle}>General Description of Today's Activities</Text>
             <TextInput
-              style={styles.textArea}
+              style={s.textArea}
               value={generalDescription}
               onChangeText={setGeneralDescription}
               placeholder="Describe the main work performed today..."
@@ -399,64 +402,64 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* Activity Details Table */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.sectionTitle}>Activity Details</Text>
+              <Text style={s.sectionTitle}>Activity Details</Text>
             </View>
-            <Text style={styles.sectionSubtitle}>Auto-populated from check-ins. Edit as needed.</Text>
+            <Text style={s.sectionSubtitle}>Auto-populated from check-ins. Edit as needed.</Text>
 
             {activities.map((act, i) => (
-              <View key={i} style={styles.activityCard}>
-                <View style={styles.activityRow}>
-                  <View style={styles.activityField}>
-                    <Text style={styles.activityLabel}>CREW</Text>
-                    <TextInput style={styles.activityInput} value={act.crew_id}
+              <View key={i} style={s.activityCard}>
+                <View style={s.activityRow}>
+                  <View style={s.activityField}>
+                    <Text style={s.activityLabel}>CREW</Text>
+                    <TextInput style={s.activityInput} value={act.crew_id}
                       onChangeText={(v) => updateActivity(i, 'crew_id', v)}
                       placeholder="C1" placeholderTextColor={colors.text.subtle} />
                   </View>
-                  <View style={[styles.activityField, { flex: 2 }]}>
-                    <Text style={styles.activityLabel}>COMPANY</Text>
-                    <TextInput style={styles.activityInput} value={act.company}
+                  <View style={[s.activityField, { flex: 2 }]}>
+                    <Text style={s.activityLabel}>COMPANY</Text>
+                    <TextInput style={s.activityInput} value={act.company}
                       onChangeText={(v) => updateActivity(i, 'company', v)}
                       placeholder="Company" placeholderTextColor={colors.text.subtle} />
                   </View>
-                  <View style={styles.activityField}>
-                    <Text style={styles.activityLabel}># WORKERS</Text>
-                    <TextInput style={styles.activityInput} value={act.num_workers}
+                  <View style={s.activityField}>
+                    <Text style={s.activityLabel}># WORKERS</Text>
+                    <TextInput style={s.activityInput} value={act.num_workers}
                       onChangeText={(v) => updateActivity(i, 'num_workers', v)}
                       placeholder="0" placeholderTextColor={colors.text.subtle} keyboardType="numeric" />
                   </View>
                 </View>
-                <View style={styles.activityField}>
-                  <Text style={styles.activityLabel}>WORK DESCRIPTION</Text>
-                  <TextInput style={styles.activityInput} value={act.work_description}
+                <View style={s.activityField}>
+                  <Text style={s.activityLabel}>WORK DESCRIPTION</Text>
+                  <TextInput style={s.activityInput} value={act.work_description}
                     onChangeText={(v) => updateActivity(i, 'work_description', v)}
                     placeholder="Work performed..." placeholderTextColor={colors.text.subtle} />
                 </View>
                 
-                <View style={styles.activityField}>
-                  <Text style={styles.activityLabel}>WORK LOCATIONS</Text>
-                  <TextInput style={styles.activityInput} value={act.work_locations}
+                <View style={s.activityField}>
+                  <Text style={s.activityLabel}>WORK LOCATIONS</Text>
+                  <TextInput style={s.activityInput} value={act.work_locations}
                     onChangeText={(v) => updateActivity(i, 'work_locations', v)}
                     placeholder="Floors, areas..." placeholderTextColor={colors.text.subtle} />
                 </View>
 
                 {/* Photos */}
-                <View style={styles.photosSection}>
-                  <View style={styles.photosHeader}>
+                <View style={s.photosSection}>
+                  <View style={s.photosHeader}>
                     <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.activityLabel}>PHOTOS ({(act.photos || []).length}/{MAX_PHOTOS_PER_ACTIVITY})</Text>
+                    <Text style={s.activityLabel}>PHOTOS ({(act.photos || []).length}/{MAX_PHOTOS_PER_ACTIVITY})</Text>
                   </View>
                   {(act.photos || []).length > 0 && (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.photoScroll}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.photoScroll}>
                       {(act.photos || []).map((photo, pi) => (
-                        <View key={pi} style={styles.photoThumb}>
+                        <View key={pi} style={s.photoThumb}>
                           <Image
                             source={{ uri: photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri }}
-                            style={styles.photoImage}
+                            style={s.photoImage}
                           />
-                          <Pressable style={styles.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
+                          <Pressable style={s.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
                             <X size={12} strokeWidth={2} color="#fff" />
                           </Pressable>
                         </View>
@@ -464,14 +467,14 @@ export default function DailyJobsiteLog() {
                     </ScrollView>
                   )}
                   {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
-                    <View style={styles.photoActions}>
-                      <Pressable style={styles.photoBtn} onPress={() => takeActivityPhoto(i)}>
+                    <View style={s.photoActions}>
+                      <Pressable style={s.photoBtn} onPress={() => takeActivityPhoto(i)}>
                         <Camera size={16} strokeWidth={1.5} color={colors.primary} />
-                        <Text style={styles.photoBtnText}>Take Photo</Text>
+                        <Text style={s.photoBtnText}>Take Photo</Text>
                       </Pressable>
-                      <Pressable style={styles.photoBtn} onPress={() => pickActivityPhoto(i)}>
+                      <Pressable style={s.photoBtn} onPress={() => pickActivityPhoto(i)}>
                         <ImageIcon size={16} strokeWidth={1.5} color={colors.primary} />
-                        <Text style={styles.photoBtnText}>Gallery</Text>
+                        <Text style={s.photoBtnText}>Gallery</Text>
                       </Pressable>
                     </View>
                   )}
@@ -479,20 +482,20 @@ export default function DailyJobsiteLog() {
               </View>
             ))}
 
-            <GlassButton title="+ Add Activity" onPress={addActivity} style={styles.addBtn} />
+            <GlassButton title="+ Add Activity" onPress={addActivity} style={s.addBtn} />
           </GlassCard>
 
           {/* Equipment */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Truck size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.sectionTitle}>Equipment on Site</Text>
+              <Text style={s.sectionTitle}>Equipment on Site</Text>
             </View>
-            <View style={styles.chipRow}>
+            <View style={s.chipRow}>
               {EQUIPMENT_ITEMS.map((item) => (
                 <Pressable key={item.key} onPress={() => toggleEquipment(item.key)}
-                  style={[styles.chip, equipmentOnSite[item.key] && styles.chipActive]}>
-                  <Text style={[styles.chipText, equipmentOnSite[item.key] && styles.chipTextActive]}>
+                  style={[s.chip, equipmentOnSite[item.key] && s.chipActive]}>
+                  <Text style={[s.chipText, equipmentOnSite[item.key] && s.chipTextActive]}>
                     {item.label}
                   </Text>
                 </Pressable>
@@ -501,17 +504,17 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* Safety Checklist */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Clipboard size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.sectionTitle}>Items Inspected</Text>
+              <Text style={s.sectionTitle}>Items Inspected</Text>
             </View>
-            <View style={styles.chipRow}>
+            <View style={s.chipRow}>
               {CHECKLIST_ITEMS.map((item) => (
                 <Pressable key={item.key} onPress={() => toggleChecklist(item.key)}
-                  style={[styles.chip, checklistItems[item.key] && styles.chipActive]}>
+                  style={[s.chip, checklistItems[item.key] && s.chipActive]}>
                   {checklistItems[item.key] && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
-                  <Text style={[styles.chipText, checklistItems[item.key] && styles.chipTextActive]}>
+                  <Text style={[s.chipText, checklistItems[item.key] && s.chipTextActive]}>
                     {item.label}
                   </Text>
                 </Pressable>
@@ -520,43 +523,43 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* Observations */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <AlertTriangle size={16} strokeWidth={1.5} color="#f59e0b" />
-              <Text style={styles.sectionTitle}>Safety Observations / Violations</Text>
+              <Text style={s.sectionTitle}>Safety Observations / Violations</Text>
             </View>
             {observations.map((obs, i) => (
-              <View key={i} style={styles.observationCard}>
-                <TextInput style={styles.fieldInput} value={obs.description}
+              <View key={i} style={s.observationCard}>
+                <TextInput style={s.fieldInput} value={obs.description}
                   onChangeText={(v) => updateObservation(i, 'description', v)}
                   placeholder="Describe observation..." placeholderTextColor={colors.text.subtle} multiline />
-                <TextInput style={styles.fieldInput} value={obs.responsible_party}
+                <TextInput style={s.fieldInput} value={obs.responsible_party}
                   onChangeText={(v) => updateObservation(i, 'responsible_party', v)}
                   placeholder="Responsible party" placeholderTextColor={colors.text.subtle} />
-                <TextInput style={styles.fieldInput} value={obs.remedy}
+                <TextInput style={s.fieldInput} value={obs.remedy}
                   onChangeText={(v) => updateObservation(i, 'remedy', v)}
                   placeholder="Remedy / corrective action" placeholderTextColor={colors.text.subtle} />
               </View>
             ))}
-            <GlassButton title="+ Add Observation" onPress={addObservation} style={styles.addBtn} />
+            <GlassButton title="+ Add Observation" onPress={addObservation} style={s.addBtn} />
           </GlassCard>
 
           {/* Visitors / Deliveries */}
-          <GlassCard style={styles.section}>
-            <Text style={styles.sectionTitle}>Visitors / Deliveries</Text>
-            <TextInput style={styles.textArea} value={visitorsDeliveries}
+          <GlassCard style={s.section}>
+            <Text style={s.sectionTitle}>Visitors / Deliveries</Text>
+            <TextInput style={s.textArea} value={visitorsDeliveries}
               onChangeText={setVisitorsDeliveries}
               placeholder="Record any visitors or deliveries..." placeholderTextColor={colors.text.subtle}
               multiline numberOfLines={3} />
           </GlassCard>
 
           {/* CP Signature ONLY — FIX #3: No superintendent signature */}
-          <GlassCard style={styles.section}>
-            <View style={styles.sectionHeaderRow}>
+          <GlassCard style={s.section}>
+            <View style={s.sectionHeaderRow}>
               <Building2 size={16} strokeWidth={1.5} color="#3b82f6" />
-              <Text style={styles.sectionTitle}>Competent Person Sign-Off</Text>
+              <Text style={s.sectionTitle}>Competent Person Sign-Off</Text>
             </View>
-            <Text style={styles.sectionSubtitle}>
+            <Text style={s.sectionSubtitle}>
               Superintendent will sign from the site device after review.
             </Text>
             <SignaturePad
@@ -569,20 +572,20 @@ export default function DailyJobsiteLog() {
           </GlassCard>
 
           {/* Actions */}
-          <View style={styles.actions}>
+          <View style={s.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
               icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => handleSave('draft')}
               loading={saving}
-              style={styles.draftBtn}
+              style={s.draftBtn}
             />
             <GlassButton
               title={saving ? 'Saving...' : 'Submit'}
               icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              style={styles.submitBtn}
+              style={s.submitBtn}
             />
           </View>
         </ScrollView>
@@ -591,7 +594,8 @@ export default function DailyJobsiteLog() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
@@ -679,3 +683,4 @@ const styles = StyleSheet.create({
   },
   photoBtnText: { fontSize: 12, fontWeight: '500', color: colors.primary },
 });
+}
