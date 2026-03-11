@@ -51,7 +51,8 @@ import { useAuth } from '../src/context/AuthContext';
 import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -69,6 +70,8 @@ const SAFETY_CHECKLIST_ITEMS = [
 ];
 
 export default function DailyLogScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
@@ -310,14 +313,14 @@ export default function DailyLogScreen() {
     const checkData = formData.safety_checklist[item.id] || { status: 'unchecked' };
     
     return (
-      <View key={item.id} style={styles.checklistItem}>
-        <Text style={styles.checklistLabel}>{item.label}</Text>
-        <View style={styles.checklistOptions}>
+      <View key={item.id} style={s.checklistItem}>
+        <Text style={s.checklistLabel}>{item.label}</Text>
+        <View style={s.checklistOptions}>
           <Pressable
             onPress={() => handleSafetyCheckChange(item.id, 'checked')}
             style={[
-              styles.checkOption,
-              checkData.status === 'checked' && styles.checkOptionActive,
+              s.checkOption,
+              checkData.status === 'checked' && s.checkOptionActive,
             ]}
           >
             <CheckCircle
@@ -329,8 +332,8 @@ export default function DailyLogScreen() {
           <Pressable
             onPress={() => handleSafetyCheckChange(item.id, 'unchecked')}
             style={[
-              styles.checkOption,
-              checkData.status === 'unchecked' && styles.checkOptionUnchecked,
+              s.checkOption,
+              checkData.status === 'unchecked' && s.checkOptionUnchecked,
             ]}
           >
             <XCircle
@@ -342,14 +345,14 @@ export default function DailyLogScreen() {
           <Pressable
             onPress={() => handleSafetyCheckChange(item.id, 'na')}
             style={[
-              styles.checkOption,
-              checkData.status === 'na' && styles.checkOptionNA,
+              s.checkOption,
+              checkData.status === 'na' && s.checkOptionNA,
             ]}
           >
             <Text
               style={[
-                styles.naText,
-                checkData.status === 'na' && styles.naTextActive,
+                s.naText,
+                checkData.status === 'na' && s.naTextActive,
               ]}
             >
               N/A
@@ -357,7 +360,7 @@ export default function DailyLogScreen() {
           </Pressable>
         </View>
         {checkData.checked_at && (
-          <Text style={styles.auditText}>
+          <Text style={s.auditText}>
             {checkData.checked_by} • {formatTimestamp(checkData.checked_at)}
           </Text>
         )}
@@ -367,30 +370,30 @@ export default function DailyLogScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
             {siteMode ? (
-              <View style={styles.siteBadge}>
+              <View style={s.siteBadge}>
                 <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-                <Text style={styles.siteBadgeText}>SITE MODE</Text>
+                <Text style={s.siteBadgeText}>SITE MODE</Text>
               </View>
             ) : isAdmin ? (
-              <View style={[styles.siteBadge, styles.viewOnlyBadge]}>
+              <View style={[s.siteBadge, s.viewOnlyBadge]}>
                 <Eye size={14} strokeWidth={1.5} color="#3b82f6" />
-                <Text style={[styles.siteBadgeText, styles.viewOnlyText]}>VIEW ONLY</Text>
+                <Text style={[s.siteBadgeText, s.viewOnlyText]}>VIEW ONLY</Text>
               </View>
             ) : (
-              <Text style={styles.logoText}>BLUEVIEW</Text>
+              <Text style={s.logoText}>BLUEVIEW</Text>
             )}
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <OfflineIndicator />
             <GlassButton
               variant="icon"
@@ -402,35 +405,35 @@ export default function DailyLogScreen() {
 
         {/* Tab Selector */}
         {siteMode && (
-          <View style={styles.tabContainer}>
+          <View style={s.tabContainer}>
             <Pressable
               onPress={() => setActiveTab('today')}
-              style={[styles.tab, activeTab === 'today' && styles.tabActive]}
+              style={[s.tab, activeTab === 'today' && s.tabActive]}
             >
               <ClipboardList
                 size={16}
                 strokeWidth={1.5}
                 color={activeTab === 'today' ? '#4ade80' : colors.text.muted}
               />
-              <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>
+              <Text style={[s.tabText, activeTab === 'today' && s.tabTextActive]}>
                 Today's Log
               </Text>
             </Pressable>
             <Pressable
               onPress={() => setActiveTab('previous')}
-              style={[styles.tab, activeTab === 'previous' && styles.tabActive]}
+              style={[s.tab, activeTab === 'previous' && s.tabActive]}
             >
               <History
                 size={16}
                 strokeWidth={1.5}
                 color={activeTab === 'previous' ? '#4ade80' : colors.text.muted}
               />
-              <Text style={[styles.tabText, activeTab === 'previous' && styles.tabTextActive]}>
+              <Text style={[s.tabText, activeTab === 'previous' && s.tabTextActive]}>
                 Previous Days
               </Text>
               {previousLogs.length > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>{previousLogs.length}</Text>
+                <View style={s.badge}>
+                  <Text style={s.badgeText}>{previousLogs.length}</Text>
                 </View>
               )}
             </Pressable>
@@ -438,36 +441,36 @@ export default function DailyLogScreen() {
         )}
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>
               {isAdmin ? 'VIEW' : activeTab === 'today' ? 'CREATE / EDIT' : 'VIEW'}
             </Text>
-            <Text style={styles.titleText}>Daily Logs</Text>
+            <Text style={s.titleText}>Daily Logs</Text>
           </View>
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xl} style={s.mb16} />
+              <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} style={s.mb16} />
               <GlassSkeleton width="100%" height={150} borderRadiusValue={borderRadius.xl} />
             </>
           ) : (!siteMode || activeTab === 'previous') ? (
             <>
               {isAdmin && (
                 <Pressable
-                  style={styles.projectSelector}
+                  style={s.projectSelector}
                   onPress={() => setShowProjectPicker(!showProjectPicker)}
                 >
                   <IconPod size={40}>
                     <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                   </IconPod>
-                  <View style={styles.projectInfo}>
-                    <Text style={styles.projectLabel}>PROJECT</Text>
-                    <Text style={styles.projectName}>
+                  <View style={s.projectInfo}>
+                    <Text style={s.projectLabel}>PROJECT</Text>
+                    <Text style={s.projectName}>
                       {selectedProject?.name || 'Select project'}
                     </Text>
                   </View>
@@ -475,53 +478,53 @@ export default function DailyLogScreen() {
                     size={20}
                     strokeWidth={1.5}
                     color={colors.text.muted}
-                    style={showProjectPicker && styles.iconRotated}
+                    style={showProjectPicker && s.iconRotated}
                   />
                 </Pressable>
               )}
 
               {showProjectPicker && (
-                <View style={styles.dropdown}>
+                <View style={s.dropdown}>
                   {projects.map((p) => (
                     <Pressable
                       key={getProjectId(p)}
                       onPress={() => handleProjectChange(p)}
                       style={[
-                        styles.dropdownItem,
-                        getProjectId(selectedProject) === getProjectId(p) && styles.dropdownItemActive,
+                        s.dropdownItem,
+                        getProjectId(selectedProject) === getProjectId(p) && s.dropdownItemActive,
                       ]}
                     >
-                      <Text style={styles.dropdownText}>{p.name}</Text>
+                      <Text style={s.dropdownText}>{p.name}</Text>
                     </Pressable>
                   ))}
                 </View>
               )}
 
               {previousLogs.length > 0 ? (
-                <View style={styles.previousLogsList}>
+                <View style={s.previousLogsList}>
                   {previousLogs.map((log) => {
                     const WeatherIcon = getWeatherIcon(log.weather);
                     return (
                       <GlassListItem
                         key={log.id || log._id}
                         onPress={() => setSelectedPreviousLog(log)}
-                        style={styles.previousLogItem}
+                        style={s.previousLogItem}
                       >
-                        <View style={styles.logDateSection}>
+                        <View style={s.logDateSection}>
                           <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-                          <Text style={styles.logDate}>{formatDate(log.date)}</Text>
+                          <Text style={s.logDate}>{formatDate(log.date)}</Text>
                         </View>
-                        <View style={styles.logSummary}>
-                          <View style={styles.logStat}>
+                        <View style={s.logSummary}>
+                          <View style={s.logStat}>
                             <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={styles.logStatText}>{log.weather}</Text>
+                            <Text style={s.logStatText}>{log.weather}</Text>
                           </View>
-                          <View style={styles.logStat}>
+                          <View style={s.logStat}>
                             <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
+                            <Text style={s.logStatText}>{log.worker_count || 0}</Text>
                           </View>
                           {log.superintendent_signature && (
-                            <View style={styles.signedBadge}>
+                            <View style={s.signedBadge}>
                               <PenTool size={10} strokeWidth={1.5} color="#4ade80" />
                             </View>
                           )}
@@ -531,12 +534,12 @@ export default function DailyLogScreen() {
                   })}
                 </View>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <IconPod size={64}>
                     <History size={28} strokeWidth={1.5} color={colors.text.muted} />
                   </IconPod>
-                  <Text style={styles.emptyTitle}>No Logs Found</Text>
-                  <Text style={styles.emptyText}>
+                  <Text style={s.emptyTitle}>No Logs Found</Text>
+                  <Text style={s.emptyText}>
                     Daily logs for this project will appear here.
                   </Text>
                 </GlassCard>
@@ -545,26 +548,26 @@ export default function DailyLogScreen() {
           ) : (
             <>
               {siteMode && siteProject && (
-                <View style={styles.siteProjectCard}>
+                <View style={s.siteProjectCard}>
                   <Building2 size={16} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.siteProjectName}>{siteProject.name}</Text>
+                  <Text style={s.siteProjectName}>{siteProject.name}</Text>
                 </View>
               )}
 
-              <View style={styles.dateCard}>
+              <View style={s.dateCard}>
                 <Calendar size={18} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.dateText}>{formatDate(new Date())}</Text>
+                <Text style={s.dateText}>{formatDate(new Date())}</Text>
                 {existingLog && (
-                  <View style={styles.existingBadge}>
+                  <View style={s.existingBadge}>
                     <Check size={12} strokeWidth={2} color="#4ade80" />
-                    <Text style={styles.existingText}>Log exists</Text>
+                    <Text style={s.existingText}>Log exists</Text>
                   </View>
                 )}
               </View>
 
-              <GlassCard style={styles.section}>
-                <Text style={styles.sectionTitle}>Weather Conditions</Text>
-                <View style={styles.weatherGrid}>
+              <GlassCard style={s.section}>
+                <Text style={s.sectionTitle}>Weather Conditions</Text>
+                <View style={s.weatherGrid}>
                   {weatherOptions.map((option) => {
                     const Icon = option.icon;
                     const isSelected = formData.weather === option.value;
@@ -572,14 +575,14 @@ export default function DailyLogScreen() {
                       <Pressable
                         key={option.value}
                         onPress={() => setFormData({ ...formData, weather: option.value })}
-                        style={[styles.weatherOption, isSelected && styles.weatherOptionSelected]}
+                        style={[s.weatherOption, isSelected && s.weatherOptionSelected]}
                       >
                         <Icon
                           size={24}
                           strokeWidth={1.5}
                           color={isSelected ? '#4ade80' : colors.text.muted}
                         />
-                        <Text style={[styles.weatherLabel, isSelected && styles.weatherLabelSelected]}>
+                        <Text style={[s.weatherLabel, isSelected && s.weatherLabelSelected]}>
                           {option.label}
                         </Text>
                       </Pressable>
@@ -588,26 +591,26 @@ export default function DailyLogScreen() {
                 </View>
               </GlassCard>
 
-              <GlassCard style={styles.section}>
-                <Text style={styles.sectionTitle}>Worker Count</Text>
-                <View style={styles.workerCountRow}>
+              <GlassCard style={s.section}>
+                <Text style={s.sectionTitle}>Worker Count</Text>
+                <View style={s.workerCountRow}>
                   <Users size={20} strokeWidth={1.5} color={colors.text.muted} />
                   <TextInput
-                    style={styles.workerCountInput}
+                    style={s.workerCountInput}
                     value={String(formData.worker_count)}
                     onChangeText={(val) => setFormData({ ...formData, worker_count: val })}
                     keyboardType="numeric"
                     placeholder="0"
                     placeholderTextColor={colors.text.subtle}
                   />
-                  <Text style={styles.workerCountLabel}>workers on site today</Text>
+                  <Text style={s.workerCountLabel}>workers on site today</Text>
                 </View>
               </GlassCard>
 
-              <GlassCard style={styles.section}>
-                <Text style={styles.sectionTitle}>Daily Notes</Text>
+              <GlassCard style={s.section}>
+                <Text style={s.sectionTitle}>Daily Notes</Text>
                 <TextInput
-                  style={styles.notesInput}
+                  style={s.notesInput}
                   value={formData.notes}
                   onChangeText={(val) => setFormData({ ...formData, notes: val })}
                   placeholder="Enter daily notes, progress updates, etc..."
@@ -617,45 +620,45 @@ export default function DailyLogScreen() {
                 />
               </GlassCard>
 
-              <GlassCard style={styles.section}>
-                <View style={styles.sectionHeader}>
+              <GlassCard style={s.section}>
+                <View style={s.sectionHeader}>
                   <ShieldCheck size={20} strokeWidth={1.5} color="#f59e0b" />
-                  <Text style={styles.sectionTitle}>Safety Inspection Checklist</Text>
+                  <Text style={s.sectionTitle}>Safety Inspection Checklist</Text>
                 </View>
-                <Text style={styles.sectionSubtitle}>
+                <Text style={s.sectionSubtitle}>
                   Check each item, mark as unchecked if issue found, or N/A if not applicable
                 </Text>
-                <View style={styles.checklistContainer}>
+                <View style={s.checklistContainer}>
                   {SAFETY_CHECKLIST_ITEMS.map(renderSafetyCheckItem)}
                 </View>
               </GlassCard>
 
-              <GlassCard style={styles.section}>
-                <View style={styles.sectionHeader}>
+              <GlassCard style={s.section}>
+                <View style={s.sectionHeader}>
                   <AlertTriangle size={20} strokeWidth={1.5} color="#ef4444" />
-                  <Text style={styles.sectionTitle}>Corrective Actions</Text>
+                  <Text style={s.sectionTitle}>Corrective Actions</Text>
                 </View>
-                <Text style={styles.sectionSubtitle}>
+                <Text style={s.sectionSubtitle}>
                   Document any unsafe conditions found and how they were addressed
                 </Text>
                 <Pressable
                   onPress={() =>
                     setFormData({ ...formData, corrective_actions_na: !formData.corrective_actions_na })
                   }
-                  style={styles.naCheckbox}
+                  style={s.naCheckbox}
                 >
                   <View
-                    style={[styles.checkbox, formData.corrective_actions_na && styles.checkboxChecked]}
+                    style={[s.checkbox, formData.corrective_actions_na && s.checkboxChecked]}
                   >
                     {formData.corrective_actions_na && (
                       <Check size={12} strokeWidth={2} color="#fff" />
                     )}
                   </View>
-                  <Text style={styles.naCheckboxLabel}>N/A - No corrective actions needed</Text>
+                  <Text style={s.naCheckboxLabel}>N/A - No corrective actions needed</Text>
                 </Pressable>
                 {!formData.corrective_actions_na && (
                   <TextInput
-                    style={styles.notesInput}
+                    style={s.notesInput}
                     value={formData.corrective_actions}
                     onChangeText={(val) => setFormData({ ...formData, corrective_actions: val })}
                     placeholder="Describe unsafe conditions and corrective measures taken..."
@@ -666,32 +669,32 @@ export default function DailyLogScreen() {
                 )}
               </GlassCard>
 
-              <GlassCard style={styles.section}>
-                <View style={styles.sectionHeader}>
+              <GlassCard style={s.section}>
+                <View style={s.sectionHeader}>
                   <FileText size={20} strokeWidth={1.5} color="#3b82f6" />
-                  <Text style={styles.sectionTitle}>Incident Log</Text>
+                  <Text style={s.sectionTitle}>Incident Log</Text>
                 </View>
-                <Text style={styles.sectionSubtitle}>
+                <Text style={s.sectionSubtitle}>
                   Record any accidents, injuries, or near-misses that occurred
                 </Text>
                 <Pressable
                   onPress={() =>
                     setFormData({ ...formData, incident_log_na: !formData.incident_log_na })
                   }
-                  style={styles.naCheckbox}
+                  style={s.naCheckbox}
                 >
                   <View
-                    style={[styles.checkbox, formData.incident_log_na && styles.checkboxChecked]}
+                    style={[s.checkbox, formData.incident_log_na && s.checkboxChecked]}
                   >
                     {formData.incident_log_na && (
                       <Check size={12} strokeWidth={2} color="#fff" />
                     )}
                   </View>
-                  <Text style={styles.naCheckboxLabel}>N/A - No incidents occurred</Text>
+                  <Text style={s.naCheckboxLabel}>N/A - No incidents occurred</Text>
                 </Pressable>
                 {!formData.incident_log_na && (
                   <TextInput
-                    style={styles.notesInput}
+                    style={s.notesInput}
                     value={formData.incident_log}
                     onChangeText={(val) => setFormData({ ...formData, incident_log: val })}
                     placeholder="Describe any incidents, injuries, or near-misses..."
@@ -704,12 +707,12 @@ export default function DailyLogScreen() {
 
               {siteMode && (
                 <>
-                  <View style={styles.signatureSection}>
-                    <View style={styles.signatureHeader}>
+                  <View style={s.signatureSection}>
+                    <View style={s.signatureHeader}>
                       <IconPod size={40}>
                         <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
                       </IconPod>
-                      <Text style={styles.signatureTitle}>Superintendent Sign-Off</Text>
+                      <Text style={s.signatureTitle}>Superintendent Sign-Off</Text>
                     </View>
                     <SignaturePad
                       title="Superintendent Signature"
@@ -722,12 +725,12 @@ export default function DailyLogScreen() {
                     />
                   </View>
 
-                  <View style={styles.signatureSection}>
-                    <View style={styles.signatureHeader}>
+                  <View style={s.signatureSection}>
+                    <View style={s.signatureHeader}>
                       <IconPod size={40}>
                         <ShieldCheck size={18} strokeWidth={1.5} color="#3b82f6" />
                       </IconPod>
-                      <Text style={styles.signatureTitle}>Competent Person Sign-Off</Text>
+                      <Text style={s.signatureTitle}>Competent Person Sign-Off</Text>
                     </View>
                     <SignaturePad
                       title="Competent Person Signature"
@@ -744,7 +747,7 @@ export default function DailyLogScreen() {
                     title={saving ? 'Saving...' : existingLog ? 'Update Daily Log' : 'Submit Daily Log'}
                     onPress={handleSubmit}
                     loading={saving}
-                    style={styles.submitButton}
+                    style={s.submitButton}
                   />
                 </>
               )}
@@ -760,10 +763,10 @@ export default function DailyLogScreen() {
           transparent={true}
           onRequestClose={() => setSelectedPreviousLog(null)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>
                   Log: {selectedPreviousLog && formatDate(selectedPreviousLog.date)}
                 </Text>
                 <Pressable onPress={() => setSelectedPreviousLog(null)}>
@@ -771,49 +774,49 @@ export default function DailyLogScreen() {
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll}>
+              <ScrollView style={s.modalScroll}>
                 {selectedPreviousLog && (
                   <>
-                    <View style={styles.modalSection}>
-                      <Text style={styles.modalLabel}>WEATHER</Text>
-                      <Text style={styles.modalValue}>{selectedPreviousLog.weather}</Text>
+                    <View style={s.modalSection}>
+                      <Text style={s.modalLabel}>WEATHER</Text>
+                      <Text style={s.modalValue}>{selectedPreviousLog.weather}</Text>
                     </View>
-                    <View style={styles.modalSection}>
-                      <Text style={styles.modalLabel}>WORKER COUNT</Text>
-                      <Text style={styles.modalValue}>{selectedPreviousLog.worker_count || 0}</Text>
+                    <View style={s.modalSection}>
+                      <Text style={s.modalLabel}>WORKER COUNT</Text>
+                      <Text style={s.modalValue}>{selectedPreviousLog.worker_count || 0}</Text>
                     </View>
                     {selectedPreviousLog.notes && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>NOTES</Text>
-                        <Text style={styles.modalValue}>{selectedPreviousLog.notes}</Text>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>NOTES</Text>
+                        <Text style={s.modalValue}>{selectedPreviousLog.notes}</Text>
                       </View>
                     )}
                     {selectedPreviousLog.safety_checklist && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>SAFETY CHECKLIST</Text>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>SAFETY CHECKLIST</Text>
                         {Object.entries(selectedPreviousLog.safety_checklist).map(([key, value]) => (
-                          <View key={key} style={styles.checklistReview}>
-                            <Text style={styles.checklistReviewLabel}>
+                          <View key={key} style={s.checklistReview}>
+                            <Text style={s.checklistReviewLabel}>
                               {SAFETY_CHECKLIST_ITEMS.find((i) => i.id === key)?.label || key}
                             </Text>
                             <View
                               style={[
-                                styles.statusBadge,
-                                value.status === 'checked' && styles.statusChecked,
-                                value.status === 'unchecked' && styles.statusUnchecked,
-                                value.status === 'na' && styles.statusNA,
+                                s.statusBadge,
+                                value.status === 'checked' && s.statusChecked,
+                                value.status === 'unchecked' && s.statusUnchecked,
+                                value.status === 'na' && s.statusNA,
                               ]}
                             >
-                              <Text style={styles.statusText}>{value.status?.toUpperCase()}</Text>
+                              <Text style={s.statusText}>{value.status?.toUpperCase()}</Text>
                             </View>
                           </View>
                         ))}
                       </View>
                     )}
                     {(selectedPreviousLog.corrective_actions || selectedPreviousLog.corrective_actions_na) && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>CORRECTIVE ACTIONS</Text>
-                        <Text style={styles.modalValue}>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>CORRECTIVE ACTIONS</Text>
+                        <Text style={s.modalValue}>
                           {selectedPreviousLog.corrective_actions_na
                             ? 'N/A - No corrective actions needed'
                             : selectedPreviousLog.corrective_actions}
@@ -821,9 +824,9 @@ export default function DailyLogScreen() {
                       </View>
                     )}
                     {(selectedPreviousLog.incident_log || selectedPreviousLog.incident_log_na) && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>INCIDENT LOG</Text>
-                        <Text style={styles.modalValue}>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>INCIDENT LOG</Text>
+                        <Text style={s.modalValue}>
                           {selectedPreviousLog.incident_log_na
                             ? 'N/A - No incidents occurred'
                             : selectedPreviousLog.incident_log}
@@ -831,23 +834,23 @@ export default function DailyLogScreen() {
                       </View>
                     )}
                     {selectedPreviousLog.superintendent_signature && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>SUPERINTENDENT SIGNATURE</Text>
-                        <Text style={styles.modalValue}>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>SUPERINTENDENT SIGNATURE</Text>
+                        <Text style={s.modalValue}>
                           {selectedPreviousLog.superintendent_signature.signer_name}
                         </Text>
-                        <Text style={styles.auditText}>
+                        <Text style={s.auditText}>
                           Signed: {formatTimestamp(selectedPreviousLog.superintendent_signature.signed_at)}
                         </Text>
                       </View>
                     )}
                     {selectedPreviousLog.competent_person_signature && (
-                      <View style={styles.modalSection}>
-                        <Text style={styles.modalLabel}>COMPETENT PERSON SIGNATURE</Text>
-                        <Text style={styles.modalValue}>
+                      <View style={s.modalSection}>
+                        <Text style={s.modalLabel}>COMPETENT PERSON SIGNATURE</Text>
+                        <Text style={s.modalValue}>
                           {selectedPreviousLog.competent_person_signature.signer_name}
                         </Text>
-                        <Text style={styles.auditText}>
+                        <Text style={s.auditText}>
                           Signed: {formatTimestamp(selectedPreviousLog.competent_person_signature.signed_at)}
                         </Text>
                       </View>
@@ -859,7 +862,7 @@ export default function DailyLogScreen() {
               <GlassButton
                 title="Close"
                 onPress={() => setSelectedPreviousLog(null)}
-                style={styles.closeButton}
+                style={s.closeButton}
               />
             </View>
           </View>
@@ -869,7 +872,8 @@ export default function DailyLogScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -1372,3 +1376,4 @@ const styles = StyleSheet.create({
     margin: spacing.lg,
   },
 });
+}
