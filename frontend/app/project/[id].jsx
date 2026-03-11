@@ -53,7 +53,8 @@ import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 // Site device API for project-specific devices
 const siteDevicesAPI = {
@@ -90,6 +91,8 @@ const dropboxAPI = {
 };
 
 export default function ProjectDetailScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
@@ -492,10 +495,10 @@ export default function ProjectDetailScreen() {
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading project...</Text>
+            <Text style={s.loadingText}>Loading project...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -505,9 +508,9 @@ export default function ProjectDetailScreen() {
     if (!project) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
-            <Text style={styles.loadingText}>Project not found</Text>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
+            <Text style={s.loadingText}>Project not found</Text>
             <GlassButton title="Go Back" onPress={() => router.back()} />
           </View>
         </SafeAreaView>
@@ -518,18 +521,18 @@ export default function ProjectDetailScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <OfflineIndicator />
             <GlassButton
               variant="icon"
@@ -540,57 +543,57 @@ export default function ProjectDetailScreen() {
         </View>
         
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text.primary} />
           }
         >
           {/* Project Header */}
-          <GlassCard style={styles.projectHeader}>
-            <View style={styles.projectTitleRow}>
-              <View style={styles.projectInfo}>
-                <Text style={styles.projectName}>{project?.name || 'Project'}</Text>
-                <View style={styles.locationRow}>
+          <GlassCard style={s.projectHeader}>
+            <View style={s.projectTitleRow}>
+              <View style={s.projectInfo}>
+                <Text style={s.projectName}>{project?.name || 'Project'}</Text>
+                <View style={s.locationRow}>
                   <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.locationText}>{project?.location || project?.address || 'No location'}</Text>
+                  <Text style={s.locationText}>{project?.location || project?.address || 'No location'}</Text>
                 </View>
               </View>
-              <View style={styles.qrBadge}>
+              <View style={s.qrBadge}>
                 <QrCode size={20} strokeWidth={1.5} color={colors.text.primary} />
               </View>
             </View>
           </GlassCard>
 
           {/* Stats Row */}
-          <View style={styles.statsRow}>
-            <StatCard style={styles.statCard}>
-              <IconPod style={styles.statIcon}>
+          <View style={s.statsRow}>
+            <StatCard style={s.statCard}>
+              <IconPod style={s.statIcon}>
                 <Users size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={styles.statValue}>{stats.onSiteWorkers}</Text>
-              <Text style={styles.statLabel}>ON SITE</Text>
+              <Text style={s.statValue}>{stats.onSiteWorkers}</Text>
+              <Text style={s.statLabel}>ON SITE</Text>
             </StatCard>
-            <StatCard style={styles.statCard}>
-              <IconPod style={styles.statIcon}>
+            <StatCard style={s.statCard}>
+              <IconPod style={s.statIcon}>
                 <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={styles.statValue}>{nfcTags.length}</Text>
-              <Text style={styles.statLabel}>NFC TAGS</Text>
+              <Text style={s.statValue}>{nfcTags.length}</Text>
+              <Text style={s.statLabel}>NFC TAGS</Text>
             </StatCard>
-            <StatCard style={styles.statCard}>
-              <IconPod style={styles.statIcon}>
+            <StatCard style={s.statCard}>
+              <IconPod style={s.statIcon}>
                 <Smartphone size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={styles.statValue}>{siteDevices.length}</Text>
-              <Text style={styles.statLabel}>DEVICES</Text>
+              <Text style={s.statValue}>{siteDevices.length}</Text>
+              <Text style={s.statLabel}>DEVICES</Text>
             </StatCard>
           </View>
 
           {/* Quick Actions */}
-          <Text style={styles.sectionLabel}>QUICK ACTIONS</Text>
-          <View style={styles.actionsGrid}>
+          <Text style={s.sectionLabel}>QUICK ACTIONS</Text>
+          <View style={s.actionsGrid}>
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (
@@ -598,14 +601,14 @@ export default function ProjectDetailScreen() {
                   key={action.title}
                   onPress={() => router.push(action.path)}
                   style={({ pressed }) => [
-                    styles.actionCard,
-                    pressed && styles.actionCardPressed,
+                    s.actionCard,
+                    pressed && s.actionCardPressed,
                   ]}
                 >
-                  <View style={[styles.actionIcon, { backgroundColor: `${action.color}20` }]}>
+                  <View style={[s.actionIcon, { backgroundColor: `${action.color}20` }]}>
                     <Icon size={24} strokeWidth={1.5} color={action.color} />
                   </View>
-                  <Text style={styles.actionTitle}>{action.title}</Text>
+                  <Text style={s.actionTitle}>{action.title}</Text>
                 </Pressable>
               );
             })}
@@ -614,8 +617,8 @@ export default function ProjectDetailScreen() {
           {/* NFC Tags Section - Admin Only */}
           {isAdmin && (
             <>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>NFC CHECK-IN TAGS</Text>
+              <View style={s.sectionHeader}>
+                <Text style={s.sectionLabel}>NFC CHECK-IN TAGS</Text>
                 <GlassButton
                   title="Add Tag"
                   icon={<Plus size={16} color={colors.text.primary} />}
@@ -624,18 +627,18 @@ export default function ProjectDetailScreen() {
               </View>
               
               {nfcTags.length > 0 ? (
-                <View style={styles.itemsList}>
+                <View style={s.itemsList}>
                   {nfcTags.map((tag) => (
-                    <GlassCard key={tag.tag_id} style={styles.itemCard}>
-                      <View style={styles.itemHeader}>
+                    <GlassCard key={tag.tag_id} style={s.itemCard}>
+                      <View style={s.itemHeader}>
                         <Wifi size={20} strokeWidth={1.5} color="#10b981" />
-                        <View style={styles.itemInfo}>
-                          <Text style={styles.itemId}>{tag.tag_id}</Text>
-                          <Text style={styles.itemLocation}>{tag.location || 'Check-In Point'}</Text>
+                        <View style={s.itemInfo}>
+                          <Text style={s.itemId}>{tag.tag_id}</Text>
+                          <Text style={s.itemLocation}>{tag.location || 'Check-In Point'}</Text>
                         </View>
                         <Pressable
                           onPress={() => handleDeleteNfcTag(tag.tag_id)}
-                          style={styles.deleteBtn}
+                          style={s.deleteBtn}
                         >
                           <Trash2 size={16} color={colors.status.error} />
                         </Pressable>
@@ -644,10 +647,10 @@ export default function ProjectDetailScreen() {
                   ))}
                 </View>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <Wifi size={40} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No NFC tags registered</Text>
-                  <Text style={styles.emptySubtext}>Add NFC tags for worker check-in</Text>
+                  <Text style={s.emptyText}>No NFC tags registered</Text>
+                  <Text style={s.emptySubtext}>Add NFC tags for worker check-in</Text>
                 </GlassCard>
               )}
             </>
@@ -656,8 +659,8 @@ export default function ProjectDetailScreen() {
           {/* Site Devices Section - Admin Only */}
           {isAdmin && (
             <>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>SITE DEVICES</Text>
+              <View style={s.sectionHeader}>
+                <Text style={s.sectionLabel}>SITE DEVICES</Text>
                 <GlassButton
                   title="Add Device"
                   icon={<Plus size={16} color={colors.text.primary} />}
@@ -666,30 +669,30 @@ export default function ProjectDetailScreen() {
               </View>
               
               {siteDevices.length > 0 ? (
-                <View style={styles.itemsList}>
+                <View style={s.itemsList}>
                   {siteDevices.map((device) => (
-                    <GlassCard key={device.id} style={styles.deviceCard}>
-                      <View style={styles.deviceHeader}>
+                    <GlassCard key={device.id} style={s.deviceCard}>
+                      <View style={s.deviceHeader}>
                         <Smartphone size={20} strokeWidth={1.5} color={device.is_active ? '#4ade80' : colors.text.muted} />
-                        <View style={styles.deviceInfo}>
-                          <Text style={styles.deviceName}>{device.device_name}</Text>
-                          <Text style={styles.deviceUsername}>@{device.username}</Text>
+                        <View style={s.deviceInfo}>
+                          <Text style={s.deviceName}>{device.device_name}</Text>
+                          <Text style={s.deviceUsername}>@{device.username}</Text>
                         </View>
-                        <View style={[styles.deviceStatusBadge, device.is_active && styles.deviceStatusActive]}>
-                          <Text style={[styles.deviceStatusText, device.is_active && styles.deviceStatusTextActive]}>
+                        <View style={[s.deviceStatusBadge, device.is_active && s.deviceStatusActive]}>
+                          <Text style={[s.deviceStatusText, device.is_active && s.deviceStatusTextActive]}>
                             {device.is_active ? 'Active' : 'Disabled'}
                           </Text>
                         </View>
                       </View>
-                      <View style={styles.deviceActions}>
+                      <View style={s.deviceActions}>
                         <GlassButton
                           title={device.is_active ? 'Disable' : 'Enable'}
                           onPress={() => handleToggleDevice(device)}
-                          style={styles.toggleBtn}
+                          style={s.toggleBtn}
                         />
                         <Pressable
                           onPress={() => handleDeleteDevice(device.id)}
-                          style={styles.deleteBtn}
+                          style={s.deleteBtn}
                         >
                           <Trash2 size={16} color={colors.status.error} />
                         </Pressable>
@@ -698,10 +701,10 @@ export default function ProjectDetailScreen() {
                   ))}
                 </View>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <Smartphone size={40} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No site devices registered</Text>
-                  <Text style={styles.emptySubtext}>Add devices for on-site access</Text>
+                  <Text style={s.emptyText}>No site devices registered</Text>
+                  <Text style={s.emptySubtext}>Add devices for on-site access</Text>
                 </GlassCard>
               )}
             </>
@@ -710,8 +713,8 @@ export default function ProjectDetailScreen() {
           {/* Dropbox Integration Section - Admin Only */}
           {isAdmin && (
             <>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>DROPBOX INTEGRATION</Text>
+              <View style={s.sectionHeader}>
+                <Text style={s.sectionLabel}>DROPBOX INTEGRATION</Text>
                 {!isDropboxConnected && (
                   <GlassButton
                     title="Link Folder"
@@ -722,90 +725,90 @@ export default function ProjectDetailScreen() {
               </View>
               
               {isDropboxConnected ? (
-                <View style={styles.itemsList}>
-                  <GlassCard style={styles.dropboxCard}>
-                    <View style={styles.dropboxHeader}>
+                <View style={s.itemsList}>
+                  <GlassCard style={s.dropboxCard}>
+                    <View style={s.dropboxHeader}>
                       <Cloud size={20} strokeWidth={1.5} color="#0061FF" />
-                      <View style={styles.dropboxInfo}>
-                        <Text style={styles.dropboxTitle}>Connected Folder</Text>
-                        <Text style={styles.dropboxPath}>{project.dropbox_folder}</Text>
+                      <View style={s.dropboxInfo}>
+                        <Text style={s.dropboxTitle}>Connected Folder</Text>
+                        <Text style={s.dropboxPath}>{project.dropbox_folder}</Text>
                       </View>
                       <Pressable
                         onPress={handleDisconnectDropbox}
-                        style={styles.disconnectBtn}
+                        style={s.disconnectBtn}
                       >
-                        <Text style={styles.disconnectText}>Disconnect</Text>
+                        <Text style={s.disconnectText}>Disconnect</Text>
                       </Pressable>
                     </View>
 
                     {loadingFiles ? (
-                      <View style={styles.filesLoading}>
+                      <View style={s.filesLoading}>
                         <ActivityIndicator size="small" color={colors.text.primary} />
-                        <Text style={styles.filesLoadingText}>Loading files...</Text>
+                        <Text style={s.filesLoadingText}>Loading files...</Text>
                       </View>
                     ) : dropboxFiles.length > 0 ? (
-                      <View style={styles.filesList}>
-                        <Text style={styles.filesHeader}>FILES ({dropboxFiles.length})</Text>
+                      <View style={s.filesList}>
+                        <Text style={s.filesHeader}>FILES ({dropboxFiles.length})</Text>
                         {dropboxFiles.map((file, idx) => (
-                          <View key={idx} style={styles.fileRow}>
+                          <View key={idx} style={s.fileRow}>
                             <FileText size={16} strokeWidth={1.5} color={colors.text.muted} />
-                            <Text style={styles.fileName} numberOfLines={1}>{file.name}</Text>
+                            <Text style={s.fileName} numberOfLines={1}>{file.name}</Text>
                           </View>
                         ))}
                       </View>
                     ) : (
-                      <View style={styles.noFiles}>
-                        <Text style={styles.noFilesText}>No files in this folder</Text>
+                      <View style={s.noFiles}>
+                        <Text style={s.noFilesText}>No files in this folder</Text>
                       </View>
                     )}
                   </GlassCard>
                 </View>
               ) : (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <Cloud size={40} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No Dropbox folder linked</Text>
-                  <Text style={styles.emptySubtext}>Link a Dropbox folder to share project documents</Text>
+                  <Text style={s.emptyText}>No Dropbox folder linked</Text>
+                  <Text style={s.emptySubtext}>Link a Dropbox folder to share project documents</Text>
                 </GlassCard>
               )}
             </>
           )}
 
           {/* On-Site Workers */}
-          <Text style={styles.sectionLabel}>ON-SITE WORKERS</Text>
+          <Text style={s.sectionLabel}>ON-SITE WORKERS</Text>
           {workersByCompany.length > 0 ? (
             workersByCompany.map((company) => (
-              <GlassCard key={company.name} style={styles.companyCard}>
-                <View style={styles.companyHeader}>
+              <GlassCard key={company.name} style={s.companyCard}>
+                <View style={s.companyHeader}>
                   <Building2 size={18} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={styles.companyName}>{company.name}</Text>
-                  <View style={styles.workerCount}>
-                    <Text style={styles.workerCountText}>{company.workers.length}</Text>
+                  <Text style={s.companyName}>{company.name}</Text>
+                  <View style={s.workerCount}>
+                    <Text style={s.workerCountText}>{company.workers.length}</Text>
                   </View>
                 </View>
-                <View style={styles.workerTags}>
+                <View style={s.workerTags}>
                   {company.workers.map((worker, idx) => (
-                    <View key={idx} style={styles.workerTag}>
-                      <Text style={styles.workerTagName}>{worker.name || worker.worker_name}</Text>
-                      <Text style={styles.workerTagTrade}>{worker.trade || 'Worker'}</Text>
+                    <View key={idx} style={s.workerTag}>
+                      <Text style={s.workerTagName}>{worker.name || worker.worker_name}</Text>
+                      <Text style={s.workerTagTrade}>{worker.trade || 'Worker'}</Text>
                     </View>
                   ))}
                 </View>
               </GlassCard>
             ))
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <Users size={40} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={styles.emptyText}>No workers on site</Text>
-              <Text style={styles.emptySubtext}>Workers will appear here when they check in</Text>
+              <Text style={s.emptyText}>No workers on site</Text>
+              <Text style={s.emptySubtext}>Workers will appear here when they check in</Text>
             </GlassCard>
           )}
 
           {/* Checklists Section */}
-          <Text style={styles.sectionLabel}>CHECKLISTS (OTA-TEST)</Text>
+          <Text style={s.sectionLabel}>CHECKLISTS (OTA-TEST)</Text>
           {loadingChecklists ? (
             <ActivityIndicator size="small" color={colors.text.primary} style={{ marginVertical: spacing.lg }} />
           ) : checklists.length > 0 ? (
-            <View style={styles.itemsList}>
+            <View style={s.itemsList}>
               {checklists.map((assignment) => {
                 const completedCount = assignment.completions?.filter(
                   c => c.progress?.completed === c.progress?.total
@@ -814,14 +817,14 @@ export default function ProjectDetailScreen() {
                 const allComplete = completedCount === totalAssigned && totalAssigned > 0;
 
                 return (
-                  <GlassCard key={assignment.id} style={styles.checklistCard}>
-                    <View style={styles.checklistHeader}>
-                      <View style={styles.checklistInfo}>
-                        <Text style={styles.checklistTitle}>
+                  <GlassCard key={assignment.id} style={s.checklistCard}>
+                    <View style={s.checklistHeader}>
+                      <View style={s.checklistInfo}>
+                        <Text style={s.checklistTitle}>
                           {assignment.checklist?.title || 'Checklist'}
                         </Text>
                         {assignment.checklist?.description && (
-                          <Text style={styles.checklistDescription} numberOfLines={2}>
+                          <Text style={s.checklistDescription} numberOfLines={2}>
                             {assignment.checklist.description}
                           </Text>
                         )}
@@ -833,24 +836,24 @@ export default function ProjectDetailScreen() {
                       )}
                     </View>
 
-                    <View style={styles.checklistStats}>
-                      <View style={styles.checklistStatItem}>
-                        <Text style={styles.checklistStatLabel}>Items</Text>
-                        <Text style={styles.checklistStatValue}>
+                    <View style={s.checklistStats}>
+                      <View style={s.checklistStatItem}>
+                        <Text style={s.checklistStatLabel}>Items</Text>
+                        <Text style={s.checklistStatValue}>
                           {assignment.checklist?.items?.length || 0}
                         </Text>
                       </View>
-                      <View style={styles.checklistStatDivider} />
-                      <View style={styles.checklistStatItem}>
-                        <Text style={styles.checklistStatLabel}>Assigned</Text>
-                        <Text style={styles.checklistStatValue}>{totalAssigned}</Text>
+                      <View style={s.checklistStatDivider} />
+                      <View style={s.checklistStatItem}>
+                        <Text style={s.checklistStatLabel}>Assigned</Text>
+                        <Text style={s.checklistStatValue}>{totalAssigned}</Text>
                       </View>
-                      <View style={styles.checklistStatDivider} />
-                      <View style={styles.checklistStatItem}>
-                        <Text style={styles.checklistStatLabel}>Complete</Text>
+                      <View style={s.checklistStatDivider} />
+                      <View style={s.checklistStatItem}>
+                        <Text style={s.checklistStatLabel}>Complete</Text>
                         <Text style={[
-                          styles.checklistStatValue,
-                          allComplete && styles.checklistStatValueComplete
+                          s.checklistStatValue,
+                          allComplete && s.checklistStatValueComplete
                         ]}>
                           {completedCount}/{totalAssigned}
                         </Text>
@@ -858,9 +861,9 @@ export default function ProjectDetailScreen() {
                     </View>
 
                     {assignment.assigned_users && assignment.assigned_users.length > 0 && (
-                      <View style={styles.assignedUsers}>
-                        <Text style={styles.assignedUsersLabel}>Assigned to:</Text>
-                        <View style={styles.assignedUsersList}>
+                      <View style={s.assignedUsers}>
+                        <Text style={s.assignedUsersLabel}>Assigned to:</Text>
+                        <View style={s.assignedUsersList}>
                           {assignment.assigned_users.map((user) => {
                             const userCompletion = assignment.completions?.find(
                               c => c.user_id === user.id
@@ -869,10 +872,10 @@ export default function ProjectDetailScreen() {
                             const isComplete = progress.completed === progress.total && progress.total > 0;
 
                             return (
-                              <View key={user.id} style={styles.assignedUserItem}>
-                                <View style={styles.assignedUserInfo}>
-                                  <Text style={styles.assignedUserName}>{user.name}</Text>
-                                  <Text style={styles.assignedUserProgress}>
+                              <View key={user.id} style={s.assignedUserItem}>
+                                <View style={s.assignedUserInfo}>
+                                  <Text style={s.assignedUserName}>{user.name}</Text>
+                                  <Text style={s.assignedUserProgress}>
                                     {progress.completed}/{progress.total}
                                   </Text>
                                 </View>
@@ -890,10 +893,10 @@ export default function ProjectDetailScreen() {
               })}
             </View>
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={styles.emptyText}>No checklists assigned</Text>
-              <Text style={styles.emptySubtext}>Checklists will appear here when assigned to this project</Text>
+              <Text style={s.emptyText}>No checklists assigned</Text>
+              <Text style={s.emptySubtext}>Checklists will appear here when assigned to this project</Text>
             </GlassCard>
           )}
         </ScrollView>
@@ -908,18 +911,18 @@ export default function ProjectDetailScreen() {
             NfcHelper.cancelNfc();
           }}
         >
-          <View style={styles.modalOverlay}>
+          <View style={s.modalOverlay}>
             <Pressable 
-              style={styles.modalBackdrop} 
+              style={s.modalBackdrop} 
               onPress={() => {
                 setShowAddNfcModal(false);
                 NfcHelper.cancelNfc();
               }} 
             />
-            <View style={styles.modalContent}>
-              <GlassCard variant="modal" style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Register NFC Tag</Text>
+            <View style={s.modalContent}>
+              <GlassCard variant="modal" style={s.modalCard}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>Register NFC Tag</Text>
                   <Pressable 
                     onPress={() => {
                       setShowAddNfcModal(false);
@@ -930,37 +933,37 @@ export default function ProjectDetailScreen() {
                   </Pressable>
                 </View>
 
-                <Text style={styles.modalInstructions}>
+                <Text style={s.modalInstructions}>
                   {nfcSupported 
                     ? 'Scan a blank NFC tag to automatically program it with this project\'s check-in link.'
                     : 'NFC not available. You can register tags manually by entering the tag ID.'}
                 </Text>
 
-                <View style={styles.modalForm}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>LOCATION *</Text>
+                <View style={s.modalForm}>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>LOCATION *</Text>
                     <GlassInput
                       value={nfcLocation}
                       onChangeText={setNfcLocation}
                       placeholder="e.g., Main Entrance, Building A Gate"
                       editable={!scanningNfc && !addingNfc}
                     />
-                    <Text style={styles.inputHint}>
+                    <Text style={s.inputHint}>
                       Where is this NFC tag located?
                     </Text>
                   </View>
 
                   {nfcSupported && (
                     <>
-                      <View style={styles.scanSection}>
-                        <View style={styles.scanHeader}>
+                      <View style={s.scanSection}>
+                        <View style={s.scanHeader}>
                           <Radio size={20} strokeWidth={1.5} color="#3b82f6" />
-                          <Text style={styles.scanTitle}>Scan NFC Tag</Text>
+                          <Text style={s.scanTitle}>Scan NFC Tag</Text>
                         </View>
 
                         {!nfcEnabled && (
-                          <View style={styles.warningBox}>
-                            <Text style={styles.warningText}>
+                          <View style={s.warningBox}>
+                            <Text style={s.warningText}>
                               ⚠️ NFC is disabled. Please enable NFC in your device settings.
                             </Text>
                           </View>
@@ -979,38 +982,38 @@ export default function ProjectDetailScreen() {
                           loading={scanningNfc}
                           disabled={!nfcLocation.trim() || !nfcEnabled || addingNfc}
                           style={[
-                            styles.scanButton,
-                            scanningNfc && styles.scanButtonActive,
+                            s.scanButton,
+                            scanningNfc && s.scanButtonActive,
                           ]}
                         />
 
-                        <View style={styles.infoBox}>
-                          <Text style={styles.infoText}>
+                        <View style={s.infoBox}>
+                          <Text style={s.infoText}>
                             💡 This will read the tag ID and write the check-in URL to the tag automatically.
                           </Text>
                         </View>
                       </View>
 
-                      <View style={styles.divider}>
-                        <View style={styles.dividerLine} />
-                        <Text style={styles.dividerText}>OR</Text>
-                        <View style={styles.dividerLine} />
+                      <View style={s.divider}>
+                        <View style={s.dividerLine} />
+                        <Text style={s.dividerText}>OR</Text>
+                        <View style={s.dividerLine} />
                       </View>
                     </>
                   )}
 
-                  <View style={styles.manualSection}>
-                    <Text style={styles.manualTitle}>Manual Entry</Text>
+                  <View style={s.manualSection}>
+                    <Text style={s.manualTitle}>Manual Entry</Text>
                     
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.inputLabel}>TAG ID</Text>
+                    <View style={s.inputGroup}>
+                      <Text style={s.inputLabel}>TAG ID</Text>
                       <GlassInput
                         value={nfcTagId}
                         onChangeText={setNfcTagId}
                         placeholder="e.g., 04:A1:B2:C3:D4:E5:F6"
                         editable={!scanningNfc && !addingNfc}
                       />
-                      <Text style={styles.inputHint}>
+                      <Text style={s.inputHint}>
                         Enter the NFC tag ID manually if scanning is unavailable
                       </Text>
                     </View>
@@ -1020,7 +1023,7 @@ export default function ProjectDetailScreen() {
                       onPress={handleAddNfcTag}
                       loading={addingNfc}
                       disabled={!nfcTagId.trim() || !nfcLocation.trim() || scanningNfc}
-                      style={styles.manualButton}
+                      style={s.manualButton}
                     />
                   </View>
                 </View>
@@ -1036,24 +1039,24 @@ export default function ProjectDetailScreen() {
           animationType="slide"
           onRequestClose={() => setShowAddDeviceModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowAddDeviceModal(false)} />
-            <View style={styles.modalContent}>
-              <GlassCard variant="modal" style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Add Site Device</Text>
+          <View style={s.modalOverlay}>
+            <Pressable style={s.modalBackdrop} onPress={() => setShowAddDeviceModal(false)} />
+            <View style={s.modalContent}>
+              <GlassCard variant="modal" style={s.modalCard}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>Add Site Device</Text>
                   <Pressable onPress={() => setShowAddDeviceModal(false)}>
                     <X size={24} color={colors.text.primary} />
                   </Pressable>
                 </View>
 
-                <Text style={styles.modalDesc}>
+                <Text style={s.modalDesc}>
                   Create credentials for an on-site device (tablet or phone) to access this project.
                 </Text>
 
-                <View style={styles.modalForm}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>DEVICE NAME</Text>
+                <View style={s.modalForm}>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>DEVICE NAME</Text>
                     <GlassInput
                       value={newDevice.device_name}
                       onChangeText={(val) => setNewDevice({ ...newDevice, device_name: val })}
@@ -1061,8 +1064,8 @@ export default function ProjectDetailScreen() {
                     />
                   </View>
 
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>USERNAME</Text>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>USERNAME</Text>
                     <GlassInput
                       value={newDevice.username}
                       onChangeText={(val) => setNewDevice({ ...newDevice, username: val })}
@@ -1071,8 +1074,8 @@ export default function ProjectDetailScreen() {
                     />
                   </View>
 
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>PASSWORD</Text>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>PASSWORD</Text>
                     <GlassInput
                       value={newDevice.password}
                       onChangeText={(val) => setNewDevice({ ...newDevice, password: val })}
@@ -1081,9 +1084,9 @@ export default function ProjectDetailScreen() {
                     />
                   </View>
 
-                  <View style={styles.infoBox}>
+                  <View style={s.infoBox}>
                     <Key size={16} strokeWidth={1.5} color="#f59e0b" />
-                    <Text style={styles.infoText}>
+                    <Text style={s.infoText}>
                       Save these credentials securely. The password cannot be recovered after creation.
                     </Text>
                   </View>
@@ -1092,7 +1095,7 @@ export default function ProjectDetailScreen() {
                     title={addingDevice ? 'Creating...' : 'Create Device'}
                     onPress={handleAddDevice}
                     loading={addingDevice}
-                    style={styles.addButton}
+                    style={s.addButton}
                   />
                 </View>
               </GlassCard>
@@ -1107,24 +1110,24 @@ export default function ProjectDetailScreen() {
           animationType="slide"
           onRequestClose={() => setShowDropboxModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <Pressable style={styles.modalBackdrop} onPress={() => setShowDropboxModal(false)} />
-            <View style={styles.modalContent}>
-              <GlassCard variant="modal" style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Link Dropbox Folder</Text>
+          <View style={s.modalOverlay}>
+            <Pressable style={s.modalBackdrop} onPress={() => setShowDropboxModal(false)} />
+            <View style={s.modalContent}>
+              <GlassCard variant="modal" style={s.modalCard}>
+                <View style={s.modalHeader}>
+                  <Text style={s.modalTitle}>Link Dropbox Folder</Text>
                   <Pressable onPress={() => setShowDropboxModal(false)}>
                     <X size={24} color={colors.text.primary} />
                   </Pressable>
                 </View>
 
-                <Text style={styles.modalDesc}>
+                <Text style={s.modalDesc}>
                   Enter the path to your Dropbox folder containing project documents.
                 </Text>
 
-                <View style={styles.modalForm}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>FOLDER PATH</Text>
+                <View style={s.modalForm}>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>FOLDER PATH</Text>
                     <GlassInput
                       value={dropboxFolder}
                       onChangeText={setDropboxFolder}
@@ -1132,9 +1135,9 @@ export default function ProjectDetailScreen() {
                     />
                   </View>
 
-                  <View style={styles.infoBox}>
+                  <View style={s.infoBox}>
                     <Folder size={16} strokeWidth={1.5} color="#0061FF" />
-                    <Text style={styles.infoText}>
+                    <Text style={s.infoText}>
                       All users you create will be able to view files from this folder.
                     </Text>
                   </View>
@@ -1143,7 +1146,7 @@ export default function ProjectDetailScreen() {
                     title={linkingDropbox ? 'Linking...' : 'Link Folder'}
                     onPress={handleLinkDropbox}
                     loading={linkingDropbox}
-                    style={styles.addButton}
+                    style={s.addButton}
                   />
                 </View>
               </GlassCard>
@@ -1158,35 +1161,35 @@ export default function ProjectDetailScreen() {
           animationType="fade"
           onRequestClose={() => setShowCredentials(null)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.credentialsModal}>
-              <View style={styles.successIcon}>
+          <View style={s.modalOverlay}>
+            <View style={s.credentialsModal}>
+              <View style={s.successIcon}>
                 <CheckCircle size={48} strokeWidth={1.5} color="#4ade80" />
               </View>
-              <Text style={styles.credentialsTitle}>Device Created!</Text>
-              <Text style={styles.credentialsSubtitle}>
+              <Text style={s.credentialsTitle}>Device Created!</Text>
+              <Text style={s.credentialsSubtitle}>
                 Save these credentials for the on-site device:
               </Text>
 
-              <View style={styles.credentialsBox}>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Device</Text>
-                  <Text style={styles.credentialValueBold}>{showCredentials?.device_name}</Text>
+              <View style={s.credentialsBox}>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Device</Text>
+                  <Text style={s.credentialValueBold}>{showCredentials?.device_name}</Text>
                 </View>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Username</Text>
-                  <Text style={styles.credentialValueMono}>{showCredentials?.username}</Text>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Username</Text>
+                  <Text style={s.credentialValueMono}>{showCredentials?.username}</Text>
                 </View>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Password</Text>
-                  <Text style={styles.credentialValueMono}>{showCredentials?.password}</Text>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Password</Text>
+                  <Text style={s.credentialValueMono}>{showCredentials?.password}</Text>
                 </View>
               </View>
 
               <GlassButton
                 title="Done"
                 onPress={() => setShowCredentials(null)}
-                style={styles.doneBtn}
+                style={s.doneBtn}
               />
             </View>
           </View>
@@ -1196,7 +1199,8 @@ export default function ProjectDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -1842,3 +1846,4 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
   },
 });
+}
