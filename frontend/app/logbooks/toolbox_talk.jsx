@@ -78,6 +78,13 @@ export default function ToolboxTalkLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Auto-fill Performed By from CP profile when available
+  useEffect(() => {
+    if (cpName && !performedBy) {
+      setPerformedBy(cpName);
+    }
+  }, [cpName]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -115,8 +122,17 @@ export default function ToolboxTalkLog() {
         if (d.attendees && d.attendees.length > 0) {
           setAttendees(d.attendees);
         } else {
-          setAttendees(autoAttendees);
+        setAttendees(autoAttendees);
+          
+        // Auto-fill company name from project or user
+        if (projectData?.company) {
+          setCompanyName(projectData.company);
+        } else if (user?.company_name) {
+          setCompanyName(user.company_name);
+        } else if (user?.name) {
+          setCompanyName(user.name.split(' ')[0]); // fallback
         }
+      }
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       } else {
