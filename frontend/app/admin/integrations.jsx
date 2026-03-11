@@ -449,7 +449,7 @@ export default function AdminIntegrationsScreen() {
   );
 }
 
-function builds.(colors, isDark) {
+function buildStyles(colors, isDark) {
   return StyleSheet.create({
   container: {
     flex: 1,
