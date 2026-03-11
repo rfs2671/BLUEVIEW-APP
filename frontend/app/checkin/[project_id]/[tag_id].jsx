@@ -25,7 +25,8 @@ import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import apiClient from '../../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
 
 /**
  * PUBLIC CHECK-IN PAGE
@@ -35,6 +36,8 @@ import { colors, spacing, borderRadius, typography } from '../../../src/styles/t
  */
 
 export default function PublicCheckInScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const { project_id, tag_id } = useLocalSearchParams();
   const router = useRouter();
   const toast = useToast();
@@ -131,10 +134,10 @@ export default function PublicCheckInScreen() {
   if (loading) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.loadingContainer}>
+        <SafeAreaView style={s.container}>
+          <View style={s.loadingContainer}>
             <ActivityIndicator size="large" color={colors.text.primary} />
-            <Text style={styles.loadingText}>Loading check-in...</Text>
+            <Text style={s.loadingText}>Loading check-in...</Text>
           </View>
         </SafeAreaView>
       </AnimatedBackground>
@@ -144,10 +147,10 @@ export default function PublicCheckInScreen() {
   if (!projectInfo) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.errorContainer}>
-            <Text style={styles.errorTitle}>Invalid Check-In Link</Text>
-            <Text style={styles.errorText}>
+        <SafeAreaView style={s.container}>
+          <View style={s.errorContainer}>
+            <Text style={s.errorTitle}>Invalid Check-In Link</Text>
+            <Text style={s.errorText}>
               This check-in link is not valid. Please contact your supervisor for assistance.
             </Text>
           </View>
@@ -158,32 +161,32 @@ export default function PublicCheckInScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={s.container}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.keyboardView}
+          style={s.keyboardView}
         >
           <ScrollView
-            style={styles.scrollView}
-            contentContainerStyle={styles.scrollContent}
+            style={s.scrollView}
+            contentContainerStyle={s.scrollContent}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
           >
             {/* Header */}
-            <View style={styles.header}>
-              <Text style={styles.headerLabel}>WORKER CHECK-IN</Text>
-              <Text style={styles.headerTitle}>BlueView</Text>
+            <View style={s.header}>
+              <Text style={s.headerLabel}>WORKER CHECK-IN</Text>
+              <Text style={s.headerTitle}>BlueView</Text>
             </View>
 
             {/* Project Info Card */}
-            <GlassCard style={styles.projectCard}>
-              <View style={styles.projectHeader}>
+            <GlassCard style={s.projectCard}>
+              <View style={s.projectHeader}>
                 <Building2 size={24} strokeWidth={1.5} color="#3b82f6" />
-                <Text style={styles.projectName}>{projectInfo.project_name}</Text>
+                <Text style={s.projectName}>{projectInfo.project_name}</Text>
               </View>
-              <View style={styles.projectLocation}>
+              <View style={s.projectLocation}>
                 <MapPin size={16} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.locationText}>
+                <Text style={s.locationText}>
                   {projectInfo.location || 'Check-In Point'}
                 </Text>
               </View>
@@ -191,29 +194,29 @@ export default function PublicCheckInScreen() {
 
             {success ? (
               /* Success State */
-              <GlassCard style={styles.successCard}>
+              <GlassCard style={s.successCard}>
                 <CheckCircle size={64} strokeWidth={1.5} color="#4ade80" />
-                <Text style={styles.successTitle}>Check-In Successful!</Text>
-                <Text style={styles.successText}>
+                <Text style={s.successTitle}>Check-In Successful!</Text>
+                <Text style={s.successText}>
                   You are now checked in to {projectInfo.project_name}
                 </Text>
               </GlassCard>
             ) : (
               /* Check-In Form */
-              <GlassCard style={styles.formCard}>
-                <Text style={styles.formTitle}>Enter Your Information</Text>
-                <Text style={styles.formSubtitle}>
+              <GlassCard style={s.formCard}>
+                <Text style={s.formTitle}>Enter Your Information</Text>
+                <Text style={s.formSubtitle}>
                   Fill in your details to check in to this project
                 </Text>
 
                 {/* Name Input */}
-                <View style={styles.inputGroup}>
-                  <View style={styles.inputHeader}>
+                <View style={s.inputGroup}>
+                  <View style={s.inputHeader}>
                     <User size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.inputLabel}>FULL NAME *</Text>
+                    <Text style={s.inputLabel}>FULL NAME *</Text>
                   </View>
                   <TextInput
-                    style={styles.input}
+                    style={s.input}
                     value={workerName}
                     onChangeText={setWorkerName}
                     placeholder="John Smith"
@@ -223,13 +226,13 @@ export default function PublicCheckInScreen() {
                 </View>
 
                 {/* Phone Input */}
-                <View style={styles.inputGroup}>
-                  <View style={styles.inputHeader}>
+                <View style={s.inputGroup}>
+                  <View style={s.inputHeader}>
                     <Phone size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.inputLabel}>PHONE NUMBER *</Text>
+                    <Text style={s.inputLabel}>PHONE NUMBER *</Text>
                   </View>
                   <TextInput
-                    style={styles.input}
+                    style={s.input}
                     value={workerPhone}
                     onChangeText={setWorkerPhone}
                     placeholder="(555) 123-4567"
@@ -239,13 +242,13 @@ export default function PublicCheckInScreen() {
                 </View>
 
                 {/* Company Input */}
-                <View style={styles.inputGroup}>
-                  <View style={styles.inputHeader}>
+                <View style={s.inputGroup}>
+                  <View style={s.inputHeader}>
                     <Briefcase size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.inputLabel}>COMPANY *</Text>
+                    <Text style={s.inputLabel}>COMPANY *</Text>
                   </View>
                   <TextInput
-                    style={styles.input}
+                    style={s.input}
                     value={workerCompany}
                     onChangeText={setWorkerCompany}
                     placeholder="ABC Construction"
@@ -255,13 +258,13 @@ export default function PublicCheckInScreen() {
                 </View>
 
                 {/* Trade Input */}
-                <View style={styles.inputGroup}>
-                  <View style={styles.inputHeader}>
+                <View style={s.inputGroup}>
+                  <View style={s.inputHeader}>
                     <HardHat size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.inputLabel}>TRADE *</Text>
+                    <Text style={s.inputLabel}>TRADE *</Text>
                   </View>
                   <TextInput
-                    style={styles.input}
+                    style={s.input}
                     value={workerTrade}
                     onChangeText={setWorkerTrade}
                     placeholder="Electrician, Plumber, Carpenter, etc."
@@ -275,11 +278,11 @@ export default function PublicCheckInScreen() {
                   title={submitting ? 'Checking In...' : 'Check In'}
                   onPress={handleCheckIn}
                   loading={submitting}
-                  style={styles.submitButton}
+                  style={s.submitButton}
                 />
 
                 {/* Info Text */}
-                <Text style={styles.infoText}>
+                <Text style={s.infoText}>
                   By checking in, you confirm your presence at this job site.
                 </Text>
               </GlassCard>
@@ -291,7 +294,8 @@ export default function PublicCheckInScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -438,3 +442,4 @@ const styles = StyleSheet.create({
     maxWidth: 280,
   },
 });
+}
