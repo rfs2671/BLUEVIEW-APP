@@ -35,7 +35,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 // Site device API functions
 const siteDevicesAPI = {
@@ -58,6 +59,8 @@ const siteDevicesAPI = {
 };
 
 export default function SiteDevicesScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -175,16 +178,16 @@ export default function SiteDevicesScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -194,15 +197,15 @@ export default function SiteDevicesScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>ADMIN</Text>
-            <Text style={styles.titleText}>Site Devices</Text>
-            <Text style={styles.subtitle}>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>ADMIN</Text>
+            <Text style={s.titleText}>Site Devices</Text>
+            <Text style={s.subtitle}>
               Create credentials for on-site devices with project-specific access
             </Text>
           </View>
@@ -212,62 +215,62 @@ export default function SiteDevicesScreen() {
             title="Add Site Device"
             icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={() => setShowCreateModal(true)}
-            style={styles.addButton}
+            style={s.addButton}
           />
 
           {/* Devices List */}
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={styles.mb12} />
+              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={s.mb12} />
               <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} />
             </>
           ) : devices.length > 0 ? (
-            <View style={styles.devicesList}>
+            <View style={s.devicesList}>
               {devices.map((device) => (
-                <GlassCard key={device.id} style={styles.deviceCard}>
-                  <View style={styles.deviceHeader}>
+                <GlassCard key={device.id} style={s.deviceCard}>
+                  <View style={s.deviceHeader}>
                     <IconPod size={44}>
                       <Smartphone size={18} strokeWidth={1.5} color={device.is_active ? '#4ade80' : colors.text.muted} />
                     </IconPod>
-                    <View style={styles.deviceInfo}>
-                      <Text style={styles.deviceName}>{device.device_name}</Text>
-                      <View style={styles.deviceMeta}>
+                    <View style={s.deviceInfo}>
+                      <Text style={s.deviceName}>{device.device_name}</Text>
+                      <View style={s.deviceMeta}>
                         <Building2 size={12} strokeWidth={1.5} color={colors.text.muted} />
-                        <Text style={styles.deviceProject}>{device.project_name}</Text>
+                        <Text style={s.deviceProject}>{device.project_name}</Text>
                       </View>
                     </View>
-                    <View style={[styles.statusBadge, device.is_active && styles.statusActive]}>
+                    <View style={[s.statusBadge, device.is_active && s.statusActive]}>
                       {device.is_active ? (
                         <CheckCircle size={12} strokeWidth={1.5} color="#4ade80" />
                       ) : (
                         <XCircle size={12} strokeWidth={1.5} color={colors.text.muted} />
                       )}
-                      <Text style={[styles.statusText, device.is_active && styles.statusTextActive]}>
+                      <Text style={[s.statusText, device.is_active && s.statusTextActive]}>
                         {device.is_active ? 'Active' : 'Disabled'}
                       </Text>
                     </View>
                   </View>
 
-                  <View style={styles.credentialsRow}>
-                    <View style={styles.credentialItem}>
-                      <Text style={styles.credentialLabel}>USERNAME</Text>
-                      <Text style={styles.credentialValue}>{device.username}</Text>
+                  <View style={s.credentialsRow}>
+                    <View style={s.credentialItem}>
+                      <Text style={s.credentialLabel}>USERNAME</Text>
+                      <Text style={s.credentialValue}>{device.username}</Text>
                     </View>
                     {device.last_login && (
-                      <View style={styles.credentialItem}>
-                        <Text style={styles.credentialLabel}>LAST LOGIN</Text>
-                        <Text style={styles.credentialValue}>
+                      <View style={s.credentialItem}>
+                        <Text style={s.credentialLabel}>LAST LOGIN</Text>
+                        <Text style={s.credentialValue}>
                           {new Date(device.last_login).toLocaleDateString()}
                         </Text>
                       </View>
                     )}
                   </View>
 
-                  <View style={styles.deviceActions}>
+                  <View style={s.deviceActions}>
                     <GlassButton
                       title={device.is_active ? 'Disable' : 'Enable'}
                       onPress={() => handleToggleActive(device)}
-                      style={styles.toggleBtn}
+                      style={s.toggleBtn}
                     />
                     <GlassButton
                       variant="icon"
@@ -279,12 +282,12 @@ export default function SiteDevicesScreen() {
               ))}
             </View>
           ) : (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <IconPod size={64}>
                 <Smartphone size={28} strokeWidth={1.5} color={colors.text.muted} />
               </IconPod>
-              <Text style={styles.emptyTitle}>No Site Devices</Text>
-              <Text style={styles.emptyText}>
+              <Text style={s.emptyTitle}>No Site Devices</Text>
+              <Text style={s.emptyText}>
                 Create device credentials to allow on-site tablets or phones to access project-specific data.
               </Text>
             </GlassCard>
@@ -302,37 +305,37 @@ export default function SiteDevicesScreen() {
         >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={styles.modalOverlay}
+            style={s.modalOverlay}
           >
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Add Site Device</Text>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Add Site Device</Text>
                 <Pressable onPress={() => setShowCreateModal(false)}>
                   <X size={24} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll}>
+              <ScrollView style={s.modalScroll}>
                 {/* Project Selector */}
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>PROJECT</Text>
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>PROJECT</Text>
                   <Pressable
-                    style={styles.selectorCard}
+                    style={s.selectorCard}
                     onPress={() => setShowProjectPicker(!showProjectPicker)}
                   >
-                    <Text style={[styles.selectorText, !newDevice.project_id && styles.selectorPlaceholder]}>
+                    <Text style={[s.selectorText, !newDevice.project_id && s.selectorPlaceholder]}>
                       {getSelectedProject()?.name || 'Select a project'}
                     </Text>
                     <ChevronDown
                       size={20}
                       strokeWidth={1.5}
                       color={colors.text.muted}
-                      style={showProjectPicker && styles.iconRotated}
+                      style={showProjectPicker && s.iconRotated}
                     />
                   </Pressable>
                   
                   {showProjectPicker && (
-                    <View style={styles.dropdown}>
+                    <View style={s.dropdown}>
                       {projects.map((p) => (
                         <Pressable
                           key={p._id || p.id}
@@ -341,19 +344,19 @@ export default function SiteDevicesScreen() {
                             setShowProjectPicker(false);
                           }}
                           style={[
-                            styles.dropdownItem,
-                            newDevice.project_id === (p._id || p.id) && styles.dropdownItemActive,
+                            s.dropdownItem,
+                            newDevice.project_id === (p._id || p.id) && s.dropdownItemActive,
                           ]}
                         >
-                          <Text style={styles.dropdownText}>{p.name}</Text>
+                          <Text style={s.dropdownText}>{p.name}</Text>
                         </Pressable>
                       ))}
                     </View>
                   )}
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>DEVICE NAME</Text>
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>DEVICE NAME</Text>
                   <GlassInput
                     value={newDevice.device_name}
                     onChangeText={(val) => setNewDevice({ ...newDevice, device_name: val })}
@@ -361,8 +364,8 @@ export default function SiteDevicesScreen() {
                   />
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>USERNAME</Text>
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>USERNAME</Text>
                   <GlassInput
                     value={newDevice.username}
                     onChangeText={(val) => setNewDevice({ ...newDevice, username: val })}
@@ -371,8 +374,8 @@ export default function SiteDevicesScreen() {
                   />
                 </View>
 
-                <View style={styles.formGroup}>
-                  <Text style={styles.formLabel}>PASSWORD</Text>
+                <View style={s.formGroup}>
+                  <Text style={s.formLabel}>PASSWORD</Text>
                   <GlassInput
                     value={newDevice.password}
                     onChangeText={(val) => setNewDevice({ ...newDevice, password: val })}
@@ -381,25 +384,25 @@ export default function SiteDevicesScreen() {
                   />
                 </View>
 
-                <View style={styles.infoBox}>
+                <View style={s.infoBox}>
                   <Key size={16} strokeWidth={1.5} color="#f59e0b" />
-                  <Text style={styles.infoText}>
+                  <Text style={s.infoText}>
                     Save these credentials securely. The password cannot be recovered after creation.
                   </Text>
                 </View>
               </ScrollView>
 
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
                   onPress={() => setShowCreateModal(false)}
-                  style={styles.cancelBtn}
+                  style={s.cancelBtn}
                 />
                 <GlassButton
                   title={saving ? 'Creating...' : 'Create Device'}
                   onPress={handleCreateDevice}
                   loading={saving}
-                  style={styles.createBtn}
+                  style={s.createBtn}
                 />
               </View>
             </View>
@@ -413,39 +416,39 @@ export default function SiteDevicesScreen() {
           transparent={true}
           onRequestClose={() => setShowCredentials(null)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.credentialsModal}>
-              <View style={styles.successIcon}>
+          <View style={s.modalOverlay}>
+            <View style={s.credentialsModal}>
+              <View style={s.successIcon}>
                 <CheckCircle size={48} strokeWidth={1.5} color="#4ade80" />
               </View>
-              <Text style={styles.credentialsTitle}>Device Created!</Text>
-              <Text style={styles.credentialsSubtitle}>
+              <Text style={s.credentialsTitle}>Device Created!</Text>
+              <Text style={s.credentialsSubtitle}>
                 Save these credentials for the on-site device:
               </Text>
 
-              <View style={styles.credentialsBox}>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Project</Text>
-                  <Text style={styles.credentialValueBold}>{showCredentials?.project_name}</Text>
+              <View style={s.credentialsBox}>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Project</Text>
+                  <Text style={s.credentialValueBold}>{showCredentials?.project_name}</Text>
                 </View>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Device</Text>
-                  <Text style={styles.credentialValueBold}>{showCredentials?.device_name}</Text>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Device</Text>
+                  <Text style={s.credentialValueBold}>{showCredentials?.device_name}</Text>
                 </View>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Username</Text>
-                  <Text style={styles.credentialValueMono}>{showCredentials?.username}</Text>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Username</Text>
+                  <Text style={s.credentialValueMono}>{showCredentials?.username}</Text>
                 </View>
-                <View style={styles.credentialRow}>
-                  <Text style={styles.credentialLabel}>Password</Text>
-                  <Text style={styles.credentialValueMono}>{showCredentials?.password}</Text>
+                <View style={s.credentialRow}>
+                  <Text style={s.credentialLabel}>Password</Text>
+                  <Text style={s.credentialValueMono}>{showCredentials?.password}</Text>
                 </View>
               </View>
 
               <GlassButton
                 title="Done"
                 onPress={() => setShowCredentials(null)}
-                style={styles.doneBtn}
+                style={s.doneBtn}
               />
             </View>
           </View>
@@ -455,7 +458,8 @@ export default function SiteDevicesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -768,3 +772,4 @@ const styles = StyleSheet.create({
     width: '100%',
   },
 });
+}
