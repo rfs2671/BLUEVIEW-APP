@@ -1,10 +1,8 @@
 import React, { useState } from 'react';
 import { TextInput, View, StyleSheet } from 'react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
-/**
- * GlassInput - Glassmorphism styled text input with hover/focus support
- */
 const GlassInput = ({
   value,
   onChangeText,
@@ -26,7 +24,7 @@ const GlassInput = ({
   return (
     <View
       style={[
-        styles.container,
+        s.container,
         isHovered && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.glass.borderHover },
         isFocused && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.border.strong },
         style,
@@ -34,7 +32,7 @@ const GlassInput = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
-      {leftIcon && <View style={styles.leftIcon}>{leftIcon}</View>}
+      {leftIcon && <View style={s.leftIcon}>{leftIcon}</View>}
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -48,20 +46,21 @@ const GlassInput = ({
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
         style={[
-          styles.input,
-          leftIcon && styles.inputWithLeftIcon,
-          rightIcon && styles.inputWithRightIcon,
-          multiline && styles.multilineInput,
+          s.input,
+          leftIcon && s.inputWithLeftIcon,
+          rightIcon && s.inputWithRightIcon,
+          multiline && s.multilineInput,
           inputStyle,
         ]}
         {...props}
       />
-      {rightIcon && <View style={styles.rightIcon}>{rightIcon}</View>}
+      {rightIcon && <View style={s.rightIcon}>{rightIcon}</View>}
     </View>
   );
 };
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.lg,
@@ -102,5 +101,5 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
 });
-
+}
 export default GlassInput;
