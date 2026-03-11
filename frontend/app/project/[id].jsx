@@ -53,8 +53,8 @@ import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 // Site device API for project-specific devices
 const siteDevicesAPI = {
