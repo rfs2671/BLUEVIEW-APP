@@ -49,7 +49,7 @@ const getFileIcon = (fileName) => {
   if (['dwg', 'dxf', 'skp'].includes(ext)) {
     return { Icon: FileCode, color: '#f59e0b' };
   }
-  return { Icon: File, color: color: '#94a3b8' };
+  return { Icon: File, color: '#94a3b8' };
 };
 
 const formatFileSize = (bytes) => {
