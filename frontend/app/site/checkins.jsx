@@ -18,8 +18,8 @@ import { GlassSkeleton, StatCardSkeleton } from '../../src/components/GlassSkele
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
-import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { useTheme } from '../src/context/ThemeContext';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteCheckInsScreen() {
   const { colors, isDark } = useTheme();
