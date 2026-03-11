@@ -551,4 +551,34 @@ export const weatherAPI = {
   },
 };
 
+/**
+ * Reports APIs (admin)
+ */
+export const reportsAPI = {
+  getPreview: async (projectId, date) => {
+    const response = await apiClient.get(`/api/reports/project/${projectId}/preview/${date}`);
+    return response.data;
+  },
+
+  getFullReport: async (projectId, date) => {
+    const response = await apiClient.get(`/api/reports/project/${projectId}/date/${date}`);
+    return response.data;
+  },
+
+  getHistory: async (projectId, limit = 30, skip = 0) => {
+    const response = await apiClient.get(`/api/reports/project/${projectId}/history`, {
+      params: { limit, skip },
+    });
+    return response.data;
+  },
+
+  getLogs: async (projectId, date = null, logType = null) => {
+    const params = {};
+    if (date) params.date = date;
+    if (logType) params.log_type = logType;
+    const response = await apiClient.get(`/api/reports/project/${projectId}/logs`, { params });
+    return response.data;
+  },
+};
+
 export default apiClient;
