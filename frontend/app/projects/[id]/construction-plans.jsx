@@ -38,6 +38,8 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
+
 
 const DROPBOX_BLUE = '#0061FF';
 
@@ -71,6 +73,8 @@ const formatFileSize = (bytes) => {
 };
 
 export default function ConstructionPlansScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -197,16 +201,16 @@ export default function ConstructionPlansScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -216,47 +220,47 @@ export default function ConstructionPlansScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>{project?.name || 'PROJECT'}</Text>
-            <Text style={styles.titleText}>Construction Plans</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>{project?.name || 'PROJECT'}</Text>
+            <Text style={s.titleText}>Construction Plans</Text>
           </View>
 
           {loading ? (
-            <View style={styles.loadingContainer}>
-              <GlassSkeleton width="100%" height={60} style={styles.mb12} />
-              <GlassSkeleton width="100%" height={80} style={styles.mb12} />
-              <GlassSkeleton width="100%" height={80} style={styles.mb12} />
+            <View style={s.loadingContainer}>
+              <GlassSkeleton width="100%" height={60} style={s.mb12} />
+              <GlassSkeleton width="100%" height={80} style={s.mb12} />
+              <GlassSkeleton width="100%" height={80} style={s.mb12} />
               <GlassSkeleton width="100%" height={80} />
             </View>
           ) : !project?.dropbox_folder_path ? (
-            <GlassCard style={styles.notLinkedCard}>
+            <GlassCard style={s.notLinkedCard}>
               <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
-              <Text style={styles.notLinkedTitle}>No Dropbox Folder Linked</Text>
-              <Text style={styles.notLinkedDesc}>
+              <Text style={s.notLinkedTitle}>No Dropbox Folder Linked</Text>
+              <Text style={s.notLinkedDesc}>
                 Link a Dropbox folder to this project to view construction plans.
               </Text>
               <GlassButton
                 title="Configure Dropbox"
                 onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
-                style={styles.configureBtn}
+                style={s.configureBtn}
               />
             </GlassCard>
           ) : (
             <>
               {/* Sync Status Bar */}
-              <View style={styles.syncBar}>
-                <View style={styles.syncInfo}>
+              <View style={s.syncBar}>
+                <View style={s.syncInfo}>
                   <View
                     style={[
-                      styles.syncIndicator,
-                      syncStatus === 'syncing' && styles.syncIndicatorSyncing,
-                      syncStatus === 'success' && styles.syncIndicatorSuccess,
-                      syncStatus === 'error' && styles.syncIndicatorError,
+                      s.syncIndicator,
+                      syncStatus === 'syncing' && s.syncIndicatorSyncing,
+                      syncStatus === 'success' && s.syncIndicatorSuccess,
+                      syncStatus === 'error' && s.syncIndicatorError,
                     ]}
                   >
                     {syncStatus === 'syncing' ? (
@@ -270,7 +274,7 @@ export default function ConstructionPlansScreen() {
                     )}
                   </View>
                   <View>
-                    <Text style={styles.syncLabel}>
+                    <Text style={s.syncLabel}>
                       {syncStatus === 'syncing'
                         ? 'Syncing...'
                         : syncStatus === 'success'
@@ -279,7 +283,7 @@ export default function ConstructionPlansScreen() {
                         ? 'Sync failed'
                         : 'Dropbox Connected'}
                     </Text>
-                    <Text style={styles.syncTime}>
+                    <Text style={s.syncTime}>
                       {lastSynced
                         ? `Last synced ${new Date(lastSynced).toLocaleString()}`
                         : 'Never synced'}
@@ -301,8 +305,8 @@ export default function ConstructionPlansScreen() {
               </View>
 
               {/* Search and Filter */}
-              <View style={styles.searchRow}>
-                <View style={styles.searchContainer}>
+              <View style={s.searchRow}>
+                <View style={s.searchContainer}>
                   <GlassInput
                     value={searchQuery}
                     onChangeText={setSearchQuery}
@@ -316,22 +320,22 @@ export default function ConstructionPlansScreen() {
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                style={styles.filterScroll}
-                contentContainerStyle={styles.filterContainer}
+                style={s.filterScroll}
+                contentContainerStyle={s.filterContainer}
               >
                 {filterOptions.map((option) => (
                   <Pressable
                     key={option.key}
                     onPress={() => setFilterType(option.key)}
                     style={[
-                      styles.filterTab,
-                      filterType === option.key && styles.filterTabActive,
+                      s.filterTab,
+                      filterType === option.key && s.filterTabActive,
                     ]}
                   >
                     <Text
                       style={[
-                        styles.filterTabText,
-                        filterType === option.key && styles.filterTabTextActive,
+                        s.filterTabText,
+                        filterType === option.key && s.filterTabTextActive,
                       ]}
                     >
                       {option.label}
@@ -341,12 +345,12 @@ export default function ConstructionPlansScreen() {
               </ScrollView>
 
               {/* Files Count */}
-              <Text style={styles.filesCount}>
+              <Text style={s.filesCount}>
                 {filteredFiles.length} file{filteredFiles.length !== 1 ? 's' : ''}
               </Text>
 
               {/* Files List */}
-              <View style={styles.filesList}>
+              <View style={s.filesList}>
                 {filteredFiles.length > 0 ? (
                   filteredFiles.map((file, index) => {
                     const typeInfo = getFileTypeInfo(file.name || '');
@@ -356,37 +360,37 @@ export default function ConstructionPlansScreen() {
                       <Pressable
                         key={file.path || index}
                         style={({ pressed }) => [
-                          styles.fileItem,
-                          pressed && styles.fileItemPressed,
+                          s.fileItem,
+                          pressed && s.fileItemPressed,
                         ]}
                         onPress={() => handleViewFile(file)}
                       >
                         {/* File Icon */}
                         <View
                           style={[
-                            styles.fileIconContainer,
+                            s.fileIconContainer,
                             { backgroundColor: `${typeInfo.color}15` },
                           ]}
                         >
                           <FileIcon size={22} strokeWidth={1.5} color={typeInfo.color} />
-                          <Text style={[styles.fileTypeLabel, { color: typeInfo.color }]}>
+                          <Text style={[s.fileTypeLabel, { color: typeInfo.color }]}>
                             {typeInfo.label}
                           </Text>
                         </View>
 
                         {/* File Info */}
-                        <View style={styles.fileInfo}>
-                          <Text style={styles.fileName} numberOfLines={1}>
+                        <View style={s.fileInfo}>
+                          <Text style={s.fileName} numberOfLines={1}>
                             {file.name}
                           </Text>
-                          <View style={styles.fileMeta}>
-                            <Text style={styles.fileMetaText}>
+                          <View style={s.fileMeta}>
+                            <Text style={s.fileMetaText}>
                               {formatFileSize(file.size)}
                             </Text>
                             {file.modified && (
                               <>
-                                <Text style={styles.fileMetaDot}>•</Text>
-                                <Text style={styles.fileMetaText}>
+                                <Text style={s.fileMetaDot}>•</Text>
+                                <Text style={s.fileMetaText}>
                                   {new Date(file.modified).toLocaleDateString()}
                                 </Text>
                               </>
@@ -395,13 +399,13 @@ export default function ConstructionPlansScreen() {
                         </View>
 
                         {/* Actions */}
-                        <View style={styles.fileActions}>
+                        <View style={s.fileActions}>
                           <Pressable
                             onPress={(e) => {
                               e.stopPropagation();
                               handleViewFile(file);
                             }}
-                            style={styles.fileActionBtn}
+                            style={s.fileActionBtn}
                           >
                             <Eye size={18} strokeWidth={1.5} color={colors.text.muted} />
                           </Pressable>
@@ -410,7 +414,7 @@ export default function ConstructionPlansScreen() {
                               e.stopPropagation();
                               handleDownloadFile(file);
                             }}
-                            style={styles.fileActionBtn}
+                            style={s.fileActionBtn}
                           >
                             <Download size={18} strokeWidth={1.5} color={colors.text.muted} />
                           </Pressable>
@@ -419,9 +423,9 @@ export default function ConstructionPlansScreen() {
                     );
                   })
                 ) : (
-                  <View style={styles.emptyFiles}>
+                  <View style={s.emptyFiles}>
                     <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
-                    <Text style={styles.emptyText}>
+                    <Text style={s.emptyText}>
                       {searchQuery || filterType !== 'all'
                         ? 'No files match your search'
                         : 'No files in this folder'}
@@ -443,7 +447,8 @@ export default function ConstructionPlansScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -664,3 +669,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+}
