@@ -103,7 +103,7 @@ export default function SiteDeviceHomeScreen() {
             {/* Log Books Button */}
             <Pressable
               style={styles.buttonCard}
-              onPress={() => handleNavigate('/site/daily-logs')}
+              onPress={() => handleNavigate('/site/logbooks')}
             >
               <GlassCard style={styles.buttonInner}>
                 <View style={[styles.iconContainer, { backgroundColor: 'rgba(59, 130, 246, 0.2)' }]}>
