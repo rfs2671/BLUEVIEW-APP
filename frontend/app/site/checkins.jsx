@@ -31,15 +31,13 @@ export default function SiteCheckInsScreen() {
   const [stats, setStats] = useState({ total: 0, active: 0 });
 
   useEffect(() => {
-  if (!authLoading && isAuthenticated !== undefined) {
+    if (authLoading) return;
     if (!isAuthenticated) {
       router.replace('/login');
-    } else if (isAuthenticated && !siteMode && siteProject === null) {
-      // Only redirect if we're sure siteMode resolved
+    } else if (!siteMode) {
       router.replace('/');
     }
-  }
-}, [isAuthenticated, authLoading, siteMode, siteProject]);
+  }, [isAuthenticated, authLoading, siteMode]);
 
   // Fetch data
   useEffect(() => {
