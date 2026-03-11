@@ -14,7 +14,8 @@ import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 const LOG_TABS = [
   { key: 'daily_jobsite', label: 'Daily Jobsite', icon: ClipboardList, color: '#3b82f6' },
@@ -23,6 +24,8 @@ const LOG_TABS = [
 ];
 
 export default function SiteLogbooksViewer() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
 
@@ -86,31 +89,31 @@ export default function SiteLogbooksViewer() {
 
     if (log.log_type === 'daily_jobsite') {
       return (
-        <View style={styles.logContent}>
+        <View style={s.logContent}>
           {data.weather && (
-            <Text style={styles.logField}>
-              <Text style={styles.logFieldLabel}>Weather: </Text>{data.weather} {data.weather_temp || ''}
+            <Text style={s.logField}>
+              <Text style={s.logFieldLabel}>Weather: </Text>{data.weather} {data.weather_temp || ''}
             </Text>
           )}
           {data.general_description && (
-            <Text style={styles.logField}>
-              <Text style={styles.logFieldLabel}>Description: </Text>{data.general_description}
+            <Text style={s.logField}>
+              <Text style={s.logFieldLabel}>Description: </Text>{data.general_description}
             </Text>
           )}
           {(data.activities || []).map((act, i) => (
-            <View key={i} style={styles.activityRow}>
-              <Text style={styles.activityText}>
+            <View key={i} style={s.activityRow}>
+              <Text style={s.activityText}>
                 {act.company || 'Unknown'} — {act.num_workers || 0} workers — {act.work_description || 'N/A'}
               </Text>
             </View>
           ))}
           {data.equipment_on_site && (
-            <Text style={styles.logField}>
-              <Text style={styles.logFieldLabel}>Equipment: </Text>
+            <Text style={s.logField}>
+              <Text style={s.logFieldLabel}>Equipment: </Text>
               {Object.entries(data.equipment_on_site).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ')).join(', ') || 'None'}
             </Text>
           )}
-          <Text style={styles.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
+          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
         </View>
       );
     }
@@ -120,31 +123,31 @@ export default function SiteLogbooksViewer() {
       const topicList = Object.entries(topics).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' '));
       const attendees = data.attendees || [];
       return (
-        <View style={styles.logContent}>
+        <View style={s.logContent}>
           {data.location && (
-            <Text style={styles.logField}>
-              <Text style={styles.logFieldLabel}>Location: </Text>{data.location}
+            <Text style={s.logField}>
+              <Text style={s.logFieldLabel}>Location: </Text>{data.location}
             </Text>
           )}
           {data.performed_by && (
-            <Text style={styles.logField}>
-              <Text style={styles.logFieldLabel}>Performed By: </Text>{data.performed_by}
+            <Text style={s.logField}>
+              <Text style={s.logFieldLabel}>Performed By: </Text>{data.performed_by}
             </Text>
           )}
-          <Text style={styles.logField}>
-            <Text style={styles.logFieldLabel}>Topics ({topicList.length}): </Text>
+          <Text style={s.logField}>
+            <Text style={s.logFieldLabel}>Topics ({topicList.length}): </Text>
             {topicList.join(', ') || 'None'}
           </Text>
-          <Text style={styles.logField}>
-            <Text style={styles.logFieldLabel}>Attendees: </Text>
+          <Text style={s.logField}>
+            <Text style={s.logFieldLabel}>Attendees: </Text>
             {attendees.length} workers
           </Text>
           {attendees.map((a, i) => (
-            <Text key={i} style={styles.attendeeText}>
+            <Text key={i} style={s.attendeeText}>
               • {a.name || 'Unknown'} ({a.company || ''}) {a.signed ? '✓' : '—'}
             </Text>
           ))}
-          <Text style={styles.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
+          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
         </View>
       );
     }
@@ -152,46 +155,46 @@ export default function SiteLogbooksViewer() {
     if (log.log_type === 'preshift_signin') {
       const workers = (data.workers || []).filter(w => w.name?.trim());
       return (
-        <View style={styles.logContent}>
-          <Text style={styles.logField}>
-            <Text style={styles.logFieldLabel}>Workers: </Text>{workers.length}
+        <View style={s.logContent}>
+          <Text style={s.logField}>
+            <Text style={s.logFieldLabel}>Workers: </Text>{workers.length}
           </Text>
           {workers.map((w, i) => (
-            <View key={i} style={styles.workerRow}>
-              <Text style={styles.workerName}>{w.name}</Text>
-              <Text style={styles.workerDetail}>{w.company} • OSHA: {w.osha_number || 'N/A'}</Text>
-              <Text style={styles.workerDetail}>
+            <View key={i} style={s.workerRow}>
+              <Text style={s.workerName}>{w.name}</Text>
+              <Text style={s.workerDetail}>{w.company} • OSHA: {w.osha_number || 'N/A'}</Text>
+              <Text style={s.workerDetail}>
                 Injury: {w.had_injury || '—'} | PPE: {w.inspected_ppe || '—'}
               </Text>
             </View>
           ))}
-          <Text style={styles.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
+          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
         </View>
       );
     }
 
-    return <Text style={styles.logField}>No data available</Text>;
+    return <Text style={s.logField}>No data available</Text>;
   };
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
+        <View style={s.header}>
           <GlassButton
             variant="icon"
             icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={() => router.push('/site')}
           />
           <View style={{ flex: 1 }}>
-            <Text style={styles.headerTitle}>Log Books</Text>
-            <Text style={styles.headerSub}>Submitted Records</Text>
+            <Text style={s.headerTitle}>Log Books</Text>
+            <Text style={s.headerSub}>Submitted Records</Text>
           </View>
         </View>
 
         {/* Tabs */}
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabScroll}>
-          <View style={styles.tabRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll}>
+          <View style={s.tabRow}>
             {LOG_TABS.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.key;
@@ -203,13 +206,13 @@ export default function SiteLogbooksViewer() {
                 <Pressable
                   key={tab.key}
                   onPress={() => { setActiveTab(tab.key); setExpandedDate(null); }}
-                  style={[styles.tab, isActive && { backgroundColor: `${tab.color}20`, borderColor: `${tab.color}50` }]}
+                  style={[s.tab, isActive && { backgroundColor: `${tab.color}20`, borderColor: `${tab.color}50` }]}
                 >
                   <Icon size={16} strokeWidth={1.5} color={isActive ? tab.color : colors.text.muted} />
-                  <Text style={[styles.tabText, isActive && { color: tab.color }]}>{tab.label}</Text>
+                  <Text style={[s.tabText, isActive && { color: tab.color }]}>{tab.label}</Text>
                   {count > 0 && (
-                    <View style={[styles.tabBadge, { backgroundColor: isActive ? tab.color : colors.text.muted }]}>
-                      <Text style={styles.tabBadgeText}>{count}</Text>
+                    <View style={[s.tabBadge, { backgroundColor: isActive ? tab.color : colors.text.muted }]}>
+                      <Text style={s.tabBadgeText}>{count}</Text>
                     </View>
                   )}
                 </Pressable>
@@ -219,17 +222,17 @@ export default function SiteLogbooksViewer() {
         </ScrollView>
 
         {/* Content */}
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent}>
           {loading ? (
-            <View style={styles.loadingCenter}>
+            <View style={s.loadingCenter}>
               <ActivityIndicator size="large" color={colors.text.primary} />
-              <Text style={styles.loadingText}>Loading logbooks...</Text>
+              <Text style={s.loadingText}>Loading logbooks...</Text>
             </View>
           ) : sortedDates.length === 0 ? (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <FileText size={40} strokeWidth={1} color={colors.text.muted} />
-              <Text style={styles.emptyTitle}>No Submitted Logs</Text>
-              <Text style={styles.emptyText}>
+              <Text style={s.emptyTitle}>No Submitted Logs</Text>
+              <Text style={s.emptyText}>
                 Submitted {LOG_TABS.find(t => t.key === activeTab)?.label || ''} entries will appear here.
               </Text>
             </GlassCard>
@@ -242,13 +245,13 @@ export default function SiteLogbooksViewer() {
                 <View key={date}>
                   <Pressable
                     onPress={() => setExpandedDate(isExpanded ? null : date)}
-                    style={styles.dateHeader}
+                    style={s.dateHeader}
                   >
                     <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={styles.dateText}>{formatDate(date)}</Text>
-                    <View style={styles.dateBadge}>
+                    <Text style={s.dateText}>{formatDate(date)}</Text>
+                    <View style={s.dateBadge}>
                       <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
-                      <Text style={styles.dateBadgeText}>{logs.length}</Text>
+                      <Text style={s.dateBadgeText}>{logs.length}</Text>
                     </View>
                     <ChevronRight
                       size={16} strokeWidth={1.5} color={colors.text.muted}
@@ -257,12 +260,12 @@ export default function SiteLogbooksViewer() {
                   </Pressable>
 
                   {isExpanded && logs.map((log, idx) => (
-                    <GlassCard key={log.id || idx} style={styles.logCard}>
-                      <View style={styles.logHeader}>
-                        <Text style={styles.logType}>
+                    <GlassCard key={log.id || idx} style={s.logCard}>
+                      <View style={s.logHeader}>
+                        <Text style={s.logType}>
                           {LOG_TABS.find(t => t.key === log.log_type)?.label || log.log_type}
                         </Text>
-                        <Text style={styles.logTime}>
+                        <Text style={s.logTime}>
                           {log.created_at ? new Date(log.created_at).toLocaleTimeString('en-US', {
                             hour: 'numeric', minute: '2-digit', hour12: true,
                           }) : ''}
@@ -283,7 +286,8 @@ export default function SiteLogbooksViewer() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.md,
