@@ -170,6 +170,11 @@ export const projectsAPI = {
     return response.data;
   },
 
+  updateReportSettings: async (projectId, settingsData) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/report-settings`, settingsData);
+    return response.data;
+  },
+
   delete: async (projectId) => {
     const response = await apiClient.delete(`/api/projects/${projectId}`);
     return response.data;
