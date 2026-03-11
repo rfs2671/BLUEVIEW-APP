@@ -32,9 +32,12 @@ import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 
 export default function AdminUsersScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
@@ -262,17 +265,17 @@ export default function AdminUsersScreen() {
   if (!isAdmin) {
     return (
       <AnimatedBackground>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.accessDenied}>
+        <SafeAreaView style={s.container}>
+          <View style={s.accessDenied}>
             <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
-            <Text style={styles.accessDeniedTitle}>Admin Access Required</Text>
-            <Text style={styles.accessDeniedDesc}>
+            <Text style={s.accessDeniedTitle}>Admin Access Required</Text>
+            <Text style={s.accessDeniedDesc}>
               Only administrators can access user management.
             </Text>
             <GlassButton
               title="Return to Dashboard"
               onPress={() => router.push('/')}
-              style={styles.returnBtn}
+              style={s.returnBtn}
             />
           </View>
         </SafeAreaView>
@@ -282,18 +285,18 @@ export default function AdminUsersScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <GlassButton
               variant="icon"
               icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
@@ -308,77 +311,77 @@ export default function AdminUsersScreen() {
         </View>
 
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text.primary} />
           }
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>ADMIN</Text>
-            <View style={styles.titleRow}>
-              <Text style={styles.titleText}>User Management</Text>
-              <View style={styles.countBadge}>
-                <Text style={styles.countText}>{users.length}</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>ADMIN</Text>
+            <View style={s.titleRow}>
+              <Text style={s.titleText}>User Management</Text>
+              <View style={s.countBadge}>
+                <Text style={s.countText}>{users.length}</Text>
               </View>
             </View>
           </View>
 
           {loading ? (
-            <View style={styles.loadingContainer}>
+            <View style={s.loadingContainer}>
               <ActivityIndicator size="large" color={colors.text.primary} />
             </View>
           ) : (
-            <View style={styles.usersList}>
+            <View style={s.usersList}>
               {users.map((userItem) => {
                 const roleStyle = getRoleBadgeStyle(userItem.role);
                 const isSelf = userItem.id === user?.id || userItem.id === user?._id;
                 
                 return (
-                  <GlassCard key={userItem.id} style={styles.userCard}>
-                    <View style={styles.userHeader}>
-                      <View style={styles.userAvatar}>
-                        <Text style={styles.userInitial}>{userItem.name?.charAt(0) || 'U'}</Text>
+                  <GlassCard key={userItem.id} style={s.userCard}>
+                    <View style={s.userHeader}>
+                      <View style={s.userAvatar}>
+                        <Text style={s.userInitial}>{userItem.name?.charAt(0) || 'U'}</Text>
                       </View>
-                      <View style={styles.userInfo}>
-                        <Text style={styles.userName}>{userItem.name}</Text>
-                        <Text style={styles.userEmail}>{userItem.email}</Text>
+                      <View style={s.userInfo}>
+                        <Text style={s.userName}>{userItem.name}</Text>
+                        <Text style={s.userEmail}>{userItem.email}</Text>
                       </View>
-                      <View style={[styles.roleBadge, { backgroundColor: roleStyle.bg }]}>
-                        <Text style={[styles.roleText, { color: roleStyle.color }]}>
+                      <View style={[s.roleBadge, { backgroundColor: roleStyle.bg }]}>
+                        <Text style={[s.roleText, { color: roleStyle.color }]}>
                           {userItem.role.toUpperCase()}
                         </Text>
                       </View>
                     </View>
 
                     {userItem.assigned_projects?.length > 0 && (
-                      <View style={styles.projectsRow}>
+                      <View style={s.projectsRow}>
                         <FolderOpen size={14} color={colors.text.muted} />
-                        <Text style={styles.projectsText}>
+                        <Text style={s.projectsText}>
                           {userItem.assigned_projects.length} project(s) assigned
                         </Text>
                       </View>
                     )}
 
-                    <View style={styles.userActions}>
+                    <View style={s.userActions}>
                       <GlassButton
                         title="Assign"
                         icon={<FolderOpen size={14} color={colors.text.primary} />}
                         onPress={() => openAssignModal(userItem)}
-                        style={styles.actionBtn}
+                        style={s.actionBtn}
                       />
                       <GlassButton
                         title="Edit"
                         icon={<Edit3 size={14} color={colors.text.primary} />}
                         onPress={() => openEditModal(userItem)}
-                        style={styles.actionBtn}
+                        style={s.actionBtn}
                         disabled={isSelf}
                       />
                       <Pressable 
                         onPress={() => handleDeleteUser(userItem.id)}
-                        style={[styles.deleteBtn, isSelf && styles.deleteBtnDisabled]}
+                        style={[s.deleteBtn, isSelf && s.deleteBtnDisabled]}
                         disabled={isSelf}
                       >
                         <Trash2 size={16} color={isSelf ? colors.text.subtle : colors.status.error} />
@@ -389,9 +392,9 @@ export default function AdminUsersScreen() {
               })}
 
               {users.length === 0 && (
-                <GlassCard style={styles.emptyCard}>
+                <GlassCard style={s.emptyCard}>
                   <Users size={48} strokeWidth={1} color={colors.text.subtle} />
-                  <Text style={styles.emptyText}>No users found</Text>
+                  <Text style={s.emptyText}>No users found</Text>
                   <GlassButton
                     title="Add User"
                     icon={<Plus size={16} color={colors.text.primary} />}
@@ -404,8 +407,8 @@ export default function AdminUsersScreen() {
 
           {/* Add User Modal */}
           {showAddModal && (
-            <GlassCard variant="modal" style={styles.modal}>
-              <Text style={styles.modalTitle}>Add New User</Text>
+            <GlassCard variant="modal" style={s.modal}>
+              <Text style={s.modalTitle}>Add New User</Text>
               <GlassInput
                 value={formName}
                 onChangeText={setFormName}
@@ -417,35 +420,35 @@ export default function AdminUsersScreen() {
                 placeholder="Email"
                 keyboardType="email-address"
                 leftIcon={<Mail size={18} color={colors.text.subtle} />}
-                style={styles.inputSpacing}
+                style={s.inputSpacing}
               />
               <GlassInput
                 value={formPassword}
                 onChangeText={setFormPassword}
                 placeholder="Password"
                 secureTextEntry
-                style={styles.inputSpacing}
+                style={s.inputSpacing}
               />
-              <View style={styles.roleSelector}>
-                <Text style={styles.roleSelectorLabel}>Role:</Text>
+              <View style={s.roleSelector}>
+                <Text style={s.roleSelectorLabel}>Role:</Text>
                 <Pressable
                   onPress={() => setFormRole('cp')}
-                  style={[styles.roleOption, formRole === 'cp' && styles.roleOptionActive]}
+                  style={[s.roleOption, formRole === 'cp' && s.roleOptionActive]}
                 >
-                  <Text style={[styles.roleOptionText, formRole === 'cp' && styles.roleOptionTextActive]}>
+                  <Text style={[s.roleOptionText, formRole === 'cp' && s.roleOptionTextActive]}>
                     CP Manager
                   </Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setFormRole('worker')}
-                  style={[styles.roleOption, formRole === 'worker' && styles.roleOptionActive]}
+                  style={[s.roleOption, formRole === 'worker' && s.roleOptionActive]}
                 >
-                  <Text style={[styles.roleOptionText, formRole === 'worker' && styles.roleOptionTextActive]}>
+                  <Text style={[s.roleOptionText, formRole === 'worker' && s.roleOptionTextActive]}>
                     Worker
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
                   onPress={() => { setShowAddModal(false); resetForm(); }}
@@ -460,8 +463,8 @@ export default function AdminUsersScreen() {
 
           {/* Edit User Modal */}
           {showEditModal && (
-            <GlassCard variant="modal" style={styles.modal}>
-              <Text style={styles.modalTitle}>Edit User</Text>
+            <GlassCard variant="modal" style={s.modal}>
+              <Text style={s.modalTitle}>Edit User</Text>
               <GlassInput
                 value={formName}
                 onChangeText={setFormName}
@@ -472,28 +475,28 @@ export default function AdminUsersScreen() {
                 onChangeText={setFormEmail}
                 placeholder="Email"
                 keyboardType="email-address"
-                style={styles.inputSpacing}
+                style={s.inputSpacing}
               />
-              <View style={styles.roleSelector}>
-                <Text style={styles.roleSelectorLabel}>Role:</Text>
+              <View style={s.roleSelector}>
+                <Text style={s.roleSelectorLabel}>Role:</Text>
                 <Pressable
                   onPress={() => setFormRole('cp')}
-                  style={[styles.roleOption, formRole === 'cp' && styles.roleOptionActive]}
+                  style={[s.roleOption, formRole === 'cp' && s.roleOptionActive]}
                 >
-                  <Text style={[styles.roleOptionText, formRole === 'cp' && styles.roleOptionTextActive]}>
+                  <Text style={[s.roleOptionText, formRole === 'cp' && s.roleOptionTextActive]}>
                     CP Manager
                   </Text>
                 </Pressable>
                 <Pressable
                   onPress={() => setFormRole('worker')}
-                  style={[styles.roleOption, formRole === 'worker' && styles.roleOptionActive]}
+                  style={[s.roleOption, formRole === 'worker' && s.roleOptionActive]}
                 >
-                  <Text style={[styles.roleOptionText, formRole === 'worker' && styles.roleOptionTextActive]}>
+                  <Text style={[s.roleOptionText, formRole === 'worker' && s.roleOptionTextActive]}>
                     Worker
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
                   onPress={() => { setShowEditModal(false); resetForm(); }}
@@ -508,27 +511,27 @@ export default function AdminUsersScreen() {
 
           {/* Assign Projects Modal */}
           {showAssignModal && (
-            <GlassCard variant="modal" style={styles.modal}>
-              <Text style={styles.modalTitle}>Assign Projects</Text>
-              <Text style={styles.modalSubtitle}>Select projects for {selectedUser?.name}</Text>
-              <View style={styles.projectsList}>
+            <GlassCard variant="modal" style={s.modal}>
+              <Text style={s.modalTitle}>Assign Projects</Text>
+              <Text style={s.modalSubtitle}>Select projects for {selectedUser?.name}</Text>
+              <View style={s.projectsList}>
                 {projects.map((proj) => (
                   <Pressable
                     key={proj.id}
                     onPress={() => toggleProjectAssignment(proj.id)}
                     style={[
-                      styles.projectItem,
-                      assignedProjects.includes(proj.id) && styles.projectItemSelected,
+                      s.projectItem,
+                      assignedProjects.includes(proj.id) && s.projectItemSelected,
                     ]}
                   >
-                    <Text style={styles.projectItemName}>{proj.name}</Text>
+                    <Text style={s.projectItemName}>{proj.name}</Text>
                     {assignedProjects.includes(proj.id) && (
                       <CheckCircle size={18} color="#10b981" />
                     )}
                   </Pressable>
                 ))}
               </View>
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   title="Cancel"
                   onPress={() => setShowAssignModal(false)}
@@ -546,7 +549,8 @@ export default function AdminUsersScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -796,3 +800,4 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
   },
 });
+}
