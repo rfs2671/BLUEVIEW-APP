@@ -25,9 +25,12 @@ import { useWorkers } from '../src/hooks/useWorkers';
 import { useProjects } from '../src/hooks/useProjects';
 import { useCheckIns } from '../src/hooks/useCheckIns';
 import OfflineIndicator from '../src/components/OfflineIndicator';
-import { colors, spacing, borderRadius, typography } from '../src/styles/theme';
+import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { useTheme } from '../src/context/ThemeContext';
 
 export default function WorkersScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -117,18 +120,18 @@ export default function WorkersScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
+      <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.headerLeft}>
+        <View style={s.header}>
+          <View style={s.headerLeft}>
             <GlassButton
               variant="icon"
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
-          <View style={styles.headerRight}>
+          <View style={s.headerRight}>
             <OfflineIndicator />
             <GlassButton
               variant="icon"
@@ -139,29 +142,29 @@ export default function WorkersScreen() {
         </View>
           
         <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
           {/* Title */}
-          <View style={styles.titleSection}>
-            <Text style={styles.titleLabel}>DAILY</Text>
-            <Text style={styles.titleText}>Sign-In Log</Text>
+          <View style={s.titleSection}>
+            <Text style={s.titleLabel}>DAILY</Text>
+            <Text style={s.titleText}>Sign-In Log</Text>
           </View>
 
           {/* Date Selector */}
-          <View style={styles.dateSelector}>
+          <View style={s.dateSelector}>
             <GlassButton
               variant="icon"
               icon={<ChevronLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={goToPreviousDay}
             />
-            <View style={styles.dateDisplay}>
+            <View style={s.dateDisplay}>
               <Calendar size={20} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.dateText}>{formatDate(selectedDate)}</Text>
+              <Text style={s.dateText}>{formatDate(selectedDate)}</Text>
               {isToday && (
-                <View style={styles.todayBadge}>
-                  <Text style={styles.todayText}>TODAY</Text>
+                <View style={s.todayBadge}>
+                  <Text style={s.todayText}>TODAY</Text>
                 </View>
               )}
             </View>
@@ -170,12 +173,12 @@ export default function WorkersScreen() {
               icon={<ChevronRight size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={goToNextDay}
               disabled={isToday}
-              style={isToday && styles.disabledButton}
+              style={isToday && s.disabledButton}
             />
           </View>
 
           {/* Stats */}
-          <View style={styles.statsRow}>
+          <View style={s.statsRow}>
             {loading ? (
               <>
                 <StatCardSkeleton />
@@ -186,12 +189,12 @@ export default function WorkersScreen() {
               statItems.map((stat) => {
                 const Icon = stat.icon;
                 return (
-                  <StatCard key={stat.label} style={styles.statCard}>
-                    <IconPod size={44} style={styles.statIcon}>
+                  <StatCard key={stat.label} style={s.statCard}>
+                    <IconPod size={44} style={s.statIcon}>
                       <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
                     </IconPod>
-                    <Text style={styles.statValue}>{stat.value}</Text>
-                    <Text style={styles.statLabel}>{stat.label.toUpperCase()}</Text>
+                    <Text style={s.statValue}>{stat.value}</Text>
+                    <Text style={s.statLabel}>{stat.label.toUpperCase()}</Text>
                   </StatCard>
                 );
               })
@@ -199,7 +202,7 @@ export default function WorkersScreen() {
           </View>
 
           {/* Checkins List */}
-          <View style={styles.checkinsList}>
+          <View style={s.checkinsList}>
             {loading ? (
               <>
                 <WorkerCardSkeleton />
@@ -216,7 +219,7 @@ export default function WorkersScreen() {
                 }, {})
               ).map(([company, companyCheckins]) => (
                 <View key={company}>
-                  <Text style={styles.companyHeader}>{company}</Text>
+                  <Text style={s.companyHeader}>{company}</Text>
                   {companyCheckins.map((checkin, index) => {
                     const workerInfo = getWorkerInfo(checkin);
                     const initials = workerInfo.name
@@ -228,7 +231,7 @@ export default function WorkersScreen() {
                     return (
                       <GlassListItem
                         key={checkin._id || checkin.id || index}
-                        style={styles.checkinCard}
+                        style={s.checkinCard}
                         onPress={() => {
                           const workerId = checkin.worker_id;
                           if (workerId) {
@@ -237,34 +240,34 @@ export default function WorkersScreen() {
                         }}
                       >
                         {/* Time */}
-                        <View style={styles.timeSection}>
-                          <Text style={styles.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
+                        <View style={s.timeSection}>
+                          <Text style={s.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
                           {workerInfo.checkOutTime && (
-                            <Text style={styles.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
+                            <Text style={s.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
                           )}
                         </View>
 
-                        <View style={styles.divider} />
+                        <View style={s.divider} />
 
                         {/* Worker Info */}
-                        <View style={styles.workerInfo}>
-                          <View style={styles.workerHeader}>
-                            <View style={styles.avatar}>
-                              <Text style={styles.avatarText}>{initials}</Text>
+                        <View style={s.workerInfo}>
+                          <View style={s.workerHeader}>
+                            <View style={s.avatar}>
+                              <Text style={s.avatarText}>{initials}</Text>
                             </View>
-                            <View style={styles.workerDetails}>
-                              <Text style={styles.workerName}>{workerInfo.name}</Text>
-                              <Text style={styles.workerTrade}>{workerInfo.trade}</Text>
+                            <View style={s.workerDetails}>
+                              <Text style={s.workerName}>{workerInfo.name}</Text>
+                              <Text style={s.workerTrade}>{workerInfo.trade}</Text>
                             </View>
                           </View>
-                          <View style={styles.workerMeta}>
-                            <View style={styles.metaItem}>
+                          <View style={s.workerMeta}>
+                            <View style={s.metaItem}>
                               <MapPin size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={styles.metaText}>{workerInfo.project}</Text>
+                              <Text style={s.metaText}>{workerInfo.project}</Text>
                             </View>
-                            <View style={styles.metaItem}>
+                            <View style={s.metaItem}>
                               <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={styles.metaText}>{workerInfo.company}</Text>
+                              <Text style={s.metaText}>{workerInfo.company}</Text>
                             </View>
                           </View>
                         </View>
@@ -272,19 +275,19 @@ export default function WorkersScreen() {
                         {/* Status */}
                         <View
                           style={[
-                            styles.statusBadge,
-                            !workerInfo.checkOutTime && styles.statusActive,
+                            s.statusBadge,
+                            !workerInfo.checkOutTime && s.statusActive,
                           ]}
                         >
                           {!workerInfo.checkOutTime ? (
                             <>
-                              <View style={styles.statusDot} />
-                              <Text style={styles.statusText}>ON-SITE</Text>
+                              <View style={s.statusDot} />
+                              <Text style={s.statusText}>ON-SITE</Text>
                             </>
                           ) : (
                             <>
                               <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={[styles.statusText, styles.statusDone]}>DONE</Text>
+                              <Text style={[s.statusText, s.statusDone]}>DONE</Text>
                             </>
                           )}
                         </View>
@@ -294,9 +297,9 @@ export default function WorkersScreen() {
                 </View>
               ))
             ) : (
-              <View style={styles.emptyState}>
+              <View style={s.emptyState}>
                 <Users size={48} strokeWidth={1} color={colors.text.subtle} />
-                <Text style={styles.emptyText}>No check-ins recorded for this date</Text>
+                <Text style={s.emptyText}>No check-ins recorded for this date</Text>
               </View>
             )}
           </View>
@@ -308,7 +311,8 @@ export default function WorkersScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -537,4 +541,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.text.muted,
   },
-});
+  });
+}
