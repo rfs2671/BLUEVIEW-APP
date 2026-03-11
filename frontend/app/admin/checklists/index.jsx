@@ -31,9 +31,12 @@ import FloatingNav from '../../../src/components/FloatingNav';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
-import { colors, spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { useTheme } from '../../../src/context/ThemeContext';
 
 export default function AdminChecklistsScreen() {
+  const { colors, isDark } = useTheme();
+  const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -297,16 +300,16 @@ export default function AdminChecklistsScreen() {
 
   return (
     <AnimatedBackground>
-      <SafeAreaView style={styles.container} edges={['top']}>
-        <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <View style={styles.header}>
-            <View style={styles.headerLeft}>
+      <SafeAreaView style={s.container} edges={['top']}>
+        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={s.header}>
+            <View style={s.headerLeft}>
               <IconPod size={48}>
                 <ClipboardList size={24} strokeWidth={1.5} color="#4ade80" />
               </IconPod>
               <View>
-                <Text style={styles.headerLabel}>ADMIN</Text>
-                <Text style={styles.headerTitle}>Checklists</Text>
+                <Text style={s.headerLabel}>ADMIN</Text>
+                <Text style={s.headerTitle}>Checklists</Text>
               </View>
             </View>
             <GlassButton
@@ -319,62 +322,62 @@ export default function AdminChecklistsScreen() {
 
           {loading ? (
             <>
-              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
-              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={styles.mb16} />
+              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={s.mb16} />
+              <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={s.mb16} />
               <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} />
             </>
           ) : checklists.length === 0 ? (
-            <GlassCard style={styles.emptyCard}>
+            <GlassCard style={s.emptyCard}>
               <ClipboardList size={48} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={styles.emptyTitle}>No Checklists</Text>
-              <Text style={styles.emptyText}>Create your first checklist to get started</Text>
+              <Text style={s.emptyTitle}>No Checklists</Text>
+              <Text style={s.emptyText}>Create your first checklist to get started</Text>
             </GlassCard>
           ) : (
-            <View style={styles.checklistsList}>
+            <View style={s.checklistsList}>
               {checklists.map((checklist) => (
-                <GlassCard key={checklist.id} style={styles.checklistCard}>
-                  <View style={styles.checklistHeader}>
-                    <View style={styles.checklistInfo}>
-                      <Text style={styles.checklistTitle}>{checklist.title}</Text>
+                <GlassCard key={checklist.id} style={s.checklistCard}>
+                  <View style={s.checklistHeader}>
+                    <View style={s.checklistInfo}>
+                      <Text style={s.checklistTitle}>{checklist.title}</Text>
                       {checklist.description && (
-                        <Text style={styles.checklistDescription} numberOfLines={2}>
+                        <Text style={s.checklistDescription} numberOfLines={2}>
                           {checklist.description}
                         </Text>
                       )}
-                      <View style={styles.checklistMeta}>
-                        <Text style={styles.metaText}>
+                      <View style={s.checklistMeta}>
+                        <Text style={s.metaText}>
                           {checklist.items?.length || 0} items
                         </Text>
-                        <Text style={styles.metaDot}>•</Text>
-                        <Text style={styles.metaText}>
+                        <Text style={s.metaDot}>•</Text>
+                        <Text style={s.metaText}>
                           {checklist.assignment_count || 0} assignments
                         </Text>
                       </View>
                     </View>
                   </View>
 
-                  <View style={styles.checklistActions}>
+                  <View style={s.checklistActions}>
                     <Pressable
                       onPress={() => handleViewAssignments(checklist)}
-                      style={styles.actionButton}
+                      style={s.actionButton}
                     >
                       <Eye size={18} strokeWidth={1.5} color={colors.text.secondary} />
                     </Pressable>
                     <Pressable
                       onPress={() => handleAssignChecklist(checklist)}
-                      style={styles.actionButton}
+                      style={s.actionButton}
                     >
                       <Send size={18} strokeWidth={1.5} color="#4ade80" />
                     </Pressable>
                     <Pressable
                       onPress={() => handleEditChecklist(checklist)}
-                      style={styles.actionButton}
+                      style={s.actionButton}
                     >
                       <Edit2 size={18} strokeWidth={1.5} color="#60a5fa" />
                     </Pressable>
                     <Pressable
                       onPress={() => handleDeleteChecklist(checklist)}
-                      style={styles.actionButton}
+                      style={s.actionButton}
                     >
                       <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
                     </Pressable>
@@ -398,10 +401,10 @@ export default function AdminChecklistsScreen() {
             resetForm();
           }}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>
                   {showCreateModal ? 'Create Checklist' : 'Edit Checklist'}
                 </Text>
                 <Pressable
@@ -415,13 +418,13 @@ export default function AdminChecklistsScreen() {
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+              <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
                 <GlassInput
                   label="Title"
                   value={formData.title}
                   onChangeText={(text) => setFormData({ ...formData, title: text })}
                   placeholder="Safety Inspection"
-                  style={styles.input}
+                  style={s.input}
                 />
 
                 <GlassInput
@@ -431,21 +434,21 @@ export default function AdminChecklistsScreen() {
                   placeholder="Describe the checklist..."
                   multiline
                   numberOfLines={2}
-                  style={styles.input}
+                  style={s.input}
                 />
 
-                <Text style={styles.sectionLabel}>ITEMS</Text>
+                <Text style={s.sectionLabel}>ITEMS</Text>
                 {formData.items.map((item, index) => (
-                  <View key={index} style={styles.itemRow}>
+                  <View key={index} style={s.itemRow}>
                     <TextInput
-                      style={styles.itemInput}
+                      style={s.itemInput}
                       value={item.text}
                       onChangeText={(text) => updateItem(index, text)}
                       placeholder={`Item ${index + 1}`}
                       placeholderTextColor={colors.text.subtle}
                     />
                     {formData.items.length > 1 && (
-                      <Pressable onPress={() => removeItem(index)} style={styles.removeBtn}>
+                      <Pressable onPress={() => removeItem(index)} style={s.removeBtn}>
                         <X size={18} strokeWidth={1.5} color="#ef4444" />
                       </Pressable>
                     )}
@@ -457,11 +460,11 @@ export default function AdminChecklistsScreen() {
                   title="Add Item"
                   icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
                   onPress={addItem}
-                  style={styles.addItemBtn}
+                  style={s.addItemBtn}
                 />
               </ScrollView>
 
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   variant="secondary"
                   title="Cancel"
@@ -470,14 +473,14 @@ export default function AdminChecklistsScreen() {
                     setShowEditModal(false);
                     resetForm();
                   }}
-                  style={styles.modalBtn}
+                  style={s.modalBtn}
                 />
                 <GlassButton
                   variant="primary"
                   title={saving ? 'Saving...' : showCreateModal ? 'Create' : 'Update'}
                   onPress={showCreateModal ? handleSubmitCreate : handleSubmitEdit}
                   loading={saving}
-                  style={styles.modalBtn}
+                  style={s.modalBtn}
                 />
               </View>
             </View>
@@ -491,48 +494,48 @@ export default function AdminChecklistsScreen() {
           transparent
           onRequestClose={() => setShowAssignModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Assign Checklist</Text>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Assign Checklist</Text>
                 <Pressable onPress={() => setShowAssignModal(false)}>
                   <X size={24} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
-                <Text style={styles.sectionLabel}>SELECT PROJECTS</Text>
+              <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
+                <Text style={s.sectionLabel}>SELECT PROJECTS</Text>
                 {projects.map((project) => (
                   <Pressable
                     key={project.id}
                     onPress={() => toggleProject(project.id)}
-                    style={styles.selectItem}
+                    style={s.selectItem}
                   >
                     <View
                       style={[
-                        styles.checkbox,
-                        assignData.selectedProjects.includes(project.id) && styles.checkboxChecked,
+                        s.checkbox,
+                        assignData.selectedProjects.includes(project.id) && s.checkboxChecked,
                       ]}
                     >
                       {assignData.selectedProjects.includes(project.id) && (
                         <Check size={14} strokeWidth={2} color="#fff" />
                       )}
                     </View>
-                    <Text style={styles.selectText}>{project.name}</Text>
+                    <Text style={s.selectText}>{project.name}</Text>
                   </Pressable>
                 ))}
 
-                <Text style={[styles.sectionLabel, styles.mt24]}>SELECT USERS</Text>
+                <Text style={[s.sectionLabel, s.mt24]}>SELECT USERS</Text>
                 {users.map((user) => (
                   <Pressable
                     key={user.id}
                     onPress={() => toggleUser(user.id)}
-                    style={styles.selectItem}
+                    style={s.selectItem}
                   >
                     <View
                       style={[
-                        styles.checkbox,
-                        assignData.selectedUsers.includes(user.id) && styles.checkboxChecked,
+                        s.checkbox,
+                        assignData.selectedUsers.includes(user.id) && s.checkboxChecked,
                       ]}
                     >
                       {assignData.selectedUsers.includes(user.id) && (
@@ -540,26 +543,26 @@ export default function AdminChecklistsScreen() {
                       )}
                     </View>
                     <View>
-                      <Text style={styles.selectText}>{user.name}</Text>
-                      <Text style={styles.selectSubtext}>{user.email}</Text>
+                      <Text style={s.selectText}>{user.name}</Text>
+                      <Text style={s.selectSubtext}>{user.email}</Text>
                     </View>
                   </Pressable>
                 ))}
               </ScrollView>
 
-              <View style={styles.modalActions}>
+              <View style={s.modalActions}>
                 <GlassButton
                   variant="secondary"
                   title="Cancel"
                   onPress={() => setShowAssignModal(false)}
-                  style={styles.modalBtn}
+                  style={s.modalBtn}
                 />
                 <GlassButton
                   variant="primary"
                   title={saving ? 'Assigning...' : 'Assign'}
                   onPress={handleSubmitAssign}
                   loading={saving}
-                  style={styles.modalBtn}
+                  style={s.modalBtn}
                 />
               </View>
             </View>
@@ -573,33 +576,33 @@ export default function AdminChecklistsScreen() {
           transparent
           onRequestClose={() => setShowViewModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Assignments</Text>
+          <View style={s.modalOverlay}>
+            <View style={s.modalContent}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Assignments</Text>
                 <Pressable onPress={() => setShowViewModal(false)}>
                   <X size={24} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
               </View>
 
-              <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+              <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
                 {assignments.length === 0 ? (
-                  <Text style={styles.emptyText}>No assignments yet</Text>
+                  <Text style={s.emptyText}>No assignments yet</Text>
                 ) : (
                   assignments.map((assignment) => (
-                    <GlassCard key={assignment.id} style={styles.assignmentCard}>
-                      <Text style={styles.assignmentProject}>{assignment.project_name}</Text>
-                      <View style={styles.assignmentUsers}>
+                    <GlassCard key={assignment.id} style={s.assignmentCard}>
+                      <Text style={s.assignmentProject}>{assignment.project_name}</Text>
+                      <View style={s.assignmentUsers}>
                         {assignment.assigned_users?.map((user) => {
                           const completion = assignment.completions?.find(c => c.user_id === user.id);
                           const isComplete = completion?.progress?.completed === completion?.progress?.total;
 
                           return (
-                            <View key={user.id} style={styles.userRow}>
-                              <View style={styles.userInfo}>
-                                <Text style={styles.userName}>{user.name}</Text>
+                            <View key={user.id} style={s.userRow}>
+                              <View style={s.userInfo}>
+                                <Text style={s.userName}>{user.name}</Text>
                                 {completion && (
-                                  <Text style={styles.userProgress}>
+                                  <Text style={s.userProgress}>
                                     {completion.progress.completed}/{completion.progress.total}
                                   </Text>
                                 )}
@@ -620,7 +623,7 @@ export default function AdminChecklistsScreen() {
                 variant="secondary"
                 title="Close"
                 onPress={() => setShowViewModal(false)}
-                style={styles.closeBtn}
+                style={s.closeBtn}
               />
             </View>
           </View>
@@ -633,28 +636,28 @@ export default function AdminChecklistsScreen() {
           transparent
           onRequestClose={() => setShowDeleteModal(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.deleteModal}>
-              <View style={styles.deleteIcon}>
+          <View style={s.modalOverlay}>
+            <View style={s.deleteModal}>
+              <View style={s.deleteIcon}>
                 <Trash2 size={32} strokeWidth={1.5} color="#ef4444" />
               </View>
-              <Text style={styles.deleteTitle}>Delete Checklist?</Text>
-              <Text style={styles.deleteText}>
+              <Text style={s.deleteTitle}>Delete Checklist?</Text>
+              <Text style={s.deleteText}>
                 This will delete the checklist and all its assignments. This cannot be undone.
               </Text>
-              <View style={styles.deleteActions}>
+              <View style={s.deleteActions}>
                 <GlassButton
                   variant="secondary"
                   title="Cancel"
                   onPress={() => setShowDeleteModal(false)}
-                  style={styles.deleteBtn}
+                  style={s.deleteBtn}
                 />
                 <Pressable
                   onPress={confirmDelete}
-                  style={styles.deleteConfirmBtn}
+                  style={s.deleteConfirmBtn}
                   disabled={saving}
                 >
-                  <Text style={styles.deleteConfirmText}>
+                  <Text style={s.deleteConfirmText}>
                     {saving ? 'Deleting...' : 'Delete'}
                   </Text>
                 </Pressable>
@@ -667,7 +670,8 @@ export default function AdminChecklistsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   scrollView: { flex: 1 },
   scrollContent: { padding: spacing.lg, paddingBottom: 120 },
@@ -726,3 +730,4 @@ const styles = StyleSheet.create({
   deleteConfirmBtn: { flex: 1, backgroundColor: '#ef4444', borderRadius: borderRadius.lg, padding: spacing.md, alignItems: 'center', justifyContent: 'center' },
   deleteConfirmText: { fontSize: 16, fontWeight: '500', color: '#fff' },
 });
+}
