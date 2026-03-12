@@ -4049,7 +4049,22 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # ==================== COMBINED REPORT GENERATOR ====================
-
+def render_signature_html(sig, label="CP Signature"):
+    """Safely render a signature that could be a base64 string or a dict with paths/data."""
+    if not sig:
+        return ""
+    if isinstance(sig, str):
+        return f'<div style="margin-top:8px;"><strong>{label}:</strong><br><img src="data:image/png;base64,{sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+    if isinstance(sig, dict):
+        sig_data = sig.get("data") or sig.get("paths") or ""
+        signer = sig.get("signer_name", "")
+        if isinstance(sig_data, str) and sig_data:
+            full_label = f"{label} ({signer})" if signer else label
+            return f'<div style="margin-top:8px;"><strong>{full_label}:</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+        if signer:
+            return f'<p><strong>{label}:</strong> {signer} (signed)</p>'
+    return ""
+	
 async def generate_combined_report(project_id: str, date: str) -> str:
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     project_name = project.get("name", "Unknown") if project else "Unknown"
@@ -4115,17 +4130,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             obs_rows += f"<tr><td>{obs.get('description', '')}</td><td>{obs.get('responsible_party', '')}</td><td>{obs.get('remedy', '')}</td></tr>"
 
         # Signature HTML
-        cp_sig_html = ""
-        cp_sig = daily_jobsite.get("cp_signature")
-        if cp_sig:
-            cp_sig_html = f'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,{cp_sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
-        
-        super_sig_html = ""
-        super_sig = d.get("superintendent_signature")
-        if super_sig:
-            super_name = d.get("superintendent_name", "Superintendent")
-            super_sig_html = f'<div style="margin-top:8px;"><strong>Superintendent ({super_name}):</strong><br><img src="data:image/png;base64,{super_sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
-
+        cp_sig_html = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature")
+        super_sig_html = render_signature_html(d.get("superintendent_signature"), "Superintendent")
         visitors = d.get("visitors_deliveries", "")
         time_in = d.get("time_in", "")
         time_out = d.get("time_out", "")
@@ -4178,7 +4184,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         <table><tr><th>Name</th><th>Company</th><th>Signed</th></tr>
         {att_rows or '<tr><td colspan="3">No attendees</td></tr>'}</table>
         <p><strong>CP:</strong> {toolbox.get('cp_name', 'N/A')}</p>
-        {'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,' + toolbox.get('cp_signature') + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>' if toolbox.get('cp_signature') else ''}
+        {render_signature_html(toolbox.get('cp_signature'), 'CP Signature')}
         """
 
     # --- Pre-Shift Sign-In ---
@@ -4195,7 +4201,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         <table><tr><th>Name</th><th>Company</th><th>OSHA #</th><th>Injury</th><th>PPE</th></tr>
         {w_rows or '<tr><td colspan="5">No workers</td></tr>'}</table>
         <p><strong>CP:</strong> {preshift.get('cp_name', 'N/A')}</p>
-        {'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,' + preshift.get('cp_signature') + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>' if preshift.get('cp_signature') else ''}
+        {render_signature_html(preshift.get('cp_signature'), 'CP Signature')}
         """
 
     # --- Site Device Log ---
