@@ -4177,6 +4177,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         <p><strong>Topics:</strong> {topic_list or 'None'}</p>
         <table><tr><th>Name</th><th>Company</th><th>Signed</th></tr>
         {att_rows or '<tr><td colspan="3">No attendees</td></tr>'}</table>
+        <p><strong>CP:</strong> {toolbox.get('cp_name', 'N/A')}</p>
+        {'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,' + toolbox.get('cp_signature') + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>' if toolbox.get('cp_signature') else ''}
         """
 
     # --- Pre-Shift Sign-In ---
@@ -4193,17 +4195,97 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         <table><tr><th>Name</th><th>Company</th><th>OSHA #</th><th>Injury</th><th>PPE</th></tr>
         {w_rows or '<tr><td colspan="5">No workers</td></tr>'}</table>
         <p><strong>CP:</strong> {preshift.get('cp_name', 'N/A')}</p>
+        {'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,' + preshift.get('cp_signature') + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>' if preshift.get('cp_signature') else ''}
         """
 
     # --- Site Device Log ---
     site_html = ""
     if daily_log:
+        # Subcontractor cards
+        sub_cards_html = ""
+        for idx, card in enumerate(daily_log.get("subcontractor_cards") or []):
+            sub_cards_html += f"""
+            <tr>
+                <td>{card.get('company_name', 'N/A')}</td>
+                <td>{card.get('trade', 'N/A')}</td>
+                <td>{card.get('num_workers', 0)}</td>
+                <td>{card.get('hours', 'N/A')}</td>
+                <td>{card.get('description', 'N/A')}</td>
+            </tr>"""
+
+        # Safety checklist
+        safety_rows = ""
+        for item_key, item_val in (daily_log.get("safety_checklist") or {}).items():
+            status = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
+            checked_by = item_val.get("checked_by", "") if isinstance(item_val, dict) else ""
+            safety_rows += f"<tr><td>{item_key.replace('_', ' ').title()}</td><td>{status}</td><td>{checked_by}</td></tr>"
+
+        # Corrective actions
+        corrective = daily_log.get("corrective_actions", "")
+        corrective_na = daily_log.get("corrective_actions_na", False)
+        corrective_text = "N/A" if corrective_na else (corrective or "None recorded")
+
+        # Incident log
+        incident = daily_log.get("incident_log", "")
+        incident_na = daily_log.get("incident_log_na", False)
+        incident_text = "N/A" if incident_na else (incident or "None recorded")
+
+        # Work performed
+        work_performed = daily_log.get("work_performed", "")
+
+        # Signatures
+        super_sig_html = ""
+        super_sig = daily_log.get("superintendent_signature")
+        if super_sig and isinstance(super_sig, dict):
+            super_name = super_sig.get("signer_name", "Superintendent")
+            sig_data = super_sig.get("paths") or super_sig.get("data") or ""
+            if isinstance(sig_data, str) and sig_data:
+                super_sig_html = f'<div style="margin-top:12px;"><strong>Superintendent ({super_name}):</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+            elif super_name:
+                super_sig_html = f'<p><strong>Superintendent:</strong> {super_name} (signed)</p>'
+
+        cp_sig_html = ""
+        cp_sig = daily_log.get("competent_person_signature")
+        if cp_sig and isinstance(cp_sig, dict):
+            cp_name = cp_sig.get("signer_name", "Competent Person")
+            sig_data = cp_sig.get("paths") or cp_sig.get("data") or ""
+            if isinstance(sig_data, str) and sig_data:
+                cp_sig_html = f'<div style="margin-top:12px;"><strong>Competent Person ({cp_name}):</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+            elif cp_name:
+                cp_sig_html = f'<p><strong>Competent Person:</strong> {cp_name} (signed)</p>'
+
         site_html = f"""
         <h2>Site Superintendent Log</h2>
         <div class="info-box">
-            <strong>Weather:</strong> {daily_log.get('weather', 'N/A')}<br>
-            <strong>Workers:</strong> {daily_log.get('worker_count', 0)}<br>
+            <strong>Weather:</strong> {daily_log.get('weather', 'N/A')} {daily_log.get('weather_temp', '') or ''} {daily_log.get('weather_wind', '') or ''}<br>
+            <strong>Workers on Site:</strong> {daily_log.get('worker_count', 0)}<br>
             <strong>Notes:</strong> {daily_log.get('notes', 'N/A')}
+        </div>
+
+        {('<h3>Work Performed</h3><p>' + work_performed + '</p>') if work_performed else ''}
+
+        <h3>Subcontractor Activity</h3>
+        <table>
+            <tr><th>Company</th><th>Trade</th><th>Workers</th><th>Hours</th><th>Description</th></tr>
+            {sub_cards_html or '<tr><td colspan="5">No subcontractor activity recorded</td></tr>'}
+        </table>
+
+        <h3>Safety Checklist</h3>
+        <table>
+            <tr><th>Item</th><th>Status</th><th>Checked By</th></tr>
+            {safety_rows or '<tr><td colspan="3">No safety items recorded</td></tr>'}
+        </table>
+
+        <h3>Corrective Actions</h3>
+        <p>{corrective_text}</p>
+
+        <h3>Incident Log</h3>
+        <p>{incident_text}</p>
+
+        <div style="margin-top:20px;padding-top:16px;border-top:2px solid #e2e8f0;">
+            <h3>Signatures</h3>
+            {super_sig_html or '<p><strong>Superintendent:</strong> Not signed</p>'}
+            {cp_sig_html or '<p><strong>Competent Person:</strong> Not signed</p>'}
         </div>
         """
 
