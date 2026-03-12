@@ -497,6 +497,7 @@ export default function ReportsScreen() {
                         icon={<Download size={18} strokeWidth={1.5} color={colors.text.primary} />}
                         onPress={handleDownloadPdf}
                         style={s.previewBtn}
+                      />
                     </>
                   ) : (
                     <GlassCard style={s.emptyCard}>
