@@ -3406,8 +3406,8 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     if log.get("project_id"):
         project = await db.projects.find_one({"_id": to_query_id(log["project_id"])})
     
-    project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
-    project_address = project.get("address", "") if project else ""
+    project_name = project.get("name", "Unknown") if project else "Unknown"
+    project_address = project.get("address") or project.get("location") or project.get("name", "") if project else ""
     
     # Build simple HTML-based PDF
     log_date = log.get("date", "N/A")
