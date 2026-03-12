@@ -350,6 +350,7 @@ function buildStyles(colors, isDark) {
     fontSize: 48,
     fontWeight: '200',
     letterSpacing: -1,
+    color: colors.text.primary,
   },
   searchRow: {
     flexDirection: 'row',
