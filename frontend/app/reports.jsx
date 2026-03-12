@@ -490,7 +490,8 @@ export default function ReportsScreen() {
                     </GlassCard>
                   )}
                 </>
-
+            </>
+          )}
         </ScrollView>
 
         <FloatingNav />
