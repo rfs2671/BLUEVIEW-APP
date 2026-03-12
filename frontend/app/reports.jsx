@@ -341,7 +341,7 @@ export default function ReportsScreen() {
               {/* ════════════ TODAY'S PREVIEW TAB ════════════ */}
                 <>
                   {/* Date Navigator */}
-                  <View style={s.dateNav}>
+                  <GlassCard style={s.dateNav}>
                     <GlassButton
                       variant="icon"
                       icon={<ChevronLeft size={18} strokeWidth={1.5} color={colors.text.primary} />}
@@ -362,7 +362,7 @@ export default function ReportsScreen() {
                       onPress={() => navigateDate(1)}
                       disabled={isToday}
                     />
-                  </View>
+                  </GlassCard>
 
                   {previewLoading ? (
                     <View style={s.loadingBox}>
@@ -658,6 +658,7 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: spacing.md,
+      padding: spacing.sm,
     },
     dateCenter: {
       flexDirection: 'row',
