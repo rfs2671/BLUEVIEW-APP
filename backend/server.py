@@ -4473,9 +4473,6 @@ async def get_submitted_logs(
             "log_type": log_type,
         }
     }
-        "report_email_list": updated_project.get("report_email_list", []),
-        "report_send_time": updated_project.get("report_send_time", "18:00"),
-    }
 
 # ==================== REPORT EMAIL SCHEDULER ====================
 
