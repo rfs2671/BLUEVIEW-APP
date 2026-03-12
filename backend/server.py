@@ -4371,6 +4371,29 @@ async def get_combined_report(project_id: str, date: str, current_user = Depends
     from fastapi.responses import HTMLResponse
     html = await generate_combined_report(project_id, date)
     return HTMLResponse(content=html)
+@api_router.get("/reports/project/{project_id}/date/{date}/pdf")
+async def get_combined_report_pdf(project_id: str, date: str, current_user = Depends(get_current_user)):
+    """Generate combined daily report as downloadable PDF."""
+    from fastapi.responses import Response
+    html = await generate_combined_report(project_id, date)
+    try:
+        from weasyprint import HTML
+        pdf_bytes = HTML(string=html).write_pdf()
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+    
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = (project.get("name", "report") if project else "report").replace(" ", "_")
+    filename = f"Blueview_Report_{project_name}_{date}.pdf"
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @api_router.get("/reports/project/{project_id}/preview/{date}")
