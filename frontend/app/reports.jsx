@@ -196,27 +196,30 @@ export default function ReportsScreen() {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
     try {
-      const response = await apiClient.get(`/api/reports/project/${projectId}/date/${previewDate}`);
-      const html = response.data;
+      const response = await apiClient.get(
+        `/api/reports/project/${projectId}/date/${previewDate}/pdf`,
+        { responseType: 'blob' }
+      );
       if (Platform.OS === 'web') {
-        const printWindow = window.open('', '_blank');
-        if (printWindow) {
-          printWindow.document.write(html);
-          printWindow.document.close();
-          // Wait for content to load then trigger print (Save as PDF)
-          printWindow.onload = () => printWindow.print();
-          // Fallback if onload doesn't fire
-          setTimeout(() => printWindow.print(), 1000);
-        }
+        const blob = new Blob([response.data], { type: 'application/pdf' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Blueview_Report_${selectedProject.name?.replace(/\s+/g, '_') || 'report'}_${previewDate}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        toast.success('Downloaded', 'PDF saved to your downloads');
       } else {
-        toast.info('PDF', 'Open the report in browser and use Print > Save as PDF');
+        toast.info('PDF', 'PDF download is available on web');
       }
     } catch (err) {
       console.error('Failed to download PDF:', err);
       toast.error('Error', 'Could not generate PDF');
     }
   };
-
+  
   const navigateDate = (direction) => {
     const current = new Date(previewDate + 'T12:00:00');
     current.setDate(current.getDate() + direction);
