@@ -4083,20 +4083,26 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     if daily_jobsite:
         d = daily_jobsite.get("data", {})
         activities = d.get("activities", [])
-        act_rows = ""
+        act_sections = ""
         for act in activities:
             photos_html = ""
             for photo in (act.get("photos") or []):
                 if photo.get("base64"):
-                    photos_html += f'<img src="data:image/jpeg;base64,{photo["base64"]}" style="width:120px;height:90px;object-fit:cover;border-radius:4px;margin:2px;" />'
-            act_rows += f"""
+                    photos_html += f'<img src="data:image/jpeg;base64,{photo["base64"]}" style="width:140px;height:105px;object-fit:cover;border-radius:4px;margin:3px;" />'
+            act_sections += f"""
             <tr>
                 <td>{act.get('crew_id', '')}</td>
                 <td>{act.get('company', '')}</td>
                 <td>{act.get('num_workers', '')}</td>
                 <td>{act.get('work_description', '')}</td>
                 <td>{act.get('work_locations', '')}</td>
-                <td>{photos_html}</td>
+            </tr>"""
+            if photos_html:
+                act_sections += f"""
+            <tr>
+                <td colspan="5" style="background:#f8fafc;">
+                    <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px 0;">{photos_html}</div>
+                </td>
             </tr>"""
 
         equip = d.get("equipment_on_site", {})
@@ -4108,21 +4114,46 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         for obs in d.get("observations", []):
             obs_rows += f"<tr><td>{obs.get('description', '')}</td><td>{obs.get('responsible_party', '')}</td><td>{obs.get('remedy', '')}</td></tr>"
 
+        # Signature HTML
+        cp_sig_html = ""
+        cp_sig = daily_jobsite.get("cp_signature")
+        if cp_sig:
+            cp_sig_html = f'<div style="margin-top:8px;"><strong>CP Signature:</strong><br><img src="data:image/png;base64,{cp_sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+        
+        super_sig_html = ""
+        super_sig = d.get("superintendent_signature")
+        if super_sig:
+            super_name = d.get("superintendent_name", "Superintendent")
+            super_sig_html = f'<div style="margin-top:8px;"><strong>Superintendent ({super_name}):</strong><br><img src="data:image/png;base64,{super_sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+
+        visitors = d.get("visitors_deliveries", "")
+        time_in = d.get("time_in", "")
+        time_out = d.get("time_out", "")
+        areas = d.get("areas_visited", "")
+        wind = d.get("weather_wind", "")
+
         jobsite_html = f"""
         <h2>Daily Jobsite Log (NYC DOB 3301-02)</h2>
         <div class="info-box">
-            <strong>Weather:</strong> {d.get('weather', 'N/A')} {d.get('weather_temp', '')}<br>
-            <strong>Description:</strong> {d.get('general_description', 'N/A')}
+            <strong>Weather:</strong> {d.get('weather', 'N/A')} {d.get('weather_temp', '')}{(' — Wind: ' + wind) if wind else ''}<br>
+            <strong>Description:</strong> {d.get('general_description', 'N/A')}<br>
+            <strong>Time In:</strong> {time_in or 'N/A'} &nbsp;&nbsp; <strong>Time Out:</strong> {time_out or 'N/A'}<br>
+            <strong>Areas Visited:</strong> {areas or 'N/A'}
         </div>
         <h3>Activity Details</h3>
         <table>
-            <tr><th>Crew</th><th>Company</th><th>Workers</th><th>Description</th><th>Location</th><th>Photos</th></tr>
-            {act_rows or '<tr><td colspan="6">No activities</td></tr>'}
+            <tr><th>Crew</th><th>Company</th><th>Workers</th><th>Description</th><th>Location</th></tr>
+            {act_sections or '<tr><td colspan="5">No activities</td></tr>'}
         </table>
         <p><strong>Equipment:</strong> {equip_list or 'None'}</p>
         <p><strong>Inspected:</strong> {check_list or 'None'}</p>
         {'<h3>Safety Observations</h3><table><tr><th>Description</th><th>Responsible</th><th>Remedy</th></tr>' + obs_rows + '</table>' if obs_rows else ''}
-        <p><strong>CP:</strong> {daily_jobsite.get('cp_name', 'N/A')}</p>
+        {('<p><strong>Visitors / Deliveries:</strong> ' + visitors + '</p>') if visitors else ''}
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #e2e8f0;">
+            <p><strong>CP:</strong> {daily_jobsite.get('cp_name', 'N/A')}</p>
+            {cp_sig_html}
+            {super_sig_html}
+        </div>
         """
 
     # --- Toolbox Talk ---
@@ -4203,7 +4234,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         tr:hover {{ background: #f1f5f9; }}
         p {{ color: #475569; line-height: 1.6; margin: 8px 0; }}
         strong {{ color: #0A1929; }}
-        img {{ border-radius: 6px; border: 1px solid #e2e8f0; }}
+        img {{ border-radius: 6px; border: 1px solid #e2e8f0; max-width: 100%; }}
         .footer {{ background: #f8fafc; padding: 24px 40px; text-align: center; border-top: 1px solid #e2e8f0; }}
         .footer-text {{ font-size: 11px; color: #94a3b8; }}
         .footer-brand {{ font-size: 10px; color: #cbd5e1; letter-spacing: 3px; text-transform: uppercase; margin-top: 8px; }}
