@@ -548,9 +548,6 @@ function buildStyles(colors, isDark) {
     scrollContent: {
       padding: spacing.lg,
       paddingBottom: 120,
-      maxWidth: 720,
-      width: '100%',
-      alignSelf: 'center',
     },
     titleSection: {
       marginBottom: spacing.xl,
