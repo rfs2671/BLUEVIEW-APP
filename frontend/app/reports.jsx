@@ -658,7 +658,9 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       justifyContent: 'space-between',
       marginBottom: spacing.md,
-      padding: spacing.sm,
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.sm,
+      minHeight: 0,
     },
     dateCenter: {
       flexDirection: 'row',
