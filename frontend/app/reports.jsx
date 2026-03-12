@@ -325,25 +325,7 @@ export default function ReportsScreen() {
                 </View>
               )}
 
-              {/* Tabs */}
-              {isAdmin && (
-                <View style={s.tabRow}>
-                  {TABS.map((tab) => (
-                    <Pressable
-                      key={tab.key}
-                      style={[s.tab, activeTab === tab.key && s.tabActive]}
-                      onPress={() => setActiveTab(tab.key)}
-                    >
-                      <Text style={[s.tabText, activeTab === tab.key && s.tabTextActive]}>
-                        {tab.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-
               {/* ════════════ TODAY'S PREVIEW TAB ════════════ */}
-              {activeTab === 'today' && (
                 <>
                   {/* Date Navigator */}
                   <View style={s.dateNav}>
@@ -508,7 +490,6 @@ export default function ReportsScreen() {
                     </GlassCard>
                   )}
                 </>
-              )}
 
               {/* ════════════ HISTORY TAB ════════════ */}
               {activeTab === 'history' && (
