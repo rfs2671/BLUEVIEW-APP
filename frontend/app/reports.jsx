@@ -174,33 +174,46 @@ export default function ReportsScreen() {
   const handleViewFullReport = async () => {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
-    // Open the HTML report in browser
-    const baseUrl = apiClient.defaults.baseURL || '';
-    const url = `${baseUrl}/api/reports/project/${projectId}/date/${previewDate}`;
     try {
+      const response = await apiClient.get(`/api/reports/project/${projectId}/date/${previewDate}`);
+      const html = response.data;
       if (Platform.OS === 'web') {
-        window.open(url, '_blank');
+        const newWindow = window.open('', '_blank');
+        if (newWindow) {
+          newWindow.document.write(html);
+          newWindow.document.close();
+        }
       } else {
-        await Linking.openURL(url);
+        toast.success('Report Loaded', 'Use the browser to view full reports');
       }
     } catch (err) {
-      toast.error('Error', 'Could not open report');
+      console.error('Failed to load report:', err);
+      toast.error('Error', 'Could not load report');
     }
   };
 
-  const handleViewHistoryReport = async (date) => {
+  const handleDownloadPdf = async () => {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
-    const baseUrl = apiClient.defaults.baseURL || '';
-    const url = `${baseUrl}/api/reports/project/${projectId}/date/${date}`;
     try {
+      const response = await apiClient.get(`/api/reports/project/${projectId}/date/${previewDate}`);
+      const html = response.data;
       if (Platform.OS === 'web') {
-        window.open(url, '_blank');
+        const printWindow = window.open('', '_blank');
+        if (printWindow) {
+          printWindow.document.write(html);
+          printWindow.document.close();
+          // Wait for content to load then trigger print (Save as PDF)
+          printWindow.onload = () => printWindow.print();
+          // Fallback if onload doesn't fire
+          setTimeout(() => printWindow.print(), 1000);
+        }
       } else {
-        await Linking.openURL(url);
+        toast.info('PDF', 'Open the report in browser and use Print > Save as PDF');
       }
     } catch (err) {
-      toast.error('Error', 'Could not open report');
+      console.error('Failed to download PDF:', err);
+      toast.error('Error', 'Could not generate PDF');
     }
   };
 
@@ -478,6 +491,13 @@ export default function ReportsScreen() {
                         icon={<Eye size={18} strokeWidth={1.5} color={colors.text.primary} />}
                         onPress={handleViewFullReport}
                         style={s.previewBtn}
+                      />
+                      <GlassButton
+                        title="Download as PDF"
+                        icon={<Download size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={handleDownloadPdf}
+                        style={s.previewBtn}
+                      />e={s.previewBtn}
                       />
                     </>
                   ) : (
