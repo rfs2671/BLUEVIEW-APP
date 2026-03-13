@@ -224,9 +224,7 @@ export default function LogBooksScreen() {
         case 'scaffold': return scaffoldActive;
         case 'weekly': return !toolboxDoneThisWeek;
         case 'first_time': {
-          const hasUnsigned = (notifications?.unsigned_orientations || 0) > 0;
-          const notSubmittedToday = todayLogs['subcontractor_orientation']?.status !== 'submitted';
-          return hasUnsigned || notSubmittedToday;
+          return (notifications?.unsigned_orientations || 0) > 0;
         }
         default: return true;
       }
