@@ -51,7 +51,7 @@ export default function OshaLogBook() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [profile, checkins, existingLogs] = await Promise.all([
+      const [checkins, existingLogs] = await Promise.all([
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         // OSHA log is ongoing — get all entries for project (no date filter)
         logbooksAPI.getByProject(projectId, 'osha_log').catch(() => []),
