@@ -516,15 +516,17 @@ def create_token(user_id: str, email: str, role: str, site_mode: bool = False, p
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not credentials:
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), token: Optional[str] = Query(None)):
+    if not credentials and not token:
         logger.error("❌ AUTH FAIL: No credentials provided")
         raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    raw_token = token if token else credentials.credentials
     
     logger.info(f"✅ AUTH: Got token, attempting to decode...")
     
     try:
-        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         site_mode = payload.get("site_mode", False)
         project_id = payload.get("project_id")
@@ -4366,13 +4368,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     return html
 
 @api_router.get("/reports/project/{project_id}/date/{date}")
-async def get_combined_report(project_id: str, date: str, current_user = Depends(get_current_user)):
+async def get_combined_report(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user)):
     """Generate combined daily report for a project+date."""
     from fastapi.responses import HTMLResponse
     html = await generate_combined_report(project_id, date)
     return HTMLResponse(content=html)
 @api_router.get("/reports/project/{project_id}/date/{date}/pdf")
-async def get_combined_report_pdf(project_id: str, date: str, current_user = Depends(get_current_user)):
+async def get_combined_report_pdf(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user)):
     """Generate combined daily report as downloadable PDF."""
     from fastapi.responses import Response
     html = await generate_combined_report(project_id, date)
