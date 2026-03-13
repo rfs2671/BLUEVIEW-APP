@@ -64,9 +64,10 @@ export default function PreShiftSignIn() {
       ]);
 
       if (projectData) {
-        setProjectLocation(projectData.address || projectData.location || '');
+        setProjectLocation(projectData.address || projectData.location || projectData.name || '');
         // Pre-fill company from project data if available
-        if (projectData.company) setCompany(projectData.company);
+        const companyVal = projectData.company_name || projectData.company || '';
+        if (companyVal) setCompany(companyVal);
       }
 
       const checkinList = Array.isArray(checkins) ? checkins : [];
