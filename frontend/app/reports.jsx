@@ -175,16 +175,20 @@ export default function ReportsScreen() {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
     try {
-      const response = await apiClient.get(`/api/reports/project/${projectId}/date/${previewDate}`);
-      const html = response.data;
       if (Platform.OS === 'web') {
+        const response = await apiClient.get(`/api/reports/project/${projectId}/date/${previewDate}`);
+        const html = response.data;
         const newWindow = window.open('', '_blank');
         if (newWindow) {
           newWindow.document.write(html);
           newWindow.document.close();
         }
       } else {
-        toast.success('Report Loaded', 'Use the browser to view full reports');
+        // On mobile, open report URL in device browser
+        const baseURL = apiClient.defaults.baseURL || '';
+        const token = apiClient.defaults.headers?.common?.Authorization?.replace('Bearer ', '') || '';
+        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}?token=${token}`;
+        await Linking.openURL(url);
       }
     } catch (err) {
       console.error('Failed to load report:', err);
@@ -196,11 +200,11 @@ export default function ReportsScreen() {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
     try {
-      const response = await apiClient.get(
-        `/api/reports/project/${projectId}/date/${previewDate}/pdf`,
-        { responseType: 'blob' }
-      );
       if (Platform.OS === 'web') {
+        const response = await apiClient.get(
+          `/api/reports/project/${projectId}/date/${previewDate}/pdf`,
+          { responseType: 'blob' }
+        );
         const blob = new Blob([response.data], { type: 'application/pdf' });
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -212,7 +216,11 @@ export default function ReportsScreen() {
         window.URL.revokeObjectURL(url);
         toast.success('Downloaded', 'PDF saved to your downloads');
       } else {
-        toast.info('PDF', 'PDF download is available on web');
+        // On mobile, open PDF URL in device browser (triggers native PDF viewer / download)
+        const baseURL = apiClient.defaults.baseURL || '';
+        const token = apiClient.defaults.headers?.common?.Authorization?.replace('Bearer ', '') || '';
+        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}/pdf?token=${token}`;
+        await Linking.openURL(url);
       }
     } catch (err) {
       console.error('Failed to download PDF:', err);
