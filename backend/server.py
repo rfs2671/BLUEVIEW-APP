@@ -157,10 +157,10 @@ def format_phone(phone: str) -> str:
 # ==================== NYC BIN RESOLUTION ====================
  
 async def fetch_nyc_bin_from_address(address: str) -> dict:
-    \"\"\"
+    """
     Query NYC GeoSearch to resolve an address into a BIN + BBL.
     Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
-    \"\"\"
+    """
     result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
     if not address or len(address.strip()) < 5:
         return result
@@ -4705,7 +4705,7 @@ async def get_submitted_logs(
 # ==================== DOB COMPLIANCE ENGINE ====================
  
 async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
-    \"\"\"Query NYC Open Data Socrata endpoints for a BIN.\"\"\"
+    """Query NYC Open Data Socrata endpoints for a BIN."""
     all_records = []
     endpoints = [
         {
@@ -4755,7 +4755,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
  
  
 async def _translate_with_gemini(raw_record: dict) -> dict:
-    \"\"\"Send a raw DOB record to Gemini 2.0 Flash for AI translation.\"\"\"
+    """Send a raw DOB record to Gemini 2.0 Flash for AI translation."""
     import json as json_mod
  
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -4828,7 +4828,7 @@ async def _translate_with_gemini(raw_record: dict) -> dict:
  
  
 async def _send_critical_dob_alert(project: dict, dob_log: dict):
-    \"\"\"Send an immediate email for Critical severity DOB alerts.\"\"\"
+    """Send an immediate email for Critical severity DOB alerts."""
     if not RESEND_API_KEY:
         return
  
@@ -4856,7 +4856,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     next_action = dob_log.get("next_action", "Review immediately")
     record_type = dob_log.get("record_type", "alert").upper().replace("_", " ")
  
-    html = f\"\"\"
+    html = f"""
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: #dc2626; color: white; padding: 20px 24px; border-radius: 8px 8px 0 0;">
             <h1 style="margin: 0; font-size: 18px;">⚠️ CRITICAL DOB Alert</h1>
@@ -4877,7 +4877,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
         </div>
         <p style="text-align: center; font-size: 10px; color: #cbd5e1; margin-top: 16px; letter-spacing: 2px;">BLUEVIEW COMPLIANCE</p>
     </div>
-    \"\"\"
+    """
  
     try:
         resend.api_key = RESEND_API_KEY
@@ -4893,7 +4893,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
  
  
 async def run_dob_sync_for_project(project: dict) -> list:
-    \"\"\"Core sync logic: fetch, dedupe, translate, save, alert. Used by cron + manual.\"\"\"
+    """Core sync logic: fetch, dedupe, translate, save, alert. Used by cron + manual."""
     project_id = str(project["_id"])
     company_id = project.get("company_id", "")
     nyc_bin = project.get("nyc_bin", "")
@@ -4962,7 +4962,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
  
  
 async def nightly_dob_scan():
-    \"\"\"Cron job: runs daily at 04:00 AM EST.\"\"\"
+    """Cron job: runs daily at 04:00 AM EST."""
     logger.info("🏗️ DOB nightly scan starting...")
  
     projects = await db.projects.find({
@@ -4990,7 +4990,7 @@ async def nightly_dob_scan():
  
 @api_router.put("/projects/{project_id}/dob-config")
 async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depends(get_admin_user)):
-    \"\"\"Manual override: update BIN/BBL and toggle DOB tracking.\"\"\"
+    """Manual override: update BIN/BBL and toggle DOB tracking."""
     project = await db.projects.find_one({
         "_id": to_query_id(project_id),
         "is_deleted": {"$ne": True},
@@ -5036,7 +5036,7 @@ async def get_dob_logs(
     limit: int = Query(50, ge=1, le=200),
     skip: int = Query(0, ge=0),
 ):
-    \"\"\"Get translated DOB logs for a project, sorted by detected_at descending.\"\"\"
+    """Get translated DOB logs for a project, sorted by detected_at descending."""
     project = await db.projects.find_one({
         "_id": to_query_id(project_id),
         "is_deleted": {"$ne": True},
@@ -5069,7 +5069,7 @@ async def get_dob_logs(
  
 @api_router.post("/projects/{project_id}/dob-sync")
 async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
-    \"\"\"Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min.\"\"\"
+    """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
     project = await db.projects.find_one({
         "_id": to_query_id(project_id),
         "is_deleted": {"$ne": True},
