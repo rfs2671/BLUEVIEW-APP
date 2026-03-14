@@ -581,4 +581,27 @@ export const reportsAPI = {
   },
 };
 
+export const dobAPI = {
+  getLogs: async (projectId, params = {}) => {
+    const queryParts = [];
+    if (params.severity) queryParts.push(`severity=${params.severity}`);
+    if (params.record_type) queryParts.push(`record_type=${params.record_type}`);
+    if (params.limit) queryParts.push(`limit=${params.limit}`);
+    if (params.skip) queryParts.push(`skip=${params.skip}`);
+    const queryString = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
+    const response = await apiClient.get(`/api/projects/${projectId}/dob-logs${queryString}`);
+    return response.data;
+  },
+ 
+  updateConfig: async (projectId, config) => {
+    const response = await apiClient.put(`/api/projects/${projectId}/dob-config`, config);
+    return response.data;
+  },
+ 
+  syncNow: async (projectId) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/dob-sync`);
+    return response.data;
+  },
+};
+ 
 export default apiClient;
