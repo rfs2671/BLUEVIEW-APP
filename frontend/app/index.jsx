@@ -71,11 +71,19 @@ export default function DashboardScreen() {
   const [projects, setProjects] = useState([]);
   const [activeCheckIns, setActiveCheckIns] = useState([]);
 
+  const [layoutReady, setLayoutReady] = useState(false);
+  
   useEffect(() => {
+    const timer = requestAnimationFrame(() => setLayoutReady(true));
+    return () => cancelAnimationFrame(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!layoutReady) return;
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
     }
-  }, [isAuthenticated, authLoading]);
+  }, [layoutReady, isAuthenticated, authLoading]);
 
   useEffect(() => {
     if (isAuthenticated) {
