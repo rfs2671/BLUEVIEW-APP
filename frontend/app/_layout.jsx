@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { View, StyleSheet } from 'react-native';
@@ -13,9 +13,14 @@ function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
-    if (isLoading || !isAuthenticated) return;
+    setIsMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isMounted || isLoading || !isAuthenticated) return;
 
     const isSiteDevice = siteMode || user?.role === 'site_device';
     const isCp = user?.role === 'cp';
@@ -39,9 +44,9 @@ function RouteGuard() {
         router.replace('/logbooks');
       }
     }
-  }, [isLoading, isAuthenticated, user, siteMode, pathname]);
+  }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname]);
 
-  return null; // renders nothing — just a side-effect hook
+  return null;
 }
 
 function AppShell() {
