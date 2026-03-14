@@ -103,13 +103,15 @@ export default function DOBLogsScreen() {
   // Expanded log card
   const [expandedLogId, setExpandedLogId] = useState(null);
 
-  // Auth guard
+  // Auth guard - delay to ensure Root Layout has mounted
   useEffect(() => {
-    if (!authLoading && !isAuthenticated) {
-      router.replace('/login');
+    if (authLoading) return;
+    if (isAuthenticated === false) {
+      const timer = setTimeout(() => router.replace('/login'), 0);
+      return () => clearTimeout(timer);
     }
   }, [isAuthenticated, authLoading]);
-
+  
   // Fetch data
   useEffect(() => {
     if (isAuthenticated && projectId) {
