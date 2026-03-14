@@ -153,6 +153,52 @@ def format_phone(phone: str) -> str:
     if len(digits) == 10:
         return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
     return phone or ""
+ 
+# ==================== NYC BIN RESOLUTION ====================
+ 
+async def fetch_nyc_bin_from_address(address: str) -> dict:
+    \"\"\"
+    Query NYC GeoSearch to resolve an address into a BIN + BBL.
+    Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
+    \"\"\"
+    result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
+    if not address or len(address.strip()) < 5:
+        return result
+ 
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            resp = await http_client.get(
+                "https://geosearch.planning.nyc.gov/v1/search",
+                params={"text": address.strip(), "size": "1"},
+            )
+            if resp.status_code != 200:
+                logger.warning(f"GeoSearch returned {resp.status_code} for '{address}'")
+                return result
+ 
+            data = resp.json()
+            features = data.get("features", [])
+            if not features:
+                logger.info(f"GeoSearch: no features for '{address}'")
+                return result
+ 
+            props = features[0].get("properties", {})
+            pad_bin = props.get("pad_bin", "")
+            pad_bbl = props.get("pad_bbl", "")
+ 
+            # Validate BIN is 7 digits
+            if pad_bin and len(str(pad_bin)) == 7 and str(pad_bin).isdigit():
+                result["nyc_bin"] = str(pad_bin)
+                result["track_dob_status"] = True
+ 
+            if pad_bbl:
+                result["nyc_bbl"] = str(pad_bbl)
+ 
+            logger.info(f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']}, BBL={result['nyc_bbl']}")
+    except Exception as e:
+        logger.error(f"GeoSearch error for '{address}': {e}")
+ 
+    return result
+ 
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
@@ -216,6 +262,9 @@ class ProjectResponse(BaseModel):
     dropbox_folder: Optional[str] = None
     dropbox_enabled: bool = False
     created_at: Optional[datetime] = None
+    nyc_bin: Optional[str] = None
+    nyc_bbl: Optional[str] = None
+    track_dob_status: bool = False
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
 
@@ -388,6 +437,26 @@ class DailyLogResponse(BaseModel):
     locked_at: Optional[str] = None
     locked_by: Optional[str] = None
 
+# ==================== DOB COMPLIANCE MODELS ====================
+ 
+class DOBLogResponse(BaseModel):
+    id: str
+    project_id: str
+    company_id: str
+    nyc_bin: str
+    record_type: str  # "complaint", "violation", "job_status", "swo"
+    raw_dob_id: str
+    ai_summary: str
+    severity: str  # "Low", "Medium", "Critical"
+    next_action: str
+    detected_at: datetime
+ 
+ 
+class DOBConfigUpdate(BaseModel):
+    nyc_bin: Optional[str] = None
+    nyc_bbl: Optional[str] = None
+    track_dob_status: Optional[bool] = None
+ 
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
     project_id: str
@@ -1432,6 +1501,21 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["company_id"] = admin.get("company_id")
     project_dict["company_name"] = admin.get("company_name")
     project_dict["admin_id"] = admin.get("id")
+    
+    # ── DOB: Auto-resolve NYC BIN from address ──
+    project_dict["nyc_bin"] = None
+    project_dict["nyc_bbl"] = None
+    project_dict["track_dob_status"] = False
+ 
+    address_for_bin = project_dict.get("address") or project_dict.get("location") or ""
+    if address_for_bin:
+        bin_result = await fetch_nyc_bin_from_address(address_for_bin)
+        project_dict["nyc_bin"] = bin_result["nyc_bin"]
+        project_dict["nyc_bbl"] = bin_result["nyc_bbl"]
+        project_dict["track_dob_status"] = bin_result["track_dob_status"]
+        if bin_result["nyc_bin"]:
+            logger.info(f"Auto-resolved BIN {bin_result['nyc_bin']} for project '{project_dict.get('name')}'")
+    # ── END DOB ──
     
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
@@ -4618,6 +4702,413 @@ async def get_submitted_logs(
         }
     }
 
+# ==================== DOB COMPLIANCE ENGINE ====================
+ 
+async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
+    \"\"\"Query NYC Open Data Socrata endpoints for a BIN.\"\"\"
+    all_records = []
+    endpoints = [
+        {
+            "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
+            "params": {"bin": nyc_bin},
+            "record_type": "job_status",
+            "id_field": "job__",
+        },
+        {
+            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
+            "params": {"bin": nyc_bin},
+            "record_type": "violation",
+            "id_field": "isn_dob_bis_viol",
+        },
+    ]
+    # 311 complaints
+    endpoints.append({
+        "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
+        "params": {
+            "agency": "DOB",
+            "$where": f"incident_address like '%{project_address.split(',')[0].strip()[:30]}%'" if project_address else f"bin='{nyc_bin}'",
+            "$limit": "50",
+        },
+        "record_type": "complaint",
+        "id_field": "unique_key",
+    })
+ 
+    async with httpx.AsyncClient(timeout=20.0) as http_client:
+        for ep in endpoints:
+            try:
+                resp = await http_client.get(ep["url"], params=ep["params"])
+                if resp.status_code == 200:
+                    records = resp.json()
+                    for rec in records:
+                        rec["_record_type"] = ep["record_type"]
+                        rec["_id_field"] = ep["id_field"]
+                        if ep["record_type"] == "violation":
+                            desc = str(rec.get("violation_type", "")).lower()
+                            if "stop work" in desc or "swo" in desc:
+                                rec["_record_type"] = "swo"
+                        all_records.append(rec)
+                else:
+                    logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
+            except Exception as e:
+                logger.error(f"DOB API error {ep['url']}: {e}")
+    return all_records
+ 
+ 
+async def _translate_with_gemini(raw_record: dict) -> dict:
+    \"\"\"Send a raw DOB record to Gemini 2.0 Flash for AI translation.\"\"\"
+    import json as json_mod
+ 
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        return {
+            "severity": "Medium",
+            "summary": f"New {raw_record.get('_record_type', 'record')} detected (AI unavailable)",
+            "next_action": "Review the raw DOB record manually.",
+        }
+ 
+    clean_record = {k: v for k, v in raw_record.items() if not k.startswith("_")}
+    record_json = json_mod.dumps(clean_record, default=str)
+ 
+    prompt_text = (
+        f"Analyze this DOB record: {record_json}. "
+        "Return strictly valid JSON matching this schema: "
+        '{\"severity\": \"Low|Medium|Critical\", '
+        '\"summary\": \"1-sentence explanation of what happened\", '
+        '\"next_action\": \"Exact step the PM must take to resolve or mitigate this\"}'
+    )
+ 
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            resp = await http_client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "system_instruction": {
+                        "parts": [{
+                            "text": (
+                                "You are an expert NYC DOB Expediter and Construction Manager. "
+                                "Analyze this raw NYC Open Data JSON regarding a construction site. "
+                                "Translate the bureaucratic code into a highly concise, actionable "
+                                "summary for an Office Project Manager."
+                            )
+                        }]
+                    },
+                    "contents": [{"parts": [{"text": prompt_text}]}],
+                },
+            )
+            if resp.status_code != 200:
+                logger.error(f"Gemini DOB error: {resp.text}")
+                return {
+                    "severity": "Medium",
+                    "summary": f"New {raw_record.get('_record_type', 'record')} detected",
+                    "next_action": "Review the raw DOB record manually.",
+                }
+ 
+            result = resp.json()
+            text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text.startswith("```"):
+                text = text.split("\\n", 1)[1].rsplit("```", 1)[0].strip()
+ 
+            parsed = json_mod.loads(text)
+            if parsed.get("severity") not in ("Low", "Medium", "Critical"):
+                parsed["severity"] = "Medium"
+ 
+            return {
+                "severity": parsed.get("severity", "Medium"),
+                "summary": parsed.get("summary", "DOB record detected"),
+                "next_action": parsed.get("next_action", "Review manually"),
+            }
+    except Exception as e:
+        logger.error(f"Gemini DOB translation error: {e}")
+        return {
+            "severity": "Medium",
+            "summary": f"New {raw_record.get('_record_type', 'record')} detected",
+            "next_action": "Review the raw DOB record manually.",
+        }
+ 
+ 
+async def _send_critical_dob_alert(project: dict, dob_log: dict):
+    \"\"\"Send an immediate email for Critical severity DOB alerts.\"\"\"
+    if not RESEND_API_KEY:
+        return
+ 
+    company_id = project.get("company_id")
+    if not company_id:
+        return
+ 
+    recipients = []
+    admin_users = await db.users.find({
+        "company_id": company_id,
+        "role": {"$in": ["admin", "owner"]},
+        "is_deleted": {"$ne": True},
+    }).to_list(50)
+ 
+    for u in admin_users:
+        email = u.get("email")
+        if email:
+            recipients.append(email)
+ 
+    if not recipients:
+        return
+ 
+    project_name = project.get("name", "Unknown Project")
+    summary = dob_log.get("ai_summary", "No summary available")
+    next_action = dob_log.get("next_action", "Review immediately")
+    record_type = dob_log.get("record_type", "alert").upper().replace("_", " ")
+ 
+    html = f\"\"\"
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
+        <div style="background: #dc2626; color: white; padding: 20px 24px; border-radius: 8px 8px 0 0;">
+            <h1 style="margin: 0; font-size: 18px;">⚠️ CRITICAL DOB Alert</h1>
+            <p style="margin: 4px 0 0; opacity: 0.9; font-size: 14px;">{project_name}</p>
+        </div>
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
+            <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 16px; margin-bottom: 16px;">
+                <p style="margin: 0 0 4px; font-size: 11px; color: #991b1b; text-transform: uppercase; letter-spacing: 0.5px;">{record_type}</p>
+                <p style="margin: 0; font-size: 15px; color: #1f2937; font-weight: 500;">{summary}</p>
+            </div>
+            <div style="background: #f9fafb; border-radius: 6px; padding: 16px;">
+                <p style="margin: 0 0 4px; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px;">Required Action</p>
+                <p style="margin: 0; font-size: 14px; color: #1f2937;">{next_action}</p>
+            </div>
+            <p style="margin: 16px 0 0; font-size: 12px; color: #9ca3af;">
+                Detected at {dob_log.get('detected_at', datetime.now(timezone.utc)).strftime('%B %d, %Y %I:%M %p')} UTC
+            </p>
+        </div>
+        <p style="text-align: center; font-size: 10px; color: #cbd5e1; margin-top: 16px; letter-spacing: 2px;">BLUEVIEW COMPLIANCE</p>
+    </div>
+    \"\"\"
+ 
+    try:
+        resend.api_key = RESEND_API_KEY
+        resend.emails.send({
+            "from": "Blueview Alerts <alerts@blue-view.app>",
+            "to": recipients,
+            "subject": f"[CRITICAL] DOB Alert: {project_name} — {record_type}",
+            "html": html,
+        })
+        logger.info(f"Critical DOB alert sent for {project_name} to {len(recipients)} recipients")
+    except Exception as e:
+        logger.error(f"Failed to send critical DOB alert: {e}")
+ 
+ 
+async def run_dob_sync_for_project(project: dict) -> list:
+    \"\"\"Core sync logic: fetch, dedupe, translate, save, alert. Used by cron + manual.\"\"\"
+    project_id = str(project["_id"])
+    company_id = project.get("company_id", "")
+    nyc_bin = project.get("nyc_bin", "")
+    project_address = project.get("address", "")
+ 
+    if not nyc_bin:
+        return []
+ 
+    raw_records = await _query_dob_apis(nyc_bin, project_address)
+    if not raw_records:
+        return []
+ 
+    existing_ids = set()
+    existing_cursor = db.dob_logs.find({"project_id": project_id}, {"raw_dob_id": 1})
+    async for doc in existing_cursor:
+        existing_ids.add(doc.get("raw_dob_id"))
+ 
+    new_records = []
+    for rec in raw_records:
+        id_field = rec.get("_id_field", "unique_key")
+        raw_id = str(rec.get(id_field, ""))
+        if not raw_id or raw_id in existing_ids:
+            continue
+        new_records.append((raw_id, rec))
+ 
+    if not new_records:
+        logger.info(f"DOB sync for project {project_id}: no new records")
+        return []
+ 
+    inserted_logs = []
+    now = datetime.now(timezone.utc)
+ 
+    for raw_id, rec in new_records:
+        ai_result = await _translate_with_gemini(rec)
+ 
+        dob_log = {
+            "project_id": project_id,
+            "company_id": company_id,
+            "nyc_bin": nyc_bin,
+            "record_type": rec.get("_record_type", "unknown"),
+            "raw_dob_id": raw_id,
+            "ai_summary": ai_result["summary"],
+            "severity": ai_result["severity"],
+            "next_action": ai_result["next_action"],
+            "detected_at": now,
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }
+ 
+        try:
+            result = await db.dob_logs.insert_one(dob_log)
+            dob_log["id"] = str(result.inserted_id)
+            inserted_logs.append(dob_log)
+ 
+            if ai_result["severity"] == "Critical":
+                await _send_critical_dob_alert(project, dob_log)
+        except Exception as e:
+            logger.error(f"Failed to insert dob_log for raw_id={raw_id}: {e}")
+ 
+    logger.info(
+        f"DOB sync for project {project_id}: {len(inserted_logs)} new records "
+        f"({sum(1 for l in inserted_logs if l.get('severity') == 'Critical')} critical)"
+    )
+    return inserted_logs
+ 
+ 
+async def nightly_dob_scan():
+    \"\"\"Cron job: runs daily at 04:00 AM EST.\"\"\"
+    logger.info("🏗️ DOB nightly scan starting...")
+ 
+    projects = await db.projects.find({
+        "track_dob_status": True,
+        "nyc_bin": {"$ne": None, "$exists": True},
+        "is_deleted": {"$ne": True},
+    }).to_list(500)
+ 
+    if not projects:
+        logger.info("DOB nightly scan: no tracked projects")
+        return
+ 
+    total_new = 0
+    for project in projects:
+        try:
+            new_logs = await run_dob_sync_for_project(project)
+            total_new += len(new_logs)
+        except Exception as e:
+            logger.error(f"DOB scan error for project {project.get('name')}: {e}")
+ 
+    logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
+ 
+ 
+# ==================== DOB COMPLIANCE ENDPOINTS ====================
+ 
+@api_router.put("/projects/{project_id}/dob-config")
+async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depends(get_admin_user)):
+    \"\"\"Manual override: update BIN/BBL and toggle DOB tracking.\"\"\"
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+ 
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+ 
+    update_fields = {"updated_at": datetime.now(timezone.utc)}
+ 
+    if config.nyc_bin is not None:
+        clean_bin = config.nyc_bin.strip()
+        if clean_bin and (len(clean_bin) != 7 or not clean_bin.isdigit()):
+            raise HTTPException(status_code=422, detail="BIN must be exactly 7 digits")
+        update_fields["nyc_bin"] = clean_bin if clean_bin else None
+ 
+    if config.nyc_bbl is not None:
+        update_fields["nyc_bbl"] = config.nyc_bbl.strip() or None
+ 
+    if config.track_dob_status is not None:
+        update_fields["track_dob_status"] = config.track_dob_status
+ 
+    await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
+ 
+    updated = await db.projects.find_one({"_id": to_query_id(project_id)})
+    return {
+        "message": "DOB config updated",
+        "nyc_bin": updated.get("nyc_bin"),
+        "nyc_bbl": updated.get("nyc_bbl"),
+        "track_dob_status": updated.get("track_dob_status", False),
+    }
+ 
+ 
+@api_router.get("/projects/{project_id}/dob-logs")
+async def get_dob_logs(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    severity: Optional[str] = Query(None, description="Filter: Low, Medium, Critical"),
+    record_type: Optional[str] = Query(None, description="Filter: complaint, violation, job_status, swo"),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
+    \"\"\"Get translated DOB logs for a project, sorted by detected_at descending.\"\"\"
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+ 
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+ 
+    query = {"project_id": project_id, "is_deleted": {"$ne": True}}
+    if severity:
+        query["severity"] = severity
+    if record_type:
+        query["record_type"] = record_type
+ 
+    total = await db.dob_logs.count_documents(query)
+    logs = await db.dob_logs.find(query).sort("detected_at", -1).skip(skip).limit(limit).to_list(limit)
+ 
+    return {
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "nyc_bin": project.get("nyc_bin"),
+        "track_dob_status": project.get("track_dob_status", False),
+        "total": total,
+        "logs": [DOBLogResponse(**serialize_id(dict(log))) for log in logs],
+    }
+ 
+ 
+@api_router.post("/projects/{project_id}/dob-sync")
+async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
+    \"\"\"Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min.\"\"\"
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+ 
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+ 
+    if not project.get("nyc_bin"):
+        raise HTTPException(status_code=400, detail="No BIN configured. Update DOB config first.")
+ 
+    last_sync = await db.dob_logs.find_one(
+        {"project_id": project_id},
+        sort=[("detected_at", -1)],
+    )
+    if last_sync:
+        last_time = last_sync.get("detected_at")
+        if last_time and isinstance(last_time, datetime):
+            elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
+            if elapsed < 900:
+                remaining = int(900 - elapsed)
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Rate limited. Try again in {remaining // 60}m {remaining % 60}s.",
+                )
+ 
+    new_logs = await run_dob_sync_for_project(project)
+ 
+    return {
+        "message": f"DOB sync complete. {len(new_logs)} new record(s) found.",
+        "new_records": len(new_logs),
+        "critical_count": sum(1 for l in new_logs if l.get("severity") == "Critical"),
+        "logs": [DOBLogResponse(**{k: v for k, v in log.items() if k != "_id"}) for log in new_logs],
+    }
+ 
+ 
 # ==================== REPORT EMAIL SCHEDULER ====================
 
 async def check_and_send_reports():
@@ -4725,13 +5216,29 @@ async def startup_event():
         )
         logger.info("Upgraded existing admin to owner role")
     
-    # Start report email scheduler
+     # Start report email scheduler
     scheduler.add_job(
         check_and_send_reports,
         CronTrigger(minute='*'),
         id='report_email_scheduler',
         replace_existing=True,
     )
+    
+    # DOB compliance nightly scanner
+    scheduler.add_job(
+        nightly_dob_scan,
+        CronTrigger(hour=4, minute=0, timezone='America/New_York'),
+        id='dob_nightly_scan',
+        replace_existing=True,
+    )
+    
     scheduler.start()
     logger.info("📧 Report email scheduler started")
+    logger.info("🏗️ DOB nightly compliance scanner scheduled (04:00 AM EST)")
+    
+    # DOB collection indexes
+    await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
+    await db.dob_logs.create_index([("company_id", 1)])
+    await db.dob_logs.create_index("raw_dob_id", unique=True, sparse=True)
+    
     logger.info("Blueview API started successfully with Sync v2.0")
