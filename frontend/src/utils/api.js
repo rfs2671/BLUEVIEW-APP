@@ -604,4 +604,43 @@ export const dobAPI = {
   },
 };
  
+export const permitRenewalAPI = {
+  list: async (params = {}) => {
+    const query = new URLSearchParams();
+    if (params.project_id) query.set('project_id', params.project_id);
+    if (params.status) query.set('status', params.status);
+    if (params.limit) query.set('limit', String(params.limit));
+    if (params.skip) query.set('skip', String(params.skip));
+    const qs = query.toString();
+    const response = await apiClient.get(`/api/permit-renewals${qs ? `?${qs}` : ''}`);
+    return response.data;
+  },
+  getById: async (renewalId) => {
+    const response = await apiClient.get(`/api/permit-renewals/${renewalId}`);
+    return response.data;
+  },
+  checkEligibility: async (permitDobLogId, projectId) => {
+    const response = await apiClient.post('/api/permit-renewals/check-eligibility', {
+      permit_dob_log_id: permitDobLogId,
+      project_id: projectId,
+    });
+    return response.data;
+  },
+  prepare: async (permitDobLogId, projectId) => {
+    const response = await apiClient.post('/api/permit-renewals/prepare', {
+      permit_dob_log_id: permitDobLogId,
+      project_id: projectId,
+    });
+    return response.data;
+  },
+  getDashboardAlerts: async () => {
+    const response = await apiClient.get('/api/permit-renewals/dashboard-alerts');
+    return response.data;
+  },
+  getHealthStatus: async () => {
+    const response = await apiClient.get('/api/permit-renewals/health-status');
+    return response.data;
+  },
+};
+
 export default apiClient;
