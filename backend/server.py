@@ -5255,6 +5255,7 @@ async def nightly_dob_scan():
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
 	# Check for expiring permits across all projects
     await check_permit_expirations()
+	await nightly_renewal_scan(db)
 
 async def check_permit_expirations():
     """Check all tracked projects for permits expiring within 14 days. Called by nightly scan."""
@@ -5468,6 +5469,19 @@ async def check_and_send_reports():
             logger.info(f"Report sent for {project_name} to {len(email_list)} recipients")
         except Exception as e:
             logger.error(f"Failed to send report for {project_name}: {e}")
+
+# ==================== PERMIT RENEWAL MODULE ====================
+from permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
+
+create_permit_renewal_routes(
+    api_router=api_router,
+    db=db,
+    get_current_user=get_current_user,
+    get_admin_user=get_admin_user,
+    to_query_id=to_query_id,
+    get_user_company_id=get_user_company_id,
+    serialize_id=serialize_id,
+)
 
 # Include the router in the main app
 app.include_router(api_router)
