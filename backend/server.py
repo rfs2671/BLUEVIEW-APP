@@ -160,43 +160,55 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
     """
     Query NYC GeoSearch to resolve an address into a BIN + BBL.
     Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
+    Tries multiple endpoints as fallbacks.
     """
     result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
     if not address or len(address.strip()) < 5:
         return result
- 
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as http_client:
-            resp = await http_client.get(
-                "https://geosearch.planning.nyc.gov/v1/search",
-                params={"text": address.strip(), "size": "1"},
-            )
-            if resp.status_code != 200:
-                logger.warning(f"GeoSearch returned {resp.status_code} for '{address}'")
+
+    # Try multiple GeoSearch endpoints (primary + fallback)
+    endpoints = [
+        "https://geosearch.planninglabs.nyc/v2/search",
+        "https://geosearch.planning.nyc.gov/v2/search",
+    ]
+
+    for endpoint in endpoints:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as http_client:
+                resp = await http_client.get(
+                    endpoint,
+                    params={"text": address.strip(), "size": "1"},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"GeoSearch {endpoint} returned {resp.status_code} for '{address}'")
+                    continue
+
+                data = resp.json()
+                features = data.get("features", [])
+                if not features:
+                    logger.info(f"GeoSearch: no features for '{address}' via {endpoint}")
+                    continue
+
+                props = features[0].get("properties", {})
+                pad_bin = props.get("pad_bin", "") or props.get("addendum", {}).get("pad", {}).get("bin", "")
+                pad_bbl = props.get("pad_bbl", "") or props.get("addendum", {}).get("pad", {}).get("bbl", "")
+
+                # Validate BIN is 7 digits
+                if pad_bin and len(str(pad_bin)) == 7 and str(pad_bin).isdigit():
+                    result["nyc_bin"] = str(pad_bin)
+                    result["track_dob_status"] = True
+
+                if pad_bbl:
+                    result["nyc_bbl"] = str(pad_bbl)
+
+                logger.info(f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']}, BBL={result['nyc_bbl']} via {endpoint}")
                 return result
- 
-            data = resp.json()
-            features = data.get("features", [])
-            if not features:
-                logger.info(f"GeoSearch: no features for '{address}'")
-                return result
- 
-            props = features[0].get("properties", {})
-            pad_bin = props.get("pad_bin", "")
-            pad_bbl = props.get("pad_bbl", "")
- 
-            # Validate BIN is 7 digits
-            if pad_bin and len(str(pad_bin)) == 7 and str(pad_bin).isdigit():
-                result["nyc_bin"] = str(pad_bin)
-                result["track_dob_status"] = True
- 
-            if pad_bbl:
-                result["nyc_bbl"] = str(pad_bbl)
- 
-            logger.info(f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']}, BBL={result['nyc_bbl']}")
-    except Exception as e:
-        logger.error(f"GeoSearch error for '{address}': {e}")
- 
+
+        except Exception as e:
+            logger.warning(f"GeoSearch error for '{address}' via {endpoint}: {e}")
+            continue
+
+    logger.error(f"All GeoSearch endpoints failed for '{address}'")
     return result
  
 class UserCreate(BaseModel):
