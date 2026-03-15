@@ -4782,7 +4782,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"bin": nyc_bin, "$where": "violation_category NOT IN ('V*-DOB VIOLATION - DISMISSED', 'RESOLVED')", "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "50"},
             "record_type": "violation",
             "id_field": "number",
         })
@@ -4853,11 +4853,12 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     
     # ── 311 COMPLAINTS (erm2-nwe9) ──
     if clean_address or bin_usable:
+        upper_address = clean_address.upper() if clean_address else ""
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
             "params": {
                 "agency": "DOB",
-                "$where": f"incident_address like '%{clean_address}%'" if clean_address else f"bin='{nyc_bin}'",
+                "$where": f"upper(incident_address) like '%{upper_address}%'" if upper_address else f"bin='{nyc_bin}'",
                 "$limit": "50",
             },
             "record_type": "complaint",
@@ -5110,7 +5111,7 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         if ecb_num:
             return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
         if bin_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet?requestid=1&allbin={bin_val}"
+            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
 
     if record_type == "complaint":
         if bin_val:
