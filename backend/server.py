@@ -1599,14 +1599,25 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
 
 @api_router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
-    # Soft delete
-    result = await db.projects.update_one(
+    # Verify project exists and user has access
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+
+    # Hard delete all DOB logs for this project
+    dob_result = await db.dob_logs.delete_many({"project_id": project_id})
+    logger.info(f"Deleted {dob_result.deleted_count} dob_logs for project {project_id}")
+
+    # Soft delete the project
+    await db.projects.update_one(
         {"_id": to_query_id(project_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return {"message": "Project deleted successfully"}
+    return {"message": "Project deleted successfully", "dob_logs_deleted": dob_result.deleted_count}
 
 # ==================== PROJECT NFC TAGS ====================
 
