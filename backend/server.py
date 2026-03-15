@@ -4853,7 +4853,10 @@ async def _translate_with_gemini(raw_record: dict) -> dict:
  
     try:
         async with httpx.AsyncClient(timeout=30.0) as http_client:
-            json={
+            resp = await http_client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                headers={"Content-Type": "application/json"},
+                json={
                     "contents": [{
                         "parts": [{
                             "text": (
@@ -4864,7 +4867,8 @@ async def _translate_with_gemini(raw_record: dict) -> dict:
                             )
                         }]
                     }],
-			},
+                },
+            )
             if resp.status_code != 200:
                 logger.error(f"Gemini DOB error: {resp.text}")
                 return {
