@@ -5471,7 +5471,7 @@ async def check_and_send_reports():
             logger.error(f"Failed to send report for {project_name}: {e}")
 
 # ==================== PERMIT RENEWAL MODULE ====================
-from permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
+from backend.permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
 
 create_permit_renewal_routes(
     api_router=api_router,
