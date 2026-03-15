@@ -4719,19 +4719,17 @@ async def get_submitted_logs(
 async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     """Query NYC Open Data Socrata endpoints by BIN and/or address."""
     all_records = []
+    seen_ids = set()
     
     # Extract clean street address for address-based queries
     clean_address = ""
     if project_address:
-        # "3846 Bailey Avenue, The Bronx, NY, USA" -> "3846 Bailey Avenue"
         clean_address = project_address.split(",")[0].strip()[:40]
     
     # Determine if BIN is usable (not a placeholder like X000000)
     bin_usable = nyc_bin and not nyc_bin.endswith("000000")
     
-    endpoints = []
-    
-    # Parse house number and street name separately for field-level queries
+    # Parse house number and street name separately
     house_num = ""
     street_name = ""
     if clean_address:
@@ -4742,11 +4740,13 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
         else:
             street_name = clean_address.upper()
     
-    # Job filings - query by BIN and/or address
+    endpoints = []
+    
+    # ── JOB FILINGS (DOB NOW - w9ak-ipjd) ──
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"bin": nyc_bin},
+            "params": {"bin": nyc_bin, "$limit": "50"},
             "record_type": "job_status",
             "id_field": "job__",
         })
@@ -4758,22 +4758,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job__",
         })
     
-    # Violations - query by BIN and/or address
-    if bin_usable:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"bin": nyc_bin},
-            "record_type": "violation",
-            "id_field": "isn_dob_bis_viol",
-        })
-    if house_num and street_name:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
-            "record_type": "violation",
-            "id_field": "isn_dob_bis_viol",
-        })
-    # DOB NOW Safety Violations (newer system - most current violations)
+    # ── VIOLATIONS: DOB NOW Safety (855j-jady) - NEWEST, check first ──
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
@@ -4788,7 +4773,24 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "violation",
             "id_field": "number",
         })
-    # DOB ECB Violations (OATH/ECB adjudicated)
+    
+    # ── VIOLATIONS: BIS legacy (3h2n-5cm9) - older violations ──
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
+            "params": {"bin": nyc_bin, "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "isn_dob_bis_viol",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "isn_dob_bis_viol",
+        })
+    
+    # ── VIOLATIONS: ECB/OATH (6bgk-3dad) - adjudicated summonses ──
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
@@ -4796,31 +4798,8 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "violation",
             "id_field": "ecb_violation_number",
         })
-    if house_num and street_name:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
-            "params": {"$where": f"violation_number like '%{house_num}%' AND upper(violation_block_house_street) like '%{street_name}%'", "$limit": "50"},
-            "record_type": "violation",
-            "id_field": "ecb_violation_number",
-        })
     
-    # DOB Permit Issuance (BIS legacy)
-    if bin_usable:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"bin__": nyc_bin, "$limit": "50"},
-            "record_type": "permit",
-            "id_field": "job__",
-        })
-    if house_num and street_name:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
-            "record_type": "permit",
-            "id_field": "job__",
-        })
-    
-    # DOB NOW Build Approved Permits
+    # ── PERMITS: DOB NOW Build (rbx6-tga4) - NEWEST, check first ──
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
@@ -4836,18 +4815,35 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job_filing_number",
         })
     
-    # 311 complaints
-    endpoints.append({
-        "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
-        "params": {
-            "agency": "DOB",
-            "$where": f"incident_address like '%{clean_address}%'" if clean_address else f"bin='{nyc_bin}'" if bin_usable else "1=0",
-            "$limit": "50",
-        },
-        "record_type": "complaint",
-        "id_field": "unique_key",
-    })
- 
+    # ── PERMITS: BIS legacy (ipu4-2q9a) - older permits ──
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
+            "params": {"bin__": nyc_bin, "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job__",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
+            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job__",
+        })
+    
+    # ── 311 COMPLAINTS (erm2-nwe9) ──
+    if clean_address or bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
+            "params": {
+                "agency": "DOB",
+                "$where": f"incident_address like '%{clean_address}%'" if clean_address else f"bin='{nyc_bin}'",
+                "$limit": "50",
+            },
+            "record_type": "complaint",
+            "id_field": "unique_key",
+        })
+    
     async with httpx.AsyncClient(timeout=20.0) as http_client:
         for ep in endpoints:
             try:
@@ -4855,10 +4851,22 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                 if resp.status_code == 200:
                     records = resp.json()
                     for rec in records:
+                        # Build a dedup key from the record's unique ID
+                        id_field = ep["id_field"]
+                        raw_id = str(rec.get(id_field, ""))
+                        if not raw_id:
+                            continue
+                        
+                        # Skip if we already have this record from another endpoint
+                        dedup_key = f"{ep['record_type']}:{raw_id}"
+                        if dedup_key in seen_ids:
+                            continue
+                        seen_ids.add(dedup_key)
+                        
                         rec["_record_type"] = ep["record_type"]
-                        rec["_id_field"] = ep["id_field"]
+                        rec["_id_field"] = id_field
                         if ep["record_type"] == "violation":
-                            desc = str(rec.get("violation_type", "")).lower()
+                            desc = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
                             if "stop work" in desc or "swo" in desc:
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
@@ -4866,6 +4874,8 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                     logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
             except Exception as e:
                 logger.error(f"DOB API error {ep['url']}: {e}")
+    
+    logger.info(f"DOB query complete: {len(all_records)} unique records from {len(endpoints)} endpoints")
     return all_records
  
  
@@ -5012,8 +5022,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
     company_id = project.get("company_id", "")
     nyc_bin = project.get("nyc_bin", "")
     project_address = project.get("address", "")
- 
-    if not nyc_bin:
+
+    if not nyc_bin and not project_address:
         return []
  
     raw_records = await _query_dob_apis(nyc_bin, project_address)
