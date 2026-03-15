@@ -41,6 +41,7 @@ import {
   Radio,
   Clock,
   Shield,
+  FileCheck,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -57,6 +58,7 @@ import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
+import RenewalAlertCard from '../../src/components/RenewalAlertCard';
 
 // Site device API for project-specific devices
 const siteDevicesAPI = {
@@ -492,6 +494,7 @@ export default function ProjectDetailScreen() {
   const quickActions = [
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
+    { title: 'Permit Renewals', icon: FileCheck, path: `/project/${projectId}/permit-renewal`, color: '#22c55e' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
   ];
 
@@ -616,6 +619,8 @@ export default function ProjectDetailScreen() {
               );
             })}
           </View>
+
+          <RenewalAlertCard projectId={projectId} />
 
           {/* NFC Tags Section - Admin Only */}
           {isAdmin && (
