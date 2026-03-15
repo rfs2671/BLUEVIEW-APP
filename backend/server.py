@@ -4769,9 +4769,39 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"house__": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
+        })
+    # DOB NOW Safety Violations (newer system - most current violations)
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
+            "params": {"bin": nyc_bin, "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
+            "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "number",
+        })
+    # DOB ECB Violations (OATH/ECB adjudicated)
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
+            "params": {"bin": nyc_bin, "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "ecb_violation_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
+            "params": {"$where": f"violation_number like '%{house_num}%' AND upper(violation_block_house_street) like '%{street_name}%'", "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "ecb_violation_number",
         })
     
     # DOB Permit Issuance (BIS legacy)
