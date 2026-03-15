@@ -44,6 +44,7 @@ import {
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
+import RenewalAlertCard from '../../src/components/RenewalAlertCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
@@ -711,7 +712,10 @@ export default function ProjectDetailScreen() {
               )}
             </>
           )}
-
+          
+          {/* Permit Renewal Alert */}
+          <RenewalAlertCard projectId={projectId} />
+          
           {/* Dropbox Integration Section - Admin Only */}
           {isAdmin && (
             <>
