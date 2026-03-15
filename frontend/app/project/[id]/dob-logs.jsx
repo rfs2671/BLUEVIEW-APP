@@ -158,10 +158,27 @@ export default function DOBLogsScreen() {
   const violationCount = allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo').length;
   const complaintCount = allLogs.filter(l => l.record_type === 'complaint').length;
 
+  // Get the real date for a record (actual issue/complaint/filing date, not sync date)
+  const getRealDate = (log) => {
+    if (log.record_type === 'violation' || log.record_type === 'swo') return log.violation_date || log.detected_at;
+    if (log.record_type === 'complaint') return log.complaint_date || log.detected_at;
+    if (log.record_type === 'permit') return log.issuance_date || log.filing_date || log.detected_at;
+    return log.detected_at;
+  };
+
+  // Sort by real date descending (newest first)
+  const sortByDate = (logs) => [...logs].sort((a, b) => {
+    const da = new Date(getRealDate(a) || 0);
+    const db = new Date(getRealDate(b) || 0);
+    return db - da;
+  });
+
   // Filtered logs for display
-  const filteredLogs = activeTab === 'all' ? allLogs
+  const filteredLogs = sortByDate(
+    activeTab === 'all' ? allLogs
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
-    : allLogs.filter(l => l.record_type === activeTab);
+    : allLogs.filter(l => l.record_type === activeTab)
+  );
 
   const expiringPermits = allLogs.filter(l => {
     if (l.record_type !== 'permit') return false;
@@ -214,6 +231,9 @@ export default function DOBLogsScreen() {
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
               </View>
+              {(isExpired || isExpiring) && (
+                <GlassButton title="Renew Permit" icon={<FileCheck size={16} strokeWidth={1.5} color="#22c55e" />} onPress={() => router.push(`/project/${projectId}/permit-renewal`)} style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]} />
+              )}
               {log.dob_link && (
                 <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
