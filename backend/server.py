@@ -4732,6 +4732,20 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         },
+    # DOB Permit Issuance (BIS legacy permits)
+        {
+            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
+            "params": {"bin__": nyc_bin, "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job__",
+        },
+        # DOB NOW Build Approved Permits (current system)
+        {
+            "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
+            "params": {"bin__": nyc_bin, "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job_filing_number",
+        },
     ]
     # 311 complaints
     endpoints.append({
