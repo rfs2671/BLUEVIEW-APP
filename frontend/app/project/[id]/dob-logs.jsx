@@ -29,6 +29,7 @@ import {
   Gavel,
   MessageSquare,
   ExternalLink,
+  FileCheck,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -205,7 +206,7 @@ export default function DOBLogsScreen() {
               </View>
             </View>
             <View style={s.logHeaderRight}>
-              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {(log.issuance_date || log.filing_date || log.detected_at) && <Text style={s.dateText}>{formatDate(log.issuance_date || log.filing_date || log.detected_at)}</Text>}
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
@@ -313,7 +314,7 @@ export default function DOBLogsScreen() {
               </View>
             </View>
             <View style={s.logHeaderRight}>
-              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {(log.complaint_date || log.detected_at) && <Text style={s.dateText}>{formatDate(log.complaint_date || log.detected_at)}</Text>}
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
@@ -455,6 +456,14 @@ export default function DOBLogsScreen() {
             <Text style={s.syncButtonText}>{syncing ? 'Syncing with NYC DOB...' : 'Sync Now'}</Text>
           </Pressable>
           <Text style={s.totalText}>{total} total records</Text>
+
+          {/* Permit Renewals shortcut */}
+          {allLogs.some(l => l.record_type === 'permit' && (daysUntil(l.expiration_date) !== null && daysUntil(l.expiration_date) <= 30)) && (
+            <Pressable onPress={() => router.push(`/project/${projectId}/permit-renewal`)} style={[s.syncButton, { backgroundColor: '#22c55e', marginBottom: spacing.md }]}>
+              <FileCheck size={18} strokeWidth={1.5} color="#fff" />
+              <Text style={s.syncButtonText}>Permit Renewals</Text>
+            </Pressable>
+          )}
 
           {/* Log cards */}
           {filteredLogs.length === 0 ? (
