@@ -295,6 +295,13 @@ export default function DOBLogsScreen() {
           {isExpanded && (
             <View style={s.expandedSection}>
               <View style={s.divider} />
+              {log.complaint_number && <DetailRow label="Complaint #" value={log.complaint_number} colors={colors} />}
+              {log.complaint_type && <DetailRow label="Type" value={log.complaint_type} colors={colors} />}
+              {log.complaint_status && <DetailRow label="Status" value={log.complaint_status} colors={colors} />}
+              {log.complaint_date && <DetailRow label="Date Filed" value={formatDate(log.complaint_date)} colors={colors} />}
+              {log.closed_date && <DetailRow label="Closed" value={formatDate(log.closed_date)} colors={colors} />}
+              {log.incident_address && <DetailRow label="Address" value={log.incident_address} colors={colors} />}
+              {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
               <View style={s.nextActionBox}>
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
