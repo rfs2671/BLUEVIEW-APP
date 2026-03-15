@@ -4930,8 +4930,11 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         rec["_record_type"] = ep["record_type"]
                         rec["_id_field"] = id_field
                         if ep["record_type"] == "violation":
-                            desc = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
-                            if "stop work" in desc or "swo" in desc:
+                            vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
+                            vdesc = str(rec.get("description", "") or rec.get("violation_description", "")).lower()
+                            vnext = str(rec.get("infraction_codes", "") or "").lower()
+                            combined = f"{vtype} {vdesc} {vnext}"
+                            if "stop work" in combined or "swo" in combined or "partial stop" in combined:
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
                 else:
