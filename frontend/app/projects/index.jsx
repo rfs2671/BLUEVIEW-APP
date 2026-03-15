@@ -237,10 +237,14 @@ export default function ProjectsScreen() {
 
                   <Pressable
                     onPress={() => handleDeleteProject(getProjectId(project))}
-                    style={s.deleteButton}
+                    onHoverIn={(e) => { e.currentTarget._trashHover = true; e.currentTarget.setNativeProps && e.currentTarget.setNativeProps({}); }}
+                    onHoverOut={(e) => { e.currentTarget._trashHover = false; e.currentTarget.setNativeProps && e.currentTarget.setNativeProps({}); }}
+                    style={({ hovered }) => [s.deleteButton, hovered && { backgroundColor: 'rgba(239,68,68,0.1)', borderRadius: 20 }]}
                     hitSlop={10}
                   >
-                    <Trash2 size={16} strokeWidth={1.5} color={colors.text.muted} />
+                    {({ hovered }) => (
+                      <Trash2 size={16} strokeWidth={1.5} color={hovered ? '#ef4444' : colors.text.muted} />
+                    )}
                   </Pressable>
                 </GlassListItem>
               ))
