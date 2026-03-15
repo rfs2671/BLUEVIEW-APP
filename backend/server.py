@@ -482,6 +482,15 @@ class DOBLogResponse(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     dob_link: Optional[str] = None
+    # Complaint fields
+    complaint_number: Optional[str] = None
+    complaint_type: Optional[str] = None
+    complaint_status: Optional[str] = None
+    complaint_date: Optional[str] = None
+    closed_date: Optional[str] = None
+    incident_address: Optional[str] = None
+    status: Optional[str] = None
+    dob_link: Optional[str] = None
  
  
 class DOBConfigUpdate(BaseModel):
@@ -4993,8 +5002,21 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
     fields["status"] = rec.get("violation_category") or rec.get("certification_status") or rec.get("current_status") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
- 
- 
+
+
+def _extract_complaint_fields(rec: dict) -> dict:
+    """Extract structured complaint fields from raw 311/DOB record."""
+    fields = {}
+    fields["complaint_number"] = rec.get("complaint_number") or rec.get("unique_key") or None
+    fields["complaint_type"] = rec.get("complaint_type") or rec.get("descriptor") or None
+    fields["complaint_status"] = rec.get("status") or rec.get("resolution_description") or None
+    fields["complaint_date"] = rec.get("created_date") or rec.get("date_entered") or rec.get("complaint_date") or None
+    fields["closed_date"] = rec.get("closed_date") or rec.get("resolution_action_updated_date") or None
+    fields["description"] = rec.get("resolution_description") or rec.get("descriptor") or rec.get("complaint_type") or None
+    fields["incident_address"] = rec.get("incident_address") or rec.get("house_street") or None
+    return {k: str(v).strip() if v else None for k, v in fields.items()}
+
+
 def _determine_severity(rec: dict, record_type: str) -> str:
     """Determine severity: 'Action' (needs attention) or 'Good' (no action needed)."""
     if record_type == "permit":
@@ -5161,15 +5183,6 @@ async def run_dob_sync_for_project(project: dict) -> list:
         if not raw_id or raw_id in existing_ids:
             continue
         
-        # Skip resolved/dismissed violations
-        if rec.get("_record_type") in ("violation", "swo"):
-            cat = str(rec.get("violation_category", "") or "").upper()
-            status = str(rec.get("certification_status", "") or rec.get("current_status", "") or "").upper()
-            if any(word in cat for word in ["DISMISSED", "RESOLVED"]):
-                continue
-            if any(word in status for word in ["RESOLVED", "DISMISSED", "CLOSED", "CERTIFIED"]):
-                continue
-        
         new_records.append((raw_id, rec))
  
     if not new_records:
@@ -5192,6 +5205,8 @@ async def run_dob_sync_for_project(project: dict) -> list:
             extra_fields = _extract_permit_fields(rec)
         elif record_type in ("violation", "swo"):
             extra_fields = _extract_violation_fields(rec)
+        elif record_type == "complaint":
+            extra_fields = _extract_complaint_fields(rec)
  
         dob_log = {
             "project_id": project_id,
