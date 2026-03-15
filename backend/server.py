@@ -475,6 +475,7 @@ class DOBLogResponse(BaseModel):
     violation_type: Optional[str] = None
     violation_number: Optional[str] = None
     violation_category: Optional[str] = None
+    violation_date: Optional[str] = None
     penalty_amount: Optional[str] = None
     respondent: Optional[str] = None
     disposition_date: Optional[str] = None
@@ -4860,7 +4861,23 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job__",
         })
     
-    # ── 311 COMPLAINTS (erm2-nwe9) ──
+    # ── DOB COMPLAINTS RECEIVED (eabe-havv) - Primary DOB complaint source ──
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
+            "params": {"bin": nyc_bin, "$limit": "50", "$order": "date_entered DESC"},
+            "record_type": "complaint",
+            "id_field": "complaint_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/eabe-havv.json",
+            "params": {"house_number": house_num, "$where": f"upper(house_street) like '%{street_name}%'", "$limit": "50", "$order": "date_entered DESC"},
+            "record_type": "complaint",
+            "id_field": "complaint_number",
+        })
+
+    # ── 311 DOB COMPLAINTS (erm2-nwe9) - Supplemental 311 source ──
     if clean_address or bin_usable:
         upper_address = clean_address.upper() if clean_address else ""
         endpoints.append({
@@ -4995,6 +5012,7 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["violation_type"] = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or None
     fields["violation_number"] = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or None
     fields["violation_category"] = rec.get("violation_category") or rec.get("category") or None
+    fields["violation_date"] = rec.get("issue_date") or rec.get("violation_date") or rec.get("issued_date") or rec.get("infraction_date") or None
     fields["description"] = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or None
     fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
@@ -5005,15 +5023,21 @@ def _extract_violation_fields(rec: dict) -> dict:
 
 
 def _extract_complaint_fields(rec: dict) -> dict:
-    """Extract structured complaint fields from raw 311/DOB record."""
+    """Extract structured complaint fields from raw DOB (eabe-havv) and 311 (erm2-nwe9) records."""
     fields = {}
     fields["complaint_number"] = rec.get("complaint_number") or rec.get("unique_key") or None
-    fields["complaint_type"] = rec.get("complaint_type") or rec.get("descriptor") or None
-    fields["complaint_status"] = rec.get("status") or rec.get("resolution_description") or None
-    fields["complaint_date"] = rec.get("created_date") or rec.get("date_entered") or rec.get("complaint_date") or None
-    fields["closed_date"] = rec.get("closed_date") or rec.get("resolution_action_updated_date") or None
-    fields["description"] = rec.get("resolution_description") or rec.get("descriptor") or rec.get("complaint_type") or None
-    fields["incident_address"] = rec.get("incident_address") or rec.get("house_street") or None
+    # DOB dataset uses complaint_category; 311 uses complaint_type/descriptor
+    fields["complaint_type"] = rec.get("complaint_category") or rec.get("complaint_type") or rec.get("descriptor") or None
+    fields["complaint_status"] = rec.get("status") or rec.get("disposition_code") or rec.get("resolution_description") or None
+    # DOB dataset uses date_entered; 311 uses created_date
+    fields["complaint_date"] = rec.get("date_entered") or rec.get("created_date") or rec.get("complaint_date") or None
+    fields["closed_date"] = rec.get("disposition_date") or rec.get("closed_date") or rec.get("resolution_action_updated_date") or None
+    fields["description"] = rec.get("complaint_category") or rec.get("resolution_description") or rec.get("descriptor") or rec.get("complaint_type") or None
+    # DOB dataset has house_number + house_street; 311 has incident_address
+    house = rec.get("house_number") or ""
+    street = rec.get("house_street") or ""
+    dob_addr = f"{house} {street}".strip() if (house or street) else None
+    fields["incident_address"] = dob_addr or rec.get("incident_address") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
