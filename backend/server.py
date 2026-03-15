@@ -4964,7 +4964,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
  
  
 def _extract_permit_fields(rec: dict) -> dict:
-    \"\"\"Extract structured permit fields from raw DOB record.\"\"\"
+    """Extract structured permit fields from raw DOB record."""
     fields = {}
     # DOB NOW permits (rbx6-tga4)
     fields["permit_type"] = rec.get("permit_type") or rec.get("permittee_s_license_type") or None
@@ -4980,7 +4980,7 @@ def _extract_permit_fields(rec: dict) -> dict:
  
  
 def _extract_violation_fields(rec: dict) -> dict:
-    \"\"\"Extract structured violation fields from raw DOB record.\"\"\"
+    """Extract structured violation fields from raw DOB record."""
     fields = {}
     fields["violation_type"] = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or None
     fields["violation_number"] = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or None
@@ -4995,7 +4995,7 @@ def _extract_violation_fields(rec: dict) -> dict:
  
  
 def _determine_severity(rec: dict, record_type: str) -> str:
-    \"\"\"Determine severity from raw record fields without AI.\"\"\"
+    """Determine severity from raw record fields without AI."""
     if record_type == "permit":
         # Check if permit is expiring soon
         exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
@@ -5048,7 +5048,7 @@ def _determine_severity(rec: dict, record_type: str) -> str:
  
  
 def _generate_summary(rec: dict, record_type: str) -> str:
-    \"\"\"Generate a human-readable summary from raw fields without AI.\"\"\"
+    """Generate a human-readable summary from raw fields without AI."""
     if record_type == "permit":
         job = rec.get("job__") or rec.get("job_filing_number") or "Unknown"
         ptype = rec.get("work_type") or rec.get("permit_type") or rec.get("filing_reason") or "General"
@@ -5085,7 +5085,7 @@ def _generate_summary(rec: dict, record_type: str) -> str:
  
  
 def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
-    \"\"\"Generate next action from raw fields without AI.\"\"\"
+    """Generate next action from raw fields without AI."""
     if record_type == "permit":
         status = str(rec.get("permit_status") or rec.get("current_status") or "").lower()
         if "expired" in status:
@@ -5114,7 +5114,7 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
  
  
 def _build_dob_link(rec: dict, record_type: str) -> str:
-    \"\"\"Build a direct link to DOB BIS/NOW for this record.\"\"\"
+    """Build a direct link to DOB BIS/NOW for this record."""
     bin_val = rec.get("bin") or rec.get("bin__") or ""
     job_num = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or ""
  
@@ -5126,7 +5126,7 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
  
  
 async def run_dob_sync_for_project(project: dict) -> list:
-    \"\"\"Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.\"\"\"
+    """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual."""
     project_id = str(project["_id"])
     company_id = project.get("company_id", "")
     nyc_bin = project.get("nyc_bin", "")
@@ -5237,7 +5237,7 @@ async def nightly_dob_scan():
     await check_permit_expirations()
 
 async def check_permit_expirations():
-    \"\"\"Check all tracked projects for permits expiring within 14 days. Called by nightly scan.\"\"\"
+    """Check all tracked projects for permits expiring within 14 days. Called by nightly scan."""
     try:
         expiring_permits = []
         cutoff = datetime.now(timezone.utc) + timedelta(days=14)
