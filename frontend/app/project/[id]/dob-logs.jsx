@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   RefreshControl,
   Modal,
   Platform,
-  Alert,
+  Linking,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -24,13 +24,17 @@ import {
   Settings,
   ChevronDown,
   ChevronUp,
-  Search,
   X,
   Building2,
   FileText,
-  Zap,
   Clock,
   Filter,
+  ExternalLink,
+  Calendar,
+  Gavel,
+  FileCheck,
+  MessageSquare,
+  Briefcase,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
@@ -44,33 +48,47 @@ import { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 
-// Severity badge configuration
+// ── Severity config ──
 const SEVERITY_CONFIG = {
   Critical: { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.12)', border: 'rgba(239, 68, 68, 0.3)', icon: AlertTriangle },
   Medium: { color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.12)', border: 'rgba(245, 158, 11, 0.3)', icon: AlertCircle },
   Low: { color: '#22c55e', bg: 'rgba(34, 197, 94, 0.12)', border: 'rgba(34, 197, 94, 0.3)', icon: CheckCircle },
 };
 
-// Record type labels
-const RECORD_TYPE_LABELS = {
-  violation: 'Violation',
-  complaint: 'Complaint',
-  job_status: 'Job Filing',
-  swo: 'Stop Work Order',
-  permit: 'Permit',
+// ── Tab config ──
+const TABS = [
+  { key: 'all', label: 'All', icon: Shield },
+  { key: 'permit', label: 'Permits', icon: FileCheck },
+  { key: 'violation', label: 'Violations', icon: Gavel },
+  { key: 'complaint', label: 'Complaints', icon: MessageSquare },
+  { key: 'job_status', label: 'Filings', icon: Briefcase },
+];
+
+// ── Helpers ──
+const formatDate = (dateStr) => {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    // Try parsing YYYYMMDD format
+    if (typeof dateStr === 'string' && dateStr.length === 8 && !dateStr.includes('-')) {
+      const y = dateStr.slice(0, 4);
+      const m = dateStr.slice(4, 6);
+      const day = dateStr.slice(6, 8);
+      return `${m}/${day}/${y}`;
+    }
+    return String(dateStr).slice(0, 10);
+  }
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const RECORD_TYPE_COLORS = {
-  violation: '#ef4444',
-  complaint: '#f59e0b',
-  job_status: '#3b82f6',
-  swo: '#dc2626',
-  permit: '#22c55e',
+const daysUntil = (dateStr) => {
+  if (!dateStr) return null;
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    return Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
+  } catch { return null; }
 };
-
-// Filter options
-const SEVERITY_OPTIONS = ['All', 'Critical', 'Medium', 'Low'];
-const TYPE_OPTIONS = ['All', 'violation', 'complaint', 'job_status', 'swo', 'permit'];
 
 export default function DOBLogsScreen() {
   const { colors, isDark } = useTheme();
@@ -80,7 +98,6 @@ export default function DOBLogsScreen() {
   const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
-  // Data state
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -90,22 +107,17 @@ export default function DOBLogsScreen() {
   const [logs, setLogs] = useState([]);
   const [total, setTotal] = useState(0);
 
-  // Filter state
-  const [severityFilter, setSeverityFilter] = useState('All');
-  const [typeFilter, setTypeFilter] = useState('All');
-  const [showFilters, setShowFilters] = useState(false);
+  // Active tab
+  const [activeTab, setActiveTab] = useState('all');
+  const [expandedLogId, setExpandedLogId] = useState(null);
 
-  // Config modal state
+  // Config modal
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [configBin, setConfigBin] = useState('');
-  const [configBbl, setConfigBbl] = useState('');
   const [configTracking, setConfigTracking] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
 
-  // Expanded log card
-  const [expandedLogId, setExpandedLogId] = useState(null);
-
-  // Auth guard - delay to ensure Root Layout has mounted
+  // Auth guard
   useEffect(() => {
     if (authLoading) return;
     if (isAuthenticated === false) {
@@ -113,27 +125,35 @@ export default function DOBLogsScreen() {
       return () => clearTimeout(timer);
     }
   }, [isAuthenticated, authLoading]);
-  
-  // Fetch data
+
   useEffect(() => {
-    if (isAuthenticated && projectId) {
-      fetchLogs();
-    }
-  }, [isAuthenticated, projectId, severityFilter, typeFilter]);
+    if (isAuthenticated && projectId) fetchLogs();
+  }, [isAuthenticated, projectId, activeTab]);
 
   const fetchLogs = async () => {
     if (!loading) setRefreshing(true);
     try {
-      const params = {};
-      if (severityFilter !== 'All') params.severity = severityFilter;
-      if (typeFilter !== 'All') params.record_type = typeFilter;
-      params.limit = 100;
-
+      const params = { limit: 200 };
+      if (activeTab !== 'all') {
+        if (activeTab === 'violation') {
+          // Include swo in violation tab
+          // We'll filter client-side since API doesn't support OR
+        } else {
+          params.record_type = activeTab;
+        }
+      }
       const data = await dobAPI.getLogs(projectId, params);
       setProjectName(data.project_name || '');
       setNycBin(data.nyc_bin || '');
       setTrackDobStatus(data.track_dob_status || false);
-      setLogs(data.logs || []);
+
+      let filtered = data.logs || [];
+      if (activeTab === 'violation') {
+        filtered = filtered.filter(l => l.record_type === 'violation' || l.record_type === 'swo');
+      } else if (activeTab !== 'all') {
+        filtered = filtered.filter(l => l.record_type === activeTab);
+      }
+      setLogs(filtered);
       setTotal(data.total || 0);
     } catch (error) {
       console.error('Failed to fetch DOB logs:', error);
@@ -151,7 +171,7 @@ export default function DOBLogsScreen() {
       toast.success(
         'Sync Complete',
         result.new_records > 0
-          ? `${result.new_records} new record(s) found. ${result.critical_count} critical.`
+          ? `${result.new_records} new record(s) found.`
           : 'No new records found.'
       );
       await fetchLogs();
@@ -169,7 +189,6 @@ export default function DOBLogsScreen() {
 
   const openConfigModal = () => {
     setConfigBin(nycBin || '');
-    setConfigBbl('');
     setConfigTracking(trackDobStatus);
     setShowConfigModal(true);
   };
@@ -179,22 +198,15 @@ export default function DOBLogsScreen() {
     try {
       const config = {};
       if (configBin !== nycBin) config.nyc_bin = configBin;
-      if (configBbl.trim()) config.nyc_bbl = configBbl.trim();
       config.track_dob_status = configTracking;
-
       const result = await dobAPI.updateConfig(projectId, config);
       setNycBin(result.nyc_bin || '');
       setTrackDobStatus(result.track_dob_status || false);
       setShowConfigModal(false);
       toast.success('Saved', 'DOB configuration updated');
-
-      // Re-fetch if tracking was just enabled
-      if (result.track_dob_status) {
-        await fetchLogs();
-      }
+      if (result.track_dob_status) await fetchLogs();
     } catch (error) {
-      const detail = error.response?.data?.detail || 'Could not save config';
-      toast.error('Error', detail);
+      toast.error('Error', error.response?.data?.detail || 'Could not save config');
     } finally {
       setSavingConfig(false);
     }
@@ -205,24 +217,207 @@ export default function DOBLogsScreen() {
     router.replace('/login');
   };
 
-  // Compute stats from current logs
-  const criticalCount = logs.filter((l) => l.severity === 'Critical').length;
-  const mediumCount = logs.filter((l) => l.severity === 'Medium').length;
-  const lowCount = logs.filter((l) => l.severity === 'Low').length;
+  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
-  const formatDate = (dateStr) => {
-    if (!dateStr) return 'Unknown';
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+  // ── Stats ──
+  const allLogs = logs;
+  const permitCount = allLogs.filter(l => l.record_type === 'permit').length;
+  const violationCount = allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo').length;
+  const criticalCount = allLogs.filter(l => l.severity === 'Critical').length;
+  const expiringPermits = allLogs.filter(l => {
+    if (l.record_type !== 'permit') return false;
+    const days = daysUntil(l.expiration_date);
+    return days !== null && days >= 0 && days <= 30;
+  });
+
+  // ── Render permit card ──
+  const renderPermitCard = (log) => {
+    const isExpanded = expandedLogId === log.id;
+    const sevConfig = SEVERITY_CONFIG[log.severity] || SEVERITY_CONFIG.Medium;
+    const SevIcon = sevConfig.icon;
+    const days = daysUntil(log.expiration_date);
+    const isExpired = days !== null && days < 0;
+    const isExpiring = days !== null && days >= 0 && days <= 30;
+
+    return (
+      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
+        <GlassCard style={s.logCard}>
+          <View style={s.logHeader}>
+            <View style={s.logHeaderLeft}>
+              <View style={[s.severityBadge, { backgroundColor: sevConfig.bg, borderColor: sevConfig.border }]}>
+                <SevIcon size={12} strokeWidth={2} color={sevConfig.color} />
+                <Text style={[s.severityText, { color: sevConfig.color }]}>{log.severity}</Text>
+              </View>
+              <View style={[s.typeBadge, { borderColor: '#22c55e40' }]}>
+                <Text style={[s.typeText, { color: '#22c55e' }]}>Permit</Text>
+              </View>
+            </View>
+            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+          </View>
+
+          {/* Permit summary line */}
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+
+          {/* Expiration warning */}
+          {(isExpired || isExpiring) && (
+            <View style={[s.expirationBanner, isExpired ? s.expiredBanner : s.expiringBanner]}>
+              <AlertTriangle size={14} color={isExpired ? '#ef4444' : '#f59e0b'} />
+              <Text style={[s.expirationText, { color: isExpired ? '#ef4444' : '#f59e0b' }]}>
+                {isExpired ? `EXPIRED ${Math.abs(days)} days ago` : `Expires in ${days} day${days !== 1 ? 's' : ''}`}
+              </Text>
+            </View>
+          )}
+
+          {isExpanded && (
+            <View style={s.expandedSection}>
+              <View style={s.divider} />
+              {log.job_number && <DetailRow label="Job #" value={log.job_number} colors={colors} />}
+              {log.permit_type && <DetailRow label="Permit Type" value={log.permit_type} colors={colors} />}
+              {log.work_type && <DetailRow label="Work Type" value={log.work_type} colors={colors} />}
+              {log.permit_status && <DetailRow label="Status" value={log.permit_status} colors={colors} />}
+              {log.issuance_date && <DetailRow label="Issued" value={formatDate(log.issuance_date)} colors={colors} />}
+              {log.expiration_date && <DetailRow label="Expires" value={formatDate(log.expiration_date)} colors={colors} />}
+              {log.job_type && <DetailRow label="Job Type" value={log.job_type} colors={colors} />}
+              {log.filing_date && <DetailRow label="Filed" value={formatDate(log.filing_date)} colors={colors} />}
+
+              {/* Next Action */}
+              <View style={s.nextActionBox}>
+                <Text style={s.nextActionLabel}>REQUIRED ACTION</Text>
+                <Text style={s.nextActionText}>{log.next_action}</Text>
+              </View>
+
+              {/* DOB Link */}
+              {log.dob_link && (
+                <GlassButton
+                  title="View on DOB BIS"
+                  icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={() => Linking.openURL(log.dob_link)}
+                  style={s.dobLinkBtn}
+                />
+              )}
+
+              <Text style={s.detectedText}>Detected: {formatDate(log.detected_at)}</Text>
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    );
   };
 
-  const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+  // ── Render violation card ──
+  const renderViolationCard = (log) => {
+    const isExpanded = expandedLogId === log.id;
+    const sevConfig = SEVERITY_CONFIG[log.severity] || SEVERITY_CONFIG.Medium;
+    const SevIcon = sevConfig.icon;
+    const isSWO = log.record_type === 'swo';
+
+    return (
+      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
+        <GlassCard style={[s.logCard, isSWO && s.swoCard]}>
+          <View style={s.logHeader}>
+            <View style={s.logHeaderLeft}>
+              <View style={[s.severityBadge, { backgroundColor: sevConfig.bg, borderColor: sevConfig.border }]}>
+                <SevIcon size={12} strokeWidth={2} color={sevConfig.color} />
+                <Text style={[s.severityText, { color: sevConfig.color }]}>{log.severity}</Text>
+              </View>
+              <View style={[s.typeBadge, { borderColor: isSWO ? '#dc262640' : '#ef444440' }]}>
+                <Text style={[s.typeText, { color: isSWO ? '#dc2626' : '#ef4444' }]}>{isSWO ? 'Stop Work' : 'Violation'}</Text>
+              </View>
+            </View>
+            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+          </View>
+
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+
+          {isExpanded && (
+            <View style={s.expandedSection}>
+              <View style={s.divider} />
+              {log.violation_number && <DetailRow label="Violation #" value={log.violation_number} colors={colors} />}
+              {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
+              {log.violation_category && <DetailRow label="Category" value={log.violation_category} colors={colors} />}
+              {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
+              {log.penalty_amount && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
+              {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
+              {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
+              {log.disposition_comments && <DetailRow label="Comments" value={log.disposition_comments} colors={colors} />}
+              {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
+
+              <View style={s.nextActionBox}>
+                <Text style={s.nextActionLabel}>REQUIRED ACTION</Text>
+                <Text style={s.nextActionText}>{log.next_action}</Text>
+              </View>
+
+              {log.dob_link && (
+                <GlassButton
+                  title="View on DOB BIS"
+                  icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={() => Linking.openURL(log.dob_link)}
+                  style={s.dobLinkBtn}
+                />
+              )}
+
+              <Text style={s.detectedText}>Detected: {formatDate(log.detected_at)}</Text>
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    );
+  };
+
+  // ── Render generic card (complaints, job filings) ──
+  const renderGenericCard = (log) => {
+    const isExpanded = expandedLogId === log.id;
+    const sevConfig = SEVERITY_CONFIG[log.severity] || SEVERITY_CONFIG.Medium;
+    const SevIcon = sevConfig.icon;
+    const typeLabel = log.record_type === 'complaint' ? 'Complaint' : log.record_type === 'job_status' ? 'Job Filing' : log.record_type;
+    const typeColor = log.record_type === 'complaint' ? '#f59e0b' : '#3b82f6';
+
+    return (
+      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
+        <GlassCard style={s.logCard}>
+          <View style={s.logHeader}>
+            <View style={s.logHeaderLeft}>
+              <View style={[s.severityBadge, { backgroundColor: sevConfig.bg, borderColor: sevConfig.border }]}>
+                <SevIcon size={12} strokeWidth={2} color={sevConfig.color} />
+                <Text style={[s.severityText, { color: sevConfig.color }]}>{log.severity}</Text>
+              </View>
+              <View style={[s.typeBadge, { borderColor: typeColor + '40' }]}>
+                <Text style={[s.typeText, { color: typeColor }]}>{typeLabel}</Text>
+              </View>
+            </View>
+            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+          </View>
+
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+
+          {isExpanded && (
+            <View style={s.expandedSection}>
+              <View style={s.divider} />
+              <View style={s.nextActionBox}>
+                <Text style={s.nextActionLabel}>REQUIRED ACTION</Text>
+                <Text style={s.nextActionText}>{log.next_action}</Text>
+              </View>
+              {log.dob_link && (
+                <GlassButton
+                  title="View on DOB BIS"
+                  icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                  onPress={() => Linking.openURL(log.dob_link)}
+                  style={s.dobLinkBtn}
+                />
+              )}
+              <Text style={s.detectedText}>DOB Record ID: {log.raw_dob_id} • Detected: {formatDate(log.detected_at)}</Text>
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    );
+  };
+
+  const renderLogCard = (log) => {
+    if (log.record_type === 'permit') return renderPermitCard(log);
+    if (log.record_type === 'violation' || log.record_type === 'swo') return renderViolationCard(log);
+    return renderGenericCard(log);
+  };
 
   if (authLoading || loading) {
     return (
@@ -243,329 +438,139 @@ export default function DOBLogsScreen() {
         {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <GlassButton
-              variant="icon"
-              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => router.back()}
-            />
+            <GlassButton variant="icon" icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => router.back()} />
             <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
           <View style={s.headerRight}>
             {isAdmin && (
-              <GlassButton
-                variant="icon"
-                icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />}
-                onPress={openConfigModal}
-              />
+              <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />
             )}
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />
+            <GlassButton variant="icon" icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={handleLogout} />
           </View>
         </View>
+
+        {/* Tabs */}
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabRow}>
+          {TABS.map((tab) => {
+            const isActive = activeTab === tab.key;
+            const TabIcon = tab.icon;
+            return (
+              <Pressable key={tab.key} onPress={() => { setActiveTab(tab.key); setExpandedLogId(null); }} style={[s.tab, isActive && s.tabActive]}>
+                <TabIcon size={14} strokeWidth={1.5} color={isActive ? '#4ade80' : colors.text.muted} />
+                <Text style={[s.tabText, isActive && s.tabTextActive]}>{tab.label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
 
         <ScrollView
           style={s.scrollView}
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={fetchLogs}
-              tintColor={colors.text.muted}
-            />
-          }
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}
         >
-          {/* Title Section */}
+          {/* Title */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
             <Text style={s.titleText}>{projectName}</Text>
             {nycBin ? (
               <View style={s.binBadge}>
-                <Building2 size={14} strokeWidth={1.5} color={colors.text.muted} />
+                <Building2 size={13} strokeWidth={1.5} color="#4ade80" />
                 <Text style={s.binText}>BIN: {nycBin}</Text>
-                {trackDobStatus && (
-                  <View style={s.trackingDot} />
-                )}
               </View>
             ) : (
-              <Pressable onPress={openConfigModal} style={s.noBinBadge}>
-                <AlertCircle size={14} strokeWidth={1.5} color="#f59e0b" />
-                <Text style={s.noBinText}>No BIN configured — tap to set up</Text>
+              <Pressable onPress={isAdmin ? openConfigModal : undefined}>
+                <View style={s.noBinBadge}>
+                  <AlertTriangle size={13} strokeWidth={1.5} color="#f59e0b" />
+                  <Text style={s.noBinText}>No BIN — {isAdmin ? 'tap to configure' : 'address-based lookup active'}</Text>
+                </View>
               </Pressable>
             )}
           </View>
 
-          {/* Stats Row */}
+          {/* Stats row */}
           <View style={s.statsRow}>
-            <StatCard style={s.statCard}>
+            <GlassCard style={s.statBox}>
+              <Text style={s.statValue}>{permitCount}</Text>
+              <Text style={s.statLabel}>Permits</Text>
+            </GlassCard>
+            <GlassCard style={s.statBox}>
+              <Text style={[s.statValue, violationCount > 0 && { color: '#ef4444' }]}>{violationCount}</Text>
+              <Text style={s.statLabel}>Violations</Text>
+            </GlassCard>
+            <GlassCard style={s.statBox}>
+              <Text style={[s.statValue, criticalCount > 0 && { color: '#ef4444' }]}>{criticalCount}</Text>
               <Text style={s.statLabel}>Critical</Text>
-              <Text style={[s.statValue, { color: '#ef4444' }]}>{criticalCount}</Text>
-            </StatCard>
-            <StatCard style={s.statCard}>
-              <Text style={s.statLabel}>Medium</Text>
-              <Text style={[s.statValue, { color: '#f59e0b' }]}>{mediumCount}</Text>
-            </StatCard>
-            <StatCard style={s.statCard}>
-              <Text style={s.statLabel}>Low</Text>
-              <Text style={[s.statValue, { color: '#22c55e' }]}>{lowCount}</Text>
-            </StatCard>
-            <StatCard style={s.statCard}>
-              <Text style={s.statLabel}>Total</Text>
-              <Text style={[s.statValue, { color: colors.text.primary }]}>{total}</Text>
-            </StatCard>
+            </GlassCard>
           </View>
 
-          {/* Action Buttons */}
-          <View style={s.actionsRow}>
-            {isAdmin && (
-              <GlassButton
-                title={syncing ? 'Syncing...' : 'Sync Now'}
-                icon={
-                  syncing ? (
-                    <ActivityIndicator size="small" color={colors.text.primary} />
-                  ) : (
-                    <RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />
-                  )
-                }
-                onPress={handleSync}
-                disabled={syncing || !nycBin}
-                style={s.syncBtn}
-              />
-            )}
-            <GlassButton
-              title="Filters"
-              icon={<Filter size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={() => setShowFilters(!showFilters)}
-              style={s.filterBtn}
-            />
-          </View>
-
-          {/* Filters Panel */}
-          {showFilters && (
-            <GlassCard style={s.filterPanel}>
-              <Text style={s.filterTitle}>Severity</Text>
-              <View style={s.filterChips}>
-                {SEVERITY_OPTIONS.map((opt) => (
-                  <Pressable
-                    key={opt}
-                    onPress={() => setSeverityFilter(opt)}
-                    style={[
-                      s.chip,
-                      severityFilter === opt && s.chipActive,
-                      severityFilter === opt && opt !== 'All' && {
-                        backgroundColor: SEVERITY_CONFIG[opt]?.bg,
-                        borderColor: SEVERITY_CONFIG[opt]?.border,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        s.chipText,
-                        severityFilter === opt && s.chipTextActive,
-                        severityFilter === opt && opt !== 'All' && {
-                          color: SEVERITY_CONFIG[opt]?.color,
-                        },
-                      ]}
-                    >
-                      {opt}
-                    </Text>
-                  </Pressable>
-                ))}
+          {/* Expiring permits warning */}
+          {expiringPermits.length > 0 && (
+            <GlassCard style={s.expiringCard}>
+              <View style={s.expiringHeader}>
+                <AlertTriangle size={16} strokeWidth={2} color="#f59e0b" />
+                <Text style={s.expiringTitle}>{expiringPermits.length} Permit{expiringPermits.length > 1 ? 's' : ''} Expiring Soon</Text>
               </View>
-
-              <Text style={[s.filterTitle, { marginTop: spacing.md }]}>Record Type</Text>
-              <View style={s.filterChips}>
-                {TYPE_OPTIONS.map((opt) => (
-                  <Pressable
-                    key={opt}
-                    onPress={() => setTypeFilter(opt)}
-                    style={[
-                      s.chip,
-                      typeFilter === opt && s.chipActive,
-                    ]}
-                  >
-                    <Text style={[s.chipText, typeFilter === opt && s.chipTextActive]}>
-                      {opt === 'All' ? 'All' : RECORD_TYPE_LABELS[opt] || opt}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
+              {expiringPermits.map((p) => (
+                <Text key={p.id} style={s.expiringItem}>
+                  {p.job_number || 'Permit'}: expires {formatDate(p.expiration_date)} ({daysUntil(p.expiration_date)} days)
+                </Text>
+              ))}
             </GlassCard>
           )}
 
-          {/* Logs List */}
+          {/* Sync button */}
+          <View style={s.syncRow}>
+            <GlassButton
+              title={syncing ? 'Syncing...' : 'Sync Now'}
+              icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleSync}
+              loading={syncing}
+              disabled={syncing}
+              style={s.syncBtn}
+            />
+            <Text style={s.totalText}>{total} total records</Text>
+          </View>
+
+          {/* Log cards */}
           {logs.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyTitle}>
-                {!nycBin
-                  ? 'No BIN Configured'
-                  : !trackDobStatus
-                  ? 'DOB Tracking Disabled'
-                  : 'All Clear'}
+                {activeTab === 'all' ? 'No Records Found' : `No ${TABS.find(t => t.key === activeTab)?.label || 'Records'}`}
               </Text>
               <Text style={s.emptySubtitle}>
-                {!nycBin
-                  ? 'Configure a Building Identification Number to start monitoring.'
-                  : !trackDobStatus
-                  ? 'Enable DOB tracking in settings to monitor this project.'
-                  : 'No violations, complaints, or filings detected for this project.'}
+                {!trackDobStatus ? 'Enable DOB tracking to start monitoring.' : 'Hit Sync Now to check for new records.'}
               </Text>
-              {!nycBin && isAdmin && (
-                <GlassButton
-                  title="Configure BIN"
-                  icon={<Settings size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                  onPress={openConfigModal}
-                  style={{ marginTop: spacing.md }}
-                />
-              )}
             </GlassCard>
           ) : (
             <View style={s.logsList}>
-              {logs.map((log) => {
-                const sevConfig = SEVERITY_CONFIG[log.severity] || SEVERITY_CONFIG.Medium;
-                const SevIcon = sevConfig.icon;
-                const isExpanded = expandedLogId === log.id;
-                const typeColor = RECORD_TYPE_COLORS[log.record_type] || '#6b7280';
-
-                return (
-                  <Pressable
-                    key={log.id}
-                    onPress={() => setExpandedLogId(isExpanded ? null : log.id)}
-                  >
-                    <GlassCard style={s.logCard}>
-                      {/* Log Header */}
-                      <View style={s.logHeader}>
-                        <View style={s.logHeaderLeft}>
-                          <View style={[s.severityBadge, { backgroundColor: sevConfig.bg, borderColor: sevConfig.border }]}>
-                            <SevIcon size={12} strokeWidth={2} color={sevConfig.color} />
-                            <Text style={[s.severityText, { color: sevConfig.color }]}>
-                              {log.severity}
-                            </Text>
-                          </View>
-                          <View style={[s.typeBadge, { borderColor: typeColor + '40' }]}>
-                            <Text style={[s.typeText, { color: typeColor }]}>
-                              {RECORD_TYPE_LABELS[log.record_type] || log.record_type}
-                            </Text>
-                          </View>
-                        </View>
-                        {isExpanded ? (
-                          <ChevronUp size={16} strokeWidth={1.5} color={colors.text.muted} />
-                        ) : (
-                          <ChevronDown size={16} strokeWidth={1.5} color={colors.text.muted} />
-                        )}
-                      </View>
-
-                      {/* Summary */}
-                      <Text style={s.logSummary} numberOfLines={isExpanded ? undefined : 2}>
-                        {log.ai_summary}
-                      </Text>
-
-                      {/* Expanded Details */}
-                      {isExpanded && (
-                        <View style={s.logExpanded}>
-                          <View style={s.logDetailRow}>
-                            <Zap size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <View style={s.logDetailContent}>
-                              <Text style={s.logDetailLabel}>Required Action</Text>
-                              <Text style={s.logDetailValue}>{log.next_action}</Text>
-                            </View>
-                          </View>
-                          <View style={s.logDetailRow}>
-                            <Clock size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <View style={s.logDetailContent}>
-                              <Text style={s.logDetailLabel}>Detected</Text>
-                              <Text style={s.logDetailValue}>{formatDate(log.detected_at)}</Text>
-                            </View>
-                          </View>
-                          <View style={s.logDetailRow}>
-                            <FileText size={14} strokeWidth={1.5} color={colors.text.muted} />
-                            <View style={s.logDetailContent}>
-                              <Text style={s.logDetailLabel}>DOB Record ID</Text>
-                              <Text style={s.logDetailValue}>{log.raw_dob_id}</Text>
-                            </View>
-                          </View>
-                        </View>
-                      )}
-
-                      {/* Footer */}
-                      <Text style={s.logDate}>{formatDate(log.detected_at)}</Text>
-                    </GlassCard>
-                  </Pressable>
-                );
-              })}
+              {logs.map(renderLogCard)}
             </View>
           )}
         </ScrollView>
 
         {/* Config Modal */}
-        <Modal
-          visible={showConfigModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowConfigModal(false)}
-        >
+        <Modal visible={showConfigModal} transparent animationType="fade" onRequestClose={() => setShowConfigModal(false)}>
           <Pressable style={s.modalOverlay} onPress={() => setShowConfigModal(false)}>
             <Pressable style={s.modalContent} onPress={(e) => e.stopPropagation()}>
-              <GlassCard variant="modal" style={s.modalCard}>
+              <GlassCard style={s.modalCard}>
                 <View style={s.modalHeader}>
                   <Text style={s.modalTitle}>DOB Configuration</Text>
-                  <GlassButton
-                    variant="icon"
-                    icon={<X size={20} strokeWidth={1.5} color={colors.text.primary} />}
-                    onPress={() => setShowConfigModal(false)}
-                  />
+                  <GlassButton variant="icon" icon={<X size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => setShowConfigModal(false)} />
                 </View>
-
-                <Text style={s.modalDescription}>
-                  The Building Identification Number (BIN) is auto-detected from the project
-                  address. Override it here if the auto-detection was incorrect.
-                </Text>
-
-                <View style={s.configField}>
-                  <Text style={s.configLabel}>NYC BIN (7 digits)</Text>
-                  <GlassInput
-                    value={configBin}
-                    onChangeText={setConfigBin}
-                    placeholder="e.g. 1234567"
-                    keyboardType="number-pad"
-                    maxLength={7}
-                  />
+                <View style={s.modalForm}>
+                  <Text style={s.inputLabel}>Building Identification Number (BIN)</Text>
+                  <GlassInput value={configBin} onChangeText={setConfigBin} placeholder="7-digit BIN" keyboardType="number-pad" maxLength={7} />
+                  <Text style={s.inputHint}>Find your BIN at a810-bisweb.nyc.gov</Text>
                 </View>
-
-                <View style={s.configField}>
-                  <Text style={s.configLabel}>NYC BBL (optional)</Text>
-                  <GlassInput
-                    value={configBbl}
-                    onChangeText={setConfigBbl}
-                    placeholder="Borough-Block-Lot"
-                  />
-                </View>
-
-                <Pressable
-                  onPress={() => setConfigTracking(!configTracking)}
-                  style={s.toggleRow}
-                >
-                  <View style={s.toggleInfo}>
-                    <Text style={s.toggleLabel}>Enable DOB Tracking</Text>
-                    <Text style={s.toggleDescription}>
-                      Automatically scan NYC Open Data daily for violations and complaints
-                    </Text>
-                  </View>
-                  <View style={[s.toggleSwitch, configTracking && s.toggleSwitchActive]}>
-                    <View style={[s.toggleKnob, configTracking && s.toggleKnobActive]} />
+                <Pressable style={s.toggleRow} onPress={() => setConfigTracking(!configTracking)}>
+                  <Text style={s.toggleLabel}>Enable DOB Tracking</Text>
+                  <View style={[s.toggle, configTracking && s.toggleOn]}>
+                    <View style={[s.toggleDot, configTracking && s.toggleDotOn]} />
                   </View>
                 </Pressable>
-
-                <GlassButton
-                  title={savingConfig ? 'Saving...' : 'Save Configuration'}
-                  onPress={handleSaveConfig}
-                  disabled={savingConfig}
-                  style={s.saveBtn}
-                />
+                <GlassButton title={savingConfig ? 'Saving...' : 'Save Configuration'} onPress={handleSaveConfig} disabled={savingConfig} style={s.saveBtn} />
               </GlassCard>
             </Pressable>
           </Pressable>
@@ -577,364 +582,110 @@ export default function DOBLogsScreen() {
   );
 }
 
+// ── Detail row component ──
+const DetailRow = ({ label, value, colors }) => (
+  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 }}>
+    <Text style={{ fontSize: 12, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5, flex: 0.4 }}>{label}</Text>
+    <Text style={{ fontSize: 13, color: colors.text.primary, flex: 0.6, textAlign: 'right' }} numberOfLines={3}>{value}</Text>
+  </View>
+);
+
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
-    container: {
-      flex: 1,
-    },
-    loadingContainer: {
-      flex: 1,
-      justifyContent: 'center',
-      alignItems: 'center',
-      gap: spacing.md,
-    },
-    loadingText: {
-      ...typography.body,
-      color: colors.text.muted,
-    },
-    header: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
-      borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-    },
-    headerLeft: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.md,
-    },
-    headerRight: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
-    },
-    logoText: {
-      ...typography.label,
-      color: colors.text.muted,
-    },
-    scrollView: {
-      flex: 1,
-    },
-    scrollContent: {
-      padding: spacing.lg,
-      paddingBottom: 120,
-    },
+    container: { flex: 1 },
+    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: spacing.md },
+    loadingText: { ...typography.body, color: colors.text.muted },
+
+    // Header
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
+    headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+    headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    logoText: { ...typography.label, color: colors.text.muted },
+
+    // Tabs
+    tabScroll: { flexGrow: 0 },
+    tabRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+    tab: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.full, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: colors.glass.background },
+    tabActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: 'rgba(74,222,128,0.3)' },
+    tabText: { fontSize: 13, fontWeight: '500', color: colors.text.muted },
+    tabTextActive: { color: '#4ade80' },
+
+    scrollView: { flex: 1 },
+    scrollContent: { padding: spacing.lg, paddingBottom: 120 },
 
     // Title
-    titleSection: {
-      marginBottom: spacing.xl,
-    },
-    titleLabel: {
-      ...typography.label,
-      color: colors.text.muted,
-      marginBottom: spacing.sm,
-    },
-    titleText: {
-      fontSize: 32,
-      fontWeight: '200',
-      color: colors.text.primary,
-      letterSpacing: -0.5,
-      marginBottom: spacing.sm,
-    },
-    binBadge: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.xs,
-      marginTop: spacing.xs,
-    },
-    binText: {
-      fontSize: 13,
-      color: colors.text.muted,
-      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    },
-    trackingDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-      backgroundColor: '#22c55e',
-      marginLeft: spacing.xs,
-    },
-    noBinBadge: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.xs,
-      marginTop: spacing.xs,
-      paddingVertical: spacing.xs,
-    },
-    noBinText: {
-      fontSize: 13,
-      color: '#f59e0b',
-    },
+    titleSection: { marginBottom: spacing.lg },
+    titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
+    titleText: { fontSize: 28, fontWeight: '200', color: colors.text.primary, letterSpacing: -0.5, marginBottom: spacing.xs },
+    binBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+    binText: { fontSize: 13, color: colors.text.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+    noBinBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+    noBinText: { fontSize: 13, color: '#f59e0b' },
 
     // Stats
-    statsRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginBottom: spacing.lg,
-    },
-    statCard: {
-      flex: 1,
-      alignItems: 'center',
-      paddingVertical: spacing.md,
-    },
-    statLabel: {
-      fontSize: 10,
-      color: colors.text.muted,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      marginBottom: spacing.xs,
-    },
-    statValue: {
-      fontSize: 24,
-      fontWeight: '600',
-    },
+    statsRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
+    statBox: { flex: 1, alignItems: 'center', paddingVertical: spacing.md },
+    statValue: { fontSize: 24, fontWeight: '600', color: colors.text.primary, marginBottom: 2 },
+    statLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
 
-    // Actions
-    actionsRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      marginBottom: spacing.lg,
-    },
-    syncBtn: {
-      flex: 1,
-    },
-    filterBtn: {
-      flex: 0,
-    },
+    // Expiring permits
+    expiringCard: { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)', marginBottom: spacing.lg },
+    expiringHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+    expiringTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
+    expiringItem: { fontSize: 13, color: colors.text.secondary, marginLeft: spacing.lg + spacing.sm, marginBottom: 4 },
 
-    // Filters
-    filterPanel: {
-      marginBottom: spacing.lg,
-      padding: spacing.lg,
-    },
-    filterTitle: {
-      fontSize: 11,
-      color: colors.text.muted,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      marginBottom: spacing.sm,
-    },
-    filterChips: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: spacing.sm,
-    },
-    chip: {
-      paddingHorizontal: spacing.md,
-      paddingVertical: spacing.sm,
-      borderRadius: borderRadius.full,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      backgroundColor: 'transparent',
-    },
-    chipActive: {
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(59, 130, 246, 0.1)',
-      borderColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(59, 130, 246, 0.3)',
-    },
-    chipText: {
-      fontSize: 12,
-      color: colors.text.muted,
-    },
-    chipTextActive: {
-      color: colors.text.primary,
-      fontWeight: '500',
-    },
+    // Sync
+    syncRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.lg },
+    syncBtn: { flex: 0 },
+    totalText: { fontSize: 13, color: colors.text.muted },
 
-    // Empty state
-    emptyCard: {
-      alignItems: 'center',
-      paddingVertical: spacing.xxl,
-      gap: spacing.md,
-    },
-    emptyTitle: {
-      fontSize: 18,
-      fontWeight: '500',
-      color: colors.text.primary,
-    },
-    emptySubtitle: {
-      fontSize: 14,
-      color: colors.text.muted,
-      textAlign: 'center',
-      lineHeight: 20,
-      maxWidth: 300,
-    },
+    // Log cards
+    logsList: { gap: spacing.md },
+    logCard: { gap: spacing.sm },
+    swoCard: { borderColor: 'rgba(220, 38, 38, 0.3)', borderWidth: 1 },
+    logHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    logHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    severityBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.full, borderWidth: 1 },
+    severityText: { fontSize: 11, fontWeight: '600' },
+    typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.full, borderWidth: 1 },
+    typeText: { fontSize: 11, fontWeight: '500' },
+    logSummary: { fontSize: 14, color: colors.text.primary, lineHeight: 20 },
 
-    // Logs
-    logsList: {
-      gap: spacing.md,
-    },
-    logCard: {
-      padding: spacing.lg,
-    },
-    logHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: spacing.sm,
-    },
-    logHeaderLeft: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
-    },
-    severityBadge: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingHorizontal: spacing.sm,
-      paddingVertical: 3,
-      borderRadius: borderRadius.full,
-      borderWidth: 1,
-    },
-    severityText: {
-      fontSize: 11,
-      fontWeight: '600',
-      textTransform: 'uppercase',
-      letterSpacing: 0.3,
-    },
-    typeBadge: {
-      paddingHorizontal: spacing.sm,
-      paddingVertical: 3,
-      borderRadius: borderRadius.full,
-      borderWidth: 1,
-      backgroundColor: 'transparent',
-    },
-    typeText: {
-      fontSize: 11,
-      fontWeight: '500',
-    },
-    logSummary: {
-      fontSize: 15,
-      color: colors.text.primary,
-      lineHeight: 22,
-      marginBottom: spacing.sm,
-    },
-    logExpanded: {
-      marginTop: spacing.sm,
-      paddingTop: spacing.md,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-      gap: spacing.md,
-    },
-    logDetailRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: spacing.sm,
-    },
-    logDetailContent: {
-      flex: 1,
-    },
-    logDetailLabel: {
-      fontSize: 11,
-      color: colors.text.muted,
-      textTransform: 'uppercase',
-      letterSpacing: 0.3,
-      marginBottom: 2,
-    },
-    logDetailValue: {
-      fontSize: 14,
-      color: colors.text.primary,
-      lineHeight: 20,
-    },
-    logDate: {
-      fontSize: 12,
-      color: colors.text.subtle,
-      marginTop: spacing.xs,
-    },
+    // Expiration banners
+    expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
+    expiredBanner: { backgroundColor: 'rgba(239,68,68,0.1)' },
+    expiringBanner: { backgroundColor: 'rgba(245,158,11,0.1)' },
+    expirationText: { fontSize: 12, fontWeight: '600' },
+
+    // Expanded
+    expandedSection: { gap: spacing.xs },
+    divider: { height: 1, backgroundColor: colors.glass.border, marginVertical: spacing.sm },
+    nextActionBox: { backgroundColor: 'rgba(59,130,246,0.08)', borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm },
+    nextActionLabel: { fontSize: 10, fontWeight: '600', color: '#3b82f6', letterSpacing: 1, marginBottom: 4 },
+    nextActionText: { fontSize: 13, color: colors.text.primary, lineHeight: 18 },
+    dobLinkBtn: { marginTop: spacing.sm },
+    detectedText: { fontSize: 11, color: colors.text.subtle, marginTop: spacing.sm },
+
+    // Empty
+    emptyCard: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xl },
+    emptyTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
+    emptySubtitle: { fontSize: 14, color: colors.text.muted, textAlign: 'center' },
 
     // Modal
-    modalOverlay: {
-      flex: 1,
-      justifyContent: 'flex-end',
-      backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    },
-    modalContent: {
-      maxHeight: '80%',
-    },
-    modalCard: {
-      borderTopLeftRadius: borderRadius.xxl,
-      borderTopRightRadius: borderRadius.xxl,
-      borderBottomLeftRadius: 0,
-      borderBottomRightRadius: 0,
-      padding: spacing.xl,
-    },
-    modalHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      marginBottom: spacing.lg,
-    },
-    modalTitle: {
-      fontSize: 20,
-      fontWeight: '600',
-      color: colors.text.primary,
-    },
-    modalDescription: {
-      fontSize: 14,
-      color: colors.text.muted,
-      lineHeight: 20,
-      marginBottom: spacing.lg,
-    },
-    configField: {
-      marginBottom: spacing.lg,
-    },
-    configLabel: {
-      fontSize: 12,
-      color: colors.text.muted,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      marginBottom: spacing.sm,
-    },
-    toggleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingVertical: spacing.md,
-      marginBottom: spacing.lg,
-    },
-    toggleInfo: {
-      flex: 1,
-      marginRight: spacing.lg,
-    },
-    toggleLabel: {
-      fontSize: 15,
-      fontWeight: '500',
-      color: colors.text.primary,
-      marginBottom: 2,
-    },
-    toggleDescription: {
-      fontSize: 13,
-      color: colors.text.muted,
-      lineHeight: 18,
-    },
-    toggleSwitch: {
-      width: 48,
-      height: 28,
-      borderRadius: 14,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
-      justifyContent: 'center',
-      paddingHorizontal: 2,
-    },
-    toggleSwitchActive: {
-      backgroundColor: '#22c55e',
-    },
-    toggleKnob: {
-      width: 24,
-      height: 24,
-      borderRadius: 12,
-      backgroundColor: '#fff',
-      ...(Platform.OS === 'web'
-        ? { boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }
-        : { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.2, shadowRadius: 3 }),
-    },
-    toggleKnobActive: {
-      alignSelf: 'flex-end',
-    },
-    saveBtn: {
-      marginTop: spacing.sm,
-    },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+    modalContent: { width: '90%', maxWidth: 400 },
+    modalCard: { gap: spacing.md },
+    modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    modalTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
+    modalForm: { gap: spacing.sm },
+    inputLabel: { fontSize: 12, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+    inputHint: { fontSize: 11, color: colors.text.subtle },
+    toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.sm },
+    toggleLabel: { fontSize: 15, color: colors.text.primary },
+    toggle: { width: 48, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', paddingHorizontal: 3 },
+    toggleOn: { backgroundColor: 'rgba(74,222,128,0.3)' },
+    toggleDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.text.muted },
+    toggleDotOn: { backgroundColor: '#4ade80', alignSelf: 'flex-end' },
+    saveBtn: { marginTop: spacing.sm },
   });
 }
