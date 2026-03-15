@@ -228,6 +228,11 @@ export default function DOBLogsScreen() {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
     const isSWO = log.record_type === 'swo';
+    const violationType = (log.violation_type || '').toLowerCase();
+    const isPartialSWO = violationType.includes('partial');
+    const headerLabel = isSWO ? (isPartialSWO ? 'PARTIAL STOP WORK ORDER' : 'STOP WORK ORDER') : 'VIOLATION';
+    const headerColor = isSWO ? '#dc2626' : '#ef4444';
+    const displayDate = log.violation_date || log.detected_at;
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -235,12 +240,12 @@ export default function DOBLogsScreen() {
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
-              <View style={[s.typeBadge, { borderColor: isSWO ? '#dc262640' : '#ef444440' }]}>
-                <Text style={[s.typeText, { color: isSWO ? '#dc2626' : '#ef4444' }]}>{isSWO ? 'Stop Work' : 'Violation'}</Text>
+              <View style={[s.typeBadge, { borderColor: headerColor + '40' }]}>
+                <Text style={[s.typeText, { color: headerColor }]}>{headerLabel}</Text>
               </View>
             </View>
             <View style={s.logHeaderRight}>
-              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {displayDate && <Text style={s.dateText}>{formatDate(displayDate)}</Text>}
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
@@ -249,6 +254,7 @@ export default function DOBLogsScreen() {
             <View style={s.expandedSection}>
               <View style={s.divider} />
               {log.violation_number && <DetailRow label="Violation #" value={log.violation_number} colors={colors} />}
+              {log.violation_date && <DetailRow label="Issue Date" value={formatDate(log.violation_date)} colors={colors} />}
               {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
               {log.violation_category && <DetailRow label="Category" value={log.violation_category} colors={colors} />}
               {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
