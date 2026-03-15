@@ -4782,7 +4782,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$where": "violation_category NOT IN ('V*-DOB VIOLATION - DISMISSED', 'RESOLVED')", "$limit": "50"},
             "record_type": "violation",
             "id_field": "number",
         })
