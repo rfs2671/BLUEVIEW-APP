@@ -4731,6 +4731,17 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     
     endpoints = []
     
+    # Parse house number and street name separately for field-level queries
+    house_num = ""
+    street_name = ""
+    if clean_address:
+        parts = clean_address.split(" ", 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            house_num = parts[0]
+            street_name = parts[1].upper()
+        else:
+            street_name = clean_address.upper()
+    
     # Job filings - query by BIN and/or address
     if bin_usable:
         endpoints.append({
@@ -4739,10 +4750,10 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "job_status",
             "id_field": "job__",
         })
-    if clean_address:
+    if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"$where": f"house__ || ' ' || street_name like '%{clean_address}%'", "$limit": "50"},
+            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
             "record_type": "job_status",
             "id_field": "job__",
         })
@@ -4755,10 +4766,10 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
-    if clean_address:
+    if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
-            "params": {"$where": f"house__ || ' ' || street like '%{clean_address}%'", "$limit": "50"},
+            "params": {"house__": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
         })
