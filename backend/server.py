@@ -5101,9 +5101,34 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     """Build a direct link to DOB BIS/NOW for this record."""
     bin_val = rec.get("bin") or rec.get("bin__") or ""
     job_num = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or ""
- 
-    if job_num:
-        return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+    isn_val = rec.get("isn_dob_bis_viol") or rec.get("isn") or ""
+    ecb_num = rec.get("ecb_violation_number") or ""
+
+    if record_type in ("violation", "swo"):
+        if isn_val and bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/ActionViolationDisplayServlet?requestid=1&allbin={bin_val}&allinquirytype=BXS3OCV4&allisn={isn_val}"
+        if ecb_num:
+            return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
+        if bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet?requestid=1&allbin={bin_val}"
+
+    if record_type == "complaint":
+        if bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet?requestid=1&allbin={bin_val}"
+
+    if record_type == "permit":
+        filing_num = rec.get("job_filing_number") or ""
+        if filing_num:
+            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={filing_num.split('-')[0]}"
+        if job_num:
+            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+        if bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/PermitQueryByNumberServlet?requestid=1&allbin={bin_val}"
+
+    if record_type == "job_status":
+        if job_num:
+            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+
     if bin_val:
         return f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin_val}"
     return "https://a810-bisweb.nyc.gov/bisweb/bispi00.jsp"
