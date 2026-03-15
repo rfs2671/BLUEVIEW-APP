@@ -57,6 +57,7 @@ const RECORD_TYPE_LABELS = {
   complaint: 'Complaint',
   job_status: 'Job Filing',
   swo: 'Stop Work Order',
+  permit: 'Permit',
 };
 
 const RECORD_TYPE_COLORS = {
@@ -64,11 +65,12 @@ const RECORD_TYPE_COLORS = {
   complaint: '#f59e0b',
   job_status: '#3b82f6',
   swo: '#dc2626',
+  permit: '#22c55e',
 };
 
 // Filter options
 const SEVERITY_OPTIONS = ['All', 'Critical', 'Medium', 'Low'];
-const TYPE_OPTIONS = ['All', 'violation', 'complaint', 'job_status', 'swo'];
+const TYPE_OPTIONS = ['All', 'violation', 'complaint', 'job_status', 'swo', 'permit'];
 
 export default function DOBLogsScreen() {
   const { colors, isDark } = useTheme();
