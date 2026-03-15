@@ -8,6 +8,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -115,13 +116,33 @@ export default function ProjectsScreen() {
   };
 
   const handleDeleteProject = async (projectId) => {
-    try {
-      await projectsAPI.delete(projectId);
-      setProjects(projects.filter((p) => (p._id || p.id) !== projectId));
-      toast.success('Deleted', 'Project removed successfully');
-    } catch (error) {
-      console.error('Failed to delete project:', error);
-      toast.error('Delete Error', error.response?.data?.detail || 'Could not delete project');
+    const projectToDelete = projects.find(p => (p._id || p.id) === projectId);
+    const projectName = projectToDelete?.name || projectToDelete?.address || 'this project';
+
+    const doDelete = async () => {
+      try {
+        await projectsAPI.delete(projectId);
+        setProjects(projects.filter((p) => (p._id || p.id) !== projectId));
+        toast.success('Deleted', 'Project and all DOB logs removed');
+      } catch (error) {
+        console.error('Failed to delete project:', error);
+        toast.error('Delete Error', error.response?.data?.detail || 'Could not delete project');
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Delete "${projectName}"?\n\nThis will permanently remove the project and all its DOB compliance data. This cannot be undone.`)) {
+        doDelete();
+      }
+    } else {
+      Alert.alert(
+        'Delete Project?',
+        `This will permanently remove "${projectName}" and all its DOB compliance data. This cannot be undone.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: doDelete },
+        ]
+      );
     }
   };
 
