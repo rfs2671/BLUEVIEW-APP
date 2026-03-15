@@ -28,7 +28,6 @@ import {
   FileCheck,
   Gavel,
   MessageSquare,
-  Briefcase,
   ExternalLink,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -42,31 +41,19 @@ import { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 
-const SEVERITY_CONFIG = {
-  Action: { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.12)', border: 'rgba(239, 68, 68, 0.3)', icon: AlertTriangle, label: 'Action Needed' },
-  Good: { color: '#22c55e', bg: 'rgba(34, 197, 94, 0.12)', border: 'rgba(34, 197, 94, 0.3)', icon: CheckCircle, label: 'Good' },
-};
-
+// Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
-  if (severity === 'Action' || severity === 'Critical' || severity === 'Medium') return SEVERITY_CONFIG.Action;
-  return SEVERITY_CONFIG.Good;
+  if (severity === 'Action' || severity === 'Critical' || severity === 'Medium')
+    return { color: '#ef4444', label: 'Action Needed' };
+  return { color: '#22c55e', label: 'Good' };
 };
-
-const TABS = [
-  { key: 'all', label: 'All', icon: Shield },
-  { key: 'permit', label: 'Permits', icon: FileCheck },
-  { key: 'violation', label: 'Violations', icon: Gavel },
-  { key: 'complaint', label: 'Complaints', icon: MessageSquare },
-  { key: 'job_status', label: 'Filings', icon: Briefcase },
-];
 
 const formatDate = (dateStr) => {
   if (!dateStr) return '\u2014';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) {
-    if (typeof dateStr === 'string' && dateStr.length === 8 && !dateStr.includes('-')) {
+    if (typeof dateStr === 'string' && dateStr.length === 8 && !dateStr.includes('-'))
       return `${dateStr.slice(4, 6)}/${dateStr.slice(6, 8)}/${dateStr.slice(0, 4)}`;
-    }
     return String(dateStr).slice(0, 10);
   }
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -95,7 +82,7 @@ export default function DOBLogsScreen() {
   const [projectName, setProjectName] = useState('');
   const [nycBin, setNycBin] = useState('');
   const [trackDobStatus, setTrackDobStatus] = useState(false);
-  const [logs, setLogs] = useState([]);
+  const [allLogs, setAllLogs] = useState([]);
   const [total, setTotal] = useState(0);
   const [activeTab, setActiveTab] = useState('all');
   const [expandedLogId, setExpandedLogId] = useState(null);
@@ -114,24 +101,16 @@ export default function DOBLogsScreen() {
 
   useEffect(() => {
     if (isAuthenticated && projectId) fetchLogs();
-  }, [isAuthenticated, projectId, activeTab]);
+  }, [isAuthenticated, projectId]);
 
   const fetchLogs = async () => {
     if (!loading) setRefreshing(true);
     try {
-      const params = { limit: 200 };
-      const data = await dobAPI.getLogs(projectId, params);
+      const data = await dobAPI.getLogs(projectId, { limit: 200 });
       setProjectName(data.project_name || '');
       setNycBin(data.nyc_bin || '');
       setTrackDobStatus(data.track_dob_status || false);
-
-      let filtered = data.logs || [];
-      if (activeTab === 'violation') {
-        filtered = filtered.filter(l => l.record_type === 'violation' || l.record_type === 'swo');
-      } else if (activeTab !== 'all') {
-        filtered = filtered.filter(l => l.record_type === activeTab);
-      }
-      setLogs(filtered);
+      setAllLogs(data.logs || []);
       setTotal(data.total || 0);
     } catch (error) {
       console.error('Failed to fetch DOB logs:', error);
@@ -150,18 +129,11 @@ export default function DOBLogsScreen() {
       await fetchLogs();
     } catch (error) {
       const detail = error.response?.data?.detail || 'Sync failed';
-      if (error.response?.status === 429) {
-        toast.warning('Rate Limited', detail);
-      } else {
-        toast.error('Sync Error', detail);
-      }
-    } finally {
-      setSyncing(false);
-    }
+      error.response?.status === 429 ? toast.warning('Rate Limited', detail) : toast.error('Sync Error', detail);
+    } finally { setSyncing(false); }
   };
 
   const openConfigModal = () => { setConfigBin(nycBin || ''); setConfigTracking(trackDobStatus); setShowConfigModal(true); };
-
   const handleSaveConfig = async () => {
     setSavingConfig(true);
     try {
@@ -178,28 +150,29 @@ export default function DOBLogsScreen() {
       toast.error('Error', error.response?.data?.detail || 'Could not save config');
     } finally { setSavingConfig(false); }
   };
-
   const handleLogout = async () => { await logout(); router.replace('/login'); };
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
-  const actionCount = logs.filter(l => {
-    const sev = l.severity;
-    return sev === 'Action' || sev === 'Critical' || sev === 'Medium';
-  }).length;
-  const goodCount = logs.filter(l => {
-    const sev = l.severity;
-    return sev === 'Good' || sev === 'Low';
-  }).length;
-  const expiringPermits = logs.filter(l => {
+  // Counts from ALL logs (not filtered)
+  const permitCount = allLogs.filter(l => l.record_type === 'permit').length;
+  const violationCount = allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo').length;
+  const complaintCount = allLogs.filter(l => l.record_type === 'complaint').length;
+
+  // Filtered logs for display
+  const filteredLogs = activeTab === 'all' ? allLogs
+    : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
+    : allLogs.filter(l => l.record_type === activeTab);
+
+  const expiringPermits = allLogs.filter(l => {
     if (l.record_type !== 'permit') return false;
     const days = daysUntil(l.expiration_date);
     return days !== null && days >= 0 && days <= 30;
   });
 
+  // ── Card renderers ──
   const renderPermitCard = (log) => {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
-    const SevIcon = sevConfig.icon;
     const days = daysUntil(log.expiration_date);
     const isExpired = days !== null && days < 0;
     const isExpiring = days !== null && days >= 0 && days <= 30;
@@ -214,7 +187,10 @@ export default function DOBLogsScreen() {
                 <Text style={[s.typeText, { color: '#22c55e' }]}>Permit</Text>
               </View>
             </View>
-            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            <View style={s.logHeaderRight}>
+              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            </View>
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
           {(isExpired || isExpiring) && (
@@ -263,7 +239,10 @@ export default function DOBLogsScreen() {
                 <Text style={[s.typeText, { color: isSWO ? '#dc2626' : '#ef4444' }]}>{isSWO ? 'Stop Work' : 'Violation'}</Text>
               </View>
             </View>
-            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            <View style={s.logHeaderRight}>
+              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            </View>
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
           {isExpanded && (
@@ -276,6 +255,7 @@ export default function DOBLogsScreen() {
               {log.penalty_amount && <DetailRow label="Penalty" value={`$${log.penalty_amount}`} colors={colors} />}
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
+              {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
               <View style={s.nextActionBox}>
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
@@ -306,7 +286,10 @@ export default function DOBLogsScreen() {
                 <Text style={[s.typeText, { color: typeColor }]}>{typeLabel}</Text>
               </View>
             </View>
-            {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            <View style={s.logHeaderRight}>
+              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            </View>
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
           {isExpanded && (
@@ -319,7 +302,7 @@ export default function DOBLogsScreen() {
               {log.dob_link && (
                 <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
-              <Text style={s.detectedText}>ID: {log.raw_dob_id} • {formatDate(log.detected_at)}</Text>
+              <Text style={s.detectedText}>ID: {log.raw_dob_id}</Text>
             </View>
           )}
         </GlassCard>
@@ -349,6 +332,7 @@ export default function DOBLogsScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
+        {/* Header */}
         <View style={s.header}>
           <View style={s.headerLeft}>
             <GlassButton variant="icon" icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => router.back()} />
@@ -360,20 +344,8 @@ export default function DOBLogsScreen() {
           </View>
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll} contentContainerStyle={s.tabRow}>
-          {TABS.map((tab) => {
-            const isActive = activeTab === tab.key;
-            const TabIcon = tab.icon;
-            return (
-              <Pressable key={tab.key} onPress={() => { setActiveTab(tab.key); setExpandedLogId(null); }} style={[s.tab, isActive && s.tabActive]}>
-                <TabIcon size={14} strokeWidth={1.5} color={isActive ? '#4ade80' : colors.text.muted} />
-                <Text style={[s.tabText, isActive && s.tabTextActive]}>{tab.label}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-
         <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}>
+          {/* Title */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
             <Text style={s.titleText}>{projectName}</Text>
@@ -392,21 +364,44 @@ export default function DOBLogsScreen() {
             )}
           </View>
 
-          <View style={s.statsRow}>
-            <GlassCard style={s.statBox}>
-              <Text style={[s.statValue, actionCount > 0 && { color: '#ef4444' }]}>{actionCount}</Text>
-              <Text style={s.statLabel}>Action Needed</Text>
-            </GlassCard>
-            <GlassCard style={s.statBox}>
-              <Text style={[s.statValue, { color: '#22c55e' }]}>{goodCount}</Text>
-              <Text style={s.statLabel}>Good</Text>
-            </GlassCard>
-            <GlassCard style={s.statBox}>
-              <Text style={s.statValue}>{logs.length}</Text>
-              <Text style={s.statLabel}>Total</Text>
-            </GlassCard>
+          {/* ── 3 Glass Nav Cards (Permits, Violations, Complaints) ── */}
+          <View style={s.navRow}>
+            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
+              <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
+                <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? '#4ade80' : colors.text.muted} />
+                <Text style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
+                <Text style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
+              </GlassCard>
+            </Pressable>
+            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
+              <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
+                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? '#ef4444' : colors.text.muted)} />
+                <Text style={[s.navCount, violationCount > 0 && { color: '#ef4444' }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
+                <Text style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
+              </GlassCard>
+            </Pressable>
+            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
+              <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
+                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? '#4ade80' : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
+                <Text style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
+                <Text style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
+              </GlassCard>
+            </Pressable>
           </View>
 
+          {/* Active filter indicator */}
+          {activeTab !== 'all' && (
+            <Pressable onPress={() => setActiveTab('all')}>
+              <View style={s.filterBanner}>
+                <Text style={s.filterText}>
+                  Showing: {activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : 'Complaints'}
+                </Text>
+                <Text style={s.filterClear}>Show All</Text>
+              </View>
+            </Pressable>
+          )}
+
+          {/* Expiring permits warning */}
           {expiringPermits.length > 0 && (
             <GlassCard style={s.expiringCard}>
               <View style={s.expiringHeader}>
@@ -421,27 +416,30 @@ export default function DOBLogsScreen() {
             </GlassCard>
           )}
 
+          {/* Full-width Sync Button */}
           <Pressable onPress={handleSync} disabled={syncing} style={[s.syncButton, syncing && s.syncButtonDisabled]}>
             <RefreshCw size={18} strokeWidth={1.5} color="#fff" />
             <Text style={s.syncButtonText}>{syncing ? 'Syncing with NYC DOB...' : 'Sync Now'}</Text>
           </Pressable>
           <Text style={s.totalText}>{total} total records</Text>
 
-          {logs.length === 0 ? (
+          {/* Log cards */}
+          {filteredLogs.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyTitle}>
-                {activeTab === 'all' ? 'No Records Found' : `No ${TABS.find(t => t.key === activeTab)?.label || 'Records'}`}
+                {activeTab === 'all' ? 'No Records Found' : `No ${activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : 'Complaints'}`}
               </Text>
               <Text style={s.emptySubtitle}>
                 {!trackDobStatus ? 'Enable DOB tracking to start monitoring.' : 'Hit Sync Now to check for new records.'}
               </Text>
             </GlassCard>
           ) : (
-            <View style={s.logsList}>{logs.map(renderLogCard)}</View>
+            <View style={s.logsList}>{filteredLogs.map(renderLogCard)}</View>
           )}
         </ScrollView>
 
+        {/* Config Modal */}
         <Modal visible={showConfigModal} transparent animationType="fade" onRequestClose={() => setShowConfigModal(false)}>
           <Pressable style={s.modalOverlay} onPress={() => setShowConfigModal(false)}>
             <Pressable style={s.modalContent} onPress={(e) => e.stopPropagation()}>
@@ -489,12 +487,6 @@ function buildStyles(colors, isDark) {
     headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     logoText: { ...typography.label, color: colors.text.muted },
-    tabScroll: { flexGrow: 0 },
-    tabRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
-    tab: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.full, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: colors.glass.background },
-    tabActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: 'rgba(74,222,128,0.3)' },
-    tabText: { fontSize: 13, fontWeight: '500', color: colors.text.muted },
-    tabTextActive: { color: '#4ade80' },
     scrollView: { flex: 1 },
     scrollContent: { padding: spacing.lg, paddingBottom: 120 },
     titleSection: { marginBottom: spacing.lg },
@@ -504,26 +496,42 @@ function buildStyles(colors, isDark) {
     binText: { fontSize: 13, color: colors.text.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     noBinBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     noBinText: { fontSize: 13, color: '#f59e0b' },
-    statsRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
-    statBox: { flex: 1, alignItems: 'center', paddingVertical: spacing.md },
-    statValue: { fontSize: 24, fontWeight: '600', color: colors.text.primary, marginBottom: 2 },
-    statLabel: { fontSize: 10, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+
+    // Nav cards (replaces pill tabs + stat row)
+    navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
+    navCard: { alignItems: 'center', paddingVertical: spacing.md, gap: 4 },
+    navCardActive: { borderColor: 'rgba(74,222,128,0.4)', backgroundColor: 'rgba(74,222,128,0.06)' },
+    navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
+    navCountActive: { color: '#4ade80' },
+    navLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
+    navLabelActive: { color: '#4ade80' },
+
+    // Filter banner
+    filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: 'rgba(74,222,128,0.08)', borderWidth: 1, borderColor: 'rgba(74,222,128,0.2)' },
+    filterText: { fontSize: 13, color: '#4ade80', fontWeight: '500' },
+    filterClear: { fontSize: 12, color: colors.text.muted, textDecorationLine: 'underline' },
+
     expiringCard: { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)', marginBottom: spacing.lg },
     expiringHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     expiringTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
     expiringItem: { fontSize: 13, color: colors.text.secondary, marginLeft: spacing.lg + spacing.sm, marginBottom: 4 },
+
+    // Full-width sync button
     syncButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: '#1565C0', paddingVertical: 14, borderRadius: borderRadius.lg, marginBottom: spacing.sm },
     syncButtonDisabled: { opacity: 0.6 },
     syncButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
     totalText: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginBottom: spacing.lg },
+
     logsList: { gap: spacing.md },
     logCard: { gap: spacing.sm },
     swoCard: { borderColor: 'rgba(220, 38, 38, 0.3)', borderWidth: 1 },
     logHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     logHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    logHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     severityDot: { width: 10, height: 10, borderRadius: 5 },
     typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.full, borderWidth: 1 },
     typeText: { fontSize: 11, fontWeight: '500' },
+    dateText: { fontSize: 11, color: colors.text.subtle },
     logSummary: { fontSize: 14, color: colors.text.primary, lineHeight: 20 },
     expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
     expiredBanner: { backgroundColor: 'rgba(239,68,68,0.1)' },
