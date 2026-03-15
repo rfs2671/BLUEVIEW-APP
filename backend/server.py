@@ -4717,42 +4717,90 @@ async def get_submitted_logs(
 # ==================== DOB COMPLIANCE ENGINE ====================
  
 async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
-    """Query NYC Open Data Socrata endpoints for a BIN."""
+    """Query NYC Open Data Socrata endpoints by BIN and/or address."""
     all_records = []
-    endpoints = [
-        {
+    
+    # Extract clean street address for address-based queries
+    clean_address = ""
+    if project_address:
+        # "3846 Bailey Avenue, The Bronx, NY, USA" -> "3846 Bailey Avenue"
+        clean_address = project_address.split(",")[0].strip()[:40]
+    
+    # Determine if BIN is usable (not a placeholder like X000000)
+    bin_usable = nyc_bin and not nyc_bin.endswith("000000")
+    
+    endpoints = []
+    
+    # Job filings - query by BIN and/or address
+    if bin_usable:
+        endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
             "params": {"bin": nyc_bin},
             "record_type": "job_status",
             "id_field": "job__",
-        },
-        {
+        })
+    if clean_address:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
+            "params": {"$where": f"house__ || ' ' || street_name like '%{clean_address}%'", "$limit": "50"},
+            "record_type": "job_status",
+            "id_field": "job__",
+        })
+    
+    # Violations - query by BIN and/or address
+    if bin_usable:
+        endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
             "params": {"bin": nyc_bin},
             "record_type": "violation",
             "id_field": "isn_dob_bis_viol",
-        },
-    # DOB Permit Issuance (BIS legacy permits)
-        {
+        })
+    if clean_address:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/3h2n-5cm9.json",
+            "params": {"$where": f"house__ || ' ' || street like '%{clean_address}%'", "$limit": "50"},
+            "record_type": "violation",
+            "id_field": "isn_dob_bis_viol",
+        })
+    
+    # DOB Permit Issuance (BIS legacy)
+    if bin_usable:
+        endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
             "params": {"bin__": nyc_bin, "$limit": "50"},
             "record_type": "permit",
             "id_field": "job__",
-        },
-        # DOB NOW Build Approved Permits (current system)
-        {
+        })
+    if clean_address:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
+            "params": {"$where": f"house__ || ' ' || street_name like '%{clean_address}%'", "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job__",
+        })
+    
+    # DOB NOW Build Approved Permits
+    if bin_usable:
+        endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
             "params": {"bin__": nyc_bin, "$limit": "50"},
             "record_type": "permit",
             "id_field": "job_filing_number",
-        },
-    ]
+        })
+    if clean_address:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
+            "params": {"$where": f"house_no || ' ' || street_name like '%{clean_address}%'", "$limit": "50"},
+            "record_type": "permit",
+            "id_field": "job_filing_number",
+        })
+    
     # 311 complaints
     endpoints.append({
         "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
         "params": {
             "agency": "DOB",
-            "$where": f"incident_address like '%{project_address.split(',')[0].strip()[:30]}%'" if project_address else f"bin='{nyc_bin}'",
+            "$where": f"incident_address like '%{clean_address}%'" if clean_address else f"bin='{nyc_bin}'" if bin_usable else "1=0",
             "$limit": "50",
         },
         "record_type": "complaint",
@@ -4988,7 +5036,10 @@ async def nightly_dob_scan():
  
     projects = await db.projects.find({
         "track_dob_status": True,
-        "nyc_bin": {"$ne": None, "$exists": True},
+        "$or": [
+            {"nyc_bin": {"$ne": None, "$exists": True}},
+            {"address": {"$ne": None, "$ne": "", "$exists": True}},
+        ],
         "is_deleted": {"$ne": True},
     }).to_list(500)
  
@@ -5102,8 +5153,8 @@ async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
  
-    if not project.get("nyc_bin"):
-        raise HTTPException(status_code=400, detail="No BIN configured. Update DOB config first.")
+    if not project.get("nyc_bin") and not project.get("address"):
+        raise HTTPException(status_code=400, detail="No BIN or address configured. Update DOB config first.")
  
     last_sync = await db.dob_logs.find_one(
         {"project_id": project_id},
