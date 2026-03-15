@@ -454,14 +454,34 @@ class DailyLogResponse(BaseModel):
 class DOBLogResponse(BaseModel):
     id: str
     project_id: str
-    company_id: str
-    nyc_bin: str
-    record_type: str  # "complaint", "violation", "job_status", "swo"
+    company_id: Optional[str] = ""
+    nyc_bin: Optional[str] = ""
+    record_type: str
     raw_dob_id: str
-    ai_summary: str
-    severity: str  # "Low", "Medium", "Critical"
-    next_action: str
+    ai_summary: Optional[str] = ""
+    severity: Optional[str] = "Medium"
+    next_action: Optional[str] = ""
     detected_at: datetime
+    # Phase 2: Raw structured fields
+    permit_type: Optional[str] = None
+    permit_subtype: Optional[str] = None
+    permit_status: Optional[str] = None
+    expiration_date: Optional[str] = None
+    issuance_date: Optional[str] = None
+    filing_date: Optional[str] = None
+    job_number: Optional[str] = None
+    job_type: Optional[str] = None
+    work_type: Optional[str] = None
+    violation_type: Optional[str] = None
+    violation_number: Optional[str] = None
+    violation_category: Optional[str] = None
+    penalty_amount: Optional[str] = None
+    respondent: Optional[str] = None
+    disposition_date: Optional[str] = None
+    disposition_comments: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    dob_link: Optional[str] = None
  
  
 class DOBConfigUpdate(BaseModel):
@@ -5016,13 +5036,175 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
         logger.error(f"Failed to send critical DOB alert: {e}")
  
  
+def _extract_permit_fields(rec: dict) -> dict:
+    \"\"\"Extract structured permit fields from raw DOB record.\"\"\"
+    fields = {}
+    # DOB NOW permits (rbx6-tga4)
+    fields["permit_type"] = rec.get("permit_type") or rec.get("permittee_s_license_type") or None
+    fields["permit_subtype"] = rec.get("permit_subtype") or rec.get("work_type") or None
+    fields["permit_status"] = rec.get("permit_status") or rec.get("current_status") or rec.get("status") or None
+    fields["expiration_date"] = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or None
+    fields["issuance_date"] = rec.get("issuance_date") or rec.get("issued_date") or rec.get("permit_si_issuance_date") or None
+    fields["filing_date"] = rec.get("filing_date") or rec.get("pre_filing_date") or rec.get("latest_action_date") or None
+    fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
+    fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
+    fields["work_type"] = rec.get("work_type") or rec.get("permit_type") or None
+    return {k: str(v).strip() if v else None for k, v in fields.items()}
+ 
+ 
+def _extract_violation_fields(rec: dict) -> dict:
+    \"\"\"Extract structured violation fields from raw DOB record.\"\"\"
+    fields = {}
+    fields["violation_type"] = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or None
+    fields["violation_number"] = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or None
+    fields["violation_category"] = rec.get("violation_category") or rec.get("category") or None
+    fields["description"] = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or None
+    fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
+    fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
+    fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
+    fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
+    fields["status"] = rec.get("violation_category") or rec.get("certification_status") or rec.get("current_status") or None
+    return {k: str(v).strip() if v else None for k, v in fields.items()}
+ 
+ 
+def _determine_severity(rec: dict, record_type: str) -> str:
+    \"\"\"Determine severity from raw record fields without AI.\"\"\"
+    if record_type == "permit":
+        # Check if permit is expiring soon
+        exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
+        if exp:
+            try:
+                from dateutil import parser as dateparser
+                exp_date = dateparser.parse(str(exp))
+                if exp_date.tzinfo is None:
+                    exp_date = exp_date.replace(tzinfo=timezone.utc)
+                days_left = (exp_date - datetime.now(timezone.utc)).days
+                if days_left < 0:
+                    return "Critical"
+                elif days_left <= 14:
+                    return "Critical"
+                elif days_left <= 30:
+                    return "Medium"
+                else:
+                    return "Low"
+            except Exception:
+                pass
+        status = str(rec.get("permit_status") or rec.get("current_status") or "").lower()
+        if "expired" in status or "revoked" in status:
+            return "Critical"
+        return "Low"
+ 
+    if record_type in ("violation", "swo"):
+        vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
+        if "stop work" in vtype or "swo" in vtype or "immediate" in vtype:
+            return "Critical"
+        cat = str(rec.get("violation_category", "") or "").lower()
+        if "active" in cat or "v-dob" in cat:
+            return "Medium"
+        penalty = rec.get("penalty_applied") or rec.get("penalty_balance_due") or "0"
+        try:
+            if float(str(penalty).replace(",", "").replace("$", "")) > 5000:
+                return "Critical"
+            elif float(str(penalty).replace(",", "").replace("$", "")) > 0:
+                return "Medium"
+        except (ValueError, TypeError):
+            pass
+        return "Medium"
+ 
+    if record_type == "complaint":
+        status = str(rec.get("status", "")).lower()
+        if "open" in status or "in progress" in status:
+            return "Medium"
+        return "Low"
+ 
+    return "Medium"
+ 
+ 
+def _generate_summary(rec: dict, record_type: str) -> str:
+    \"\"\"Generate a human-readable summary from raw fields without AI.\"\"\"
+    if record_type == "permit":
+        job = rec.get("job__") or rec.get("job_filing_number") or "Unknown"
+        ptype = rec.get("work_type") or rec.get("permit_type") or rec.get("filing_reason") or "General"
+        status = rec.get("permit_status") or rec.get("current_status") or "Unknown"
+        exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
+        summary = f"Permit {job} ({ptype}) — Status: {status}"
+        if exp:
+            summary += f" — Expires: {str(exp)[:10]}"
+        return summary
+ 
+    if record_type in ("violation", "swo"):
+        vnum = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or "Unknown"
+        vtype = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or ""
+        desc = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or ""
+        if desc and len(str(desc)) > 120:
+            desc = str(desc)[:117] + "..."
+        return f"Violation {vnum}: {vtype}. {desc}".strip()
+ 
+    if record_type == "complaint":
+        ctype = rec.get("complaint_type") or rec.get("descriptor") or "DOB Complaint"
+        status = rec.get("status") or "Open"
+        addr = rec.get("incident_address") or ""
+        return f"{ctype} — Status: {status}. {addr}".strip()
+ 
+    if record_type == "job_status":
+        job = rec.get("job__") or "Unknown"
+        jtype = rec.get("job_type") or ""
+        desc = rec.get("job_description") or rec.get("job_s1_special_place_name") or ""
+        if desc and len(str(desc)) > 100:
+            desc = str(desc)[:97] + "..."
+        return f"Job {job} ({jtype}): {desc}".strip()
+ 
+    return f"DOB record detected"
+ 
+ 
+def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
+    \"\"\"Generate next action from raw fields without AI.\"\"\"
+    if record_type == "permit":
+        status = str(rec.get("permit_status") or rec.get("current_status") or "").lower()
+        if "expired" in status:
+            return "URGENT: Permit has expired. File renewal application on DOB NOW immediately."
+        exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
+        if exp and severity == "Critical":
+            return f"Permit expiring {str(exp)[:10]}. Contact expediter to file renewal on DOB NOW before expiration."
+        if severity == "Medium":
+            return "Permit expiring within 30 days. Schedule renewal with your expediter."
+        return "No action needed. Monitor for status changes."
+ 
+    if record_type in ("violation", "swo"):
+        vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
+        if "stop work" in vtype or "swo" in vtype:
+            return "STOP ALL WORK. Contact DOB and your attorney immediately to resolve SWO."
+        if severity == "Critical":
+            return "Contact your expediter and schedule DOB inspection to resolve this violation ASAP."
+        return "Review violation details and schedule correction. File Certificate of Correction when resolved."
+ 
+    if record_type == "complaint":
+        if severity == "Medium":
+            return "DOB may schedule an inspection. Ensure site compliance and prepare documentation."
+        return "Monitor complaint status. No immediate action required."
+ 
+    return "Review record details on DOB BIS/NOW portal."
+ 
+ 
+def _build_dob_link(rec: dict, record_type: str) -> str:
+    \"\"\"Build a direct link to DOB BIS/NOW for this record.\"\"\"
+    bin_val = rec.get("bin") or rec.get("bin__") or ""
+    job_num = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or ""
+ 
+    if job_num:
+        return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+    if bin_val:
+        return f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin_val}"
+    return "https://a810-bisweb.nyc.gov/bisweb/bispi00.jsp"
+ 
+ 
 async def run_dob_sync_for_project(project: dict) -> list:
-    """Core sync logic: fetch, dedupe, translate, save, alert. Used by cron + manual."""
+    \"\"\"Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.\"\"\"
     project_id = str(project["_id"])
     company_id = project.get("company_id", "")
     nyc_bin = project.get("nyc_bin", "")
     project_address = project.get("address", "")
-
+ 
     if not nyc_bin and not project_address:
         return []
  
@@ -5051,21 +5233,34 @@ async def run_dob_sync_for_project(project: dict) -> list:
     now = datetime.now(timezone.utc)
  
     for raw_id, rec in new_records:
-        ai_result = await _translate_with_gemini(rec)
+        record_type = rec.get("_record_type", "unknown")
+        severity = _determine_severity(rec, record_type)
+        summary = _generate_summary(rec, record_type)
+        next_action = _generate_next_action(rec, record_type, severity)
+        dob_link = _build_dob_link(rec, record_type)
+ 
+        # Extract structured fields based on record type
+        extra_fields = {}
+        if record_type == "permit":
+            extra_fields = _extract_permit_fields(rec)
+        elif record_type in ("violation", "swo"):
+            extra_fields = _extract_violation_fields(rec)
  
         dob_log = {
             "project_id": project_id,
             "company_id": company_id,
             "nyc_bin": nyc_bin,
-            "record_type": rec.get("_record_type", "unknown"),
+            "record_type": record_type,
             "raw_dob_id": raw_id,
-            "ai_summary": ai_result["summary"],
-            "severity": ai_result["severity"],
-            "next_action": ai_result["next_action"],
+            "ai_summary": summary,
+            "severity": severity,
+            "next_action": next_action,
+            "dob_link": dob_link,
             "detected_at": now,
             "created_at": now,
             "updated_at": now,
             "is_deleted": False,
+            **extra_fields,
         }
  
         try:
@@ -5073,7 +5268,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
             dob_log["id"] = str(result.inserted_id)
             inserted_logs.append(dob_log)
  
-            if ai_result["severity"] == "Critical":
+            if severity == "Critical":
                 await _send_critical_dob_alert(project, dob_log)
         except Exception as e:
             logger.error(f"Failed to insert dob_log for raw_id={raw_id}: {e}")
@@ -5111,7 +5306,49 @@ async def nightly_dob_scan():
             logger.error(f"DOB scan error for project {project.get('name')}: {e}")
  
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
+
+async def check_permit_expirations():
+    \"\"\"Check all tracked projects for permits expiring within 14 days. Called by nightly scan.\"\"\"
+    try:
+        expiring_permits = []
+        cutoff = datetime.now(timezone.utc) + timedelta(days=14)
  
+        permits = await db.dob_logs.find({
+            "record_type": "permit",
+            "expiration_date": {"$ne": None},
+            "is_deleted": {"$ne": True},
+        }).to_list(1000)
+ 
+        for permit in permits:
+            exp_str = permit.get("expiration_date", "")
+            if not exp_str:
+                continue
+            try:
+                from dateutil import parser as dateparser
+                exp_date = dateparser.parse(str(exp_str))
+                if exp_date.tzinfo is None:
+                    exp_date = exp_date.replace(tzinfo=timezone.utc)
+                days_left = (exp_date - datetime.now(timezone.utc)).days
+                if 0 < days_left <= 14:
+                    # Update severity to Critical
+                    await db.dob_logs.update_one(
+                        {"_id": permit["_id"]},
+                        {"$set": {"severity": "Critical", "next_action": f"URGENT: Permit expires in {days_left} days ({str(exp_str)[:10]}). File renewal on DOB NOW immediately."}}
+                    )
+                    expiring_permits.append(permit)
+                elif days_left <= 0:
+                    await db.dob_logs.update_one(
+                        {"_id": permit["_id"]},
+                        {"$set": {"severity": "Critical", "next_action": "EXPIRED: Permit has expired. Stop permitted work and file renewal immediately."}}
+                    )
+            except Exception:
+                continue
+ 
+        if expiring_permits:
+            logger.info(f"Permit expiration check: {len(expiring_permits)} permits expiring within 14 days")
+    except Exception as e:
+        logger.error(f"Permit expiration check error: {e}")
+
  
 # ==================== DOB COMPLIANCE ENDPOINTS ====================
  
