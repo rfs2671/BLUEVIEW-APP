@@ -5255,7 +5255,7 @@ async def nightly_dob_scan():
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
 	# Check for expiring permits across all projects
     await check_permit_expirations()
-	await nightly_renewal_scan(db)
+    await nightly_renewal_scan(db)
 
 async def check_permit_expirations():
     """Check all tracked projects for permits expiring within 14 days. Called by nightly scan."""
