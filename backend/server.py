@@ -4915,8 +4915,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         if not raw_id:
                             continue
                         
+                        # For permits, append work_type to dedup key (one job = multiple permits)
+                        if ep["record_type"] == "permit":
+                            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
+                            dedup_key = f"permit:{raw_id}:{work_suffix}"
+                        else:
+                            dedup_key = f"{ep['record_type']}:{raw_id}"
+                        
                         # Skip if we already have this record from another endpoint
-                        dedup_key = f"{ep['record_type']}:{raw_id}"
                         if dedup_key in seen_ids:
                             continue
                         seen_ids.add(dedup_key)
@@ -5229,6 +5235,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
  
     for raw_id, rec in new_records:
         record_type = rec.get("_record_type", "unknown")
+        # For permits, make raw_dob_id unique per work type (one job = multiple permits)
+        if record_type == "permit":
+            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
+            raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
         severity = _determine_severity(rec, record_type)
         summary = _generate_summary(rec, record_type)
         next_action = _generate_next_action(rec, record_type, severity)
