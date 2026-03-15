@@ -4995,9 +4995,8 @@ def _extract_violation_fields(rec: dict) -> dict:
  
  
 def _determine_severity(rec: dict, record_type: str) -> str:
-    """Determine severity from raw record fields without AI."""
+    """Determine severity: 'Action' (needs attention) or 'Good' (no action needed)."""
     if record_type == "permit":
-        # Check if permit is expiring soon
         exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
         if exp:
             try:
@@ -5006,45 +5005,32 @@ def _determine_severity(rec: dict, record_type: str) -> str:
                 if exp_date.tzinfo is None:
                     exp_date = exp_date.replace(tzinfo=timezone.utc)
                 days_left = (exp_date - datetime.now(timezone.utc)).days
-                if days_left < 0:
-                    return "Critical"
-                elif days_left <= 14:
-                    return "Critical"
-                elif days_left <= 30:
-                    return "Medium"
-                else:
-                    return "Low"
+                if days_left <= 30:
+                    return "Action"
             except Exception:
                 pass
         status = str(rec.get("permit_status") or rec.get("current_status") or "").lower()
         if "expired" in status or "revoked" in status:
-            return "Critical"
-        return "Low"
- 
+            return "Action"
+        return "Good"
+
     if record_type in ("violation", "swo"):
-        vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
-        if "stop work" in vtype or "swo" in vtype or "immediate" in vtype:
-            return "Critical"
-        cat = str(rec.get("violation_category", "") or "").lower()
-        if "active" in cat or "v-dob" in cat:
-            return "Medium"
-        penalty = rec.get("penalty_applied") or rec.get("penalty_balance_due") or "0"
-        try:
-            if float(str(penalty).replace(",", "").replace("$", "")) > 5000:
-                return "Critical"
-            elif float(str(penalty).replace(",", "").replace("$", "")) > 0:
-                return "Medium"
-        except (ValueError, TypeError):
-            pass
-        return "Medium"
- 
+        # Check if dismissed/resolved — should be filtered out, but just in case
+        cat = str(rec.get("violation_category", "") or "").upper()
+        status = str(rec.get("certification_status", "") or rec.get("current_status", "") or "").upper()
+        if any(word in cat for word in ["DISMISSED", "RESOLVED"]):
+            return "Good"
+        if any(word in status for word in ["RESOLVED", "DISMISSED", "CLOSED", "CERTIFIED"]):
+            return "Good"
+        return "Action"
+
     if record_type == "complaint":
         status = str(rec.get("status", "")).lower()
-        if "open" in status or "in progress" in status:
-            return "Medium"
-        return "Low"
- 
-    return "Medium"
+        if "closed" in status:
+            return "Good"
+        return "Action"
+
+    return "Good"
  
  
 def _generate_summary(rec: dict, record_type: str) -> str:
@@ -5085,31 +5071,29 @@ def _generate_summary(rec: dict, record_type: str) -> str:
  
  
 def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
-    """Generate next action from raw fields without AI."""
+    """Generate next action from raw fields."""
     if record_type == "permit":
         status = str(rec.get("permit_status") or rec.get("current_status") or "").lower()
         if "expired" in status:
             return "URGENT: Permit has expired. File renewal application on DOB NOW immediately."
-        exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
-        if exp and severity == "Critical":
+        if severity == "Action":
+            exp = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or ""
             return f"Permit expiring {str(exp)[:10]}. Contact expediter to file renewal on DOB NOW before expiration."
-        if severity == "Medium":
-            return "Permit expiring within 30 days. Schedule renewal with your expediter."
-        return "No action needed. Monitor for status changes."
- 
+        return "Permit is active and current. No action needed."
+
     if record_type in ("violation", "swo"):
         vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
         if "stop work" in vtype or "swo" in vtype:
             return "STOP ALL WORK. Contact DOB and your attorney immediately to resolve SWO."
-        if severity == "Critical":
-            return "Contact your expediter and schedule DOB inspection to resolve this violation ASAP."
-        return "Review violation details and schedule correction. File Certificate of Correction when resolved."
- 
+        if severity == "Action":
+            return "Active violation. Contact your expediter and schedule correction with DOB."
+        return "Violation resolved. No action needed."
+
     if record_type == "complaint":
-        if severity == "Medium":
-            return "DOB may schedule an inspection. Ensure site compliance and prepare documentation."
-        return "Monitor complaint status. No immediate action required."
- 
+        if severity == "Action":
+            return "Open complaint. DOB may schedule an inspection. Ensure site compliance."
+        return "Complaint closed. No action needed."
+
     return "Review record details on DOB BIS/NOW portal."
  
  
@@ -5150,6 +5134,16 @@ async def run_dob_sync_for_project(project: dict) -> list:
         raw_id = str(rec.get(id_field, ""))
         if not raw_id or raw_id in existing_ids:
             continue
+        
+        # Skip resolved/dismissed violations
+        if rec.get("_record_type") in ("violation", "swo"):
+            cat = str(rec.get("violation_category", "") or "").upper()
+            status = str(rec.get("certification_status", "") or rec.get("current_status", "") or "").upper()
+            if any(word in cat for word in ["DISMISSED", "RESOLVED"]):
+                continue
+            if any(word in status for word in ["RESOLVED", "DISMISSED", "CLOSED", "CERTIFIED"]):
+                continue
+        
         new_records.append((raw_id, rec))
  
     if not new_records:
@@ -5195,7 +5189,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
             dob_log["id"] = str(result.inserted_id)
             inserted_logs.append(dob_log)
  
-            if severity == "Critical":
+            if severity == "Action":
                 await _send_critical_dob_alert(project, dob_log)
         except Exception as e:
             logger.error(f"Failed to insert dob_log for raw_id={raw_id}: {e}")
@@ -5258,17 +5252,16 @@ async def check_permit_expirations():
                 if exp_date.tzinfo is None:
                     exp_date = exp_date.replace(tzinfo=timezone.utc)
                 days_left = (exp_date - datetime.now(timezone.utc)).days
-                if 0 < days_left <= 14:
-                    # Update severity to Critical
+                if 0 < days_left <= 30:
                     await db.dob_logs.update_one(
                         {"_id": permit["_id"]},
-                        {"$set": {"severity": "Critical", "next_action": f"URGENT: Permit expires in {days_left} days ({str(exp_str)[:10]}). File renewal on DOB NOW immediately."}}
+                        {"$set": {"severity": "Action", "next_action": f"Permit expires in {days_left} days ({str(exp_str)[:10]}). File renewal on DOB NOW."}}
                     )
                     expiring_permits.append(permit)
                 elif days_left <= 0:
                     await db.dob_logs.update_one(
                         {"_id": permit["_id"]},
-                        {"$set": {"severity": "Critical", "next_action": "EXPIRED: Permit has expired. Stop permitted work and file renewal immediately."}}
+                        {"$set": {"severity": "Action", "next_action": "EXPIRED: Permit has expired. Stop permitted work and file renewal immediately."}}
                     )
             except Exception:
                 continue
