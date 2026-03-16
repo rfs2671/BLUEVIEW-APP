@@ -89,7 +89,16 @@ const renewalAPI = {
           blocking_reasons: [],
         };
       });
-    return { renewals, project_id: logsResp.data?.project_id, project_name: logsResp.data?.project_name };
+    // Deduplicate: keep only the latest permit per job number
+    const byJob = {};
+    for (const r of renewals) {
+      const key = r.job_number || r.id;
+      if (!byJob[key] || new Date(r.current_expiration) > new Date(byJob[key].current_expiration)) {
+        byJob[key] = r;
+      }
+    }
+    const dedupedRenewals = Object.values(byJob);
+    return { renewals: dedupedRenewals, project_id: logsResp.data?.project_id, project_name: logsResp.data?.project_name };
   },
   prepare: async (permitDobLogId, projectId) => {
     const resp = await apiClient.post('/api/permit-renewals/prepare', {
@@ -331,10 +340,8 @@ export default function PermitRenewalScreen() {
     const StatusIcon = statusCfg.icon;
     const daysLeft = renewal.days_until_expiry;
     const isUrgent = daysLeft !== null && daysLeft <= 7;
-    const canPrepare = renewal.status === 'eligible';
-    const canOpenDob = ['draft_ready', 'awaiting_gc'].includes(
-      renewal.status
-    ) && renewal.dob_now_url;
+    const canPrepare = false; // RPA not yet configured — disabled until Playwright is set up on Railway
+    const canOpenDob = renewal.status === 'eligible' || (['draft_ready', 'awaiting_gc'].includes(renewal.status) && renewal.dob_now_url);
     const isComplete = renewal.status === 'completed';
 
     return (
@@ -537,14 +544,20 @@ export default function PermitRenewalScreen() {
 
                 {canOpenDob && (
                   <GlassButton
-                    title="Sign & Pay on DOB NOW"
+                    title="Renew on DOB NOW"
                     icon={
                       <ExternalLink
                         size={16}
                         color="#8b5cf6"
                       />
                     }
-                    onPress={() => handleOpenDobNow(renewal)}
+                    onPress={() => {
+                      const jobNum = renewal.job_number || '';
+                      const url = jobNum
+                        ? `https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard`
+                        : 'https://a810-dobnow.nyc.gov/publish/';
+                      Linking.openURL(url);
+                    }}
                     style={[
                       s.actionBtn,
                       { borderColor: '#8b5cf640' },
