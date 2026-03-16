@@ -4836,7 +4836,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "issue_date DESC"},
+            "record_type": "violation",
+            "id_field": "ecb_violation_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
+            "params": {"$where": f"upper(violation_address) like '%{house_num}%{street_name}%'", "$limit": "100", "$order": "issue_date DESC"},
             "record_type": "violation",
             "id_field": "ecb_violation_number",
         })
@@ -5018,7 +5025,8 @@ def _extract_violation_fields(rec: dict) -> dict:
     """Extract structured violation fields from raw DOB record."""
     fields = {}
     fields["violation_type"] = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or None
-    fields["violation_number"] = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or None
+    # Build a display-friendly violation number from whichever source
+    fields["violation_number"] = rec.get("ecb_violation_number") or rec.get("violation_number") or rec.get("number") or rec.get("isn_dob_bis_viol") or None
     fields["violation_category"] = rec.get("violation_category") or rec.get("category") or None
     fields["violation_date"] = rec.get("issue_date") or rec.get("violation_date") or rec.get("issued_date") or rec.get("infraction_date") or None
     fields["description"] = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or None
@@ -5159,14 +5167,21 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     """Build a direct link to DOB BIS/NOW for this record."""
     bin_val = rec.get("bin") or rec.get("bin__") or ""
     job_num = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or ""
-    isn_val = rec.get("isn_dob_bis_viol") or rec.get("isn") or ""
+    isn_val = rec.get("isn_dob_bis_viol") or ""
     ecb_num = rec.get("ecb_violation_number") or ""
+    dob_now_number = rec.get("number") or ""
 
     if record_type in ("violation", "swo"):
+        # BIS legacy violations — use isn_dob_bis_viol for direct violation page
         if isn_val:
             return f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?requestid=2&vlcompdetlkey={isn_val}"
+        # ECB/OATH violations — use ecb_violation_number
         if ecb_num:
             return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
+        # DOB NOW Safety violations — link to DOB NOW portal
+        if dob_now_number:
+            return f"https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard"
+        # Fallback: BIS violations overview by BIN
         if bin_val:
             return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
 
