@@ -490,6 +490,7 @@ class DOBLogResponse(BaseModel):
     complaint_date: Optional[str] = None
     closed_date: Optional[str] = None
     incident_address: Optional[str] = None
+    disposition_code: Optional[str] = None
     status: Optional[str] = None
     dob_link: Optional[str] = None
  
@@ -4888,19 +4889,6 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "complaint_number",
         })
 
-    # ── 311 DOB COMPLAINTS (erm2-nwe9) - Supplemental 311 source ──
-    if clean_address or bin_usable:
-        upper_address = clean_address.upper() if clean_address else ""
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
-            "params": {
-                "agency": "DOB",
-                "$where": f"upper(incident_address) like '%{upper_address}%'" if upper_address else f"bin='{nyc_bin}'",
-                "$limit": "50",
-            },
-            "record_type": "complaint",
-            "id_field": "unique_key",
-        })
     
     async with httpx.AsyncClient(timeout=20.0) as http_client:
         for ep in endpoints:
@@ -5043,23 +5031,23 @@ def _extract_violation_fields(rec: dict) -> dict:
 
 
 def _extract_complaint_fields(rec: dict) -> dict:
-    """Extract structured complaint fields from raw DOB (eabe-havv) and 311 (erm2-nwe9) records."""
+    """Extract structured complaint fields from DOB Complaints Received (eabe-havv)."""
     fields = {}
-    fields["complaint_number"] = rec.get("complaint_number") or rec.get("unique_key") or None
-    # DOB dataset uses complaint_category; 311 uses complaint_type/descriptor
-    fields["complaint_type"] = rec.get("complaint_category") or rec.get("complaint_type") or rec.get("descriptor") or None
-    fields["complaint_status"] = rec.get("status") or rec.get("disposition_code") or rec.get("resolution_description") or None
-    # DOB dataset uses date_entered; 311 uses created_date
-    fields["complaint_date"] = rec.get("date_entered") or rec.get("created_date") or rec.get("complaint_date") or None
-    fields["closed_date"] = rec.get("disposition_date") or rec.get("closed_date") or rec.get("resolution_action_updated_date") or None
-    fields["description"] = rec.get("complaint_category") or rec.get("resolution_description") or rec.get("descriptor") or rec.get("complaint_type") or None
-    # DOB dataset has house_number + house_street; 311 has incident_address
+    fields["complaint_number"] = rec.get("complaint_number") or None
+    fields["complaint_type"] = rec.get("complaint_category") or None
+    fields["complaint_status"] = rec.get("status") or None
+    fields["complaint_date"] = rec.get("date_entered") or None
+    fields["closed_date"] = rec.get("disposition_date") or None
+    # Build caller description from DOB fields
+    category = rec.get("complaint_category") or ""
+    disposition_code = rec.get("disposition_code") or ""
+    fields["description"] = f"{category}".strip() if category else None
+    fields["disposition_code"] = disposition_code or None
+    # Address
     house = rec.get("house_number") or ""
     street = rec.get("house_street") or ""
-    dob_addr = f"{house} {street}".strip() if (house or street) else None
-    fields["incident_address"] = dob_addr or rec.get("incident_address") or None
+    fields["incident_address"] = f"{house} {street}".strip() if (house or street) else None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
-
 
 def _determine_severity(rec: dict, record_type: str) -> str:
     """Determine severity: 'Action' (needs attention) or 'Good' (no action needed)."""
@@ -5093,10 +5081,12 @@ def _determine_severity(rec: dict, record_type: str) -> str:
 
     if record_type == "complaint":
         status = str(rec.get("status", "")).lower()
+        # "Resolved" in DOB complaint = inspector finished investigating, NOT that site is clear.
+        # Active/Open = inspector coming or in progress. Always Action.
+        # Closed = investigation done. Could still have spawned a violation.
         if "closed" in status:
             return "Good"
         return "Action"
-
     return "Good"
  
  
@@ -5121,10 +5111,11 @@ def _generate_summary(rec: dict, record_type: str) -> str:
         return f"Violation {vnum}: {vtype}. {desc}".strip()
  
     if record_type == "complaint":
-        ctype = rec.get("complaint_type") or rec.get("descriptor") or "DOB Complaint"
+        comp_num = rec.get("complaint_number") or ""
+        ctype = rec.get("complaint_category") or rec.get("complaint_type") or rec.get("descriptor") or "DOB Complaint"
         status = rec.get("status") or "Open"
-        addr = rec.get("incident_address") or ""
-        return f"{ctype} — Status: {status}. {addr}".strip()
+        prefix = f"#{comp_num}" if comp_num else ""
+        return f"311 Complaint {prefix}: {ctype} — Inspector Status: {status}".strip()
  
     if record_type == "job_status":
         job = rec.get("job__") or "Unknown"
@@ -5158,8 +5149,8 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
 
     if record_type == "complaint":
         if severity == "Action":
-            return "Open complaint. DOB may schedule an inspection. Ensure site compliance."
-        return "Complaint closed. No action needed."
+            return "ALERT: 311 complaint filed. DOB inspector is coming or currently investigating. Ensure full site compliance before inspection."
+        return "Inspector investigation complete. Check Violations tab — if a violation was issued from this complaint, it will appear there."
 
     return "Review record details on DOB BIS/NOW portal."
  
@@ -5172,6 +5163,8 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     ecb_num = rec.get("ecb_violation_number") or ""
 
     if record_type in ("violation", "swo"):
+        if isn_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?requestid=2&vlcompdetlkey={isn_val}"
         if ecb_num:
             return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
         if bin_val:
