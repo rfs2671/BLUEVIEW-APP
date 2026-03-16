@@ -4925,10 +4925,21 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         rec["_record_type"] = ep["record_type"]
                         rec["_id_field"] = id_field
                         if ep["record_type"] == "violation":
-                            vtype = str(rec.get("violation_type", "") or rec.get("violation_type_code", "")).lower()
-                            vdesc = str(rec.get("description", "") or rec.get("violation_description", "")).lower()
-                            vnext = str(rec.get("infraction_codes", "") or "").lower()
-                            combined = f"{vtype} {vdesc} {vnext}"
+                            # Check ALL text fields for stop work indicators across all 3 violation datasets
+                            swo_fields = [
+                                rec.get("violation_type", ""),
+                                rec.get("violation_type_code", ""),
+                                rec.get("description", ""),
+                                rec.get("violation_description", ""),
+                                rec.get("infraction_codes", ""),
+                                rec.get("penalty_description", ""),
+                                rec.get("section_of_law", ""),
+                                rec.get("severity", ""),
+                                rec.get("violation_category", ""),
+                                rec.get("certification_status", ""),
+                                rec.get("status", ""),
+                            ]
+                            combined = " ".join(str(f or "").lower() for f in swo_fields)
                             if "stop work" in combined or "swo" in combined or "partial stop" in combined:
                                 rec["_record_type"] = "swo"
                         all_records.append(rec)
