@@ -5198,11 +5198,11 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
             return f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet?requestid=1&allbin={bin_val}"
 
     if record_type == "permit":
-        filing_num = rec.get("job_filing_number") or ""
-        if filing_num:
-            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={filing_num.split('-')[0]}"
-        if job_num:
-            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+        # Use job number, strip any filing sequence suffix (e.g. "B00736930-I1" → "B00736930")
+        raw_job = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or ""
+        clean_job = str(raw_job).split("-")[0].strip() if raw_job else ""
+        if clean_job:
+            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={clean_job}"
         if bin_val:
             return f"https://a810-bisweb.nyc.gov/bisweb/PermitQueryByNumberServlet?requestid=1&allbin={bin_val}"
 
