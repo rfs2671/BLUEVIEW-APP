@@ -25,7 +25,6 @@ import {
   ChevronUp,
   X,
   Building2,
-  FileCheck,
   Gavel,
   MessageSquare,
   ExternalLink,
