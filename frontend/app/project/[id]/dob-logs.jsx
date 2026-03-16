@@ -253,9 +253,9 @@ export default function DOBLogsScreen() {
   const renderViolationCard = (log) => {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
-    const isSWO = log.record_type === 'swo';
-    const violationType = (log.violation_type || '').toLowerCase();
-    const isPartialSWO = violationType.includes('partial');
+    const combinedText = `${log.violation_type || ''} ${log.description || ''} ${log.ai_summary || ''}`.toLowerCase();
+    const isSWO = log.record_type === 'swo' || combinedText.includes('stop work') || combinedText.includes('swo');
+    const isPartialSWO = combinedText.includes('partial stop') || combinedText.includes('partial swo');
     const headerLabel = isSWO ? (isPartialSWO ? 'PARTIAL STOP WORK ORDER' : 'STOP WORK ORDER') : 'VIOLATION';
     const headerColor = isSWO ? '#dc2626' : '#ef4444';
     const displayDate = log.violation_date || log.detected_at;
