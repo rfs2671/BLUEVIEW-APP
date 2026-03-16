@@ -89,15 +89,35 @@ const renewalAPI = {
           blocking_reasons: [],
         };
       });
-    // Deduplicate: keep only the latest permit per job number
+    // Deduplicate: group all permits by base job number, keep only the LATEST expiration
     const byJob = {};
     for (const r of renewals) {
-      const key = r.job_number || r.id;
+      const raw = r.job_number || r.id;
+      const key = raw.includes('-') ? raw.split('-')[0] : raw;
       if (!byJob[key] || new Date(r.current_expiration) > new Date(byJob[key].current_expiration)) {
         byJob[key] = r;
       }
     }
-    const dedupedRenewals = Object.values(byJob);
+    // Also check ALL permits (not just expiring ones) for each base job — if any permit
+    // under the same base job has a future expiration > 30 days, the job is already renewed
+    const allPermitsByJob = {};
+    for (const l of logs) {
+      if (!l.job_number) continue;
+      const key = l.job_number.includes('-') ? l.job_number.split('-')[0] : l.job_number;
+      const exp = new Date(l.expiration_date);
+      if (isNaN(exp.getTime())) continue;
+      const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+      if (!allPermitsByJob[key] || daysLeft > allPermitsByJob[key]) {
+        allPermitsByJob[key] = daysLeft;
+      }
+    }
+    // Only show jobs where the newest permit is actually expired or expiring
+    const dedupedRenewals = Object.entries(byJob)
+      .filter(([key, r]) => {
+        const newestDays = allPermitsByJob[key] ?? r.days_until_expiry;
+        return newestDays <= 30;
+      })
+      .map(([, r]) => r);
     return { renewals: dedupedRenewals, project_id: logsResp.data?.project_id, project_name: logsResp.data?.project_name };
   },
   prepare: async (permitDobLogId, projectId) => {
@@ -340,7 +360,7 @@ export default function PermitRenewalScreen() {
     const StatusIcon = statusCfg.icon;
     const daysLeft = renewal.days_until_expiry;
     const isUrgent = daysLeft !== null && daysLeft <= 7;
-    const canPrepare = false; // RPA not yet configured — disabled until Playwright is set up on Railway
+    const canPrepare = renewal.status === 'eligible';
     const canOpenDob = renewal.status === 'eligible' || (['draft_ready', 'awaiting_gc'].includes(renewal.status) && renewal.dob_now_url);
     const isComplete = renewal.status === 'completed';
 
