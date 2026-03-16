@@ -5172,8 +5172,6 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     ecb_num = rec.get("ecb_violation_number") or ""
 
     if record_type in ("violation", "swo"):
-        if isn_val and bin_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/ActionViolationDisplayServlet?requestid=1&allbin={bin_val}&allinquirytype=BXS3OCV4&allisn={isn_val}"
         if ecb_num:
             return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
         if bin_val:
