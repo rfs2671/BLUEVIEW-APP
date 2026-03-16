@@ -49,14 +49,20 @@ const getSevConfig = (severity) => {
   return { color: '#22c55e', label: 'Good' };
 };
 
+const parseAnyDate = (dateStr) => {
+  if (!dateStr) return null;
+  // Handle YYYYMMDD format (no separators)
+  if (typeof dateStr === 'string' && dateStr.length === 8 && /^\d{8}$/.test(dateStr)) {
+    return new Date(`${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T00:00:00Z`);
+  }
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 const formatDate = (dateStr) => {
   if (!dateStr) return '\u2014';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) {
-    if (typeof dateStr === 'string' && dateStr.length === 8 && !dateStr.includes('-'))
-      return `${dateStr.slice(4, 6)}/${dateStr.slice(6, 8)}/${dateStr.slice(0, 4)}`;
-    return String(dateStr).slice(0, 10);
-  }
+  const d = parseAnyDate(dateStr);
+  if (!d) return String(dateStr).slice(0, 10);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
@@ -169,11 +175,11 @@ export default function DOBLogsScreen() {
 
   // Sort by real date descending (newest first)
   const sortByDate = (logs) => [...logs].sort((a, b) => {
-    const da = new Date(getRealDate(a) || 0);
-    const db = new Date(getRealDate(b) || 0);
+    const da = parseAnyDate(getRealDate(a)) || new Date(0);
+    const db = parseAnyDate(getRealDate(b)) || new Date(0);
     return db - da;
   });
-
+  
   // Filtered logs for display
   const filteredLogs = sortByDate(
     activeTab === 'all' ? allLogs
