@@ -17,8 +17,3 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install --with-deps chromium
 COPY backend/ ./backend/
 CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8001"]
-```
-
-Then add `playwright` to your `requirements.txt` if it's not already there:
-```
-playwright==1.49.0
