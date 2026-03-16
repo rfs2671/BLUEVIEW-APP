@@ -5172,15 +5172,12 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     dob_now_number = rec.get("number") or ""
 
     if record_type in ("violation", "swo"):
-        # BIS legacy violations — use isn_dob_bis_viol for direct violation page
-        if isn_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?requestid=2&vlcompdetlkey={isn_val}"
-        # ECB/OATH violations — use ecb_violation_number
+        # ECB ticket number is the most reliable link
         if ecb_num:
             return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
-        # DOB NOW Safety violations — link to DOB NOW portal
-        if dob_now_number:
-            return f"https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard"
+        # DOB NOW Safety violations — also have an associated DOB violation number
+        if dob_now_number and bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
         # Fallback: BIS violations overview by BIN
         if bin_val:
             return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
