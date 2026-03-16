@@ -1,15 +1,3 @@
-/**
- * Permit Renewal — "One-Tap Renewal" Screen
- * ═══════════════════════════════════════════
- * frontend/app/project/[id]/permit-renewal.jsx
- *
- * Flow:
- *   1. Shows expiring permits with eligibility details
- *   2. "Prepare Renewal" — triggers RPA to draft on DOB NOW
- *   3. "Sign & Pay on DOB NOW" — deep-links GC to their filing
- *   4. Status monitor detects completion automatically
- */
-
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -56,10 +44,52 @@ import apiClient from '../../../src/utils/api';
 
 const renewalAPI = {
   list: async (projectId) => {
-    const resp = await apiClient.get(
-      `/api/permit-renewals?project_id=${projectId}&limit=50`
+    // Try the dedicated renewals endpoint first, fall back to dob_logs permits
+    try {
+      const resp = await apiClient.get(
+        `/api/permit-renewals?project_id=${projectId}&limit=50`
+      );
+      if (resp.data?.renewals?.length > 0) return resp.data;
+    } catch (e) {
+      console.log('Renewal endpoint unavailable, falling back to dob_logs');
+    }
+    // Fallback: build renewals from dob_logs permits
+    const logsResp = await apiClient.get(
+      `/api/projects/${projectId}/dob-logs?record_type=permit&limit=200`
     );
-    return resp.data;
+    const logs = logsResp.data?.logs || [];
+    const now = new Date();
+    const renewals = logs
+      .filter(l => {
+        if (!l.expiration_date) return false;
+        const exp = new Date(l.expiration_date);
+        if (isNaN(exp.getTime())) return false;
+        const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+        return daysLeft <= 30; // expired or expiring within 30 days
+      })
+      .map(l => {
+        const exp = new Date(l.expiration_date);
+        const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+        return {
+          id: l.id,
+          permit_dob_log_id: l.id,
+          project_id: logsResp.data?.project_id,
+          project_name: logsResp.data?.project_name,
+          job_number: l.job_number,
+          permit_type: l.permit_type || l.work_type,
+          current_expiration: l.expiration_date,
+          days_until_expiry: daysLeft,
+          status: daysLeft <= 0 ? 'eligible' : 'eligible',
+          dob_now_url: null,
+          gc_license_number: null,
+          gc_license_status: null,
+          insurance_gl_expiry: null,
+          insurance_wc_expiry: null,
+          insurance_db_expiry: null,
+          blocking_reasons: [],
+        };
+      });
+    return { renewals, project_id: logsResp.data?.project_id, project_name: logsResp.data?.project_name };
   },
   prepare: async (permitDobLogId, projectId) => {
     const resp = await apiClient.post('/api/permit-renewals/prepare', {
