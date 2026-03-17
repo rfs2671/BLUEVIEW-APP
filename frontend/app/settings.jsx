@@ -19,6 +19,7 @@ import {
   Save,
   Shield,
   LogOut,
+  Building2,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard } from '../src/components/GlassCard';
@@ -29,7 +30,7 @@ import CpNav from '../src/components/CpNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
-import { authAPI } from '../src/utils/api';
+import { authAPI, apiClient } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 
 export default function SettingsScreen() {
@@ -41,18 +42,21 @@ export default function SettingsScreen() {
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
   const isCp    = user?.role === 'cp';
 
-  // \u2500\u2500 Profile fields \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // --- Profile fields ---
   const [name,        setName]        = useState('');
   const [email,       setEmail]       = useState('');
   const [savingName,  setSavingName]  = useState(false);
 
-  // \u2500\u2500 Password fields (admin only) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-  const [currentPw,   setCurrentPw]   = useState('');
+  // --- GC Legal Name (admin only) ---
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [gcLegalName, setGcLegalName] = useState('');
+  const [savingGc, setSavingGc] = useState(false);
+  const [loadingGc, setLoadingGc] = useState(false);
   const [newPw,       setNewPw]       = useState('');
   const [confirmPw,   setConfirmPw]   = useState('');
   const [savingPw,    setSavingPw]    = useState(false);
 
-  // \u2500\u2500 Auth guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   useEffect(() => {
     if (!authLoading && !isAuthenticated) router.replace('/login');
   }, [isAuthenticated, authLoading]);
@@ -65,7 +69,49 @@ export default function SettingsScreen() {
     }
   }, [user]);
 
-  // \u2500\u2500 Handlers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // Fetch projects for GC name editing (admin only)
+  useEffect(() => {
+    if (isAdmin && isAuthenticated) {
+      apiClient.get('/api/projects').then(resp => {
+        const p = resp.data || [];
+        setProjects(p);
+        if (p.length > 0) {
+          setSelectedProjectId(p[0].id);
+          fetchGcName(p[0].id);
+        }
+      }).catch(() => {});
+    }
+  }, [isAdmin, isAuthenticated]);
+
+  const fetchGcName = async (projId) => {
+    if (!projId) return;
+    setLoadingGc(true);
+    try {
+      const resp = await apiClient.get(`/api/projects/${projId}/dob-config`);
+      setGcLegalName(resp.data?.gc_legal_name || '');
+    } catch {
+      setGcLegalName('');
+    } finally {
+      setLoadingGc(false);
+    }
+  };
+
+  const handleSaveGcName = async () => {
+    if (!selectedProjectId) return;
+    setSavingGc(true);
+    try {
+      await apiClient.put(`/api/projects/${selectedProjectId}/dob-config`, {
+        gc_legal_name: gcLegalName.trim(),
+      });
+      toast.success('Saved', 'GC Legal Name updated');
+    } catch (e) {
+      toast.error('Error', e?.response?.data?.detail || 'Could not save GC name');
+    } finally {
+      setSavingGc(false);
+    }
+  };
+  
+  // -- Handlers --
   const handleSaveName = async () => {
     if (!name.trim()) {
       toast.error('Error', 'Name cannot be empty');
@@ -114,7 +160,7 @@ export default function SettingsScreen() {
     router.replace('/login');
   };
 
-  // \u2500\u2500 Role badge label \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // -- Role badge label --------------------------------------------------------
   const roleLabel = {
     admin:  'Administrator',
     owner:  'Owner',
@@ -122,7 +168,7 @@ export default function SettingsScreen() {
     worker: 'Worker',
   }[user?.role] || user?.role || 'User';
 
-  // \u2500\u2500 Styles (theme-aware, built inline so colors update on toggle) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  // -- Styles (theme-aware, built inline so colors update on toggle) -----------
   const s = buildStyles(colors);
 
   if (authLoading) {
@@ -155,7 +201,7 @@ export default function SettingsScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* \u2500\u2500 Account info card \u2500\u2500 */}
+          {/* -- Account info card -- */}
           <GlassCard style={s.accountCard}>
             <View style={s.avatarRow}>
               <View style={s.avatar}>
@@ -174,7 +220,7 @@ export default function SettingsScreen() {
             </View>
           </GlassCard>
 
-          {/* \u2500\u2500 Appearance \u2500\u2500 */}
+          {/* -- Appearance -- */}
           <Text style={s.sectionLabel}>APPEARANCE</Text>
           <GlassCard style={s.card}>
             <View style={s.settingRow}>
@@ -199,7 +245,7 @@ export default function SettingsScreen() {
             </View>
           </GlassCard>
 
-          {/* \u2500\u2500 Personal details \u2500\u2500 */}
+          {/* -- Personal details -- */}
           <Text style={s.sectionLabel}>PERSONAL DETAILS</Text>
           <GlassCard style={s.card}>
             <View style={s.fieldGroup}>
@@ -237,7 +283,7 @@ export default function SettingsScreen() {
             />
           </GlassCard>
 
-          {/* \u2500\u2500 Password (admin only) \u2500\u2500 */}
+          {/* -- Password (admin only) -- */}
           {isAdmin && (
             <>
               <Text style={s.sectionLabel}>SECURITY</Text>
@@ -280,7 +326,68 @@ export default function SettingsScreen() {
             </>
           )}
 
-          {/* \u2500\u2500 Sign out \u2500\u2500 */}
+          {/* ── GC Legal Name (admin only) ── */}
+          {isAdmin && projects.length > 0 && (
+            <>
+              <Text style={s.sectionLabel}>DOB PERMIT RENEWAL</Text>
+              <GlassCard style={s.card}>
+                <View style={s.fieldGroup}>
+                  <View style={s.fieldIconRow}>
+                    <Building2 size={16} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={s.fieldLabel}>GC Legal Name (for DOB)</Text>
+                  </View>
+                  <Text style={s.hintText}>
+                    The General Contractor's legal name used for DOB permit renewals.
+                  </Text>
+
+                  {projects.length > 1 && (
+                    <View style={{ marginTop: spacing.sm }}>
+                      <Text style={[s.fieldLabel, { fontSize: 11, marginBottom: 4 }]}>Select Project</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: spacing.sm }}>
+                        {projects.map(p => (
+                          <Pressable
+                            key={p.id}
+                            onPress={() => { setSelectedProjectId(p.id); fetchGcName(p.id); }}
+                            style={{
+                              paddingHorizontal: 12,
+                              paddingVertical: 6,
+                              borderRadius: 8,
+                              marginRight: 8,
+                              backgroundColor: selectedProjectId === p.id ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.05)',
+                              borderWidth: 1,
+                              borderColor: selectedProjectId === p.id ? '#4ade8040' : 'rgba(255,255,255,0.1)',
+                            }}
+                          >
+                            <Text style={{ fontSize: 12, color: selectedProjectId === p.id ? '#4ade80' : colors.text.muted }}>
+                              {p.name || p.address || 'Project'}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  )}
+
+                  <GlassInput
+                    value={gcLegalName}
+                    onChangeText={setGcLegalName}
+                    placeholder="e.g. Blue Elm Inc"
+                    autoCapitalize="words"
+                    editable={!loadingGc}
+                  />
+                </View>
+
+                <GlassButton
+                  title={savingGc ? 'Saving...' : 'Save GC Name'}
+                  onPress={handleSaveGcName}
+                  loading={savingGc}
+                  icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                  style={s.saveBtn}
+                />
+              </GlassCard>
+            </>
+          )}
+
+          {/* -- Sign out -- */}
           <Text style={s.sectionLabel}>ACCOUNT</Text>
           <GlassCard style={s.card}>
             <GlassButton
