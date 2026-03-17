@@ -144,7 +144,7 @@ export default function DOBLogsScreen() {
     setSavingConfig(true);
     try {
       const config = {};
-      if (configBin !== nycBin) config.nyc_bin = configBin;
+      config.nyc_bin = configBin;
       config.track_dob_status = configTracking;
       const result = await dobAPI.updateConfig(projectId, config);
       setNycBin(result.nyc_bin || '');
