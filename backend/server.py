@@ -3445,11 +3445,15 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
     folder_path = project.get("dropbox_folder_path")
     if not folder_path:
         return []
     
-    company_id = get_user_company_id(current_user) or project.get("company_id")
+    company_id = company_id or project.get("company_id")
     
     response = await dropbox_api_call(
         company_id, "post",
@@ -3483,11 +3487,15 @@ async def sync_project_dropbox(project_id: str, current_user = Depends(get_curre
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
     folder_path = project.get("dropbox_folder_path")
     if not folder_path:
         raise HTTPException(status_code=400, detail="No Dropbox folder linked")
     
-    company_id = get_user_company_id(current_user) or project.get("company_id")
+    company_id = company_id or project.get("company_id")
     
     response = await dropbox_api_call(
         company_id, "post",
@@ -3516,7 +3524,11 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
-    company_id = get_user_company_id(current_user) or project.get("company_id")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
+    company_id = company_id or project.get("company_id")
     
     response = await dropbox_api_call(
         company_id, "post",
@@ -5266,9 +5278,15 @@ async def run_dob_sync_for_project(project: dict) -> list:
     for rec in raw_records:
         id_field = rec.get("_id_field", "unique_key")
         raw_id = str(rec.get(id_field, ""))
-        if not raw_id or raw_id in existing_ids:
+        if not raw_id:
             continue
-        
+        # Apply permit work-type suffix BEFORE dedup check so the key matches
+        # what gets stored — prevents re-insertion on every sync run
+        if rec.get("_record_type") == "permit":
+            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
+            raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
+        if raw_id in existing_ids:
+            continue
         new_records.append((raw_id, rec))
  
     if not new_records:
@@ -5280,10 +5298,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
  
     for raw_id, rec in new_records:
         record_type = rec.get("_record_type", "unknown")
-        # For permits, make raw_dob_id unique per work type (one job = multiple permits)
-        if record_type == "permit":
-            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
-            raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
+        # raw_id already has work-type suffix applied during dedup phase above
         severity = _determine_severity(rec, record_type)
         summary = _generate_summary(rec, record_type)
         next_action = _generate_next_action(rec, record_type, severity)
@@ -5554,10 +5569,6 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
  
-    company_id = get_user_company_id(admin)
-    if company_id and project.get("company_id") != company_id:
-        raise HTTPException(status_code=403, detail="Access denied to this project")
- 
     if not project.get("nyc_bin") and not project.get("address"):
         raise HTTPException(status_code=400, detail="No BIN or address configured. Update DOB config first.")
  
@@ -5585,7 +5596,7 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         "message": f"DOB sync complete. {len(new_logs)} new record(s) found.",
         "new_records": len(new_logs),
         "critical_count": sum(1 for l in new_logs if l.get("severity") == "Critical"),
-        "logs": [DOBLogResponse(**{k: v for k, v in log.items() if k != "_id"}) for log in new_logs],
+        "logs": [DOBLogResponse(**serialize_id(dict(log))) for log in new_logs],
     }
  
  
@@ -5596,7 +5607,9 @@ async def check_and_send_reports():
     if not RESEND_API_KEY:
         return
     now = datetime.now(timezone.utc)
-    est_now = now + timedelta(hours=-5)
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    est_now = now.astimezone(eastern)
     current_time = est_now.strftime("%H:%M")
     today = est_now.strftime("%Y-%m-%d")
 
