@@ -499,6 +499,7 @@ class DOBConfigUpdate(BaseModel):
     nyc_bin: Optional[str] = None
     nyc_bbl: Optional[str] = None
     track_dob_status: Optional[bool] = None
+    gc_legal_name: Optional[str] = None
  
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
@@ -5420,7 +5421,10 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
  
     if config.track_dob_status is not None:
         update_fields["track_dob_status"] = config.track_dob_status
- 
+
+    if config.gc_legal_name is not None:
+        update_fields["gc_legal_name"] = config.gc_legal_name.strip() or None
+
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
  
     updated = await db.projects.find_one({"_id": to_query_id(project_id)})
@@ -5429,6 +5433,7 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
         "nyc_bin": updated.get("nyc_bin"),
         "nyc_bbl": updated.get("nyc_bbl"),
         "track_dob_status": updated.get("track_dob_status", False),
+        "gc_legal_name": updated.get("gc_legal_name"),
     }
  
  
