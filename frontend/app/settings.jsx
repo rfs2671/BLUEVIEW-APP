@@ -98,12 +98,17 @@ export default function SettingsScreen() {
 
   const handleSaveGcName = async () => {
     if (!selectedProjectId) return;
+    if (!gcLegalName.trim()) {
+      toast.error('Required', 'GC Legal Name cannot be empty');
+      return;
+    }
     setSavingGc(true);
     try {
-      await apiClient.put(`/api/projects/${selectedProjectId}/dob-config`, {
+      const resp = await apiClient.put(`/api/projects/${selectedProjectId}/dob-config`, {
         gc_legal_name: gcLegalName.trim(),
       });
-      toast.success('Saved', 'GC Legal Name updated');
+      setGcLegalName(resp.data?.gc_legal_name || gcLegalName.trim());
+      toast.success('Saved', 'GC Legal Name updated — will be used for permit renewal eligibility checks.');
     } catch (e) {
       toast.error('Error', e?.response?.data?.detail || 'Could not save GC name');
     } finally {
@@ -337,7 +342,7 @@ export default function SettingsScreen() {
                     <Text style={s.fieldLabel}>GC Legal Name (for DOB)</Text>
                   </View>
                   <Text style={s.hintText}>
-                    The General Contractor's legal name used for DOB permit renewals.
+                    The GC legal name used to look up the license on DOB for permit renewals. Must match exactly as registered with DOB Licensing.
                   </Text>
 
                   {projects.length > 1 && (
