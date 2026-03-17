@@ -1,22 +1,3 @@
-"""
-NYC Permit Renewal Automation — "One-Tap Renewal" Module
-=========================================================
-Detects expiring permits, prepares renewal drafts on DOB NOW via RPA,
-and deep-links the GC to sign & pay directly on the DOB portal.
-
-No payment processing in Blueview. No Stripe. No invoicing.
-
-Dependencies:
-  pip install playwright python-dateutil --break-system-packages
-  playwright install chromium
-
-Env vars:
-  NYC_ID_USERNAME   — Preparer NYC.ID email
-  NYC_ID_PASSWORD   — Preparer NYC.ID password
-  RESEND_API_KEY    — (already configured in server.py)
-  OWNER_ALERT_EMAIL — owner email for DOB NOW change alerts
-"""
-
 import os
 import re
 import hashlib
@@ -868,7 +849,7 @@ async def _send_health_check_alert(issues: List[str]):
         </div>
         """
 
-        resend.emails.send({
+        resend.Emails.send({
             "from": "Blueview Alerts <alerts@blue-view.app>",
             "to": [recipient],
             "subject": (
