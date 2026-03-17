@@ -602,6 +602,11 @@ export const dobAPI = {
     const response = await apiClient.post(`/api/projects/${projectId}/dob-sync`);
     return response.data;
   },
+  
+  getConfig: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/dob-config`);
+    return response.data;
+  },
 };
  
 export const permitRenewalAPI = {
