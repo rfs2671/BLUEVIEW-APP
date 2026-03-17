@@ -1125,11 +1125,19 @@ def create_permit_renewal_routes(
             company = await db.companies.find_one(
                 {"_id": to_query_id(company_id)}
             )
-        company_name = company.get("name", "") if company else ""
+        # Prefer the project-level GC legal name (set in Settings → DOB Permit Renewal)
+        # Fall back to the company name if not set
+        permit_log = await db.dob_logs.find_one({"_id": to_query_id(body.permit_dob_log_id)})
+        project_for_gc = await db.projects.find_one({"_id": to_query_id(body.project_id)}) if body.project_id else None
+        company_name = (
+            (project_for_gc.get("gc_legal_name") or "").strip()
+            if project_for_gc
+            else ""
+        ) or (company.get("name", "") if company else "")
         if not company_name:
             raise HTTPException(
                 status_code=400,
-                detail="Company name required for eligibility check",
+                detail="GC Legal Name required. Set it in Settings → DOB Permit Renewal.",
             )
 
         eligibility = await check_renewal_eligibility(
