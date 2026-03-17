@@ -5304,14 +5304,34 @@ async def run_dob_sync_for_project(project: dict) -> list:
         }
  
         try:
-            result = await db.dob_logs.insert_one(dob_log)
-            dob_log["id"] = str(result.inserted_id)
-            inserted_logs.append(dob_log)
- 
-            if severity == "Action":
-                await _send_critical_dob_alert(project, dob_log)
+            existing = await db.dob_logs.find_one({"raw_dob_id": raw_id})
+            if existing:
+                # Update mutable fields — status, severity, expiration, summary
+                update_fields = {
+                    "severity": dob_log["severity"],
+                    "next_action": dob_log["next_action"],
+                    "ai_summary": dob_log["ai_summary"],
+                    "dob_link": dob_log["dob_link"],
+                    "updated_at": now,
+                    **extra_fields,
+                }
+                await db.dob_logs.update_one(
+                    {"raw_dob_id": raw_id},
+                    {"$set": update_fields},
+                )
+                dob_log["id"] = str(existing["_id"])
+                # Only alert if severity escalated to Action
+                old_severity = existing.get("severity", "")
+                if severity == "Action" and old_severity != "Action":
+                    await _send_critical_dob_alert(project, dob_log)
+            else:
+                result = await db.dob_logs.insert_one(dob_log)
+                dob_log["id"] = str(result.inserted_id)
+                inserted_logs.append(dob_log)
+                if severity == "Action":
+                    await _send_critical_dob_alert(project, dob_log)
         except Exception as e:
-            logger.error(f"Failed to insert dob_log for raw_id={raw_id}: {e}")
+            logger.error(f"Failed to upsert dob_log for raw_id={raw_id}: {e}")
  
     logger.info(
         f"DOB sync for project {project_id}: {len(inserted_logs)} new records "
@@ -5429,6 +5449,14 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
  
     updated = await db.projects.find_one({"_id": to_query_id(project_id)})
 
+    # If BIN was just set or tracking just enabled, kick off an immediate background sync
+    bin_changed = config.nyc_bin is not None and config.nyc_bin.strip() != (project.get("nyc_bin") or "")
+    tracking_enabled = config.track_dob_status is True and not project.get("track_dob_status")
+    if (bin_changed or tracking_enabled) and updated.get("nyc_bin"):
+        import asyncio
+        asyncio.create_task(run_dob_sync_for_project(updated))
+        logger.info(f"Auto-triggered DOB sync for project {project_id} after config save")
+
     return {
         "message": "DOB config updated",
         "nyc_bin": updated.get("nyc_bin"),
@@ -5517,12 +5545,10 @@ async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
     if not project.get("nyc_bin") and not project.get("address"):
         raise HTTPException(status_code=400, detail="No BIN or address configured. Update DOB config first.")
  
-    last_sync = await db.dob_logs.find_one(
-        {"project_id": project_id},
-        sort=[("detected_at", -1)],
-    )
-    if last_sync:
-        last_time = last_sync.get("detected_at")
+    rate_key = f"dob_sync_last:{project_id}"
+    rate_doc = await db.system_config.find_one({"key": rate_key})
+    if rate_doc:
+        last_time = rate_doc.get("last_sync_at")
         if last_time and isinstance(last_time, datetime):
             elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
             if elapsed < 900:
@@ -5531,6 +5557,11 @@ async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
                     status_code=429,
                     detail=f"Rate limited. Try again in {remaining // 60}m {remaining % 60}s.",
                 )
+    await db.system_config.update_one(
+        {"key": rate_key},
+        {"$set": {"key": rate_key, "last_sync_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
  
     new_logs = await run_dob_sync_for_project(project)
  
@@ -5670,17 +5701,18 @@ async def startup_event():
         replace_existing=True,
     )
     
-    # DOB compliance nightly scanner
+    # DOB compliance scanner — runs every 30 minutes
     scheduler.add_job(
         nightly_dob_scan,
-        CronTrigger(hour=4, minute=0, timezone='America/New_York'),
+        'interval',
+        minutes=30,
         id='dob_nightly_scan',
         replace_existing=True,
     )
     
     scheduler.start()
     logger.info("📧 Report email scheduler started")
-    logger.info("🏗️ DOB nightly compliance scanner scheduled (04:00 AM EST)")
+    logger.info("🏗️ DOB compliance scanner scheduled (every 30 minutes)")
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
