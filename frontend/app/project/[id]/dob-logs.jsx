@@ -150,8 +150,13 @@ export default function DOBLogsScreen() {
       setNycBin(result.nyc_bin || '');
       setTrackDobStatus(result.track_dob_status || false);
       setShowConfigModal(false);
-      toast.success('Saved', 'DOB configuration updated');
-      if (result.track_dob_status) await fetchLogs();
+      toast.success('Saved', 'DOB configuration updated. Syncing records...');
+      // Always re-fetch after config save — backend triggers auto-sync on BIN change
+      await fetchLogs();
+      // Poll once more after 8s to catch the background sync results
+      setTimeout(async () => {
+        try { await fetchLogs(); } catch (_) {}
+      }, 8000);
     } catch (error) {
       toast.error('Error', error.response?.data?.detail || 'Could not save config');
     } finally { setSavingConfig(false); }
@@ -240,7 +245,7 @@ export default function DOBLogsScreen() {
               {(isExpired || isExpiring) && (
                 <GlassButton title="Renew Permit" icon={<FileCheck size={16} strokeWidth={1.5} color="#22c55e" />} onPress={() => router.push(`/project/${projectId}/permit-renewal`)} style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]} />
               )}
-              {log.dob_link && (
+              {log.dob_link && log.dob_link.trim().length > 0 && (
                 <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
             </View>
@@ -292,7 +297,7 @@ export default function DOBLogsScreen() {
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
               </View>
-              {log.dob_link && (
+              {log.dob_link && log.dob_link.trim().length > 0 && (
                 <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
             </View>
