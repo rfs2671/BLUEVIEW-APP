@@ -5378,7 +5378,7 @@ async def nightly_dob_scan():
             logger.error(f"DOB scan error for project {project.get('name')}: {e}")
  
     logger.info(f"🏗️ DOB nightly scan complete: {len(projects)} projects scanned, {total_new} new records")
-	# Check for expiring permits across all projects
+    # Check for expiring permits across all projects
     await check_permit_expirations()
     await nightly_renewal_scan(db)
 
@@ -5541,7 +5541,7 @@ async def get_dob_logs(
  
  
 @api_router.post("/projects/{project_id}/dob-sync")
-async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
+async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user)):
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
     project = await db.projects.find_one({
         "_id": to_query_id(project_id),
@@ -5549,6 +5549,10 @@ async def manual_dob_sync(project_id: str, admin=Depends(get_admin_user)):
     })
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+ 
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
  
     company_id = get_user_company_id(admin)
     if company_id and project.get("company_id") != company_id:
