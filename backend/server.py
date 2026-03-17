@@ -5428,15 +5428,15 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
  
     updated = await db.projects.find_one({"_id": to_query_id(project_id)})
+    
     return {
-        "message": "DOB config updated",
-        "nyc_bin": updated.get("nyc_bin"),
-        "nyc_bbl": updated.get("nyc_bbl"),
-        "track_dob_status": updated.get("track_dob_status", False),
-        "gc_legal_name": updated.get("gc_legal_name"),
+        "nyc_bin": project.get("nyc_bin"),
+        "nyc_bbl": project.get("nyc_bbl"),
+        "track_dob_status": project.get("track_dob_status", False),
+        "gc_legal_name": project.get("gc_legal_name"),
     }
- 
- 
+
+
 @api_router.get("/projects/{project_id}/dob-logs")
 async def get_dob_logs(
     project_id: str,
