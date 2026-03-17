@@ -5006,7 +5006,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
  
     try:
         resend.api_key = RESEND_API_KEY
-        resend.emails.send({
+        resend.Emails.send({
             "from": "Blueview Alerts <alerts@blue-view.app>",
             "to": recipients,
             "subject": f"[CRITICAL] DOB Alert: {project_name} — {record_type}",
@@ -5551,7 +5551,7 @@ async def check_and_send_reports():
             continue
         try:
             html = await generate_combined_report(project_id, today)
-            resend.emails.send({
+            resend.Emails.send({
                 "from": "Blueview Reports <reports@blue-view.app>",
                 "to": email_list,
                 "subject": f"Daily Report - {project_name} - {today}",
