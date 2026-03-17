@@ -241,7 +241,7 @@ export default function DOBLogsScreen() {
                 <GlassButton title="Renew Permit" icon={<FileCheck size={16} strokeWidth={1.5} color="#22c55e" />} onPress={() => router.push(`/project/${projectId}/permit-renewal`)} style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]} />
               )}
               {log.dob_link && (
-                <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+                <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
             </View>
           )}
@@ -293,7 +293,7 @@ export default function DOBLogsScreen() {
                 <Text style={s.nextActionText}>{log.next_action}</Text>
               </View>
               {log.dob_link && (
-                <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+                <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
             </View>
           )}
@@ -405,7 +405,7 @@ export default function DOBLogsScreen() {
                 <Text style={s.nextActionText}>{log.next_action}</Text>
               </View>
               {log.dob_link && (
-                <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+                <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
               <Text style={s.detectedText}>ID: {log.raw_dob_id}</Text>
             </View>
