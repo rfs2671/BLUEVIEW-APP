@@ -71,18 +71,23 @@ export default function SettingsScreen() {
 
   // Fetch projects for GC name editing (admin only)
   useEffect(() => {
-    if (isAdmin && isAuthenticated) {
-      apiClient.get('/api/projects').then(resp => {
-        const p = resp.data || [];
+    if (!isAuthenticated || authLoading) return;
+    if (!isAdmin) return;
+    apiClient.get('/api/projects')
+      .then(resp => {
+        const p = Array.isArray(resp.data) ? resp.data : [];
         setProjects(p);
-        if (p.length > 0) {
-          setSelectedProjectId(p[0].id);
-          fetchGcName(p[0].id);
+        const firstId = p[0]?.id || p[0]?._id || '';
+        if (firstId) {
+          setSelectedProjectId(firstId);
+          fetchGcName(firstId);
         }
-      }).catch(() => {});
-    }
-  }, [isAdmin, isAuthenticated]);
-
+      })
+      .catch((e) => {
+        console.error('Failed to load projects for GC name:', e);
+        setProjects([]);
+      });
+  }, [isAuthenticated, authLoading, isAdmin]);
   const fetchGcName = async (projId) => {
     if (!projId) return;
     setLoadingGc(true);
@@ -332,7 +337,7 @@ export default function SettingsScreen() {
           )}
 
           {/* ── GC Legal Name (admin only) ── */}
-          {isAdmin && projects.length > 0 && (
+          {isAdmin && (
             <>
               <Text style={s.sectionLabel}>DOB PERMIT RENEWAL</Text>
               <GlassCard style={s.card}>
@@ -372,22 +377,30 @@ export default function SettingsScreen() {
                     </View>
                   )}
 
-                  <GlassInput
-                    value={gcLegalName}
-                    onChangeText={setGcLegalName}
-                    placeholder="e.g. Blue Elm Inc"
-                    autoCapitalize="words"
-                    editable={!loadingGc}
-                  />
+                  {projects.length === 0 ? (
+                    <Text style={[s.hintText, { color: '#f59e0b', marginTop: 8 }]}>
+                      No projects found. Create a project first, then set the GC name here.
+                    </Text>
+                  ) : (
+                    <GlassInput
+                      value={gcLegalName}
+                      onChangeText={setGcLegalName}
+                      placeholder="e.g. Blue Elm Construction Inc"
+                      autoCapitalize="words"
+                      editable={!loadingGc}
+                    />
+                  )}
                 </View>
 
-                <GlassButton
-                  title={savingGc ? 'Saving...' : 'Save GC Name'}
-                  onPress={handleSaveGcName}
-                  loading={savingGc}
-                  icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                  style={s.saveBtn}
-                />
+                {projects.length > 0 && (
+                  <GlassButton
+                    title={savingGc ? 'Saving...' : 'Save GC Name'}
+                    onPress={handleSaveGcName}
+                    loading={savingGc}
+                    icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                    style={s.saveBtn}
+                  />
+                )}
               </GlassCard>
             </>
           )}
