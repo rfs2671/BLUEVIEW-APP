@@ -5176,59 +5176,71 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
  
  
 def _build_dob_link(rec: dict, record_type: str) -> str:
-    """Build a direct link to DOB BIS or DOB NOW Public Portal for this record.
-    
-    Key insight: Job numbers starting with 'B' are DOB NOW jobs (2018+) and
-    do NOT exist in BIS. They must link to DOB NOW Public Portal instead.
-    Legacy job numbers (numeric only) link to BIS.
-    """
-    bin_val = str(rec.get("bin") or rec.get("bin__") or "").strip()
-    job_num = str(rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or "").strip()
-    isn_val = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
-    ecb_num = str(rec.get("ecb_violation_number") or "").strip()
+    """Build a direct public link to DOB BIS or DOB NOW for this record.
 
-    # Helper: determine if this is a DOB NOW job (B-prefix) vs BIS legacy
-    is_dob_now_job = job_num.upper().startswith("B") if job_num else False
+    DOB NOW jobs (B-prefix, 2018+) do not exist in BIS — they must link to
+    DOB NOW Public Portal. Legacy numeric job numbers link to BIS.
+    All URLs below are publicly accessible without login.
+    """
+    bin_val  = str(rec.get("bin") or rec.get("bin__") or "").strip()
+    job_num  = str(rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or "").strip()
+    isn_val  = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
+    ecb_num  = str(rec.get("ecb_violation_number") or "").strip()
+
+    # Strip dashes for DOB NOW deep-links (B01234567 not B0123-4567)
+    job_clean = job_num.replace("-", "").strip()
+    is_dob_now_job = job_clean.upper().startswith("B") if job_clean else False
 
     if record_type in ("violation", "swo"):
-        # ECB/OATH violations → BIS ECB query (works for all ECB numbers)
         if ecb_num:
-            return f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?requestid=1&ecession={ecb_num}"
-        # BIS legacy violations with ISN
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet"
+                f"?requestid=1&ecession={ecb_num}"
+            )
         if isn_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet?requestid=2&vlcompdetlkey={isn_val}"
-        # Fallback: violations by BIN
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet"
+                f"?requestid=2&vlcompdetlkey={isn_val}"
+            )
         if bin_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
+                f"?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
+            )
+        return ""
 
     if record_type == "complaint":
         if bin_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet?requestid=1&allbin={bin_val}"
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
+                f"?requestid=1&allbin={bin_val}"
+            )
+        return ""
 
-    if record_type == "permit":
+    if record_type in ("permit", "job_status"):
+        if is_dob_now_job and job_clean:
+            # DOB NOW Public Portal — direct job record, no login required
+            return f"https://a810-dobnow.nyc.gov/publish/#!/bldgs/{job_clean}"
+        # BIS legacy: direct job query, no login required
         base_job = job_num.split("-")[0].strip() if job_num else ""
-        if is_dob_now_job:
-            # DOB NOW permits: link to DOB NOW Public Portal (BIS can't find B-prefix jobs)
-            if bin_val:
-                return f"https://a810-dobnow.nyc.gov/publish/#!/search?searchType=BIN&SearchValue={bin_val}"
-            # No BIN? Link to DOB NOW search page
-            return "https://a810-dobnow.nyc.gov/publish/#!/search"
-        else:
-            # Legacy BIS permits (numeric job numbers)
-            if base_job:
-                return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={base_job}"
-            if bin_val:
-                return f"https://a810-bisweb.nyc.gov/bisweb/PermitQueryByNumberServlet?requestid=1&allbin={bin_val}"
-
-    if record_type == "job_status":
-        if is_dob_now_job and bin_val:
-            return f"https://a810-dobnow.nyc.gov/publish/#!/search?searchType=BIN&SearchValue={bin_val}"
-        if job_num:
-            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job_num}"
+        if base_job:
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
+                f"?passjobnumber={base_job}&passdocnumber=01&requestid=1"
+            )
+        if bin_val:
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
+                f"?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
+            )
+        return ""
 
     if bin_val:
-        return f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin_val}"
-    return "https://a810-bisweb.nyc.gov/bisweb/bispi00.jsp"
+        return (
+            f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
+            f"?bin={bin_val}"
+        )
+    return ""
  
  
 async def run_dob_sync_for_project(project: dict) -> list:
