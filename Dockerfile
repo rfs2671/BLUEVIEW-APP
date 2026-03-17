@@ -16,7 +16,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Install Playwright system deps manually (Debian Trixie renames some Ubuntu font packages)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-unifont \
-    fonts-ubuntu-sans \
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
