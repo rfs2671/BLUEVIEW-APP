@@ -5428,7 +5428,30 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
  
     updated = await db.projects.find_one({"_id": to_query_id(project_id)})
-    
+
+    return {
+        "message": "DOB config updated",
+        "nyc_bin": updated.get("nyc_bin"),
+        "nyc_bbl": updated.get("nyc_bbl"),
+        "track_dob_status": updated.get("track_dob_status", False),
+        "gc_legal_name": updated.get("gc_legal_name"),
+    }
+
+
+@api_router.get("/projects/{project_id}/dob-config")
+async def get_dob_config(project_id: str, current_user=Depends(get_current_user)):
+    """Get DOB config for a project (BIN, tracking, GC name)."""
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+
     return {
         "nyc_bin": project.get("nyc_bin"),
         "nyc_bbl": project.get("nyc_bbl"),
