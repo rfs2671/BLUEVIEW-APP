@@ -22,7 +22,7 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 OWNER_ALERT_EMAIL = os.environ.get("OWNER_ALERT_EMAIL", "")
 
 DOB_BIS_LICENSE_URL = "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryServlet"
-DOB_NOW_BUILD_URL = "https://a810-dobnow.nyc.gov/publish/#!/"
+DOB_NOW_BUILD_URL = "https://a810-dobnow.nyc.gov/publish/Index.html"
 
 # RPA selectors the bot depends on — monitored by the health check
 RPA_CRITICAL_SELECTORS = {
