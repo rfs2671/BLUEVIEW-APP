@@ -1641,19 +1641,28 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
-    # Check for duplicate tag_id across all projects
+    now = datetime.now(timezone.utc)
+    
+    # If this tag already exists anywhere, deactivate old registration and reassign
     existing_tag = await db.nfc_tags.find_one({
         "tag_id": tag_data.tag_id,
         "is_deleted": {"$ne": True}
     })
     if existing_tag:
-        existing_proj_id = existing_tag.get("project_id", "unknown")
-        raise HTTPException(
-            status_code=400,
-            detail=f"This NFC tag is already registered (project {existing_proj_id}). Remove it first before re-registering."
+        old_project_id = existing_tag.get("project_id")
+        logger.info(f"NFC tag {tag_data.tag_id} was registered to project {old_project_id}, reassigning to {project_id}")
+        await db.nfc_tags.update_one(
+            {"_id": existing_tag["_id"]},
+            {"$set": {"is_deleted": True, "updated_at": now}}
         )
-    
-    now = datetime.now(timezone.utc)
+        if old_project_id:
+            await db.projects.update_one(
+                {"_id": to_query_id(old_project_id)},
+                {
+                    "$pull": {"nfc_tags": {"tag_id": tag_data.tag_id}},
+                    "$set": {"updated_at": now}
+                }
+            )
     
     # Create NFC tag document
     nfc_tag = {
