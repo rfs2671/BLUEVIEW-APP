@@ -73,24 +73,30 @@ export default function ReportSettingsScreen() {
   }, [isAuthenticated, authLoading]);
 
   const fetchProject = async () => {
+    if (!projectId) {
+      console.warn('fetchProject called with no projectId, skipping');
+      return;
+    }
     setLoading(true);
     try {
       const projectData = await projectsAPI.getById(projectId);
       if (!projectData) {
         throw new Error('Project not found on server');
-      }
       
       setProject(projectData);
       // CRITICAL: Use the backend data as source of truth
       const backendEmailList = projectData.report_email_list || [];
       const backendSendTime = projectData.report_send_time || '18:00';
       
+      console.log('✅ Report settings loaded from backend:', {
+        emailCount: backendEmailList.length,
+        emails: backendEmailList,
+        sendTime: backendSendTime,
+        projectId: projectData.id,
+      });
+      
       setEmailList(backendEmailList);
       setSendTime(backendSendTime);
-      setHasChanges(false);
-      lastSavedRef.current = {
-        emailList: backendEmailList,
-        sendTime: backendSendTime,
       };
     } catch (error) {
       console.error('Failed to fetch project:', error);
