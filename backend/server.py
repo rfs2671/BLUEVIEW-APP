@@ -1689,19 +1689,11 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         }
     )
     
-    # Fetch updated project and serialize safely through Pydantic model
-    updated_project = await db.projects.find_one({"_id": to_query_id(project_id)})
-    try:
-        project_response = ProjectResponse(**serialize_id(dict(updated_project)))
-        project_dict = project_response.model_dump(mode="json")
-    except Exception as e:
-        logger.warning(f"NFC tag registered but project serialization failed: {e}")
-        project_dict = None
-    
+    # Return success - frontend will refetch project data via fetchData()
+    logger.info(f"NFC tag {tag_data.tag_id} registered to project {project_id}")
     return {
         "message": "NFC tag registered successfully",
         "tag_id": tag_data.tag_id,
-        "project": project_dict
     }
 
 @api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
