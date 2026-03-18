@@ -294,7 +294,8 @@ const styles = StyleSheet.create({
     transition: 'all 0.2s ease',
   },
   statPadded: {
-    padding: spacing.lg,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.sm,
   },
 
   /* ── IconPod ────────────────────────────────────────────────────────────── */
