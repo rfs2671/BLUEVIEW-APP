@@ -460,21 +460,21 @@ function buildStyles(colors, isDark) {
   },
   statValue: {
     fontFamily: typography.semibold,
-    fontSize: 40,
+    fontSize: 44,
     marginBottom: spacing.xs,
   },
   statLabel: {
     fontFamily: typography.medium,
-    fontSize: 11,
-    letterSpacing: 0.3,
+    fontSize: 12,
+    letterSpacing: 0.5,
     textAlign: 'center',
-    paddingHorizontal: 2,
+    paddingHorizontal: 0,
   },
   darkStatsCard: {
     marginTop: spacing.lg,
     marginBottom: spacing.xl,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xs,
+    paddingVertical: spacing.xs,
+    paddingHorizontal: 0,
   },
 
   /* ── Section label ─────────────────────────────────────────────────────── */
