@@ -1641,6 +1641,18 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
+    # Check for duplicate tag_id across all projects
+    existing_tag = await db.nfc_tags.find_one({
+        "tag_id": tag_data.tag_id,
+        "is_deleted": {"$ne": True}
+    })
+    if existing_tag:
+        existing_proj_id = existing_tag.get("project_id", "unknown")
+        raise HTTPException(
+            status_code=400,
+            detail=f"This NFC tag is already registered (project {existing_proj_id}). Remove it first before re-registering."
+        )
+    
     now = datetime.now(timezone.utc)
     
     # Create NFC tag document
@@ -1668,12 +1680,19 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         }
     )
     
-    # Fetch updated project
+    # Fetch updated project and serialize safely through Pydantic model
     updated_project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    try:
+        project_response = ProjectResponse(**serialize_id(dict(updated_project)))
+        project_dict = project_response.model_dump(mode="json")
+    except Exception as e:
+        logger.warning(f"NFC tag registered but project serialization failed: {e}")
+        project_dict = None
+    
     return {
         "message": "NFC tag registered successfully",
         "tag_id": tag_data.tag_id,
-        "project": serialize_id(updated_project)
+        "project": project_dict
     }
 
 @api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
