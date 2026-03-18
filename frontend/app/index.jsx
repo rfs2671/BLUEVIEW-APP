@@ -191,11 +191,18 @@ export default function DashboardScreen() {
         return (
           <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
             <StatCard style={s.statCard}>
-              <IconPod size={44} style={s.statIcon}>
-                <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+              <IconPod size={36} style={s.statIcon}>
+                <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
               <Text style={[s.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
-              <Text style={[s.statLabel, { color: colors.text.muted }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>{stat.label.toUpperCase()}</Text>
+              <Text
+                style={[s.statLabel, { color: colors.text.muted }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.85}
+              >
+                {stat.label.toUpperCase()}
+              </Text>
             </StatCard>
           </Pressable>
         );
@@ -439,34 +446,35 @@ function buildStyles(colors, isDark) {
   /* ── Stats row ─────────────────────────────────────────────────────────── */
   statsGrid: {
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.sm,
     marginBottom: spacing.xl,
   },
   statCard: {
     flex: 1,
-    minHeight: 120,
+    minHeight: 140,
     width: '100%',
+    alignItems: 'center',
   },
   statIcon: {
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs,
   },
   statValue: {
     fontFamily: typography.semibold,
-    fontSize: 32,
+    fontSize: 40,
     marginBottom: spacing.xs,
   },
   statLabel: {
     fontFamily: typography.medium,
-    fontSize: 12,
-    letterSpacing: 0.5,
+    fontSize: 11,
+    letterSpacing: 0.3,
     textAlign: 'center',
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: 2,
   },
   darkStatsCard: {
     marginTop: spacing.lg,
     marginBottom: spacing.xl,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xs,
   },
 
   /* ── Section label ─────────────────────────────────────────────────────── */
