@@ -91,7 +91,7 @@ export default function SiteCheckInsScreen() {
       hour: 'numeric',
       minute: '2-digit',
       hour12: true,
-      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timeZone: 'America/New_York',
     });
   };
 
