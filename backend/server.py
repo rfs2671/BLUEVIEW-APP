@@ -3781,6 +3781,27 @@ async def get_daily_log_photo_image(log_id: str, photo_id: str):
     image_data = base64.b64decode(photo["data"])
     return Response(content=image_data, media_type=photo.get("content_type", "image/jpeg"))
 
+@api_router.get("/reports/logbook-photo/{logbook_id}/{activity_index}/{photo_index}")
+async def get_logbook_activity_photo(logbook_id: str, activity_index: int, photo_index: int):
+    """Public endpoint - serve activity photo from logbook as raw image for email reports."""
+    from fastapi.responses import Response
+    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    data = logbook.get("data", {})
+    activities = data.get("activities", [])
+    if activity_index < 0 or activity_index >= len(activities):
+        raise HTTPException(status_code=404, detail="Activity not found")
+    photos = activities[activity_index].get("photos") or []
+    if photo_index < 0 or photo_index >= len(photos):
+        raise HTTPException(status_code=404, detail="Photo not found")
+    photo = photos[photo_index]
+    b64 = photo.get("base64", "")
+    if not b64:
+        raise HTTPException(status_code=404, detail="Photo data not available")
+    image_data = base64.b64decode(b64)
+    return Response(content=image_data, media_type="image/jpeg")
+
 @api_router.delete("/daily-logs/{log_id}/photos/{photo_id}")
 async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
     """Delete a photo (soft delete)"""
@@ -4228,23 +4249,56 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # ==================== COMBINED REPORT GENERATOR ====================
+# ==================== COMBINED REPORT GENERATOR ====================
 def render_signature_html(sig, label="CP Signature"):
-    """Safely render a signature that could be a base64 string or a dict with paths/data."""
+    """Render a signature as email-safe HTML. Signatures stay as base64
+    since they are small PNGs critical for legal compliance."""
     if not sig:
         return ""
     if isinstance(sig, str):
-        return f'<div style="margin-top:8px;"><strong>{label}:</strong><br><img src="data:image/png;base64,{sig}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
+            '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
+            + label + ':</td></tr>'
+            '<tr><td><img src="data:image/png;base64,' + sig
+            + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+            '</table>'
+        )
     if isinstance(sig, dict):
         sig_data = sig.get("data") or sig.get("paths") or ""
         signer = sig.get("signer_name", "")
         if isinstance(sig_data, str) and sig_data:
             full_label = f"{label} ({signer})" if signer else label
-            return f'<div style="margin-top:8px;"><strong>{full_label}:</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
+            return (
+                '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
+                '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
+                + full_label + ':</td></tr>'
+                '<tr><td><img src="data:image/png;base64,' + sig_data
+                + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                '</table>'
+            )
         if signer:
-            return f'<p><strong>{label}:</strong> {signer} (signed)</p>'
+            return (
+                '<p style="color:#475569;margin:8px 0;">'
+                '<strong style="color:#0A1929;">' + label + ':</strong> '
+                + signer + ' (signed)</p>'
+            )
     return ""
-	
+
+
 async def generate_combined_report(project_id: str, date: str) -> str:
+    """Generate email-safe HTML report. Uses table-based layout, bgcolor attrs,
+    and URL-based images for Gmail/Outlook/Apple Mail compatibility.
+
+    Fixes:
+      1) White background forced (Gmail dark mode defeated via bgcolor + color-scheme)
+      2) Fits in email box (table layout, zero flexbox)
+      3) Photos render (base64 -> absolute URLs to public image endpoints)
+      4) Full report content (daily_log_photos fetched + all sections)
+    """
+
+    BASE_URL = "https://blueview2-production.up.railway.app"
+
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     project_name = project.get("name", "Unknown") if project else "Unknown"
     project_address = project.get("address", "") if project else ""
@@ -4271,102 +4325,194 @@ async def generate_combined_report(project_id: str, date: str) -> str:
 
     checkin_count = len(checkins)
 
-    # --- Daily Jobsite (CP) ---
+    # --- Fetch daily_log_photos if daily_log exists ---
+    daily_log_photos = []
+    if daily_log:
+        dl_id = str(daily_log["_id"])
+        daily_log_photos = await db.daily_log_photos.find(
+            {"daily_log_id": dl_id, "is_deleted": {"$ne": True}},
+            {"data": 0},
+        ).to_list(500)
+
+    # Reusable inline style constants
+    TH = (
+        'style="background-color:#1e293b;color:#ffffff;padding:10px 12px;'
+        'text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;'
+        'letter-spacing:0.5px;" bgcolor="#1e293b"'
+    )
+    TD = 'style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;"'
+    EMPTY_5 = f'<tr><td colspan="5" {TD}>&mdash;</td></tr>'
+    EMPTY_3 = f'<tr><td colspan="3" {TD}>&mdash;</td></tr>'
+
+    def section_title(text):
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 12px 0;">'
+            '<tr><td style="font-size:16px;font-weight:600;color:#0A1929;'
+            f'padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{text}</td></tr></table>'
+        )
+
+    def sub_title(text):
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 8px 0;">'
+            f'<tr><td style="font-size:14px;font-weight:600;color:#475569;">{text}</td></tr></table>'
+        )
+
+    def info_box(content):
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="margin:12px 0;" bgcolor="#f1f5f9">'
+            '<tr><td style="background-color:#f1f5f9;padding:14px 18px;'
+            'border-left:4px solid #1565C0;font-size:14px;line-height:1.7;color:#475569;">'
+            + content + '</td></tr></table>'
+        )
+
+    def para(text):
+        return f'<p style="color:#475569;line-height:1.6;margin:8px 0;">{text}</p>'
+
+    def bold_para(label, value):
+        return (
+            '<p style="color:#475569;line-height:1.6;margin:8px 0;">'
+            f'<strong style="color:#0A1929;">{label}:</strong> {value}</p>'
+        )
+
+    # ==========================================================
+    #  DAILY JOBSITE (CP Logbook)
+    # ==========================================================
     daily_jobsite = next((l for l in logbooks if l.get("log_type") == "daily_jobsite"), None)
     jobsite_html = ""
     if daily_jobsite:
+        logbook_id = str(daily_jobsite["_id"])
         d = daily_jobsite.get("data", {})
         activities = d.get("activities", [])
-        act_sections = ""
-        for act in activities:
-            photos_html = ""
-            for photo in (act.get("photos") or []):
+
+        act_rows = ""
+        for ai, act in enumerate(activities):
+            # Photos as URL-based <img> tags
+            photos = ""
+            for pi, photo in enumerate(act.get("photos") or []):
                 if photo.get("base64"):
-                    photos_html += f'<img src="data:image/jpeg;base64,{photo["base64"]}" style="width:140px;height:105px;object-fit:cover;border-radius:4px;margin:3px;" />'
-            act_sections += f"""
-            <tr>
-                <td>{act.get('crew_id', '')}</td>
-                <td>{act.get('company', '')}</td>
-                <td>{act.get('num_workers', '')}</td>
-                <td>{act.get('work_description', '')}</td>
-                <td>{act.get('work_locations', '')}</td>
-            </tr>"""
-            if photos_html:
-                act_sections += f"""
-            <tr>
-                <td colspan="5" style="background:#f8fafc;">
-                    <div style="display:flex;flex-wrap:wrap;gap:4px;padding:4px 0;">{photos_html}</div>
-                </td>
-            </tr>"""
+                    url = f"{BASE_URL}/api/reports/logbook-photo/{logbook_id}/{ai}/{pi}"
+                    photos += (
+                        f'<img src="{url}" width="140" height="105" '
+                        'style="width:140px;height:105px;object-fit:cover;'
+                        'border-radius:4px;border:1px solid #e2e8f0;'
+                        'display:inline-block;margin:3px;" />'
+                    )
+
+            act_rows += (
+                f'<tr>'
+                f'<td {TD}>{act.get("crew_id", "")}</td>'
+                f'<td {TD}>{act.get("company", "")}</td>'
+                f'<td {TD}>{act.get("num_workers", "")}</td>'
+                f'<td {TD}>{act.get("work_description", "")}</td>'
+                f'<td {TD}>{act.get("work_locations", "")}</td>'
+                f'</tr>'
+            )
+            if photos:
+                act_rows += (
+                    '<tr><td colspan="5" style="padding:8px 12px;border-bottom:1px solid #e2e8f0;'
+                    f'background-color:#f8fafc;" bgcolor="#f8fafc">{photos}</td></tr>'
+                )
 
         equip = d.get("equipment_on_site", {})
         equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
-        check = d.get("checklist_items", {})
-        check_list = ", ".join(k.replace("_", " ").title() for k, v in check.items() if v)
+        chk = d.get("checklist_items", {})
+        check_list = ", ".join(k.replace("_", " ").title() for k, v in chk.items() if v)
 
+        obs_html = ""
         obs_rows = ""
         for obs in d.get("observations", []):
-            obs_rows += f"<tr><td>{obs.get('description', '')}</td><td>{obs.get('responsible_party', '')}</td><td>{obs.get('remedy', '')}</td></tr>"
+            obs_rows += (
+                f'<tr><td {TD}>{obs.get("description", "")}</td>'
+                f'<td {TD}>{obs.get("responsible_party", "")}</td>'
+                f'<td {TD}>{obs.get("remedy", "")}</td></tr>'
+            )
+        if obs_rows:
+            obs_html = (
+                sub_title("Safety Observations")
+                + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+                  'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+                + f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
+                + obs_rows + '</table>'
+            )
 
-        # Signature HTML
-        cp_sig_html = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature")
-        super_sig_html = render_signature_html(d.get("superintendent_signature"), "Superintendent")
+        cp_sig = render_signature_html(daily_jobsite.get("cp_signature"), "CP Signature")
+        sup_sig = render_signature_html(d.get("superintendent_signature"), "Superintendent")
         visitors = d.get("visitors_deliveries", "")
-        time_in = d.get("time_in", "")
-        time_out = d.get("time_out", "")
-        areas = d.get("areas_visited", "")
         wind = d.get("weather_wind", "")
 
-        jobsite_html = f"""
-        <h2>Daily Jobsite Log (NYC DOB 3301-02)</h2>
-        <div class="info-box">
-            <strong>Weather:</strong> {d.get('weather', 'N/A')} {d.get('weather_temp', '')}{(' — Wind: ' + wind) if wind else ''}<br>
-            <strong>Description:</strong> {d.get('general_description', 'N/A')}<br>
-            <strong>Time In:</strong> {time_in or 'N/A'} &nbsp;&nbsp; <strong>Time Out:</strong> {time_out or 'N/A'}<br>
-            <strong>Areas Visited:</strong> {areas or 'N/A'}
-        </div>
-        <h3>Activity Details</h3>
-        <table>
-            <tr><th>Crew</th><th>Company</th><th>Workers</th><th>Description</th><th>Location</th></tr>
-            {act_sections or '<tr><td colspan="5">No activities</td></tr>'}
-        </table>
-        <p><strong>Equipment:</strong> {equip_list or 'None'}</p>
-        <p><strong>Inspected:</strong> {check_list or 'None'}</p>
-        {'<h3>Safety Observations</h3><table><tr><th>Description</th><th>Responsible</th><th>Remedy</th></tr>' + obs_rows + '</table>' if obs_rows else ''}
-        {('<p><strong>Visitors / Deliveries:</strong> ' + visitors + '</p>') if visitors else ''}
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid #e2e8f0;">
-            <p><strong>CP:</strong> {daily_jobsite.get('cp_name', 'N/A')}</p>
-            {cp_sig_html}
-            {super_sig_html}
-        </div>
-        """
+        weather_str = f'{d.get("weather", "N/A")} {d.get("weather_temp", "")}'
+        if wind:
+            weather_str += f' &mdash; Wind: {wind}'
 
-    # --- Toolbox Talk ---
+        jobsite_html = (
+            section_title("Daily Jobsite Log (NYC DOB 3301-02)")
+            + info_box(
+                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
+                f'<strong style="color:#0A1929;">Description:</strong> {d.get("general_description", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Time In:</strong> {d.get("time_in") or "N/A"}'
+                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {d.get("time_out") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Areas Visited:</strong> {d.get("areas_visited") or "N/A"}'
+            )
+            + sub_title("Activity Details")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>Workers</th>'
+              f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
+            + (act_rows or EMPTY_5)
+            + '</table>'
+            + bold_para("Equipment", equip_list or "None")
+            + bold_para("Inspected", check_list or "None")
+            + obs_html
+            + (bold_para("Visitors / Deliveries", visitors) if visitors else "")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="margin-top:16px;border-top:1px solid #e2e8f0;"><tr><td style="padding-top:12px;">'
+            + bold_para("CP", daily_jobsite.get("cp_name", "N/A"))
+            + cp_sig + sup_sig
+            + '</td></tr></table>'
+        )
+
+    # ==========================================================
+    #  TOOLBOX TALK
+    # ==========================================================
     toolbox = next((l for l in logbooks if l.get("log_type") == "toolbox_talk"), None)
     toolbox_html = ""
     if toolbox:
-        td = toolbox.get("data", {})
-        topics = td.get("checked_topics", {})
+        td_data = toolbox.get("data", {})
+        topics = td_data.get("checked_topics", {})
         topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
         att_rows = ""
-        for a in td.get("attendees", []):
-            att_rows += f'<tr><td>{a.get("name", "")}</td><td>{a.get("company", "")}</td><td>{"✓" if a.get("signed") else "—"}</td></tr>'
-        toolbox_html = f"""
-        <h2>Tool Box Talk</h2>
-        <div class="info-box">
-            <strong>Location:</strong> {td.get('location', 'N/A')}<br>
-            <strong>Company:</strong> {td.get('company_name', 'N/A')}<br>
-            <strong>Performed By:</strong> {td.get('performed_by', 'N/A')}<br>
-            <strong>Time:</strong> {td.get('meeting_time', 'N/A')}
-        </div>
-        <p><strong>Topics:</strong> {topic_list or 'None'}</p>
-        <table><tr><th>Name</th><th>Company</th><th>Signed</th></tr>
-        {att_rows or '<tr><td colspan="3">No attendees</td></tr>'}</table>
-        <p><strong>CP:</strong> {toolbox.get('cp_name', 'N/A')}</p>
-        {render_signature_html(toolbox.get('cp_signature'), 'CP Signature')}
-        """
+        for a in td_data.get("attendees", []):
+            signed = "&#10003;" if a.get("signed") else "&mdash;"
+            att_rows += (
+                f'<tr><td {TD}>{a.get("name", "")}</td>'
+                f'<td {TD}>{a.get("company", "")}</td>'
+                f'<td {TD}>{signed}</td></tr>'
+            )
 
-    # --- Pre-Shift Sign-In ---
+        tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
+
+        toolbox_html = (
+            section_title("Tool Box Talk")
+            + info_box(
+                f'<strong style="color:#0A1929;">Location:</strong> {td_data.get("location", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Company:</strong> {td_data.get("company_name", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Performed By:</strong> {td_data.get("performed_by", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Time:</strong> {td_data.get("meeting_time", "N/A")}'
+            )
+            + bold_para("Topics", topic_list or "None")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
+            + (att_rows or EMPTY_3)
+            + '</table>'
+            + bold_para("CP", toolbox.get("cp_name", "N/A"))
+            + tb_sig
+        )
+
+    # ==========================================================
+    #  PRE-SHIFT SIGN-IN
+    # ==========================================================
     preshift = next((l for l in logbooks if l.get("log_type") == "preshift_signin"), None)
     preshift_html = ""
     if preshift:
@@ -4374,174 +4520,251 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         w_rows = ""
         for w in pd.get("workers", []):
             if w.get("name", "").strip():
-                w_rows += f'<tr><td>{w.get("name", "")}</td><td>{w.get("company", "")}</td><td>{w.get("osha_number", "")}</td><td>{w.get("had_injury") or "—"}</td><td>{w.get("inspected_ppe") or "—"}</td></tr>'
-        preshift_html = f"""
-        <h2>Pre-Shift Sign-In</h2>
-        <table><tr><th>Name</th><th>Company</th><th>OSHA #</th><th>Injury</th><th>PPE</th></tr>
-        {w_rows or '<tr><td colspan="5">No workers</td></tr>'}</table>
-        <p><strong>CP:</strong> {preshift.get('cp_name', 'N/A')}</p>
-        {render_signature_html(preshift.get('cp_signature'), 'CP Signature')}
-        """
+                w_rows += (
+                    f'<tr><td {TD}>{w.get("name", "")}</td>'
+                    f'<td {TD}>{w.get("company", "")}</td>'
+                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
+                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
+                )
 
-    # --- Site Device Log ---
+        ps_sig = render_signature_html(preshift.get("cp_signature"), "CP Signature")
+
+        preshift_html = (
+            section_title("Pre-Shift Sign-In")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
+              f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
+            + (w_rows or EMPTY_5)
+            + '</table>'
+            + bold_para("CP", preshift.get("cp_name", "N/A"))
+            + ps_sig
+        )
+
+    # ==========================================================
+    #  SITE SUPERINTENDENT LOG  (daily_log)
+    # ==========================================================
     site_html = ""
     if daily_log:
+        dl_id = str(daily_log["_id"])
+
         # Subcontractor cards
-        sub_cards_html = ""
-        for idx, card in enumerate(daily_log.get("subcontractor_cards") or []):
-            sub_cards_html += f"""
-            <tr>
-                <td>{card.get('company_name', 'N/A')}</td>
-                <td>{card.get('trade', 'N/A')}</td>
-                <td>{card.get('num_workers', 0)}</td>
-                <td>{card.get('hours', 'N/A')}</td>
-                <td>{card.get('description', 'N/A')}</td>
-            </tr>"""
+        sub_rows = ""
+        for card in (daily_log.get("subcontractor_cards") or []):
+            sub_rows += (
+                f'<tr><td {TD}>{card.get("company_name", "N/A")}</td>'
+                f'<td {TD}>{card.get("trade", "N/A")}</td>'
+                f'<td {TD}>{card.get("num_workers", 0)}</td>'
+                f'<td {TD}>{card.get("hours", "N/A")}</td>'
+                f'<td {TD}>{card.get("description", "N/A")}</td></tr>'
+            )
 
         # Safety checklist
         safety_rows = ""
         for item_key, item_val in (daily_log.get("safety_checklist") or {}).items():
-            status = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
-            checked_by = item_val.get("checked_by", "") if isinstance(item_val, dict) else ""
-            safety_rows += f"<tr><td>{item_key.replace('_', ' ').title()}</td><td>{status}</td><td>{checked_by}</td></tr>"
+            st = item_val.get("status", "N/A") if isinstance(item_val, dict) else str(item_val)
+            cb = item_val.get("checked_by", "") if isinstance(item_val, dict) else ""
+            safety_rows += (
+                f'<tr><td {TD}>{item_key.replace("_", " ").title()}</td>'
+                f'<td {TD}>{st}</td><td {TD}>{cb}</td></tr>'
+            )
 
-        # Corrective actions
-        corrective = daily_log.get("corrective_actions", "")
         corrective_na = daily_log.get("corrective_actions_na", False)
-        corrective_text = "N/A" if corrective_na else (corrective or "None recorded")
+        corrective_text = "N/A" if corrective_na else (daily_log.get("corrective_actions", "") or "None recorded")
 
-        # Incident log
-        incident = daily_log.get("incident_log", "")
         incident_na = daily_log.get("incident_log_na", False)
-        incident_text = "N/A" if incident_na else (incident or "None recorded")
+        incident_text = "N/A" if incident_na else (daily_log.get("incident_log", "") or "None recorded")
 
-        # Work performed
         work_performed = daily_log.get("work_performed", "")
+        work_html = (sub_title("Work Performed") + para(work_performed)) if work_performed else ""
 
-        # Signatures
-        super_sig_html = ""
-        super_sig = daily_log.get("superintendent_signature")
-        if super_sig and isinstance(super_sig, dict):
-            super_name = super_sig.get("signer_name", "Superintendent")
-            sig_data = super_sig.get("paths") or super_sig.get("data") or ""
-            if isinstance(sig_data, str) and sig_data:
-                super_sig_html = f'<div style="margin-top:12px;"><strong>Superintendent ({super_name}):</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
-            elif super_name:
-                super_sig_html = f'<p><strong>Superintendent:</strong> {super_name} (signed)</p>'
+        # Superintendent signature
+        sup_sig_html = ""
+        sup_sig_raw = daily_log.get("superintendent_signature")
+        if sup_sig_raw and isinstance(sup_sig_raw, dict):
+            sn = sup_sig_raw.get("signer_name", "Superintendent")
+            sd = sup_sig_raw.get("paths") or sup_sig_raw.get("data") or ""
+            if isinstance(sd, str) and sd:
+                sup_sig_html = (
+                    '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
+                    '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
+                    f'Superintendent ({sn}):</td></tr>'
+                    f'<tr><td><img src="data:image/png;base64,{sd}" '
+                    'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                    '</table>'
+                )
+            elif sn:
+                sup_sig_html = bold_para("Superintendent", sn + " (signed)")
 
+        # CP signature
         cp_sig_html = ""
-        cp_sig = daily_log.get("competent_person_signature")
-        if cp_sig and isinstance(cp_sig, dict):
-            cp_name = cp_sig.get("signer_name", "Competent Person")
-            sig_data = cp_sig.get("paths") or cp_sig.get("data") or ""
-            if isinstance(sig_data, str) and sig_data:
-                cp_sig_html = f'<div style="margin-top:12px;"><strong>Competent Person ({cp_name}):</strong><br><img src="data:image/png;base64,{sig_data}" style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;margin-top:4px;" /></div>'
-            elif cp_name:
-                cp_sig_html = f'<p><strong>Competent Person:</strong> {cp_name} (signed)</p>'
+        cp_sig_raw = daily_log.get("competent_person_signature")
+        if cp_sig_raw and isinstance(cp_sig_raw, dict):
+            cn = cp_sig_raw.get("signer_name", "Competent Person")
+            cd = cp_sig_raw.get("paths") or cp_sig_raw.get("data") or ""
+            if isinstance(cd, str) and cd:
+                cp_sig_html = (
+                    '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
+                    '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
+                    f'Competent Person ({cn}):</td></tr>'
+                    f'<tr><td><img src="data:image/png;base64,{cd}" '
+                    'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                    '</table>'
+                )
+            elif cn:
+                cp_sig_html = bold_para("Competent Person", cn + " (signed)")
 
-        site_html = f"""
-        <h2>Site Superintendent Log</h2>
-        <div class="info-box">
-            <strong>Weather:</strong> {daily_log.get('weather', 'N/A')} {daily_log.get('weather_temp', '') or ''} {daily_log.get('weather_wind', '') or ''}<br>
-            <strong>Workers on Site:</strong> {daily_log.get('worker_count', 0)}<br>
-            <strong>Notes:</strong> {daily_log.get('notes', 'N/A')}
-        </div>
+        # Photos from daily_log_photos collection
+        photos_section = ""
+        if daily_log_photos:
+            cells = []
+            for ph in daily_log_photos:
+                pid = str(ph["_id"])
+                url = f"{BASE_URL}/api/daily-logs/{dl_id}/photos/{pid}/image"
+                cap = ph.get("caption", "")
+                cells.append(
+                    f'<td style="padding:3px;vertical-align:top;" valign="top">'
+                    f'<img src="{url}" width="180" height="135" alt="{cap}" '
+                    f'style="width:180px;height:135px;object-fit:cover;border-radius:4px;'
+                    f'border:1px solid #e2e8f0;display:block;" /></td>'
+                )
+            rows = ""
+            for i in range(0, len(cells), 3):
+                rows += "<tr>" + "".join(cells[i:i + 3]) + "</tr>"
+            photos_section = (
+                sub_title("Site Photos")
+                + f'<table cellpadding="0" cellspacing="0" border="0">{rows}</table>'
+            )
 
-        {('<h3>Work Performed</h3><p>' + work_performed + '</p>') if work_performed else ''}
+        not_signed_super = bold_para("Superintendent", "Not signed")
+        not_signed_cp = bold_para("Competent Person", "Not signed")
 
-        <h3>Subcontractor Activity</h3>
-        <table>
-            <tr><th>Company</th><th>Trade</th><th>Workers</th><th>Hours</th><th>Description</th></tr>
-            {sub_cards_html or '<tr><td colspan="5">No subcontractor activity recorded</td></tr>'}
-        </table>
+        site_html = (
+            section_title("Site Superintendent Log")
+            + info_box(
+                f'<strong style="color:#0A1929;">Weather:</strong> '
+                f'{daily_log.get("weather", "N/A")} '
+                f'{daily_log.get("weather_temp", "") or ""} '
+                f'{daily_log.get("weather_wind", "") or ""}<br />'
+                f'<strong style="color:#0A1929;">Workers on Site:</strong> {daily_log.get("worker_count", 0)}<br />'
+                f'<strong style="color:#0A1929;">Notes:</strong> {daily_log.get("notes", "N/A")}'
+            )
+            + work_html
+            + sub_title("Subcontractor Activity")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Company</th><th {TH}>Trade</th><th {TH}>Workers</th>'
+              f'<th {TH}>Hours</th><th {TH}>Description</th></tr>'
+            + (sub_rows or EMPTY_5) + '</table>'
+            + sub_title("Safety Checklist")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Item</th><th {TH}>Status</th><th {TH}>Checked By</th></tr>'
+            + (safety_rows or EMPTY_3) + '</table>'
+            + sub_title("Corrective Actions") + para(corrective_text)
+            + sub_title("Incident Log") + para(incident_text)
+            + photos_section
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="margin-top:20px;border-top:2px solid #e2e8f0;"><tr><td style="padding-top:16px;">'
+            + sub_title("Signatures")
+            + (sup_sig_html or not_signed_super)
+            + (cp_sig_html or not_signed_cp)
+            + '</td></tr></table>'
+        )
 
-        <h3>Safety Checklist</h3>
-        <table>
-            <tr><th>Item</th><th>Status</th><th>Checked By</th></tr>
-            {safety_rows or '<tr><td colspan="3">No safety items recorded</td></tr>'}
-        </table>
+    # ==========================================================
+    #  FINAL HTML ASSEMBLY  (email-safe, table-based)
+    # ==========================================================
+    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
 
-        <h3>Corrective Actions</h3>
-        <p>{corrective_text}</p>
+    html = f"""<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light only" />
+<meta name="supported-color-schemes" content="light only" />
+<title>Daily Construction Report - {project_name}</title>
+<!--[if mso]><style>table, td {{font-family: Arial, sans-serif !important;}}</style><![endif]-->
+<style>
+  :root {{ color-scheme: light only; }}
+  body, .body {{ background-color: #f0f4f8 !important; }}
+  u + .body {{ background-color: #f0f4f8 !important; }}
+  [data-ogsc] .wrapper {{ background-color: #ffffff !important; }}
+  [data-ogsc] body {{ background-color: #f0f4f8 !important; }}
+  @media (prefers-color-scheme: dark) {{
+    body, .body {{ background-color: #f0f4f8 !important; }}
+    .wrapper {{ background-color: #ffffff !important; }}
+    .content-cell {{ background-color: #ffffff !important; color: #1a2332 !important; }}
+  }}
+</style>
+</head>
+<body class="body" style="margin:0;padding:0;background-color:#f0f4f8;font-family:{font};-webkit-font-smoothing:antialiased;" bgcolor="#f0f4f8">
 
-        <h3>Incident Log</h3>
-        <p>{incident_text}</p>
+<table cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f0f4f8" style="background-color:#f0f4f8;">
+<tr><td align="center" style="padding:20px 0;">
 
-        <div style="margin-top:20px;padding-top:16px;border-top:2px solid #e2e8f0;">
-            <h3>Signatures</h3>
-            {super_sig_html or '<p><strong>Superintendent:</strong> Not signed</p>'}
-            {cp_sig_html or '<p><strong>Competent Person:</strong> Not signed</p>'}
-        </div>
-        """
+<table cellpadding="0" cellspacing="0" border="0" width="680" class="wrapper" bgcolor="#ffffff"
+  style="background-color:#ffffff;max-width:680px;width:100%;">
 
-    html = f"""
-    <html>
-    <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background: #f0f4f8; color: #1a2332; }}
-        .wrapper {{ max-width: 680px; margin: 0 auto; background: #ffffff; }}
-        .header {{ background: linear-gradient(135deg, #0A1929 0%, #1565C0 100%); padding: 32px 40px; }}
-        .header h1 {{ color: #ffffff; font-size: 22px; font-weight: 600; margin: 0 0 4px 0; letter-spacing: 0.5px; }}
-        .header .subtitle {{ color: rgba(255,255,255,0.7); font-size: 13px; font-weight: 400; }}
-        .header .logo {{ color: rgba(255,255,255,0.5); font-size: 10px; letter-spacing: 3px; text-transform: uppercase; margin-bottom: 16px; }}
-        .summary {{ background: #f8fafc; padding: 20px 40px; border-bottom: 1px solid #e2e8f0; display: flex; }}
-        .summary-item {{ display: inline-block; margin-right: 32px; }}
-        .summary-label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: #64748b; font-weight: 600; }}
-        .summary-value {{ font-size: 15px; color: #0A1929; font-weight: 500; margin-top: 2px; }}
-        .content {{ padding: 24px 40px 40px; }}
-        h2 {{ color: #0A1929; font-size: 16px; font-weight: 600; margin: 28px 0 12px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }}
-        h3 {{ color: #475569; font-size: 14px; font-weight: 600; margin: 16px 0 8px; }}
-        .info-box {{ background: #f1f5f9; padding: 14px 18px; border-radius: 8px; margin: 12px 0; border-left: 4px solid #1565C0; font-size: 14px; line-height: 1.7; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; border-radius: 8px; overflow: hidden; }}
-        th {{ background: #1e293b; color: #ffffff; padding: 10px 12px; text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }}
-        td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; color: #334155; }}
-        tr:nth-child(even) {{ background: #f8fafc; }}
-        tr:hover {{ background: #f1f5f9; }}
-        p {{ color: #475569; line-height: 1.6; margin: 8px 0; }}
-        strong {{ color: #0A1929; }}
-        img {{ border-radius: 6px; border: 1px solid #e2e8f0; max-width: 100%; }}
-        .footer {{ background: #f8fafc; padding: 24px 40px; text-align: center; border-top: 1px solid #e2e8f0; }}
-        .footer-text {{ font-size: 11px; color: #94a3b8; }}
-        .footer-brand {{ font-size: 10px; color: #cbd5e1; letter-spacing: 3px; text-transform: uppercase; margin-top: 8px; }}
-    </style>
-    </head>
-    <body>
-    <div class="wrapper">
-        <div class="header">
-            <div class="logo">Blueview</div>
-            <h1>Daily Construction Report</h1>
-            <div class="subtitle">{project_name}</div>
-        </div>
-        <div class="summary">
-            <div class="summary-item">
-                <div class="summary-label">Date</div>
-                <div class="summary-value">{date}</div>
-            </div>
-            <div class="summary-item">
-                <div class="summary-label">Address</div>
-                <div class="summary-value">{project_address or 'N/A'}</div>
-            </div>
-            <div class="summary-item">
-                <div class="summary-label">Workers</div>
-                <div class="summary-value">{checkin_count}</div>
-            </div>
-        </div>
-        <div class="content">
-            {jobsite_html}
-            {toolbox_html}
-            {preshift_html}
-            {site_html}
-        </div>
-        <div class="footer">
-            <div class="footer-text">This report was automatically generated on {datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')} UTC</div>
-            <div class="footer-brand">Blueview Construction Management</div>
-        </div>
-    </div>
-    </body>
-    </html>
-    """
+  <!-- HEADER -->
+  <tr>
+    <td style="background-color:#0A1929;padding:32px 40px;" bgcolor="#0A1929">
+      <table cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr><td style="color:rgba(255,255,255,0.5);font-size:10px;letter-spacing:3px;text-transform:uppercase;padding-bottom:16px;font-family:{font};">BLUEVIEW</td></tr>
+        <tr><td style="color:#ffffff;font-size:22px;font-weight:600;letter-spacing:0.5px;padding-bottom:4px;font-family:{font};">Daily Construction Report</td></tr>
+        <tr><td style="color:rgba(255,255,255,0.7);font-size:13px;font-weight:400;font-family:{font};">{project_name}</td></tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- SUMMARY ROW -->
+  <tr>
+    <td style="background-color:#f8fafc;padding:20px 40px;border-bottom:1px solid #e2e8f0;" bgcolor="#f8fafc">
+      <table cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr>
+          <td width="33%" valign="top" style="vertical-align:top;">
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">DATE</span><br />
+            <span style="font-size:15px;color:#0A1929;font-weight:500;">{date}</span>
+          </td>
+          <td width="34%" valign="top" style="vertical-align:top;">
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">ADDRESS</span><br />
+            <span style="font-size:15px;color:#0A1929;font-weight:500;">{project_address or 'N/A'}</span>
+          </td>
+          <td width="33%" valign="top" style="vertical-align:top;">
+            <span style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:600;">WORKERS</span><br />
+            <span style="font-size:15px;color:#0A1929;font-weight:500;">{checkin_count}</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+
+  <!-- CONTENT -->
+  <tr>
+    <td class="content-cell" style="padding:24px 40px 40px;background-color:#ffffff;color:#1a2332;" bgcolor="#ffffff">
+      {jobsite_html}
+      {toolbox_html}
+      {preshift_html}
+      {site_html}
+    </td>
+  </tr>
+
+  <!-- FOOTER -->
+  <tr>
+    <td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
+      <span style="font-size:11px;color:#94a3b8;">This report was automatically generated on {gen_time} UTC</span><br />
+      <span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;text-transform:uppercase;">BLUEVIEW CONSTRUCTION MANAGEMENT</span>
+    </td>
+  </tr>
+
+</table>
+</td></tr></table>
+
+</body>
+</html>"""
     return html
 
 @api_router.get("/reports/project/{project_id}/date/{date}")
