@@ -629,64 +629,64 @@ def create_token(user_id: str, email: str, role: str, site_mode: bool = False, p
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), token: Optional[str] = Query(None)):
-    if not credentials and not token:
-        logger.error("❌ AUTH FAIL: No credentials provided")
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    token: Optional[str] = None,
+):
+    raw_token = None
+    if credentials:
+        raw_token = credentials.credentials
+    elif token:
+        raw_token = token
+
+    if not raw_token:
+        logger.error("❌ AUTH FAIL: No token provided")
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    raw_token = token if token else credentials.credentials
-    
-    logger.info(f"✅ AUTH: Got token, attempting to decode...")
-    
+
     try:
         payload = jwt.decode(raw_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
         site_mode = payload.get("site_mode", False)
-        project_id = payload.get("project_id")
-        
-        logger.info(f"✅ AUTH: Token decoded - user_id={user_id}, site_mode={site_mode}")
-        
+
         if not user_id:
             logger.error("❌ AUTH FAIL: No user_id in token")
             raise HTTPException(status_code=401, detail="Invalid token")
-        
-        # For site devices, fetch from site_devices collection
+
         if site_mode:
             device = await db.site_devices.find_one({"_id": to_query_id(user_id)})
             if not device:
                 logger.error(f"❌ AUTH FAIL: Site device not found - {user_id}")
                 raise HTTPException(status_code=401, detail="Device not found")
-            
+
             device_data = serialize_id(device)
             device_data["site_mode"] = True
             device_data["role"] = "site_device"
-            
-            # Get company_id from project
+
             if device.get("project_id"):
                 project = await db.projects.find_one({"_id": to_query_id(device["project_id"])})
                 if project:
                     device_data["company_id"] = project.get("company_id")
-            
+
             logger.info(f"✅ AUTH SUCCESS: Site device {user_id}")
             return device_data
-        
-        # Regular user
+
         user = await db.users.find_one({"_id": to_query_id(user_id)})
         if not user:
             logger.error(f"❌ AUTH FAIL: User not found - {user_id}")
             raise HTTPException(status_code=401, detail="User not found")
-        
+
         user_data = serialize_id(user)
         user_data["site_mode"] = False
         logger.info(f"✅ AUTH SUCCESS: User {user_id}, role={user_data.get('role')}")
         return user_data
+
     except jwt.ExpiredSignatureError:
         logger.error("❌ AUTH FAIL: Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:
         logger.error(f"❌ AUTH FAIL: Invalid token - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
-
+		
 async def get_admin_user(current_user = Depends(get_current_user)):
     if current_user.get("role") not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Admin access required")
