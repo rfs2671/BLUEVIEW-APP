@@ -39,7 +39,7 @@ import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
-import { projectsAPI, dailyLogsAPI, reportsAPI } from '../src/utils/api';
+import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
@@ -186,8 +186,8 @@ export default function ReportsScreen() {
       } else {
         // On mobile, open report URL in device browser
         const baseURL = apiClient.defaults.baseURL || '';
-        const token = apiClient.defaults.headers?.common?.Authorization?.replace('Bearer ', '') || '';
-        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}?token=${token}`;
+        const token = await getToken();
+        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}?token=${token || ''}`;
         await Linking.openURL(url);
       }
     } catch (err) {
@@ -218,8 +218,8 @@ export default function ReportsScreen() {
       } else {
         // On mobile, open PDF URL in device browser (triggers native PDF viewer / download)
         const baseURL = apiClient.defaults.baseURL || '';
-        const token = apiClient.defaults.headers?.common?.Authorization?.replace('Bearer ', '') || '';
-        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}/pdf?token=${token}`;
+        const token = await getToken();
+        const url = `${baseURL}/api/reports/project/${projectId}/date/${previewDate}/pdf?token=${token || ''}`;
         await Linking.openURL(url);
       }
     } catch (err) {
