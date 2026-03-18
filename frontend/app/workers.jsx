@@ -190,11 +190,11 @@ export default function WorkersScreen() {
                 const Icon = stat.icon;
                 return (
                   <StatCard key={stat.label} style={s.statCard}>
-                    <IconPod size={44} style={s.statIcon}>
-                      <Icon size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                    <IconPod size={36} style={s.statIcon}>
+                      <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
                     </IconPod>
                     <Text style={s.statValue}>{stat.value}</Text>
-                    <Text style={s.statLabel}>{stat.label.toUpperCase()}</Text>
+                    <Text style={s.statLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{stat.label.toUpperCase()}</Text>
                   </StatCard>
                 );
               })
@@ -411,7 +411,8 @@ function buildStyles(colors, isDark) {
   statLabel: {
     ...typography.label,
     color: colors.text.muted,
-    fontSize: 10,
+    fontSize: 9,
+    letterSpacing: 0.8,
   },
   checkinsList: {
     gap: spacing.sm,
