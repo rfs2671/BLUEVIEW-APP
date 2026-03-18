@@ -1643,19 +1643,13 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     
     now = datetime.now(timezone.utc)
     
-    # If this tag already exists anywhere, deactivate old registration and reassign
-    existing_tag = await db.nfc_tags.find_one({
-        "tag_id": tag_data.tag_id,
-        "is_deleted": {"$ne": True}
-    })
+    # Check if this tag_id exists ANYWHERE (including soft-deleted) due to unique index on tag_id
+    existing_tag = await db.nfc_tags.find_one({"tag_id": tag_data.tag_id})
+    
     if existing_tag:
         old_project_id = existing_tag.get("project_id")
-        logger.info(f"NFC tag {tag_data.tag_id} was registered to project {old_project_id}, reassigning to {project_id}")
-        await db.nfc_tags.update_one(
-            {"_id": existing_tag["_id"]},
-            {"$set": {"is_deleted": True, "updated_at": now}}
-        )
-        if old_project_id:
+        if old_project_id and old_project_id != project_id and not existing_tag.get("is_deleted"):
+            logger.info(f"NFC tag {tag_data.tag_id} was registered to project {old_project_id}, reassigning to {project_id}")
             await db.projects.update_one(
                 {"_id": to_query_id(old_project_id)},
                 {
@@ -1663,22 +1657,34 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
                     "$set": {"updated_at": now}
                 }
             )
-    
-    # Create NFC tag document
-    nfc_tag = {
-        "tag_id": tag_data.tag_id,
-        "project_id": project_id,
-        "location_description": tag_data.location_description,
-        "created_at": now,
-        "updated_at": now,
-        "admin_id": admin["id"],
-        "company_id": project.get("company_id"),
-        "status": "active",
-        "is_deleted": False
-    }
-    
-    # Store in nfc_tags collection
-    await db.nfc_tags.insert_one(nfc_tag)
+        
+        # Update the existing document in-place (avoids unique index conflict)
+        await db.nfc_tags.update_one(
+            {"_id": existing_tag["_id"]},
+            {"$set": {
+                "project_id": project_id,
+                "location_description": tag_data.location_description,
+                "updated_at": now,
+                "admin_id": admin["id"],
+                "company_id": project.get("company_id"),
+                "status": "active",
+                "is_deleted": False
+            }}
+        )
+    else:
+        # Brand new tag - safe to insert
+        nfc_tag = {
+            "tag_id": tag_data.tag_id,
+            "project_id": project_id,
+            "location_description": tag_data.location_description,
+            "created_at": now,
+            "updated_at": now,
+            "admin_id": admin["id"],
+            "company_id": project.get("company_id"),
+            "status": "active",
+            "is_deleted": False
+        }
+        await db.nfc_tags.insert_one(nfc_tag)
     
     # Also update project's nfc_tags array
     await db.projects.update_one(
