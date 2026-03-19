@@ -225,6 +225,7 @@ export default function DailyJobsiteLog() {
       toast.error('Error', 'Could not capture photo');
     }
   };
+  const pickActivityPhoto = async (activityIndex) => {
     const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
