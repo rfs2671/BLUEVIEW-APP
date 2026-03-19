@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image } from 'react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard } from '../src/components/GlassCard';
 import GlassInput from '../src/components/GlassInput';
