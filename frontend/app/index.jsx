@@ -11,7 +11,6 @@ import {
   Cloud,
   ClipboardList,
 } from 'lucide-react-native';
-import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Image } from 'react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
