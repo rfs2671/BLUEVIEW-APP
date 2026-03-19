@@ -19,7 +19,15 @@ import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import * as ImagePicker from 'expo-image-picker';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Platform } from 'react-native';
+let CameraView, useCameraPermissions;
+if (Platform.OS !== 'web') {
+  try {
+    const mod = require('expo-camera');
+    CameraView = mod.CameraView;
+    useCameraPermissions = mod.useCameraPermissions;
+  } catch (e) {}
+}
 import { Modal } from 'react-native';
 
 const MAX_PHOTOS_PER_ACTIVITY = 5;
