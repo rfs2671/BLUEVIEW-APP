@@ -5480,11 +5480,15 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
 
     if record_type in ("permit", "job_status"):
         if is_dob_now_job and job_clean:
-            # DOB NOW only accepts base job number: B + 8 digits
-            import re
+            # DOB NOW Public Portal now requires NYC.ID login (since June 2024)
+            # Fall through to BIS lookup by job number or BIN instead
             base_job_match = re.match(r'(B\d{8})', job_clean.upper())
             base_job_now = base_job_match.group(1) if base_job_match else job_clean
-            return f"https://a810-dobnow.nyc.gov/publish/#!/bldgs/{base_job_now}"
+            if bin_val:
+                return (
+                    f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
+                    f"?passjobnumber={base_job_now}&passdocnumber=01&requestid=1"
+                )
         # BIS legacy: direct job query, no login required
         base_job = job_num.split("-")[0].strip() if job_num else ""
         if base_job:
