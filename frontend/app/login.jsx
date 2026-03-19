@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
@@ -79,7 +78,10 @@ export default function LoginScreen() {
       <AnimatedBackground>
         <View style={s.loadingContainer}>
           <View style={s.logoIcon}>
-            <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
+            <Image
+              source={require('../assets/icon.png')}
+              style={{ width: 28, height: 28, resizeMode: 'contain' }}
+            />
           </View>
           <Text style={s.logoTextLoading}>BLUEVIEW</Text>
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
