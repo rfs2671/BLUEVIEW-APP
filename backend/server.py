@@ -5842,13 +5842,24 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         upsert=True,
     )
  
-    new_logs = await run_dob_sync_for_project(project)
- 
+    try:
+        new_logs = await run_dob_sync_for_project(project)
+    except Exception as e:
+        logger.exception(f"DOB sync failed for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"DOB sync error: {str(e)}")
+
+    safe_logs = []
+    for log in new_logs:
+        try:
+            safe_logs.append(DOBLogResponse(**serialize_id(dict(log))))
+        except Exception as e:
+            logger.warning(f"Failed to serialize dob_log {log.get('raw_dob_id')}: {e}")
+
     return {
         "message": f"DOB sync complete. {len(new_logs)} new record(s) found.",
         "new_records": len(new_logs),
         "critical_count": sum(1 for l in new_logs if l.get("severity") == "Critical"),
-        "logs": [DOBLogResponse(**serialize_id(dict(log))) for log in new_logs],
+        "logs": safe_logs,
     }
  
  
