@@ -5456,7 +5456,7 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         if ecb_num:
             return (
                 f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet"
-                f"?requestid=1&ecession={ecb_num}"
+                f"?requestid=2&ecbin={ecb_num}"
             )
         if isn_val:
             return (
@@ -5480,8 +5480,11 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
 
     if record_type in ("permit", "job_status"):
         if is_dob_now_job and job_clean:
-            # DOB NOW Public Portal — direct job record, no login required
-            return f"https://a810-dobnow.nyc.gov/publish/#!/bldgs/{job_clean}"
+            # DOB NOW only accepts base job number: B + 8 digits
+            import re
+            base_job_match = re.match(r'(B\d{8})', job_clean.upper())
+            base_job_now = base_job_match.group(1) if base_job_match else job_clean
+            return f"https://a810-dobnow.nyc.gov/publish/#!/bldgs/{base_job_now}"
         # BIS legacy: direct job query, no login required
         base_job = job_num.split("-")[0].strip() if job_num else ""
         if base_job:
