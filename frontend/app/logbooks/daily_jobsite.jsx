@@ -643,6 +643,7 @@ export default function DailyJobsiteLog() {
               style={s.submitBtn}
             />
           </View>
+        </ScrollView>
         <FloatingNav />
       </SafeAreaView>
 
