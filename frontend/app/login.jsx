@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Mail, Lock, Eye, EyeOff, ArrowRight, LayoutGrid } from 'lucide-react-native';
+import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image } from 'react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard } from '../src/components/GlassCard';
 import GlassInput from '../src/components/GlassInput';
@@ -94,7 +95,10 @@ export default function LoginScreen() {
           {/* Logo */}
           <View style={s.logoContainer}>
             <View style={s.logoIcon}>
-              <LayoutGrid size={20} strokeWidth={1.5} color={colors.text.primary} />
+              <Image
+                source={require('../assets/icon.png')}
+                style={{ width: 28, height: 28, resizeMode: 'contain' }}
+              />
             </View>
             <Text style={s.logoText}>BLUEVIEW</Text>
           </View>
