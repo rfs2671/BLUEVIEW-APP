@@ -487,7 +487,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: colors.glass.border,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
     pointerEvents: 'none',
   },
   navItem: {
@@ -502,7 +502,7 @@ const styles = StyleSheet.create({
   navLabel: {
     fontSize: 13,
     fontWeight: '500',
-    color: colors.text.muted,
+    color: 'rgba(255, 255, 255, 0.4)',
     transition: 'color 0.2s ease',
   },
   navLabelActive: {
