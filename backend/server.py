@@ -19,6 +19,8 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
+import re
+from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -162,7 +164,7 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
     Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
     Tries multiple endpoints as fallbacks.
     """
-    result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
+     {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
     if not address or len(address.strip()) < 5:
         return result
 
@@ -994,7 +996,7 @@ async def register(user_data: UserCreate):
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
         raise HTTPException(status_code=400, detail="Company ID required")
     
-    result = await db.users.insert_one(user_dict)
+     await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
     del user_dict["password"]
     
@@ -5319,10 +5321,10 @@ def _extract_complaint_fields(rec: dict) -> dict:
     fields["complaint_status"] = rec.get("status") or None
     fields["complaint_date"] = rec.get("date_entered") or None
     fields["closed_date"] = rec.get("disposition_date") or None
-    # Build caller description from DOB fields
+    # Build rich description from code lookups
     category = rec.get("complaint_category") or ""
     disposition_code = rec.get("disposition_code") or ""
-    fields["description"] = f"{category}".strip() if category else None
+    fields["description"] = get_category_label(category) if category else None
     fields["disposition_code"] = disposition_code or None
     # Address
     house = rec.get("house_number") or ""
@@ -5361,13 +5363,8 @@ def _determine_severity(rec: dict, record_type: str) -> str:
         return "Action"
 
     if record_type == "complaint":
-        status = str(rec.get("status", "")).lower()
-        # "Resolved" in DOB complaint = inspector finished investigating, NOT that site is clear.
-        # Active/Open = inspector coming or in progress. Always Action.
-        # Closed = investigation done. Could still have spawned a violation.
-        if "closed" in status:
-            return "Good"
-        return "Action"
+        result = classify_complaint(rec)
+        return result["severity"]
     return "Good"
  
  
@@ -5393,10 +5390,9 @@ def _generate_summary(rec: dict, record_type: str) -> str:
  
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""
-        ctype = rec.get("complaint_category") or rec.get("complaint_type") or rec.get("descriptor") or "DOB Complaint"
-        status = rec.get("status") or "Open"
+        result = classify_complaint(rec)
         prefix = f"#{comp_num}" if comp_num else ""
-        return f"311 Complaint {prefix}: {ctype} — Inspector Status: {status}".strip()
+        return f"311 Complaint {prefix}: {result['category_label']} — {result['disposition_label']} [{result['risk_level']}]".strip()
  
     if record_type == "job_status":
         job = rec.get("job__") or "Unknown"
@@ -5429,9 +5425,8 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
         return "Violation resolved. No action needed."
 
     if record_type == "complaint":
-        if severity == "Action":
-            return "ALERT: 311 complaint filed. DOB inspector is coming or currently investigating. Ensure full site compliance before inspection."
-        return "Inspector investigation complete. Check Violations tab — if a violation was issued from this complaint, it will appear there."
+        result = classify_complaint(rec)
+        return result["action"]
 
     return "Review record details on DOB BIS/NOW portal."
  
