@@ -164,7 +164,7 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
     Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
     Tries multiple endpoints as fallbacks.
     """
-  result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
+    result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
     if not address or len(address.strip()) < 5:
         return result
 
