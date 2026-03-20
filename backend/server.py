@@ -19,6 +19,8 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
 
