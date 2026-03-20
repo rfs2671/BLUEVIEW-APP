@@ -5447,6 +5447,13 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     job_clean = job_num.replace("-", "").strip()
     is_dob_now_job = job_clean.upper().startswith("B") if job_clean else False
 
+    if record_type == "swo":
+        if bin_val:
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
+                f"?requestid=2&allbin={bin_val}&fillerdata=A"
+            )
+
     if record_type in ("violation", "swo"):
         if ecb_num:
             return (
