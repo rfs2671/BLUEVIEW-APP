@@ -996,7 +996,7 @@ async def register(user_data: UserCreate):
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
         raise HTTPException(status_code=400, detail="Company ID required")
     
-     await db.users.insert_one(user_dict)
+    result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
     del user_dict["password"]
     
