@@ -119,10 +119,18 @@ class CompanyCreate(BaseModel):
 # ==================== MODELS ====================
 
 def serialize_id(obj):
-    """Convert MongoDB _id to string id"""
+    """Convert MongoDB _id to string id and ensure datetime fields are UTC-marked"""
     if obj and '_id' in obj:
         obj['id'] = str(obj['_id'])
         del obj['_id']
+    # Ensure all datetime fields are serialized with UTC indicator
+    if obj:
+        for key, value in obj.items():
+            if isinstance(value, datetime):
+                # MongoDB returns naive datetimes that are actually UTC.
+                # Mark them explicitly so JS `new Date()` parses correctly.
+                if value.tzinfo is None:
+                    obj[key] = value.replace(tzinfo=timezone.utc)
     return obj
 
 def serialize_list(items):
@@ -148,6 +156,16 @@ def serialize_sync_record(record):
         record['timestamp'] = int(record['timestamp'].timestamp() * 1000)
     
     return record
+
+def get_today_range_est():
+    """Get today's start/end in UTC, aligned to Eastern Time midnight."""
+    now_utc = datetime.now(timezone.utc)
+    est_offset = timedelta(hours=-5)
+    now_est = now_utc + est_offset
+    today_est_midnight = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_est_midnight - est_offset
+    today_end_utc = today_start_utc + timedelta(hours=24)
+    return today_start_utc, today_end_utc
 
 def format_phone(phone: str) -> str:
     """Format a 10-digit phone number as XXX-XXX-XXXX"""
@@ -2164,12 +2182,12 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                     {"$set": update_fields}
                 )
         
-        # Check if already checked in today
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Check if already checked in today (EST-aligned)
+        today_start, today_end = get_today_range_est()
         existing_checkin = await db.checkins.find_one({
             "worker_id": str(worker["_id"]),
-            "project_id": checkin_data.project_id,
-            "check_in_time": {"$gte": today_start},
+            "project_id": project_id,
+            "check_in_time": {"$gte": today_start, "$lt": today_end},
             "status": "checked_in",
             "is_deleted": {"$ne": True}
         })
@@ -2370,9 +2388,12 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
     if company_id:
         query["company_id"] = company_id
     if date:
-        day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
-        query["check_in_time"] = {"$gte": day_start, "$lte": day_end}
+        # Parse date as Eastern Time day, convert to UTC range
+        est_offset = timedelta(hours=-5)
+        day_start_est = datetime.strptime(date, "%Y-%m-%d")
+        day_start_utc = day_start_est - est_offset
+        day_end_utc = day_start_utc + timedelta(hours=24)
+        query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
     checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
     
     results = []
@@ -2407,12 +2428,12 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
     
     now = datetime.now(timezone.utc)
     
-    # ── FIX #1: Prevent duplicate check-in for same worker+project today ──
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ── Prevent duplicate check-in for same worker+project today (EST-aligned) ──
+    today_start, today_end = get_today_range_est()
     existing_checkin = await db.checkins.find_one({
         "worker_id": str(worker["_id"]),
         "project_id": str(project["_id"]),
-        "check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
         "status": "checked_in",
         "is_deleted": {"$ne": True}
     })
@@ -2529,11 +2550,11 @@ async def get_project_checkins(project_id: str, current_user = Depends(get_curre
 
 @api_router.get("/checkins/project/{project_id}/active")
 async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
         "status": "checked_in",
-        "check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
     }).to_list(1000)
 	
@@ -2552,10 +2573,10 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
 
 @api_router.get("/checkins/project/{project_id}/today")
 async def get_today_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
-        "check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
     }).to_list(1000)
     
@@ -2796,7 +2817,7 @@ async def get_project_site_devices(project_id: str, admin = Depends(get_admin_us
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):
     company_id = get_user_company_id(current_user)
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start, today_end = get_today_range_est()
     
     query = {"is_deleted": {"$ne": True}}
     if company_id:
@@ -2811,7 +2832,7 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
     project_query = {**query, "status": "active"}
     total_projects = await db.projects.count_documents(project_query)
     
-    today_query = {**query, "check_in_time": {"$gte": today_start}}
+    today_query = {**query, "check_in_time": {"$gte": today_start, "$lt": today_end}}
     today_checkins = await db.checkins.count_documents(today_query)
     
     return {
