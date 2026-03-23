@@ -8,7 +8,7 @@ import {
   UserCheck,
   Building2,
   LogOut,
-  PenTool
+  PenTool,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -102,9 +102,8 @@ export default function SiteDeviceHomeScreen() {
 
         {/* Main Content */}
         <View style={s.content}>
-          {/* Top Row: Log Books + Documents */}
-          <View style={s.topRow}>
-            {/* Log Books Button */}
+          {/* Top Row: Log Books + Daily Logs */}
+          <View style={s.gridRow}>
             <Pressable
               style={s.buttonCard}
               onPress={() => handleNavigate('/site/logbooks')}
@@ -122,7 +121,6 @@ export default function SiteDeviceHomeScreen() {
               </GlassCard>
             </Pressable>
 
-            {/* Daily Logs Button */}
             <Pressable
               style={s.buttonCard}
               onPress={() => handleNavigate('/site/daily-logs')}
@@ -136,23 +134,37 @@ export default function SiteDeviceHomeScreen() {
             </Pressable>
           </View>
 
-          {/* Bottom Row: Worker Sign In (Larger) */}
-          <Pressable
-            style={s.largeButtonCard}
-            onPress={() => handleNavigate('/site/checkins')}
-          >
-            <GlassCard style={s.largeButtonInner}>
-              <View style={[s.largeIconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
-                <UserCheck size={80} strokeWidth={1.5} color="#4ade80" />
-              </View>
-              <Text style={s.largeButtonLabel}>Worker Sign In</Text>
-              {!loading && workersOnSite > 0 && (
-                <View style={s.largeBadge}>
-                  <Text style={s.largeBadgeText}>{workersOnSite} on site</Text>
+          {/* Bottom Row: Documents + Worker Sign In */}
+          <View style={s.gridRow}>
+            <Pressable
+              style={s.buttonCard}
+              onPress={() => handleNavigate('/site/documents')}
+            >
+              <GlassCard style={s.buttonInner}>
+                <View style={[s.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
+                  <FolderOpen size={64} strokeWidth={1.5} color="#f59e0b" />
                 </View>
-              )}
-            </GlassCard>
-          </Pressable>
+                <Text style={s.buttonLabel}>Documents</Text>
+              </GlassCard>
+            </Pressable>
+
+            <Pressable
+              style={s.buttonCard}
+              onPress={() => handleNavigate('/site/checkins')}
+            >
+              <GlassCard style={s.buttonInner}>
+                <View style={[s.iconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
+                  <UserCheck size={64} strokeWidth={1.5} color="#4ade80" />
+                </View>
+                <Text style={s.buttonLabel}>Worker Sign In</Text>
+                {!loading && workersOnSite > 0 && (
+                  <View style={s.badge}>
+                    <Text style={s.badgeText}>{workersOnSite} on site</Text>
+                  </View>
+                )}
+              </GlassCard>
+            </Pressable>
+          </View>
         </View>
       </SafeAreaView>
     </AnimatedBackground>
@@ -161,134 +173,94 @@ export default function SiteDeviceHomeScreen() {
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  headerLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-  },
-  siteBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
-  },
-  siteBadgeText: {
-    ...typography.label,
-    fontSize: 9,
-    color: '#4ade80',
-    letterSpacing: 1,
-  },
-  projectName: {
-    fontSize: 16,
-    fontWeight: '400',
-    color: colors.text.primary,
-    flex: 1,
-  },
-  content: {
-    flex: 1,
-    padding: spacing.xl,
-    gap: spacing.xl,
-  },
-  topRow: {
-    flexDirection: 'row',
-    gap: spacing.xl,
-    height: '45%',
-  },
-  buttonCard: {
-    flex: 1,
-  },
-  buttonInner: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xl,
-    position: 'relative',
-  },
-  iconContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: borderRadius.xxl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.lg,
-  },
-  buttonLabel: {
-    fontSize: 24,
-    fontWeight: '300',
-    color: colors.text.primary,
-    textAlign: 'center',
-  },
-  badge: {
-    position: 'absolute',
-    top: spacing.lg,
-    right: spacing.lg,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    backgroundColor: colors.glass.background,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-  },
-  badgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.text.primary,
-  },
-  largeButtonCard: {
-    flex: 1,
-  },
-  largeButtonInner: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: spacing.xxl,
-    position: 'relative',
-  },
-  largeIconContainer: {
-    width: 160,
-    height: 160,
-    borderRadius: borderRadius.xxl,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.xl,
-  },
-  largeButtonLabel: {
-    fontSize: 32,
-    fontWeight: '300',
-    color: colors.text.primary,
-    textAlign: 'center',
-  },
-  largeBadge: {
-    position: 'absolute',
-    top: spacing.xl,
-    right: spacing.xl,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
-  },
-  largeBadgeText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#4ade80',
-  },
-});
+    container: {
+      flex: 1,
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+    },
+    headerLeft: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+    },
+    siteBadge: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      backgroundColor: 'rgba(74, 222, 128, 0.15)',
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: 'rgba(74, 222, 128, 0.3)',
+    },
+    siteBadgeText: {
+      ...typography.label,
+      fontSize: 9,
+      color: '#4ade80',
+      letterSpacing: 1,
+    },
+    projectName: {
+      fontSize: 16,
+      fontWeight: '400',
+      color: colors.text.primary,
+      flex: 1,
+    },
+    content: {
+      flex: 1,
+      padding: spacing.xl,
+      gap: spacing.xl,
+    },
+    gridRow: {
+      flexDirection: 'row',
+      gap: spacing.xl,
+      flex: 1,
+    },
+    buttonCard: {
+      flex: 1,
+    },
+    buttonInner: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: spacing.xl,
+      position: 'relative',
+    },
+    iconContainer: {
+      width: 120,
+      height: 120,
+      borderRadius: borderRadius.xxl,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: spacing.lg,
+    },
+    buttonLabel: {
+      fontSize: 24,
+      fontWeight: '300',
+      color: colors.text.primary,
+      textAlign: 'center',
+    },
+    badge: {
+      position: 'absolute',
+      top: spacing.lg,
+      right: spacing.lg,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    badgeText: {
+      fontSize: 12,
+      fontWeight: '600',
+      color: colors.text.primary,
+    },
+  });
 }
