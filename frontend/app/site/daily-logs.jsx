@@ -30,7 +30,7 @@ import {
   PenTool,
   CheckCircle,
   XCircle,
-  home,
+  Home,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
