@@ -2814,8 +2814,55 @@ async def get_project_site_devices(project_id: str, admin = Depends(get_admin_us
     ).to_list(100)
     return serialize_list(devices)
 
-# ==================== STATS / DASHBOARD ====================
+@api_router.post("/projects/{project_id}/site-devices")
+async def create_project_site_device(project_id: str, device_data: dict, admin = Depends(get_admin_user)):
+    """Create a site device from project detail page"""
+    username = device_data.get("username")
+    password = device_data.get("password")
+    device_name = device_data.get("device_name")
+    
+    if not all([username, password, device_name]):
+        raise HTTPException(status_code=400, detail="Username, password, and device name are required")
+    
+    existing = await db.site_devices.find_one({"username": username, "is_deleted": {"$ne": True}})
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    company_id = get_user_company_id(admin)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
+    now = datetime.now(timezone.utc)
+    device_dict = {
+        "project_id": project_id,
+        "device_name": device_name,
+        "username": username,
+        "password": hash_password(password),
+        "is_active": True,
+        "created_at": now,
+        "updated_at": now,
+        "created_by": admin.get("id"),
+        "company_id": project.get("company_id"),
+        "is_deleted": False,
+    }
+    
+    result = await db.site_devices.insert_one(device_dict)
+    
+    return {
+        "id": str(result.inserted_id),
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "device_name": device_name,
+        "username": username,
+        "is_active": True,
+        "message": "Site device created successfully"
+    }
 
+# ==================== STATS / DASHBOARD ====================
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):
     company_id = get_user_company_id(current_user)
