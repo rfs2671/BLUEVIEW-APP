@@ -383,8 +383,8 @@ export default function ProjectDetailScreen() {
   };
 
   const handleAddDevice = async () => {
-    if (!newDevice.device_name.trim() || !newDevice.username.trim() || !newDevice.password.trim()) {
-      toast.error('Error', 'Please fill in all fields');
+    if (!newDevice.username.trim() || !newDevice.password.trim()) {
+      toast.error('Error', 'Please fill in username and password');
       return;
     }
 
