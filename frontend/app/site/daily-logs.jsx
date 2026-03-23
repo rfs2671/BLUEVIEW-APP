@@ -454,18 +454,6 @@ export default function SiteDailyLogsScreen() {
                   onSignatureCapture={(s) => setFormData({...formData, superintendent_signature: s})} />
               </View>
 
-              {/* Competent Person Signature */}
-              <View style={styles.signatureSection}>
-                <View style={styles.signatureHeader}>
-                  <IconPod size={36}><ShieldCheck size={16} strokeWidth={1.5} color="#3b82f6" /></IconPod>
-                  <Text style={styles.signatureTitle}>Competent Person Sign-Off</Text>
-                </View>
-                <SignaturePad title="Competent Person" signerName={formData.competent_person_name}
-                  onNameChange={(n) => setFormData({...formData, competent_person_name: n})}
-                  existingSignature={formData.competent_person_signature}
-                  onSignatureCapture={(s) => setFormData({...formData, competent_person_signature: s})} />
-              </View>
-
               <GlassButton title={saving ? 'Saving...' : existingLog ? 'Update Log' : 'Submit Log'}
                 onPress={handleSubmit} loading={saving} style={styles.submitBtn} />
             </>
