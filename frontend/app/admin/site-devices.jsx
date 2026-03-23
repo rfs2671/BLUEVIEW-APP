@@ -118,8 +118,8 @@ export default function SiteDevicesScreen() {
   };
 
   const handleCreateDevice = async () => {
-    if (!newDevice.project_id || !newDevice.device_name || !newDevice.username || !newDevice.password) {
-      toast.warning('Missing Fields', 'Please fill in all fields');
+    if (!newDevice.project_id || !newDevice.username || !newDevice.password) {
+      toast.warning('Missing Fields', 'Please select a project and fill in username and password');
       return;
     }
 
