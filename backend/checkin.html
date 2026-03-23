@@ -629,7 +629,12 @@ function cropImage(dataUrl, box) {
       const lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone });
       if (lookup.found) {
         returningWorker = lookup;
-        showReturningScreen(lookup);
+        const oriented = (lookup.safety_orientations || []).some(o => o.project_id === projectId);
+        if (oriented) {
+          showReturningScreen(lookup);
+        } else {
+          showReturningScreen(lookup, true);
+        }
         return;
       }
     } catch (e) {}
