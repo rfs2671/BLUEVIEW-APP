@@ -8,6 +8,7 @@ import {
   UserCheck,
   Building2,
   LogOut,
+  PenTool
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -121,16 +122,16 @@ export default function SiteDeviceHomeScreen() {
               </GlassCard>
             </Pressable>
 
-            {/* Documents Button */}
+            {/* Daily Logs Button */}
             <Pressable
               style={s.buttonCard}
-              onPress={() => handleNavigate('/site/documents')}
+              onPress={() => handleNavigate('/site/daily-logs')}
             >
               <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
-                  <FolderOpen size={64} strokeWidth={1.5} color="#f59e0b" />
+                <View style={[s.iconContainer, { backgroundColor: 'rgba(139, 92, 246, 0.2)' }]}>
+                  <PenTool size={64} strokeWidth={1.5} color="#8b5cf6" />
                 </View>
-                <Text style={s.buttonLabel}>Documents</Text>
+                <Text style={s.buttonLabel}>Daily Logs</Text>
               </GlassCard>
             </Pressable>
           </View>
