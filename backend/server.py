@@ -527,7 +527,7 @@ class DOBConfigUpdate(BaseModel):
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
     project_id: str
-    device_name: str
+    device_name: Optional[str] = "Site Device"
     username: str
     password: str
 
