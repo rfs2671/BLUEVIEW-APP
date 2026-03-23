@@ -2396,6 +2396,7 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
         day_start_utc = day_start_eastern.astimezone(timezone.utc)
         day_end_utc = day_start_utc + timedelta(hours=24)
         query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
+    checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
     
     results = []
     for c in checkins:
