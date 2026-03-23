@@ -66,7 +66,7 @@ const siteDevicesAPI = {
     return response.data;
   },
   create: async (projectId, deviceData) => {
-    const response = await apiClient.post(`/api/projects/${projectId}/site-devices`, deviceData);
+    const response = await apiClient.post(`/api/projects/${projectId}/site-devices`, { ...deviceData, project_id: projectId });
     return response.data;
   },
   delete: async (projectId, deviceId) => {
