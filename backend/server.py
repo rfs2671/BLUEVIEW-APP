@@ -158,15 +158,16 @@ def serialize_sync_record(record):
     return record
 
 def get_today_range_est():
-    """Get today's start/end in UTC, aligned to Eastern Time midnight."""
-    now_utc = datetime.now(timezone.utc)
-    est_offset = timedelta(hours=-5)
-    now_est = now_utc + est_offset
-    today_est_midnight = now_est.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_start_utc = today_est_midnight - est_offset
+    """Get today's start/end in UTC, aligned to Eastern Time midnight.
+    Uses zoneinfo to automatically handle EST (-5) vs EDT (-4)."""
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    now_eastern = datetime.now(eastern)
+    today_midnight_eastern = now_eastern.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_midnight_eastern.astimezone(timezone.utc)
     today_end_utc = today_start_utc + timedelta(hours=24)
     return today_start_utc, today_end_utc
-
+	
 def format_phone(phone: str) -> str:
     """Format a 10-digit phone number as XXX-XXX-XXXX"""
     digits = ''.join(c for c in (phone or '') if c.isdigit())
@@ -2389,12 +2390,12 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
         query["company_id"] = company_id
     if date:
         # Parse date as Eastern Time day, convert to UTC range
-        est_offset = timedelta(hours=-5)
-        day_start_est = datetime.strptime(date, "%Y-%m-%d")
-        day_start_utc = day_start_est - est_offset
+        from zoneinfo import ZoneInfo
+        eastern = ZoneInfo("America/New_York")
+        day_start_eastern = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=eastern)
+        day_start_utc = day_start_eastern.astimezone(timezone.utc)
         day_end_utc = day_start_utc + timedelta(hours=24)
         query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
-    checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
     
     results = []
     for c in checkins:
