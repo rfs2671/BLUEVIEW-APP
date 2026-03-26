@@ -1962,8 +1962,6 @@ async def register_and_checkin(data: dict):
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
     device_info = data.get("device_info")  # FingerprintJS data from checkin.html
-    language_provided = data.get("language_provided", "en")  # "en" or "es"
-    device_info = data.get("device_info")  # FingerprintJS data from checkin.html
 	
     if not all([project_id, tag_id, name, company]):
         raise HTTPException(status_code=400, detail="Missing required fields")
