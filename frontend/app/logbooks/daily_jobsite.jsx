@@ -359,7 +359,8 @@ export default function DailyJobsiteLog() {
       }
 
       toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ?
+        submitStatus === 'submitted' ? 'Log submitted successfully' : 'Draft saved');
+      if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not save log');
