@@ -163,7 +163,22 @@ export default function PreShiftSignIn() {
       }
 
       await autoSave(cpName, cpSignature);
-      toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'Pre-Shift log saved');
+
+      if (submitStatus === 'submitted' && cpSignature) {
+        const docId = existingLogId || created?.id || created?._id;
+        if (docId) {
+          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+          recordSignatureEvent({
+            documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+            signerName: cpName, signerRole: user?.role || 'cp',
+            signatureData: cpSignature,
+            contentSnapshot: { log_type: 'preshift_signin', date, project_id: projectId, data: payload.data, status: submitStatus },
+            user,
+          });
+        }
+      }
+
+      toast.success(submitStatus === 'submitted' ?
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
