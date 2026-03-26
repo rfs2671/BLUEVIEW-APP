@@ -31,19 +31,11 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
-/**
- * Subcontractor Safety Orientation
- *
- * This screen reads orientation documents that were automatically created
- * when workers registered via NFC (their checklist answers are stored in
- * logbooks.data.checklist). The CP can:
- *   - See all completed orientations for the project
- *   - Add their CP signature to any document
- *   - Manually add a new orientation for a walk-in worker
- *   - See the full checklist answers per worker
- */
+const LANGUAGE_LABELS = {
+  en: 'English',
+  es: 'Español',
+};
 
-// These items mirror what the NFC registration screen captures
 const ORIENTATION_SECTIONS = [
   {
     section: 'General Safety Rules',
