@@ -21,7 +21,7 @@ export const getToken = async () => {
   }
 };
 
-export const setToken = async (token) => {
+ const setToken = async (token) => {
   try {
     await AsyncStorage.setItem('blueview_token', token);
   } catch (e) {
@@ -29,7 +29,7 @@ export const setToken = async (token) => {
   }
 };
 
-export const removeToken = async () => {
+ const removeToken = async () => {
   try {
     await AsyncStorage.removeItem('blueview_token');
   } catch (e) {
@@ -38,7 +38,7 @@ export const removeToken = async () => {
 };
 
 // User data management
-export const getStoredUser = async () => {
+ const getStoredUser = async () => {
   try {
     const user = await AsyncStorage.getItem('blueview_user');
     return user ? JSON.parse(user) : null;
@@ -47,7 +47,7 @@ export const getStoredUser = async () => {
   }
 };
 
-export const setStoredUser = async (user) => {
+ const setStoredUser = async (user) => {
   try {
     await AsyncStorage.setItem('blueview_user', JSON.stringify(user));
   } catch (e) {
@@ -55,7 +55,7 @@ export const setStoredUser = async (user) => {
   }
 };
 
-export const removeStoredUser = async () => {
+ const removeStoredUser = async () => {
   try {
     await AsyncStorage.removeItem('blueview_user');
   } catch (e) {
@@ -64,7 +64,7 @@ export const removeStoredUser = async () => {
 };
 
 // Clear all auth data
-export const clearAuth = async () => {
+ const clearAuth = async () => {
   await removeToken();
   await removeStoredUser();
 };
@@ -96,7 +96,7 @@ apiClient.interceptors.response.use(
 /**
  * Authentication APIs
  */
-export const authAPI = {
+ const authAPI = {
   login: async (email, password) => {
     const response = await apiClient.post('/api/auth/login', {
       email,
@@ -134,7 +134,7 @@ export const authAPI = {
 /**
  * Projects APIs
  */
-export const projectsAPI = {
+ const projectsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/projects');
     return response.data;
@@ -184,7 +184,7 @@ export const projectsAPI = {
 /**
  * Workers APIs
  */
-export const workersAPI = {
+ const workersAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/workers');
     return response.data;
@@ -219,7 +219,7 @@ export const workersAPI = {
 /**
  * Check-ins APIs
  */
-export const checkinsAPI = {
+ const checkinsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/checkins');
     return response.data;
@@ -255,7 +255,7 @@ export const checkinsAPI = {
 /**
  * Daily Logs APIs
  */
-export const dailyLogsAPI = {
+ const dailyLogsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/daily-logs');
     return response.data;
@@ -297,7 +297,7 @@ export const dailyLogsAPI = {
 /**
  * Dropbox APIs
  */
-export const dropboxAPI = {
+ const dropboxAPI = {
   getStatus: async () => {
     const response = await apiClient.get('/api/dropbox/status');
     return response.data;
@@ -353,7 +353,7 @@ export const dropboxAPI = {
 /**
  * Admin User Management APIs
  */
-export const adminUsersAPI = {
+ const adminUsersAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/admin/users');
     return response.data;
@@ -390,7 +390,7 @@ export const adminUsersAPI = {
 /**
  * Owner Portal APIs
  */
-export const ownerAPI = {
+ const ownerAPI = {
   getAdmins: async () => {
     const response = await apiClient.get('/api/owner/admins');
     return response.data;
@@ -415,7 +415,7 @@ export const ownerAPI = {
 /**
  * Checklists APIs
  */
-export const checklistsAPI = {
+ const checklistsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/admin/checklists');
     return response.data;
@@ -472,7 +472,7 @@ export const checklistsAPI = {
   },
 };
 
-export const logbooksAPI = {
+ const logbooksAPI = {
   getByProject: async (projectId, logType = null, date = null) => {
     const params = {};
     if (logType) params.log_type = logType;
@@ -528,7 +528,7 @@ export const logbooksAPI = {
   },
 };
 
-export const cpProfileAPI = {
+ const cpProfileAPI = {
   getProfile: async () => {
     const response = await apiClient.get('/api/cp/profile');
     return response.data;
@@ -540,7 +540,7 @@ export const cpProfileAPI = {
   },
 };
 
-export const weatherAPI = {
+ const weatherAPI = {
   getCurrent: async (lat = null, lng = null, address = null) => {
     const params = {};
     if (lat) params.lat = lat;
@@ -554,7 +554,7 @@ export const weatherAPI = {
 /**
  * Reports APIs (admin)
  */
-export const reportsAPI = {
+ const reportsAPI = {
   getPreview: async (projectId, date) => {
     const response = await apiClient.get(`/api/reports/project/${projectId}/preview/${date}`);
     return response.data;
@@ -581,7 +581,7 @@ export const reportsAPI = {
   },
 };
 
-export const dobAPI = {
+ const dobAPI = {
   getLogs: async (projectId, params = {}) => {
     const queryParts = [];
     if (params.severity) queryParts.push(`severity=${params.severity}`);
@@ -644,6 +644,90 @@ export const permitRenewalAPI = {
   },
   getHealthStatus: async () => {
     const response = await apiClient.get('/api/permit-renewals/health-status');
+    return response.data;
+  },
+};
+
+export const csRegistrationAPI = {
+  getAll: async (projectId = null) => {
+    const params = projectId ? { project_id: projectId } : {};
+    const response = await apiClient.get('/api/admin/cs-registrations', { params });
+    return response.data;
+  },
+ 
+  create: async (data) => {
+    const response = await apiClient.post('/api/admin/cs-registrations', data);
+    return response.data;
+  },
+ 
+  getById: async (registrationId) => {
+    const response = await apiClient.get(`/api/admin/cs-registrations/${registrationId}`);
+    return response.data;
+  },
+ 
+  update: async (registrationId, data) => {
+    const response = await apiClient.put(`/api/admin/cs-registrations/${registrationId}`, data);
+    return response.data;
+  },
+ 
+  delete: async (registrationId) => {
+    const response = await apiClient.delete(`/api/admin/cs-registrations/${registrationId}`);
+    return response.data;
+  },
+ 
+  getForProject: async (projectId) => {
+    const response = await apiClient.get(`/api/cs/project/${projectId}`);
+    return response.data;
+  },
+};
+ 
+/**
+ * Compliance Alerts APIs (admin)
+ */
+export const complianceAlertsAPI = {
+  getAll: async (resolved = null) => {
+    const params = resolved !== null ? { resolved } : {};
+    const response = await apiClient.get('/api/admin/compliance-alerts', { params });
+    return response.data;
+  },
+ 
+  resolve: async (alertId) => {
+    const response = await apiClient.put(`/api/admin/compliance-alerts/${alertId}/resolve`);
+    return response.data;
+  },
+};
+ 
+/**
+ * Per-logbook PDF download
+ * Add this method to the existing logbooksAPI object:
+ */
+// logbooksAPI.getPdf = async (logbookId) => {
+//   const response = await apiClient.get(`/api/reports/logbook/${logbookId}/pdf`, {
+//     responseType: 'blob',
+//   });
+//   return response.data;
+// };
+ 
+/**
+ * Signature Events APIs
+ */
+export const signatureEventsAPI = {
+  getForDocument: async (documentType, documentId) => {
+    const response = await apiClient.get(
+      `/api/signature-events/document/${documentType}/${documentId}`
+    );
+    return response.data;
+  },
+ 
+  getDetail: async (eventId) => {
+    const response = await apiClient.get(`/api/signature-events/${eventId}`);
+    return response.data;
+  },
+ 
+  verify: async (documentType, documentId) => {
+    const response = await apiClient.get(
+      `/api/signature-events/verify/${documentType}/${documentId}`
+    );
     return response.data;
   },
 };
