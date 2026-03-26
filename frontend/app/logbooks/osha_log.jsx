@@ -143,6 +143,19 @@ export default function OshaLogBook() {
       }
 
       await autoSave(cpName, cpSignature);
+      if (submitStatus === 'submitted' && cpSignature) {
+        const docId = existingLogId || created?.id || created?._id;
+        if (docId) {
+          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+          recordSignatureEvent({
+            documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
+            signerName: cpName, signerRole: user?.role || 'cp',
+            signatureData: cpSignature,
+            contentSnapshot: { log_type: 'osha_log', date, project_id: projectId, data: { entries }, status: submitStatus },
+            user,
+          });
+        }
+      }
       toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'OSHA Log saved');
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
