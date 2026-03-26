@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -22,6 +22,7 @@ import httpx
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
+import hashlib
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
 
 ROOT_DIR = Path(__file__).parent
@@ -1959,6 +1960,8 @@ async def register_and_checkin(data: dict):
     osha_number = data.get("osha_number")
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
+    language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
+    device_info = data.get("device_info")  # FingerprintJS data from checkin.html
     language_provided = data.get("language_provided", "en")  # "en" or "es"
     device_info = data.get("device_info")  # FingerprintJS data from checkin.html
 	
