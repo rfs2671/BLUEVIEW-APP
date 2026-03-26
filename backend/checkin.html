@@ -172,6 +172,7 @@ select option{background:#1e293b;color:#f1f5f9}
 /* Hide sections */
 .hidden{display:none!important}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@4/dist/fp.min.js"></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -345,6 +346,30 @@ select option{background:#1e293b;color:#f1f5f9}
 <script>
 // ==================== I18N ====================
 let currentLang = 'en';
+
+// Device fingerprint for signature audit trail
+let deviceFingerprint = null;
+let deviceFingerprintComponents = null;
+
+(async function initFingerprint() {
+  try {
+    if (typeof FingerprintJS !== 'undefined') {
+      const fp = await FingerprintJS.load();
+      const result = await fp.get();
+      deviceFingerprint = result.visitorId;
+      deviceFingerprintComponents = {
+        visitor_id: result.visitorId,
+        platform: navigator.platform,
+        user_agent: navigator.userAgent,
+        screen: screen.width + 'x' + screen.height,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      };
+    }
+  } catch (e) {
+    deviceFingerprint = btoa(navigator.userAgent + screen.width + screen.height).substring(0, 32);
+    deviceFingerprintComponents = { visitor_id: deviceFingerprint, platform: navigator.platform, user_agent: navigator.userAgent, fallback: true };
+  }
+})();
 
 const TRANSLATIONS = {
   en: {
@@ -975,6 +1000,12 @@ async function submitRegistration() {
       osha_number: oshaNumber,
       safety_orientation: orientation,
       signature: signatureData,
+      language_provided: currentLang,
+      device_info: {
+        fingerprint_id: deviceFingerprint,
+        components: deviceFingerprintComponents,
+        source: 'checkin_html',
+      },
     });
 
     if (res.worker_id) {
