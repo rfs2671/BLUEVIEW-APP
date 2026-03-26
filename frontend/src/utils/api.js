@@ -521,6 +521,13 @@ apiClient.interceptors.response.use(
     return response.data;
   },
 
+  getPdf: async (logbookId) => {
+    const response = await apiClient.get(`/api/reports/logbook/${logbookId}/pdf`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
+
   getCheckinsForDate: async (projectId, date = null) => {
     const params = date ? { date } : {};
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/checkins-today`, { params });
