@@ -801,6 +801,26 @@ async def _send_health_check_alert(issues: List[str]):
         )
         return
 
+    # 24-hour cooldown: don't spam if we already alerted recently
+    try:
+        last_alert = await db.system_config.find_one(
+            {"key": "dob_health_check_last_alert"}
+        )
+        if last_alert and last_alert.get("sent_at"):
+            last_sent = last_alert["sent_at"]
+            if isinstance(last_sent, datetime):
+                hours_since = (
+                    datetime.now(timezone.utc) - last_sent
+                ).total_seconds() / 3600
+                if hours_since < 24:
+                    logger.info(
+                        f"Health check alert suppressed — last sent "
+                        f"{hours_since:.1f}h ago. Issues: {issues}"
+                    )
+                    return
+    except Exception as e:
+        logger.warning(f"Cooldown check failed, proceeding: {e}")
+
     try:
         import resend
         resend.api_key = RESEND_API_KEY
@@ -859,6 +879,17 @@ async def _send_health_check_alert(issues: List[str]):
             "html": html,
         })
         logger.info(f"Health check alert sent to {recipient}")
+
+        # Record send time for 24h cooldown
+        await db.system_config.update_one(
+            {"key": "dob_health_check_last_alert"},
+            {"$set": {
+                "key": "dob_health_check_last_alert",
+                "sent_at": datetime.now(timezone.utc),
+                "issues": issues,
+            }},
+            upsert=True,
+        )
 
     except Exception as e:
         logger.error(f"Failed to send health check alert: {e}")
@@ -1033,8 +1064,27 @@ async def nightly_renewal_scan(db):
                 f"{renewal.get('_id')}: {e}"
             )
 
-    # ── Job 3: DOB NOW health check ─────────────────────────────────
-    await run_dob_now_health_check(db)
+    # ── Job 3: DOB NOW health check (once per day only) ─────────────
+    try:
+        last_check = await db.system_config.find_one(
+            {"key": "dob_now_health_check"}
+        )
+        should_run = True
+        if last_check and last_check.get("last_run"):
+            last_run = last_check["last_run"]
+            if isinstance(last_run, datetime):
+                hours_since = (
+                    datetime.now(timezone.utc) - last_run
+                ).total_seconds() / 3600
+                if hours_since < 23:
+                    should_run = False
+                    logger.info(
+                        f"Health check skipped — last ran {hours_since:.1f}h ago"
+                    )
+        if should_run:
+            await run_dob_now_health_check(db)
+    except Exception as e:
+        logger.error(f"Health check scheduling error: {e}")
 
     logger.info(
         f"🔄 Nightly renewal scan complete: "
