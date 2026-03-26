@@ -178,7 +178,8 @@ export default function PreShiftSignIn() {
         }
       }
 
-      toast.success(submitStatus === 'submitted' ?
+      toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
+        submitStatus === 'submitted' ? 'Pre-shift sign-in submitted' : 'Draft saved');
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
