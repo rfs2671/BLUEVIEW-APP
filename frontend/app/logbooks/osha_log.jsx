@@ -157,6 +157,8 @@ export default function OshaLogBook() {
         }
       }
       toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'OSHA Log saved');
+        submitStatus === 'submitted' ? 'OSHA log submitted' : 'Draft saved');
+      if (submitStatus === 'submitted') router.back();
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
