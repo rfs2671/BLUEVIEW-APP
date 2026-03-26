@@ -156,9 +156,10 @@ export default function OshaLogBook() {
           });
         }
       }
-      toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'OSHA Log saved');
-        submitStatus === 'submitted' ? 'OSHA log submitted' : 'Draft saved');
-      if (submitStatus === 'submitted') router.back();
+      toast.success(
+        submitStatus === 'submitted' ? 'OSHA log submitted' : 'Draft saved',
+        submitStatus === 'submitted' ? 'Submitted' : 'Saved'
+      );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
