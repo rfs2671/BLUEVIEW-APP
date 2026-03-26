@@ -140,6 +140,22 @@ export default function SubcontractorOrientation() {
             : o
         )
       );
+      // Record audit event for CP signing the orientation
+      const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+      recordSignatureEvent({
+        documentType: 'logbook', documentId: id, eventType: 'cp_sign',
+        signerName: cpN, signerRole: user?.role || 'cp',
+        signatureData: cpSig,
+        contentSnapshot: {
+          log_type: 'subcontractor_orientation',
+          worker_name: orientation.data?.worker_name,
+          worker_company: orientation.data?.worker_company,
+          language_provided: orientation.data?.language_provided || 'en',
+          project_id: orientation.project_id,
+        },
+        user,
+      });
+
       toast.success('Signed', `Orientation for ${orientation.data?.worker_name} signed`);
     } catch (e) {
       console.error(e);
