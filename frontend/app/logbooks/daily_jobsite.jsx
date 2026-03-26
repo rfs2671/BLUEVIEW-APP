@@ -187,11 +187,6 @@ export default function DailyJobsiteLog() {
     setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
   };
 
-  const [cameraVisible, setCameraVisible] = useState(false);
-  const [pendingActivityIndex, setPendingActivityIndex] = useState(null);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const cameraRef = React.useRef(null);
-
   const openZoomedCamera = async (activityIndex) => {
     const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
@@ -531,7 +526,7 @@ export default function DailyJobsiteLog() {
                   )}
                   {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
                     <View style={s.photoActions}>
-                      <Pressable style={s.photoBtn} onPress={() => openZoomedCamera(i)}>
+                      <Pressable style={s.photoBtn} onPress={() => takeActivityPhoto(i)}>
                         <Camera size={16} strokeWidth={1.5} color={colors.primary} />
                         <Text style={s.photoBtnText}>Take Photo</Text>
                       </Pressable>
