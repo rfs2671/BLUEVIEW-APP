@@ -5990,6 +5990,35 @@ async def check_and_send_reports():
         already_sent = await db.report_emails.find_one({"project_id": project_id, "date": today})
         if already_sent:
             continue
+
+        # Skip if no data exists for today (avoid blank reports)
+        try:
+            has_logbooks = await db.logbooks.count_documents({
+                "project_id": project_id,
+                "date": today,
+                "status": "submitted",
+                "is_deleted": {"$ne": True},
+            })
+            has_daily_log = await db.daily_logs.find_one({
+                "project_id": project_id,
+                "date": today,
+                "is_deleted": {"$ne": True},
+            })
+            day_start = datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            day_end = day_start + timedelta(days=1)
+            has_checkins = await db.checkins.count_documents({
+                "project_id": project_id,
+                "check_in_time": {"$gte": day_start, "$lt": day_end},
+                "is_deleted": {"$ne": True},
+            })
+            if not has_logbooks and not has_daily_log and not has_checkins:
+                logger.info(
+                    f"Report skipped for {project_name} — no data for {today}"
+                )
+                continue
+        except Exception as e:
+            logger.warning(f"Data check failed for {project_name}, sending anyway: {e}")
+
         try:
             html = await generate_combined_report(project_id, today)
             resend.Emails.send({
