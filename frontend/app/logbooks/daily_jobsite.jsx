@@ -19,6 +19,7 @@ import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 let CameraView, useCameraPermissions;
 if (Platform.OS !== 'web') {
@@ -31,6 +32,18 @@ if (Platform.OS !== 'web') {
 import { Modal } from 'react-native';
 
 const MAX_PHOTOS_PER_ACTIVITY = 5;
+const uriToBase64 = async (uri) => {
+  try {
+    if (!uri || Platform.OS === 'web') return null;
+    const b64 = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return b64;
+  } catch (err) {
+    console.warn('base64 conversion failed for', uri, err?.message);
+    return null;
+  }
+};
 const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
 const EQUIPMENT_ITEMS = [
   { key: 'elevator', label: 'Elevator' },
@@ -209,12 +222,12 @@ export default function DailyJobsiteLog() {
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.6,
-        base64: true,
+        base64: false,
         exif: false,
       });
       const newPhoto = {
         uri: photo.uri,
-        base64: photo.base64,
+        base64: null, // deferred — will be converted at save time
         timestamp: new Date().toISOString(),
       };
       setActivities(prev => prev.map((a, i) => {
@@ -242,14 +255,14 @@ export default function DailyJobsiteLog() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.6,
-      base64: true,
+      base64: false,
       allowsMultipleSelection: true,
       selectionLimit: MAX_PHOTOS_PER_ACTIVITY - current.length,
     });
     if (result.canceled) return;
     const newPhotos = (result.assets || []).map((asset) => ({
       uri: asset.uri,
-      base64: asset.base64,
+      base64: null, // deferred — will be converted at save time
       timestamp: new Date().toISOString(),
     }));
     setActivities(prev => prev.map((a, i) => {
@@ -273,7 +286,7 @@ export default function DailyJobsiteLog() {
     try {
       result = await ImagePicker.launchCameraAsync({
         quality: 0.3,
-        base64: true,
+        base64: false,
         exif: false,
         allowsEditing: false,
       });
@@ -287,7 +300,7 @@ export default function DailyJobsiteLog() {
     if (!asset) return;
     const newPhoto = {
       uri: asset.uri,
-      base64: asset.base64,
+      base64: null, // deferred — will be converted at save time
       timestamp: new Date().toISOString(),
     };
     setActivities(prev => prev.map((a, i) => {
@@ -313,10 +326,25 @@ export default function DailyJobsiteLog() {
     setObservations(prev => prev.map((o, i) => i === index ? { ...o, [field]: value } : o));
   };
 
-  // FIX #3: No superintendent signature in payload — CP only
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
+      // Convert any URI-only photos to base64 before saving
+      const activitiesWithBase64 = await Promise.all(
+        activities.map(async (act) => {
+          if (!act.photos || act.photos.length === 0) return act;
+          const convertedPhotos = await Promise.all(
+            act.photos.map(async (photo) => {
+              if (photo.base64) return photo; // already has base64
+              if (!photo.uri) return photo; // no URI either, skip
+              const b64 = await uriToBase64(photo.uri);
+              return { ...photo, base64: b64 };
+            })
+          );
+          return { ...act, photos: convertedPhotos };
+        })
+      );
+
       const payload = {
         project_id: projectId,
         log_type: 'daily_jobsite',
@@ -327,7 +355,7 @@ export default function DailyJobsiteLog() {
           weather_temp: weatherTemp,
           weather_wind: weatherWind,
           general_description: generalDescription,
-          activities,
+          activities: activitiesWithBase64,
           equipment_on_site: equipmentOnSite,
           checklist_items: checklistItems,
           observations,
@@ -514,7 +542,8 @@ export default function DailyJobsiteLog() {
                       {(act.photos || []).map((photo, pi) => (
                         <View key={pi} style={s.photoThumb}>
                           <Image
-                            source={{ uri: photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : photo.uri }}
+                            source={{ uri: photo.uri || (photo.base64 ?
+                              `data:image/jpeg;base64,${photo.base64}` : undefined) }}
                             style={s.photoImage}
                           />
                           <Pressable style={s.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
