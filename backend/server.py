@@ -620,6 +620,65 @@ class CPProfileUpdate(BaseModel):
     cp_signature: Optional[Dict] = None  # {paths, signed_at}
     cp_title: Optional[str] = None
 
+# ==================== SIGNATURE AUDIT TRAIL MODELS ====================
+ 
+class SignatureEventCreate(BaseModel):
+    """Payload sent from frontend when a signature is captured."""
+    document_type: str  # "logbook", "daily_log", "worker_registration"
+    document_id: str    # MongoDB _id of the parent document
+    event_type: str     # "cp_sign", "superintendent_sign", "worker_sign"
+    signer_name: str
+    signer_role: str    # "cp", "site_device", "worker", "admin"
+    signature_data: Dict[str, Any]  # The actual {paths, signerName, timestamp} or base64
+    content_snapshot: Dict[str, Any]  # Full JSON of document at sign-time
+    device_info: Optional[Dict[str, Any]] = None  # {site_device_id, hardware_fingerprint, user_agent}
+ 
+class SignatureEventResponse(BaseModel):
+    id: str
+    document_type: str
+    document_id: str
+    event_type: str
+    version: int
+    signer: Dict[str, Any]
+    device: Dict[str, Any]
+    content_hash: str
+    timestamp: datetime
+    # signature_data and content_snapshot omitted from list responses for size
+    # — fetch individually via GET /signature-events/{id}
+ 
+# ==================== CONSTRUCTION SUPERINTENDENT MODELS ====================
+ 
+class CSRegistrationCreate(BaseModel):
+    """Register a Construction Superintendent to a project."""
+    project_id: str
+    full_name: str
+    license_number: str          # NYC DOB License/Registration Number
+    nyc_id_email: Optional[str] = None  # NYC.ID email used for DOB filings
+    sst_number: Optional[str] = None    # SST card number if different
+    phone: Optional[str] = None
+ 
+class CSRegistrationUpdate(BaseModel):
+    full_name: Optional[str] = None
+    license_number: Optional[str] = None
+    nyc_id_email: Optional[str] = None
+    sst_number: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: Optional[bool] = None
+ 
+class CSRegistrationResponse(BaseModel):
+    id: str
+    project_id: str
+    project_name: str
+    full_name: str
+    license_number: str
+    nyc_id_email: Optional[str] = None
+    sst_number: Optional[str] = None
+    phone: Optional[str] = None
+    is_active: bool = True
+    conflict_warning: Optional[str] = None  # Set if license found on another active project
+    created_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+	
 # ==================== SYNC MODELS ====================
 
 class SyncPullRequest(BaseModel):
@@ -1900,7 +1959,9 @@ async def register_and_checkin(data: dict):
     osha_number = data.get("osha_number")
     safety_orientation = data.get("safety_orientation")  # dict of checked items
     signature = data.get("signature")  # base64 PNG
-    
+    language_provided = data.get("language_provided", "en")  # "en" or "es"
+    device_info = data.get("device_info")  # FingerprintJS data from checkin.html
+	
     if not all([project_id, tag_id, name, company]):
         raise HTTPException(status_code=400, detail="Missing required fields")
     
@@ -2022,6 +2083,7 @@ async def register_and_checkin(data: dict):
                     "checklist": safety_orientation,
                     "completed_at": now.isoformat(),
                     "orientation_number": None,
+					"language_provided": language_provided,
                 },
                 "created_at": now,
                 "updated_at": now,
@@ -2879,6 +2941,717 @@ async def create_project_site_device(project_id: str, device_data: SiteDeviceCre
         "message": "Site device created successfully"
     }
 
+# ==================== SIGNATURE EVENT HELPERS ====================
+ 
+def compute_content_hash(content: dict) -> str:
+    """SHA-256 hash of the JSON-serialized content snapshot.
+    Ensures deterministic serialization with sort_keys."""
+    import json
+    canonical = json.dumps(content, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+ 
+ 
+async def create_signature_event(
+    document_type: str,
+    document_id: str,
+    event_type: str,
+    signer_name: str,
+    signer_role: str,
+    signer_user_id: str,
+    signature_data: dict,
+    content_snapshot: dict,
+    device_info: dict = None,
+    ip_address: str = None,
+) -> str:
+    """Create a signature event in the audit ledger.
+    Returns the inserted event_id as a string."""
+    
+    now = datetime.now(timezone.utc)
+    
+    # Determine version: count existing events for this document
+    existing_count = await db.signature_events.count_documents({
+        "document_type": document_type,
+        "document_id": document_id,
+    })
+    version = existing_count + 1
+    
+    content_hash = compute_content_hash(content_snapshot)
+    
+    event_doc = {
+        "document_type": document_type,
+        "document_id": document_id,
+        "event_type": event_type,
+        "version": version,
+        "signer": {
+            "user_id": signer_user_id,
+            "name": signer_name,
+            "role": signer_role,
+        },
+        "device": device_info or {},
+        "content_snapshot": content_snapshot,
+        "content_hash": content_hash,
+        "signature_data": signature_data,
+        "timestamp": now,
+        "ip_address": ip_address,
+        "is_deleted": False,
+    }
+    
+    result = await db.signature_events.insert_one(event_doc)
+    return str(result.inserted_id)
+ 
+ 
+# ==================== SIGNATURE EVENT ENDPOINTS ====================
+ 
+@api_router.post("/signature-events")
+async def record_signature_event(
+    data: SignatureEventCreate,
+    request: Request,
+    current_user=Depends(get_current_user),
+):
+    """Record a signature event from any frontend signature capture.
+    Returns the event_id to be stored as a reference on the parent document."""
+    
+    user_id = current_user.get("id")
+    ip_address = request.client.host if request.client else None
+    
+    event_id = await create_signature_event(
+        document_type=data.document_type,
+        document_id=data.document_id,
+        event_type=data.event_type,
+        signer_name=data.signer_name,
+        signer_role=data.signer_role,
+        signer_user_id=user_id,
+        signature_data=data.signature_data,
+        content_snapshot=data.content_snapshot,
+        device_info=data.device_info,
+        ip_address=ip_address,
+    )
+    
+    return {"event_id": event_id, "message": "Signature event recorded"}
+ 
+ 
+@api_router.post("/signature-events/public")
+async def record_public_signature_event(data: dict, request: Request):
+    """Record a signature event from public endpoints (NFC check-in).
+    No auth required — used by checkin.html worker registration."""
+    
+    ip_address = request.client.host if request.client else None
+    
+    required = ["document_type", "document_id", "event_type", "signer_name", "signature_data", "content_snapshot"]
+    for field in required:
+        if field not in data:
+            raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+    
+    event_id = await create_signature_event(
+        document_type=data["document_type"],
+        document_id=data["document_id"],
+        event_type=data["event_type"],
+        signer_name=data["signer_name"],
+        signer_role=data.get("signer_role", "worker"),
+        signer_user_id=data.get("worker_id", "anonymous"),
+        signature_data=data["signature_data"],
+        content_snapshot=data["content_snapshot"],
+        device_info=data.get("device_info"),
+        ip_address=ip_address,
+    )
+    
+    return {"event_id": event_id}
+ 
+ 
+@api_router.get("/signature-events/document/{document_type}/{document_id}")
+async def get_signature_events_for_document(
+    document_type: str,
+    document_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Get all signature events for a specific document (audit trail view).
+    Returns events in chronological order with hashes for verification."""
+    
+    events = await db.signature_events.find({
+        "document_type": document_type,
+        "document_id": document_id,
+        "is_deleted": {"$ne": True},
+    }).sort("version", 1).to_list(100)
+    
+    result = []
+    for evt in events:
+        result.append({
+            "id": str(evt["_id"]),
+            "version": evt.get("version"),
+            "event_type": evt.get("event_type"),
+            "signer": evt.get("signer"),
+            "device": evt.get("device"),
+            "content_hash": evt.get("content_hash"),
+            "timestamp": evt.get("timestamp"),
+            "ip_address": evt.get("ip_address"),
+            # Omit content_snapshot and signature_data from list — fetch individually
+        })
+    
+    return {"events": result, "total": len(result)}
+ 
+ 
+@api_router.get("/signature-events/{event_id}")
+async def get_signature_event_detail(event_id: str, current_user=Depends(get_current_user)):
+    """Get full detail of a single signature event including snapshot and signature data."""
+    
+    event = await db.signature_events.find_one({"_id": to_query_id(event_id)})
+    if not event:
+        raise HTTPException(status_code=404, detail="Signature event not found")
+    
+    return serialize_id(event)
+ 
+ 
+@api_router.get("/signature-events/verify/{document_type}/{document_id}")
+async def verify_signature_integrity(
+    document_type: str,
+    document_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Verify that no signature events have been tampered with.
+    Re-computes content_hash from stored snapshot and compares."""
+    
+    events = await db.signature_events.find({
+        "document_type": document_type,
+        "document_id": document_id,
+        "is_deleted": {"$ne": True},
+    }).sort("version", 1).to_list(100)
+    
+    results = []
+    for evt in events:
+        stored_hash = evt.get("content_hash", "")
+        recomputed_hash = compute_content_hash(evt.get("content_snapshot", {}))
+        is_valid = stored_hash == recomputed_hash
+        
+        results.append({
+            "event_id": str(evt["_id"]),
+            "version": evt.get("version"),
+            "event_type": evt.get("event_type"),
+            "signer_name": evt.get("signer", {}).get("name"),
+            "timestamp": evt.get("timestamp"),
+            "stored_hash": stored_hash,
+            "recomputed_hash": recomputed_hash,
+            "integrity_valid": is_valid,
+        })
+    
+    all_valid = all(r["integrity_valid"] for r in results)
+    
+    # Check for version gaps (deletion detection)
+    versions = [r["version"] for r in results if r.get("version")]
+    has_gaps = versions != list(range(1, len(versions) + 1)) if versions else False
+    
+    return {
+        "document_type": document_type,
+        "document_id": document_id,
+        "total_events": len(results),
+        "all_valid": all_valid,
+        "has_version_gaps": has_gaps,
+        "events": results,
+    }
+ 
+ 
+# ==================== CONSTRUCTION SUPERINTENDENT ENDPOINTS ====================
+ 
+@api_router.post("/admin/cs-registrations")
+async def register_construction_superintendent(
+    data: CSRegistrationCreate,
+    admin=Depends(get_admin_user),
+):
+    """Register a Construction Superintendent to a project.
+    Checks for license conflicts across active projects (one-job rule)."""
+    
+    company_id = get_user_company_id(admin)
+    now = datetime.now(timezone.utc)
+    
+    # Verify project
+    project = await db.projects.find_one({"_id": to_query_id(data.project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    
+    # Check if this project already has an active CS
+    existing_for_project = await db.cs_registrations.find_one({
+        "project_id": data.project_id,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+    })
+    if existing_for_project:
+        # Deactivate previous CS for this project
+        await db.cs_registrations.update_one(
+            {"_id": existing_for_project["_id"]},
+            {"$set": {"is_active": False, "deactivated_at": now, "updated_at": now}}
+        )
+    
+    # ONE-JOB RULE CHECK: Look for same license on other active projects
+    conflict_warning = None
+    license_clean = data.license_number.strip().upper()
+    
+    conflicting = await db.cs_registrations.find({
+        "license_number_normalized": license_clean,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+        "project_id": {"$ne": data.project_id},
+    }).to_list(50)
+    
+    if conflicting:
+        conflict_projects = []
+        for c in conflicting:
+            cp = await db.projects.find_one({"_id": to_query_id(c["project_id"])})
+            conflict_projects.append(cp.get("name", "Unknown") if cp else "Unknown")
+        
+        conflict_warning = (
+            f"WARNING: License {license_clean} is already registered as active CS on: "
+            + ", ".join(conflict_projects)
+            + ". NYC DOB one-job rule (eff. Jan 2026) limits CS to one active job."
+        )
+        
+        # Log compliance alert
+        await db.compliance_alerts.insert_one({
+            "alert_type": "cs_one_job_conflict",
+            "severity": "high",
+            "license_number": license_clean,
+            "cs_name": data.full_name,
+            "conflicting_projects": [c["project_id"] for c in conflicting],
+            "new_project_id": data.project_id,
+            "company_id": company_id,
+            "message": conflict_warning,
+            "resolved": False,
+            "created_at": now,
+            "created_by": admin.get("id"),
+        })
+    
+    # Create registration
+    reg_doc = {
+        "project_id": data.project_id,
+        "full_name": data.full_name.strip(),
+        "license_number": data.license_number.strip(),
+        "license_number_normalized": license_clean,
+        "nyc_id_email": (data.nyc_id_email or "").strip().lower() or None,
+        "sst_number": (data.sst_number or "").strip() or None,
+        "phone": (data.phone or "").strip() or None,
+        "is_active": True,
+        "company_id": company_id,
+        "created_by": admin.get("id"),
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+    
+    result = await db.cs_registrations.insert_one(reg_doc)
+    
+    return {
+        "id": str(result.inserted_id),
+        "project_id": data.project_id,
+        "project_name": project.get("name"),
+        "full_name": data.full_name,
+        "license_number": data.license_number,
+        "nyc_id_email": data.nyc_id_email,
+        "is_active": True,
+        "conflict_warning": conflict_warning,
+        "message": "CS registered successfully" + (" — with conflict warning" if conflict_warning else ""),
+    }
+ 
+ 
+@api_router.get("/admin/cs-registrations")
+async def list_cs_registrations(
+    project_id: Optional[str] = None,
+    admin=Depends(get_admin_user),
+):
+    """List all CS registrations, optionally filtered by project."""
+    
+    company_id = get_user_company_id(admin)
+    query = {"is_deleted": {"$ne": True}}
+    if company_id:
+        query["company_id"] = company_id
+    if project_id:
+        query["project_id"] = project_id
+    
+    regs = await db.cs_registrations.find(query).sort("created_at", -1).to_list(200)
+    
+    result = []
+    for reg in regs:
+        reg_data = serialize_id(reg)
+        # Add project name
+        project = await db.projects.find_one({"_id": to_query_id(reg["project_id"])})
+        reg_data["project_name"] = project.get("name") if project else "Unknown"
+        
+        # Check for active conflicts
+        if reg.get("is_active"):
+            conflicts = await db.cs_registrations.count_documents({
+                "license_number_normalized": reg.get("license_number_normalized"),
+                "is_active": True,
+                "is_deleted": {"$ne": True},
+                "_id": {"$ne": reg["_id"]},
+            })
+            reg_data["has_conflict"] = conflicts > 0
+        else:
+            reg_data["has_conflict"] = False
+        
+        result.append(reg_data)
+    
+    return result
+ 
+ 
+@api_router.get("/admin/cs-registrations/{registration_id}")
+async def get_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
+    """Get a specific CS registration."""
+    reg = await db.cs_registrations.find_one({"_id": to_query_id(registration_id), "is_deleted": {"$ne": True}})
+    if not reg:
+        raise HTTPException(status_code=404, detail="CS registration not found")
+    return serialize_id(reg)
+ 
+ 
+@api_router.put("/admin/cs-registrations/{registration_id}")
+async def update_cs_registration(
+    registration_id: str,
+    data: CSRegistrationUpdate,
+    admin=Depends(get_admin_user),
+):
+    """Update a CS registration."""
+    now = datetime.now(timezone.utc)
+    update = {"updated_at": now}
+    
+    if data.full_name is not None:
+        update["full_name"] = data.full_name.strip()
+    if data.license_number is not None:
+        update["license_number"] = data.license_number.strip()
+        update["license_number_normalized"] = data.license_number.strip().upper()
+    if data.nyc_id_email is not None:
+        update["nyc_id_email"] = data.nyc_id_email.strip().lower() or None
+    if data.sst_number is not None:
+        update["sst_number"] = data.sst_number.strip() or None
+    if data.phone is not None:
+        update["phone"] = data.phone.strip() or None
+    if data.is_active is not None:
+        update["is_active"] = data.is_active
+        if not data.is_active:
+            update["deactivated_at"] = now
+    
+    result = await db.cs_registrations.update_one(
+        {"_id": to_query_id(registration_id)},
+        {"$set": update}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="CS registration not found")
+    
+    updated = await db.cs_registrations.find_one({"_id": to_query_id(registration_id)})
+    return serialize_id(updated)
+ 
+ 
+@api_router.delete("/admin/cs-registrations/{registration_id}")
+async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_user)):
+    """Soft-delete a CS registration."""
+    await db.cs_registrations.update_one(
+        {"_id": to_query_id(registration_id)},
+        {"$set": {"is_deleted": True, "is_active": False, "updated_at": datetime.now(timezone.utc)}}
+    )
+    return {"message": "CS registration deleted"}
+ 
+ 
+@api_router.get("/cs/project/{project_id}")
+async def get_project_cs(project_id: str, current_user=Depends(get_current_user)):
+    """Get the active CS for a project. Used by site device to auto-fill superintendent info."""
+    
+    cs = await db.cs_registrations.find_one({
+        "project_id": project_id,
+        "is_active": True,
+        "is_deleted": {"$ne": True},
+    })
+    
+    if not cs:
+        return {"registered": False}
+    
+    return {
+        "registered": True,
+        "id": str(cs["_id"]),
+        "full_name": cs.get("full_name"),
+        "license_number": cs.get("license_number"),
+        "nyc_id_email": cs.get("nyc_id_email"),
+        "sst_number": cs.get("sst_number"),
+    }
+ 
+ 
+# ==================== COMPLIANCE ALERTS ENDPOINTS ====================
+ 
+@api_router.get("/admin/compliance-alerts")
+async def get_compliance_alerts(
+    resolved: Optional[bool] = None,
+    admin=Depends(get_admin_user),
+):
+    """Get compliance alerts for the admin dashboard."""
+    
+    company_id = get_user_company_id(admin)
+    query = {}
+    if company_id:
+        query["company_id"] = company_id
+    if resolved is not None:
+        query["resolved"] = resolved
+    
+    alerts = await db.compliance_alerts.find(query).sort("created_at", -1).to_list(100)
+    return [serialize_id(a) for a in alerts]
+ 
+ 
+@api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
+async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_user)):
+    """Mark a compliance alert as resolved."""
+    now = datetime.now(timezone.utc)
+    await db.compliance_alerts.update_one(
+        {"_id": to_query_id(alert_id)},
+        {"$set": {"resolved": True, "resolved_at": now, "resolved_by": admin.get("id")}}
+    )
+    return {"message": "Alert resolved"}
+ 
+ 
+# ==================== PER-LOG-TYPE PDF ENDPOINT ====================
+ 
+@api_router.get("/reports/logbook/{logbook_id}/pdf")
+async def get_single_logbook_pdf(logbook_id: str, token: Optional[str] = None, current_user=Depends(get_current_user)):
+    """Generate PDF for a single logbook entry (per-type PDF).
+    Reuses the combined report HTML generator but filters to one log type."""
+    from fastapi.responses import Response
+    
+    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    
+    project_id = logbook.get("project_id")
+    date = logbook.get("date")
+    log_type = logbook.get("log_type")
+    
+    # Generate full report HTML but we'll use it as-is since it filters by date
+    # For a single-type PDF, generate targeted HTML
+    html = await generate_single_logbook_html(logbook)
+    
+    try:
+        from weasyprint import HTML
+        pdf_bytes = HTML(string=html).write_pdf()
+    except Exception as e:
+        logger.error(f"PDF generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+    
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = (project.get("name", "report") if project else "report").replace(" ", "_")
+    type_label = log_type.replace("_", "-") if log_type else "log"
+    filename = f"Blueview_{type_label}_{project_name}_{date}.pdf"
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+ 
+ 
+async def generate_single_logbook_html(logbook: dict) -> str:
+    """Generate standalone HTML for a single logbook entry.
+    Reuses the same styling as the combined report."""
+    
+    BASE_URL = "https://blueview2-production.up.railway.app"
+    
+    project_id = logbook.get("project_id")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = project.get("name", "Unknown") if project else "Unknown"
+    project_address = project.get("address", "") if project else ""
+    date = logbook.get("date", "N/A")
+    log_type = logbook.get("log_type", "unknown")
+    data = logbook.get("data", {})
+    
+    gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
+    
+    # Reuse existing style constants
+    TH = (
+        'style="background-color:#1e293b;color:#ffffff;padding:10px 12px;'
+        'text-align:left;font-weight:600;font-size:11px;text-transform:uppercase;'
+        'letter-spacing:0.5px;" bgcolor="#1e293b"'
+    )
+    TD = 'style="padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;"'
+    
+    def section_title(text):
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" style="margin:28px 0 12px 0;">'
+            '<tr><td style="font-size:16px;font-weight:600;color:#0A1929;'
+            f'padding-bottom:8px;border-bottom:2px solid #e2e8f0;">{text}</td></tr></table>'
+        )
+    
+    def bold_para(label, value):
+        return f'<p style="color:#475569;margin:6px 0;"><strong style="color:#0A1929;">{label}:</strong> {value}</p>'
+    
+    def info_box(content):
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="margin:12px 0;"><tr><td style="background-color:#f1f5f9;'
+            f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">{content}</td></tr></table>'
+        )
+    
+    # Build type-specific content
+    body_html = ""
+    type_title = ""
+    
+    if log_type == "daily_jobsite":
+        type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
+        weather_str = f'{data.get("weather", "N/A")} {data.get("weather_temp", "")}'
+        if data.get("weather_wind"):
+            weather_str += f' — Wind: {data["weather_wind"]}'
+        
+        # Activities table
+        act_rows = ""
+        for i, act in enumerate(data.get("activities", [])):
+            act_rows += (
+                f'<tr><td {TD}>{act.get("crew_name", "")}</td>'
+                f'<td {TD}>{act.get("company", "N/A")}</td>'
+                f'<td {TD}>{act.get("num_workers", 0)}</td>'
+                f'<td {TD}>{act.get("work_description", "N/A")}</td>'
+                f'<td {TD}>{act.get("work_locations", "")}</td></tr>'
+            )
+        
+        equip = data.get("equipment_on_site", {})
+        equip_list = ", ".join(k.replace("_", " ").title() for k, v in equip.items() if v)
+        chk = data.get("checklist_items", {})
+        check_list = ", ".join(k.replace("_", " ").title() for k, v in chk.items() if v)
+        
+        # Observations
+        obs_html = ""
+        obs_rows = ""
+        for obs in data.get("observations", []):
+            if obs.get("description", "").strip():
+                obs_rows += (
+                    f'<tr><td {TD}>{obs.get("description", "")}</td>'
+                    f'<td {TD}>{obs.get("responsible_party", "")}</td>'
+                    f'<td {TD}>{obs.get("remedy", "")}</td></tr>'
+                )
+        if obs_rows:
+            obs_html = (
+                '<h3 style="color:#0A1929;margin:16px 0 8px;">Safety Observations</h3>'
+                '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+                'style="border-collapse:collapse;font-size:13px;">'
+                f'<tr><th {TH}>Description</th><th {TH}>Responsible</th><th {TH}>Remedy</th></tr>'
+                + obs_rows + '</table>'
+            )
+        
+        cp_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
+        sup_sig = render_signature_html(data.get("superintendent_signature"), "Superintendent")
+        visitors = data.get("visitors_deliveries", "")
+        
+        body_html = (
+            info_box(
+                f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
+                f'<strong style="color:#0A1929;">Description:</strong> {data.get("general_description", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
+                f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Areas Visited:</strong> {data.get("areas_visited") or "N/A"}'
+            )
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Crew</th><th {TH}>Company</th><th {TH}>Workers</th>'
+              f'<th {TH}>Description</th><th {TH}>Location</th></tr>'
+            + (act_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
+            + '</table>'
+            + bold_para("Equipment", equip_list or "None")
+            + bold_para("Inspected", check_list or "None")
+            + obs_html
+            + (bold_para("Visitors / Deliveries", visitors) if visitors else "")
+            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + cp_sig + sup_sig
+        )
+    
+    elif log_type == "toolbox_talk":
+        type_title = "Tool Box Talk"
+        topics = data.get("checked_topics", {})
+        topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
+        
+        att_rows = ""
+        for a in data.get("attendees", []):
+            signed = "&#10003;" if a.get("signed") else "&mdash;"
+            att_rows += (
+                f'<tr><td {TD}>{a.get("name", "")}</td>'
+                f'<td {TD}>{a.get("company", "")}</td>'
+                f'<td {TD}>{signed}</td></tr>'
+            )
+        
+        tb_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
+        
+        body_html = (
+            info_box(
+                f'<strong style="color:#0A1929;">Location:</strong> {data.get("location", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Company:</strong> {data.get("company_name", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Performed By:</strong> {data.get("performed_by", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Time:</strong> {data.get("meeting_time", "N/A")}'
+            )
+            + bold_para("Topics", topic_list or "None")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
+            + (att_rows or f'<tr><td colspan="3" {TD}>—</td></tr>')
+            + '</table>'
+            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + tb_sig
+        )
+    
+    elif log_type == "preshift_signin":
+        type_title = "Pre-Shift Sign-In"
+        workers = data.get("workers", [])
+        
+        w_rows = ""
+        for w in workers:
+            if w.get("name", "").strip():
+                w_rows += (
+                    f'<tr><td {TD}>{w.get("name", "")}</td>'
+                    f'<td {TD}>{w.get("company", "")}</td>'
+                    f'<td {TD}>{w.get("osha_number", "")}</td>'
+                    f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
+                    f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
+                )
+        
+        ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
+        
+        body_html = (
+            info_box(
+                f'<strong style="color:#0A1929;">Company:</strong> {data.get("company", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Location:</strong> {data.get("project_location", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Total Workers:</strong> {data.get("total_count", len(workers))}'
+            )
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>OSHA #</th>'
+              f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
+            + (w_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
+            + '</table>'
+            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + ps_sig
+        )
+    
+    else:
+        type_title = log_type.replace("_", " ").title()
+        body_html = bold_para("Status", logbook.get("status", "N/A"))
+    
+    # Wrap in full HTML document
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
+<style>body{{font-family:Arial,sans-serif;margin:0;padding:0;color:#334155;background:#fff;}}
+table{{border-collapse:collapse;}}
+</style></head>
+<body style="margin:0;padding:0;background-color:#ffffff;">
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:700px;margin:0 auto;">
+<tr><td style="background-color:#0A1929;padding:24px 40px;color:#fff;" bgcolor="#0A1929">
+<span style="font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#60a5fa;">BLUEVIEW</span><br/>
+<span style="font-size:20px;font-weight:600;">{type_title}</span><br/>
+<span style="font-size:13px;color:#94a3b8;">{project_name} — {project_address}</span>
+<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;"><tr>
+<td style="padding-right:24px;vertical-align:top;"><span style="font-size:10px;text-transform:uppercase;color:#64748b;">DATE</span><br/><span style="font-size:15px;color:#fff;">{date}</span></td>
+<td style="vertical-align:top;"><span style="font-size:10px;text-transform:uppercase;color:#64748b;">STATUS</span><br/><span style="font-size:15px;color:#fff;">{logbook.get("status", "N/A").upper()}</span></td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:24px 40px;background-color:#ffffff;" bgcolor="#ffffff">
+{section_title(type_title)}
+{body_html}
+</td></tr>
+<tr><td style="background-color:#f8fafc;padding:24px 40px;text-align:center;border-top:1px solid #e2e8f0;" bgcolor="#f8fafc">
+<span style="font-size:11px;color:#94a3b8;">Generated on {gen_time} UTC</span><br/>
+<span style="font-size:10px;color:#cbd5e1;letter-spacing:3px;">BLUEVIEW CONSTRUCTION MANAGEMENT</span>
+</td></tr></table></body></html>"""
+    
+    return html
+	
 # ==================== STATS / DASHBOARD ====================
 @api_router.get("/stats/dashboard")
 async def get_dashboard_stats(current_user = Depends(get_current_user)):
