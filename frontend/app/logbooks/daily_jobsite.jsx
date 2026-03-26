@@ -21,15 +21,6 @@ import { useTheme } from '../../src/context/ThemeContext';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
-let CameraView, useCameraPermissions;
-if (Platform.OS !== 'web') {
-  try {
-    const mod = require('expo-camera');
-    CameraView = mod.CameraView;
-    useCameraPermissions = mod.useCameraPermissions;
-  } catch (e) {}
-}
-import { Modal } from 'react-native';
 
 const MAX_PHOTOS_PER_ACTIVITY = 5;
 const uriToBase64 = async (uri) => {
@@ -200,47 +191,6 @@ export default function DailyJobsiteLog() {
     setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
   };
 
-  const openZoomedCamera = async (activityIndex) => {
-    const current = activities[activityIndex]?.photos || [];
-    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
-      return;
-    }
-    if (!cameraPermission?.granted) {
-      const { granted } = await requestCameraPermission();
-      if (!granted) {
-        toast.error('Permission Denied', 'Camera access is required to take photos');
-        return;
-      }
-    }
-    setPendingActivityIndex(activityIndex);
-    setCameraVisible(true);
-  };
-
-  const captureZoomedPhoto = async () => {
-    if (!cameraRef.current || pendingActivityIndex === null) return;
-    try {
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.6,
-        base64: false,
-        exif: false,
-      });
-      const newPhoto = {
-        uri: photo.uri,
-        base64: null, // deferred — will be converted at save time
-        timestamp: new Date().toISOString(),
-      };
-      setActivities(prev => prev.map((a, i) => {
-        if (i !== pendingActivityIndex) return a;
-        return { ...a, photos: [...(a.photos || []), newPhoto].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-      }));
-      setCameraVisible(false);
-      setPendingActivityIndex(null);
-    } catch (err) {
-      console.error('Capture failed:', err);
-      toast.error('Error', 'Could not capture photo');
-    }
-  };
   const pickActivityPhoto = async (activityIndex) => {
     const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
@@ -678,42 +628,6 @@ export default function DailyJobsiteLog() {
         </ScrollView>
         <FloatingNav />
       </SafeAreaView>
-
-      {/* 0.5x Zoom Camera Modal */}
-      <Modal visible={cameraVisible} animationType="slide" statusBarTranslucent>
-        <View style={{ flex: 1, backgroundColor: '#000' }}>
-          <CameraView
-            ref={cameraRef}
-            style={{ flex: 1 }}
-            facing="back"
-            zoom={0.0}
-            // zoom: 0.0 = widest (0.5x on ultrawide devices), 1.0 = max zoom
-            // On iPhone with ultrawide: zoom=0.0 activates the 0.5x lens
-          />
-          {/* Controls */}
-          <View style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0,
-            paddingBottom: 48, paddingHorizontal: 32,
-            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-          }}>
-            <Pressable
-              onPress={() => { setCameraVisible(false); setPendingActivityIndex(null); }}
-              style={{ padding: 16 }}
-            >
-              <Text style={{ color: '#fff', fontSize: 16 }}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={captureZoomedPhoto}
-              style={{
-                width: 72, height: 72, borderRadius: 36,
-                backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.5)',
-              }}
-            />
-            <View style={{ width: 64 }} />
-          </View>
-        </View>
-      </Modal>
-
     </AnimatedBackground>
   );
 }
