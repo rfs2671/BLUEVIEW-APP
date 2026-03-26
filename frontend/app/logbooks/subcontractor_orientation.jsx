@@ -172,6 +172,7 @@ export default function SubcontractorOrientation() {
           checklist: newChecklist,
           completed_at: new Date().toISOString(),
           worker_signature: null,
+          language_provided: 'en',
         },
       });
       setOrientations(prev => [created, ...prev]);
@@ -414,6 +415,23 @@ export default function SubcontractorOrientation() {
                             </View>
                           ))}
                         </View>
+
+                        {/* Language provided badge */}
+                        {d.language_provided && (
+                          <View style={{
+                            flexDirection: 'row', alignItems: 'center', gap: 4,
+                            marginTop: spacing.xs, marginBottom: spacing.sm,
+                            paddingHorizontal: spacing.sm, paddingVertical: 3,
+                            backgroundColor: 'rgba(59,130,246,0.1)',
+                            borderRadius: borderRadius.full,
+                            borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                            alignSelf: 'flex-start',
+                          }}>
+                            <Text style={{ fontSize: 11, fontWeight: '600', color: '#60a5fa' }}>
+                              🌐 Orientation in: {d.language_provided === 'es' ? 'Español' : 'English'}
+                            </Text>
+                          </View>
+                        )}
 
                         {/* Checklist summary */}
                         <View style={styles.checklistSummary}>
