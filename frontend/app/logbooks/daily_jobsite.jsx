@@ -333,8 +333,33 @@ export default function DailyJobsiteLog() {
       }
 
       await autoSave(cpName, cpSignature);
+
+      // Record signature audit event
+      if (submitStatus === 'submitted' && cpSignature) {
+        const docId = existingLogId || created?.id || created?._id;
+        if (docId) {
+          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+          recordSignatureEvent({
+            documentType: 'logbook',
+            documentId: docId,
+            eventType: 'cp_sign',
+            signerName: cpName,
+            signerRole: user?.role || 'cp',
+            signatureData: cpSignature,
+            contentSnapshot: {
+              log_type: 'daily_jobsite',
+              date,
+              project_id: projectId,
+              data: payload.data,
+              status: submitStatus,
+            },
+            user,
+          });
+        }
+      }
+
       toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ? 'Daily jobsite log submitted' : 'Draft saved');
+        submitStatus === 'submitted' ?
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not save log');
