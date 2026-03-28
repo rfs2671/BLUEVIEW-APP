@@ -22,6 +22,7 @@
     "expo": "~52.0.17",
     "expo-blur": "~14.0.1",
     "expo-constants": "~17.0.3",
+    "expo-device": "~7.0.1",
     "expo-file-system": "~18.0.4",
     "expo-image-picker": "~16.0.6",
     "expo-linear-gradient": "~14.0.1",
