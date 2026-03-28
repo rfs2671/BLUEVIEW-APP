@@ -21,7 +21,7 @@ export const getToken = async () => {
   }
 };
 
- const setToken = async (token) => {
+export const setToken = async (token) => {
   try {
     await AsyncStorage.setItem('blueview_token', token);
   } catch (e) {
@@ -29,7 +29,7 @@ export const getToken = async () => {
   }
 };
 
- const removeToken = async () => {
+export const removeToken = async () => {
   try {
     await AsyncStorage.removeItem('blueview_token');
   } catch (e) {
@@ -38,7 +38,7 @@ export const getToken = async () => {
 };
 
 // User data management
- const getStoredUser = async () => {
+export const getStoredUser = async () => {
   try {
     const user = await AsyncStorage.getItem('blueview_user');
     return user ? JSON.parse(user) : null;
@@ -47,7 +47,7 @@ export const getToken = async () => {
   }
 };
 
- const setStoredUser = async (user) => {
+export const setStoredUser = async (user) => {
   try {
     await AsyncStorage.setItem('blueview_user', JSON.stringify(user));
   } catch (e) {
@@ -55,7 +55,7 @@ export const getToken = async () => {
   }
 };
 
- const removeStoredUser = async () => {
+export const removeStoredUser = async () => {
   try {
     await AsyncStorage.removeItem('blueview_user');
   } catch (e) {
@@ -64,7 +64,7 @@ export const getToken = async () => {
 };
 
 // Clear all auth data
- const clearAuth = async () => {
+export const clearAuth = async () => {
   await removeToken();
   await removeStoredUser();
 };
@@ -96,7 +96,7 @@ apiClient.interceptors.response.use(
 /**
  * Authentication APIs
  */
- const authAPI = {
+export const authAPI = {
   login: async (email, password) => {
     const response = await apiClient.post('/api/auth/login', {
       email,
@@ -134,7 +134,7 @@ apiClient.interceptors.response.use(
 /**
  * Projects APIs
  */
- const projectsAPI = {
+export const projectsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/projects');
     return response.data;
@@ -184,7 +184,7 @@ apiClient.interceptors.response.use(
 /**
  * Workers APIs
  */
- const workersAPI = {
+export const workersAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/workers');
     return response.data;
@@ -219,7 +219,7 @@ apiClient.interceptors.response.use(
 /**
  * Check-ins APIs
  */
- const checkinsAPI = {
+export const checkinsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/checkins');
     return response.data;
@@ -255,7 +255,7 @@ apiClient.interceptors.response.use(
 /**
  * Daily Logs APIs
  */
- const dailyLogsAPI = {
+export const dailyLogsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/daily-logs');
     return response.data;
@@ -297,7 +297,7 @@ apiClient.interceptors.response.use(
 /**
  * Dropbox APIs
  */
- const dropboxAPI = {
+export const dropboxAPI = {
   getStatus: async () => {
     const response = await apiClient.get('/api/dropbox/status');
     return response.data;
@@ -353,7 +353,7 @@ apiClient.interceptors.response.use(
 /**
  * Admin User Management APIs
  */
- const adminUsersAPI = {
+export const adminUsersAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/admin/users');
     return response.data;
@@ -390,7 +390,7 @@ apiClient.interceptors.response.use(
 /**
  * Owner Portal APIs
  */
- const ownerAPI = {
+export const ownerAPI = {
   getAdmins: async () => {
     const response = await apiClient.get('/api/owner/admins');
     return response.data;
@@ -415,7 +415,7 @@ apiClient.interceptors.response.use(
 /**
  * Checklists APIs
  */
- const checklistsAPI = {
+export const checklistsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/admin/checklists');
     return response.data;
@@ -472,7 +472,7 @@ apiClient.interceptors.response.use(
   },
 };
 
- const logbooksAPI = {
+export const logbooksAPI = {
   getByProject: async (projectId, logType = null, date = null) => {
     const params = {};
     if (logType) params.log_type = logType;
@@ -535,7 +535,7 @@ apiClient.interceptors.response.use(
   },
 };
 
- const cpProfileAPI = {
+export const cpProfileAPI = {
   getProfile: async () => {
     const response = await apiClient.get('/api/cp/profile');
     return response.data;
@@ -547,7 +547,7 @@ apiClient.interceptors.response.use(
   },
 };
 
- const weatherAPI = {
+export const weatherAPI = {
   getCurrent: async (lat = null, lng = null, address = null) => {
     const params = {};
     if (lat) params.lat = lat;
@@ -561,7 +561,7 @@ apiClient.interceptors.response.use(
 /**
  * Reports APIs (admin)
  */
- const reportsAPI = {
+export const reportsAPI = {
   getPreview: async (projectId, date) => {
     const response = await apiClient.get(`/api/reports/project/${projectId}/preview/${date}`);
     return response.data;
@@ -588,7 +588,7 @@ apiClient.interceptors.response.use(
   },
 };
 
- const dobAPI = {
+export const dobAPI = {
   getLogs: async (projectId, params = {}) => {
     const queryParts = [];
     if (params.severity) queryParts.push(`severity=${params.severity}`);
@@ -599,23 +599,23 @@ apiClient.interceptors.response.use(
     const response = await apiClient.get(`/api/projects/${projectId}/dob-logs${queryString}`);
     return response.data;
   },
- 
+
   updateConfig: async (projectId, config) => {
     const response = await apiClient.put(`/api/projects/${projectId}/dob-config`, config);
     return response.data;
   },
- 
+
   syncNow: async (projectId) => {
     const response = await apiClient.post(`/api/projects/${projectId}/dob-sync`);
     return response.data;
   },
-  
+
   getConfig: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/dob-config`);
     return response.data;
   },
 };
- 
+
 export const permitRenewalAPI = {
   list: async (params = {}) => {
     const query = new URLSearchParams();
@@ -661,33 +661,33 @@ export const csRegistrationAPI = {
     const response = await apiClient.get('/api/admin/cs-registrations', { params });
     return response.data;
   },
- 
+
   create: async (data) => {
     const response = await apiClient.post('/api/admin/cs-registrations', data);
     return response.data;
   },
- 
+
   getById: async (registrationId) => {
     const response = await apiClient.get(`/api/admin/cs-registrations/${registrationId}`);
     return response.data;
   },
- 
+
   update: async (registrationId, data) => {
     const response = await apiClient.put(`/api/admin/cs-registrations/${registrationId}`, data);
     return response.data;
   },
- 
+
   delete: async (registrationId) => {
     const response = await apiClient.delete(`/api/admin/cs-registrations/${registrationId}`);
     return response.data;
   },
- 
+
   getForProject: async (projectId) => {
     const response = await apiClient.get(`/api/cs/project/${projectId}`);
     return response.data;
   },
 };
- 
+
 /**
  * Compliance Alerts APIs (admin)
  */
@@ -697,24 +697,13 @@ export const complianceAlertsAPI = {
     const response = await apiClient.get('/api/admin/compliance-alerts', { params });
     return response.data;
   },
- 
+
   resolve: async (alertId) => {
     const response = await apiClient.put(`/api/admin/compliance-alerts/${alertId}/resolve`);
     return response.data;
   },
 };
- 
-/**
- * Per-logbook PDF download
- * Add this method to the existing logbooksAPI object:
- */
-// logbooksAPI.getPdf = async (logbookId) => {
-//   const response = await apiClient.get(`/api/reports/logbook/${logbookId}/pdf`, {
-//     responseType: 'blob',
-//   });
-//   return response.data;
-// };
- 
+
 /**
  * Signature Events APIs
  */
@@ -725,12 +714,12 @@ export const signatureEventsAPI = {
     );
     return response.data;
   },
- 
+
   getDetail: async (eventId) => {
     const response = await apiClient.get(`/api/signature-events/${eventId}`);
     return response.data;
   },
- 
+
   verify: async (documentType, documentId) => {
     const response = await apiClient.get(
       `/api/signature-events/verify/${documentType}/${documentId}`
