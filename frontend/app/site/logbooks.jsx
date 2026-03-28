@@ -126,96 +126,291 @@ export default function SiteLogbooksViewer() {
     }
   };
 
-  // Render log content based on type
-  const renderLogContent = (log) => {
+  // ===========================================================================
+  //  Helper components for full document rendering
+  // ===========================================================================
+
+  const SignatureBlock = ({ signature, label }) => {
+    if (!signature) return null;
+    let base64Data = null;
+    let signerName = '';
+    if (typeof signature === 'string') {
+      base64Data = signature;
+    } else if (typeof signature === 'object') {
+      base64Data = signature.data || signature.paths || null;
+      signerName = signature.signer_name || '';
+    }
+    return (
+      <View style={{ marginTop: spacing.sm }}>
+        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
+          {label}{signerName ? ` — ${signerName}` : ''}
+        </Text>
+        {base64Data && typeof base64Data === 'string' ? (
+          <Image
+            source={{ uri: base64Data.startsWith('data:') ? base64Data : `data:image/png;base64,${base64Data}` }}
+            style={{ width: 200, height: 60, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.05)' }}
+            resizeMode="contain"
+          />
+        ) : signerName ? (
+          <Text style={{ fontSize: 13, color: colors.text.secondary, fontStyle: 'italic' }}>{signerName} (signed)</Text>
+        ) : null}
+      </View>
+    );
+  };
+
+  const DocInfoRow = ({ icon: Icon, text }) => (
+    <View style={s.docInfoRow}>
+      <Icon size={12} strokeWidth={1.5} color={colors.text.muted} />
+      <Text style={s.docInfoText}>{text}</Text>
+    </View>
+  );
+
+  const DocSectionLabel = ({ icon: Icon, label, color }) => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.md, marginBottom: spacing.xs }}>
+      {Icon && <Icon size={14} strokeWidth={1.5} color={color || colors.text.muted} />}
+      <Text style={{ fontSize: 12, fontWeight: '700', color: color || colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</Text>
+    </View>
+  );
+
+  const DocTableRow = ({ cells, isHeader }) => (
+    <View style={{
+      flexDirection: 'row',
+      borderBottomWidth: 1,
+      borderBottomColor: isHeader ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)',
+      paddingVertical: isHeader ? 6 : spacing.xs,
+      backgroundColor: isHeader ? 'rgba(255,255,255,0.04)' : 'transparent',
+    }}>
+      {cells.map((cell, i) => (
+        <Text key={i} style={{
+          flex: cell.flex || 1,
+          fontSize: isHeader ? 10 : 12,
+          fontWeight: isHeader ? '700' : '400',
+          color: isHeader ? colors.text.muted : colors.text.secondary,
+          textTransform: isHeader ? 'uppercase' : 'none',
+          letterSpacing: isHeader ? 0.5 : 0,
+          paddingHorizontal: 4,
+        }} numberOfLines={3}>
+          {cell.text}
+        </Text>
+      ))}
+    </View>
+  );
+
+  // ===========================================================================
+  //  FULL DOCUMENT RENDERERS
+  // ===========================================================================
+
+  const renderDailyJobsite = (log) => {
     const data = log.data || {};
+    const activities = data.activities || [];
+    const equipmentOnSite = data.equipment_on_site || {};
+    const checklistItems = data.checklist_items || {};
+    const observations = data.observations || [];
+    const visitorsDeliveries = data.visitors_deliveries || '';
+    const equipList = Object.entries(equipmentOnSite).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())).join(', ');
+    const checkList = Object.entries(checklistItems).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())).join(', ');
 
-    if (log.log_type === 'daily_jobsite') {
-      return (
-        <View style={s.logContent}>
-          {data.weather && (
-            <Text style={s.logField}>
-              <Text style={s.logFieldLabel}>Weather: </Text>{data.weather} {data.weather_temp || ''}
-            </Text>
-          )}
-          {data.general_description && (
-            <Text style={s.logField}>
-              <Text style={s.logFieldLabel}>Description: </Text>{data.general_description}
-            </Text>
-          )}
-          {(data.activities || []).map((act, i) => (
-            <View key={i} style={s.activityRow}>
-              <Text style={s.activityText}>
-                {act.company || 'Unknown'} — {act.num_workers || 0} workers — {act.work_description || 'N/A'}
-              </Text>
+    return (
+      <View style={s.docContent}>
+        <View style={s.docInfoBox}>
+          {data.project_address && <DocInfoRow icon={MapPin} text={data.project_address} />}
+          <DocInfoRow icon={CloudSun} text={`${data.weather || 'N/A'} ${data.weather_temp || ''}${data.weather_wind ? ` — Wind: ${data.weather_wind}` : ''}`} />
+          {(data.time_in || data.time_out) && <DocInfoRow icon={Clock} text={`Time In: ${data.time_in || 'N/A'}  |  Time Out: ${data.time_out || 'N/A'}`} />}
+          {data.areas_visited && <DocInfoRow icon={Eye} text={`Areas Visited: ${data.areas_visited}`} />}
+        </View>
+
+        {data.general_description && (
+          <>
+            <DocSectionLabel icon={FileText} label="General Description" color="#3b82f6" />
+            <Text style={s.docParagraph}>{data.general_description}</Text>
+          </>
+        )}
+
+        {activities.length > 0 && (
+          <>
+            <DocSectionLabel icon={Wrench} label="Activity Details" color="#3b82f6" />
+            <DocTableRow isHeader cells={[
+              { text: 'Crew / Company', flex: 1.5 }, { text: 'Workers', flex: 0.6 },
+              { text: 'Description', flex: 2 }, { text: 'Location', flex: 1 },
+            ]} />
+            {activities.map((act, i) => (
+              <React.Fragment key={i}>
+                <DocTableRow cells={[
+                  { text: `${act.crew_name || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
+                  { text: String(act.num_workers || 0), flex: 0.6 },
+                  { text: act.work_description || 'N/A', flex: 2 },
+                  { text: act.work_locations || 'N/A', flex: 1 },
+                ]} />
+                {(act.photos || []).length > 0 && (
+                  <View style={s.photoRow}>
+                    {act.photos.map((photo, pi) => {
+                      const uri = photo.base64
+                        ? (photo.base64.startsWith('data:') ? photo.base64 : `data:image/jpeg;base64,${photo.base64}`)
+                        : photo.uri;
+                      if (!uri) return null;
+                      return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
+                    })}
+                  </View>
+                )}
+              </React.Fragment>
+            ))}
+          </>
+        )}
+
+        {equipList ? (<><DocSectionLabel icon={Wrench} label="Equipment on Site" color="#f59e0b" /><Text style={s.docParagraph}>{equipList}</Text></>) : null}
+        {checkList ? (<><DocSectionLabel icon={ShieldCheck} label="Inspected" color="#4ade80" /><Text style={s.docParagraph}>{checkList}</Text></>) : null}
+
+        {observations.length > 0 && observations.some(o => o.description?.trim()) && (
+          <>
+            <DocSectionLabel icon={AlertTriangle} label="Safety Observations" color="#ef4444" />
+            <DocTableRow isHeader cells={[{ text: 'Description', flex: 2 }, { text: 'Responsible', flex: 1 }, { text: 'Remedy', flex: 1.5 }]} />
+            {observations.filter(o => o.description?.trim()).map((obs, i) => (
+              <DocTableRow key={i} cells={[{ text: obs.description || '', flex: 2 }, { text: obs.responsible_party || '', flex: 1 }, { text: obs.remedy || '', flex: 1.5 }]} />
+            ))}
+          </>
+        )}
+
+        {visitorsDeliveries ? (<><DocSectionLabel icon={Truck} label="Visitors / Deliveries" color="#8b5cf6" /><Text style={s.docParagraph}>{visitorsDeliveries}</Text></>) : null}
+
+        <View style={s.signatureSection}>
+          <View style={s.signatureDivider} />
+          <SignatureBlock signature={log.cp_signature} label="Competent Person (CP)" />
+          {log.cp_name && !log.cp_signature && <Text style={s.signedByName}>CP: {log.cp_name}</Text>}
+          <SignatureBlock signature={data.superintendent_signature} label="Superintendent" />
+        </View>
+      </View>
+    );
+  };
+
+  const renderToolboxTalk = (log) => {
+    const data = log.data || {};
+    const topics = data.checked_topics || {};
+    const topicList = Object.entries(topics).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+    const attendees = data.attendees || [];
+
+    return (
+      <View style={s.docContent}>
+        <View style={s.docInfoBox}>
+          {data.location && <DocInfoRow icon={MapPin} text={`Location: ${data.location}`} />}
+          {data.company_name && <DocInfoRow icon={Building2} text={`Company: ${data.company_name}`} />}
+          {data.performed_by && <DocInfoRow icon={Users} text={`Performed By: ${data.performed_by}`} />}
+          {data.meeting_time && <DocInfoRow icon={Clock} text={`Time: ${data.meeting_time}`} />}
+        </View>
+
+        <DocSectionLabel icon={BookOpen} label={`Topics (${topicList.length})`} color="#8b5cf6" />
+        {topicList.length > 0 ? (
+          <View style={s.topicChips}>
+            {topicList.map((topic, i) => (
+              <View key={i} style={s.topicChip}>
+                <CheckCircle size={10} strokeWidth={2} color="#8b5cf6" />
+                <Text style={s.topicChipText}>{topic}</Text>
+              </View>
+            ))}
+          </View>
+        ) : <Text style={s.docParagraph}>None</Text>}
+
+        <DocSectionLabel icon={Users} label={`Attendees (${attendees.length})`} color="#8b5cf6" />
+        {attendees.length > 0 && (
+          <>
+            <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Company', flex: 1 }, { text: 'Signed', flex: 0.6 }]} />
+            {attendees.map((a, i) => (
+              <DocTableRow key={i} cells={[{ text: a.name || 'Unknown', flex: 1.5 }, { text: a.company || '', flex: 1 }, { text: a.signed ? '✓' : '—', flex: 0.6 }]} />
+            ))}
+          </>
+        )}
+
+        {attendees.some(a => a.worker_signature || a.signature) && (
+          <>
+            <DocSectionLabel icon={Pen} label="Worker Signatures" color="#4ade80" />
+            <View style={s.workerSigGrid}>
+              {attendees.filter(a => a.worker_signature || a.signature).map((a, i) => (
+                <View key={i} style={s.workerSigCard}>
+                  <Text style={s.workerSigName}>{a.name || 'Unknown'}</Text>
+                  <Image
+                    source={{ uri: (a.worker_signature || a.signature || '').startsWith('data:') ? (a.worker_signature || a.signature) : `data:image/png;base64,${a.worker_signature || a.signature}` }}
+                    style={s.workerSigImage} resizeMode="contain"
+                  />
+                </View>
+              ))}
             </View>
-          ))}
-          {data.equipment_on_site && (
-            <Text style={s.logField}>
-              <Text style={s.logFieldLabel}>Equipment: </Text>
-              {Object.entries(data.equipment_on_site).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' ')).join(', ') || 'None'}
-            </Text>
-          )}
-          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
-        </View>
-      );
-    }
+          </>
+        )}
 
-    if (log.log_type === 'toolbox_talk') {
-      const topics = data.checked_topics || {};
-      const topicList = Object.entries(topics).filter(([_, v]) => v).map(([k]) => k.replace(/_/g, ' '));
-      const attendees = data.attendees || [];
-      return (
-        <View style={s.logContent}>
-          {data.location && (
-            <Text style={s.logField}>
-              <Text style={s.logFieldLabel}>Location: </Text>{data.location}
-            </Text>
-          )}
-          {data.performed_by && (
-            <Text style={s.logField}>
-              <Text style={s.logFieldLabel}>Performed By: </Text>{data.performed_by}
-            </Text>
-          )}
-          <Text style={s.logField}>
-            <Text style={s.logFieldLabel}>Topics ({topicList.length}): </Text>
-            {topicList.join(', ') || 'None'}
-          </Text>
-          <Text style={s.logField}>
-            <Text style={s.logFieldLabel}>Attendees: </Text>
-            {attendees.length} workers
-          </Text>
-          {attendees.map((a, i) => (
-            <Text key={i} style={s.attendeeText}>
-              • {a.name || 'Unknown'} ({a.company || ''}) {a.signed ? '✓' : '—'}
-            </Text>
-          ))}
-          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
+        <View style={s.signatureSection}>
+          <View style={s.signatureDivider} />
+          <SignatureBlock signature={log.cp_signature} label="Competent Person (CP)" />
+          {log.cp_name && !log.cp_signature && <Text style={s.signedByName}>CP: {log.cp_name}</Text>}
         </View>
-      );
-    }
+      </View>
+    );
+  };
 
-    if (log.log_type === 'preshift_signin') {
-      const workers = (data.workers || []).filter(w => w.name?.trim());
-      return (
-        <View style={s.logContent}>
-          <Text style={s.logField}>
-            <Text style={s.logFieldLabel}>Workers: </Text>{workers.length}
-          </Text>
-          {workers.map((w, i) => (
-            <View key={i} style={s.workerRow}>
-              <Text style={s.workerName}>{w.name}</Text>
-              <Text style={s.workerDetail}>{w.company} • OSHA: {w.osha_number || 'N/A'}</Text>
-              <Text style={s.workerDetail}>
-                Injury: {w.had_injury || '—'} | PPE: {w.inspected_ppe || '—'}
-              </Text>
+  const renderPreshiftSignin = (log) => {
+    const data = log.data || {};
+    const workers = (data.workers || []).filter(w => w.name?.trim());
+
+    return (
+      <View style={s.docContent}>
+        <View style={s.docInfoBox}>
+          {data.company && <DocInfoRow icon={Building2} text={`Company: ${data.company}`} />}
+          {data.project_location && <DocInfoRow icon={MapPin} text={`Location: ${data.project_location}`} />}
+          <DocInfoRow icon={Users} text={`Total Workers: ${data.total_count || workers.length}`} />
+        </View>
+
+        <DocSectionLabel icon={Users} label={`Workers (${workers.length})`} color="#f59e0b" />
+        {workers.length > 0 && (
+          <>
+            <DocTableRow isHeader cells={[
+              { text: 'Name', flex: 1.5 }, { text: 'Company', flex: 1 }, { text: 'OSHA #', flex: 0.8 },
+              { text: 'Injury', flex: 0.5 }, { text: 'PPE', flex: 0.5 },
+            ]} />
+            {workers.map((w, i) => (
+              <DocTableRow key={i} cells={[
+                { text: w.name || '', flex: 1.5 }, { text: w.company || '', flex: 1 },
+                { text: w.osha_number || 'N/A', flex: 0.8 }, { text: w.had_injury || '—', flex: 0.5 },
+                { text: w.inspected_ppe || '—', flex: 0.5 },
+              ]} />
+            ))}
+          </>
+        )}
+
+        {workers.some(w => w.worker_signature) && (
+          <>
+            <DocSectionLabel icon={Pen} label="Worker Signatures" color="#4ade80" />
+            <View style={s.workerSigGrid}>
+              {workers.filter(w => w.worker_signature).map((w, i) => (
+                <View key={i} style={s.workerSigCard}>
+                  <Text style={s.workerSigName}>{w.name}</Text>
+                  <Image
+                    source={{ uri: w.worker_signature.startsWith('data:') ? w.worker_signature : `data:image/png;base64,${w.worker_signature}` }}
+                    style={s.workerSigImage} resizeMode="contain"
+                  />
+                </View>
+              ))}
             </View>
-          ))}
-          <Text style={s.signedBy}>Signed by: {log.cp_name || 'N/A'}</Text>
-        </View>
-      );
-    }
+          </>
+        )}
 
+        {workers.some(w => !w.worker_signature) && (
+          <View style={s.unsignedBlock}>
+            <Text style={s.unsignedLabel}>Not Signed: </Text>
+            <Text style={s.unsignedNames}>{workers.filter(w => !w.worker_signature).map(w => w.name).join(', ')}</Text>
+          </View>
+        )}
+
+        <View style={s.signatureSection}>
+          <View style={s.signatureDivider} />
+          <SignatureBlock signature={log.cp_signature} label="Competent Person (CP)" />
+          {log.cp_name && !log.cp_signature && <Text style={s.signedByName}>CP: {log.cp_name}</Text>}
+        </View>
+      </View>
+    );
+  };
+
+  const renderLogContent = (log) => {
+    if (log.log_type === 'daily_jobsite') return renderDailyJobsite(log);
+    if (log.log_type === 'toolbox_talk') return renderToolboxTalk(log);
+    if (log.log_type === 'preshift_signin') return renderPreshiftSignin(log);
     return <Text style={s.logField}>No data available</Text>;
   };
 
@@ -428,35 +623,91 @@ function buildStyles(colors, isDark) {
   },
   dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#4ade80' },
 
-  // Log card
-  logCard: { marginTop: spacing.sm, marginBottom: spacing.sm, padding: spacing.md },
-  logHeader: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    marginBottom: spacing.sm, paddingBottom: spacing.xs,
-    borderBottomWidth: 1, borderBottomColor: colors.glass.border,
-  },
-  logType: { fontSize: 14, fontWeight: '600', color: colors.text.primary },
-  logTime: { fontSize: 12, color: colors.text.muted },
+  // Log card — full document style
+  logCard: { marginTop: spacing.sm, marginBottom: spacing.md, padding: spacing.md },
 
-  // Log content
-  logContent: { gap: spacing.xs },
+  // Document header
+  docHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start',
+    marginBottom: spacing.md, paddingBottom: spacing.sm,
+    borderBottomWidth: 2, borderBottomColor: 'rgba(59,130,246,0.3)',
+  },
+  docHeaderLeft: { flex: 1 },
+  docHeaderRight: { alignItems: 'flex-end', gap: 4 },
+  logType: { fontSize: 16, fontWeight: '700', color: colors.text.primary },
+  docDate: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
+  logTime: { fontSize: 11, color: colors.text.muted },
+
+  // Status badge
+  statusBadge: {
+    paddingHorizontal: spacing.sm, paddingVertical: 2,
+    borderRadius: borderRadius.full, borderWidth: 1,
+  },
+  statusSubmitted: { backgroundColor: 'rgba(74,222,128,0.12)', borderColor: 'rgba(74,222,128,0.3)' },
+  statusDraft: { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: 'rgba(245,158,11,0.3)' },
+  statusText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+  statusTextSubmitted: { color: '#4ade80' },
+  statusTextDraft: { color: '#f59e0b' },
+
+  // Document content
+  docContent: { gap: 2 },
+  docInfoBox: {
+    backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: borderRadius.md,
+    padding: spacing.sm, gap: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+  },
+  docInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  docInfoText: { fontSize: 13, color: colors.text.secondary, flex: 1 },
+  docParagraph: { fontSize: 13, color: colors.text.secondary, lineHeight: 20, paddingLeft: 2 },
+
+  // Photo row
+  photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },
+  activityPhoto: { width: 80, height: 60, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+
+  // Signature section
+  signatureSection: { marginTop: spacing.md },
+  signatureDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.08)', marginBottom: spacing.sm },
+  signedByName: { fontSize: 13, color: '#4ade80', fontWeight: '500', marginTop: spacing.xs },
+
+  // Topic chips
+  topicChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
+  topicChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: 'rgba(139,92,246,0.1)', borderWidth: 1, borderColor: 'rgba(139,92,246,0.2)',
+    borderRadius: borderRadius.full, paddingHorizontal: spacing.sm, paddingVertical: 4,
+  },
+  topicChipText: { fontSize: 12, color: '#c4b5fd', fontWeight: '500' },
+
+  // Worker signatures grid
+  workerSigGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  workerSigCard: {
+    width: '47%', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: borderRadius.md,
+    padding: spacing.xs, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', alignItems: 'center',
+  },
+  workerSigName: { fontSize: 11, fontWeight: '600', color: colors.text.muted, marginBottom: 4 },
+  workerSigImage: { width: 120, height: 36, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.05)' },
+
+  // Unsigned workers
+  unsignedBlock: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: spacing.xs, paddingLeft: 2 },
+  unsignedLabel: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
+  unsignedNames: { fontSize: 11, color: colors.text.subtle },
+
+  // PDF buttons
+  pdfRow: { paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginTop: spacing.xs },
+  pdfBtn: { backgroundColor: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.25)' },
+  pdfActions: {
+    flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.sm,
+    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  pdfActionBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
+    backgroundColor: 'rgba(59,130,246,0.08)', borderRadius: borderRadius.full,
+    borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+  },
+  pdfActionText: { fontSize: 12, fontWeight: '600', color: '#3b82f6' },
+
+  // Legacy
   logField: { fontSize: 13, color: colors.text.secondary, lineHeight: 20 },
   logFieldLabel: { fontWeight: '600', color: colors.text.primary },
-  signedBy: { fontSize: 12, color: '#4ade80', fontWeight: '500', marginTop: spacing.sm },
-
-  // Activity
-  activityRow: {
-    paddingLeft: spacing.sm, paddingVertical: 2,
-    borderLeftWidth: 2, borderLeftColor: 'rgba(59,130,246,0.3)', marginVertical: 2,
-  },
-  activityText: { fontSize: 13, color: colors.text.secondary },
-
-  // Attendee
-  attendeeText: { fontSize: 12, color: colors.text.muted, paddingLeft: spacing.sm },
-
-  // Worker
-  workerRow: { paddingVertical: spacing.xs, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.04)' },
-  workerName: { fontSize: 14, fontWeight: '500', color: colors.text.primary },
-  workerDetail: { fontSize: 12, color: colors.text.muted },
 });
 }
