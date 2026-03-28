@@ -1,19 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image,
+  Linking, Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft, ClipboardList, BookOpen, Users, FileText,
-  Building2, Calendar, CheckCircle, ChevronRight,
+  Building2, Calendar, CheckCircle, ChevronRight, ChevronDown,
+  CloudSun, Clock, MapPin, Wrench, ShieldCheck, Eye, Truck,
+  AlertTriangle, Pen, XCircle, Download, Share2,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
-import { logbooksAPI } from '../../src/utils/api';
+import { logbooksAPI, getToken } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 
@@ -59,6 +62,46 @@ export default function SiteLogbooksViewer() {
       setLogsByDate({});
     } finally {
       setLoading(false);
+    }
+  };
+
+  // PDF handlers
+  const BASE_URL = 'https://blueview2-production.up.railway.app';
+
+  const handleViewLogPdf = async (logbookId) => {
+    try {
+      const token = await getToken();
+      const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
+      await Linking.openURL(url);
+    } catch (e) {
+      console.error('PDF open failed:', e);
+    }
+  };
+
+  const handleShareLogPdf = async (logbookId, logType, date) => {
+    try {
+      const Sharing = require('expo-sharing');
+      const FileSystem = require('expo-file-system');
+      const token = await getToken();
+      const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
+      const filename = `Blueview_${logType}_${date}.pdf`;
+      const fileUri = FileSystem.cacheDirectory + filename;
+      const download = await FileSystem.downloadAsync(url, fileUri);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(download.uri, { mimeType: 'application/pdf', dialogTitle: 'Share Logbook PDF' });
+      }
+    } catch (e) {
+      console.error('PDF share failed:', e);
+    }
+  };
+
+  const handleCombinedPdf = async (date) => {
+    try {
+      const token = await getToken();
+      const url = `${BASE_URL}/api/reports/project/${siteProject.id}/date/${date}/pdf?token=${token}`;
+      await Linking.openURL(url);
+    } catch (e) {
+      console.error('Combined PDF failed:', e);
     }
   };
 
@@ -259,21 +302,69 @@ export default function SiteLogbooksViewer() {
                     />
                   </Pressable>
 
-                  {isExpanded && logs.map((log, idx) => (
-                    <GlassCard key={log.id || idx} style={s.logCard}>
-                      <View style={s.logHeader}>
-                        <Text style={s.logType}>
-                          {LOG_TABS.find(t => t.key === log.log_type)?.label || log.log_type}
-                        </Text>
-                        <Text style={s.logTime}>
-                          {log.created_at ? new Date(log.created_at).toLocaleTimeString('en-US', {
-                            hour: 'numeric', minute: '2-digit', hour12: true,
-                          }) : ''}
-                        </Text>
+                  {isExpanded && (
+                    <>
+                      {/* Combined PDF button for this date */}
+                      <View style={s.pdfRow}>
+                        <GlassButton
+                          title="Download Full Day Report"
+                          icon={<Download size={14} strokeWidth={1.5} color={colors.text.primary} />}
+                          onPress={() => handleCombinedPdf(date)}
+                          style={s.pdfBtn}
+                        />
                       </View>
-                      {renderLogContent(log)}
-                    </GlassCard>
-                  ))}
+
+                      {logs.map((log, idx) => (
+                        <GlassCard key={log.id || idx} style={s.logCard}>
+                          {/* Document Header */}
+                          <View style={s.docHeader}>
+                            <View style={s.docHeaderLeft}>
+                              <Text style={s.logType}>
+                                {LOG_TABS.find(t => t.key === log.log_type)?.label || log.log_type}
+                              </Text>
+                              <Text style={s.docDate}>{formatDate(log.date || date)}</Text>
+                            </View>
+                            <View style={s.docHeaderRight}>
+                              <View style={[s.statusBadge, log.status === 'submitted' ? s.statusSubmitted : s.statusDraft]}>
+                                <Text style={[s.statusText, log.status === 'submitted' ? s.statusTextSubmitted : s.statusTextDraft]}>
+                                  {log.status === 'submitted' ? 'SUBMITTED' : 'DRAFT'}
+                                </Text>
+                              </View>
+                              <Text style={s.logTime}>
+                                {log.created_at ? new Date(log.created_at).toLocaleTimeString('en-US', {
+                                  hour: 'numeric', minute: '2-digit', hour12: true,
+                                }) : ''}
+                              </Text>
+                            </View>
+                          </View>
+
+                          {/* Full Document Content */}
+                          {renderLogContent(log)}
+
+                          {/* PDF Actions — tap = browser, long-press = share */}
+                          {log.status === 'submitted' && (log.id || log._id) && (
+                            <View style={s.pdfActions}>
+                              <Pressable
+                                style={s.pdfActionBtn}
+                                onPress={() => handleViewLogPdf(log.id || log._id)}
+                                onLongPress={() => handleShareLogPdf(log.id || log._id, log.log_type, log.date || date)}
+                              >
+                                <Download size={14} strokeWidth={1.5} color="#3b82f6" />
+                                <Text style={s.pdfActionText}>PDF</Text>
+                              </Pressable>
+                              <Pressable
+                                style={s.pdfActionBtn}
+                                onPress={() => handleShareLogPdf(log.id || log._id, log.log_type, log.date || date)}
+                              >
+                                <Share2 size={14} strokeWidth={1.5} color="#3b82f6" />
+                                <Text style={s.pdfActionText}>Share</Text>
+                              </Pressable>
+                            </View>
+                          )}
+                        </GlassCard>
+                      ))}
+                    </>
+                  )}
                 </View>
               );
             })
