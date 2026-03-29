@@ -173,23 +173,47 @@ export default function WorkerDetailScreen() {
     }
   };
 
-  const handleAddCertification = () => {
-    if (!newCertName.trim()) {
-      toast.error('Error', 'Please enter certification name');
-      return;
-    }
-    
-    const newCert = {
-      name: newCertName,
-      expiry: newCertExpiry || null,
-      issued: new Date().toISOString(),
+  const CERT_TYPES = [
+    { value: 'OSHA_10', label: 'OSHA-10' },
+    { value: 'OSHA_30', label: 'OSHA-30' },
+    { value: 'SST_FULL', label: 'SST Full (62-hr)' },
+    { value: 'SST_LIMITED', label: 'SST Limited (10-hr)' },
+    { value: 'SST_SUPERVISOR', label: 'SST Supervisor' },
+    { value: 'FDNY_COF', label: 'FDNY Certificate of Fitness' },
+    { value: 'SCAFFOLD', label: 'Scaffold Safety' },
+    { value: 'RIGGING', label: 'Rigging' },
+    { value: 'WELDING', label: 'Welding' },
+    { value: 'ASBESTOS', label: 'Asbestos Handler' },
+    { value: 'LEAD', label: 'Lead Abatement' },
+    { value: 'CONFINED_SPACE', label: 'Confined Space' },
+    { value: 'OTHER', label: 'Other' },
+  ];
+
+  const [newCertType, setNewCertType] = useState('OSHA_10');
+
+  const handleAddCertification = async () => {
+    const certData = {
+      type: newCertType,
+      card_number: newCertName.trim() || null,
+      expiration_date: newCertExpiry || null,
+      issue_date: new Date().toISOString(),
+      verified: false,
     };
-    
-    setCertifications([...certifications, newCert]);
-    setNewCertName('');
-    setNewCertExpiry('');
-    setShowAddCert(false);
-    toast.success('Added', 'Certification added');
+
+    try {
+      const workerId = worker._id || worker.id;
+      await apiClient.post(`/api/workers/${workerId}/certifications`, certData);
+      const updated = await getWorkerById(workerId);
+      setCertifications(updated?.certifications || []);
+      setNewCertName('');
+      setNewCertExpiry('');
+      setNewCertType('OSHA_10');
+      setShowAddCert(false);
+      toast.success('Added', 'Certification added and validated');
+    } catch (error) {
+      console.error('Failed to add cert:', error);
+      toast.error('Error', 'Could not save certification');
+    }
   };
 
   const handleDeleteCertification = (index) => {
