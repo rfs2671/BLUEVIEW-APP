@@ -7248,7 +7248,6 @@ async def startup_event():
         [("certifications.expiration_date", 1)],
         partialFilterExpression={"is_deleted": {"$ne": True}},
         name="worker_cert_expiry",
-        sparse=True
     )
     
     # Create owner account if doesn't exist
