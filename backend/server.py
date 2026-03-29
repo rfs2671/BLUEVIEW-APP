@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
+from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
 import jwt
@@ -38,49 +39,51 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'blueview-secret-key-2024')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 720
 
-# Dropbox Configuration
 DROPBOX_APP_KEY = os.environ.get('DROPBOX_APP_KEY', '37ueec2e4se8gbg')
 DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2-production.up.railway.app/api/dropbox/callback')
 
-# Google Places
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
 
-# Resend (email)
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 
-# Report scheduler
 scheduler = AsyncIOScheduler()
 
-# Create the main app
 app = FastAPI(title="Blueview API", version="2.0.0")
 
-# CORS - must be added immediately after app creation
-# Use both: the standard middleware for preflight (OPTIONS) requests,
-# plus a raw middleware that guarantees headers on ALL responses
-# including 500s and validation errors that bypass CORSMiddleware.
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
+    "https://blue-view.app",
+    "https://www.blue-view.app",
+    "https://blueview2-production.up.railway.app",
+    "http://localhost:8081",
+    "http://localhost:19006",
+    "http://localhost:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=["Content-Disposition"],
 )
 
 @app.middleware("http")
 async def add_cors_headers(request, call_next):
     """Fallback: ensure CORS headers are present even on error responses."""
+    origin = request.headers.get("origin", "")
+    allowed_origin = origin if origin in ALLOWED_ORIGINS else (ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "")
     try:
         response = await call_next(request)
     except Exception:
-        # If something truly blows up, still send CORS headers
         from fastapi.responses import JSONResponse
         response = JSONResponse({"detail": "Internal server error"}, status_code=500)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    response.headers["Access-Control-Expose-Headers"] = "*"
+    if allowed_origin:
+        response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
 # Create a router with the /api prefix
@@ -304,7 +307,152 @@ class ProjectResponse(BaseModel):
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
 
-# Worker Models
+# ==================== CERTIFICATION MODELS ====================
+
+class CertificationType(str, Enum):
+    OSHA_10 = "OSHA_10"
+    OSHA_30 = "OSHA_30"
+    SST_FULL = "SST_FULL"
+    SST_LIMITED = "SST_LIMITED"
+    SST_SUPERVISOR = "SST_SUPERVISOR"
+    FDNY_COF = "FDNY_COF"
+    SCAFFOLD = "SCAFFOLD"
+    RIGGING = "RIGGING"
+    WELDING = "WELDING"
+    ASBESTOS = "ASBESTOS"
+    LEAD = "LEAD"
+    CONFINED_SPACE = "CONFINED_SPACE"
+    OTHER = "OTHER"
+
+class WorkerCertification(BaseModel):
+    type: str
+    card_number: Optional[str] = None
+    issue_date: Optional[datetime] = None
+    expiration_date: Optional[datetime] = None
+    verified: bool = False
+    verified_by: Optional[str] = None
+    verified_at: Optional[datetime] = None
+    card_image_url: Optional[str] = None
+    ocr_confidence: Optional[float] = None
+    notes: Optional[str] = None
+
+# ==================== CERTIFICATION GATE LOGIC ====================
+
+def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
+    """
+    Validate worker certs against NYC LL196.
+    Returns {"cleared": bool, "blocks": [...], "warnings": [...]}
+    """
+    certs = worker.get("certifications", [])
+    blocks = []
+    warnings = []
+    now = datetime.now(timezone.utc)
+
+    cert_types = {}
+    for c in certs:
+        ctype = c.get("type", "")
+        if ctype not in cert_types:
+            cert_types[ctype] = []
+        cert_types[ctype].append(c)
+
+    # Check 1: OSHA baseline
+    has_osha = bool(cert_types.get("OSHA_10") or cert_types.get("OSHA_30"))
+    if not has_osha:
+        blocks.append({
+            "type": "MISSING_OSHA",
+            "detail": "No OSHA-10 or OSHA-30 card on file. Required for all NYC job sites.",
+            "remediation": "Worker must present valid OSHA card to site manager."
+        })
+
+    # Check 2: SST card (LL196)
+    sst_types = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
+    sst_certs = []
+    for st in sst_types:
+        sst_certs.extend(cert_types.get(st, []))
+
+    has_valid_sst = False
+    expired_sst = None
+    for c in sst_certs:
+        exp = c.get("expiration_date")
+        if exp is None:
+            has_valid_sst = True
+            warnings.append({
+                "type": "SST_NO_EXPIRY",
+                "detail": f"SST card ({c.get('type')}) has no expiration date recorded."
+            })
+        elif isinstance(exp, str):
+            try:
+                exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                if exp_dt > now:
+                    has_valid_sst = True
+                else:
+                    expired_sst = exp_dt
+            except (ValueError, TypeError):
+                has_valid_sst = True
+        elif isinstance(exp, datetime):
+            if exp > now:
+                has_valid_sst = True
+            else:
+                expired_sst = exp
+
+    if not has_valid_sst:
+        if expired_sst:
+            blocks.append({
+                "type": "EXPIRED_SST",
+                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Cannot enter site per NYC LL196.",
+                "remediation": "Worker must complete SST renewal training and present updated card."
+            })
+        elif not sst_certs:
+            blocks.append({
+                "type": "MISSING_SST",
+                "detail": "No NYC SST card on file. Required per LL196.",
+                "remediation": "Worker must complete SST training (10-hr or 62-hr) and present card."
+            })
+
+    # Check 3: 30-day expiration warnings
+    thirty_days = now + timedelta(days=30)
+    for c in certs:
+        exp = c.get("expiration_date")
+        if exp:
+            exp_dt = exp if isinstance(exp, datetime) else None
+            if exp_dt is None and isinstance(exp, str):
+                try:
+                    exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                except (ValueError, TypeError):
+                    continue
+            if exp_dt and now < exp_dt <= thirty_days:
+                warnings.append({
+                    "type": "CERT_EXPIRING_SOON",
+                    "detail": f"{c.get('type')} expires {exp_dt.strftime('%Y-%m-%d')} (within 30 days).",
+                    "cert_type": c.get("type")
+                })
+
+    return {"cleared": len(blocks) == 0, "blocks": blocks, "warnings": warnings}
+
+
+async def create_cert_block_alert(worker: dict, project: dict, blocks: list):
+    """Create compliance alert when worker is blocked at gate."""
+    now = datetime.now(timezone.utc)
+    alert = {
+        "alert_type": "CERT_BLOCK",
+        "project_id": str(project.get("_id", project.get("id", ""))),
+        "project_name": project.get("name", ""),
+        "company_id": project.get("company_id"),
+        "worker_id": str(worker.get("_id", worker.get("id", ""))),
+        "worker_name": worker.get("name", ""),
+        "worker_company": worker.get("company", ""),
+        "blocks": blocks,
+        "resolved": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.compliance_alerts.insert_one(alert)
+    logger.warning(
+        f"🚫 CERT BLOCK: {worker.get('name')} blocked from {project.get('name')} — "
+        f"{', '.join(b['type'] for b in blocks)}"
+    )
+
+
 class WorkerCreate(BaseModel):
     name: str
     phone: str
@@ -775,6 +923,134 @@ async def get_admin_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
+# ==================== CERTIFICATION GATE LOGIC ====================
+
+def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
+    """
+    Validate a worker's certifications against NYC LL196 requirements.
+    Returns: {"cleared": bool, "blocks": [...], "warnings": [...]}
+    
+    NYC Local Law 196 Requirements (effective Dec 2020):
+    - ALL workers on NYC DOB-permitted job sites must have SST card
+    - Supervisors/forepersons need 62-hour SST or OSHA-30 + SST Supervisor
+    - OSHA-10 or OSHA-30 required as baseline
+    """
+    certs = worker.get("certifications", [])
+    blocks = []
+    warnings = []
+    now = datetime.now(timezone.utc)
+    
+    # Normalize cert types for lookup
+    cert_types = {}
+    for c in certs:
+        ctype = c.get("type", "")
+        if ctype not in cert_types:
+            cert_types[ctype] = []
+        cert_types[ctype].append(c)
+    
+    # Check 1: OSHA baseline (OSHA-10 or OSHA-30)
+    has_osha = bool(cert_types.get("OSHA_10") or cert_types.get("OSHA_30"))
+    if not has_osha:
+        blocks.append({
+            "type": "MISSING_OSHA",
+            "detail": "No OSHA-10 or OSHA-30 card on file. Required for all NYC job sites.",
+            "remediation": "Worker must present valid OSHA card to site manager."
+        })
+    
+    # Check 2: SST card (LL196)
+    sst_types = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
+    sst_certs = []
+    for st in sst_types:
+        sst_certs.extend(cert_types.get(st, []))
+    
+    has_valid_sst = False
+    expired_sst = None
+    for c in sst_certs:
+        exp = c.get("expiration_date")
+        if exp is None:
+            # No expiration recorded — treat as valid but warn
+            has_valid_sst = True
+            warnings.append({
+                "type": "SST_NO_EXPIRY",
+                "detail": f"SST card ({c.get('type')}) has no expiration date recorded. Verify manually."
+            })
+        elif isinstance(exp, str):
+            try:
+                exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                if exp_dt > now:
+                    has_valid_sst = True
+                else:
+                    expired_sst = exp_dt
+            except (ValueError, TypeError):
+                has_valid_sst = True  # Can't parse — don't block, but warn
+                warnings.append({"type": "SST_PARSE_ERROR", "detail": f"Could not parse SST expiration: {exp}"})
+        elif isinstance(exp, datetime):
+            if exp > now:
+                has_valid_sst = True
+            else:
+                expired_sst = exp
+    
+    if not has_valid_sst:
+        if expired_sst:
+            blocks.append({
+                "type": "EXPIRED_SST",
+                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Worker cannot enter site per NYC LL196.",
+                "remediation": "Worker must complete SST renewal training and present updated card."
+            })
+        elif not sst_certs:
+            blocks.append({
+                "type": "MISSING_SST",
+                "detail": "No NYC SST card on file. Required for all workers on DOB-permitted sites per LL196.",
+                "remediation": "Worker must complete SST training (10-hr limited or 62-hr full) and present card."
+            })
+    
+    # Check 3: Certification expiration warnings (30-day lookahead)
+    thirty_days = now + timedelta(days=30)
+    for c in certs:
+        exp = c.get("expiration_date")
+        if exp:
+            exp_dt = exp if isinstance(exp, datetime) else None
+            if exp_dt is None and isinstance(exp, str):
+                try:
+                    exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
+                except (ValueError, TypeError):
+                    continue
+            if exp_dt and now < exp_dt <= thirty_days:
+                warnings.append({
+                    "type": "CERT_EXPIRING_SOON",
+                    "detail": f"{c.get('type')} expires {exp_dt.strftime('%Y-%m-%d')} (within 30 days).",
+                    "cert_type": c.get("type")
+                })
+    
+    return {
+        "cleared": len(blocks) == 0,
+        "blocks": blocks,
+        "warnings": warnings
+    }
+
+
+async def create_cert_block_alert(worker: dict, project: dict, blocks: list):
+    """Create a compliance alert when a worker is blocked from checking in."""
+    now = datetime.now(timezone.utc)
+    alert = {
+        "alert_type": "CERT_BLOCK",
+        "project_id": str(project.get("_id", project.get("id", ""))),
+        "project_name": project.get("name", ""),
+        "company_id": project.get("company_id"),
+        "worker_id": str(worker.get("_id", worker.get("id", ""))),
+        "worker_name": worker.get("name", ""),
+        "worker_company": worker.get("company", ""),
+        "blocks": blocks,
+        "resolved": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await db.compliance_alerts.insert_one(alert)
+    logger.warning(
+        f"🚫 CERT BLOCK: {worker.get('name')} blocked from {project.get('name')} — "
+        f"{', '.join(b['type'] for b in blocks)}"
+    )
+	
 def get_user_company_id(current_user):
     """Get the company_id from current user"""
     if current_user.get("site_mode"):
@@ -2112,6 +2388,43 @@ async def register_and_checkin(data: dict):
             "is_new_worker": False,
         }
     
+    # ── CERTIFICATION GATE ──
+    worker_certs = worker.get("certifications", [])
+    if osha_number and not any(c.get("type", "").startswith("OSHA") for c in worker_certs):
+        new_cert = {
+            "type": "OSHA_30" if "30" in str(osha_data.get("course", "") if osha_data else "") else "OSHA_10",
+            "card_number": osha_number,
+            "issue_date": None,
+            "expiration_date": None,
+            "verified": False,
+            "ocr_confidence": osha_data.get("confidence") if osha_data else None,
+        }
+        if osha_data and osha_data.get("expiration"):
+            try:
+                new_cert["expiration_date"] = datetime.strptime(osha_data["expiration"], "%m/%d/%Y").replace(tzinfo=timezone.utc)
+                new_cert["type"] = "SST_LIMITED"
+            except (ValueError, TypeError):
+                pass
+        worker_certs.append(new_cert)
+        await db.workers.update_one(
+            {"_id": worker["_id"]},
+            {"$set": {"certifications": worker_certs, "updated_at": now}}
+        )
+        worker["certifications"] = worker_certs
+
+    cert_result = validate_worker_certifications(worker, project)
+    if not cert_result["cleared"]:
+        await create_cert_block_alert(worker, project, cert_result["blocks"])
+        return {
+            "success": False,
+            "blocked": True,
+            "worker_name": worker.get("name"),
+            "worker_id": str(worker["_id"]),
+            "blocks": cert_result["blocks"],
+            "message": "Registration saved but check-in denied — missing certifications.",
+        }
+    cert_warnings = cert_result.get("warnings", [])
+
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
@@ -2132,6 +2445,7 @@ async def register_and_checkin(data: dict):
         "created_at": now,
         "updated_at": now,
         "is_deleted": False,
+        "cert_warnings": cert_warnings,
     }
     
     result = await db.checkins.insert_one(checkin_record)
@@ -2266,6 +2580,21 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                 "check_in_time": existing_checkin["check_in_time"].isoformat()
             }
         
+        # ── CERTIFICATION GATE ──
+        cert_result = validate_worker_certifications(worker, project)
+        if not cert_result["cleared"]:
+            await create_cert_block_alert(worker, project, cert_result["blocks"])
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "blocked": True,
+                    "worker_name": worker.get("name"),
+                    "blocks": cert_result["blocks"],
+                    "message": "Check-in denied — certification requirements not met."
+                }
+            )
+        cert_warnings = cert_result.get("warnings", [])
+
         # Create check-in
         checkin_record = {
             "worker_id": str(worker["_id"]),
@@ -2286,7 +2615,8 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "timestamp": now,
             "created_at": now,
             "updated_at": now,
-            "is_deleted": False
+            "is_deleted": False,
+            "cert_warnings": cert_warnings,
         }
         
         result = await db.checkins.insert_one(checkin_record)
@@ -2340,6 +2670,74 @@ async def register_worker(worker_data: WorkerCreate):
     
     return {"worker_id": str(result.inserted_id), "message": "Worker registered successfully"}
 
+# ==================== WORKER CERTIFICATION MANAGEMENT ====================
+
+@api_router.get("/workers/{worker_id}/certifications")
+async def get_worker_certifications(worker_id: str, current_user=Depends(get_current_user)):
+    """Get structured certifications with validation status."""
+    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    certs = worker.get("certifications", [])
+    validation = validate_worker_certifications(worker)
+    return {"worker_id": worker_id, "worker_name": worker.get("name"), "certifications": certs, "validation": validation}
+
+@api_router.post("/workers/{worker_id}/certifications")
+async def add_worker_certification(worker_id: str, cert: WorkerCertification, admin=Depends(get_admin_user)):
+    """Add a certification to a worker's record."""
+    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    now = datetime.now(timezone.utc)
+    cert_dict = cert.model_dump()
+    cert_dict["added_by"] = admin.get("id")
+    cert_dict["added_at"] = now
+    await db.workers.update_one(
+        {"_id": to_query_id(worker_id)},
+        {"$push": {"certifications": cert_dict}, "$set": {"updated_at": now}}
+    )
+    updated = await db.workers.find_one({"_id": to_query_id(worker_id)})
+    validation = validate_worker_certifications(updated)
+    return {"message": "Certification added", "certification": cert_dict, "validation": validation}
+
+@api_router.delete("/workers/{worker_id}/certifications/{cert_index}")
+async def remove_worker_certification(worker_id: str, cert_index: int, admin=Depends(get_admin_user)):
+    """Remove a certification by index."""
+    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
+    if not worker:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    certs = worker.get("certifications", [])
+    if cert_index < 0 or cert_index >= len(certs):
+        raise HTTPException(status_code=400, detail="Invalid certification index")
+    removed = certs.pop(cert_index)
+    now = datetime.now(timezone.utc)
+    await db.workers.update_one(
+        {"_id": to_query_id(worker_id)},
+        {"$set": {"certifications": certs, "updated_at": now}}
+    )
+    return {"message": "Certification removed", "removed": removed}
+
+@api_router.post("/admin/certifications/scan-expiring")
+async def scan_expiring_certifications(admin=Depends(get_admin_user)):
+    """Scan all workers for expiring or missing certifications."""
+    company_id = get_user_company_id(admin)
+    query = {"is_deleted": {"$ne": True}}
+    if company_id:
+        query["company_id"] = company_id
+    workers = await db.workers.find(query).to_list(5000)
+    blocked_workers = []
+    warning_workers = []
+    for w in workers:
+        result = validate_worker_certifications(w)
+        ws = {"worker_id": str(w.get("_id", "")), "name": w.get("name", ""), "company": w.get("company", ""), "trade": w.get("trade", "")}
+        if result["blocks"]:
+            ws["blocks"] = result["blocks"]
+            blocked_workers.append(ws)
+        elif result["warnings"]:
+            ws["warnings"] = result["warnings"]
+            warning_workers.append(ws)
+    return {"total_scanned": len(workers), "blocked_count": len(blocked_workers), "warning_count": len(warning_workers), "blocked_workers": blocked_workers, "warning_workers": warning_workers}
+	
 @api_router.get("/workers/{worker_id}/osha-card")
 async def get_worker_osha_card(worker_id: str, current_user = Depends(get_current_user)):
     """Get worker's OSHA card image and data - for admin and site device"""
@@ -2507,6 +2905,21 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         existing_data = serialize_id(existing_checkin)
         return existing_data
 
+    # ── CERTIFICATION GATE ──
+    cert_result = validate_worker_certifications(worker, project)
+    if not cert_result["cleared"]:
+        await create_cert_block_alert(worker, project, cert_result["blocks"])
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "blocked": True,
+                "worker_name": worker.get("name"),
+                "blocks": cert_result["blocks"],
+                "message": "Check-in denied — certification requirements not met."
+            }
+        )
+    cert_warnings = cert_result.get("warnings", [])
+
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
@@ -2521,14 +2934,14 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         "timestamp": now,
         "created_at": now,
         "updated_at": now,
-        "is_deleted": False
+        "is_deleted": False,
+        "cert_warnings": cert_warnings,
     }
     
     result = await db.checkins.insert_one(checkin_record)
     checkin_record["id"] = str(result.inserted_id)
     checkin_record.pop("_id", None)
     return checkin_record
-
 @api_router.post("/checkin")
 async def check_in_worker(checkin_data: CheckInCreate):
     """Public endpoint - allows workers to check in via NFC or manual."""
@@ -2554,6 +2967,21 @@ async def check_in_worker(checkin_data: CheckInCreate):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # ── CERTIFICATION GATE ──
+    cert_result = validate_worker_certifications(worker, project)
+    if not cert_result["cleared"]:
+        await create_cert_block_alert(worker, project, cert_result["blocks"])
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "blocked": True,
+                "worker_name": worker.get("name"),
+                "blocks": cert_result["blocks"],
+                "message": "Check-in denied — certification requirements not met."
+            }
+        )
+    cert_warnings = cert_result.get("warnings", [])
+
     # Create check-in record
     now = datetime.now(timezone.utc)
     checkin_record = {
@@ -2571,6 +2999,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
         "created_at": now,
         "updated_at": now,
         "is_deleted": False
+	    "cert_warnings": cert_warnings,
     }
     
     result = await db.checkins.insert_one(checkin_record)
@@ -6859,6 +7288,35 @@ async def startup_event():
     await db.nfc_tags.create_index([("company_id", 1), ("updated_at", -1)])
     await db.logbooks.create_index([("project_id", 1), ("log_type", 1), ("date", -1)])
     await db.logbooks.create_index([("company_id", 1), ("date", -1)])
+
+	# Compound index for check-in duplicate prevention (critical at scale)
+    await db.checkins.create_index(
+        [("worker_id", 1), ("project_id", 1), ("check_in_time", 1), ("status", 1)],
+        name="checkin_dedup_compound"
+    )
+    # Partial index for active (non-deleted) records — optimizes the is_deleted != True filter
+    await db.workers.create_index(
+        [("company_id", 1), ("status", 1)],
+        partialFilterExpression={"is_deleted": {"$ne": True}},
+        name="workers_active_by_company"
+    )
+    await db.checkins.create_index(
+        [("project_id", 1), ("status", 1)],
+        partialFilterExpression={"is_deleted": {"$ne": True}},
+        name="checkins_active_by_project"
+    )
+    # COI expiration tracking (Phase 3 prep)
+    await db.certificates_of_insurance.create_index(
+        [("company_id", 1), ("expiration_date", 1)],
+        name="coi_expiry_by_company"
+    )
+    # Worker certification expiration scanning
+    await db.workers.create_index(
+        [("certifications.expiration_date", 1)],
+        partialFilterExpression={"is_deleted": {"$ne": True}},
+        name="worker_cert_expiry",
+        sparse=True
+    )
     
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
