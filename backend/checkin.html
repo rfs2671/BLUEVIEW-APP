@@ -782,6 +782,13 @@ async function quickCheckIn() {
       osha_number: returningWorker.osha_number,
     });
     hideLoading();
+
+    // ── CERTIFICATION GATE: blocked workers get red screen ──
+    if (res.blocked === true) {
+      showBlockedScreen(res);
+      return;
+    }
+
     showSuccess(res);
   } catch (e) {
     hideLoading();
@@ -1017,6 +1024,13 @@ async function submitRegistration() {
     localStorage.setItem(LS_WORKER_NAME, name || 'Worker');
 
     hideLoading();
+
+    // ── CERTIFICATION GATE: blocked workers get red screen ──
+    if (res.blocked === true) {
+      showBlockedScreen(res);
+      return;
+    }
+
     showSuccess(res);
   } catch (e) {
     hideLoading();
@@ -1024,6 +1038,43 @@ async function submitRegistration() {
   }
 }
 
+  // ==================== BLOCKED (CERTIFICATION GATE) ====================
+function showBlockedScreen(data) {
+  const blocks = data.blocks || [];
+  const workerName = data.worker_name || 'Worker';
+
+  const reasonsHtml = blocks.map(b => `
+    <div style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:12px;padding:16px;margin:8px 0;">
+      <div style="font-weight:700;color:#ef4444;font-size:16px;margin-bottom:4px;">
+        ⛔ ${b.type.replace(/_/g, ' ')}
+      </div>
+      <div style="color:#fca5a5;font-size:14px;">${b.detail}</div>
+      ${b.remediation ? `<div style="color:#94a3b8;font-size:13px;margin-top:8px;font-style:italic;">→ ${b.remediation}</div>` : ''}
+    </div>
+  `).join('');
+
+  document.querySelector('.app').innerHTML = `
+    <div style="min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;">
+      <div style="width:100px;height:100px;border-radius:50%;background:rgba(239,68,68,0.2);border:3px solid #ef4444;display:flex;align-items:center;justify-content:center;margin-bottom:24px;">
+        <span style="font-size:48px;">🚫</span>
+      </div>
+      <h1 style="color:#ef4444;font-size:28px;font-weight:800;margin:0 0 8px;">CHECK-IN BLOCKED</h1>
+      <p style="color:#f87171;font-size:18px;margin:0 0 24px;">${workerName}</p>
+      <div style="width:100%;max-width:400px;text-align:left;">
+        ${reasonsHtml}
+      </div>
+      <div style="margin-top:32px;padding:20px;background:rgba(255,255,255,0.06);border-radius:12px;border:1px solid rgba(255,255,255,0.1);max-width:400px;">
+        <p style="color:#94a3b8;font-size:14px;margin:0;">
+          Contact your <strong style="color:#f1f5f9;">Site Safety Manager</strong> to resolve this issue before entering the site.
+        </p>
+      </div>
+      <p style="color:#475569;font-size:12px;margin-top:24px;">
+        NYC DOB Local Law 196 Compliance
+      </p>
+    </div>
+  `;
+}
+  
 // ==================== SUCCESS ====================
 function showSuccess(res) {
   document.getElementById('successTitle').textContent = currentLang === 'es' ? '¡Registrado!' : 'Checked In!';
