@@ -141,6 +141,32 @@ def serialize_list(items):
     """Convert list of MongoDB docs to serialized format"""
     return [serialize_id(item) for item in items]
 
+async def paginated_query(
+    collection,
+    query: dict,
+    sort_field: str = "created_at",
+    sort_dir: int = -1,
+    limit: int = 50,
+    skip: int = 0,
+    projection: dict = None,
+):
+    """
+    Standard paginated query. Returns {items, total, limit, skip, has_more}.
+    Use instead of .to_list(1000) on every list endpoint.
+    """
+    cursor = collection.find(query, projection).sort(sort_field, sort_dir).skip(skip).limit(limit)
+    items = []
+    async for doc in cursor:
+        items.append(serialize_id(dict(doc)))
+    total = await collection.count_documents(query)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "has_more": (skip + limit) < total,
+    }
+
 def serialize_sync_record(record):
     """Convert MongoDB record to sync format with timestamps in milliseconds"""
     if '_id' in record:
@@ -1460,18 +1486,20 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 
 # ==================== ADMIN USER MANAGEMENT ====================
 
-@api_router.get("/admin/users", response_model=List[UserResponse])
-async def get_admin_users(current_user = Depends(get_current_user)):
+@api_router.get("/admin/users")
+async def get_admin_users(
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
     company_id = get_user_company_id(current_user)
     
-    # Filter by company if not owner
     query = {"is_deleted": {"$ne": True}}
     if current_user.get("role") != "owner" and company_id:
         query["company_id"] = company_id
     
-    users = await db.users.find(query, {"password": 0}).to_list(1000)
-    return [UserResponse(**serialize_id(u)) for u in users]
-
+    result = await paginated_query(db.users, query, sort_field="name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
+    return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
     existing = await db.users.find_one({"email": user_data.email})
@@ -1550,17 +1578,20 @@ async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depen
 
 # ==================== ADMIN SUBCONTRACTORS ====================
 
-@api_router.get("/admin/subcontractors", response_model=List[SubcontractorResponse])
-async def get_subcontractors(current_user = Depends(get_current_user)):
+@api_router.get("/admin/subcontractors")
+async def get_subcontractors(
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
     company_id = get_user_company_id(current_user)
     
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
     
-    subs = await db.subcontractors.find(query, {"password": 0}).to_list(1000)
-    return [SubcontractorResponse(**serialize_id(s)) for s in subs]
-
+    result = await paginated_query(db.subcontractors, query, sort_field="company_name", sort_dir=1, limit=limit, skip=skip, projection={"password": 0})
+    return result
 @api_router.post("/admin/subcontractors", response_model=SubcontractorResponse)
 async def create_subcontractor(sub_data: SubcontractorCreate, admin = Depends(get_admin_user)):
     existing = await db.subcontractors.find_one({"email": sub_data.email})
@@ -1628,7 +1659,7 @@ async def get_companies(current_user = Depends(get_current_user)):
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     
-    companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(1000)
+    companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(200)
     return serialize_list(companies)
 
 @api_router.post("/owner/companies")
@@ -1754,7 +1785,7 @@ async def get_admin_accounts(current_user = Depends(get_current_user)):
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
     
-    admins = await db.users.find({"role": "admin", "is_deleted": {"$ne": True}}, {"password": 0}).to_list(1000)
+    admins = await db.users.find({"role": "admin", "is_deleted": {"$ne": True}}, {"password": 0}).to_list(200)
     return serialize_list(admins)
 
 @api_router.delete("/owner/admins/{admin_id}")
@@ -1871,17 +1902,20 @@ async def migrate_company_data(data: dict, current_user = Depends(get_current_us
 
 # ==================== PROJECTS ====================
 
-@api_router.get("/projects", response_model=List[ProjectResponse])
-async def get_projects(current_user = Depends(get_current_user)):
+@api_router.get("/projects")
+async def get_projects(
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
     company_id = get_user_company_id(current_user)
     
-    # Filter by company_id if user has one
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
     
-    projects = await db.projects.find(query).to_list(1000)
-    return [ProjectResponse(**serialize_id(p)) for p in projects]
+    result = await paginated_query(db.projects, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
+    return result
 
 @api_router.post("/projects", response_model=ProjectResponse)
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
@@ -2637,17 +2671,20 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         
 # ==================== WORKERS ====================
 
-@api_router.get("/workers", response_model=List[WorkerResponse])
-async def get_workers(current_user = Depends(get_current_user)):
+@api_router.get("/workers")
+async def get_workers(
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
     company_id = get_user_company_id(current_user)
     
-    # Filter by company_id if user has one
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
     
-    workers = await db.workers.find(query).to_list(1000)
-    return [WorkerResponse(**serialize_id(w)) for w in workers]
+    result = await paginated_query(db.workers, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
+    return result
 
 @api_router.post("/workers/register")
 async def register_worker(worker_data: WorkerCreate):
@@ -2843,7 +2880,12 @@ async def create_worker(worker_data: WorkerCreate, current_user = Depends(get_cu
     return WorkerResponse(**worker_dict)
 
 @api_router.get("/checkins")
-async def get_all_checkins(date: str = None, current_user = Depends(get_current_user)):
+async def get_all_checkins(
+    date: str = None,
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
     """Get all check-ins for the user's company"""
     company_id = get_user_company_id(current_user)
     query = {"is_deleted": {"$ne": True}}
@@ -2857,7 +2899,8 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
         day_start_utc = day_start_eastern.astimezone(timezone.utc)
         day_end_utc = day_start_utc + timedelta(hours=24)
         query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
-    checkins = await db.checkins.find(query).sort("check_in_time", -1).to_list(1000)
+    total = await db.checkins.count_documents(query)
+    checkins = await db.checkins.find(query).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
     
     results = []
     for c in checkins:
@@ -2872,7 +2915,7 @@ async def get_all_checkins(date: str = None, current_user = Depends(get_current_
                 s["company"] = s["worker_company"]
                 s["trade"] = s["worker_trade"]
         results.append(s)
-    return results
+    return {"items": results, "total": total, "limit": limit, "skip": skip, "has_more": (skip + limit) < total}
 
 @api_router.post("/checkins")
 async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get_current_user)):
@@ -3027,8 +3070,13 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
     return {"message": "Check-out successful"}
 
 @api_router.get("/checkins/project/{project_id}")
-async def get_project_checkins(project_id: str, current_user = Depends(get_current_user)):
-    checkins = await db.checkins.find({"project_id": project_id, "is_deleted": {"$ne": True}}).to_list(1000)
+async def get_project_checkins(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    limit: int = Query(200, ge=1, le=1000),
+    skip: int = Query(0, ge=0),
+):
+    checkins = await db.checkins.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
     
     results = []
     for c in checkins:
@@ -3050,7 +3098,7 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
         "status": "checked_in",
         "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(500)
 	
     # Populate missing worker_name from workers collection
     results = []
@@ -3072,7 +3120,7 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
         "project_id": project_id,
         "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(500)
     
     # Populate missing worker_name from workers collection
     results = []
@@ -3090,15 +3138,19 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
 # ==================== DAILY LOGS ====================
 
 @api_router.get("/daily-logs")
-async def get_daily_logs(current_user = Depends(get_current_user)):
+async def get_daily_logs(
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
+):
     company_id = get_user_company_id(current_user)
     
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
     
-    logs = await db.daily_logs.find(query).sort("date", -1).to_list(1000)
-    return serialize_list(logs)
+    result = await paginated_query(db.daily_logs, query, sort_field="date", limit=limit, skip=skip)
+    return result
 
 @api_router.post("/daily-logs", response_model=DailyLogResponse)
 async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_current_user)):
@@ -3167,8 +3219,12 @@ async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
 
 @api_router.get("/daily-logs/project/{project_id}")
 async def get_project_daily_logs(project_id: str, current_user = Depends(get_current_user)):
-    logs = await db.daily_logs.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("date", -1).to_list(1000)
-    return serialize_list(logs)
+    result = await paginated_query(
+        db.daily_logs,
+        {"project_id": project_id, "is_deleted": {"$ne": True}},
+        sort_field="date", limit=50, skip=0,
+    )
+    return result
 
 @api_router.get("/daily-logs/project/{project_id}/date/{date}")
 async def get_daily_log_by_date(project_id: str, date: str, current_user = Depends(get_current_user)):
@@ -3189,7 +3245,7 @@ async def get_site_devices(admin = Depends(get_admin_user)):
     """Get all site devices"""
     company_id = get_user_company_id(admin)
     
-    devices = await db.site_devices.find({"is_deleted": {"$ne": True}}, {"password": 0}).to_list(1000)
+    devices = await db.site_devices.find({"is_deleted": {"$ne": True}}, {"password": 0}).to_list(200)
     result = []
     for device in devices:
         device_data = serialize_id(device)
@@ -3808,6 +3864,8 @@ async def get_project_cs(project_id: str, current_user=Depends(get_current_user)
 async def get_compliance_alerts(
     resolved: Optional[bool] = None,
     admin=Depends(get_admin_user),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
 ):
     """Get compliance alerts for the admin dashboard."""
     
@@ -3818,9 +3876,9 @@ async def get_compliance_alerts(
     if resolved is not None:
         query["resolved"] = resolved
     
-    alerts = await db.compliance_alerts.find(query).sort("created_at", -1).to_list(100)
-    return [serialize_id(a) for a in alerts]
- 
+    result = await paginated_query(db.compliance_alerts, query, limit=limit, skip=skip)
+    return result
+	
  
 @api_router.put("/admin/compliance-alerts/{alert_id}/resolve")
 async def resolve_compliance_alert(alert_id: str, admin=Depends(get_admin_user)):
@@ -4121,7 +4179,7 @@ async def get_project_checklists(project_id: str, current_user = Depends(get_cur
     assignments = await db.checklist_assignments.find({
         "project_id": project_id,
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(200)
     
     result = []
     for assignment in assignments:
@@ -4144,7 +4202,7 @@ async def get_checklists(admin = Depends(get_admin_user)):
     if company_id:
         query["company_id"] = company_id
     
-    checklists = await db.checklists.find(query).sort("created_at", -1).to_list(1000)
+    checklists = await db.checklists.find(query).sort("created_at", -1).to_list(200)
     result = []
     for cl in checklists:
         serialized = serialize_id(cl)
@@ -4316,20 +4374,20 @@ async def get_checklist_assignments(checklist_id: str, admin = Depends(get_admin
     assignments = await db.checklist_assignments.find({
         "checklist_id": checklist_id,
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(200)
     
     result = []
     for assignment in assignments:
         serialized = serialize_id(dict(assignment))
         
-        # Get completion stats
-        completions = await db.checklist_completions.find({
+        # Get completion stats — use count instead of fetching all docs
+        completion_count = await db.checklist_completions.count_documents({
             "assignment_id": str(assignment["_id"]) if "_id" in assignment else assignment.get("id")
-        }).to_list(1000)
+        })
         
         serialized["completion_stats"] = {
             "total_assigned": len(assignment.get("assigned_user_ids", [])),
-            "completed": len(completions)
+            "completed": completion_count
         }
         result.append(serialized)
     
@@ -4345,7 +4403,7 @@ async def get_assigned_checklists(current_user = Depends(get_current_user)):
     assignments = await db.checklist_assignments.find({
         "assigned_user_ids": user_id,
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(200)
     
     result = []
     for assignment in assignments:
@@ -4449,12 +4507,12 @@ async def get_reports(current_user = Depends(get_current_user)):
     if company_id:
         query["company_id"] = company_id
     
-    reports = await db.reports.find(query).to_list(1000)
+    reports = await db.reports.find(query).sort("created_at", -1).to_list(200)
     return serialize_list(reports)
 
 @api_router.get("/reports/project/{project_id}")
 async def get_project_reports(project_id: str, current_user = Depends(get_current_user)):
-    reports = await db.reports.find({"project_id": project_id, "is_deleted": {"$ne": True}}).to_list(1000)
+    reports = await db.reports.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("created_at", -1).to_list(200)
     return serialize_list(reports)
 
 # ==================== DROPBOX INTEGRATION ====================
@@ -5046,7 +5104,7 @@ async def get_daily_log_photos(log_id: str, current_user = Depends(get_current_u
     photos = await db.daily_log_photos.find(
         {"daily_log_id": log_id, "is_deleted": {"$ne": True}},
         {"data": 0}
-    ).to_list(1000)
+    ).to_list(200)
     return serialize_list(photos)
 
 @api_router.get("/daily-logs/{log_id}/photos/{photo_id}")
@@ -5145,7 +5203,9 @@ async def get_project_logbooks(
     project_id: str,
     log_type: Optional[str] = None,
     date: Optional[str] = None,
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=500),
+    skip: int = Query(0, ge=0),
 ):
     """Get all logbooks for a project, optionally filtered by type and date"""
     company_id = get_user_company_id(current_user)
@@ -5159,8 +5219,8 @@ async def get_project_logbooks(
         query["log_type"] = log_type
     if date:
         query["date"] = date
-    logbooks = await db.logbooks.find(query).sort("date", -1).to_list(500)
-    return [serialize_id(lb) for lb in logbooks]
+    result = await paginated_query(db.logbooks, query, sort_field="date", limit=limit, skip=skip)
+    return result
 
 @api_router.get("/logbooks/{logbook_id}")
 async def get_logbook(logbook_id: str, current_user = Depends(get_current_user)):
@@ -5269,7 +5329,7 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         "project_id": project_id,
         "check_in_time": {"$gte": week_start},
         "is_deleted": {"$ne": True}
-    }).to_list(1000)
+    }).to_list(2000)
 
     worker_ids_this_week = list(set(c.get("worker_id") for c in checkins_this_week if c.get("worker_id")))
 
@@ -6171,7 +6231,7 @@ async def get_submitted_logbooks(project_id: str, current_user = Depends(get_cur
         "project_id": project_id,
         "status": "submitted",
         "is_deleted": {"$ne": True},
-    }).sort("date", -1).to_list(1000)
+    }).sort("date", -1).to_list(500)
     by_date = {}
     for log in logbooks:
         d = log.get("date", "unknown")
