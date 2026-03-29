@@ -188,8 +188,9 @@ export const projectsAPI = {
 export const workersAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/workers');
-    return response.data;
-  },
+    const data = response.data;
+    return Array.isArray(data) ? data : (data.items || []);
+},
 
   getById: async (workerId) => {
     const response = await apiClient.get(`/api/workers/${workerId}`);
@@ -220,11 +221,11 @@ export const workersAPI = {
 /**
  * Check-ins APIs
  */
-export const checkinsAPI = {
-  getAll: async () => {
+getAll: async () => {
     const response = await apiClient.get('/api/checkins');
-    return response.data;
-  },
+    const data = response.data;
+    return Array.isArray(data) ? data : (data.items || []);
+},
 
   getByDate: async (date) => {
     const dateStr = date.toISOString().split('T')[0];
@@ -382,11 +383,11 @@ export const dropboxAPI = {
 /**
  * Admin User Management APIs
  */
-export const adminUsersAPI = {
-  getAll: async () => {
+getAll: async () => {
     const response = await apiClient.get('/api/admin/users');
-    return response.data;
-  },
+    const data = response.data;
+    return Array.isArray(data) ? data : (data.items || []);
+},
 
   getById: async (userId) => {
     const response = await apiClient.get(`/api/admin/users/${userId}`);
@@ -419,11 +420,11 @@ export const adminUsersAPI = {
 /**
  * Owner Portal APIs
  */
-export const ownerAPI = {
-  getAdmins: async () => {
+getAdmins: async () => {
     const response = await apiClient.get('/api/owner/admins');
-    return response.data;
-  },
+    const data = response.data;
+    return Array.isArray(data) ? data : (data.items || []);
+},
 
   createAdmin: async (adminData) => {
     const response = await apiClient.post('/api/owner/admins', adminData);
