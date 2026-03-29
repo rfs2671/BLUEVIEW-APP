@@ -137,7 +137,8 @@ export const authAPI = {
 export const projectsAPI = {
   getAll: async () => {
     const response = await apiClient.get('/api/projects');
-    return response.data;
+    const data = response.data;
+    return Array.isArray(data) ? data : (data.items || []);
   },
 
   getById: async (projectId) => {
