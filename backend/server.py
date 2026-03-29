@@ -7237,9 +7237,7 @@ async def startup_event():
         partialFilterExpression={"is_deleted": {"$eq": False}},
         name="checkins_active_by_project"
     )
-db.workers.dropIndex("workers_active_by_company")
-db.checkins.dropIndex("checkins_active_by_project")
-
+	
     # COI expiration tracking (Phase 3 prep)
     await db.certificates_of_insurance.create_index(
         [("company_id", 1), ("expiration_date", 1)],
