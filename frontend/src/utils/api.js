@@ -295,6 +295,34 @@ export const dailyLogsAPI = {
 };
 
 /**
+ * Paginated fetch helper — handles both old (array) and new ({items, total}) response shapes.
+ */
+export const fetchPaginated = async (url, params = {}) => {
+  const response = await apiClient.get(url, {
+    params: { limit: 50, skip: 0, ...params },
+  });
+  if (Array.isArray(response.data)) {
+    return { items: response.data, total: response.data.length, has_more: false };
+  }
+  return response.data;
+};
+
+/**
+ * Load ALL records across pages (for exports/reports only — not UI lists).
+ */
+export const fetchAll = async (url, params = {}, maxPages = 20) => {
+  const all = [];
+  let skip = 0;
+  const limit = 200;
+  for (let page = 0; page < maxPages; page++) {
+    const result = await fetchPaginated(url, { ...params, limit, skip });
+    all.push(...result.items);
+    if (!result.has_more) break;
+    skip += limit;
+  }
+  return all;
+};
+/**
  * Dropbox APIs
  */
 export const dropboxAPI = {
