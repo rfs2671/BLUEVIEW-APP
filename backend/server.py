@@ -948,134 +948,6 @@ async def get_admin_user(current_user = Depends(get_current_user)):
     if current_user.get("role") not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
-
-# ==================== CERTIFICATION GATE LOGIC ====================
-
-def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
-    """
-    Validate a worker's certifications against NYC LL196 requirements.
-    Returns: {"cleared": bool, "blocks": [...], "warnings": [...]}
-    
-    NYC Local Law 196 Requirements (effective Dec 2020):
-    - ALL workers on NYC DOB-permitted job sites must have SST card
-    - Supervisors/forepersons need 62-hour SST or OSHA-30 + SST Supervisor
-    - OSHA-10 or OSHA-30 required as baseline
-    """
-    certs = worker.get("certifications", [])
-    blocks = []
-    warnings = []
-    now = datetime.now(timezone.utc)
-    
-    # Normalize cert types for lookup
-    cert_types = {}
-    for c in certs:
-        ctype = c.get("type", "")
-        if ctype not in cert_types:
-            cert_types[ctype] = []
-        cert_types[ctype].append(c)
-    
-    # Check 1: OSHA baseline (OSHA-10 or OSHA-30)
-    has_osha = bool(cert_types.get("OSHA_10") or cert_types.get("OSHA_30"))
-    if not has_osha:
-        blocks.append({
-            "type": "MISSING_OSHA",
-            "detail": "No OSHA-10 or OSHA-30 card on file. Required for all NYC job sites.",
-            "remediation": "Worker must present valid OSHA card to site manager."
-        })
-    
-    # Check 2: SST card (LL196)
-    sst_types = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
-    sst_certs = []
-    for st in sst_types:
-        sst_certs.extend(cert_types.get(st, []))
-    
-    has_valid_sst = False
-    expired_sst = None
-    for c in sst_certs:
-        exp = c.get("expiration_date")
-        if exp is None:
-            # No expiration recorded — treat as valid but warn
-            has_valid_sst = True
-            warnings.append({
-                "type": "SST_NO_EXPIRY",
-                "detail": f"SST card ({c.get('type')}) has no expiration date recorded. Verify manually."
-            })
-        elif isinstance(exp, str):
-            try:
-                exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
-                if exp_dt > now:
-                    has_valid_sst = True
-                else:
-                    expired_sst = exp_dt
-            except (ValueError, TypeError):
-                has_valid_sst = True  # Can't parse — don't block, but warn
-                warnings.append({"type": "SST_PARSE_ERROR", "detail": f"Could not parse SST expiration: {exp}"})
-        elif isinstance(exp, datetime):
-            if exp > now:
-                has_valid_sst = True
-            else:
-                expired_sst = exp
-    
-    if not has_valid_sst:
-        if expired_sst:
-            blocks.append({
-                "type": "EXPIRED_SST",
-                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Worker cannot enter site per NYC LL196.",
-                "remediation": "Worker must complete SST renewal training and present updated card."
-            })
-        elif not sst_certs:
-            blocks.append({
-                "type": "MISSING_SST",
-                "detail": "No NYC SST card on file. Required for all workers on DOB-permitted sites per LL196.",
-                "remediation": "Worker must complete SST training (10-hr limited or 62-hr full) and present card."
-            })
-    
-    # Check 3: Certification expiration warnings (30-day lookahead)
-    thirty_days = now + timedelta(days=30)
-    for c in certs:
-        exp = c.get("expiration_date")
-        if exp:
-            exp_dt = exp if isinstance(exp, datetime) else None
-            if exp_dt is None and isinstance(exp, str):
-                try:
-                    exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
-                except (ValueError, TypeError):
-                    continue
-            if exp_dt and now < exp_dt <= thirty_days:
-                warnings.append({
-                    "type": "CERT_EXPIRING_SOON",
-                    "detail": f"{c.get('type')} expires {exp_dt.strftime('%Y-%m-%d')} (within 30 days).",
-                    "cert_type": c.get("type")
-                })
-    
-    return {
-        "cleared": len(blocks) == 0,
-        "blocks": blocks,
-        "warnings": warnings
-    }
-
-
-async def create_cert_block_alert(worker: dict, project: dict, blocks: list):
-    """Create a compliance alert when a worker is blocked from checking in."""
-    now = datetime.now(timezone.utc)
-    alert = {
-        "alert_type": "CERT_BLOCK",
-        "project_id": str(project.get("_id", project.get("id", ""))),
-        "project_name": project.get("name", ""),
-        "company_id": project.get("company_id"),
-        "worker_id": str(worker.get("_id", worker.get("id", ""))),
-        "worker_name": worker.get("name", ""),
-        "worker_company": worker.get("company", ""),
-        "blocks": blocks,
-        "resolved": False,
-        "created_at": now,
-        "updated_at": now,
-    }
-    await db.compliance_alerts.insert_one(alert)
-    logger.warning(
-        f"🚫 CERT BLOCK: {worker.get('name')} blocked from {project.get('name')} — "
-        f"{', '.join(b['type'] for b in blocks)}"
-    )
 	
 def get_user_company_id(current_user):
     """Get the company_id from current user"""
@@ -3041,7 +2913,7 @@ async def check_in_worker(checkin_data: CheckInCreate):
         "timestamp": now,
         "created_at": now,
         "updated_at": now,
-        "is_deleted": False
+        "is_deleted": False,
 	    "cert_warnings": cert_warnings,
     }
     
