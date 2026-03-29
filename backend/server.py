@@ -7246,7 +7246,7 @@ async def startup_event():
     # Worker certification expiration scanning
     await db.workers.create_index(
         [("certifications.expiration_date", 1)],
-        partialFilterExpression={"is_deleted": {"$ne": True}},
+        partialFilterExpression={"is_deleted": {"$eq": False}},
         name="worker_cert_expiry",
     )
     
