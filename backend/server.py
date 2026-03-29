@@ -7229,14 +7229,17 @@ async def startup_event():
     # Partial index for active (non-deleted) records — optimizes the is_deleted != True filter
     await db.workers.create_index(
         [("company_id", 1), ("status", 1)],
-        partialFilterExpression={"is_deleted": {"$ne": True}},
+        partialFilterExpression={"is_deleted": {"$eq": False}},
         name="workers_active_by_company"
     )
     await db.checkins.create_index(
         [("project_id", 1), ("status", 1)],
-        partialFilterExpression={"is_deleted": {"$ne": True}},
+        partialFilterExpression={"is_deleted": {"$eq": False}},
         name="checkins_active_by_project"
     )
+db.workers.dropIndex("workers_active_by_company")
+db.checkins.dropIndex("checkins_active_by_project")
+
     # COI expiration tracking (Phase 3 prep)
     await db.certificates_of_insurance.create_index(
         [("company_id", 1), ("expiration_date", 1)],
