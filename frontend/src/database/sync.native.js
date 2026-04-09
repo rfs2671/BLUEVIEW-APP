@@ -6,6 +6,36 @@ import database from './index';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
 const LAST_SYNC_KEY = 'blueview_last_sync';
+const SYNC_LOCK_KEY = 'blueview_sync_lock';
+
+/**
+ * Acquire a sync lock to prevent concurrent syncs (offline queue + db sync).
+ * Returns true if lock acquired, false if another sync is in progress.
+ * Lock auto-expires after 30 seconds to prevent deadlocks.
+ */
+export async function acquireSyncLock() {
+  try {
+    const existing = await AsyncStorage.getItem(SYNC_LOCK_KEY);
+    if (existing) {
+      const lockTime = parseInt(existing, 10);
+      if (Date.now() - lockTime < 30000) {
+        return false;
+      }
+    }
+    await AsyncStorage.setItem(SYNC_LOCK_KEY, Date.now().toString());
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+export async function releaseSyncLock() {
+  try {
+    await AsyncStorage.removeItem(SYNC_LOCK_KEY);
+  } catch {
+    // Best effort
+  }
+}
 
 /**
  * Check if device is online
@@ -35,69 +65,94 @@ async function setLastSyncTimestamp(timestamp) {
  */
 export async function syncDatabase() {
   const online = await isOnline();
-  
+
   if (!online) {
     console.log('Cannot sync - device is offline');
     return { success: false, error: 'offline' };
   }
 
+  const locked = await acquireSyncLock();
+  if (!locked) {
+    console.log('Sync already in progress, skipping');
+    return { success: false, error: 'locked' };
+  }
+
   try {
+    let serverTimestamp = null;
+
     await synchronize({
       database,
-      
+
       pullChanges: async ({ lastPulledAt, schemaVersion, migration }) => {
         const timestamp = lastPulledAt || (await getLastSyncTimestamp());
         const token = await getToken();
-        
+
+        if (!token) {
+          throw new Error('No auth token available for sync');
+        }
+
         const response = await fetch(`${API_URL}/api/sync/pull`, {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
           },
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             lastPulledAt: timestamp,
             schemaVersion,
-            migration 
+            migration
           }),
         });
 
         if (!response.ok) {
-          throw new Error('Pull failed');
+          const status = response.status;
+          throw new Error(`Pull failed with status ${status}`);
         }
 
         const { changes, timestamp: newTimestamp } = await response.json();
+        serverTimestamp = newTimestamp;
         return { changes, timestamp: newTimestamp };
       },
 
       pushChanges: async ({ changes, lastPulledAt }) => {
         const token = await getToken();
-        
+
+        if (!token) {
+          throw new Error('No auth token available for sync');
+        }
+
         const response = await fetch(`${API_URL}/api/sync/push`, {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`,
           },
-          body: JSON.stringify({ 
+          body: JSON.stringify({
             changes,
-            lastPulledAt 
+            lastPulledAt
           }),
         });
 
         if (!response.ok) {
-          throw new Error('Push failed');
+          const status = response.status;
+          throw new Error(`Push failed with status ${status}`);
         }
       },
     });
 
-    await setLastSyncTimestamp(Date.now());
+    // Use server timestamp instead of client time to prevent drift
+    if (serverTimestamp) {
+      await setLastSyncTimestamp(serverTimestamp);
+    }
+
     console.log('✅ Sync successful');
     return { success: true };
-    
+
   } catch (error) {
-    console.error('❌ Sync failed:', error);
+    console.error('❌ Sync failed:', error.message);
     return { success: false, error: error.message };
+  } finally {
+    await releaseSyncLock();
   }
 }
 
@@ -109,13 +164,13 @@ export function setupAutoSync() {
 
   const unsubscribe = NetInfo.addEventListener(state => {
     const isCurrentlyOnline = state.isConnected && state.isInternetReachable !== false;
-    
+
     // If we just came back online, sync
     if (wasOffline && isCurrentlyOnline) {
       console.log('📶 Back online - syncing...');
       syncDatabase();
     }
-    
+
     wasOffline = !isCurrentlyOnline;
   });
 
@@ -123,34 +178,16 @@ export function setupAutoSync() {
 }
 
 /**
- * Format changes for backend
- */
-export function formatChangesForBackend(changes) {
-  const formatted = {};
-  
-  Object.keys(changes).forEach(table => {
-    formatted[table] = {
-      created: changes[table].created.map(record => ({
-        id: record.id,
-        ...record._raw,
-      })),
-      updated: changes[table].updated.map(record => ({
-        id: record.id,
-        ...record._raw,
-      })),
-      deleted: changes[table].deleted,
-    };
-  });
-  
-  return formatted;
-}
-
-/**
  * Clear all local data (use with caution)
  */
 export async function clearLocalDatabase() {
-  await database.write(async () => {
-    await database.unsafeResetDatabase();
-  });
-  await AsyncStorage.removeItem(LAST_SYNC_KEY);
+  try {
+    await database.write(async () => {
+      await database.unsafeResetDatabase();
+    });
+    await AsyncStorage.removeItem(LAST_SYNC_KEY);
+  } catch (error) {
+    console.error('Failed to clear local database:', error);
+    throw error;
+  }
 }
