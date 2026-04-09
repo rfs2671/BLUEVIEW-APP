@@ -174,7 +174,7 @@ export default function PreShiftSignIn() {
             signatureData: cpSignature,
             contentSnapshot: { log_type: 'preshift_signin', date, project_id: projectId, data: payload.data, status: submitStatus },
             user,
-          });
+          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
         }
       }
 
