@@ -20,7 +20,7 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
-import sys, os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import hashlib
@@ -35,7 +35,9 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'blueview-secret-key-2024')
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET environment variable is required. The server will not start without it.")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 720
 
@@ -69,23 +71,6 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
-@app.middleware("http")
-async def add_cors_headers(request, call_next):
-    """Fallback: ensure CORS headers are present even on error responses."""
-    origin = request.headers.get("origin", "")
-    allowed_origin = origin if origin in ALLOWED_ORIGINS else (ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "")
-    try:
-        response = await call_next(request)
-    except Exception:
-        from fastapi.responses import JSONResponse
-        response = JSONResponse({"detail": "Internal server error"}, status_code=500)
-    if allowed_origin:
-        response.headers["Access-Control-Allow-Origin"] = allowed_origin
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
-        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, Accept"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
-
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
@@ -98,6 +83,52 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ==================== RATE LIMITING (auth endpoints) ====================
+
+from collections import defaultdict
+import time as _time
+
+class RateLimiter:
+    """Simple in-memory rate limiter for auth endpoints."""
+    def __init__(self, max_requests: int, window_seconds: int):
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._hits = defaultdict(list)
+
+    def is_allowed(self, key: str) -> bool:
+        now = _time.time()
+        # Prune expired entries
+        self._hits[key] = [t for t in self._hits[key] if now - t < self.window]
+        if len(self._hits[key]) >= self.max_requests:
+            return False
+        self._hits[key].append(now)
+        return True
+
+auth_rate_limiter = RateLimiter(max_requests=10, window_seconds=60)  # 10 req/min per IP
+checkin_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)  # 30 req/min per IP — shift start bursts
+
+async def check_auth_rate_limit(request: Request):
+    """Dependency: rate limit login/register by client IP."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not auth_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Try again later.")
+
+# ==================== AUDIT LOGGING ====================
+
+async def audit_log(action: str, user_id: str, resource_type: str, resource_id: str, details: dict = None):
+    """Record an immutable audit entry for compliance-relevant mutations."""
+    try:
+        await db.audit_logs.insert_one({
+            "action": action,
+            "user_id": user_id,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "details": details or {},
+            "timestamp": datetime.now(timezone.utc),
+        })
+    except Exception as e:
+        logger.error(f"Audit log write failed: {e}")
 
 # ==================== ID HELPER ====================
 
@@ -689,10 +720,8 @@ class DOBLogResponse(BaseModel):
     closed_date: Optional[str] = None
     incident_address: Optional[str] = None
     disposition_code: Optional[str] = None
-    status: Optional[str] = None
-    dob_link: Optional[str] = None
- 
- 
+
+
 class DOBConfigUpdate(BaseModel):
     nyc_bin: Optional[str] = None
     nyc_bbl: Optional[str] = None
@@ -1102,32 +1131,46 @@ async def sync_push(request: SyncPushRequest, current_user = Depends(get_current
             collection_name = table_map[table_name]
             collection = db[collection_name]
             
-            # Handle creates
+            # Handle creates — with duplicate detection for check-ins
             for record in table_changes.get("created", []):
                 try:
                     record["company_id"] = company_id
                     record["is_deleted"] = False
-        
+
                     if "id" in record:
                         record["_id"] = record["id"]
                         del record["id"]
-            
+
                     if "created_at" in record:
                         record["created_at"] = datetime.fromtimestamp(record["created_at"] / 1000, timezone.utc)
                     else:
                         record["created_at"] = datetime.now(timezone.utc)
-        
+
                     if "updated_at" in record:
                         record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, timezone.utc)
                     else:
                         record["updated_at"] = datetime.now(timezone.utc)
-        
+
                     if "check_in_time" in record and isinstance(record["check_in_time"], (int, float)):
                         record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, timezone.utc)
                     if "check_out_time" in record and isinstance(record["check_out_time"], (int, float)):
                         record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, timezone.utc)
                     if "timestamp" in record and isinstance(record["timestamp"], (int, float)):
                         record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
+
+                    # Duplicate detection for check-ins: same worker + project + day = skip
+                    if collection_name == "checkins" and record.get("worker_id") and record.get("project_id"):
+                        today_start, today_end = get_today_range_est()
+                        existing = await collection.find_one({
+                            "worker_id": record["worker_id"],
+                            "project_id": record["project_id"],
+                            "check_in_time": {"$gte": today_start, "$lt": today_end},
+                            "status": "checked_in",
+                            "is_deleted": {"$ne": True},
+                        })
+                        if existing:
+                            logger.info(f"Duplicate check-in skipped: worker {record['worker_id']} already checked in")
+                            continue
 
                     await collection.insert_one(record)
                     logger.info(f"Created record in {collection_name} with ID {record['_id']}")
@@ -1137,31 +1180,43 @@ async def sync_push(request: SyncPushRequest, current_user = Depends(get_current
                     else:
                         logger.error(f"Error creating record in {collection_name}: {str(e)}")
             
-            # Handle updates
+            # Handle updates — last-write-wins: only apply if incoming updated_at > server's
             for record in table_changes.get("updated", []):
                 try:
                     record_id = record.pop("id", None)
                     if not record_id:
                         continue
-                    
+
                     # Convert timestamps
                     if "updated_at" in record:
                         record["updated_at"] = datetime.fromtimestamp(record["updated_at"] / 1000, timezone.utc)
                     else:
                         record["updated_at"] = datetime.now(timezone.utc)
-                    
+
                     if "check_in_time" in record and isinstance(record["check_in_time"], (int, float)):
                         record["check_in_time"] = datetime.fromtimestamp(record["check_in_time"] / 1000, timezone.utc)
                     if "check_out_time" in record and isinstance(record["check_out_time"], (int, float)):
                         record["check_out_time"] = datetime.fromtimestamp(record["check_out_time"] / 1000, timezone.utc)
                     if "timestamp" in record and isinstance(record["timestamp"], (int, float)):
                         record["timestamp"] = datetime.fromtimestamp(record["timestamp"] / 1000, timezone.utc)
-                    
-                    await collection.update_one(
-                        {"_id": to_query_id(record_id), "company_id": company_id},
+
+                    # Last-write-wins: only update if our timestamp is newer than server's
+                    incoming_ts = record.get("updated_at", datetime.now(timezone.utc))
+                    result = await collection.update_one(
+                        {
+                            "_id": to_query_id(record_id),
+                            "company_id": company_id,
+                            "$or": [
+                                {"updated_at": {"$lt": incoming_ts}},
+                                {"updated_at": {"$exists": False}},
+                            ],
+                        },
                         {"$set": record}
                     )
-                    logger.info(f"Updated record in {collection_name}")
+                    if result.matched_count > 0:
+                        logger.info(f"Updated record in {collection_name} (last-write-wins)")
+                    else:
+                        logger.info(f"Skipped stale update in {collection_name} for {record_id}")
                 except Exception as e:
                     logger.error(f"Error updating record in {collection_name}: {str(e)}")
             
@@ -1192,7 +1247,7 @@ async def sync_timestamp():
 # ==================== AUTH ROUTES ====================
 
 @api_router.post("/auth/login", response_model=TokenResponse)
-async def login(credentials: UserLogin):
+async def login(credentials: UserLogin, request: Request = None, _rate=Depends(check_auth_rate_limit)):
     # First try regular user login
     user = await db.users.find_one({"email": credentials.email})
     if user and verify_password(credentials.password, user.get("password", "")):
@@ -1233,12 +1288,19 @@ async def login(credentials: UserLogin):
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
 @api_router.post("/auth/register", response_model=UserResponse)
-async def register(user_data: UserCreate):
+async def register(user_data: UserCreate, request: Request = None, _rate=Depends(check_auth_rate_limit)):
+    # Password complexity — minimum 8 chars, at least one letter and one digit
+    pwd = user_data.password
+    if len(pwd) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    if not re.search(r'[A-Za-z]', pwd) or not re.search(r'[0-9]', pwd):
+        raise HTTPException(status_code=422, detail="Password must contain at least one letter and one digit")
+
     # Check if email exists
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     user_dict = user_data.model_dump()
     user_dict["password"] = hash_password(user_dict["password"])
     now = datetime.now(timezone.utc)
@@ -1332,35 +1394,12 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 
     logger.info(f"User {current_user['id']} (role={role}) changed their password")
     return {"message": "Password updated successfully"}
-    
-    # For site devices, include project info
-    if user.get("site_mode"):
-        project_id = user.get("project_id")
-        if project_id:
-            project = await db.projects.find_one({"_id": to_query_id(project_id)})
-            if project:
-                user["project_name"] = project.get("name")
-                user["project"] = serialize_id(project)
-        
-        return {
-            "id": user.get("id"),
-            "name": user.get("device_name", "Site Device"),
-            "username": user.get("username"),
-            "role": "site_device",
-            "site_mode": True,
-            "project_id": user.get("project_id"),
-            "project_name": user.get("project_name"),
-            "project": user.get("project"),
-            "company_id": user.get("company_id")
-        }
-    
-    return user
 
 # ==================== ADMIN USER MANAGEMENT ====================
 
 @api_router.get("/admin/users")
 async def get_admin_users(
-    current_user = Depends(get_current_user),
+    current_user = Depends(get_admin_user),
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
 ):
@@ -1374,10 +1413,17 @@ async def get_admin_users(
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
+    # Password complexity
+    pwd = user_data.password
+    if len(pwd) < 8:
+        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
+    if not re.search(r'[A-Za-z]', pwd) or not re.search(r'[0-9]', pwd):
+        raise HTTPException(status_code=422, detail="Password must contain at least one letter and one digit")
+
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     user_dict = user_data.model_dump()
     user_dict["password"] = hash_password(user_dict["password"])
     now = datetime.now(timezone.utc)
@@ -1398,7 +1444,7 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     return UserResponse(**user_dict)
 
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
-async def get_admin_user_by_id(user_id: str, current_user = Depends(get_current_user)):
+async def get_admin_user_by_id(user_id: str, current_user = Depends(get_admin_user)):
     user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}}, {"password": 0})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1406,8 +1452,9 @@ async def get_admin_user_by_id(user_id: str, current_user = Depends(get_current_
 
 @api_router.put("/admin/users/{user_id}", response_model=UserResponse)
 async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_admin_user)):
-    # Remove password from update if not provided
-    update_data = {k: v for k, v in user_data.items() if v is not None and k != "password"}
+    # Field whitelist — prevent privilege escalation via arbitrary field injection
+    ALLOWED_USER_FIELDS = {"name", "full_name", "email", "role", "phone", "assigned_projects", "password"}
+    update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
     
@@ -1420,7 +1467,12 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
     
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
+    # Audit — especially important for role changes
+    audit_details = {k: v for k, v in update_data.items() if k != "password" and k != "updated_at"}
+    if audit_details:
+        await audit_log("user_update", str(admin.get("_id", "")), "user", user_id, audit_details)
+
     user = await db.users.find_one({"_id": to_query_id(user_id)}, {"password": 0})
     return UserResponse(**serialize_id(user))
 
@@ -1433,6 +1485,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+    await audit_log("user_delete", str(admin.get("_id", "")), "user", user_id)
     return {"message": "User deleted successfully"}
 
 @api_router.post("/admin/users/{user_id}/assign-projects")
@@ -1495,7 +1548,8 @@ async def get_subcontractor(sub_id: str, current_user = Depends(get_current_user
 
 @api_router.put("/admin/subcontractors/{sub_id}", response_model=SubcontractorResponse)
 async def update_subcontractor(sub_id: str, sub_data: dict, admin = Depends(get_admin_user)):
-    update_data = {k: v for k, v in sub_data.items() if v is not None and k != "password"}
+    ALLOWED_SUB_FIELDS = {"name", "company_name", "email", "phone", "trade", "license_number", "insurance_info", "password"}
+    update_data = {k: v for k, v in sub_data.items() if v is not None and k in ALLOWED_SUB_FIELDS and k != "password"}
     if "password" in sub_data and sub_data["password"]:
         update_data["password"] = hash_password(sub_data["password"])
     
@@ -1565,29 +1619,27 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     """Hard delete a company and all its users (owner only)"""
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
-    
-    # Delete all users belonging to this company
-    await db.users.delete_many({"company_id": company_id})
-    
-    # Delete the company
-    await db.companies.delete_one({"_id": to_query_id(company_id)})
-    
-    return {"message": "Company and all users permanently deleted"}
 
-    # Check no admins assigned
+    # Safety check: no active admins assigned
     admin_count = await db.users.count_documents({
-        "company_id": company_id, 
-        "role": "admin", 
+        "company_id": company_id,
+        "role": "admin",
         "is_deleted": {"$ne": True}
     })
     if admin_count > 0:
         raise HTTPException(status_code=400, detail="Remove all admins from this company first")
-    
+
+    # Delete all users belonging to this company
+    await db.users.delete_many({"company_id": company_id})
+
+    # Delete the company
     result = await db.companies.delete_one({"_id": to_query_id(company_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Company not found")
-    
-    return {"message": "Company deleted successfully"}
+
+    await audit_log("company_hard_delete", str(current_user.get("_id", "")), "company", company_id)
+
+    return {"message": "Company and all users permanently deleted"}
 
 class CreateAdminRequest(BaseModel):
     name: str
@@ -1828,7 +1880,11 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
-    
+
+    await audit_log("project_create", str(admin.get("_id", admin.get("id", ""))), "project", str(result.inserted_id), {
+        "name": project_dict.get("name"), "address": project_dict.get("address"),
+    })
+
     return ProjectResponse(**project_dict)
 
 @api_router.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -1884,6 +1940,11 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
         {"_id": to_query_id(project_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
+
+    await audit_log("project_delete", str(admin.get("_id", admin.get("id", ""))), "project", project_id, {
+        "name": project.get("name"), "dob_logs_deleted": dob_result.deleted_count,
+    })
+
     return {"message": "Project deleted successfully", "dob_logs_deleted": dob_result.deleted_count}
 
 # ==================== PROJECT NFC TAGS ====================
@@ -2039,8 +2100,8 @@ async def get_checkin_info(project_id: str, tag_id: str):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @api_router.post("/checkin/upload-osha")
-async def upload_osha_card(file_data: dict):
-    """Public endpoint - OCR an OSHA/SST card photo using Gemini AI."""
+async def upload_osha_card(file_data: dict, current_user = Depends(get_current_user)):
+    """OCR an OSHA/SST card photo using Gemini AI."""
     import httpx
     import json as json_mod
 
@@ -2273,12 +2334,12 @@ async def register_and_checkin(data: dict):
                 "is_deleted": False,
             })
     
-    # Create check-in
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Create check-in — use EST-aligned day boundaries for NYC compliance
+    today_start, today_end = get_today_range_est()
     existing_checkin = await db.checkins.find_one({
         "worker_id": str(worker["_id"]),
         "project_id": project_id,
-        "check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
         "status": "checked_in",
         "is_deleted": {"$ne": True}
     })
@@ -2470,7 +2531,7 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         today_start, today_end = get_today_range_est()
         existing_checkin = await db.checkins.find_one({
             "worker_id": str(worker["_id"]),
-            "project_id": project_id,
+            "project_id": checkin_data.project_id,
             "check_in_time": {"$gte": today_start, "$lt": today_end},
             "status": "checked_in",
             "is_deleted": {"$ne": True}
@@ -2698,7 +2759,8 @@ async def get_worker(worker_id: str, current_user = Depends(get_current_user)):
 
 @api_router.put("/workers/{worker_id}", response_model=WorkerResponse)
 async def update_worker(worker_id: str, worker_data: dict, current_user = Depends(get_current_user)):
-    update_data = {k: v for k, v in worker_data.items() if v is not None}
+    ALLOWED_WORKER_FIELDS = {"name", "phone", "trade", "company", "osha_number", "certifications", "emergency_contact", "emergency_phone", "notes"}
+    update_data = {k: v for k, v in worker_data.items() if v is not None and k in ALLOWED_WORKER_FIELDS}
     update_data["updated_at"] = datetime.now(timezone.utc)
     
     result = await db.workers.update_one(
@@ -2858,8 +2920,12 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
     checkin_record.pop("_id", None)
     return checkin_record
 @api_router.post("/checkin")
-async def check_in_worker(checkin_data: CheckInCreate):
-    """Public endpoint - allows workers to check in via NFC or manual."""
+async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
+    """Public endpoint - allows workers to check in via NFC or manual.
+    Rate-limited and duplicate-protected since it doesn't require JWT."""
+    client_ip = request.client.host if request and request.client else "unknown"
+    if not checkin_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Too many check-in requests. Try again shortly.")
     # Find worker
     worker = None
     if checkin_data.worker_id:
@@ -2882,6 +2948,26 @@ async def check_in_worker(checkin_data: CheckInCreate):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     
+    # ── DUPLICATE CHECK (EST-aligned) ──
+    today_start, today_end = get_today_range_est()
+    existing_checkin = await db.checkins.find_one({
+        "worker_id": str(worker["_id"]),
+        "project_id": str(project["_id"]),
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
+        "status": "checked_in",
+        "is_deleted": {"$ne": True}
+    })
+    if existing_checkin:
+        return {
+            "id": str(existing_checkin["_id"]),
+            "worker_id": str(worker["_id"]),
+            "worker_name": worker.get("name"),
+            "project_id": str(project["_id"]),
+            "project_name": project.get("name"),
+            "timestamp": existing_checkin["check_in_time"].isoformat(),
+            "message": "Already checked in today"
+        }
+
     # ── CERTIFICATION GATE ──
     cert_result = validate_worker_certifications(worker, project)
     if not cert_result["cleared"]:
@@ -2919,7 +3005,11 @@ async def check_in_worker(checkin_data: CheckInCreate):
     
     result = await db.checkins.insert_one(checkin_record)
     checkin_record["id"] = str(result.inserted_id)
-    
+
+    await audit_log("checkin_create", str(worker["_id"]), "checkin", str(result.inserted_id), {
+        "worker_name": worker.get("name"), "project_name": project.get("name"), "project_id": str(project["_id"]),
+    })
+
     return {
         "id": str(result.inserted_id),
         "worker_id": str(worker["_id"]),
@@ -2939,6 +3029,9 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Check-in record not found")
+
+    await audit_log("checkout", str(current_user.get("_id", "")), "checkin", checkin_id)
+
     return {"message": "Check-out successful"}
 
 @api_router.get("/checkins/project/{project_id}")
@@ -2949,12 +3042,25 @@ async def get_project_checkins(
     skip: int = Query(0, ge=0),
 ):
     checkins = await db.checkins.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
-    
+
+    # Batch-fetch workers for check-ins missing worker_name (avoid N+1)
+    missing_worker_ids = set()
+    for c in checkins:
+        if not c.get("worker_name") and c.get("worker_id"):
+            missing_worker_ids.add(c["worker_id"])
+
+    workers_map = {}
+    if missing_worker_ids:
+        query_ids = [to_query_id(wid) for wid in missing_worker_ids]
+        workers_list = await db.workers.find({"_id": {"$in": query_ids}, "is_deleted": {"$ne": True}}).to_list(len(query_ids))
+        for w in workers_list:
+            workers_map[str(w["_id"])] = w
+
     results = []
     for c in checkins:
         s = serialize_id(c)
         if not s.get("worker_name") and s.get("worker_id"):
-            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            worker = workers_map.get(s["worker_id"])
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
@@ -2971,13 +3077,23 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
         "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
     }).to_list(500)
-	
-    # Populate missing worker_name from workers collection
+
+    # Batch-fetch workers for check-ins missing worker_name (avoid N+1)
+    missing_ids = set()
+    for c in checkins:
+        if not c.get("worker_name") and c.get("worker_id"):
+            missing_ids.add(c["worker_id"])
+    workers_map = {}
+    if missing_ids:
+        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}).to_list(len(missing_ids))
+        for w in wlist:
+            workers_map[str(w["_id"])] = w
+
     results = []
     for c in checkins:
         s = serialize_id(c)
         if not s.get("worker_name") and s.get("worker_id"):
-            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            worker = workers_map.get(s["worker_id"])
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
@@ -2993,13 +3109,23 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
         "check_in_time": {"$gte": today_start, "$lt": today_end},
         "is_deleted": {"$ne": True}
     }).to_list(500)
-    
-    # Populate missing worker_name from workers collection
+
+    # Batch-fetch workers for check-ins missing worker_name (avoid N+1)
+    missing_ids = set()
+    for c in checkins:
+        if not c.get("worker_name") and c.get("worker_id"):
+            missing_ids.add(c["worker_id"])
+    workers_map = {}
+    if missing_ids:
+        wlist = await db.workers.find({"_id": {"$in": [to_query_id(wid) for wid in missing_ids]}, "is_deleted": {"$ne": True}}).to_list(len(missing_ids))
+        for w in wlist:
+            workers_map[str(w["_id"])] = w
+
     results = []
     for c in checkins:
         s = serialize_id(c)
         if not s.get("worker_name") and s.get("worker_id"):
-            worker = await db.workers.find_one({"_id": to_query_id(s["worker_id"]), "is_deleted": {"$ne": True}})
+            worker = workers_map.get(s["worker_id"])
             if worker:
                 s["worker_name"] = worker.get("name", "Unknown Worker")
                 s["worker_company"] = s.get("worker_company") or worker.get("company")
@@ -3271,30 +3397,6 @@ async def create_project_site_device(project_id: str, device_data: SiteDeviceCre
         "project_name": project.get("name"),
         "device_name": device_dict["device_name"],
         "username": device_data.username,
-        "is_active": True,
-        "message": "Site device created successfully"
-    }
-    device_dict = {
-        "project_id": project_id,
-        "device_name": device_name,
-        "username": username,
-        "password": hash_password(password),
-        "is_active": True,
-        "created_at": now,
-        "updated_at": now,
-        "created_by": admin.get("id"),
-        "company_id": project.get("company_id"),
-        "is_deleted": False,
-    }
-    
-    result = await db.site_devices.insert_one(device_dict)
-    
-    return {
-        "id": str(result.inserted_id),
-        "project_id": project_id,
-        "project_name": project.get("name"),
-        "device_name": device_name,
-        "username": username,
         "is_active": True,
         "message": "Site device created successfully"
     }
@@ -4441,7 +4543,8 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
     try:
         payload = jwt.decode(state, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload["user_id"]
-    except:
+    except (jwt.InvalidTokenError, KeyError, Exception) as e:
+        logger.warning(f"Dropbox callback state validation failed: {e}")
         raise HTTPException(status_code=400, detail="Invalid state")
     
     # Exchange code for token
@@ -4497,7 +4600,9 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
         upsert=True
     )
     
-    return HTMLResponse("<html><body><h2>Dropbox connected successfully!</h2><p>You can close this window.</p><script>window.opener && window.opener.postMessage('dropbox-connected','*'); setTimeout(()=>window.close(), 2000);</script></body></html>")
+    # Use specific origin instead of '*' to prevent cross-origin message interception
+    allowed_origin = ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "https://blue-view.app"
+    return HTMLResponse(f"<html><body><h2>Dropbox connected successfully!</h2><p>You can close this window.</p><script>window.opener && window.opener.postMessage('dropbox-connected','{allowed_origin}'); setTimeout(()=>window.close(), 2000);</script></body></html>")
 
 @api_router.post("/dropbox/complete-auth")
 async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_user)):
@@ -4569,8 +4674,8 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
                     "https://api.dropboxapi.com/2/auth/token/revoke",
                     headers={"Authorization": f"Bearer {connection['access_token']}"}
                 )
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Dropbox token revocation failed (non-blocking): {e}")
     
     await db.dropbox_connections.update_one(
         {"company_id": company_id},
@@ -4992,7 +5097,7 @@ async def get_daily_log_photo(log_id: str, photo_id: str, current_user = Depends
     return serialize_id(photo)
 
 @api_router.get("/daily-logs/{log_id}/photos/{photo_id}/image")
-async def get_daily_log_photo_image(log_id: str, photo_id: str):
+async def get_daily_log_photo_image(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
     """Serve photo as raw image binary"""
     from fastapi.responses import Response
     photo = await db.daily_log_photos.find_one({
@@ -5153,6 +5258,11 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     }
     result = await db.logbooks.insert_one(doc)
     created = await db.logbooks.find_one({"_id": result.inserted_id})
+
+    await audit_log("logbook_create", str(current_user.get("_id", current_user.get("id", ""))), "logbook", str(result.inserted_id), {
+        "log_type": data.log_type, "project_id": data.project_id, "date": data.date,
+    })
+
     return serialize_id(created)
 
 @api_router.put("/logbooks/{logbook_id}")
@@ -5176,11 +5286,26 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
 
 @api_router.delete("/logbooks/{logbook_id}")
 async def delete_logbook(logbook_id: str, current_user = Depends(get_current_user)):
-    """Soft delete a logbook entry"""
+    """Soft delete a logbook entry — only by admins or the user who created it"""
+    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    if not logbook:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+
+    # Authorization: admin/owner can delete any, others only their own
+    user_role = current_user.get("role", "")
+    user_id = str(current_user.get("_id", ""))
+    if user_role not in ("admin", "owner") and logbook.get("created_by") != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this logbook")
+
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
     )
+
+    await audit_log("logbook_delete", user_id, "logbook", logbook_id, {
+        "log_type": logbook.get("log_type"), "project_id": logbook.get("project_id"),
+    })
+
     return {"message": "Logbook deleted"}
 
 @api_router.get("/logbooks/project/{project_id}/notifications")
@@ -5321,7 +5446,7 @@ async def places_autocomplete(input: str, types: str = "address", current_user =
         raise HTTPException(status_code=502, detail="Could not reach Google Places API")
 		
 @api_router.get("/weather")
-async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, address: Optional[str] = None):
+async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, address: Optional[str] = None, current_user = Depends(get_current_user)):
     """
     Get current weather using OpenWeather API.
     Pass lat/lng directly, or address for geocoding.
@@ -5406,19 +5531,22 @@ async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, 
 @api_router.get("/logbooks/project/{project_id}/checkins-today")
 async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user)):
     """Get all workers checked in to a project on a given date (for auto-populating log books)"""
-    now = datetime.now(timezone.utc)
-    target_date = date or now.strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    now_eastern = datetime.now(eastern)
+    target_date = date or now_eastern.strftime("%Y-%m-%d")
 
-    # Parse date
+    # Parse date using Eastern Time boundaries for NYC compliance
     try:
-        day_start = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        day_end = day_start.replace(hour=23, minute=59, second=59)
+        day_eastern = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=eastern)
+        day_start = day_eastern.astimezone(timezone.utc)
+        day_end = (day_eastern + timedelta(hours=24)).astimezone(timezone.utc)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
     checkins = await db.checkins.find({
         "project_id": project_id,
-        "check_in_time": {"$gte": day_start, "$lte": day_end},
+        "check_in_time": {"$gte": day_start, "$lt": day_end},
         "is_deleted": {"$ne": True}
     }).to_list(500)
 
@@ -5462,19 +5590,12 @@ async def serve_checkin_page(tag_id: str):
         raise HTTPException(status_code=404, detail="Check-in page not found")
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
-@app.get("/checkin/{tag_id}")
-async def serve_checkin_page_short(tag_id: str):
-    from fastapi.responses import HTMLResponse
-    html_path = Path(__file__).parent / "checkin.html"
-    return HTMLResponse(content=html_path.read_text(), status_code=200)
-
 @app.get("/checkin/{project_id}/{tag_id}")
 async def serve_checkin_page_full(project_id: str, tag_id: str):
     from fastapi.responses import HTMLResponse
     html_path = Path(__file__).parent / "checkin.html"
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
-# ==================== COMBINED REPORT GENERATOR ====================
 # ==================== COMBINED REPORT GENERATOR ====================
 def render_signature_html(sig, label="CP Signature"):
     """Render a signature as email-safe HTML. Signatures stay as base64
@@ -6269,6 +6390,9 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             street_name = parts[1].upper()
         else:
             street_name = clean_address.upper()
+    # Sanitize for Socrata $where clause — strip characters that could manipulate the query
+    street_name = re.sub(r"[^A-Z0-9 ]", "", street_name)
+    house_num = re.sub(r"[^0-9]", "", house_num)
     
     endpoints = []
     
@@ -6955,7 +7079,11 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
         update_fields["gc_legal_name"] = config.gc_legal_name.strip() or None
 
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update_fields})
- 
+
+    await audit_log("dob_config_update", str(admin.get("_id", admin.get("id", ""))), "project", project_id, {
+        k: v for k, v in update_fields.items() if k != "updated_at"
+    })
+
     updated = await db.projects.find_one({"_id": to_query_id(project_id)})
 
     # If BIN was just set or tracking just enabled, kick off an immediate background sync
@@ -7252,11 +7380,12 @@ async def startup_event():
     
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
-    if not owner:
+    owner_default_pw = os.environ.get("OWNER_DEFAULT_PASSWORD")
+    if not owner and owner_default_pw:
         now = datetime.now(timezone.utc)
         await db.users.insert_one({
             "email": "rfs2671@gmail.com",
-            "password": hash_password("Asdddfgh1$"),
+            "password": hash_password(owner_default_pw),
             "name": "Roy Fishman",
             "role": "owner",
             "created_at": now,
