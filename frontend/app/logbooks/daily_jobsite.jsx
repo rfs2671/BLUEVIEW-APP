@@ -25,7 +25,26 @@ import { Platform } from 'react-native';
 const MAX_PHOTOS_PER_ACTIVITY = 5;
 const uriToBase64 = async (uri) => {
   try {
-    if (!uri || Platform.OS === 'web') return null;
+    if (!uri) return null;
+
+    // Web: fetch the blob URL and convert to base64 via FileReader
+    if (Platform.OS === 'web') {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          // Strip the data:...;base64, prefix
+          const result = reader.result;
+          const b64 = result ? result.split(',')[1] : null;
+          resolve(b64);
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    // Native: use FileSystem
     const b64 = await FileSystem.readAsStringAsync(uri, {
       encoding: FileSystem.EncodingType.Base64,
     });
@@ -84,6 +103,7 @@ export default function DailyJobsiteLog() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false); // guard against double-tap only
   const [existingLogId, setExistingLogId] = useState(null);
 
   const [projectAddress, setProjectAddress] = useState('');
@@ -227,36 +247,50 @@ export default function DailyJobsiteLog() {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
       return;
     }
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') {
-      toast.error('Permission Denied', 'Camera access is required to take photos');
-      return;
-    }
-    let result;
+    if (cameraActive) return;
+    setCameraActive(true);
     try {
-      result = await ImagePicker.launchCameraAsync({
-        quality: 0.3,
+      // Web: camera API isn't available, use gallery
+      if (Platform.OS === 'web') {
+        const result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          quality: 0.6,
+          base64: false,
+        });
+        if (!result || result.canceled) return;
+        const asset = result.assets?.[0];
+        if (!asset) return;
+        setActivities(prev => prev.map((a, idx) => {
+          if (idx !== activityIndex) return a;
+          return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+        }));
+        return;
+      }
+
+      // Native: open camera directly
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        toast.error('Permission Denied', 'Allow camera access in device settings.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.5,
         base64: false,
         exif: false,
-        allowsEditing: false,
       });
+      if (!result || result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset) return;
+      setActivities(prev => prev.map((a, i) => {
+        if (i !== activityIndex) return a;
+        return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+      }));
     } catch (err) {
       console.error('Camera launch failed:', err);
-      toast.error('Camera Error', 'Could not open camera. Please check permissions in device settings.');
-      return;
+      toast.error('Camera Error', 'Could not open camera. Check permissions in device settings.');
+    } finally {
+      setCameraActive(false);
     }
-    if (!result || result.canceled) return;
-    const asset = result.assets?.[0];
-    if (!asset) return;
-    const newPhoto = {
-      uri: asset.uri,
-      base64: null, // deferred — will be converted at save time
-      timestamp: new Date().toISOString(),
-    };
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== activityIndex) return a;
-      return { ...a, photos: [...(a.photos || []), newPhoto].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-    }));
   };
 
   const removeActivityPhoto = (activityIndex, photoIndex) => {
@@ -354,7 +388,7 @@ export default function DailyJobsiteLog() {
               status: submitStatus,
             },
             user,
-          });
+          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
         }
       }
 
