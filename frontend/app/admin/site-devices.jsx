@@ -146,6 +146,17 @@ export default function SiteDevicesScreen() {
   };
 
   const handleDeleteDevice = async (deviceId) => {
+    const confirmed = Platform.OS === 'web'
+      ? window.confirm('Are you sure you want to delete this site device?')
+      : await new Promise(resolve => {
+          const { Alert } = require('react-native');
+          Alert.alert('Delete Device', 'Are you sure you want to delete this site device?', [
+            { text: 'Cancel', onPress: () => resolve(false), style: 'cancel' },
+            { text: 'Delete', onPress: () => resolve(true), style: 'destructive' },
+          ]);
+        });
+    if (!confirmed) return;
+
     try {
       await siteDevicesAPI.delete(deviceId);
       toast.success('Deleted', 'Site device removed');
