@@ -137,7 +137,7 @@ export default function DashboardScreen() {
   };
 
   const stats = {
-    totalWorkers: activeCheckIns.length,
+    totalWorkers: workers.length,
     activeProjects: projects.filter(p => p.status === 'active' || !p.status).length,
     onSiteNow: activeCheckIns.length,
   };
@@ -160,7 +160,7 @@ export default function DashboardScreen() {
   const screenWidth = Dimensions.get('window').width;
   const tilePadding = spacing.lg * 2;
   const tileGap = spacing.sm;
-  const tileWidth = Math.min((screenWidth - tilePadding - tileGap) / 2, 300);;
+  const tileWidth = Math.min((screenWidth - tilePadding - tileGap) / 2, 300);
 
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
