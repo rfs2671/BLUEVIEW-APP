@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Q } from '@nozbe/watermelondb';
 import database from '../database';
 
