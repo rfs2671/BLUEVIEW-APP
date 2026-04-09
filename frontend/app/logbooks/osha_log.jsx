@@ -15,6 +15,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const CERT_TYPES = ['OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST', 'Flagman', 'Forklift', 'Scaffold', 'Other'];
@@ -130,6 +131,7 @@ export default function OshaLogBook() {
         status: submitStatus,
       };
 
+      let created = null;
       if (existingLogId) {
         await logbooksAPI.update(existingLogId, {
           data: payload.data,
@@ -138,7 +140,7 @@ export default function OshaLogBook() {
           status: submitStatus,
         });
       } else {
-        const created = await logbooksAPI.create(payload);
+        created = await logbooksAPI.create(payload);
         setExistingLogId(created.id || created._id);
       }
 
@@ -146,14 +148,13 @@ export default function OshaLogBook() {
       if (submitStatus === 'submitted' && cpSignature) {
         const docId = existingLogId || created?.id || created?._id;
         if (docId) {
-          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
           recordSignatureEvent({
             documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
             signerName: cpName, signerRole: user?.role || 'cp',
             signatureData: cpSignature,
             contentSnapshot: { log_type: 'osha_log', date, project_id: projectId, data: { entries }, status: submitStatus },
             user,
-          });
+          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
         }
       }
       toast.success(
