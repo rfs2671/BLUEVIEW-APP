@@ -29,6 +29,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const LANGUAGE_LABELS = {
@@ -141,7 +142,7 @@ export default function SubcontractorOrientation() {
         )
       );
       // Record audit event for CP signing the orientation
-      const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+      // recordSignatureEvent imported at top level
       recordSignatureEvent({
         documentType: 'logbook', documentId: id, eventType: 'cp_sign',
         signerName: cpN, signerRole: user?.role || 'cp',
@@ -154,7 +155,7 @@ export default function SubcontractorOrientation() {
           project_id: orientation.project_id,
         },
         user,
-      });
+      }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
 
       toast.success('Signed', `Orientation for ${orientation.data?.worker_name} signed`);
     } catch (e) {
