@@ -1,14 +1,3 @@
-/**
- * AuthContext.js
- * Place at: frontend/src/context/AuthContext.js
- *
- * FIXES:
- *  1. Network errors during /me validation → fall back to stored user (offline)
- *  2. Only 401 → clear auth (token invalid)
- *  3. isValidatingRef prevents 401 interceptor from racing with validateSession
- *  4. isLoading stays true until validateSession fully resolves
- */
-
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { authAPI, getToken, getStoredUser, setStoredUser, clearAuth } from '../utils/api';
 
@@ -162,6 +151,7 @@ export const AuthProvider = ({ children }) => {
     } catch (e) {
       console.error('Logout API call failed, clearing local state anyway');
     } finally {
+      await clearAuth();
       setUser(null);
       setIsAuthenticated(false);
       setSiteMode(false);
@@ -180,7 +170,6 @@ export const AuthProvider = ({ children }) => {
         login,
         logout,
         validateSession,
-        _isValidatingRef: isValidatingRef,
       }}
     >
       {children}
