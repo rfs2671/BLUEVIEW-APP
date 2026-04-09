@@ -83,7 +83,7 @@ export default function ScaffoldMaintenanceLog() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [scaffoldInfo, profile, existingLogs] = await Promise.all([
+      const [scaffoldInfo, existingLogs] = await Promise.all([
         logbooksAPI.getScaffoldInfo(projectId).catch(() => ({})),
         logbooksAPI.getByProject(projectId, 'scaffold_maintenance', date).catch(() => []),
       ]);
@@ -104,14 +104,7 @@ export default function ScaffoldMaintenanceLog() {
         }));
       }
 
-      // Pre-fill CP signature
-      if (profile) {
-        setCpProfile(profile);
-        setCpName(profile.cp_name || '');
-        if (profile.cp_signature) {
-          setCpSignature(profile.cp_signature);
-        }
-      }
+      // CP profile is auto-loaded by useCpProfile hook — no manual fetch needed
 
       // Load existing log for this date
       const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
@@ -174,7 +167,7 @@ export default function ScaffoldMaintenanceLog() {
             signatureData: cpSignature,
             contentSnapshot: { log_type: 'scaffold_maintenance', date, project_id: projectId, data: payload.data, status: submitStatus },
             user,
-          });
+          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
         }
       }
 
