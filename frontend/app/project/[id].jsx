@@ -561,19 +561,16 @@ export default function ProjectDetailScreen() {
               <View style={s.projectInfo}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Text style={s.projectName}>{project?.name || 'Project'}</Text>
-                  {project?.classification && (
+                  {project?.project_class && project.project_class !== 'regular' && (
                     <View style={{
-                      paddingHorizontal: 8,
-                      paddingVertical: 2,
-                      borderRadius: 999,
-                      backgroundColor: project.classification === 'major' ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.15)',
+                      paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
+                      backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
                     }}>
                       <Text style={{
-                        fontSize: 10,
-                        fontWeight: '600',
-                        color: project.classification === 'major' ? '#f59e0b' : '#60a5fa',
+                        fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
+                        color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
                       }}>
-                        {project.classification.toUpperCase()}
+                        {project.project_class === 'major_b' ? 'MAJOR B · SSM' : 'MAJOR A · SSC'}
                       </Text>
                     </View>
                   )}

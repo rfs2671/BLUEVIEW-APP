@@ -104,28 +104,25 @@ export default function ProjectsScreen() {
 
     setCreating(true);
     try {
-      const stories = parseInt(newProject.building_stories, 10) || 0;
-      const demStories = parseInt(newProject.demolition_stories, 10) || 0;
-      const classification =
-        stories > 14 || newProject.adjacent_to_occupied || (newProject.has_full_demolition && demStories > 7)
-          ? 'major'
-          : 'minor';
-
-      const createdProject = await projectsAPI.create({
+      const payload = {
         name: newProject.address,
         address: newProject.address,
         location: newProject.address,
-        building_stories: stories,
-        adjacent_to_occupied: newProject.adjacent_to_occupied,
-        has_full_demolition: newProject.has_full_demolition,
-        demolition_stories: demStories,
-        classification,
-      });
+      };
+      if (newProject.building_stories) payload.building_stories = parseInt(newProject.building_stories, 10) || null;
+      if (newProject.adjacent_to_occupied) payload.adjacent_to_occupied = true;
+      if (newProject.has_full_demolition) payload.has_full_demolition = true;
+      if (newProject.demolition_stories) payload.demolition_stories = parseInt(newProject.demolition_stories, 10) || null;
+
+      const createdProject = await projectsAPI.create(payload);
 
       setProjects([...projects, createdProject]);
       setNewProject({ address: '', building_stories: '', adjacent_to_occupied: false, has_full_demolition: false, demolition_stories: '' });
       setShowAddModal(false);
-      toast.success('Success', `Project created — classified as ${classification.toUpperCase()}`);
+
+      const cls = createdProject.project_class || 'regular';
+      const classLabels = { regular: 'Regular', major_a: 'Major A (SSC Required)', major_b: 'Major B (SSM Required)' };
+      toast.success('Project Created', `Classification: ${classLabels[cls] || cls}`);
     } catch (error) {
       console.error('Failed to create project:', error);
       toast.error('Create Error', error.response?.data?.detail || 'Could not create project');
@@ -257,20 +254,14 @@ export default function ProjectsScreen() {
                     </View>
                   )}
 
-                  {project.classification && (
-                    <View
-                      style={[
-                        s.classificationBadge,
-                        project.classification === 'major' && s.classificationMajor,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          s.classificationText,
-                          project.classification === 'major' && s.classificationTextMajor,
-                        ]}
-                      >
-                        {project.classification.toUpperCase()}
+                  {project.project_class && project.project_class !== 'regular' && (
+                    <View style={[s.classificationBadge, {
+                      backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
+                    }]}>
+                      <Text style={[s.classificationText, {
+                        color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
+                      }]}>
+                        {project.project_class === 'major_b' ? 'MAJOR B' : 'MAJOR A'}
                       </Text>
                     </View>
                   )}
