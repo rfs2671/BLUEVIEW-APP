@@ -874,6 +874,149 @@ class CPProfileUpdate(BaseModel):
     cp_signature: Optional[Dict] = None  # {paths, signed_at}
     cp_title: Optional[str] = None
 
+# ==================== SAFETY STAFF MODELS ====================
+
+class SafetyStaffCreate(BaseModel):
+    project_id: str
+    role: str  # "ssc" (Site Safety Coordinator) or "ssm" (Site Safety Manager)
+    name: str
+    license_number: str  # S-56 for SSC, S-57 for SSM
+    license_expiration: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+class SafetyStaffResponse(BaseModel):
+    id: str
+    project_id: str
+    role: str
+    name: str
+    license_number: str
+    license_expiration: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    company_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    is_deleted: bool = False
+
+# ==================== LOGBOOK TYPE REGISTRY ====================
+
+LOGBOOK_TYPE_REGISTRY = [
+    {
+        "key": "daily_jobsite",
+        "label": "Daily Jobsite Log",
+        "subtitle": "NYC DOB 3301-02",
+        "frequency": "daily",
+        "icon": "Building2",
+        "color": "#ef4444",
+        "dob_reference": "§3301.2",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+    },
+    {
+        "key": "preshift_signin",
+        "label": "Pre-Shift Safety Meeting",
+        "subtitle": "Daily sign-in with all workers",
+        "frequency": "daily",
+        "icon": "Users",
+        "color": "#4ade80",
+        "dob_reference": "OSHA 1926.21",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+    },
+    {
+        "key": "toolbox_talk",
+        "label": "Tool Box Talk",
+        "subtitle": "OSHA — Weekly per company",
+        "frequency": "weekly",
+        "icon": "BookOpen",
+        "color": "#3b82f6",
+        "dob_reference": "OSHA 1926.21",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+    },
+    {
+        "key": "subcontractor_orientation",
+        "label": "Subcontractor Safety Orientation",
+        "subtitle": "First-time workers only",
+        "frequency": "as_needed",
+        "icon": "ShieldCheck",
+        "color": "#8b5cf6",
+        "dob_reference": "LL196",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+    },
+    {
+        "key": "osha_log",
+        "label": "OSHA Log Book",
+        "subtitle": "Worker certifications register",
+        "frequency": "daily",
+        "icon": "ClipboardList",
+        "color": "#06b6d4",
+        "dob_reference": "OSHA 1926",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+    },
+    {
+        "key": "scaffold_maintenance",
+        "label": "Scaffold Maintenance Log",
+        "subtitle": "NYC DOB — Daily while scaffold is up",
+        "frequency": "daily",
+        "icon": "HardHat",
+        "color": "#f59e0b",
+        "dob_reference": "§3314",
+        "applicable_classes": ["regular", "major_a", "major_b"],
+        "conditional": "scaffold_erected",
+    },
+    {
+        "key": "ssc_daily_safety_log",
+        "label": "SSC/SSM Daily Safety Log",
+        "subtitle": "Site Safety Coordinator/Manager daily report",
+        "frequency": "daily",
+        "icon": "ShieldCheck",
+        "color": "#ec4899",
+        "dob_reference": "§3310.4/§3310.5",
+        "applicable_classes": ["major_a", "major_b"],
+    },
+    {
+        "key": "hot_work",
+        "label": "Hot Work Permit Log",
+        "subtitle": "Welding, cutting, brazing operations",
+        "frequency": "as_needed",
+        "icon": "Flame",
+        "color": "#f97316",
+        "dob_reference": "FC §3504",
+        "applicable_classes": ["major_a", "major_b"],
+    },
+    {
+        "key": "concrete_operations",
+        "label": "Concrete Operations Log",
+        "subtitle": "Slump tests, formwork inspection",
+        "frequency": "daily",
+        "icon": "Layers",
+        "color": "#64748b",
+        "dob_reference": "§3310.4",
+        "applicable_classes": ["major_a", "major_b"],
+        "conditional": "building_stories_gte_5",
+    },
+    {
+        "key": "crane_operations",
+        "label": "Crane Operations Log",
+        "subtitle": "Pre-operation inspection & load log",
+        "frequency": "daily",
+        "icon": "Crane",
+        "color": "#eab308",
+        "dob_reference": "§3319",
+        "applicable_classes": ["major_a", "major_b"],
+        "conditional": "has_crane_permit",
+    },
+    {
+        "key": "excavation_monitoring",
+        "label": "Excavation Monitoring Log",
+        "subtitle": "Adjacent building monitoring & vibration",
+        "frequency": "daily",
+        "icon": "Mountain",
+        "color": "#a855f7",
+        "dob_reference": "§3304",
+        "applicable_classes": ["major_a", "major_b"],
+        "conditional": "has_excavation",
+    },
+]
+
 # ==================== SIGNATURE AUDIT TRAIL MODELS ====================
  
 class SignatureEventCreate(BaseModel):
@@ -5524,6 +5667,79 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
     update = {k: v for k, v in update.items() if v is not None}
     await db.projects.update_one({"_id": to_query_id(project_id)}, {"$set": update})
     return {"message": "Scaffold info saved"}
+# ==================== LOGBOOK TYPE REGISTRY ENDPOINT ====================
+
+@api_router.get("/logbook-types")
+async def get_logbook_types(current_user = Depends(get_current_user)):
+    """Return the full logbook type registry for UI rendering."""
+    return LOGBOOK_TYPE_REGISTRY
+
+# ==================== SAFETY STAFF ENDPOINTS ====================
+
+@api_router.get("/projects/{project_id}/safety-staff")
+async def get_project_safety_staff(project_id: str, current_user = Depends(get_current_user)):
+    """Get safety staff registrations for a project (SSC/SSM)."""
+    staff = await db.safety_staff_registrations.find({
+        "project_id": project_id, "is_deleted": {"$ne": True}
+    }).to_list(20)
+    return serialize_list(staff)
+
+@api_router.post("/projects/{project_id}/safety-staff")
+async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = Depends(get_admin_user)):
+    """Register a Site Safety Coordinator (SSC) or Site Safety Manager (SSM) for a project."""
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if data.role not in ("ssc", "ssm"):
+        raise HTTPException(status_code=422, detail="Role must be 'ssc' or 'ssm'")
+
+    now = datetime.now(timezone.utc)
+    staff_dict = data.model_dump()
+    staff_dict["company_id"] = project.get("company_id")
+    staff_dict["created_at"] = now
+    staff_dict["updated_at"] = now
+    staff_dict["is_deleted"] = False
+
+    result = await db.safety_staff_registrations.insert_one(staff_dict)
+
+    await audit_log("safety_staff_create", str(admin.get("_id", admin.get("id", ""))), "safety_staff", str(result.inserted_id), {
+        "role": data.role, "name": data.name, "license_number": data.license_number, "project_id": project_id,
+    })
+
+    staff_dict["id"] = str(result.inserted_id)
+    return staff_dict
+
+@api_router.put("/safety-staff/{staff_id}")
+async def update_safety_staff(staff_id: str, data: dict, admin = Depends(get_admin_user)):
+    """Update a safety staff registration."""
+    ALLOWED_FIELDS = {"name", "license_number", "license_expiration", "phone", "email", "role"}
+    update_data = {k: v for k, v in data.items() if v is not None and k in ALLOWED_FIELDS}
+    update_data["updated_at"] = datetime.now(timezone.utc)
+
+    result = await db.safety_staff_registrations.update_one(
+        {"_id": to_query_id(staff_id)},
+        {"$set": update_data}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Safety staff not found")
+
+    updated = await db.safety_staff_registrations.find_one({"_id": to_query_id(staff_id)})
+    return serialize_id(updated)
+
+@api_router.delete("/safety-staff/{staff_id}")
+async def delete_safety_staff(staff_id: str, admin = Depends(get_admin_user)):
+    """Soft delete a safety staff registration."""
+    result = await db.safety_staff_registrations.update_one(
+        {"_id": to_query_id(staff_id)},
+        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Safety staff not found")
+
+    await audit_log("safety_staff_delete", str(admin.get("_id", admin.get("id", ""))), "safety_staff", staff_id)
+    return {"message": "Safety staff removed"}
+
 # ==================== GOOGLE PLACES AUTOCOMPLETE ====================
 
 @api_router.get("/places/autocomplete")
@@ -6132,6 +6348,44 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
+    # ==========================================================
+    handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
+                     "subcontractor_orientation", "osha_log"}
+    additional_logbooks_html = ""
+    for logbook in logbooks:
+        lt = logbook.get("log_type", "")
+        if lt in handled_types:
+            continue
+        d = logbook.get("data", {})
+        label = lt.replace("_", " ").title()
+        # Build key-value rows from the data dict
+        data_rows = ""
+        for k, v in d.items():
+            if isinstance(v, (dict, list)):
+                if isinstance(v, list):
+                    v_str = ", ".join(str(item) if not isinstance(item, dict) else str(item) for item in v[:10])
+                else:
+                    v_str = ", ".join(f"{ik}: {iv}" for ik, iv in v.items() if iv)
+            elif isinstance(v, bool):
+                v_str = "Yes" if v else "No"
+            else:
+                v_str = str(v) if v else ""
+            if v_str:
+                field_label = k.replace("_", " ").title()
+                data_rows += f'<tr><td {TD} style="font-weight:600;width:35%;padding:10px 12px;border-bottom:1px solid #e2e8f0;color:#334155;">{field_label}</td><td {TD}>{v_str}</td></tr>'
+
+        sig_html = render_signature_html(logbook.get("cp_signature"), "Signature")
+        additional_logbooks_html += (
+            section_title(f"{label}")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + (data_rows or f'<tr><td {TD}>No data recorded</td></tr>')
+            + '</table>'
+            + sig_html
+        )
+
+    # ==========================================================
     #  FINAL HTML ASSEMBLY  (email-safe, table-based)
     # ==========================================================
     gen_time = datetime.now(timezone.utc).strftime('%B %d, %Y at %I:%M %p')
@@ -6207,6 +6461,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {toolbox_html}
       {preshift_html}
       {site_html}
+      {additional_logbooks_html}
     </td>
   </tr>
 
@@ -7084,6 +7339,136 @@ async def run_dob_sync_for_project(project: dict) -> list:
     return inserted_logs
  
  
+async def nightly_compliance_check():
+    """Nightly check: missing logbooks, missing SSP for major projects, expiring safety staff licenses."""
+    try:
+        logger.info("🔍 Nightly compliance check starting...")
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+
+        projects = await db.projects.find({
+            "status": "active", "is_deleted": {"$ne": True}
+        }).to_list(500)
+
+        for project in projects:
+            pid = str(project["_id"])
+            pname = project.get("name", "Unknown")
+            pclass = project.get("project_class", "regular")
+            company_id = project.get("company_id")
+
+            # 1. Check for missing required daily logbooks (only if workers were on site today)
+            today_start, today_end = get_today_range_est()
+            checkin_count = await db.checkins.count_documents({
+                "project_id": pid,
+                "check_in_time": {"$gte": today_start, "$lt": today_end},
+                "is_deleted": {"$ne": True},
+            })
+
+            if checkin_count > 0:
+                required = project.get("required_logbooks") or get_required_logbooks(pclass, project)
+                daily_required = [r for r in required if r not in ("subcontractor_orientation", "toolbox_talk")]
+
+                for log_type in daily_required:
+                    existing = await db.logbooks.find_one({
+                        "project_id": pid, "log_type": log_type, "date": today,
+                        "status": "submitted", "is_deleted": {"$ne": True},
+                    })
+                    if not existing:
+                        # Check if alert already exists for today
+                        existing_alert = await db.compliance_alerts.find_one({
+                            "alert_type": "missing_logbook", "project_id": pid,
+                            "details.log_type": log_type, "details.date": today,
+                        })
+                        if not existing_alert:
+                            severity = "high" if log_type == "ssc_daily_safety_log" else "medium"
+                            await db.compliance_alerts.insert_one({
+                                "alert_type": "missing_logbook",
+                                "severity": severity,
+                                "project_id": pid,
+                                "project_name": pname,
+                                "message": f"Required {log_type.replace('_', ' ').title()} not submitted for {pname} on {today}",
+                                "resolved": False,
+                                "created_at": now,
+                                "company_id": company_id,
+                                "details": {"log_type": log_type, "date": today},
+                            })
+
+            # 2. Missing SSP for major projects
+            if pclass in ("major_a", "major_b") and not project.get("ssp_number"):
+                existing_alert = await db.compliance_alerts.find_one({
+                    "alert_type": "missing_ssp", "project_id": pid, "resolved": False,
+                })
+                if not existing_alert:
+                    await db.compliance_alerts.insert_one({
+                        "alert_type": "missing_ssp",
+                        "severity": "critical",
+                        "project_id": pid,
+                        "project_name": pname,
+                        "message": f"Major project {pname} has no Site Safety Plan (SSP) filed with DOB",
+                        "resolved": False,
+                        "created_at": now,
+                        "company_id": company_id,
+                    })
+
+            # 3. SSP expiration warning (within 30 days)
+            ssp_exp = project.get("ssp_expiration_date")
+            if ssp_exp:
+                try:
+                    exp_date = datetime.strptime(ssp_exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    days_until = (exp_date - now).days
+                    if 0 < days_until <= 30:
+                        existing_alert = await db.compliance_alerts.find_one({
+                            "alert_type": "ssp_expiring", "project_id": pid, "resolved": False,
+                        })
+                        if not existing_alert:
+                            await db.compliance_alerts.insert_one({
+                                "alert_type": "ssp_expiring",
+                                "severity": "high",
+                                "project_id": pid,
+                                "project_name": pname,
+                                "message": f"SSP for {pname} expires in {days_until} days ({ssp_exp})",
+                                "resolved": False,
+                                "created_at": now,
+                                "company_id": company_id,
+                            })
+                except Exception:
+                    pass
+
+        # 4. Expiring safety staff licenses (within 30 days)
+        all_staff = await db.safety_staff_registrations.find({
+            "is_deleted": {"$ne": True}
+        }).to_list(500)
+
+        for staff in all_staff:
+            exp = staff.get("license_expiration")
+            if exp:
+                try:
+                    exp_date = datetime.strptime(exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    days_until = (exp_date - now).days
+                    if 0 < days_until <= 30:
+                        sid = str(staff["_id"])
+                        existing_alert = await db.compliance_alerts.find_one({
+                            "alert_type": "staff_license_expiring",
+                            "details.staff_id": sid, "resolved": False,
+                        })
+                        if not existing_alert:
+                            await db.compliance_alerts.insert_one({
+                                "alert_type": "staff_license_expiring",
+                                "severity": "high",
+                                "project_id": staff.get("project_id"),
+                                "message": f"{staff.get('role', '').upper()} {staff.get('name')}'s license ({staff.get('license_number')}) expires in {days_until} days",
+                                "resolved": False,
+                                "created_at": now,
+                                "company_id": staff.get("company_id"),
+                                "details": {"staff_id": sid, "license_expiration": exp},
+                            })
+                except Exception:
+                    pass
+
+        logger.info("🔍 Nightly compliance check completed")
+    except Exception as e:
+        logger.error(f"Nightly compliance check error: {e}")
+
 async def nightly_dob_scan():
     """Cron job: runs daily at 04:00 AM EST."""
     logger.info("🏗️ DOB nightly scan starting...")
@@ -7449,7 +7834,15 @@ async def startup_event():
     await db.checklist_assignments.create_index("project_id")
     await db.checklist_assignments.create_index("assigned_user_ids")
     await db.checklist_completions.create_index([("assignment_id", 1), ("user_id", 1)])
-    
+
+    # Safety staff indexes
+    await db.safety_staff_registrations.create_index([("project_id", 1), ("role", 1)])
+    await db.safety_staff_registrations.create_index("company_id")
+
+    # Audit log indexes
+    await db.audit_logs.create_index([("resource_type", 1), ("resource_id", 1)])
+    await db.audit_logs.create_index("timestamp")
+
     # Create compound indexes for sync queries
     await db.workers.create_index([("company_id", 1), ("updated_at", -1)])
     await db.projects.create_index([("company_id", 1), ("updated_at", -1)])
@@ -7529,10 +7922,19 @@ async def startup_event():
         id='dob_nightly_scan',
         replace_existing=True,
     )
-    
+
+    # Nightly compliance check — missing logbooks, missing SSP, expiring licenses
+    scheduler.add_job(
+        nightly_compliance_check,
+        CronTrigger(hour=22, minute=0),  # 10 PM EST
+        id='nightly_compliance_check',
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("📧 Report email scheduler started")
     logger.info("🏗️ DOB compliance scanner scheduled (every 30 minutes)")
+    logger.info("🔍 Nightly compliance check scheduled (10 PM)")
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])

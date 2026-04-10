@@ -510,6 +510,41 @@ export const checklistsAPI = {
   },
 };
 
+/**
+ * Logbook Type Registry
+ */
+export const logbookTypesAPI = {
+  getAll: async () => {
+    const response = await apiClient.get('/api/logbook-types');
+    return response.data;
+  },
+};
+
+/**
+ * Safety Staff APIs
+ */
+export const safetyStaffAPI = {
+  getByProject: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/safety-staff`);
+    return response.data;
+  },
+
+  create: async (projectId, data) => {
+    const response = await apiClient.post(`/api/projects/${projectId}/safety-staff`, data);
+    return response.data;
+  },
+
+  update: async (staffId, data) => {
+    const response = await apiClient.put(`/api/safety-staff/${staffId}`, data);
+    return response.data;
+  },
+
+  delete: async (staffId) => {
+    const response = await apiClient.delete(`/api/safety-staff/${staffId}`);
+    return response.data;
+  },
+};
+
 export const logbooksAPI = {
   getByProject: async (projectId, logType = null, date = null) => {
     const params = {};

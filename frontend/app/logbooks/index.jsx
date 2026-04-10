@@ -33,61 +33,19 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 
-const LOG_TYPES = [
-  {
-    key: 'daily_jobsite',
-    label: 'Daily Jobsite Log',
-    subtitle: 'NYC DOB 3301-02 — Daily',
-    icon: Building2,
-    color: '#ef4444',
-    bg: 'rgba(239, 68, 68, 0.15)',
-    visibility: 'always',
-  },
-  {
-    key: 'preshift_signin',
-    label: 'Pre-Shift Safety Meeting',
-    subtitle: 'Daily sign-in with all workers',
-    icon: Users,
-    color: '#4ade80',
-    bg: 'rgba(74, 222, 128, 0.15)',
-    visibility: 'always',
-  },
-  {
-    key: 'scaffold_maintenance',
-    label: 'Scaffold Maintenance Log',
-    subtitle: 'NYC DOB — Daily while scaffold is up',
-    icon: HardHat,
-    color: '#f59e0b',
-    bg: 'rgba(245, 158, 11, 0.15)',
-    visibility: 'scaffold',
-  },
-  {
-    key: 'toolbox_talk',
-    label: 'Tool Box Talk',
-    subtitle: 'OSHA — Weekly per company',
-    icon: BookOpen,
-    color: '#3b82f6',
-    bg: 'rgba(59, 130, 246, 0.15)',
-    visibility: 'weekly',
-  },
-  {
-    key: 'subcontractor_orientation',
-    label: 'Subcontractor Safety Orientation',
-    subtitle: 'First-time workers only',
-    icon: ShieldCheck,
-    color: '#8b5cf6',
-    bg: 'rgba(139, 92, 246, 0.15)',
-    visibility: 'first_time',
-  },
-  {
-    key: 'osha_log',
-    label: 'OSHA Log Book',
-    subtitle: 'Worker certifications register',
-    icon: ClipboardList,
-    color: '#06b6d4',
-    bg: 'rgba(6, 182, 212, 0.15)',
-    visibility: 'always',
-  },
+// Icon mapping for dynamic logbook types from API
+const ICON_MAP = {
+  Building2, Users, HardHat, BookOpen, ShieldCheck, ClipboardList,
+};
+
+// Fallback LOG_TYPES for when API hasn't loaded yet
+const FALLBACK_LOG_TYPES = [
+  { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', color: '#ef4444', frequency: 'daily' },
+  { key: 'preshift_signin', label: 'Pre-Shift Safety Meeting', subtitle: 'Daily sign-in', icon: 'Users', color: '#4ade80', frequency: 'daily' },
+  { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', color: '#3b82f6', frequency: 'weekly' },
+  { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', color: '#8b5cf6', frequency: 'as_needed' },
+  { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', color: '#06b6d4', frequency: 'daily' },
+  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', color: '#f59e0b', frequency: 'daily', conditional: 'scaffold_erected' },
 ];
 
 export default function LogBooksScreen() {
@@ -105,6 +63,7 @@ export default function LogBooksScreen() {
   const [cpName, setCpName] = useState('');
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
+  const [requiredLogbooks, setRequiredLogbooks] = useState(null); // dynamic from API
 
   const today = new Date().toISOString().split('T')[0];
   const todayFormatted = new Date().toLocaleDateString('en-US', {
@@ -151,16 +110,21 @@ export default function LogBooksScreen() {
 
   const fetchProjectData = async (projectId) => {
     try {
-      const [logs, notifs, scaffoldInfo] = await Promise.all([
+      const [logs, notifs, scaffoldInfo, reqLogbooks] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
         logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0 })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
+        projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
       ]);
 
       const logMap = {};
       (Array.isArray(logs) ? logs : []).forEach(log => { logMap[log.log_type] = log; });
       setTodayLogs(logMap);
       setNotifications(notifs);
+
+      if (reqLogbooks?.logbooks) {
+        setRequiredLogbooks(reqLogbooks);
+      }
 
       const isScaffoldUp = scaffoldInfo?.scaffold_erected === true
         || (scaffoldInfo?.scaffold_erector && scaffoldInfo?.scaffold_erected !== false)
@@ -218,16 +182,33 @@ export default function LogBooksScreen() {
   };
 
   const getVisibleLogTypes = () => {
-    return LOG_TYPES.filter((lt) => {
-      switch (lt.visibility) {
-        case 'always': return true;
-        case 'scaffold': return scaffoldActive;
-        case 'weekly': return !toolboxDoneThisWeek;
-        case 'first_time': {
-          return (notifications?.unsigned_orientations || 0) > 0;
+    // If we have dynamic required logbooks from the API, use them
+    if (requiredLogbooks?.logbooks) {
+      const requiredKeys = requiredLogbooks.logbooks.map(l => l.log_type);
+      // Build log type list from FALLBACK data enriched with required status
+      const allTypes = FALLBACK_LOG_TYPES.filter(lt => requiredKeys.includes(lt.key));
+      // Add any required types not in fallback (new types like ssc_daily_safety_log)
+      requiredKeys.forEach(key => {
+        if (!allTypes.find(t => t.key === key)) {
+          allTypes.push({
+            key,
+            label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+            subtitle: requiredLogbooks.project_class === 'major_b' ? 'Major B Required' : 'Major A Required',
+            icon: 'ShieldCheck',
+            color: '#ec4899',
+            frequency: 'daily',
+          });
         }
-        default: return true;
-      }
+      });
+      return allTypes;
+    }
+
+    // Fallback to local filtering
+    return FALLBACK_LOG_TYPES.filter((lt) => {
+      if (lt.conditional === 'scaffold_erected') return scaffoldActive;
+      if (lt.frequency === 'weekly') return !toolboxDoneThisWeek;
+      if (lt.frequency === 'as_needed') return (notifications?.unsigned_orientations || 0) > 0;
+      return true;
     });
   };
 
@@ -411,7 +392,7 @@ export default function LogBooksScreen() {
                 </GlassCard>
               ) : (
                 visibleLogs.map((logType) => {
-                  const Icon = logType.icon;
+                  const Icon = typeof logType.icon === 'string' ? (ICON_MAP[logType.icon] || ClipboardList) : logType.icon;
                   const status = getLogStatus(logType.key);
                   return (
                     <Pressable
@@ -419,7 +400,7 @@ export default function LogBooksScreen() {
                       onPress={() => handleOpenLog(logType.key)}
                       style={({ pressed }) => [styles.logCard, pressed && styles.logCardPressed]}
                     >
-                      <View style={[styles.logIcon, { backgroundColor: logType.bg }]}>
+                      <View style={[styles.logIcon, { backgroundColor: logType.bg || (logType.color + '26') }]}>
                         <Icon size={22} strokeWidth={1.5} color={logType.color} />
                       </View>
                       <View style={styles.logInfo}>
