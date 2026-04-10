@@ -559,7 +559,25 @@ export default function ProjectDetailScreen() {
           <GlassCard style={s.projectHeader}>
             <View style={s.projectTitleRow}>
               <View style={s.projectInfo}>
-                <Text style={s.projectName}>{project?.name || 'Project'}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={s.projectName}>{project?.name || 'Project'}</Text>
+                  {project?.classification && (
+                    <View style={{
+                      paddingHorizontal: 8,
+                      paddingVertical: 2,
+                      borderRadius: 999,
+                      backgroundColor: project.classification === 'major' ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.15)',
+                    }}>
+                      <Text style={{
+                        fontSize: 10,
+                        fontWeight: '600',
+                        color: project.classification === 'major' ? '#f59e0b' : '#60a5fa',
+                      }}>
+                        {project.classification.toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                </View>
                 <View style={s.locationRow}>
                   <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                   <Text style={s.locationText}>{project?.location || project?.address || 'No location'}</Text>

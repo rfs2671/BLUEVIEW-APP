@@ -228,7 +228,31 @@ def get_today_range_est():
     today_start_utc = today_midnight_eastern.astimezone(timezone.utc)
     today_end_utc = today_start_utc + timedelta(hours=24)
     return today_start_utc, today_end_utc
-	
+
+VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
+
+def classify_project(stories, adjacent_occupied, full_demo, demo_stories):
+    if stories and stories >= 15: return "major_b"
+    if full_demo and demo_stories and demo_stories >= 15: return "major_b"
+    if stories and stories >= 10: return "major_a"
+    if adjacent_occupied: return "major_a"
+    if full_demo and demo_stories and demo_stories >= 7: return "major_a"
+    return "regular"
+
+def get_required_logbooks(project_class, project=None):
+    base = ["daily_jobsite", "preshift_signin", "toolbox_talk", "subcontractor_orientation", "osha_log"]
+    if project_class in ("major_a", "major_b"):
+        base.append("ssc_daily_safety_log")
+        base.append("hot_work")
+        if project:
+            if project.get("building_stories") and project["building_stories"] >= 5:
+                base.append("concrete_operations")
+            if project.get("has_full_demolition") or project.get("adjacent_to_occupied"):
+                base.append("excavation_monitoring")
+    if project and project.get("scaffold_erected"):
+        base.append("scaffold_maintenance")
+    return base
+
 def format_phone(phone: str) -> str:
     """Format a 10-digit phone number as XXX-XXX-XXXX"""
     digits = ''.join(c for c in (phone or '') if c.isdigit())
@@ -337,6 +361,14 @@ class ProjectCreate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    building_stories: Optional[int] = None
+    adjacent_to_occupied: Optional[bool] = False
+    has_full_demolition: Optional[bool] = False
+    demolition_stories: Optional[int] = None
+    project_class: Optional[str] = None
+    ssp_number: Optional[str] = None
+    ssp_filing_date: Optional[str] = None
+    ssp_expiration_date: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -345,6 +377,14 @@ class ProjectUpdate(BaseModel):
     status: Optional[str] = None
     report_email_list: Optional[List[str]] = None
     report_send_time: Optional[str] = None
+    building_stories: Optional[int] = None
+    adjacent_to_occupied: Optional[bool] = None
+    has_full_demolition: Optional[bool] = None
+    demolition_stories: Optional[int] = None
+    project_class: Optional[str] = None
+    ssp_number: Optional[str] = None
+    ssp_filing_date: Optional[str] = None
+    ssp_expiration_date: Optional[str] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -363,6 +403,16 @@ class ProjectResponse(BaseModel):
     track_dob_status: bool = False
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
+    project_class: Optional[str] = "regular"
+    suggested_class: Optional[str] = None
+    building_stories: Optional[int] = None
+    adjacent_to_occupied: Optional[bool] = False
+    has_full_demolition: Optional[bool] = False
+    demolition_stories: Optional[int] = None
+    required_logbooks: List[str] = []
+    ssp_number: Optional[str] = None
+    ssp_filing_date: Optional[str] = None
+    ssp_expiration_date: Optional[str] = None
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -1877,12 +1927,40 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
         if bin_result["nyc_bin"]:
             logger.info(f"Auto-resolved BIN {bin_result['nyc_bin']} for project '{project_dict.get('name')}'")
     # ── END DOB ──
-    
+
+    # ── Project classification ──
+    suggested = classify_project(
+        project_dict.get("building_stories"),
+        project_dict.get("adjacent_to_occupied"),
+        project_dict.get("has_full_demolition"),
+        project_dict.get("demolition_stories"),
+    )
+    project_dict["suggested_class"] = suggested
+    override = project_dict.get("project_class")
+    if override and override in VALID_PROJECT_CLASSES:
+        project_dict["project_class"] = override
+        if override != suggested:
+            await db.compliance_alerts.insert_one({
+                "type": "classification_override",
+                "project_name": project_dict.get("name"),
+                "suggested_class": suggested,
+                "override_class": override,
+                "admin_id": str(admin.get("_id", admin.get("id", ""))),
+                "timestamp": now,
+                "resolved": False,
+            })
+    else:
+        project_dict["project_class"] = suggested
+
+    project_dict["required_logbooks"] = get_required_logbooks(project_dict["project_class"], project_dict)
+    # ── END classification ──
+
     result = await db.projects.insert_one(project_dict)
     project_dict["id"] = str(result.inserted_id)
 
     await audit_log("project_create", str(admin.get("_id", admin.get("id", ""))), "project", str(result.inserted_id), {
         "name": project_dict.get("name"), "address": project_dict.get("address"),
+        "project_class": project_dict.get("project_class"), "suggested_class": suggested,
     })
 
     return ProjectResponse(**project_dict)
@@ -1908,17 +1986,50 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
     # Normalize email list to lowercase if present
     if "report_email_list" in update_data and update_data["report_email_list"] is not None:
         update_data["report_email_list"] = [e.lower() for e in update_data["report_email_list"]]
-    
+
+    # Re-classify when classification-relevant fields change
+    classification_fields = {"building_stories", "adjacent_to_occupied", "has_full_demolition", "demolition_stories", "project_class"}
+    if classification_fields & update_data.keys():
+        existing = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if existing:
+            merged = {**existing, **update_data}
+            suggested = classify_project(
+                merged.get("building_stories"),
+                merged.get("adjacent_to_occupied"),
+                merged.get("has_full_demolition"),
+                merged.get("demolition_stories"),
+            )
+            update_data["suggested_class"] = suggested
+            override = update_data.get("project_class")
+            if override and override in VALID_PROJECT_CLASSES:
+                update_data["project_class"] = override
+            else:
+                update_data["project_class"] = suggested
+            update_data["required_logbooks"] = get_required_logbooks(update_data["project_class"], merged)
+
     result = await db.projects.update_one(
         {"_id": to_query_id(project_id)},
         {"$set": update_data}
     )
-    
+
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     return ProjectResponse(**serialize_id(project))
+
+@api_router.get("/projects/{project_id}/required-logbooks")
+async def get_project_required_logbooks(project_id: str, current_user = Depends(get_current_user)):
+    """Return the required logbook types for this project based on its classification."""
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    project_class = project.get("project_class", "regular")
+    required = get_required_logbooks(project_class, project)
+    return {"project_id": project_id, "project_class": project_class, "required_logbooks": required}
 
 @api_router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):

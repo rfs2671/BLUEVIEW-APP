@@ -22,6 +22,7 @@ import {
   X,
   Search,
   LogOut,
+  CheckCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -50,7 +51,13 @@ export default function ProjectsScreen() {
   const [creating, setCreating] = useState(false);
   const [projects, setProjects] = useState([]);
   // ── FIX #3: Single address field instead of name + location ──
-  const [newProject, setNewProject] = useState({ address: '' });
+  const [newProject, setNewProject] = useState({
+    address: '',
+    building_stories: '',
+    adjacent_to_occupied: false,
+    has_full_demolition: false,
+    demolition_stories: '',
+  });
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -97,16 +104,28 @@ export default function ProjectsScreen() {
 
     setCreating(true);
     try {
+      const stories = parseInt(newProject.building_stories, 10) || 0;
+      const demStories = parseInt(newProject.demolition_stories, 10) || 0;
+      const classification =
+        stories > 14 || newProject.adjacent_to_occupied || (newProject.has_full_demolition && demStories > 7)
+          ? 'major'
+          : 'minor';
+
       const createdProject = await projectsAPI.create({
         name: newProject.address,
         address: newProject.address,
         location: newProject.address,
+        building_stories: stories,
+        adjacent_to_occupied: newProject.adjacent_to_occupied,
+        has_full_demolition: newProject.has_full_demolition,
+        demolition_stories: demStories,
+        classification,
       });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '' });
+      setNewProject({ address: '', building_stories: '', adjacent_to_occupied: false, has_full_demolition: false, demolition_stories: '' });
       setShowAddModal(false);
-      toast.success('Success', 'Project created successfully');
+      toast.success('Success', `Project created — classified as ${classification.toUpperCase()}`);
     } catch (error) {
       console.error('Failed to create project:', error);
       toast.error('Create Error', error.response?.data?.detail || 'Could not create project');
@@ -238,6 +257,24 @@ export default function ProjectsScreen() {
                     </View>
                   )}
 
+                  {project.classification && (
+                    <View
+                      style={[
+                        s.classificationBadge,
+                        project.classification === 'major' && s.classificationMajor,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          s.classificationText,
+                          project.classification === 'major' && s.classificationTextMajor,
+                        ]}
+                      >
+                        {project.classification.toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+
                   {project.status && (
                     <View
                       style={[
@@ -316,6 +353,49 @@ export default function ProjectsScreen() {
                       placeholder="Start typing an address..."
                     />
                   </View>
+
+                  {/* Classification fields */}
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>BUILDING STORIES</Text>
+                    <GlassInput
+                      value={newProject.building_stories}
+                      onChangeText={(text) => setNewProject({ ...newProject, building_stories: text })}
+                      placeholder="Number of stories"
+                      keyboardType="numeric"
+                    />
+                  </View>
+
+                  <Pressable
+                    style={s.toggleRow}
+                    onPress={() => setNewProject({ ...newProject, adjacent_to_occupied: !newProject.adjacent_to_occupied })}
+                  >
+                    <View style={[s.toggleBox, newProject.adjacent_to_occupied && s.toggleBoxActive]}>
+                      {newProject.adjacent_to_occupied && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
+                    </View>
+                    <Text style={s.toggleLabel}>Adjacent to occupied building</Text>
+                  </Pressable>
+
+                  <Pressable
+                    style={s.toggleRow}
+                    onPress={() => setNewProject({ ...newProject, has_full_demolition: !newProject.has_full_demolition })}
+                  >
+                    <View style={[s.toggleBox, newProject.has_full_demolition && s.toggleBoxActive]}>
+                      {newProject.has_full_demolition && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
+                    </View>
+                    <Text style={s.toggleLabel}>Full demolition</Text>
+                  </Pressable>
+
+                  {newProject.has_full_demolition && (
+                    <View style={s.inputGroup}>
+                      <Text style={s.inputLabel}>DEMOLITION STORIES</Text>
+                      <GlassInput
+                        value={newProject.demolition_stories}
+                        onChangeText={(text) => setNewProject({ ...newProject, demolition_stories: text })}
+                        placeholder="Stories being demolished"
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  )}
 
                   <GlassButton
                     title="Create Project"
@@ -491,6 +571,47 @@ function buildStyles(colors, isDark) {
   },
   createButton: {
     marginTop: spacing.md,
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  toggleBox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleBoxActive: {
+    backgroundColor: 'rgba(74,222,128,0.1)',
+    borderColor: '#4ade80',
+  },
+  toggleLabel: {
+    fontSize: 14,
+    color: colors.text.secondary,
+  },
+  classificationBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.full,
+    backgroundColor: 'rgba(59,130,246,0.15)',
+  },
+  classificationMajor: {
+    backgroundColor: 'rgba(245,158,11,0.15)',
+  },
+  classificationText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#60a5fa',
+  },
+  classificationTextMajor: {
+    color: '#f59e0b',
   },
   });
 }

@@ -180,6 +180,11 @@ export const projectsAPI = {
     const response = await apiClient.delete(`/api/projects/${projectId}`);
     return response.data;
   },
+
+  getRequiredLogbooks: async (projectId) => {
+    const response = await apiClient.get(`/api/projects/${projectId}/required-logbooks`);
+    return response.data;
+  },
 };
 
 /**
