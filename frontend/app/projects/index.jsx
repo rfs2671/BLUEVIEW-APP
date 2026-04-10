@@ -53,11 +53,7 @@ export default function ProjectsScreen() {
   // ── FIX #3: Single address field instead of name + location ──
   const [newProject, setNewProject] = useState({
     address: '',
-    building_stories: '',
-    building_height: '',
-    footprint_sqft: '',
-    has_full_demolition: false,
-    demolition_stories: '',
+    project_class: 'regular',
   });
 
   // Redirect if not authenticated
@@ -105,26 +101,17 @@ export default function ProjectsScreen() {
 
     setCreating(true);
     try {
-      const payload = {
+      const createdProject = await projectsAPI.create({
         name: newProject.address,
         address: newProject.address,
         location: newProject.address,
-      };
-      if (newProject.building_stories) payload.building_stories = parseInt(newProject.building_stories, 10) || null;
-      if (newProject.building_height) payload.building_height = parseInt(newProject.building_height, 10) || null;
-      if (newProject.footprint_sqft) payload.footprint_sqft = parseInt(newProject.footprint_sqft, 10) || null;
-      if (newProject.has_full_demolition) payload.has_full_demolition = true;
-      if (newProject.demolition_stories) payload.demolition_stories = parseInt(newProject.demolition_stories, 10) || null;
-
-      const createdProject = await projectsAPI.create(payload);
+        project_class: newProject.project_class,
+      });
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '', building_stories: '', building_height: '', footprint_sqft: '', has_full_demolition: false, demolition_stories: '' });
+      setNewProject({ address: '', project_class: 'regular' });
       setShowAddModal(false);
-
-      const cls = createdProject.project_class || 'regular';
-      const classLabels = { regular: 'Regular', major_a: 'Major A (SSC Required)', major_b: 'Major B (SSM Required)' };
-      toast.success('Project Created', `Classification: ${classLabels[cls] || cls}`);
+      toast.success('Project Created', 'New project added');
     } catch (error) {
       console.error('Failed to create project:', error);
       toast.error('Create Error', error.response?.data?.detail || 'Could not create project');
@@ -349,56 +336,31 @@ export default function ProjectsScreen() {
 
                   {/* Classification fields */}
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>BUILDING STORIES</Text>
-                    <GlassInput
-                      value={newProject.building_stories}
-                      onChangeText={(text) => setNewProject({ ...newProject, building_stories: text })}
-                      placeholder="Number of stories"
-                      keyboardType="numeric"
-                    />
-                  </View>
-
-                  <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>BUILDING HEIGHT (feet)</Text>
-                    <GlassInput
-                      value={newProject.building_height}
-                      onChangeText={(text) => setNewProject({ ...newProject, building_height: text })}
-                      placeholder="Height in feet"
-                      keyboardType="numeric"
-                    />
-                  </View>
-
-                  <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>TOTAL FOOTPRINT (sq ft)</Text>
-                    <GlassInput
-                      value={newProject.footprint_sqft}
-                      onChangeText={(text) => setNewProject({ ...newProject, footprint_sqft: text })}
-                      placeholder="Square feet"
-                      keyboardType="numeric"
-                    />
-                  </View>
-
-                  <Pressable
-                    style={s.toggleRow}
-                    onPress={() => setNewProject({ ...newProject, has_full_demolition: !newProject.has_full_demolition })}
-                  >
-                    <View style={[s.toggleBox, newProject.has_full_demolition && s.toggleBoxActive]}>
-                      {newProject.has_full_demolition && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
+                    <Text style={s.inputLabel}>PROJECT TYPE</Text>
+                    <View style={s.classPickerRow}>
+                      {[
+                        { key: 'regular', label: 'Regular' },
+                        { key: 'major_a', label: 'Major A' },
+                        { key: 'major_b', label: 'Major B' },
+                      ].map((opt) => (
+                        <Pressable
+                          key={opt.key}
+                          style={[
+                            s.classPickerOption,
+                            newProject.project_class === opt.key && s.classPickerActive,
+                          ]}
+                          onPress={() => setNewProject({ ...newProject, project_class: opt.key })}
+                        >
+                          <Text style={[
+                            s.classPickerText,
+                            newProject.project_class === opt.key && s.classPickerTextActive,
+                          ]}>
+                            {opt.label}
+                          </Text>
+                        </Pressable>
+                      ))}
                     </View>
-                    <Text style={s.toggleLabel}>Full demolition</Text>
-                  </Pressable>
-
-                  {newProject.has_full_demolition && (
-                    <View style={s.inputGroup}>
-                      <Text style={s.inputLabel}>DEMOLITION STORIES</Text>
-                      <GlassInput
-                        value={newProject.demolition_stories}
-                        onChangeText={(text) => setNewProject({ ...newProject, demolition_stories: text })}
-                        placeholder="Stories being demolished"
-                        keyboardType="numeric"
-                      />
-                    </View>
-                  )}
+                  </View>
 
                   <GlassButton
                     title="Create Project"
@@ -574,6 +536,31 @@ function buildStyles(colors, isDark) {
   },
   createButton: {
     marginTop: spacing.md,
+  },
+  classPickerRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  classPickerOption: {
+    flex: 1,
+    paddingVertical: spacing.sm + 2,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  classPickerActive: {
+    borderColor: colors.primary || '#3b82f6',
+    backgroundColor: (colors.primary || '#3b82f6') + '20',
+  },
+  classPickerText: {
+    color: colors.text.muted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  classPickerTextActive: {
+    color: colors.primary || '#3b82f6',
   },
   toggleRow: {
     flexDirection: 'row',
