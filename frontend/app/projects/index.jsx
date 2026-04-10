@@ -337,11 +337,11 @@ export default function ProjectsScreen() {
                   {/* Classification fields */}
                   <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>PROJECT TYPE</Text>
-                    <View style={s.classPickerRow}>
+                    <View style={s.classPickerCol}>
                       {[
-                        { key: 'regular', label: 'Regular' },
-                        { key: 'major_a', label: 'Major A' },
-                        { key: 'major_b', label: 'Major B' },
+                        { key: 'regular', label: 'Regular', desc: 'Under 10 stories, no SSC/SSM required' },
+                        { key: 'major_a', label: 'Major A — SSC', desc: '10+ stories or 125+ ft — Site Safety Coordinator required' },
+                        { key: 'major_b', label: 'Major B — SSM', desc: '15+ stories, 200+ ft, or 100K+ sqft — Site Safety Manager required' },
                       ].map((opt) => (
                         <Pressable
                           key={opt.key}
@@ -357,6 +357,7 @@ export default function ProjectsScreen() {
                           ]}>
                             {opt.label}
                           </Text>
+                          <Text style={s.classPickerDesc}>{opt.desc}</Text>
                         </Pressable>
                       ))}
                     </View>
@@ -537,30 +538,33 @@ function buildStyles(colors, isDark) {
   createButton: {
     marginTop: spacing.md,
   },
-  classPickerRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
+  classPickerCol: {
+    gap: spacing.xs,
   },
   classPickerOption: {
-    flex: 1,
-    paddingVertical: spacing.sm + 2,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
-    alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.03)',
   },
   classPickerActive: {
     borderColor: colors.primary || '#3b82f6',
-    backgroundColor: (colors.primary || '#3b82f6') + '20',
+    backgroundColor: (colors.primary || '#3b82f6') + '15',
   },
   classPickerText: {
     color: colors.text.muted,
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '600',
   },
   classPickerTextActive: {
     color: colors.primary || '#3b82f6',
+  },
+  classPickerDesc: {
+    color: colors.text.subtle,
+    fontSize: 11,
+    marginTop: 2,
   },
   toggleRow: {
     flexDirection: 'row',
