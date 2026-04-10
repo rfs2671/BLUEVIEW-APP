@@ -231,12 +231,44 @@ def get_today_range_est():
 
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
-def classify_project(stories, adjacent_occupied, full_demo, demo_stories):
-    if stories and stories >= 15: return "major_b"
-    if full_demo and demo_stories and demo_stories >= 15: return "major_b"
-    if stories and stories >= 10: return "major_a"
-    if adjacent_occupied: return "major_a"
-    if full_demo and demo_stories and demo_stories >= 7: return "major_a"
+def classify_project(stories, footprint_sqft, full_demo, demo_stories, building_height=None):
+    """NYC Building Code §3310 classification.
+    Major Building = 10+ stories OR 125+ ft OR 100,000+ sqft footprint.
+    SSM required = 15+ stories OR 200+ ft OR footprint > 100,000 sqft.
+    SSC can substitute for SSM if < 15 stories AND < 200 ft AND <= 100,000 sqft."""
+    is_major = False
+    needs_ssm = False
+
+    # Check stories
+    if stories and stories >= 15:
+        is_major = True
+        needs_ssm = True
+    elif stories and stories >= 10:
+        is_major = True
+
+    # Check height
+    if building_height and building_height >= 200:
+        is_major = True
+        needs_ssm = True
+    elif building_height and building_height >= 125:
+        is_major = True
+
+    # Check footprint
+    if footprint_sqft and footprint_sqft >= 100000:
+        is_major = True
+        needs_ssm = True
+
+    # Full demolition of major building
+    if full_demo and demo_stories and demo_stories >= 15:
+        is_major = True
+        needs_ssm = True
+    elif full_demo and demo_stories and demo_stories >= 10:
+        is_major = True
+
+    if needs_ssm:
+        return "major_b"
+    if is_major:
+        return "major_a"
     return "regular"
 
 def get_required_logbooks(project_class, project=None):
@@ -361,11 +393,13 @@ class ProjectCreate(BaseModel):
     location: Optional[str] = None
     address: Optional[str] = None
     status: str = "active"
+    # NYC DOB Classification (§3310)
     building_stories: Optional[int] = None
-    adjacent_to_occupied: Optional[bool] = False
-    has_full_demolition: Optional[bool] = False
+    building_height: Optional[int] = None  # feet
+    footprint_sqft: Optional[int] = None  # square feet
+    has_full_demolition: bool = False
     demolition_stories: Optional[int] = None
-    project_class: Optional[str] = None
+    project_class: Optional[str] = None  # admin override
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
@@ -378,7 +412,8 @@ class ProjectUpdate(BaseModel):
     report_email_list: Optional[List[str]] = None
     report_send_time: Optional[str] = None
     building_stories: Optional[int] = None
-    adjacent_to_occupied: Optional[bool] = None
+    building_height: Optional[int] = None
+    footprint_sqft: Optional[int] = None
     has_full_demolition: Optional[bool] = None
     demolition_stories: Optional[int] = None
     project_class: Optional[str] = None
@@ -406,8 +441,9 @@ class ProjectResponse(BaseModel):
     project_class: Optional[str] = "regular"
     suggested_class: Optional[str] = None
     building_stories: Optional[int] = None
-    adjacent_to_occupied: Optional[bool] = False
-    has_full_demolition: Optional[bool] = False
+    building_height: Optional[int] = None
+    footprint_sqft: Optional[int] = None
+    has_full_demolition: bool = False
     demolition_stories: Optional[int] = None
     required_logbooks: List[str] = []
     ssp_number: Optional[str] = None
@@ -2074,9 +2110,10 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     # ── Project classification ──
     suggested = classify_project(
         project_dict.get("building_stories"),
-        project_dict.get("adjacent_to_occupied"),
-        project_dict.get("has_full_demolition"),
+        project_dict.get("footprint_sqft"),
+        project_dict.get("has_full_demolition", False),
         project_dict.get("demolition_stories"),
+        project_dict.get("building_height"),
     )
     project_dict["suggested_class"] = suggested
     override = project_dict.get("project_class")
@@ -2131,16 +2168,17 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
         update_data["report_email_list"] = [e.lower() for e in update_data["report_email_list"]]
 
     # Re-classify when classification-relevant fields change
-    classification_fields = {"building_stories", "adjacent_to_occupied", "has_full_demolition", "demolition_stories", "project_class"}
+    classification_fields = {"building_stories", "building_height", "footprint_sqft", "has_full_demolition", "demolition_stories", "project_class"}
     if classification_fields & update_data.keys():
         existing = await db.projects.find_one({"_id": to_query_id(project_id)})
         if existing:
             merged = {**existing, **update_data}
             suggested = classify_project(
                 merged.get("building_stories"),
-                merged.get("adjacent_to_occupied"),
-                merged.get("has_full_demolition"),
+                merged.get("footprint_sqft"),
+                merged.get("has_full_demolition", False),
                 merged.get("demolition_stories"),
+                merged.get("building_height"),
             )
             update_data["suggested_class"] = suggested
             override = update_data.get("project_class")

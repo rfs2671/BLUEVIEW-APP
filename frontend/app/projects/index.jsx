@@ -54,7 +54,8 @@ export default function ProjectsScreen() {
   const [newProject, setNewProject] = useState({
     address: '',
     building_stories: '',
-    adjacent_to_occupied: false,
+    building_height: '',
+    footprint_sqft: '',
     has_full_demolition: false,
     demolition_stories: '',
   });
@@ -110,14 +111,15 @@ export default function ProjectsScreen() {
         location: newProject.address,
       };
       if (newProject.building_stories) payload.building_stories = parseInt(newProject.building_stories, 10) || null;
-      if (newProject.adjacent_to_occupied) payload.adjacent_to_occupied = true;
+      if (newProject.building_height) payload.building_height = parseInt(newProject.building_height, 10) || null;
+      if (newProject.footprint_sqft) payload.footprint_sqft = parseInt(newProject.footprint_sqft, 10) || null;
       if (newProject.has_full_demolition) payload.has_full_demolition = true;
       if (newProject.demolition_stories) payload.demolition_stories = parseInt(newProject.demolition_stories, 10) || null;
 
       const createdProject = await projectsAPI.create(payload);
 
       setProjects([...projects, createdProject]);
-      setNewProject({ address: '', building_stories: '', adjacent_to_occupied: false, has_full_demolition: false, demolition_stories: '' });
+      setNewProject({ address: '', building_stories: '', building_height: '', footprint_sqft: '', has_full_demolition: false, demolition_stories: '' });
       setShowAddModal(false);
 
       const cls = createdProject.project_class || 'regular';
@@ -356,15 +358,25 @@ export default function ProjectsScreen() {
                     />
                   </View>
 
-                  <Pressable
-                    style={s.toggleRow}
-                    onPress={() => setNewProject({ ...newProject, adjacent_to_occupied: !newProject.adjacent_to_occupied })}
-                  >
-                    <View style={[s.toggleBox, newProject.adjacent_to_occupied && s.toggleBoxActive]}>
-                      {newProject.adjacent_to_occupied && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
-                    </View>
-                    <Text style={s.toggleLabel}>Adjacent to occupied building</Text>
-                  </Pressable>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>BUILDING HEIGHT (feet)</Text>
+                    <GlassInput
+                      value={newProject.building_height}
+                      onChangeText={(text) => setNewProject({ ...newProject, building_height: text })}
+                      placeholder="Height in feet"
+                      keyboardType="numeric"
+                    />
+                  </View>
+
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>TOTAL FOOTPRINT (sq ft)</Text>
+                    <GlassInput
+                      value={newProject.footprint_sqft}
+                      onChangeText={(text) => setNewProject({ ...newProject, footprint_sqft: text })}
+                      placeholder="Square feet"
+                      keyboardType="numeric"
+                    />
+                  </View>
 
                   <Pressable
                     style={s.toggleRow}
