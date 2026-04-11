@@ -29,10 +29,7 @@ import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 
-// Conditional PDF viewer import
-const PDFViewer = Platform.OS === 'web'
-  ? require('../../src/components/PDFViewerWeb').default
-  : require('../../src/components/PDFViewer').default;
+import PDFViewer from '../../src/components/PDFViewer';
 
 const dropboxAPI = {
   getProjectFiles: async (projectId) => {
