@@ -13,6 +13,10 @@
       "destination": "https://blueview2-production.up.railway.app/api/:path*"
     },
     {
+      "source": "/a/:annotation_id",
+      "destination": "https://blueview2-production.up.railway.app/a/:annotation_id"
+    },
+    {
       "source": "/:path*",
       "destination": "/index.html"
     }

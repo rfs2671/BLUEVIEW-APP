@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -29,6 +29,11 @@ import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
+
+// Conditional PDF viewer import
+const PDFViewer = Platform.OS === 'web'
+  ? require('../src/components/PDFViewerWeb').default
+  : require('../src/components/PDFViewer').default;
 
 // File type icon mapping
 const getFileIcon = (fileName) => {
@@ -86,6 +91,8 @@ export default function DocumentsScreen() {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [files, setFiles] = useState([]);
   const [loadingFile, setLoadingFile] = useState(null);
+  const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState(null);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -156,6 +163,13 @@ export default function DocumentsScreen() {
 
   const handleOpenFile = async (file) => {
     if (!selectedProject) return;
+
+    const ext = file.name?.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') {
+      setSelectedPdfFile(file);
+      setPdfViewerVisible(true);
+      return;
+    }
 
     setLoadingFile(file.path);
     try {
@@ -354,6 +368,13 @@ export default function DocumentsScreen() {
 
         {/* CP gets CpNav, everyone else gets FloatingNav */}
         {isCp ? <CpNav /> : <FloatingNav />}
+
+        <PDFViewer
+          visible={pdfViewerVisible}
+          file={selectedPdfFile}
+          projectId={selectedProject?._id || selectedProject?.id}
+          onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
+        />
       </SafeAreaView>
     </AnimatedBackground>
   );

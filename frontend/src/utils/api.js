@@ -801,4 +801,71 @@ export const signatureEventsAPI = {
   },
 };
 
+/**
+ * Document Annotations (Plan Notes) APIs
+ */
+export const annotationsAPI = {
+  create: async (data) => {
+    const response = await apiClient.post('/api/annotations', data);
+    return response.data;
+  },
+  getForDocument: async (projectId, documentPath) => {
+    const encoded = encodeURIComponent(documentPath);
+    const response = await apiClient.get(`/api/annotations/${projectId}/${encoded}`);
+    return response.data;
+  },
+  reply: async (annotationId, message) => {
+    const response = await apiClient.put(`/api/annotations/${annotationId}/reply`, { message });
+    return response.data;
+  },
+  resolve: async (annotationId) => {
+    const response = await apiClient.put(`/api/annotations/${annotationId}/resolve`);
+    return response.data;
+  },
+  delete: async (annotationId) => {
+    const response = await apiClient.delete(`/api/annotations/${annotationId}`);
+    return response.data;
+  },
+};
+
+/**
+ * WhatsApp Integration APIs
+ */
+export const whatsappAPI = {
+  getStatus: async () => {
+    const response = await apiClient.get('/api/whatsapp/status');
+    return response.data;
+  },
+
+  activate: async () => {
+    const response = await apiClient.post('/api/whatsapp/activate');
+    return response.data;
+  },
+
+  getGroups: async (projectId) => {
+    const response = await apiClient.get(`/api/whatsapp/groups/${projectId}`);
+    return response.data;
+  },
+
+  initiateLink: async (projectId) => {
+    const response = await apiClient.post('/api/whatsapp/group-link/initiate', {
+      project_id: projectId,
+    });
+    return response.data;
+  },
+
+  verifyLink: async (code, projectId) => {
+    const response = await apiClient.post('/api/whatsapp/group-link/verify', {
+      code,
+      project_id: projectId,
+    });
+    return response.data;
+  },
+
+  unlinkGroup: async (groupDocId) => {
+    const response = await apiClient.delete(`/api/whatsapp/groups/${groupDocId}`);
+    return response.data;
+  },
+};
+
 export default apiClient;

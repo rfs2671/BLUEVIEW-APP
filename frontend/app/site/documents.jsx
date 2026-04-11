@@ -6,6 +6,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -27,6 +28,11 @@ import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
+
+// Conditional PDF viewer import
+const PDFViewer = Platform.OS === 'web'
+  ? require('../../src/components/PDFViewerWeb').default
+  : require('../../src/components/PDFViewer').default;
 
 const dropboxAPI = {
   getProjectFiles: async (projectId) => {
@@ -59,6 +65,8 @@ export default function SiteDocumentsScreen() {
 
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState([]);
+  const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState(null);
 
   useEffect(() => {
   if (!authLoading && isAuthenticated !== undefined) {
@@ -89,6 +97,14 @@ export default function SiteDocumentsScreen() {
       toast.error('Error', 'Could not load documents');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleOpenFile = (file) => {
+    const ext = file.name?.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') {
+      setSelectedPdfFile(file);
+      setPdfViewerVisible(true);
     }
   };
 
@@ -145,7 +161,7 @@ export default function SiteDocumentsScreen() {
               {files.map((file, index) => {
                 const { Icon, color } = getFileIcon(file.name);
                 return (
-                  <GlassCard key={index} style={s.fileCard}>
+                  <GlassCard key={index} style={s.fileCard} onPress={() => handleOpenFile(file)}>
                     <View style={s.fileIcon}>
                       <Icon size={24} strokeWidth={1.5} color={color} />
                     </View>
@@ -168,6 +184,13 @@ export default function SiteDocumentsScreen() {
             </GlassCard>
           )}
         </ScrollView>
+
+        <PDFViewer
+          visible={pdfViewerVisible}
+          file={selectedPdfFile}
+          projectId={siteProject?.id}
+          onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
+        />
       </SafeAreaView>
     </AnimatedBackground>
   );

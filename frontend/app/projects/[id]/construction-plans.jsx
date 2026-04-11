@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Linking,
   TextInput,
+  Platform,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -39,6 +40,11 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
+
+// Conditional PDF viewer import
+const PDFViewer = Platform.OS === 'web'
+  ? require('../../../src/components/PDFViewerWeb').default
+  : require('../../../src/components/PDFViewer').default;
 
 const DROPBOX_BLUE = '#0061FF';
 
@@ -87,6 +93,8 @@ export default function ConstructionPlansScreen() {
   const [filterType, setFilterType] = useState('all'); // all, pdf, image, document
   const [lastSynced, setLastSynced] = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, success, error
+  const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState(null);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -142,6 +150,13 @@ export default function ConstructionPlansScreen() {
   };
 
   const handleViewFile = async (file) => {
+    const ext = file.name?.split('.').pop()?.toLowerCase();
+    if (ext === 'pdf') {
+      setSelectedPdfFile(file);
+      setPdfViewerVisible(true);
+      return;
+    }
+
     try {
       const { url } = await dropboxAPI.getFileUrl(projectId, file.path);
       if (url) {
@@ -441,6 +456,13 @@ export default function ConstructionPlansScreen() {
             </>
           )}
         </ScrollView>
+
+        <PDFViewer
+          visible={pdfViewerVisible}
+          file={selectedPdfFile}
+          projectId={projectId}
+          onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
+        />
       </SafeAreaView>
     </AnimatedBackground>
   );

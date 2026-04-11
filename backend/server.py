@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -20,6 +20,8 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
+import asyncio
+import io
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
@@ -33,6 +35,27 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# ==================== DROPBOX URL CACHE ====================
+_dropbox_url_cache: dict = {}
+
+def _cache_key(file_path: str) -> str:
+    return hashlib.md5(file_path.encode()).hexdigest()
+
+def _get_cached_url(company_id: str, file_path: str):
+    now = datetime.now(timezone.utc)
+    entry = _dropbox_url_cache.get(company_id, {}).get(_cache_key(file_path))
+    if entry and entry["expires_at"] > now:
+        return entry["url"]
+    return None
+
+def _set_cached_url(company_id: str, file_path: str, url: str):
+    if company_id not in _dropbox_url_cache:
+        _dropbox_url_cache[company_id] = {}
+    _dropbox_url_cache[company_id][_cache_key(file_path)] = {
+        "url": url,
+        "expires_at": datetime.now(timezone.utc) + timedelta(hours=3),
+    }
 
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET')
@@ -48,6 +71,16 @@ DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
+
+# WhatsApp (WaAPI) integration
+WAAPI_BASE_URL = os.environ.get("WAAPI_BASE_URL", "https://waapi.app/api/v1")
+WAAPI_INSTANCE_ID = os.environ.get("WAAPI_INSTANCE_ID", "")
+WAAPI_TOKEN = os.environ.get("WAAPI_TOKEN", "")
+WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
+SCREENSHOT_ENABLED = False
 
 scheduler = AsyncIOScheduler()
 
@@ -284,6 +317,17 @@ def get_required_logbooks(project_class, project=None):
     if project and project.get("scaffold_erected"):
         base.append("scaffold_maintenance")
     return base
+
+def normalize_phone(phone: str) -> str:
+    """Normalize phone to E.164 format."""
+    if not phone:
+        return ""
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits[0] == '1':
+        return f"+{digits}"
+    return f"+{digits}"
 
 def format_phone(phone: str) -> str:
     """Format a 10-digit phone number as XXX-XXX-XXXX"""
@@ -5125,6 +5169,24 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
             file_info["modified"] = entry.get("server_modified", "")
         files.append(file_info)
     
+    # Background-warm URL cache for PDFs
+    async def _warm_pdf_cache(files_list, cid):
+        for f in files_list:
+            if f.get("name", "").lower().endswith(".pdf"):
+                path = f.get("path", "")
+                if path and not _get_cached_url(cid, path):
+                    try:
+                        resp = await dropbox_api_call(
+                            cid, "post",
+                            "https://api.dropboxapi.com/2/files/get_temporary_link",
+                            json={"path": path}
+                        )
+                        if resp.status_code == 200:
+                            _set_cached_url(cid, path, resp.json().get("link", ""))
+                    except Exception:
+                        pass
+    asyncio.create_task(_warm_pdf_cache(files, company_id))
+
     return files
 
 @api_router.post("/projects/{project_id}/sync-dropbox")
@@ -5176,18 +5238,25 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
     company_id = company_id or project.get("company_id")
-    
+
+    # Check cache first
+    cached_url = _get_cached_url(company_id, file_path)
+    if cached_url:
+        return {"url": cached_url, "cached": True}
+
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/get_temporary_link",
         json={"path": file_path}
     )
-    
+
     if response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to get file URL")
-    
+
     data = response.json()
-    return {"url": data.get("link", ""), "metadata": data.get("metadata", {})}
+    url = data.get("link", "")
+    _set_cached_url(company_id, file_path, url)
+    return {"url": url, "cached": False}
 
 # ==================== DAILY LOG PDF EXPORT ====================
 
@@ -7834,6 +7903,366 @@ async def check_and_send_reports():
         except Exception as e:
             logger.error(f"Failed to send report for {project_name}: {e}")
 
+# ==================== DOCUMENT ANNOTATIONS (PLAN NOTES) ====================
+
+async def _generate_annotation_screenshot(
+    annotation_id: str,
+    document_path: str,
+    page_number: int,
+    position: dict,
+    project_id: str,
+    company_id: str,
+):
+    """Render page thumbnail, draw red circle at pin, crop 400x400, store as base64 data URL."""
+    if not SCREENSHOT_ENABLED:
+        return
+    try:
+        from pdf2image import convert_from_bytes
+        from PIL import Image, ImageDraw
+
+        # Fetch PDF bytes from Dropbox
+        project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if not project:
+            return
+        dropbox_token_doc = await db.dropbox_tokens.find_one({"company_id": company_id})
+        if not dropbox_token_doc:
+            return
+        access_token = dropbox_token_doc.get("access_token")
+        if not access_token:
+            return
+
+        async with httpx.AsyncClient(timeout=30) as hc:
+            resp = await hc.post(
+                "https://content.dropboxapi.com/2/files/download",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Dropbox-API-Arg": f'{{"path": "{document_path}"}}',
+                },
+            )
+            if resp.status_code != 200:
+                logger.error(f"Dropbox download failed for annotation screenshot: {resp.status_code}")
+                return
+            pdf_bytes = resp.content
+
+        images = convert_from_bytes(pdf_bytes, first_page=page_number, last_page=page_number, dpi=150)
+        if not images:
+            return
+        img = images[0]
+
+        # Draw red circle at position
+        draw = ImageDraw.Draw(img)
+        px = int(position.get("x", 0.5) * img.width)
+        py = int(position.get("y", 0.5) * img.height)
+        r = 18
+        draw.ellipse([px - r, py - r, px + r, py + r], outline="red", width=4)
+
+        # Crop 400x400 centred on pin
+        half = 200
+        left = max(px - half, 0)
+        top = max(py - half, 0)
+        right = min(px + half, img.width)
+        bottom = min(py + half, img.height)
+        cropped = img.crop((left, top, right, bottom))
+
+        buf = io.BytesIO()
+        cropped.save(buf, format="JPEG", quality=80)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        data_url = f"data:image/jpeg;base64,{b64}"
+
+        await db.document_annotations.update_one(
+            {"_id": to_query_id(annotation_id)},
+            {"$set": {"screenshot": data_url}},
+        )
+        logger.info(f"Annotation screenshot generated for {annotation_id}")
+    except Exception as e:
+        logger.error(f"Annotation screenshot failed: {e}")
+
+
+async def _send_annotation_emails(annotation: dict, project_name: str, recipient_ids: list, creator_id: str):
+    """Wait up to 30s for screenshot, then email all recipients."""
+    try:
+        # Wait for screenshot to be generated (up to 30s)
+        ann_id = annotation.get("id") or str(annotation.get("_id"))
+        screenshot_url = None
+        for _ in range(15):
+            await asyncio.sleep(2)
+            doc = await db.document_annotations.find_one({"_id": to_query_id(ann_id)})
+            if doc and doc.get("screenshot"):
+                screenshot_url = doc["screenshot"]
+                break
+
+        # Gather recipient emails
+        recipient_emails = []
+        for uid in recipient_ids:
+            if uid == creator_id:
+                continue
+            user = await db.users.find_one({"_id": to_query_id(uid)})
+            if user and user.get("email"):
+                recipient_emails.append(user["email"])
+
+        if not recipient_emails:
+            return
+
+        creator = await db.users.find_one({"_id": to_query_id(creator_id)})
+        creator_name = creator.get("name", "A team member") if creator else "A team member"
+
+        short_link = f"https://blue-view.app/a/{ann_id}"
+        comment_text = annotation.get("comment", "")
+
+        screenshot_block = ""
+        if screenshot_url:
+            screenshot_block = f'<img src="{screenshot_url}" alt="Plan screenshot" style="max-width:400px;border-radius:8px;border:1px solid #e2e8f0;margin:12px 0;" /><br/>'
+
+        html = f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#ffffff;">
+            <div style="text-align:center;margin-bottom:16px;">
+                <span style="font-size:20px;font-weight:700;color:#1e3a5f;">BLUEVIEW</span>
+            </div>
+            <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;">
+                <p style="margin:0 0 8px;font-size:14px;color:#64748b;">New Plan Note on <strong>{project_name}</strong></p>
+                <p style="margin:0 0 16px;font-size:16px;color:#1e293b;"><strong>{creator_name}</strong> left a note:</p>
+                {screenshot_block}
+                <div style="background:#ffffff;border-radius:8px;padding:16px;border-left:4px solid #3b82f6;margin:12px 0;">
+                    <p style="margin:0;font-size:14px;color:#334155;">{comment_text}</p>
+                </div>
+                <a href="{short_link}" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#3b82f6;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">View Note</a>
+            </div>
+            <p style="text-align:center;font-size:10px;color:#cbd5e1;margin-top:16px;letter-spacing:2px;">BLUEVIEW</p>
+        </div>
+        """
+
+        resend.api_key = RESEND_API_KEY
+        resend.Emails.send({
+            "from": "Blueview Plans <plans@blue-view.app>",
+            "to": recipient_emails,
+            "subject": f"Plan Note — {project_name}",
+            "html": html,
+        })
+        logger.info(f"Annotation email sent to {len(recipient_emails)} recipients for {ann_id}")
+    except Exception as e:
+        logger.error(f"Failed to send annotation email: {e}")
+
+
+async def _send_reply_notification(annotation: dict, thread_entry: dict):
+    """Notify annotation creator when someone replies."""
+    try:
+        ann_id = annotation.get("id") or str(annotation.get("_id"))
+        creator_id = annotation.get("created_by")
+        replier_id = thread_entry.get("user_id")
+
+        if creator_id == replier_id:
+            return  # Don't notify self
+
+        creator = await db.users.find_one({"_id": to_query_id(creator_id)})
+        if not creator or not creator.get("email"):
+            return
+
+        replier = await db.users.find_one({"_id": to_query_id(replier_id)})
+        replier_name = replier.get("name", "A team member") if replier else "A team member"
+
+        project = await db.projects.find_one({"_id": to_query_id(annotation.get("project_id"))})
+        project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
+
+        short_link = f"https://blue-view.app/a/{ann_id}"
+        reply_text = thread_entry.get("message", "")
+
+        html = f"""
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#ffffff;">
+            <div style="text-align:center;margin-bottom:16px;">
+                <span style="font-size:20px;font-weight:700;color:#1e3a5f;">BLUEVIEW</span>
+            </div>
+            <div style="background:#f8fafc;border-radius:12px;padding:20px;border:1px solid #e2e8f0;">
+                <p style="margin:0 0 8px;font-size:14px;color:#64748b;">Reply on <strong>{project_name}</strong></p>
+                <p style="margin:0 0 16px;font-size:16px;color:#1e293b;"><strong>{replier_name}</strong> replied to your note:</p>
+                <div style="background:#ffffff;border-radius:8px;padding:16px;border-left:4px solid #10b981;margin:12px 0;">
+                    <p style="margin:0;font-size:14px;color:#334155;">{reply_text}</p>
+                </div>
+                <a href="{short_link}" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#3b82f6;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">View Thread</a>
+            </div>
+            <p style="text-align:center;font-size:10px;color:#cbd5e1;margin-top:16px;letter-spacing:2px;">BLUEVIEW</p>
+        </div>
+        """
+
+        resend.api_key = RESEND_API_KEY
+        resend.Emails.send({
+            "from": "Blueview Plans <plans@blue-view.app>",
+            "to": [creator["email"]],
+            "subject": f"Reply on Plan Note — {project_name}",
+            "html": html,
+        })
+        logger.info(f"Reply notification sent for annotation {ann_id}")
+    except Exception as e:
+        logger.error(f"Failed to send reply notification: {e}")
+
+
+@api_router.post("/annotations")
+async def create_annotation(data: dict, background_tasks: BackgroundTasks, current_user=Depends(get_current_user)):
+    """Create a document annotation (plan note)."""
+    project_id = data.get("project_id")
+    document_path = data.get("document_path")
+    page_number = data.get("page_number", 1)
+    position = data.get("position", {"x": 0.5, "y": 0.5})
+    comment = data.get("comment", "")
+    recipients_input = data.get("recipients", "all")
+
+    if not project_id or not document_path:
+        raise HTTPException(status_code=400, detail="project_id and document_path are required")
+
+    user_id = current_user.get("id") or str(current_user.get("_id"))
+    company_id = get_user_company_id(current_user)
+
+    # Expand "all" to actual user IDs in the company
+    if recipients_input == "all":
+        all_users = await db.users.find(
+            {"company_id": company_id, "is_deleted": {"$ne": True}},
+            {"_id": 1},
+        ).to_list(500)
+        recipient_ids = [str(u["_id"]) for u in all_users]
+    else:
+        recipient_ids = recipients_input if isinstance(recipients_input, list) else [recipients_input]
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "project_id": project_id,
+        "document_path": document_path,
+        "page_number": page_number,
+        "position": position,
+        "comment": comment,
+        "recipients": recipient_ids,
+        "created_by": user_id,
+        "company_id": company_id,
+        "thread": [],
+        "resolved": False,
+        "is_deleted": False,
+        "screenshot": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await db.document_annotations.insert_one(doc)
+    ann_id = str(result.inserted_id)
+    doc["id"] = ann_id
+
+    # Fetch project name for email
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
+
+    # Background: generate screenshot + send emails
+    background_tasks.add_task(
+        _generate_annotation_screenshot, ann_id, document_path, page_number, position, project_id, company_id
+    )
+    background_tasks.add_task(
+        _send_annotation_emails, doc, project_name, recipient_ids, user_id
+    )
+
+    return serialize_id(doc)
+
+
+@api_router.get("/annotations/{project_id}/{document_path:path}")
+async def get_annotations_for_document(project_id: str, document_path: str, current_user=Depends(get_current_user)):
+    """Get annotations for a document with server-side visibility filtering."""
+    user_id = current_user.get("id") or str(current_user.get("_id"))
+    user_role = current_user.get("role")
+
+    query = {
+        "project_id": project_id,
+        "document_path": document_path,
+        "is_deleted": {"$ne": True},
+    }
+
+    # Non-admins only see their own annotations or where they are recipients
+    if user_role not in ["admin", "owner"]:
+        query["$or"] = [
+            {"created_by": user_id},
+            {"recipients": user_id},
+        ]
+
+    annotations = await db.document_annotations.find(query).sort("created_at", -1).to_list(500)
+    return serialize_list([dict(a) for a in annotations])
+
+
+@api_router.put("/annotations/{annotation_id}/reply")
+async def add_annotation_reply(annotation_id: str, data: dict, background_tasks: BackgroundTasks, current_user=Depends(get_current_user)):
+    """Add a reply to an annotation thread."""
+    message = data.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    user_id = current_user.get("id") or str(current_user.get("_id"))
+    now = datetime.now(timezone.utc)
+
+    thread_entry = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "user_name": current_user.get("name", "Unknown"),
+        "message": message,
+        "created_at": now,
+    }
+
+    result = await db.document_annotations.update_one(
+        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}},
+        {"$push": {"thread": thread_entry}, "$set": {"updated_at": now}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    annotation = await db.document_annotations.find_one({"_id": to_query_id(annotation_id)})
+    background_tasks.add_task(_send_reply_notification, serialize_id(dict(annotation)), thread_entry)
+
+    return serialize_id(dict(annotation))
+
+
+@api_router.put("/annotations/{annotation_id}/resolve")
+async def resolve_annotation(annotation_id: str, current_user=Depends(get_current_user)):
+    """Mark annotation as resolved. Only creator, recipient, or admin can resolve."""
+    user_id = current_user.get("id") or str(current_user.get("_id"))
+    user_role = current_user.get("role")
+
+    annotation = await db.document_annotations.find_one(
+        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}}
+    )
+    if not annotation:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    is_creator = annotation.get("created_by") == user_id
+    is_recipient = user_id in (annotation.get("recipients") or [])
+    is_admin = user_role in ["admin", "owner"]
+
+    if not (is_creator or is_recipient or is_admin):
+        raise HTTPException(status_code=403, detail="Not authorized to resolve this annotation")
+
+    await db.document_annotations.update_one(
+        {"_id": to_query_id(annotation_id)},
+        {"$set": {"resolved": True, "resolved_by": user_id, "resolved_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}},
+    )
+    updated = await db.document_annotations.find_one({"_id": to_query_id(annotation_id)})
+    return serialize_id(dict(updated))
+
+
+@api_router.delete("/annotations/{annotation_id}")
+async def delete_annotation(annotation_id: str, current_user=Depends(get_current_user)):
+    """Soft delete an annotation. Only creator or admin."""
+    user_id = current_user.get("id") or str(current_user.get("_id"))
+    user_role = current_user.get("role")
+
+    annotation = await db.document_annotations.find_one(
+        {"_id": to_query_id(annotation_id), "is_deleted": {"$ne": True}}
+    )
+    if not annotation:
+        raise HTTPException(status_code=404, detail="Annotation not found")
+
+    is_creator = annotation.get("created_by") == user_id
+    is_admin = user_role in ["admin", "owner"]
+
+    if not (is_creator or is_admin):
+        raise HTTPException(status_code=403, detail="Not authorized to delete this annotation")
+
+    await db.document_annotations.update_one(
+        {"_id": to_query_id(annotation_id)},
+        {"$set": {"is_deleted": True, "deleted_by": user_id, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"status": "deleted"}
+
+
 # ==================== PERMIT RENEWAL MODULE ====================
 from backend.permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
 
@@ -7847,8 +8276,632 @@ create_permit_renewal_routes(
     serialize_id=serialize_id,
 )
 
+# ==================== WHATSAPP INTEGRATION ====================
+
+import random
+import string as _string
+import io
+
+# ---------- helpers ----------
+
+async def send_whatsapp_message(chat_id: str, message: str):
+    """Send a WhatsApp message via WaAPI HTTP API."""
+    if not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        logger.warning("WhatsApp send skipped — WAAPI credentials not configured")
+        return None
+    url = f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-message"
+    headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
+    payload = {"chatId": chat_id, "message": message}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client_http:
+            resp = await client_http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        logger.error(f"WhatsApp send failed to {chat_id}: {e}")
+        return None
+
+
+def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
+    """Normalize a WaAPI inbound webhook payload to a standard format."""
+    if vendor == "waapi":
+        data = payload.get("data", {})
+        msg = data.get("message", data)
+        is_group = "@g.us" in msg.get("from", "")
+        body = msg.get("body", "")
+        # Audio detection
+        has_audio = msg.get("type") == "audio" or msg.get("type") == "ptt"
+        audio_url = None
+        if has_audio:
+            media = msg.get("media") or msg.get("_data", {})
+            audio_url = media.get("url") or media.get("directPath")
+        return {
+            "message_id": msg.get("id", {}).get("id", "") if isinstance(msg.get("id"), dict) else str(msg.get("id", "")),
+            "from": msg.get("from", ""),
+            "sender": msg.get("author", msg.get("from", "")),
+            "to": msg.get("to", ""),
+            "body": body,
+            "is_group": is_group,
+            "group_id": msg.get("from", "") if is_group else None,
+            "timestamp": msg.get("timestamp", 0),
+            "has_audio": has_audio,
+            "audio_url": audio_url,
+            "raw": msg,
+        }
+    # Fallback — return as-is with safe defaults
+    return {
+        "message_id": str(payload.get("id", "")),
+        "from": payload.get("from", ""),
+        "sender": payload.get("from", ""),
+        "to": payload.get("to", ""),
+        "body": payload.get("body", ""),
+        "is_group": False,
+        "group_id": None,
+        "timestamp": 0,
+        "has_audio": False,
+        "audio_url": None,
+        "raw": payload,
+    }
+
+
+async def download_audio(parsed_msg: dict) -> Optional[bytes]:
+    """Download audio bytes from parsed message audio URL."""
+    audio_url = parsed_msg.get("audio_url")
+    if not audio_url:
+        return None
+    try:
+        headers = {}
+        if WAAPI_TOKEN and "waapi" in audio_url:
+            headers["Authorization"] = f"Bearer {WAAPI_TOKEN}"
+        async with httpx.AsyncClient(timeout=30) as client_http:
+            resp = await client_http.get(audio_url, headers=headers)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as e:
+        logger.error(f"Audio download failed: {e}")
+        return None
+
+
+async def transcribe_audio(audio_bytes: bytes) -> str:
+    """Transcribe audio bytes using OpenAI Whisper API. Primary language: Yiddish."""
+    if not OPENAI_API_KEY:
+        logger.warning("Transcription skipped — OPENAI_API_KEY not set")
+        return ""
+    try:
+        import json as _json
+        url = "https://api.openai.com/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+        # Build multipart form
+        files_payload = {
+            "file": ("audio.ogg", io.BytesIO(audio_bytes), "audio/ogg"),
+            "model": (None, "whisper-1"),
+            "language": (None, "yi"),  # Yiddish primary
+        }
+        async with httpx.AsyncClient(timeout=60) as client_http:
+            resp = await client_http.post(url, headers=headers, files=files_payload)
+            resp.raise_for_status()
+            return resp.json().get("text", "")
+    except Exception as e:
+        logger.error(f"Whisper transcription failed: {e}")
+        return ""
+
+
+async def classify_intent(message: str) -> Optional[str]:
+    """Classify a WhatsApp message intent. String match first, GPT-4o-mini fallback."""
+    text = message.lower().strip()
+    # Quick string-match rules
+    if any(kw in text for kw in ["who on site", "who is on site", "who's on site", "whose on site", "workers on site"]):
+        return "who_on_site"
+    if any(kw in text for kw in ["dob status", "dob update", "violations", "dob check"]):
+        return "dob_status"
+    if any(kw in text for kw in ["open items", "open observations", "punch list", "uncorrected"]):
+        return "open_items"
+    # GPT-4o-mini fallback
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        import json as _json
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "gpt-4o-mini",
+            "temperature": 0,
+            "max_tokens": 30,
+            "messages": [
+                {"role": "system", "content": (
+                    "Classify the user message into one of these intents: "
+                    "who_on_site, dob_status, open_items, or none. "
+                    "Reply with ONLY the intent label."
+                )},
+                {"role": "user", "content": message},
+            ],
+        }
+        async with httpx.AsyncClient(timeout=10) as client_http:
+            resp = await client_http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            label = resp.json()["choices"][0]["message"]["content"].strip().lower()
+            if label in ("who_on_site", "dob_status", "open_items"):
+                return label
+            return None
+    except Exception as e:
+        logger.error(f"Intent classification failed: {e}")
+        return None
+
+
+# ---------- intent handlers ----------
+
+async def _handle_who_on_site(project_id: str) -> str:
+    """Return formatted worker list by company for a project."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    checkins = await db.checkins.find({
+        "project_id": project_id,
+        "check_in_time": {"$gte": today_start},
+        "status": "checked_in",
+        "is_deleted": {"$ne": True},
+    }).to_list(500)
+    if not checkins:
+        return "No workers currently checked in on site."
+    # Group by company
+    by_company: Dict[str, list] = {}
+    for ci in checkins:
+        co = ci.get("company_name", "Unknown")
+        name = ci.get("worker_name", "Unknown")
+        by_company.setdefault(co, []).append(name)
+    lines = [f"*Workers on site today ({len(checkins)} total):*"]
+    for company, workers in sorted(by_company.items()):
+        lines.append(f"\n_{company}_ ({len(workers)}):")
+        for w in sorted(workers):
+            lines.append(f"  - {w}")
+    return "\n".join(lines)
+
+
+async def _handle_dob_status(project_id: str) -> str:
+    """Return project DOB info summary."""
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        return "Project not found."
+    dob_cfg = project.get("dob_config", {})
+    bin_number = dob_cfg.get("bin_number", "N/A")
+    lines = [f"*DOB Status for {project.get('name', 'Unknown')}*"]
+    lines.append(f"BIN: {bin_number}")
+    # Recent violations
+    recent = await db.dob_logs.find({
+        "project_id": project_id,
+        "record_type": "violation",
+    }).sort("detected_at", -1).to_list(5)
+    if recent:
+        lines.append(f"\nRecent violations ({len(recent)}):")
+        for v in recent:
+            desc = v.get("description", v.get("raw_dob_id", ""))[:80]
+            lines.append(f"  - {desc}")
+    else:
+        lines.append("\nNo recent violations found.")
+    return "\n".join(lines)
+
+
+async def _handle_open_items(project_id: str) -> str:
+    """Return uncorrected observations from today's daily log."""
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    log = await db.daily_logs.find_one({"project_id": project_id, "date": today_str})
+    if not log:
+        return "No daily log found for today."
+    observations = log.get("observations", [])
+    open_obs = [o for o in observations if not o.get("corrected")]
+    if not open_obs:
+        return "All observations corrected for today."
+    lines = [f"*Open items today ({len(open_obs)}):*"]
+    for i, o in enumerate(open_obs, 1):
+        desc = o.get("description", o.get("note", "No description"))[:100]
+        lines.append(f"  {i}. {desc}")
+    return "\n".join(lines)
+
+
+async def _find_project_for_contact(contact: dict) -> Optional[str]:
+    """Return first assigned project ID for a contact, or None."""
+    user_id = contact.get("user_id")
+    if not user_id:
+        return None
+    user = await db.users.find_one({"_id": to_query_id(user_id)})
+    if not user:
+        return None
+    assigned = user.get("assigned_projects", [])
+    if assigned:
+        return str(assigned[0])
+    # Fallback: first active project in company
+    company_id = user.get("company_id")
+    if company_id:
+        proj = await db.projects.find_one({"company_id": company_id, "is_deleted": {"$ne": True}})
+        if proj:
+            return str(proj["_id"])
+    return None
+
+
+# ---------- inbound processing ----------
+
+async def _process_whatsapp_message(payload: dict):
+    """Background task to process an inbound WhatsApp message."""
+    try:
+        parsed = parse_inbound_message(payload, vendor=WHATSAPP_VENDOR)
+        sender = parsed["sender"].split("@")[0]  # phone number
+        now = datetime.now(timezone.utc)
+
+        # --- GROUP message ---
+        if parsed["is_group"]:
+            group_id = parsed["group_id"]
+            # Look up linked group
+            group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id})
+            project_id = group_doc["project_id"] if group_doc else None
+
+            # Transcribe audio if present
+            body = parsed["body"]
+            if parsed["has_audio"]:
+                audio_bytes = await download_audio(parsed)
+                if audio_bytes:
+                    body = await transcribe_audio(audio_bytes)
+
+            # Store message
+            await db.whatsapp_messages.insert_one({
+                "group_id": group_id,
+                "project_id": project_id,
+                "sender": sender,
+                "body": body,
+                "has_audio": parsed["has_audio"],
+                "message_id": parsed["message_id"],
+                "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
+                "created_at": now,
+            })
+
+            # Check for link-code pattern (6-digit code from group)
+            if body and re.match(r"^\d{6}$", body.strip()):
+                code_doc = await db.whatsapp_link_codes.find_one({"code": body.strip()})
+                if code_doc and not code_doc.get("verified"):
+                    await db.whatsapp_link_codes.update_one(
+                        {"_id": code_doc["_id"]},
+                        {"$set": {"group_id": group_id, "group_verified": True}}
+                    )
+            return
+
+        # --- DIRECT message ---
+        # Look up contact
+        contact = await db.whatsapp_contacts.find_one({"phone": sender})
+        if not contact or not contact.get("user_id"):
+            # Unknown number — stay silent
+            return
+
+        # Transcribe audio if present
+        body = parsed["body"]
+        if parsed["has_audio"]:
+            audio_bytes = await download_audio(parsed)
+            if audio_bytes:
+                body = await transcribe_audio(audio_bytes)
+
+        if not body:
+            return
+
+        # Classify intent
+        intent = await classify_intent(body)
+        if not intent:
+            return
+
+        project_id = await _find_project_for_contact(contact)
+        if not project_id:
+            await send_whatsapp_message(parsed["from"], "No project found linked to your account.")
+            return
+
+        # Execute intent
+        if intent == "who_on_site":
+            reply = await _handle_who_on_site(project_id)
+        elif intent == "dob_status":
+            reply = await _handle_dob_status(project_id)
+        elif intent == "open_items":
+            reply = await _handle_open_items(project_id)
+        else:
+            return
+
+        await send_whatsapp_message(parsed["from"], reply)
+
+    except Exception as e:
+        logger.error(f"WhatsApp message processing error: {e}", exc_info=True)
+
+
+# ---------- group link handler ----------
+
+async def _handle_bot_added_to_group(group_id: str):
+    """When bot is added to a group, send the pending link code into the group."""
+    # Find any pending link code that hasn't been group-verified
+    code_doc = await db.whatsapp_link_codes.find_one({
+        "verified": False,
+        "group_verified": {"$ne": True},
+    })
+    if code_doc:
+        code = code_doc["code"]
+        await send_whatsapp_message(
+            group_id,
+            f"Blueview bot has been added. To link this group, someone with access should paste this code in the Blueview app:\n\n*{code}*\n\nOr type the code in this group to auto-verify."
+        )
+
+
+# ---------- webhook (PUBLIC — no JWT) ----------
+
+@api_router.post("/whatsapp/webhook")
+async def whatsapp_webhook(request: Request):
+    """Public webhook for WaAPI — returns 200 immediately, processes in background."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ok"}
+    # Fire-and-forget background processing
+    asyncio.create_task(_process_whatsapp_message(payload))
+    return {"status": "ok"}
+
+
+# ---------- group linking flow (auth required) ----------
+
+@api_router.post("/whatsapp/group-link/initiate")
+async def whatsapp_group_link_initiate(
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Generate a 6-digit code valid for 5 minutes to link a WhatsApp group to a project."""
+    project_id = body.get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    company_id = get_user_company_id(current_user)
+    # Generate unique 6-digit code
+    code = "".join(random.choices(_string.digits, k=6))
+    now = datetime.now(timezone.utc)
+    await db.whatsapp_link_codes.insert_one({
+        "code": code,
+        "project_id": project_id,
+        "company_id": company_id,
+        "created_by": str(current_user["_id"]),
+        "verified": False,
+        "group_verified": False,
+        "group_id": None,
+        "created_at": now,
+        "expires_at": now + timedelta(minutes=5),
+    })
+    return {"code": code, "expires_in_seconds": 300}
+
+
+@api_router.post("/whatsapp/group-link/verify")
+async def whatsapp_group_link_verify(
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Verify a link code and create the group-project association."""
+    code = body.get("code", "").strip()
+    project_id = body.get("project_id")
+    if not code or not project_id:
+        raise HTTPException(status_code=400, detail="code and project_id required")
+    company_id = get_user_company_id(current_user)
+    code_doc = await db.whatsapp_link_codes.find_one({
+        "code": code,
+        "project_id": project_id,
+        "company_id": company_id,
+        "verified": False,
+    })
+    if not code_doc:
+        raise HTTPException(status_code=404, detail="Invalid or expired code")
+    group_id = code_doc.get("group_id")
+    if not group_id and not code_doc.get("group_verified"):
+        raise HTTPException(status_code=400, detail="Code not yet verified by group. Send the code in the WhatsApp group first.")
+    # Create group link
+    now = datetime.now(timezone.utc)
+    await db.whatsapp_groups.update_one(
+        {"company_id": company_id, "wa_group_id": group_id},
+        {"$set": {
+            "project_id": project_id,
+            "company_id": company_id,
+            "wa_group_id": group_id,
+            "linked_by": str(current_user["_id"]),
+            "linked_at": now,
+            "active": True,
+        }},
+        upsert=True,
+    )
+    # Mark code as used
+    await db.whatsapp_link_codes.update_one(
+        {"_id": code_doc["_id"]},
+        {"$set": {"verified": True}},
+    )
+    return {"status": "linked", "group_id": group_id, "project_id": project_id}
+
+
+# ---------- WhatsApp management endpoints (auth required) ----------
+
+@api_router.get("/whatsapp/groups/{project_id}")
+async def whatsapp_get_groups(project_id: str, current_user=Depends(get_current_user)):
+    """List linked WhatsApp groups for a project, with message counts."""
+    company_id = get_user_company_id(current_user)
+    groups = await db.whatsapp_groups.find({
+        "project_id": project_id,
+        "company_id": company_id,
+        "active": True,
+    }).to_list(50)
+    results = []
+    for g in groups:
+        msg_count = await db.whatsapp_messages.count_documents({"group_id": g["wa_group_id"]})
+        results.append({
+            "id": str(g["_id"]),
+            "wa_group_id": g["wa_group_id"],
+            "project_id": g["project_id"],
+            "linked_at": g.get("linked_at"),
+            "message_count": msg_count,
+        })
+    return results
+
+
+@api_router.delete("/whatsapp/groups/{group_doc_id}")
+async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_current_user)):
+    """Unlink (deactivate) a WhatsApp group."""
+    company_id = get_user_company_id(current_user)
+    result = await db.whatsapp_groups.update_one(
+        {"_id": to_query_id(group_doc_id), "company_id": company_id},
+        {"$set": {"active": False, "unlinked_at": datetime.now(timezone.utc)}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"status": "unlinked"}
+
+
+@api_router.post("/whatsapp/activate")
+async def whatsapp_activate(current_user=Depends(get_current_user)):
+    """Activate WhatsApp for the company. Auto-populate contacts from users."""
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=400, detail="No company associated")
+    # Mark company as WhatsApp-active
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {"whatsapp_active": True, "whatsapp_activated_at": datetime.now(timezone.utc)}},
+    )
+    # Auto-populate contacts from existing users with phone numbers
+    users = await db.users.find({
+        "company_id": company_id,
+        "is_deleted": {"$ne": True},
+        "phone": {"$exists": True, "$ne": ""},
+    }).to_list(500)
+    created = 0
+    for user in users:
+        phone = re.sub(r"[^\d]", "", user.get("phone", ""))
+        if not phone:
+            continue
+        try:
+            await db.whatsapp_contacts.update_one(
+                {"company_id": company_id, "phone": phone},
+                {"$setOnInsert": {
+                    "company_id": company_id,
+                    "phone": phone,
+                    "user_id": str(user["_id"]),
+                    "name": user.get("name", ""),
+                    "created_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+            created += 1
+        except Exception:
+            pass  # duplicate
+    return {"status": "activated", "contacts_synced": created}
+
+
+@api_router.get("/whatsapp/status")
+async def whatsapp_status(current_user=Depends(get_current_user)):
+    """Check if WhatsApp is configured at platform level and active for company."""
+    company_id = get_user_company_id(current_user)
+    platform_configured = bool(WAAPI_INSTANCE_ID and WAAPI_TOKEN)
+    company_active = False
+    if company_id:
+        company = await db.companies.find_one({"_id": to_query_id(company_id)})
+        company_active = bool(company and company.get("whatsapp_active"))
+    return {
+        "platform_configured": platform_configured,
+        "company_active": company_active,
+        "vendor": WHATSAPP_VENDOR,
+    }
+
+
+# ---------- daily summary scheduler ----------
+
+async def _send_whatsapp_daily_summaries():
+    """Mon-Fri 5 PM EST: summarize each project's WhatsApp messages and send to linked groups."""
+    try:
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        # Find all active groups
+        groups = await db.whatsapp_groups.find({"active": True}).to_list(200)
+        for group_doc in groups:
+            project_id = group_doc.get("project_id")
+            group_id = group_doc.get("wa_group_id")
+            if not project_id or not group_id:
+                continue
+            # Get today's messages
+            messages = await db.whatsapp_messages.find({
+                "project_id": project_id,
+                "created_at": {"$gte": today_start},
+            }).sort("created_at", 1).to_list(500)
+            if not messages:
+                continue
+            # Build conversation text for GPT
+            convo_lines = []
+            for m in messages:
+                sender = m.get("sender", "unknown")
+                body = m.get("body", "")
+                if body:
+                    convo_lines.append(f"{sender}: {body}")
+            if not convo_lines:
+                continue
+            conversation_text = "\n".join(convo_lines[:200])  # cap at 200 messages
+            # Get project name
+            project = await db.projects.find_one({"_id": to_query_id(project_id)})
+            project_name = project.get("name", "Project") if project else "Project"
+            # Summarize with GPT-4o
+            if not OPENAI_API_KEY:
+                continue
+            try:
+                url = "https://api.openai.com/v1/chat/completions"
+                headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+                gpt_payload = {
+                    "model": "gpt-4o",
+                    "temperature": 0.3,
+                    "max_tokens": 500,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "You are a construction project assistant. Summarize the day's WhatsApp "
+                            "group messages into a concise daily digest. Focus on: key decisions, "
+                            "issues raised, action items, and safety concerns. Format with bullet points. "
+                            "Keep it under 300 words."
+                        )},
+                        {"role": "user", "content": f"Project: {project_name}\n\nMessages:\n{conversation_text}"},
+                    ],
+                }
+                async with httpx.AsyncClient(timeout=30) as client_http:
+                    resp = await client_http.post(url, json=gpt_payload, headers=headers)
+                    resp.raise_for_status()
+                    summary = resp.json()["choices"][0]["message"]["content"].strip()
+                header = f"*Daily Summary - {project_name}*\n_{datetime.now(timezone.utc).strftime('%B %d, %Y')}_\n"
+                await send_whatsapp_message(group_id, header + "\n" + summary)
+            except Exception as e:
+                logger.error(f"Daily summary GPT failed for {project_name}: {e}")
+    except Exception as e:
+        logger.error(f"WhatsApp daily summary job error: {e}", exc_info=True)
+
+
 # Include the router in the main app
 app.include_router(api_router)
+
+
+@app.get("/a/{annotation_id}")
+async def annotation_short_link(annotation_id: str, request: Request):
+    """Short link redirect for annotation deep links."""
+    from fastapi.responses import HTMLResponse
+
+    web_url = f"https://blue-view.app/plans?annotation={annotation_id}"
+    deep_link = f"blueview://annotation/{annotation_id}"
+
+    # Return HTML that tries the deep link first, falls back to web
+    html = f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Redirecting…</title>
+<script>
+  var deep = "{deep_link}";
+  var web  = "{web_url}";
+  var ua = navigator.userAgent || "";
+  if (/iPhone|iPad|Android/i.test(ua)) {{
+    window.location = deep;
+    setTimeout(function() {{ window.location = web; }}, 1500);
+  }} else {{
+    window.location = web;
+  }}
+</script>
+</head>
+<body style="font-family:sans-serif;text-align:center;padding:60px;">
+<p>Redirecting&hellip;</p>
+<p><a href="{web_url}">Click here if not redirected</a></p>
+</body></html>"""
+    return HTMLResponse(content=html)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
@@ -7860,7 +8913,24 @@ async def shutdown_db_client():
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting Blueview API with Sync Support...")
-    
+
+    global SCREENSHOT_ENABLED
+    SCREENSHOT_ENABLED = False
+    try:
+        from pdf2image import convert_from_bytes
+        _test_pdf = (
+            b"%PDF-1.4 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj "
+            b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj "
+            b"3 0 obj<</Type/Page/MediaBox[0 0 3 3]>>endobj\n"
+            b"xref\n0 4\n0000000000 65535 f \n"
+            b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n0\n%%EOF"
+        )
+        convert_from_bytes(_test_pdf, first_page=1, last_page=1)
+        SCREENSHOT_ENABLED = True
+        logger.info("pdf2image/poppler: OK — annotation screenshots enabled")
+    except Exception as _e:
+        logger.error(f"pdf2image/poppler not available: {_e}. Annotation screenshots disabled.")
+
     # Create indexes
     await db.users.create_index("email", unique=True)
     await db.workers.create_index("phone", unique=True, sparse=True)
@@ -7880,6 +8950,12 @@ async def startup_event():
     # Audit log indexes
     await db.audit_logs.create_index([("resource_type", 1), ("resource_id", 1)])
     await db.audit_logs.create_index("timestamp")
+
+    # Document annotation indexes
+    await db.document_annotations.create_index("project_id")
+    await db.document_annotations.create_index("created_by")
+    await db.document_annotations.create_index("recipients")
+    await db.document_annotations.create_index([("project_id", 1), ("document_path", 1)])
 
     # Create compound indexes for sync queries
     await db.workers.create_index([("company_id", 1), ("updated_at", -1)])
@@ -7919,7 +8995,15 @@ async def startup_event():
         partialFilterExpression={"is_deleted": {"$eq": False}},
         name="worker_cert_expiry",
     )
-    
+
+    # WhatsApp indexes
+    await db.whatsapp_groups.create_index([("company_id", 1), ("wa_group_id", 1)])
+    await db.whatsapp_groups.create_index("project_id")
+    await db.whatsapp_messages.create_index([("project_id", 1), ("timestamp", -1)])
+    await db.whatsapp_messages.create_index([("group_id", 1), ("created_at", -1)])
+    await db.whatsapp_contacts.create_index([("company_id", 1), ("phone", 1)], unique=True)
+    await db.whatsapp_link_codes.create_index("expires_at", expireAfterSeconds=0)
+
     # Create owner account if doesn't exist
     owner = await db.users.find_one({"email": "rfs2671@gmail.com"})
     owner_default_pw = os.environ.get("OWNER_DEFAULT_PASSWORD")
@@ -7969,10 +9053,19 @@ async def startup_event():
         replace_existing=True,
     )
 
+    # WhatsApp daily summary — Mon-Fri 5 PM EST (22:00 UTC)
+    scheduler.add_job(
+        _send_whatsapp_daily_summaries,
+        CronTrigger(hour=22, minute=0, day_of_week='mon-fri'),
+        id='whatsapp_daily_summary',
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("📧 Report email scheduler started")
     logger.info("🏗️ DOB compliance scanner scheduled (every 30 minutes)")
     logger.info("🔍 Nightly compliance check scheduled (10 PM)")
+    logger.info("💬 WhatsApp daily summary scheduled (Mon-Fri 5 PM EST)")
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])

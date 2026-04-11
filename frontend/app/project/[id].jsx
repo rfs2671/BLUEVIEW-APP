@@ -42,6 +42,7 @@ import {
   Clock,
   Shield,
   FileCheck,
+  MessageCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -53,7 +54,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useProjects } from '../../src/hooks/useProjects';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
-import { projectsAPI, checkinsAPI, checklistsAPI } from '../../src/utils/api';
+import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -142,6 +143,7 @@ export default function ProjectDetailScreen() {
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [checklists, setChecklists] = useState([]);
   const [loadingChecklists, setLoadingChecklists] = useState(false);
+  const [whatsappActive, setWhatsappActive] = useState(false);
 
   const isAdmin = user?.role === 'admin';
 
@@ -203,6 +205,14 @@ export default function ProjectDetailScreen() {
         if (projectData.dropbox_enabled && projectData.dropbox_folder) {
           fetchDropboxFiles();
         }
+      }
+
+      // Fetch WhatsApp status
+      try {
+        const waStatus = await whatsappAPI.getStatus();
+        setWhatsappActive(waStatus?.company_active === true);
+      } catch (e) {
+        setWhatsappActive(false);
       }
 
       // Fetch active check-ins for this project
@@ -495,6 +505,7 @@ export default function ProjectDetailScreen() {
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
     { title: 'Permit Renewals', icon: FileCheck, path: `/project/${projectId}/permit-renewal`, color: '#22c55e' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
+    ...(whatsappActive ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' }] : []),
   ];
 
   if (authLoading || loading) {
