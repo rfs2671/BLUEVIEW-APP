@@ -301,55 +301,60 @@ export default function ConstructionPlansScreen() {
             </View>
           ) : (
             <>
-              {/* Upload + Sync bar — upload always available, sync only with Dropbox */}
-              <View style={s.syncBar}>
-                <View style={s.syncInfo}>
+              {/* Action bar */}
+              {user?.role === 'admin' && (
+                <View style={{ flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+                  <Pressable
+                    onPress={handleUploadFile}
+                    disabled={uploading}
+                    style={({ pressed }) => [
+                      { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.15)',
+                        borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)' },
+                      pressed && { opacity: 0.7 },
+                      uploading && { opacity: 0.5 },
+                    ]}
+                  >
+                    <Upload size={18} strokeWidth={1.5} color="#3b82f6" />
+                    <Text style={{ color: '#3b82f6', fontSize: 14, fontWeight: '600' }}>
+                      {uploading ? 'Uploading...' : 'Upload PDF'}
+                    </Text>
+                  </Pressable>
                   {project?.dropbox_folder_path ? (
-                    <>
-                      <View
-                        style={[
-                          s.syncIndicator,
-                          syncStatus === 'syncing' && s.syncIndicatorSyncing,
-                          syncStatus === 'success' && s.syncIndicatorSuccess,
-                          syncStatus === 'error' && s.syncIndicatorError,
-                        ]}
-                      />
-                      <Text style={s.syncTime}>
-                        {lastSynced
-                          ? `Last synced ${new Date(lastSynced).toLocaleString()}`
-                          : 'Never synced'}
-                      </Text>
-                    </>
-                  ) : (
-                    <Text style={s.syncTime}>Upload files or connect Dropbox</Text>
-                  )}
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
-                  {user?.role === 'admin' && (
-                    <GlassButton
-                      variant="icon"
-                      icon={<Upload size={18} strokeWidth={1.5} color={colors.text.primary} />}
-                      onPress={handleUploadFile}
-                      disabled={uploading}
-                    />
-                  )}
-                  {project?.dropbox_folder_path && (
-                    <GlassButton
-                      variant="icon"
-                      icon={<RefreshCw size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                    <Pressable
                       onPress={handleSync}
                       disabled={syncing}
-                    />
-                  )}
-                  {!project?.dropbox_folder_path && (
-                    <GlassButton
-                      variant="icon"
-                      icon={<Cloud size={18} strokeWidth={1.5} color={colors.text.muted} />}
+                      style={({ pressed }) => [
+                        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
+                          borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+                        pressed && { opacity: 0.7 },
+                        syncing && { opacity: 0.5 },
+                      ]}
+                    >
+                      <RefreshCw size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                      <Text style={{ color: colors.text.secondary, fontSize: 14, fontWeight: '600' }}>
+                        {syncing ? 'Syncing...' : 'Sync Dropbox'}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable
                       onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
-                    />
+                      style={({ pressed }) => [
+                        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
+                          borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+                        pressed && { opacity: 0.7 },
+                      ]}
+                    >
+                      <Cloud size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      <Text style={{ color: colors.text.muted, fontSize: 14, fontWeight: '600' }}>
+                        Connect Dropbox
+                      </Text>
+                    </Pressable>
                   )}
                 </View>
-              </View>
+              )}
 
               {/* File list or empty state */}
               {files.length === 0 && !project?.dropbox_folder_path ? (

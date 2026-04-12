@@ -144,6 +144,7 @@ export default function ProjectDetailScreen() {
   const [checklists, setChecklists] = useState([]);
   const [loadingChecklists, setLoadingChecklists] = useState(false);
   const [whatsappActive, setWhatsappActive] = useState(false);
+  const [whatsappGroups, setWhatsappGroups] = useState([]);
 
   const isAdmin = user?.role === 'admin';
 
@@ -210,7 +211,12 @@ export default function ProjectDetailScreen() {
       // Fetch WhatsApp status
       try {
         const waStatus = await whatsappAPI.getStatus();
-        setWhatsappActive(waStatus?.company_active === true);
+        const isActive = waStatus?.company_active === true;
+        setWhatsappActive(isActive);
+        if (isActive) {
+          const groups = await whatsappAPI.getGroups(projectId).catch(() => []);
+          setWhatsappGroups(Array.isArray(groups) ? groups : []);
+        }
       } catch (e) {
         setWhatsappActive(false);
       }
@@ -505,7 +511,6 @@ export default function ProjectDetailScreen() {
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
     { title: 'Permit Renewals', icon: FileCheck, path: `/project/${projectId}/permit-renewal`, color: '#22c55e' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
-    ...(whatsappActive ? [{ title: 'WhatsApp', icon: MessageCircle, path: `/projects/${projectId}/whatsapp-groups`, color: '#25D366' }] : []),
   ];
 
   if (authLoading || loading) {
@@ -644,6 +649,44 @@ export default function ProjectDetailScreen() {
               );
             })}
           </View>
+
+          {/* WhatsApp Status — auto-detect linked groups */}
+          {whatsappActive && (
+            <Pressable
+              onPress={() => router.push(`/projects/${projectId}/whatsapp-groups`)}
+              style={({ pressed }) => [
+                { flexDirection: 'row', alignItems: 'center', padding: spacing.md,
+                  borderRadius: 12, backgroundColor: 'rgba(37,211,102,0.08)',
+                  borderWidth: 1, borderColor: 'rgba(37,211,102,0.2)',
+                  marginBottom: spacing.md },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <MessageCircle size={20} strokeWidth={1.5} color="#25D366" />
+              <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                {whatsappGroups.length > 0 ? (
+                  <>
+                    <Text style={{ color: '#25D366', fontSize: 13, fontWeight: '600' }}>
+                      WhatsApp Connected
+                    </Text>
+                    <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
+                      {whatsappGroups.length} group{whatsappGroups.length !== 1 ? 's' : ''} linked · {whatsappGroups.reduce((sum, g) => sum + (g.message_count || 0), 0)} messages
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ color: colors.text.secondary, fontSize: 13, fontWeight: '600' }}>
+                      Link a WhatsApp Group
+                    </Text>
+                    <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
+                      Enable messaging and daily summaries
+                    </Text>
+                  </>
+                )}
+              </View>
+              <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+            </Pressable>
+          )}
 
           <RenewalAlertCard projectId={projectId} />
 
