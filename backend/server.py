@@ -8529,8 +8529,11 @@ async def _process_whatsapp_message(payload: dict):
         if parsed["is_group"]:
             group_id = parsed["group_id"]
             # Look up linked group
-            group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id})
-            project_id = group_doc["project_id"] if group_doc else None
+            group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
+            if not group_doc:
+                return  # Not a linked group — ignore
+            project_id = group_doc["project_id"]
+            msg_company_id = group_doc.get("company_id")
 
             # Transcribe audio if present
             body = parsed["body"]
@@ -8543,6 +8546,7 @@ async def _process_whatsapp_message(payload: dict):
             await db.whatsapp_messages.insert_one({
                 "group_id": group_id,
                 "project_id": project_id,
+                "company_id": msg_company_id,
                 "sender": sender,
                 "body": body,
                 "has_audio": parsed["has_audio"],
@@ -8563,9 +8567,9 @@ async def _process_whatsapp_message(payload: dict):
 
         # --- DIRECT message ---
         # Look up contact
-        contact = await db.whatsapp_contacts.find_one({"phone": sender})
-        if not contact or not contact.get("user_id"):
-            # Unknown number — stay silent
+        contact = await db.whatsapp_contacts.find_one({"phone": sender, "user_id": {"$ne": None}})
+        if not contact:
+            # Unknown or unregistered number — stay silent
             return
 
         # Transcribe audio if present
@@ -8818,7 +8822,7 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
 async def _send_whatsapp_daily_summaries():
     """Mon-Fri 5 PM EST: summarize each project's WhatsApp messages and send to linked groups."""
     try:
-        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_start, today_end = get_today_range_est()
         # Find all active groups
         groups = await db.whatsapp_groups.find({"active": True}).to_list(200)
         for group_doc in groups:
@@ -8826,10 +8830,10 @@ async def _send_whatsapp_daily_summaries():
             group_id = group_doc.get("wa_group_id")
             if not project_id or not group_id:
                 continue
-            # Get today's messages
+            # Get today's messages — filter by group_id to prevent cross-group leaking
             messages = await db.whatsapp_messages.find({
-                "project_id": project_id,
-                "created_at": {"$gte": today_start},
+                "group_id": group_id,
+                "created_at": {"$gte": today_start, "$lt": today_end},
             }).sort("created_at", 1).to_list(500)
             if not messages:
                 continue
