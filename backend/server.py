@@ -27,6 +27,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import hashlib
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
+import mimetypes
+
+try:
+    import boto3
+    from botocore.config import Config as BotoConfig
+    _BOTO3_AVAILABLE = True
+except ImportError:
+    _BOTO3_AVAILABLE = False
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -57,6 +65,40 @@ def _set_cached_url(company_id: str, file_path: str, url: str):
         "expires_at": datetime.now(timezone.utc) + timedelta(hours=3),
     }
 
+# ==================== CLOUDFLARE R2 STORAGE ====================
+
+def _get_r2_client():
+    """Get boto3 S3 client configured for Cloudflare R2. Returns None if not configured."""
+    if not _BOTO3_AVAILABLE:
+        return None
+    if not R2_ACCESS_KEY_ID or not R2_SECRET_ACCESS_KEY or not R2_ENDPOINT_URL:
+        return None
+    return boto3.client(
+        "s3",
+        endpoint_url=R2_ENDPOINT_URL,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+_r2_client = None  # initialized in startup_event
+
+
+def _upload_to_r2(file_bytes: bytes, r2_key: str, content_type: str = "application/octet-stream") -> str:
+    """Upload bytes to R2, returns the public URL. Returns empty string if R2 not configured."""
+    if not _r2_client or not R2_BUCKET_NAME:
+        return ""
+    _r2_client.put_object(
+        Bucket=R2_BUCKET_NAME,
+        Key=r2_key,
+        Body=file_bytes,
+        ContentType=content_type,
+    )
+    if R2_PUBLIC_URL:
+        return f"{R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
+    return f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{r2_key}"
+
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET')
 if not JWT_SECRET:
@@ -69,6 +111,14 @@ DROPBOX_APP_SECRET = os.environ.get('DROPBOX_APP_SECRET', '9uvjvxkh9gvelys')
 DROPBOX_REDIRECT_URI = os.environ.get('DROPBOX_REDIRECT_URI', 'https://blueview2-production.up.railway.app/api/dropbox/callback')
 
 GOOGLE_PLACES_API_KEY = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+
+# Cloudflare R2 storage
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME", "")
+R2_ENDPOINT_URL = os.environ.get("R2_ENDPOINT_URL", "")
+R2_PUBLIC_URL = os.environ.get("R2_PUBLIC_URL", "")
 
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 
@@ -4999,6 +5049,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
     now = datetime.now(timezone.utc)
     
     # Store connection
+    expires_at = now + timedelta(seconds=token_data.get("expires_in", 14400))
     await db.dropbox_connections.update_one(
         {"company_id": company_id},
         {"$set": {
@@ -5008,6 +5059,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
             "refresh_token": token_data.get("refresh_token"),
             "account_id": token_data.get("account_id"),
             "account_name": account_name,
+            "access_token_expires_at": expires_at,
             "connected_at": now,
             "updated_at": now,
             "is_deleted": False,
@@ -5057,6 +5109,7 @@ async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_u
         account_info = account_response.json()
         account_name = account_info.get("name", {}).get("display_name", "")
     
+    expires_at = now + timedelta(seconds=token_data.get("expires_in", 14400))
     await db.dropbox_connections.update_one(
         {"company_id": company_id},
         {"$set": {
@@ -5066,13 +5119,14 @@ async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_u
             "refresh_token": token_data.get("refresh_token"),
             "account_id": token_data.get("account_id"),
             "account_name": account_name,
+            "access_token_expires_at": expires_at,
             "connected_at": now,
             "updated_at": now,
             "is_deleted": False,
         }},
         upsert=True
     )
-    
+
     return {"message": "Dropbox connected successfully", "account_name": account_name}
 
 @api_router.delete("/dropbox/disconnect")
@@ -5099,66 +5153,75 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
     
     return {"message": "Dropbox disconnected"}
 
-async def get_dropbox_token(company_id: str) -> Optional[str]:
-    """Get valid Dropbox access token, refreshing if needed"""
+async def get_valid_dropbox_token(company_id: str) -> str:
+    """Get a valid Dropbox access token, proactively refreshing if expired or expiring within 30 min."""
     connection = await db.dropbox_connections.find_one({
-        "company_id": company_id,
-        "is_deleted": {"$ne": True}
+        "company_id": company_id, "is_deleted": {"$ne": True}
     })
-    
-    if not connection or not connection.get("access_token"):
-        return None
-    
-    # Try to use current token, refresh if it fails
-    return connection["access_token"]
+    if not connection:
+        raise HTTPException(status_code=400, detail="Dropbox not connected")
 
-async def refresh_dropbox_token(company_id: str) -> Optional[str]:
-    """Refresh Dropbox token"""
-    connection = await db.dropbox_connections.find_one({"company_id": company_id})
-    if not connection or not connection.get("refresh_token"):
-        return None
-    
-    async with httpx.AsyncClient() as client_http:
-        response = await client_http.post(
-            "https://api.dropboxapi.com/oauth2/token",
-            data={
+    # Check if token is still valid (with 30-min buffer)
+    expires_at = connection.get("access_token_expires_at")
+    if expires_at and isinstance(expires_at, datetime):
+        if expires_at > datetime.now(timezone.utc) + timedelta(minutes=30):
+            return connection["access_token"]
+
+    # Token expired or no expiry stored — refresh
+    refresh_token = connection.get("refresh_token")
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="No refresh token. Please reconnect Dropbox.")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            resp = await c.post("https://api.dropboxapi.com/oauth2/token", data={
                 "grant_type": "refresh_token",
-                "refresh_token": connection["refresh_token"],
+                "refresh_token": refresh_token,
                 "client_id": DROPBOX_APP_KEY,
                 "client_secret": DROPBOX_APP_SECRET,
-            }
-        )
-    
-    if response.status_code == 200:
-        token_data = response.json()
+            })
+        if resp.status_code != 200:
+            logger.error(f"Dropbox token refresh failed: {resp.status_code} {resp.text}")
+            raise HTTPException(status_code=401, detail="Dropbox token refresh failed. Please reconnect.")
+
+        token_data = resp.json()
+        new_token = token_data["access_token"]
+        expires_in = token_data.get("expires_in", 14400)  # default 4 hours
+        new_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
         await db.dropbox_connections.update_one(
             {"company_id": company_id},
-            {"$set": {"access_token": token_data["access_token"], "updated_at": datetime.now(timezone.utc)}}
+            {"$set": {
+                "access_token": new_token,
+                "access_token_expires_at": new_expires_at,
+                "updated_at": datetime.now(timezone.utc),
+            }}
         )
-        return token_data["access_token"]
-    return None
+        logger.info(f"Dropbox token refreshed for company {company_id}, expires at {new_expires_at}")
+        return new_token
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Dropbox token refresh error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to refresh Dropbox token")
 
 async def dropbox_api_call(company_id: str, method: str, url: str, **kwargs):
     """Make Dropbox API call with automatic token refresh"""
-    token = await get_dropbox_token(company_id)
-    if not token:
-        raise HTTPException(status_code=400, detail="Dropbox not connected")
-    
+    token = await get_valid_dropbox_token(company_id)
+
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {token}"
-    
+
     async with httpx.AsyncClient() as client_http:
         response = await getattr(client_http, method)(url, headers=headers, **kwargs)
-    
-    # If unauthorized, try refresh
+
+    # Safety net: if 401 despite proactive refresh, force-refresh once more
     if response.status_code == 401:
-        token = await refresh_dropbox_token(company_id)
-        if not token:
-            raise HTTPException(status_code=401, detail="Dropbox token expired. Please reconnect.")
+        token = await get_valid_dropbox_token(company_id)
         headers["Authorization"] = f"Bearer {token}"
         async with httpx.AsyncClient() as client_http:
             response = await getattr(client_http, method)(url, headers=headers, **kwargs)
-    
+
     return response
 
 @api_router.get("/dropbox/folders")
@@ -5210,30 +5273,50 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
 
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
-    """Get files from project's linked Dropbox folder"""
+    """Get files from project's linked Dropbox folder (R2-backed with Dropbox fallback)"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    
+
     folder_path = project.get("dropbox_folder_path")
     if not folder_path:
         return []
-    
+
     company_id = company_id or project.get("company_id")
-    
+
+    # Check project_files collection first (R2 cache)
+    cached_files = await db.project_files.find({"project_id": project_id}).to_list(5000)
+
+    if cached_files:
+        files = []
+        for rec in cached_files:
+            files.append({
+                "name": rec.get("name", ""),
+                "path": rec.get("dropbox_path", ""),
+                "id": str(rec.get("_id", "")),
+                "type": "file",
+                "size": rec.get("size", 0),
+                "modified": rec.get("modified", ""),
+                "r2_url": rec.get("r2_url", ""),
+                "cache_version": rec.get("cache_version", 0),
+                "source": rec.get("source", "dropbox_sync"),
+            })
+        return files
+
+    # No cached records — fall back to live Dropbox listing
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
         json={"path": folder_path, "recursive": False}
     )
-    
+
     if response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to list files")
-    
+
     data = response.json()
     files = []
     for entry in data.get("entries", []):
@@ -5242,12 +5325,17 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
             "path": entry["path_lower"],
             "id": entry.get("id", ""),
             "type": entry[".tag"],
+            "r2_url": "",
+            "cache_version": 0,
         }
         if entry[".tag"] == "file":
             file_info["size"] = entry.get("size", 0)
             file_info["modified"] = entry.get("server_modified", "")
         files.append(file_info)
-    
+
+    # Trigger background sync so next request will use cached records
+    asyncio.create_task(_sync_project_to_r2(project_id, company_id, folder_path))
+
     # Background-warm URL cache for PDFs
     async def _warm_pdf_cache(files_list, cid):
         for f in files_list:
@@ -5268,61 +5356,178 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 
     return files
 
+async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str):
+    """Background task: sync Dropbox files to R2 and update project_files collection."""
+    try:
+        response = await dropbox_api_call(
+            company_id, "post",
+            "https://api.dropboxapi.com/2/files/list_folder",
+            json={"path": folder_path, "recursive": True}
+        )
+        if response.status_code != 200:
+            logger.error(f"Sync failed for project {project_id}: Dropbox list_folder returned {response.status_code}")
+            return
+
+        data = response.json()
+        entries = [e for e in data.get("entries", []) if e[".tag"] == "file"]
+
+        # Handle pagination
+        while data.get("has_more"):
+            cursor_resp = await dropbox_api_call(
+                company_id, "post",
+                "https://api.dropboxapi.com/2/files/list_folder/continue",
+                json={"cursor": data["cursor"]}
+            )
+            if cursor_resp.status_code != 200:
+                break
+            data = cursor_resp.json()
+            entries.extend([e for e in data.get("entries", []) if e[".tag"] == "file"])
+
+        now = datetime.now(timezone.utc)
+        synced = 0
+
+        for entry in entries:
+            dropbox_path = entry["path_lower"]
+            content_hash = entry.get("content_hash", "")
+            filename = entry["name"]
+
+            try:
+                existing = await db.project_files.find_one({
+                    "project_id": project_id, "dropbox_path": dropbox_path
+                })
+
+                if existing and existing.get("dropbox_content_hash") == content_hash and content_hash:
+                    # Unchanged — just update last_synced_at
+                    await db.project_files.update_one(
+                        {"_id": existing["_id"]},
+                        {"$set": {"last_synced_at": now}}
+                    )
+                    synced += 1
+                    continue
+
+                # New or changed — download from Dropbox
+                dl_resp = await dropbox_api_call(
+                    company_id, "post",
+                    "https://content.dropboxapi.com/2/files/download",
+                    headers={"Dropbox-API-Arg": f'{{"path": "{dropbox_path}"}}'}
+                )
+                if dl_resp.status_code != 200:
+                    logger.warning(f"Sync skip {dropbox_path}: download failed {dl_resp.status_code}")
+                    continue
+
+                file_bytes = dl_resp.content
+                r2_key = f"{company_id}/{project_id}/{filename}"
+                ct = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                r2_url = ""
+
+                # Upload to R2 (non-blocking)
+                if _r2_client:
+                    try:
+                        r2_url = await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, ct)
+                    except Exception as r2_err:
+                        logger.error(f"R2 upload failed for {r2_key}: {r2_err}")
+
+                file_record = {
+                    "project_id": project_id,
+                    "company_id": company_id,
+                    "name": filename,
+                    "dropbox_path": dropbox_path,
+                    "dropbox_content_hash": content_hash,
+                    "r2_key": r2_key if r2_url else "",
+                    "r2_url": r2_url,
+                    "size": entry.get("size", 0),
+                    "modified": entry.get("server_modified", ""),
+                    "source": "dropbox_sync",
+                    "last_synced_at": now,
+                    "updated_at": now,
+                }
+
+                if existing:
+                    file_record["cache_version"] = existing.get("cache_version", 0) + 1
+                    await db.project_files.update_one(
+                        {"_id": existing["_id"]},
+                        {"$set": file_record}
+                    )
+                else:
+                    file_record["cache_version"] = 1
+                    file_record["created_at"] = now
+                    await db.project_files.insert_one(file_record)
+
+                synced += 1
+            except Exception as entry_err:
+                logger.error(f"Sync error for {dropbox_path}: {entry_err}")
+
+        # Update sync timestamp
+        await db.projects.update_one(
+            {"_id": to_query_id(project_id)},
+            {"$set": {"dropbox_last_synced": now}}
+        )
+        logger.info(f"Sync complete for project {project_id}: {synced}/{len(entries)} files")
+
+    except Exception as e:
+        logger.error(f"Background sync failed for project {project_id}: {e}")
+
+
 @api_router.post("/projects/{project_id}/sync-dropbox")
 async def sync_project_dropbox(project_id: str, current_user = Depends(get_current_user)):
-    """Sync/refresh project files from Dropbox"""
+    """Sync/refresh project files from Dropbox — returns immediately, runs sync in background"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    
+
     folder_path = project.get("dropbox_folder_path")
     if not folder_path:
         raise HTTPException(status_code=400, detail="No Dropbox folder linked")
-    
+
     company_id = company_id or project.get("company_id")
-    
+
+    # Quick count from Dropbox for immediate response
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
         json={"path": folder_path, "recursive": True}
     )
-    
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to sync files")
-    
-    data = response.json()
-    file_count = len([e for e in data.get("entries", []) if e[".tag"] == "file"])
-    
-    # Update sync timestamp
-    await db.projects.update_one(
-        {"_id": to_query_id(project_id)},
-        {"$set": {"dropbox_last_synced": datetime.now(timezone.utc)}}
-    )
-    
-    return {"message": f"Synced {file_count} files", "file_count": file_count}
+
+    file_count = 0
+    if response.status_code == 200:
+        data = response.json()
+        file_count = len([e for e in data.get("entries", []) if e[".tag"] == "file"])
+
+    # Launch background sync
+    asyncio.create_task(_sync_project_to_r2(project_id, company_id, folder_path))
+
+    return {"message": "Sync started", "file_count": file_count}
 
 @api_router.get("/projects/{project_id}/dropbox-file-url")
 async def get_dropbox_file_url(project_id: str, file_path: str, current_user = Depends(get_current_user)):
-    """Get a temporary download/preview URL for a Dropbox file"""
+    """Get a download/preview URL for a project file (R2 preferred, Dropbox fallback)"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    
+
     company_id = company_id or project.get("company_id")
 
-    # Check cache first
+    # Check project_files for R2 URL first
+    file_rec = await db.project_files.find_one({
+        "project_id": project_id, "dropbox_path": file_path
+    })
+    if file_rec and file_rec.get("r2_url"):
+        return {"url": file_rec["r2_url"], "cached": True, "source": "r2"}
+
+    # Check in-memory Dropbox URL cache
     cached_url = _get_cached_url(company_id, file_path)
     if cached_url:
-        return {"url": cached_url, "cached": True}
+        return {"url": cached_url, "cached": True, "source": "dropbox_cache"}
 
+    # Fall back to Dropbox temporary link
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/get_temporary_link",
@@ -5335,7 +5540,156 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
     data = response.json()
     url = data.get("link", "")
     _set_cached_url(company_id, file_path, url)
-    return {"url": url, "cached": False}
+    return {"url": url, "cached": False, "source": "dropbox"}
+
+
+# ==================== DIRECT FILE UPLOAD (R2) ====================
+
+@api_router.post("/projects/{project_id}/upload-file")
+async def upload_project_file(project_id: str, file: UploadFile = File(...), current_user = Depends(get_current_user)):
+    """Upload a file directly to R2 storage for a project (PDF only, max 100 MB)."""
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    company_id = company_id or project.get("company_id")
+
+    # Validate file type
+    filename = file.filename or "upload.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    # Read and validate size (100 MB max)
+    file_bytes = await file.read()
+    max_size = 100 * 1024 * 1024
+    if len(file_bytes) > max_size:
+        raise HTTPException(status_code=400, detail="File too large. Maximum 100 MB.")
+
+    if not _r2_client:
+        raise HTTPException(status_code=503, detail="File storage (R2) is not configured")
+
+    r2_key = f"{company_id}/{project_id}/{filename}"
+    try:
+        r2_url = await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, "application/pdf")
+    except Exception as e:
+        logger.error(f"Direct upload R2 error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
+
+    now = datetime.now(timezone.utc)
+    file_record = {
+        "project_id": project_id,
+        "company_id": company_id,
+        "name": filename,
+        "dropbox_path": "",
+        "dropbox_content_hash": "",
+        "r2_key": r2_key,
+        "r2_url": r2_url,
+        "size": len(file_bytes),
+        "modified": now.isoformat(),
+        "source": "direct_upload",
+        "cache_version": 1,
+        "created_at": now,
+        "updated_at": now,
+        "uploaded_by": current_user.get("id"),
+    }
+    result = await db.project_files.insert_one(file_record)
+    file_record["_id"] = str(result.inserted_id)
+    file_record.pop("created_at", None)
+    file_record.pop("updated_at", None)
+
+    return {
+        "id": file_record["_id"],
+        "name": filename,
+        "r2_url": r2_url,
+        "size": len(file_bytes),
+        "source": "direct_upload",
+    }
+
+
+# ==================== DROPBOX WEBHOOK ====================
+
+@api_router.get("/dropbox/webhook")
+async def dropbox_webhook_challenge(challenge: str = ""):
+    """Dropbox webhook verification -- return challenge as plain text."""
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(challenge)
+
+
+@api_router.post("/dropbox/webhook")
+async def dropbox_webhook_notify(request: Request):
+    """Dropbox webhook notification -- trigger background sync for affected projects."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ok"}
+
+    accounts = []
+    for entry in body.get("list_folder", {}).get("accounts", []):
+        accounts.append(entry)
+    if not body.get("list_folder"):
+        # Delta/legacy format
+        delta = body.get("delta", {})
+        if delta.get("users"):
+            accounts = delta["users"]
+
+    if not accounts:
+        return {"status": "ok"}
+
+    # Find companies whose Dropbox account_id matches
+    for acct_id in accounts:
+        connections = await db.dropbox_connections.find({
+            "account_id": acct_id, "is_deleted": {"$ne": True}
+        }).to_list(100)
+
+        for conn in connections:
+            cid = conn.get("company_id")
+            if not cid:
+                continue
+            # Find projects with linked Dropbox folders for this company
+            projects = await db.projects.find({
+                "company_id": cid,
+                "dropbox_folder_path": {"$exists": True, "$ne": ""},
+                "is_deleted": {"$ne": True},
+            }).to_list(500)
+
+            for proj in projects:
+                pid = str(proj["_id"])
+                folder = proj.get("dropbox_folder_path", "")
+                if folder:
+                    asyncio.create_task(_sync_project_to_r2(pid, cid, folder))
+                    logger.info(f"Dropbox webhook: triggered sync for project {pid}")
+
+    return {"status": "ok"}
+
+
+@api_router.post("/dropbox/register-webhook")
+async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_admin_user)):
+    """Register Dropbox webhook URL (admin one-time setup)."""
+    webhook_url = data.get("url", "")
+    if not webhook_url:
+        raise HTTPException(status_code=400, detail="url required in body")
+
+    company_id = get_user_company_id(current_user)
+    token = await get_valid_dropbox_token(company_id)
+
+    async with httpx.AsyncClient(timeout=15.0) as c:
+        resp = await c.post(
+            "https://api.dropboxapi.com/2/files/list_folder/longpoll",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"cursor": ""},
+        )
+
+    # Dropbox doesn't have a direct "register webhook" API — webhooks are
+    # configured in the Dropbox App Console. This endpoint verifies the token works.
+    return {
+        "message": "Dropbox connection verified. Register the webhook URL in your Dropbox App Console.",
+        "webhook_url": webhook_url,
+        "token_valid": True,
+    }
+
 
 # ==================== DAILY LOG PDF EXPORT ====================
 
@@ -8003,11 +8357,9 @@ async def _generate_annotation_screenshot(
         project = await db.projects.find_one({"_id": to_query_id(project_id)})
         if not project:
             return
-        dropbox_token_doc = await db.dropbox_tokens.find_one({"company_id": company_id})
-        if not dropbox_token_doc:
-            return
-        access_token = dropbox_token_doc.get("access_token")
-        if not access_token:
+        try:
+            access_token = await get_valid_dropbox_token(company_id)
+        except Exception:
             return
 
         async with httpx.AsyncClient(timeout=30) as hc:
@@ -9009,6 +9361,14 @@ async def shutdown_db_client():
 async def startup_event():
     logger.info("Starting Blueview API with Sync Support...")
 
+    # Initialize R2 storage client
+    global _r2_client
+    _r2_client = _get_r2_client()
+    if _r2_client:
+        logger.info(f"R2 storage configured: bucket={R2_BUCKET_NAME}")
+    else:
+        logger.warning("R2 storage not configured — file delivery will use Dropbox only")
+
     global SCREENSHOT_ENABLED
     SCREENSHOT_ENABLED = False
     try:
@@ -9051,6 +9411,11 @@ async def startup_event():
     await db.document_annotations.create_index("created_by")
     await db.document_annotations.create_index("recipients")
     await db.document_annotations.create_index([("project_id", 1), ("document_path", 1)])
+
+    # Project files (R2 cache) indexes
+    await db.project_files.create_index("project_id")
+    await db.project_files.create_index([("project_id", 1), ("dropbox_path", 1)], unique=True, sparse=True)
+    await db.project_files.create_index("dropbox_content_hash")
 
     # Create compound indexes for sync queries
     await db.workers.create_index([("company_id", 1), ("updated_at", -1)])

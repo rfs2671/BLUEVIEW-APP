@@ -164,7 +164,8 @@ export default function DocumentsScreen() {
 
     const ext = file.name?.split('.').pop()?.toLowerCase();
     if (ext === 'pdf') {
-      setSelectedPdfFile(file);
+      // If file has r2_url, pass it directly instead of calling getFileUrl
+      setSelectedPdfFile(file.r2_url ? { ...file, directUrl: file.r2_url } : file);
       setPdfViewerVisible(true);
       return;
     }

@@ -29,7 +29,9 @@ import {
   LogOut,
   CheckCircle,
   AlertCircle,
+  Upload,
 } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
@@ -79,7 +81,7 @@ export default function ConstructionPlansScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -92,6 +94,7 @@ export default function ConstructionPlansScreen() {
   const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, success, error
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -146,10 +149,58 @@ export default function ConstructionPlansScreen() {
     }
   };
 
+  const fetchFiles = async () => {
+    try {
+      const filesData = await dropboxAPI.getProjectFiles(projectId);
+      setFiles(Array.isArray(filesData) ? filesData : []);
+    } catch (error) {
+      console.error('Failed to refresh files:', error);
+    }
+  };
+
+  const handleUploadFile = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const file = result.assets?.[0];
+      if (!file) return;
+
+      setUploading(true);
+      toast.info('Uploading', `Uploading ${file.name}...`);
+
+      // Create FormData
+      const formData = new FormData();
+      if (Platform.OS === 'web') {
+        const response = await fetch(file.uri);
+        const blob = await response.blob();
+        formData.append('file', blob, file.name);
+      } else {
+        formData.append('file', {
+          uri: file.uri,
+          name: file.name,
+          type: 'application/pdf',
+        });
+      }
+
+      await dropboxAPI.uploadFile(projectId, formData);
+      toast.success('Uploaded', `${file.name} uploaded successfully`);
+      fetchFiles(); // refresh the file list
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error('Upload Error', error.response?.data?.detail || 'Could not upload file');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleViewFile = async (file) => {
     const ext = file.name?.split('.').pop()?.toLowerCase();
     if (ext === 'pdf') {
-      setSelectedPdfFile(file);
+      // If file has r2_url, pass it directly instead of calling getFileUrl
+      setSelectedPdfFile(file.r2_url ? { ...file, directUrl: file.r2_url } : file);
       setPdfViewerVisible(true);
       return;
     }
@@ -301,18 +352,34 @@ export default function ConstructionPlansScreen() {
                     </Text>
                   </View>
                 </View>
-                <GlassButton
-                  variant="icon"
-                  icon={
-                    <RefreshCw
-                      size={18}
-                      strokeWidth={1.5}
-                      color={colors.text.primary}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
+                  {user?.role === 'admin' && (
+                    <GlassButton
+                      variant="icon"
+                      icon={
+                        <Upload
+                          size={18}
+                          strokeWidth={1.5}
+                          color={colors.text.primary}
+                        />
+                      }
+                      onPress={handleUploadFile}
+                      disabled={uploading}
                     />
-                  }
-                  onPress={handleSync}
-                  disabled={syncing}
-                />
+                  )}
+                  <GlassButton
+                    variant="icon"
+                    icon={
+                      <RefreshCw
+                        size={18}
+                        strokeWidth={1.5}
+                        color={colors.text.primary}
+                      />
+                    }
+                    onPress={handleSync}
+                    disabled={syncing}
+                  />
+                </View>
               </View>
 
               {/* Search and Filter */}
