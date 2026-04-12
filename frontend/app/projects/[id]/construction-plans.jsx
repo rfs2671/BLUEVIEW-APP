@@ -25,6 +25,7 @@ import {
   Filter,
   Clock,
   HardDrive,
+  Folder,
   FolderOpen,
   LogOut,
   CheckCircle,
@@ -347,9 +348,9 @@ export default function ConstructionPlansScreen() {
                         pressed && { opacity: 0.7 },
                       ]}
                     >
-                      <Cloud size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      <Folder size={18} strokeWidth={1.5} color={colors.text.muted} />
                       <Text style={{ color: colors.text.muted, fontSize: 14, fontWeight: '600' }}>
-                        Connect Dropbox
+                        Link Dropbox Folder
                       </Text>
                     </Pressable>
                   )}
@@ -362,7 +363,7 @@ export default function ConstructionPlansScreen() {
                   <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
                   <Text style={s.notLinkedTitle}>No Files Yet</Text>
                   <Text style={s.notLinkedDesc}>
-                    Upload PDFs directly or link a Dropbox folder to sync construction plans.
+                    Upload PDFs directly or choose a Dropbox folder to sync files for this project.
                   </Text>
                 </GlassCard>
               ) : files.length === 0 ? (
