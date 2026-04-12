@@ -8751,11 +8751,19 @@ async def whatsapp_activate(current_user=Depends(get_current_user)):
     company_id = get_user_company_id(current_user)
     if not company_id:
         raise HTTPException(status_code=400, detail="No company associated")
-    # Mark company as WhatsApp-active
-    await db.companies.update_one(
-        {"_id": to_query_id(company_id)},
-        {"$set": {"whatsapp_active": True, "whatsapp_activated_at": datetime.now(timezone.utc)}},
-    )
+
+    # Check if already active
+    existing = await db.whatsapp_config.find_one({"company_id": company_id})
+    if existing:
+        return {"status": "already_active", "whatsapp_number": os.environ.get("WAAPI_DISPLAY_NUMBER", "")}
+
+    # Create config
+    await db.whatsapp_config.insert_one({
+        "company_id": company_id,
+        "is_active": True,
+        "activated_at": datetime.now(timezone.utc),
+        "activated_by": str(current_user.get("_id", current_user.get("id", "")))
+    })
     # Auto-populate contacts from existing users with phone numbers
     users = await db.users.find({
         "company_id": company_id,
@@ -8782,7 +8790,7 @@ async def whatsapp_activate(current_user=Depends(get_current_user)):
             created += 1
         except Exception:
             pass  # duplicate
-    return {"status": "activated", "contacts_synced": created}
+    return {"status": "activated", "contacts_synced": created, "whatsapp_number": os.environ.get("WAAPI_DISPLAY_NUMBER", "")}
 
 
 @api_router.get("/whatsapp/status")
@@ -8791,12 +8799,16 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
     company_id = get_user_company_id(current_user)
     platform_configured = bool(WAAPI_INSTANCE_ID and WAAPI_TOKEN)
     company_active = False
+    whatsapp_number = ""
     if company_id:
-        company = await db.companies.find_one({"_id": to_query_id(company_id)})
-        company_active = bool(company and company.get("whatsapp_active"))
+        config = await db.whatsapp_config.find_one({"company_id": company_id})
+        company_active = bool(config and config.get("is_active"))
+    if company_active:
+        whatsapp_number = os.environ.get("WAAPI_DISPLAY_NUMBER", "")
     return {
         "platform_configured": platform_configured,
         "company_active": company_active,
+        "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
     }
 
