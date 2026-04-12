@@ -17,7 +17,6 @@ import { useTheme } from '../context/ThemeContext';
 
 const CP_NAV_ITEMS = [
   { path: '/logbooks',  icon: LayoutDashboard, label: 'Dashboard' },
-  { path: '/documents', icon: FolderOpen,      label: 'Documents' },
   { path: '/settings',  icon: Settings,        label: 'Settings'  },
 ];
 

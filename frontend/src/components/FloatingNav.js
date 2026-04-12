@@ -37,7 +37,6 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/projects', icon: FolderKanban, label: 'Projects' },
   { path: '/workers', icon: Users, label: 'Workers' },
-  { path: '/documents', icon: FolderOpen, label: 'Documents' },
   { path: '/reports', icon: FileText, label: 'Reports' },
 ];
 
