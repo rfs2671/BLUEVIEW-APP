@@ -56,6 +56,7 @@ export default function AdminUsersScreen() {
   // Form fields
   const [formName, setFormName] = useState('');
   const [formEmail, setFormEmail] = useState('');
+  const [formPhone, setFormPhone] = useState('');
   const [formRole, setFormRole] = useState('cp');
   const [formPassword, setFormPassword] = useState('');
   const [assignedProjects, setAssignedProjects] = useState([]);
@@ -118,12 +119,14 @@ export default function AdminUsersScreen() {
     }
 
     try {
-      const newUser = await adminUsersAPI.create({
+      const payload = {
         name: formName,
         email: formEmail,
         role: formRole,
         password: formPassword,
-      });
+      };
+      if (formPhone.trim()) payload.phone = formPhone.trim();
+      const newUser = await adminUsersAPI.create(payload);
       
       setUsers([...users, newUser]);
       resetForm();
@@ -145,15 +148,17 @@ export default function AdminUsersScreen() {
     }
     
     try {
-      await adminUsersAPI.update(selectedUser.id, {
+      const updatePayload = {
         name: formName,
         email: formEmail,
         role: formRole,
-      });
-      
-      const updated = users.map(u => 
-        u.id === selectedUser.id 
-          ? { ...u, name: formName, email: formEmail, role: formRole }
+      };
+      if (formPhone.trim()) updatePayload.phone = formPhone.trim();
+      await adminUsersAPI.update(selectedUser.id, updatePayload);
+
+      const updated = users.map(u =>
+        u.id === selectedUser.id
+          ? { ...u, name: formName, email: formEmail, role: formRole, phone: formPhone.trim() || u.phone }
           : u
       );
       
@@ -236,6 +241,7 @@ export default function AdminUsersScreen() {
     setSelectedUser(userItem);
     setFormName(userItem.name);
     setFormEmail(userItem.email);
+    setFormPhone(userItem.phone || '');
     setFormRole(userItem.role);
     setShowEditModal(true);
   };
@@ -249,9 +255,22 @@ export default function AdminUsersScreen() {
   const resetForm = () => {
     setFormName('');
     setFormEmail('');
+    setFormPhone('');
     setFormRole('cp');
     setFormPassword('');
     setSelectedUser(null);
+  };
+
+  const formatPhoneDisplay = (phone) => {
+    if (!phone) return '';
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length === 11 && digits[0] === '1') {
+      return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+    }
+    if (digits.length === 10) {
+      return `+1 (${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+    }
+    return phone;
   };
 
   const getRoleBadgeStyle = (role) => {
@@ -348,6 +367,7 @@ export default function AdminUsersScreen() {
                       <View style={s.userInfo}>
                         <Text style={s.userName}>{userItem.name}</Text>
                         <Text style={s.userEmail}>{userItem.email}</Text>
+                        {userItem.phone ? <Text style={s.userEmail}>{formatPhoneDisplay(userItem.phone)}</Text> : null}
                       </View>
                       <View style={[s.roleBadge, { backgroundColor: roleStyle.bg }]}>
                         <Text style={[s.roleText, { color: roleStyle.color }]}>
@@ -423,6 +443,13 @@ export default function AdminUsersScreen() {
                 style={s.inputSpacing}
               />
               <GlassInput
+                value={formPhone}
+                onChangeText={setFormPhone}
+                placeholder="Phone Number (optional)"
+                keyboardType="phone-pad"
+                style={s.inputSpacing}
+              />
+              <GlassInput
                 value={formPassword}
                 onChangeText={setFormPassword}
                 placeholder="Password"
@@ -475,6 +502,13 @@ export default function AdminUsersScreen() {
                 onChangeText={setFormEmail}
                 placeholder="Email"
                 keyboardType="email-address"
+                style={s.inputSpacing}
+              />
+              <GlassInput
+                value={formPhone}
+                onChangeText={setFormPhone}
+                placeholder="Phone Number (optional)"
+                keyboardType="phone-pad"
                 style={s.inputSpacing}
               />
               <View style={s.roleSelector}>

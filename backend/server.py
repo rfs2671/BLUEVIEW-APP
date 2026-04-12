@@ -1704,16 +1704,37 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     user_dict["updated_at"] = now
     user_dict["assigned_projects"] = []
     user_dict["is_deleted"] = False
-    
+
+    # Normalize phone to E.164 if provided
+    if user_dict.get("phone"):
+        user_dict["phone"] = normalize_phone(user_dict["phone"])
+
     # IMPORTANT: Inherit company_id from admin creating the user
     user_dict["company_id"] = admin.get("company_id")
     if admin.get("company_name"):
         user_dict["company_name"] = admin.get("company_name")
-    
+
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
+
+    # Sync to whatsapp_contacts if phone provided
+    if user_dict.get("phone") and user_dict.get("company_id"):
+        try:
+            await db.whatsapp_contacts.update_one(
+                {"company_id": user_dict["company_id"], "phone": user_dict["phone"]},
+                {"$set": {
+                    "company_id": user_dict["company_id"],
+                    "phone": user_dict["phone"],
+                    "user_id": str(result.inserted_id),
+                    "display_name": user_dict.get("name", ""),
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts upsert failed for user {result.inserted_id}: {e}")
+
     del user_dict["password"]
-    
+
     return UserResponse(**user_dict)
 
 @api_router.get("/admin/users/{user_id}", response_model=UserResponse)
@@ -1730,16 +1751,60 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
     update_data = {k: v for k, v in user_data.items() if v is not None and k in ALLOWED_USER_FIELDS and k != "password"}
     if "password" in user_data and user_data["password"]:
         update_data["password"] = hash_password(user_data["password"])
-    
+
+    # Normalize phone to E.164 if provided
+    if "phone" in update_data and update_data["phone"]:
+        update_data["phone"] = normalize_phone(update_data["phone"])
+
     update_data["updated_at"] = datetime.now(timezone.utc)
-    
+
+    # Fetch existing user to detect phone changes
+    existing_user = await db.users.find_one({"_id": to_query_id(user_id)})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    old_phone = existing_user.get("phone", "")
+    company_id = existing_user.get("company_id")
+
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
         {"$set": update_data}
     )
-    
+
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Sync whatsapp_contacts on phone change
+    new_phone = update_data.get("phone", old_phone)
+    if company_id and "phone" in update_data:
+        try:
+            if new_phone != old_phone:
+                # Deactivate old contact (preserve message history)
+                if old_phone:
+                    await db.whatsapp_contacts.update_one(
+                        {"company_id": company_id, "phone": old_phone},
+                        {"$set": {"user_id": None}},
+                    )
+                # Upsert new contact
+                if new_phone:
+                    await db.whatsapp_contacts.update_one(
+                        {"company_id": company_id, "phone": new_phone},
+                        {"$set": {
+                            "company_id": company_id,
+                            "phone": new_phone,
+                            "user_id": user_id,
+                            "display_name": update_data.get("name") or existing_user.get("name", ""),
+                        }},
+                        upsert=True,
+                    )
+            else:
+                # Phone unchanged — update display_name if name changed
+                if "name" in update_data and new_phone:
+                    await db.whatsapp_contacts.update_one(
+                        {"company_id": company_id, "phone": new_phone},
+                        {"$set": {"display_name": update_data["name"]}},
+                    )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts sync failed for user {user_id}: {e}")
 
     # Audit — especially important for role changes
     audit_details = {k: v for k, v in update_data.items() if k != "password" and k != "updated_at"}
@@ -1751,6 +1816,9 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
 
 @api_router.delete("/admin/users/{user_id}")
 async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
+    # Fetch user before delete to get phone for whatsapp_contacts cleanup
+    user_doc = await db.users.find_one({"_id": to_query_id(user_id)})
+
     # Soft delete
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
@@ -1758,6 +1826,17 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Revoke WhatsApp bot access — nullify user_id on their contact record
+    if user_doc and user_doc.get("phone") and user_doc.get("company_id"):
+        try:
+            await db.whatsapp_contacts.update_one(
+                {"company_id": user_doc["company_id"], "phone": user_doc["phone"]},
+                {"$set": {"user_id": None}},
+            )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts cleanup failed for deleted user {user_id}: {e}")
+
     await audit_log("user_delete", str(admin.get("_id", "")), "user", user_id)
     return {"message": "User deleted successfully"}
 
