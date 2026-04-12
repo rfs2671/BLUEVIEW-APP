@@ -299,88 +299,76 @@ export default function ConstructionPlansScreen() {
               <GlassSkeleton width="100%" height={80} style={s.mb12} />
               <GlassSkeleton width="100%" height={80} />
             </View>
-          ) : !project?.dropbox_folder_path ? (
-            <GlassCard style={s.notLinkedCard}>
-              <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
-              <Text style={s.notLinkedTitle}>No Dropbox Folder Linked</Text>
-              <Text style={s.notLinkedDesc}>
-                Link a Dropbox folder to this project to view construction plans.
-              </Text>
-              <GlassButton
-                title="Configure Dropbox"
-                onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
-                style={s.configureBtn}
-              />
-            </GlassCard>
           ) : (
             <>
-              {/* Sync Status Bar */}
+              {/* Upload + Sync bar — upload always available, sync only with Dropbox */}
               <View style={s.syncBar}>
                 <View style={s.syncInfo}>
-                  <View
-                    style={[
-                      s.syncIndicator,
-                      syncStatus === 'syncing' && s.syncIndicatorSyncing,
-                      syncStatus === 'success' && s.syncIndicatorSuccess,
-                      syncStatus === 'error' && s.syncIndicatorError,
-                    ]}
-                  >
-                    {syncStatus === 'syncing' ? (
-                      <ActivityIndicator size="small" color={DROPBOX_BLUE} />
-                    ) : syncStatus === 'success' ? (
-                      <CheckCircle size={16} strokeWidth={2} color="#4ade80" />
-                    ) : syncStatus === 'error' ? (
-                      <AlertCircle size={16} strokeWidth={2} color="#f87171" />
-                    ) : (
-                      <Cloud size={16} strokeWidth={1.5} color={DROPBOX_BLUE} />
-                    )}
-                  </View>
-                  <View>
-                    <Text style={s.syncLabel}>
-                      {syncStatus === 'syncing'
-                        ? 'Syncing...'
-                        : syncStatus === 'success'
-                        ? 'Synced!'
-                        : syncStatus === 'error'
-                        ? 'Sync failed'
-                        : 'Dropbox Connected'}
-                    </Text>
-                    <Text style={s.syncTime}>
-                      {lastSynced
-                        ? `Last synced ${new Date(lastSynced).toLocaleString()}`
-                        : 'Never synced'}
-                    </Text>
-                  </View>
+                  {project?.dropbox_folder_path ? (
+                    <>
+                      <View
+                        style={[
+                          s.syncIndicator,
+                          syncStatus === 'syncing' && s.syncIndicatorSyncing,
+                          syncStatus === 'success' && s.syncIndicatorSuccess,
+                          syncStatus === 'error' && s.syncIndicatorError,
+                        ]}
+                      />
+                      <Text style={s.syncTime}>
+                        {lastSynced
+                          ? `Last synced ${new Date(lastSynced).toLocaleString()}`
+                          : 'Never synced'}
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={s.syncTime}>Upload files or connect Dropbox</Text>
+                  )}
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs }}>
                   {user?.role === 'admin' && (
                     <GlassButton
                       variant="icon"
-                      icon={
-                        <Upload
-                          size={18}
-                          strokeWidth={1.5}
-                          color={colors.text.primary}
-                        />
-                      }
+                      icon={<Upload size={18} strokeWidth={1.5} color={colors.text.primary} />}
                       onPress={handleUploadFile}
                       disabled={uploading}
                     />
                   )}
-                  <GlassButton
-                    variant="icon"
-                    icon={
-                      <RefreshCw
-                        size={18}
-                        strokeWidth={1.5}
-                        color={colors.text.primary}
-                      />
-                    }
-                    onPress={handleSync}
-                    disabled={syncing}
-                  />
+                  {project?.dropbox_folder_path && (
+                    <GlassButton
+                      variant="icon"
+                      icon={<RefreshCw size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                      onPress={handleSync}
+                      disabled={syncing}
+                    />
+                  )}
+                  {!project?.dropbox_folder_path && (
+                    <GlassButton
+                      variant="icon"
+                      icon={<Cloud size={18} strokeWidth={1.5} color={colors.text.muted} />}
+                      onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
+                    />
+                  )}
                 </View>
               </View>
+
+              {/* File list or empty state */}
+              {files.length === 0 && !project?.dropbox_folder_path ? (
+                <GlassCard style={s.notLinkedCard}>
+                  <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
+                  <Text style={s.notLinkedTitle}>No Files Yet</Text>
+                  <Text style={s.notLinkedDesc}>
+                    Upload PDFs directly or link a Dropbox folder to sync construction plans.
+                  </Text>
+                </GlassCard>
+              ) : files.length === 0 ? (
+                <GlassCard style={s.notLinkedCard}>
+                  <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
+                  <Text style={s.notLinkedTitle}>No Files Found</Text>
+                  <Text style={s.notLinkedDesc}>
+                    Tap sync to pull files from Dropbox, or upload a PDF directly.
+                  </Text>
+                </GlassCard>
+              ) : null}
 
               {/* Search and Filter */}
               <View style={s.searchRow}>

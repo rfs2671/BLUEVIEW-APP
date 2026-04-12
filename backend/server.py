@@ -5282,14 +5282,15 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
-    folder_path = project.get("dropbox_folder_path")
-    if not folder_path:
-        return []
-
     company_id = company_id or project.get("company_id")
+    folder_path = project.get("dropbox_folder_path")
 
-    # Check project_files collection first (R2 cache)
-    cached_files = await db.project_files.find({"project_id": project_id}).to_list(5000)
+    # Check project_files collection first (R2 cache + direct uploads)
+    cached_files = await db.project_files.find({
+        "project_id": project_id,
+        "company_id": company_id,
+        "is_deleted": {"$ne": True},
+    }).to_list(5000)
 
     if cached_files:
         files = []
@@ -5307,7 +5308,10 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
             })
         return files
 
-    # No cached records — fall back to live Dropbox listing
+    # No cached records — fall back to live Dropbox listing (only if folder linked)
+    if not folder_path:
+        return []
+
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
@@ -5515,9 +5519,9 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
 
     company_id = company_id or project.get("company_id")
 
-    # Check project_files for R2 URL first
+    # Check project_files for R2 URL first (company-scoped)
     file_rec = await db.project_files.find_one({
-        "project_id": project_id, "dropbox_path": file_path
+        "project_id": project_id, "company_id": company_id, "dropbox_path": file_path
     })
     if file_rec and file_rec.get("r2_url"):
         return {"url": file_rec["r2_url"], "cached": True, "source": "r2"}
