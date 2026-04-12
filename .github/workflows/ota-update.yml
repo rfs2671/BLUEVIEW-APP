@@ -14,22 +14,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          
+
       - name: Setup Expo
         uses: expo/expo-github-action@v8
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
-          
+
       - name: Install dependencies
         working-directory: ./frontend
         run: npm install
-        
+
       - name: Publish update
         working-directory: ./frontend
-        run: eas update --branch production --message "${{ github.event.head_commit.message }}"
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          # Truncate to first line and sanitize for shell safety
+          MSG=$(echo "$COMMIT_MSG" | head -1 | tr -d '"' | cut -c1-100)
+          eas update --branch production --message "$MSG"
