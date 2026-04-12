@@ -17,7 +17,9 @@ import {
   LogOut,
   RefreshCw,
   Cloud,
+  Upload,
 } from 'lucide-react-native';
+import * as DocumentPicker from 'expo-document-picker';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
@@ -89,6 +91,7 @@ export default function DocumentsScreen() {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [files, setFiles] = useState([]);
   const [loadingFile, setLoadingFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
 
@@ -191,6 +194,44 @@ export default function DocumentsScreen() {
       toast.error('Error', error.response?.data?.detail || 'Could not get file URL');
     } finally {
       setLoadingFile(null);
+    }
+  };
+
+  const handleUploadFile = async () => {
+    if (!selectedProject) {
+      toast.warning('Select Project', 'Please select a project first');
+      return;
+    }
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const file = result.assets?.[0];
+      if (!file) return;
+
+      setUploading(true);
+      toast.info('Uploading', `Uploading ${file.name}...`);
+
+      const formData = new FormData();
+      if (Platform.OS === 'web') {
+        const response = await fetch(file.uri);
+        const blob = await response.blob();
+        formData.append('file', blob, file.name);
+      } else {
+        formData.append('file', { uri: file.uri, name: file.name, type: 'application/pdf' });
+      }
+
+      const pid = selectedProject._id || selectedProject.id;
+      await dropboxAPI.uploadFile(pid, formData);
+      toast.success('Uploaded', `${file.name} uploaded`);
+      handleRefresh();
+    } catch (error) {
+      console.error('Upload failed:', error);
+      toast.error('Upload Error', error.response?.data?.detail || 'Could not upload file');
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -298,23 +339,37 @@ export default function DocumentsScreen() {
                 </GlassCard>
               )}
 
-              {/* Refresh button */}
+              {/* Actions row */}
               {selectedProject && (
                 <View style={s.refreshRow}>
                   <Text style={s.fileCount}>
                     {files.length} file{files.length !== 1 ? 's' : ''}
                   </Text>
-                  <Pressable style={s.refreshBtn} onPress={handleRefresh}>
-                    <RefreshCw
-                      size={14}
-                      strokeWidth={1.5}
-                      color={colors.text.muted}
-                      style={refreshing ? { opacity: 0.5 } : {}}
-                    />
-                    <Text style={s.refreshText}>
-                      {refreshing ? 'Refreshing...' : 'Refresh'}
-                    </Text>
-                  </Pressable>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
+                    {(user?.role === 'admin' || user?.role === 'owner') && (
+                      <Pressable
+                        style={[s.refreshBtn, { backgroundColor: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.3)', borderWidth: 1 }]}
+                        onPress={handleUploadFile}
+                        disabled={uploading}
+                      >
+                        <Upload size={14} strokeWidth={1.5} color="#3b82f6" />
+                        <Text style={[s.refreshText, { color: '#3b82f6' }]}>
+                          {uploading ? 'Uploading...' : 'Upload PDF'}
+                        </Text>
+                      </Pressable>
+                    )}
+                    <Pressable style={s.refreshBtn} onPress={handleRefresh}>
+                      <RefreshCw
+                        size={14}
+                        strokeWidth={1.5}
+                        color={colors.text.muted}
+                        style={refreshing ? { opacity: 0.5 } : {}}
+                      />
+                      <Text style={s.refreshText}>
+                        {refreshing ? 'Refreshing...' : 'Refresh'}
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
               )}
 
