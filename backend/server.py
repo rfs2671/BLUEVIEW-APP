@@ -10096,14 +10096,156 @@ async def startup_event():
             "is_deleted": False
         })
         logger.info("Created default owner user")
-    elif owner.get("role") == "admin":
+    elif owner and owner.get("role") == "admin":
         # Upgrade existing admin to owner
         await db.users.update_one(
             {"email": "rfs2671@gmail.com"},
             {"$set": {"role": "owner", "updated_at": datetime.now(timezone.utc)}}
         )
         logger.info("Upgraded existing admin to owner role")
-    
+
+    # ── TEST DATA SEED (creates test accounts + project if missing) ──
+    test_user = await db.users.find_one({"email": "test@test.com"})
+    if not test_user:
+        now = datetime.now(timezone.utc)
+        # 1. Create test company
+        test_company = await db.companies.find_one({"name": "Test Construction Co"})
+        if not test_company:
+            result = await db.companies.insert_one({
+                "name": "Test Construction Co",
+                "created_at": now,
+                "updated_at": now,
+                "is_deleted": False,
+            })
+            test_company_id = str(result.inserted_id)
+            logger.info(f"Created test company: {test_company_id}")
+        else:
+            test_company_id = str(test_company["_id"])
+
+        # 2. Create test@test.com as owner
+        result = await db.users.insert_one({
+            "email": "test@test.com",
+            "password": hash_password("test"),
+            "name": "Test Owner",
+            "full_name": "Test Owner",
+            "role": "owner",
+            "company_id": test_company_id,
+            "phone": "+15163018154",
+            "created_at": now,
+            "updated_at": now,
+            "assigned_projects": [],
+            "is_deleted": False,
+        })
+        test_owner_id = str(result.inserted_id)
+        logger.info(f"Created test owner: test@test.com")
+
+        # 3. Create admin account (rfs2671@gmail.com) for this company
+        existing_admin = await db.users.find_one({"email": "rfs2671@gmail.com", "company_id": test_company_id})
+        if not existing_admin:
+            result = await db.users.insert_one({
+                "email": "rfs2671@gmail.com",
+                "password": hash_password("test"),
+                "name": "Roy Fishman",
+                "full_name": "Roy Fishman",
+                "role": "admin",
+                "company_id": test_company_id,
+                "phone": "+15163018154",
+                "created_at": now,
+                "updated_at": now,
+                "assigned_projects": [],
+                "is_deleted": False,
+            })
+            admin_id = str(result.inserted_id)
+            logger.info(f"Created test admin: rfs2671@gmail.com")
+
+        # 4. Create test CP (Construction Professional)
+        result = await db.users.insert_one({
+            "email": "cp@test.com",
+            "password": hash_password("test"),
+            "name": "Test CP",
+            "full_name": "Test Construction Professional",
+            "role": "cp",
+            "company_id": test_company_id,
+            "phone": "+15551234567",
+            "created_at": now,
+            "updated_at": now,
+            "assigned_projects": [],
+            "is_deleted": False,
+        })
+        cp_id = str(result.inserted_id)
+        logger.info(f"Created test CP: cp@test.com")
+
+        # 5. Create test worker
+        test_worker = await db.workers.insert_one({
+            "name": "Test Worker",
+            "full_name": "Test Worker",
+            "company_id": test_company_id,
+            "phone": "+15559876543",
+            "email": "worker@test.com",
+            "trade": "General Laborer",
+            "sst_card_number": "SST-TEST-001",
+            "osha_card_number": "OSHA-TEST-001",
+            "certifications": [
+                {
+                    "type": "SST",
+                    "number": "SST-TEST-001",
+                    "expiration_date": (now + timedelta(days=365)).isoformat(),
+                },
+                {
+                    "type": "OSHA-30",
+                    "number": "OSHA-TEST-001",
+                    "expiration_date": (now + timedelta(days=180)).isoformat(),
+                },
+            ],
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        })
+        worker_id = str(test_worker.inserted_id)
+        logger.info(f"Created test worker: {worker_id}")
+
+        # 6. Create test subcontractor
+        await db.subcontractors.insert_one({
+            "name": "Test Electrical Sub",
+            "company_name": "Spark Electric LLC",
+            "company_id": test_company_id,
+            "email": "sub@test.com",
+            "phone": "+15557654321",
+            "trade": "Electrician",
+            "license_number": "LIC-ELEC-TEST",
+            "insurance_info": "Policy #INS-TEST-001, Exp 2027-01-01",
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        })
+        logger.info("Created test subcontractor: Spark Electric LLC")
+
+        # 7. Create test project with real NYC BIN (Empire State Building)
+        test_project = await db.projects.find_one({"name": "Test Project - ESB", "company_id": test_company_id})
+        if not test_project:
+            result = await db.projects.insert_one({
+                "name": "Test Project - ESB",
+                "company_id": test_company_id,
+                "address": "350 5th Avenue, New York, NY 10118",
+                "nyc_bin": "1015862",
+                "nyc_bbl": "1008370032",
+                "track_dob_status": True,
+                "gc_legal_name": "Test Construction Co",
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+                "is_deleted": False,
+            })
+            test_project_id = str(result.inserted_id)
+            # Assign project to all test users
+            await db.users.update_many(
+                {"company_id": test_company_id},
+                {"$addToSet": {"assigned_projects": test_project_id}},
+            )
+            logger.info(f"Created test project (ESB): {test_project_id}")
+
+        logger.info("✅ Test data seeding complete")
+
      # Start report email scheduler
     scheduler.add_job(
         check_and_send_reports,
