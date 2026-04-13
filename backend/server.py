@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -8497,45 +8498,42 @@ async def get_dob_logs(
 @api_router.post("/projects/{project_id}/dob-sync")
 async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user)):
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
-    project = await db.projects.find_one({
-        "_id": to_query_id(project_id),
-        "is_deleted": {"$ne": True},
-    })
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
- 
-    company_id = get_user_company_id(current_user)
-    if company_id and project.get("company_id") != company_id:
-        raise HTTPException(status_code=403, detail="Access denied to this project")
- 
-    if not project.get("nyc_bin") and not project.get("address"):
-        raise HTTPException(status_code=400, detail="No BIN or address configured. Update DOB config first.")
- 
-    rate_key = f"dob_sync_last:{project_id}"
-    rate_doc = await db.system_config.find_one({"key": rate_key})
-    if rate_doc:
-        last_time = rate_doc.get("last_sync_at")
-        if last_time and isinstance(last_time, datetime):
-            elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
-            if elapsed < 900:
-                remaining = int(900 - elapsed)
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Rate limited. Try again in {remaining // 60}m {remaining % 60}s.",
-                )
-    await db.system_config.update_one(
-        {"key": rate_key},
-        {"$set": {"key": rate_key, "last_sync_at": datetime.now(timezone.utc)}},
-        upsert=True,
-    )
- 
+    import traceback as _tb
     try:
-        new_logs = await run_dob_sync_for_project(project)
-    except Exception as e:
-        logger.exception(f"DOB sync failed for project {project_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"DOB sync error: {str(e)}")
+        project = await db.projects.find_one({
+            "_id": to_query_id(project_id),
+            "is_deleted": {"$ne": True},
+        })
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
 
-    try:
+        company_id = get_user_company_id(current_user)
+        if company_id and project.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+
+        if not project.get("nyc_bin") and not project.get("address"):
+            raise HTTPException(status_code=400, detail="No BIN or address configured. Update DOB config first.")
+
+        rate_key = f"dob_sync_last:{project_id}"
+        rate_doc = await db.system_config.find_one({"key": rate_key})
+        if rate_doc:
+            last_time = rate_doc.get("last_sync_at")
+            if last_time and isinstance(last_time, datetime):
+                elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
+                if elapsed < 900:
+                    remaining = int(900 - elapsed)
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Rate limited. Try again in {remaining // 60}m {remaining % 60}s.",
+                    )
+        await db.system_config.update_one(
+            {"key": rate_key},
+            {"$set": {"key": rate_key, "last_sync_at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+
+        new_logs = await run_dob_sync_for_project(project)
+
         safe_logs = []
         for log in new_logs:
             try:
@@ -8550,17 +8548,17 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
             "critical_count": action_count,
             "logs": safe_logs,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"DOB sync serialization failed for project {project_id}: {e}")
-        # Still return success since sync completed — just can't serialize response
-        return {
-            "message": f"DOB sync complete. {len(new_logs)} new record(s) found but serialization failed: {str(e)}",
-            "new_records": len(new_logs),
-            "critical_count": 0,
-            "logs": [],
-        }
- 
- 
+        tb_str = _tb.format_exc()
+        logger.exception(f"DOB sync UNHANDLED error for project {project_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"DOB sync error: {str(e)}", "traceback": tb_str},
+        )
+
+
 # ==================== REPORT EMAIL SCHEDULER ====================
 
 async def check_and_send_reports():
