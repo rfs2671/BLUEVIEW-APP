@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Platform, Image as RNImage } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -258,7 +258,7 @@ export default function DocumentsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={handleBack}
             />
-            <Text style={s.logoText}>LEVELOG</Text>
+            <RNImage source={require('../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
           </View>
           <GlassButton
             variant="icon"

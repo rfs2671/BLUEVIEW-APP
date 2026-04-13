@@ -9,6 +9,7 @@ import {
   Linking,
   TextInput,
   Platform,
+  Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,7 +17,7 @@ import {
   ArrowLeft,
   Cloud,
   FileText,
-  Image,
+  Image as ImageIcon,
   File,
   Download,
   Eye,
@@ -58,10 +59,10 @@ const getFileTypeInfo = (filename) => {
     docx: { icon: FileText, color: '#3b82f6', label: 'DOCX' },
     xls: { icon: FileText, color: '#22c55e', label: 'XLS' },
     xlsx: { icon: FileText, color: '#22c55e', label: 'XLSX' },
-    png: { icon: Image, color: '#8b5cf6', label: 'PNG' },
-    jpg: { icon: Image, color: '#8b5cf6', label: 'JPG' },
-    jpeg: { icon: Image, color: '#8b5cf6', label: 'JPEG' },
-    gif: { icon: Image, color: '#8b5cf6', label: 'GIF' },
+    png: { icon: ImageIcon, color: '#8b5cf6', label: 'PNG' },
+    jpg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPG' },
+    jpeg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPEG' },
+    gif: { icon: ImageIcon, color: '#8b5cf6', label: 'GIF' },
     dwg: { icon: File, color: '#f59e0b', label: 'DWG' },
     dxf: { icon: File, color: '#f59e0b', label: 'DXF' },
   };
@@ -273,7 +274,7 @@ export default function ConstructionPlansScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={s.logoText}>LEVELOG</Text>
+            <Image source={require('../../../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
           </View>
           <GlassButton
             variant="icon"

@@ -215,13 +215,10 @@ export default function DashboardScreen() {
         {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <View style={s.logoIcon}>
-              <Image
-                source={require('../assets/headicon.png')}
-                style={{ width: 28, height: 28, resizeMode: 'contain' }}
-              />
-            </View>
-            <Text style={[s.logoText, { color: colors.text.primary }]}>LEVELOG</Text>
+            <Image
+              source={require('../assets/logo-header.png')}
+              style={{ width: 120, height: 32, resizeMode: 'contain' }}
+            />
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

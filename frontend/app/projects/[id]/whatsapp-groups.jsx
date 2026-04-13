@@ -9,6 +9,7 @@ import {
   Modal,
   TextInput,
   Platform,
+  Image,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -215,7 +216,7 @@ export default function WhatsAppGroupsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={s.logoText}>LEVELOG</Text>
+            <Image source={require('../../../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
           </View>
           <GlassButton
             variant="icon"

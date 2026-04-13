@@ -77,13 +77,10 @@ export default function LoginScreen() {
     return (
       <AnimatedBackground>
         <View style={s.loadingContainer}>
-          <View style={s.logoIcon}>
-            <Image
-              source={require('../assets/icon.png')}
-              style={{ width: 28, height: 28, resizeMode: 'contain' }}
-            />
-          </View>
-          <Text style={s.logoTextLoading}>LEVELOG</Text>
+          <Image
+            source={require('../assets/logo-header.png')}
+            style={{ width: 160, height: 44, resizeMode: 'contain' }}
+          />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
       </AnimatedBackground>
@@ -96,13 +93,10 @@ export default function LoginScreen() {
         <View style={s.content}>
           {/* Logo */}
           <View style={s.logoContainer}>
-            <View style={s.logoIcon}>
-              <Image
-                source={require('../assets/headicon.png')}
-                style={{ width: 28, height: 28, resizeMode: 'contain' }}
-              />
-            </View>
-            <Text style={s.logoText}>LEVELOG</Text>
+            <Image
+              source={require('../assets/logo-header.png')}
+              style={{ width: 160, height: 44, resizeMode: 'contain' }}
+            />
           </View>
 
           <GlassCard style={s.card}>

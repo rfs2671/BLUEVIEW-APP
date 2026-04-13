@@ -6,6 +6,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -243,7 +244,7 @@ export default function LogBooksScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.logoText}>LEVELOG</Text>
+          <Image source={require('../../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}

@@ -9,6 +9,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -390,7 +391,7 @@ export default function DailyLogScreen() {
                 <Text style={[s.siteBadgeText, s.viewOnlyText]}>VIEW ONLY</Text>
               </View>
             ) : (
-              <Text style={s.logoText}>LEVELOG</Text>
+              <Image source={require('../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
             )}
           </View>
           <View style={s.headerRight}>
