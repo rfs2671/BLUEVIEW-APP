@@ -8519,6 +8519,9 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         if rate_doc:
             last_time = rate_doc.get("last_sync_at")
             if last_time and isinstance(last_time, datetime):
+                # Ensure both datetimes are tz-aware for subtraction
+                if last_time.tzinfo is None:
+                    last_time = last_time.replace(tzinfo=timezone.utc)
                 elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
                 if elapsed < 900:
                     remaining = int(900 - elapsed)
@@ -8555,7 +8558,7 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         logger.exception(f"DOB sync UNHANDLED error for project {project_id}: {e}")
         return JSONResponse(
             status_code=500,
-            content={"detail": f"DOB sync error: {str(e)}", "traceback": tb_str},
+            content={"detail": f"DOB sync error: {str(e)}"},
         )
 
 
