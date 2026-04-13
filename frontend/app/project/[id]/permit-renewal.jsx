@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
 import {
   ArrowLeft,
   LogOut,
@@ -22,6 +23,7 @@ import {
   AlertTriangle,
   Clock,
   ExternalLink,
+  Copy,
   ChevronDown,
   ChevronUp,
   XCircle,
@@ -220,6 +222,7 @@ export default function PermitRenewalScreen() {
   const [expandedId, setExpandedId] = useState(null);
   const [preparing, setPreparing] = useState(null);
   const [projectName, setProjectName] = useState('');
+  const [renewalData, setRenewalData] = useState(null);
 
   // Auth guard
   useEffect(() => {
@@ -259,9 +262,10 @@ export default function PermitRenewalScreen() {
         renewal.permit_dob_log_id,
         renewal.project_id
       );
+      setRenewalData(result);
       toast.success(
         'Renewal Prepared',
-        'Draft filed on DOB NOW. Tap "Sign & Pay on DOB NOW" to complete.'
+        'Review the details below and complete the renewal on DOB NOW.'
       );
       await fetchRenewals();
     } catch (error) {
@@ -531,13 +535,55 @@ export default function PermitRenewalScreen() {
                 </View>
               )}
 
+              {/* BIS Legacy Banner */}
+              {(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
+                <GlassCard style={{ backgroundColor: '#f59e0b15', borderColor: '#f59e0b40', borderWidth: 1, marginBottom: 12, padding: 14 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                    <AlertTriangle size={18} color="#f59e0b" style={{ marginTop: 2 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: '#f59e0b', marginBottom: 4 }}>
+                        BIS Legacy Permit
+                      </Text>
+                      <Text style={{ fontFamily: typography.regular, fontSize: 13, color: colors.text.secondary, lineHeight: 18 }}>
+                        This permit was filed through the legacy BIS system. Automated renewal is not available. Contact your expediter to file a Post Approval Amendment (PAA) or re-file through DOB NOW.
+                      </Text>
+                      <Pressable
+                        onPress={() => Linking.openURL('https://a810-dobnow.nyc.gov/publish/')}
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 }}
+                      >
+                        <ExternalLink size={14} color="#3b82f6" />
+                        <Text style={{ fontFamily: typography.medium, fontSize: 13, color: '#3b82f6' }}>
+                          Open DOB NOW
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                </GlassCard>
+              )}
+
+              {/* Copyable Fields */}
+              {renewalData?.copyable_fields?.map((field, i) => (
+                <Pressable key={i} onPress={async () => {
+                  await Clipboard.setStringAsync(field.value);
+                  toast.success('Copied', `${field.label} copied to clipboard`);
+                }}>
+                  <GlassCard style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 14, marginBottom: 8 }}>
+                    <View>
+                      <Text style={{ fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{field.label}</Text>
+                      <Text style={{ fontSize: 15, color: colors.text.primary, marginTop: 2 }}>{field.value || '\u2014'}</Text>
+                    </View>
+                    <Copy size={16} color={colors.text.muted} />
+                  </GlassCard>
+                </Pressable>
+              ))}
+
               {/* Action Buttons */}
               <View style={s.actionsRow}>
-                {canPrepare && (
+                {canPrepare && !(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
                   <GlassButton
                     title={
                       preparing === renewal.id
-                        ? 'Preparing on DOB NOW...'
+                        ? 'Preparing...'
                         : 'Prepare Renewal'
                     }
                     icon={
@@ -562,7 +608,7 @@ export default function PermitRenewalScreen() {
                   />
                 )}
 
-                {canOpenDob && (
+                {canOpenDob && !(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
                   <GlassButton
                     title="Renew on DOB NOW"
                     icon={
@@ -573,9 +619,9 @@ export default function PermitRenewalScreen() {
                     }
                     onPress={() => {
                       const jobNum = renewal.job_number || '';
-                      const url = jobNum
+                      const url = renewalData?.dob_now_url || (jobNum
                         ? `https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard`
-                        : 'https://a810-dobnow.nyc.gov/publish/';
+                        : 'https://a810-dobnow.nyc.gov/publish/');
                       Linking.openURL(url);
                     }}
                     style={[

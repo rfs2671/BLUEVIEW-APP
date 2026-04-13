@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import hashlib
+import json
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
 import mimetypes
 
@@ -900,6 +901,26 @@ class DOBLogResponse(BaseModel):
     closed_date: Optional[str] = None
     incident_address: Optional[str] = None
     disposition_code: Optional[str] = None
+    risk_level: Optional[str] = None
+    disposition_label: Optional[str] = None
+    category_label: Optional[str] = None
+    complaint_source: Optional[str] = None
+    inspector_unit: Optional[str] = None
+    what_to_expect: Optional[str] = None
+    linked_violation_id: Optional[str] = None
+    linked_complaint_ids: Optional[list] = None
+    # Sprint 2 fields
+    violation_subtype: Optional[str] = None
+    resolution_state: Optional[str] = None
+    # Sprint 5 fields
+    inspection_date: Optional[str] = None
+    inspection_type: Optional[str] = None
+    inspection_result: Optional[str] = None
+    inspection_result_description: Optional[str] = None
+    linked_job_number: Optional[str] = None
+    # Sprint 6 fields
+    notice_type: Optional[str] = None
+    compliance_deadline: Optional[str] = None
 
 
 class DOBConfigUpdate(BaseModel):
@@ -7402,6 +7423,15 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job__",
         })
     
+    # ── DOB NOW INSPECTIONS (ic9t-2s3z) ──
+    if bin_usable:
+        endpoints.append({
+            "url": f"https://data.cityofnewyork.us/resource/ic9t-2s3z.json?$where=bin='{nyc_bin}'&$limit=50&$order=inspection_date DESC",
+            "params": {},
+            "record_type": "inspection",
+            "id_field": "inspection_tracking_number",
+        })
+
     # ── DOB COMPLAINTS RECEIVED (eabe-havv) - Primary DOB complaint source ──
     if bin_usable:
         endpoints.append({
@@ -7554,6 +7584,108 @@ def _extract_permit_fields(rec: dict) -> dict:
     return {k: str(v).strip() if v else None for k, v in fields.items()}
  
  
+def _classify_violation_subtype(rec: dict) -> str:
+    """Classify violation into sub-type: SWO_FULL, SWO_PARTIAL, VACATE_FULL, VACATE_PARTIAL, COMM_ORDER, ECB, NOV."""
+    vtype = str(rec.get("violation_type") or rec.get("violation_type_code") or "").upper()
+    desc = str(rec.get("description") or rec.get("violation_description") or "").upper()
+    record_type = str(rec.get("_record_type") or "").lower()
+    ecb_num = rec.get("ecb_violation_number") or ""
+
+    combined = f"{vtype} {desc}"
+
+    if "FULL STOP WORK" in combined or (record_type == "swo" and "PARTIAL" not in combined):
+        return "SWO_FULL"
+    if "PARTIAL STOP" in combined or "PARTIAL SWO" in combined:
+        return "SWO_PARTIAL"
+    if "FULL VACATE" in combined:
+        return "VACATE_FULL"
+    if "PARTIAL VACATE" in combined or "VACATE" in combined:
+        return "VACATE_PARTIAL"
+    if "COMMISSIONER" in combined or "COMM ORDER" in combined:
+        return "COMM_ORDER"
+    if ecb_num or "ECB" in combined:
+        return "ECB"
+    return "NOV"
+
+
+def _classify_resolution_state(rec: dict) -> str:
+    """Derive resolution state from violation record fields."""
+    cert_status = str(rec.get("certification_status") or "").upper()
+    current_status = str(rec.get("current_status") or "").upper()
+    category = str(rec.get("violation_category") or "").upper()
+    hearing = rec.get("hearing_date_time") or ""
+    disp_date = rec.get("disposition_date") or ""
+
+    if any(w in cert_status for w in ["CERTIFIED", "RESOLVED"]):
+        return "certified"
+    if any(w in current_status for w in ["DISMISSED"]):
+        return "dismissed"
+    if any(w in category for w in ["DISMISSED"]):
+        return "dismissed"
+    if any(w in current_status for w in ["PAID", "SATISFIED"]):
+        return "paid"
+    if any(w in current_status for w in ["RESOLVED", "CLOSED"]):
+        return "resolved"
+    if "CURE" in cert_status or "CURE" in current_status:
+        return "cure_pending"
+    if hearing:
+        try:
+            from dateutil import parser as dateparser
+            h_date = dateparser.parse(str(hearing))
+            if h_date.tzinfo is None:
+                h_date = h_date.replace(tzinfo=timezone.utc)
+            if h_date > datetime.now(timezone.utc):
+                return "hearing_scheduled"
+            return "hearing_past"
+        except Exception:
+            return "hearing_scheduled"
+    return "open"
+
+
+def _classify_notice_type(rec: dict) -> Optional[str]:
+    """Classify violation notice type from description and violation_type fields."""
+    desc = str(rec.get("description") or rec.get("violation_description") or "").upper()
+    vtype = str(rec.get("violation_type") or rec.get("violation_type_code") or "").upper()
+    combined = f"{vtype} {desc}"
+
+    if "COMMISSIONER" in combined and "ORDER" in combined:
+        return "commissioners_order"
+    if "PADLOCK" in combined:
+        return "padlock_order"
+    if "EMERGENCY" in combined and ("DECLARATION" in combined or "ORDER" in combined):
+        return "emergency_declaration"
+    if "NOTICE OF DEFICIENCY" in combined or "NOD" in combined:
+        return "notice_of_deficiency"
+    if "LETTER OF DEFICIENCY" in combined or "LOD" in combined:
+        return "letter_of_deficiency"
+    return None
+
+
+def _extract_compliance_deadline(rec: dict) -> Optional[str]:
+    """Attempt to extract a compliance deadline from disposition comments or description."""
+    from dateutil import parser as dateparser
+    import re
+
+    text = f"{rec.get('disposition_comments', '') or ''} {rec.get('description', '') or ''}"
+    # Look for patterns like "comply by MM/DD/YYYY", "deadline: MM/DD/YYYY", "within 30 days"
+    date_patterns = [
+        r'comply by\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+        r'deadline[:\s]+(\d{1,2}/\d{1,2}/\d{2,4})',
+        r'before\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+        r'by\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+        r'cure by\s+(\d{1,2}/\d{1,2}/\d{2,4})',
+    ]
+    for pattern in date_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                deadline = dateparser.parse(match.group(1))
+                return deadline.strftime("%Y-%m-%d")
+            except Exception:
+                continue
+    return None
+
+
 def _extract_violation_fields(rec: dict) -> dict:
     """Extract structured violation fields from raw DOB record."""
     fields = {}
@@ -7568,6 +7700,10 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
     fields["status"] = rec.get("violation_category") or rec.get("certification_status") or rec.get("current_status") or None
+    fields["violation_subtype"] = _classify_violation_subtype(rec)
+    fields["resolution_state"] = _classify_resolution_state(rec)
+    fields["notice_type"] = _classify_notice_type(rec)
+    fields["compliance_deadline"] = _extract_compliance_deadline(rec)
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -7588,7 +7724,62 @@ def _extract_complaint_fields(rec: dict) -> dict:
     house = rec.get("house_number") or ""
     street = rec.get("house_street") or ""
     fields["incident_address"] = f"{house} {street}".strip() if (house or street) else None
+
+    # Sprint 1: Classify complaint and persist rich data
+    result = classify_complaint(rec)
+    fields["risk_level"] = result.get("risk_level")
+    fields["disposition_label"] = result.get("disposition_label")
+    fields["category_label"] = result.get("category_label")
+
+    # Derived: complaint_source
+    cat_code = rec.get("complaint_category", "")
+    if rec.get("community_board"):
+        fields["complaint_source"] = "Neighbor/Community Complaint"
+    elif cat_code >= "4A" and cat_code <= "4W" or cat_code >= "6B" and cat_code <= "7N":
+        fields["complaint_source"] = "DOB Internal Inspection"
+    else:
+        fields["complaint_source"] = "311 Complaint"
+
+    # Derived: inspector_unit
+    disp_code = (disposition_code or "").strip()
+    import re as _re
+    if _re.match(r'^(D[1-9]|E[A-D])$', disp_code):
+        fields["inspector_unit"] = result.get("disposition_label")
+    else:
+        fields["inspector_unit"] = None
+
+    # Derived: what_to_expect
+    if _re.match(r'^A[1-9]$', disp_code):
+        fields["what_to_expect"] = "Inspector will visit within 1-5 business days"
+    elif _re.match(r'^D[1-9]$', disp_code):
+        unit_name = result.get("disposition_label", "specialized unit")
+        fields["what_to_expect"] = f"Inspector from {unit_name} will visit within 1-5 business days"
+    elif _re.match(r'^I[1-5]$', disp_code):
+        fields["what_to_expect"] = "Respond before hearing date — cure or pay penalty"
+    elif _re.match(r'^I[6-9]$', disp_code):
+        fields["what_to_expect"] = "All covered work must cease immediately"
+    elif _re.match(r'^C[1-9]$', disp_code):
+        fields["what_to_expect"] = "Inspector will return — ensure site is accessible"
+    elif _re.match(r'^[ZR][1-9]$', disp_code):
+        fields["what_to_expect"] = "No further action needed"
+    elif _re.match(r'^E[A-D]$', disp_code):
+        fields["what_to_expect"] = "Inspector will visit within 1-5 business days"
+    else:
+        fields["what_to_expect"] = "Review complaint status on DOB BIS"
+
     return {k: str(v).strip() if v else None for k, v in fields.items()}
+
+
+def _extract_inspection_fields(rec: dict) -> dict:
+    """Extract structured inspection fields from DOB NOW Inspections dataset."""
+    fields = {}
+    fields["inspection_date"] = rec.get("inspection_date") or rec.get("approved_date") or None
+    fields["inspection_type"] = rec.get("inspection_type") or rec.get("inspection_category") or None
+    fields["inspection_result"] = rec.get("result") or rec.get("inspection_result") or None
+    fields["inspection_result_description"] = rec.get("result_description") or rec.get("comments") or None
+    fields["linked_job_number"] = rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
+    return {k: str(v).strip() if v else None for k, v in fields.items()}
+
 
 def _determine_severity(rec: dict, record_type: str) -> str:
     """Determine severity: 'Action' (needs attention) or 'Good' (no action needed)."""
@@ -7620,6 +7811,12 @@ def _determine_severity(rec: dict, record_type: str) -> str:
             return "Good"
         return "Action"
 
+    if record_type == "inspection":
+        result = str(rec.get("result") or rec.get("inspection_result") or "").upper()
+        if "FAIL" in result:
+            return "Action"
+        return "Good"
+
     if record_type == "complaint":
         result = classify_complaint(rec)
         return result["severity"]
@@ -7649,9 +7846,39 @@ def _generate_summary(rec: dict, record_type: str) -> str:
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""
         result = classify_complaint(rec)
-        prefix = f"#{comp_num}" if comp_num else ""
-        return f"311 Complaint {prefix}: {result['category_label']} — {result['disposition_label']} [{result['risk_level']}]".strip()
+        CATEGORY_DESCRIPTIONS = {
+            "01": "illegal work or work without a permit",
+            "03": "failure to maintain building facade",
+            "05": "work contrary to approved plans",
+            "06": "unsafe construction condition",
+            "09": "illegal conversion or occupancy",
+            "12": "failure to maintain elevator",
+            "14": "demolition without permit",
+            "23": "working without a safety net",
+            "28": "illegal curb cut or sidewalk damage",
+            "30": "debris falling from building",
+            "45": "unsafe scaffolding or sidewalk shed",
+            "49": "construction noise outside allowed hours",
+            "59": "work without required DOB inspection",
+            "63": "illegal fence or retaining wall",
+            "71": "crane or derrick safety violation",
+            "83": "failure to safeguard persons or property",
+            "91": "building under construction in unsafe condition",
+        }
+        cat_code = rec.get("complaint_category", "")
+        desc = CATEGORY_DESCRIPTIONS.get(cat_code, result['category_label'])
+        summary = f"Complaint about {desc.lower()}. {result['disposition_label']}."
+        if comp_num:
+            summary = f"#{comp_num}: {summary}"
+        return summary
  
+    if record_type == "inspection":
+        insp_type = rec.get("inspection_type") or rec.get("inspection_category") or "General"
+        job = rec.get("job_filing_number") or rec.get("job_number") or ""
+        result = rec.get("result") or rec.get("inspection_result") or "Pending"
+        job_str = f" for Job {job}" if job else ""
+        return f"Inspection ({insp_type}){job_str} — Result: {result}"
+
     if record_type == "job_status":
         job = rec.get("job__") or "Unknown"
         jtype = rec.get("job_type") or ""
@@ -7681,6 +7908,14 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
         if severity == "Action":
             return "Active violation. Contact your expediter and schedule correction with DOB."
         return "Violation resolved. No action needed."
+
+    if record_type == "inspection":
+        result = str(rec.get("result") or rec.get("inspection_result") or "").upper()
+        if "FAIL" in result:
+            return "Failed inspection. Review deficiencies and schedule re-inspection on DOB NOW."
+        if "PARTIAL" in result:
+            return "Partial pass. Address noted deficiencies and request follow-up inspection."
+        return "Inspection passed. No action needed."
 
     if record_type == "complaint":
         result = classify_complaint(rec)
@@ -7731,6 +7966,12 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return ""
 
     if record_type == "complaint":
+        comp_num = str(rec.get("complaint_number") or "").strip()
+        if comp_num:
+            return (
+                f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet"
+                f"?requestid=2&vlession=L&vlession={comp_num}"
+            )
         if bin_val:
             return (
                 f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
@@ -7763,14 +8004,22 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
             )
         return ""
 
+    if record_type == "inspection":
+        job = str(rec.get("job_filing_number") or rec.get("job_number") or "").replace("-","").strip()
+        if job and job.upper().startswith("B"):
+            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job}&passdocnumber=01&requestid=1"
+        if bin_val:
+            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
+        return ""
+
     if bin_val:
         return (
             f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
             f"?bin={bin_val}"
         )
     return ""
- 
- 
+
+
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual."""
     project_id = str(project["_id"])
@@ -7828,7 +8077,9 @@ async def run_dob_sync_for_project(project: dict) -> list:
             extra_fields = _extract_violation_fields(rec)
         elif record_type == "complaint":
             extra_fields = _extract_complaint_fields(rec)
- 
+        elif record_type == "inspection":
+            extra_fields = _extract_inspection_fields(rec)
+
         dob_log = {
             "project_id": project_id,
             "company_id": company_id,
@@ -7876,6 +8127,44 @@ async def run_dob_sync_for_project(project: dict) -> list:
         except Exception as e:
             logger.error(f"Failed to upsert dob_log for raw_id={raw_id}: {e}")
  
+    # Sprint 1: Cross-reference complaints to violations
+    try:
+        from dateutil import parser as dateparser
+        from datetime import timedelta
+        complaints = await db.dob_logs.find({
+            "project_id": project_id,
+            "record_type": "complaint",
+            "complaint_date": {"$ne": None},
+        }).to_list(length=5000)
+        violations = await db.dob_logs.find({
+            "project_id": project_id,
+            "record_type": "violation",
+            "violation_date": {"$ne": None},
+        }).to_list(length=5000)
+        for comp in complaints:
+            try:
+                comp_date = dateparser.parse(comp["complaint_date"])
+                comp_bin = comp.get("nyc_bin") or ""
+                for viol in violations:
+                    try:
+                        viol_date = dateparser.parse(viol["violation_date"])
+                        viol_bin = viol.get("nyc_bin") or ""
+                        if comp_bin and comp_bin == viol_bin and timedelta(0) <= (viol_date - comp_date) <= timedelta(days=30):
+                            await db.dob_logs.update_one(
+                                {"_id": comp["_id"]},
+                                {"$set": {"linked_violation_id": str(viol["_id"])}}
+                            )
+                            await db.dob_logs.update_one(
+                                {"_id": viol["_id"]},
+                                {"$addToSet": {"linked_complaint_ids": str(comp["_id"])}}
+                            )
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+    except Exception as e:
+        logger.error(f"Complaint-to-violation cross-referencing failed for project {project_id}: {e}")
+
     logger.info(
         f"DOB sync for project {project_id}: {len(inserted_logs)} new records "
         f"({sum(1 for l in inserted_logs if l.get('severity') == 'Critical')} critical)"
@@ -8750,6 +9039,13 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         if has_audio:
             media = msg.get("media") or msg.get("_data", {})
             audio_url = media.get("url") or media.get("directPath")
+        # Image detection
+        has_image = False
+        image_url = None
+        if msg.get("type") == "image":
+            has_image = True
+            media = msg.get("media") or {}
+            image_url = media.get("url") or media.get("directPath") or None
         return {
             "message_id": msg.get("id", {}).get("id", "") if isinstance(msg.get("id"), dict) else str(msg.get("id", "")),
             "from": msg.get("from", ""),
@@ -8761,6 +9057,8 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "timestamp": msg.get("timestamp", 0),
             "has_audio": has_audio,
             "audio_url": audio_url,
+            "has_image": has_image,
+            "image_url": image_url,
             "raw": msg,
         }
     # Fallback — return as-is with safe defaults
@@ -8775,6 +9073,8 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         "timestamp": 0,
         "has_audio": False,
         "audio_url": None,
+        "has_image": False,
+        "image_url": None,
         "raw": payload,
     }
 
@@ -8831,6 +9131,17 @@ async def classify_intent(message: str) -> Optional[str]:
         return "dob_status"
     if any(kw in text for kw in ["open items", "open observations", "punch list", "uncorrected"]):
         return "open_items"
+    # Material delivery receipt
+    material_delivery_keywords = ["delivery", "arrived", "received", "delivered", "dropped off",
+                                   "on site now", "material here", "truck came", "receipt",
+                                   "shortage", "missing", "short", "only got"]
+    if any(kw in text for kw in material_delivery_keywords):
+        return "material_receipt"
+    # Material status query
+    material_status_keywords = ["material status", "what's missing", "delivery status",
+                                 "outstanding materials", "what do we need", "materials needed"]
+    if any(kw in text for kw in material_status_keywords):
+        return "material_status"
     # GPT-4o-mini fallback
     if not OPENAI_API_KEY:
         return None
@@ -8845,7 +9156,7 @@ async def classify_intent(message: str) -> Optional[str]:
             "messages": [
                 {"role": "system", "content": (
                     "Classify the user message into one of these intents: "
-                    "who_on_site, dob_status, open_items, or none. "
+                    "who_on_site, dob_status, open_items, material_receipt, material_status, or none. "
                     "Reply with ONLY the intent label."
                 )},
                 {"role": "user", "content": message},
@@ -8855,7 +9166,7 @@ async def classify_intent(message: str) -> Optional[str]:
             resp = await client_http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             label = resp.json()["choices"][0]["message"]["content"].strip().lower()
-            if label in ("who_on_site", "dob_status", "open_items"):
+            if label in ("who_on_site", "dob_status", "open_items", "material_receipt", "material_status"):
                 return label
             return None
     except Exception as e:
@@ -8931,6 +9242,253 @@ async def _handle_open_items(project_id: str) -> str:
     return "\n".join(lines)
 
 
+# ---------- material tracking ----------
+
+async def _detect_material_request(message_body: str, project_id: str, company_id: str) -> Optional[dict]:
+    """Use GPT-4o-mini to detect if a message contains a material request."""
+    if not message_body or len(message_body.strip()) < 15:
+        return None
+    if not OPENAI_API_KEY:
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "messages": [
+                        {"role": "system", "content": """You analyze construction site WhatsApp messages to detect material requests.
+A material request is when someone asks for construction materials to be ordered or delivered.
+Examples: "need 200 sheets of drywall", "order 50 bags of concrete", "we're out of 2x4s", "bring 10 boxes of screws tomorrow"
+NOT material requests: status updates, questions, greetings, photos, scheduling.
+
+If this is a material request, return JSON:
+{"is_request": true, "items": [{"name": "material name", "quantity": number_or_null, "unit": "unit_or_null", "specs": "any specifications"}], "trade": "framing|plumbing|electrical|concrete|drywall|general", "needed_by": "date_mentioned_or_null"}
+
+If NOT a material request, return: {"is_request": false}"""},
+                        {"role": "user", "content": message_body}
+                    ],
+                    "response_format": {"type": "json_object"}
+                }
+            )
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"]
+                result = json.loads(content)
+                if result.get("is_request"):
+                    return result
+    except Exception as e:
+        logger.error(f"Material detection error: {e}")
+    return None
+
+
+async def _create_material_request(project_id: str, company_id: str, group_id: str,
+                                     message_id: str, sender_phone: str, detection: dict) -> dict:
+    """Create a material request document from detected request."""
+    now = datetime.now(timezone.utc)
+
+    # Duplicate detection: check for similar request from same group in last 24h
+    recent = await db.material_requests.find_one({
+        "project_id": project_id,
+        "group_id": group_id,
+        "status": {"$in": ["open", "partial"]},
+        "created_at": {"$gte": now - timedelta(hours=24)}
+    })
+    if recent:
+        # Check item overlap
+        existing_names = {i["name"].lower() for i in recent.get("items", [])}
+        new_names = {i["name"].lower() for i in detection.get("items", [])}
+        overlap = len(existing_names & new_names)
+        if overlap > 0 and overlap >= len(new_names) * 0.5:
+            logger.info(f"Duplicate material request detected for project {project_id}, skipping")
+            return recent
+
+    items = []
+    for item in detection.get("items", []):
+        items.append({
+            "name": item.get("name", "Unknown"),
+            "quantity_requested": item.get("quantity"),
+            "quantity_received": 0,
+            "unit": item.get("unit"),
+            "specs": item.get("specs"),
+            "status": "pending",
+        })
+
+    doc = {
+        "project_id": project_id,
+        "company_id": company_id,
+        "group_id": group_id,
+        "message_id": message_id,
+        "requested_by": sender_phone,
+        "requested_by_trade": detection.get("trade", "general"),
+        "needed_by_date": detection.get("needed_by"),
+        "items": items,
+        "status": "open",
+        "delivery_receipts": [],
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+
+    result = await db.material_requests.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return doc
+
+
+async def _send_material_confirmation(group_id: str, request_doc: dict):
+    """Send formatted confirmation to WhatsApp group."""
+    items = request_doc.get("items", [])
+    trade = request_doc.get("requested_by_trade", "general").title()
+    needed_by = request_doc.get("needed_by_date")
+
+    lines = [f"\U0001f4cb *Material Request Logged* ({trade})"]
+    if needed_by:
+        lines.append(f"\U0001f4c5 Needed by: {needed_by}")
+    lines.append("")
+    for i, item in enumerate(items, 1):
+        qty = f"{item['quantity_requested']} {item.get('unit') or 'units'}" if item.get('quantity_requested') else "TBD"
+        specs = f" \u2014 {item['specs']}" if item.get('specs') else ""
+        lines.append(f"{i}. {item['name']}: {qty}{specs}")
+    lines.append("")
+    lines.append("_Reply with delivery info when materials arrive._")
+
+    message = "\n".join(lines)
+    await send_whatsapp_message(group_id, message)
+
+
+async def _handle_material_receipt(project_id: str, message_body: str, sender_phone: str) -> str:
+    """Reconcile a delivery receipt against open material requests."""
+    if not project_id or not OPENAI_API_KEY:
+        return "I couldn't process this delivery receipt. Please log it manually."
+
+    # Get open/partial requests
+    requests = await db.material_requests.find({
+        "project_id": project_id,
+        "status": {"$in": ["open", "partial"]},
+        "is_deleted": {"$ne": True}
+    }).to_list(20)
+
+    if not requests:
+        return "No open material requests found for this project."
+
+    # Build outstanding items summary
+    outstanding = []
+    for req in requests:
+        for item in req.get("items", []):
+            if item["status"] in ("pending", "partial"):
+                remaining = (item.get("quantity_requested") or 0) - (item.get("quantity_received") or 0)
+                outstanding.append({
+                    "request_id": str(req["_id"]),
+                    "item_name": item["name"],
+                    "quantity_remaining": remaining,
+                    "unit": item.get("unit"),
+                })
+
+    if not outstanding:
+        return "All material requests are fulfilled. No outstanding items."
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={
+                    "model": "gpt-4o",
+                    "temperature": 0,
+                    "messages": [
+                        {"role": "system", "content": f"""Match the delivery receipt against outstanding material requests.
+Outstanding items: {json.dumps(outstanding)}
+Return JSON: {{"matches": [{{"request_id": "id", "item_name": "name", "quantity_received": number}}], "unmatched": ["items not on any request"]}}"""},
+                        {"role": "user", "content": message_body}
+                    ],
+                    "response_format": {"type": "json_object"}
+                }
+            )
+            if resp.status_code != 200:
+                return "Could not process delivery receipt. Please log manually."
+
+            result = json.loads(resp.json()["choices"][0]["message"]["content"])
+    except Exception as e:
+        logger.error(f"Delivery reconciliation error: {e}")
+        return "Error processing delivery receipt. Please log manually."
+
+    # Update MongoDB
+    report_lines = ["\U0001f4e6 *Delivery Reconciliation*", ""]
+    for match in result.get("matches", []):
+        req_id = match.get("request_id")
+        item_name = match.get("item_name")
+        qty_received = match.get("quantity_received", 0)
+
+        # Find and update the request
+        for req in requests:
+            if str(req["_id"]) == req_id:
+                for item in req.get("items", []):
+                    if item["name"].lower() == item_name.lower():
+                        item["quantity_received"] = (item.get("quantity_received") or 0) + qty_received
+                        if item.get("quantity_requested") and item["quantity_received"] >= item["quantity_requested"]:
+                            item["status"] = "received"
+                            report_lines.append(f"\u2705 {item_name}: {qty_received} received \u2014 *Complete*")
+                        else:
+                            remaining = (item.get("quantity_requested") or 0) - item["quantity_received"]
+                            item["status"] = "partial"
+                            report_lines.append(f"\u26a0\ufe0f {item_name}: {qty_received} received \u2014 {remaining} still needed")
+                        break
+
+                # Update overall request status
+                statuses = [i["status"] for i in req.get("items", [])]
+                if all(s == "received" for s in statuses):
+                    req_status = "fulfilled"
+                elif any(s in ("received", "partial") for s in statuses):
+                    req_status = "partial"
+                else:
+                    req_status = "open"
+
+                await db.material_requests.update_one(
+                    {"_id": req["_id"]},
+                    {"$set": {"items": req["items"], "status": req_status, "updated_at": datetime.now(timezone.utc)},
+                     "$push": {"delivery_receipts": {"received_by": sender_phone, "message": message_body, "timestamp": datetime.now(timezone.utc), "matches": result.get("matches", [])}}}
+                )
+                break
+
+    for unmatched in result.get("unmatched", []):
+        report_lines.append(f"\u2753 {unmatched} \u2014 not on any open request")
+
+    return "\n".join(report_lines)
+
+
+async def _handle_material_status(project_id: str) -> str:
+    """Return formatted status of open/partial material requests."""
+    if not project_id:
+        return "Could not determine project."
+
+    requests = await db.material_requests.find({
+        "project_id": project_id,
+        "status": {"$in": ["open", "partial"]},
+        "is_deleted": {"$ne": True}
+    }).to_list(20)
+
+    if not requests:
+        return "\u2705 No outstanding material requests."
+
+    lines = ["\U0001f4ca *Outstanding Materials*", ""]
+    for req in requests:
+        trade = req.get("requested_by_trade", "general").title()
+        lines.append(f"*{trade}* (requested {req.get('created_at', '').strftime('%m/%d') if isinstance(req.get('created_at'), datetime) else 'N/A'}):")
+        for item in req.get("items", []):
+            if item["status"] in ("pending", "partial"):
+                remaining = (item.get("quantity_requested") or 0) - (item.get("quantity_received") or 0)
+                unit = item.get("unit") or "units"
+                if item["status"] == "pending":
+                    lines.append(f"  \u23f3 {item['name']}: {remaining} {unit} needed")
+                else:
+                    lines.append(f"  \u26a0\ufe0f {item['name']}: {remaining} {unit} still needed")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 async def _find_project_for_contact(contact: dict) -> Optional[str]:
     """Return first assigned project ID for a contact, or None."""
     user_id = contact.get("user_id")
@@ -8998,6 +9556,17 @@ async def _process_whatsapp_message(payload: dict):
                         {"_id": code_doc["_id"]},
                         {"$set": {"group_id": group_id, "group_verified": True}}
                     )
+
+            # Material request detection for group messages
+            if body and len(body) >= 15:
+                detection = await _detect_material_request(body, str(project_id), msg_company_id)
+                if detection:
+                    req_doc = await _create_material_request(
+                        str(project_id), msg_company_id, group_id,
+                        parsed["message_id"], sender, detection
+                    )
+                    if req_doc and req_doc.get("_id"):
+                        await _send_material_confirmation(group_id, req_doc)
             return
 
         # --- DIRECT message ---
@@ -9034,6 +9603,10 @@ async def _process_whatsapp_message(payload: dict):
             reply = await _handle_dob_status(project_id)
         elif intent == "open_items":
             reply = await _handle_open_items(project_id)
+        elif intent == "material_receipt":
+            reply = await _handle_material_receipt(project_id, body, sender)
+        elif intent == "material_status":
+            reply = await _handle_material_status(project_id)
         else:
             return
 
@@ -9250,6 +9823,34 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
         "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
     }
+
+
+# ---------- material request endpoints (auth required) ----------
+
+@api_router.get("/projects/{project_id}/material-requests")
+async def get_material_requests(project_id: str, status: str = None, current_user=Depends(get_current_user)):
+    """Get material requests for a project."""
+    query = {"project_id": project_id, "company_id": current_user.get("company_id"), "is_deleted": {"$ne": True}}
+    if status:
+        query["status"] = status
+    requests = await db.material_requests.find(query).sort("created_at", -1).to_list(100)
+    for r in requests:
+        r["id"] = str(r.pop("_id"))
+    return {"requests": requests, "total": len(requests)}
+
+
+@api_router.put("/material-requests/{request_id}/cancel")
+async def cancel_material_request(request_id: str, current_user=Depends(get_current_user)):
+    """Cancel a material request (admin only)."""
+    if current_user.get("role") not in ("admin", "owner"):
+        raise HTTPException(403, "Only admins can cancel material requests")
+    result = await db.material_requests.update_one(
+        {"_id": to_query_id(request_id), "company_id": current_user.get("company_id")},
+        {"$set": {"status": "cancelled", "updated_at": datetime.now(timezone.utc)}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(404, "Material request not found")
+    return {"message": "Material request cancelled"}
 
 
 # ---------- daily summary scheduler ----------

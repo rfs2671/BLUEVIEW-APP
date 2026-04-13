@@ -30,6 +30,7 @@ import {
   MessageSquare,
   ExternalLink,
   FileCheck,
+  ClipboardCheck,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -169,12 +170,14 @@ export default function DOBLogsScreen() {
   const permitCount = allLogs.filter(l => l.record_type === 'permit').length;
   const violationCount = allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo').length;
   const complaintCount = allLogs.filter(l => l.record_type === 'complaint').length;
+  const inspectionCount = allLogs.filter(l => l.record_type === 'inspection').length;
 
   // Get the real date for a record (actual issue/complaint/filing date, not sync date)
   const getRealDate = (log) => {
     if (log.record_type === 'violation' || log.record_type === 'swo') return log.violation_date || log.detected_at;
     if (log.record_type === 'complaint') return log.complaint_date || log.detected_at;
     if (log.record_type === 'permit') return log.issuance_date || log.filing_date || log.detected_at;
+    if (log.record_type === 'inspection') return log.inspection_date || log.detected_at;
     return log.detected_at;
   };
 
@@ -189,6 +192,7 @@ export default function DOBLogsScreen() {
   const filteredLogs = sortByDate(
     activeTab === 'all' ? allLogs
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
+    : activeTab === 'inspection' ? allLogs.filter(l => l.record_type === 'inspection')
     : allLogs.filter(l => l.record_type === activeTab)
   );
 
@@ -259,11 +263,26 @@ export default function DOBLogsScreen() {
   const renderViolationCard = (log) => {
     const isExpanded = expandedLogId === log.id;
     const sevConfig = getSevConfig(log.severity);
-    const combinedText = `${log.violation_type || ''} ${log.description || ''} ${log.ai_summary || ''}`.toLowerCase();
-    const isSWO = log.record_type === 'swo' || combinedText.includes('stop work') || combinedText.includes('swo');
-    const isPartialSWO = combinedText.includes('partial stop') || combinedText.includes('partial swo');
-    const headerLabel = isSWO ? (isPartialSWO ? 'PARTIAL STOP WORK ORDER' : 'STOP WORK ORDER') : 'VIOLATION';
-    const headerColor = isSWO ? '#dc2626' : '#ef4444';
+    const subtypeLabels = {
+      SWO_FULL: 'STOP WORK ORDER',
+      SWO_PARTIAL: 'PARTIAL SWO',
+      VACATE_FULL: 'VACATE ORDER',
+      VACATE_PARTIAL: 'PARTIAL VACATE',
+      COMM_ORDER: "COMMISSIONER'S ORDER",
+      ECB: 'ECB VIOLATION',
+      NOV: 'VIOLATION',
+    };
+    const subtypeColors = {
+      SWO_FULL: '#dc2626', SWO_PARTIAL: '#dc2626',
+      VACATE_FULL: '#dc2626', VACATE_PARTIAL: '#dc2626',
+      COMM_ORDER: '#dc2626',
+      ECB: '#f97316',
+      NOV: '#ef4444',
+    };
+    const subtype = log.violation_subtype || 'NOV';
+    const headerLabel = subtypeLabels[subtype] || 'VIOLATION';
+    const headerColor = subtypeColors[subtype] || '#ef4444';
+    const isSWO = subtype.startsWith('SWO') || subtype.startsWith('VACATE');
     const displayDate = log.violation_date || log.detected_at;
 
     return (
@@ -282,9 +301,35 @@ export default function DOBLogsScreen() {
             </View>
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          {log.penalty_amount && subtype === 'ECB' && (
+            <View style={{ backgroundColor: 'rgba(249,115,22,0.1)', borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
+              <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>Penalty Amount</Text>
+            </View>
+          )}
           {isExpanded && (
             <View style={s.expandedSection}>
               <View style={s.divider} />
+              {log.notice_type && (
+                <View style={[s.typeBadge, { borderColor: '#f5920b40', marginTop: 4, alignSelf: 'flex-start' }]}>
+                  <Text style={[s.typeText, { color: '#f59e0b' }]}>
+                    {{'commissioners_order': "COMMISSIONER'S ORDER", 'padlock_order': 'PADLOCK ORDER', 'emergency_declaration': 'EMERGENCY DECLARATION', 'notice_of_deficiency': 'NOTICE OF DEFICIENCY', 'letter_of_deficiency': 'LETTER OF DEFICIENCY'}[log.notice_type] || log.notice_type}
+                  </Text>
+                </View>
+              )}
+              {log.compliance_deadline && (() => {
+                const deadlineDays = daysUntil(log.compliance_deadline);
+                if (deadlineDays === null) return null;
+                const isOverdue = deadlineDays < 0;
+                return (
+                  <View style={[s.expirationBanner, { backgroundColor: isOverdue ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)' }]}>
+                    <AlertTriangle size={14} color={isOverdue ? '#ef4444' : '#f59e0b'} />
+                    <Text style={[s.expirationText, { color: isOverdue ? '#ef4444' : '#f59e0b', fontWeight: '600' }]}>
+                      {isOverdue ? `OVERDUE by ${Math.abs(deadlineDays)} days` : `${deadlineDays} days to comply`}
+                    </Text>
+                  </View>
+                );
+              })()}
               {log.violation_number && <DetailRow label="Violation #" value={log.violation_number} colors={colors} />}
               {log.violation_date && <DetailRow label="Issue Date" value={formatDate(log.violation_date)} colors={colors} />}
               {log.violation_type && <DetailRow label="Type" value={log.violation_type} colors={colors} />}
@@ -294,6 +339,17 @@ export default function DOBLogsScreen() {
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
               {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
+              {log.resolution_state && (
+                <View style={{ marginTop: 8 }}>
+                  <Text style={{ fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>RESOLUTION STATUS</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ['certified','dismissed','paid','resolved'].includes(log.resolution_state) ? '#22c55e' : ['hearing_scheduled','cure_pending'].includes(log.resolution_state) ? '#f59e0b' : '#ef4444' }} />
+                    <Text style={{ fontSize: 13, color: colors.text.primary, fontWeight: '600' }}>
+                      {{'open':'Open — Unresolved','cure_pending':'Cure Submitted — Awaiting Certification','hearing_scheduled':'ECB Hearing Scheduled','hearing_past':'Hearing Occurred — Awaiting Result','certified':'Certified — Resolved','dismissed':'Dismissed','paid':'Penalty Paid','resolved':'Resolved'}[log.resolution_state] || log.resolution_state}
+                    </Text>
+                  </View>
+                </View>
+              )}
               <View style={s.nextActionBox}>
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
@@ -308,104 +364,202 @@ export default function DOBLogsScreen() {
     );
   };
 
-  const renderGenericCard = (log) => {
+  const renderComplaintCard = (log) => {
     const isExpanded = expandedLogId === log.id;
-    const sevConfig = getSevConfig(log.severity);
-    const isComplaint = log.record_type === 'complaint';
-    const typeLabel = isComplaint ? '311 Complaint' : log.record_type === 'job_status' ? 'Job Filing' : log.record_type;
-    const typeColor = isComplaint ? '#f59e0b' : '#3b82f6';
 
-    // Check if this resolved complaint spawned a violation (by date proximity)
-    let linkedViolation = null;
-    if (isComplaint && log.complaint_date) {
-      const complaintDate = parseAnyDate(log.complaint_date);
-      if (complaintDate) {
-        const violations = allLogs.filter(v => v.record_type === 'violation' || v.record_type === 'swo');
-        linkedViolation = violations.find(v => {
-          const vDate = parseAnyDate(v.violation_date);
-          if (!vDate) return false;
-          const diffDays = (vDate - complaintDate) / (1000 * 60 * 60 * 24);
-          return diffDays >= 0 && diffDays <= 30;
-        });
-      }
-    }
+    // Risk level color mapping
+    const riskColors = {
+      CRITICAL: '#dc2626',
+      HIGH: '#f97316',
+      MEDIUM: '#f59e0b',
+      LOW: '#22c55e',
+      RESOLVED: '#6b7280',
+      PENDING: '#3b82f6',
+    };
+    const riskColor = riskColors[(log.risk_level || '').toUpperCase()] || '#3b82f6';
 
-    const isResolved = (log.complaint_status || '').toUpperCase().includes('CLOSE') || (log.complaint_status || '').toUpperCase().includes('RESOLVED');
-    const hasViolation = !!linkedViolation;
+    const complaintSource = log.complaint_source || '311 Complaint';
+    const isResolved = !!log.closed_date || (log.complaint_status || '').toUpperCase().includes('CLOSE');
+    const hasLinkedViolation = !!log.linked_violation_id;
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
-        <GlassCard style={[s.logCard, hasViolation && isResolved && { borderColor: 'rgba(239,68,68,0.3)', borderWidth: 1 }]}>
+        <GlassCard style={s.logCard}>
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
-              <View style={[s.severityDot, { backgroundColor: hasViolation ? '#ef4444' : sevConfig.color }]} />
-              <View style={[s.typeBadge, { borderColor: typeColor + '40' }]}>
-                <Text style={[s.typeText, { color: typeColor }]}>{typeLabel}</Text>
+              <View style={[s.severityDot, { backgroundColor: riskColor }]} />
+              <View style={[s.typeBadge, { borderColor: 'rgba(245,158,11,0.4)' }]}>
+                <Text style={[s.typeText, { color: '#f59e0b' }]}>{complaintSource}</Text>
               </View>
-              {isResolved && !hasViolation && (
-                <View style={[s.typeBadge, { borderColor: '#22c55e40', marginLeft: 4 }]}>
-                  <Text style={[s.typeText, { color: '#22c55e' }]}>Clear</Text>
-                </View>
-              )}
             </View>
             <View style={s.logHeaderRight}>
-              {(log.complaint_date || log.detected_at) && <Text style={s.dateText}>{formatDate(log.complaint_date || log.detected_at)}</Text>}
+              {log.complaint_date && <Text style={s.dateText}>{formatDate(log.complaint_date)}</Text>}
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
 
-          {/* Yellow banner: inspector done */}
-          {isResolved && !hasViolation && (
+          {/* Disposition badges */}
+          {isResolved && (
             <View style={[s.expirationBanner, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
               <CheckCircle size={14} color="#22c55e" />
-              <Text style={[s.expirationText, { color: '#22c55e', fontWeight: '500' }]}>Inspection complete — no violation issued</Text>
+              <Text style={[s.expirationText, { color: '#22c55e', fontWeight: '500' }]}>Resolved</Text>
             </View>
           )}
-
-          {/* Red banner: resolved BUT spawned a violation */}
-          {hasViolation && (
-            <Pressable onPress={() => { setActiveTab('violation'); setExpandedLogId(linkedViolation.id); }}>
-              <View style={[s.expirationBanner, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
-                <AlertTriangle size={14} color="#ef4444" />
-                <Text style={[s.expirationText, { color: '#ef4444', fontWeight: '600' }]}>
-                  ⚠️ Violation issued from this complaint — tap to view
-                </Text>
-              </View>
-            </Pressable>
-          )}
-
-          {/* Yellow banner: still open/active */}
-          {!isResolved && !hasViolation && isComplaint && (
-            <View style={[s.expirationBanner, s.expiringBanner]}>
-              <AlertTriangle size={14} color="#f59e0b" />
-              <Text style={[s.expirationText, { color: '#f59e0b' }]}>Inspector coming or actively investigating</Text>
+          {hasLinkedViolation && (
+            <View style={[s.expirationBanner, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
+              <AlertTriangle size={14} color="#ef4444" />
+              <Text style={[s.expirationText, { color: '#ef4444', fontWeight: '600' }]}>Violation Issued</Text>
             </View>
           )}
 
           {isExpanded && (
             <View style={s.expandedSection}>
               <View style={s.divider} />
-              {log.complaint_number && <DetailRow label="Complaint #" value={log.complaint_number} colors={colors} />}
-              {log.complaint_type && <DetailRow label="Category" value={log.complaint_type} colors={colors} />}
-              {log.complaint_status && <DetailRow label="Inspector Status" value={log.complaint_status} colors={colors} />}
-              {log.disposition_code && <DetailRow label="Disposition Code" value={log.disposition_code} colors={colors} />}
-              {log.complaint_date && <DetailRow label="Date Filed" value={formatDate(log.complaint_date)} colors={colors} />}
-              {log.closed_date && <DetailRow label="Inspection Date" value={formatDate(log.closed_date)} colors={colors} />}
-              {log.incident_address && <DetailRow label="Address" value={log.incident_address} colors={colors} />}
-              {log.description && <DetailRow label="Complaint Category" value={log.description} colors={colors} />}
-              {hasViolation && (
-                <View style={[s.nextActionBox, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                  <Text style={[s.nextActionLabel, { color: '#ef4444' }]}>VIOLATION ISSUED</Text>
-                  <Text style={s.nextActionText}>
-                    {linkedViolation.violation_number ? `#${linkedViolation.violation_number} — ` : ''}
-                    {linkedViolation.violation_type || 'Violation'}{linkedViolation.violation_date ? ` (${formatDate(linkedViolation.violation_date)})` : ''}
-                  </Text>
-                  <Pressable onPress={() => { setActiveTab('violation'); setExpandedLogId(linkedViolation.id); }}>
-                    <Text style={{ color: '#ef4444', fontSize: 13, fontWeight: '600', marginTop: 6 }}>View Violation →</Text>
-                  </Pressable>
+
+              {/* What Happened */}
+              {log.category_label && (
+                <View style={s.nextActionBox}>
+                  <Text style={s.nextActionLabel}>WHAT HAPPENED</Text>
+                  <Text style={s.nextActionText}>{log.category_label}</Text>
                 </View>
               )}
+
+              {/* Current Status */}
+              {log.disposition_label && (
+                <View style={s.nextActionBox}>
+                  <Text style={s.nextActionLabel}>CURRENT STATUS</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    <Text style={[s.nextActionText, { flex: 1 }]}>{log.disposition_label}</Text>
+                    <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: riskColor + '20' }}>
+                      <Text style={{ fontSize: 10, fontWeight: '600', color: riskColor }}>{log.risk_level || 'PENDING'}</Text>
+                    </View>
+                  </View>
+                </View>
+              )}
+
+              {/* What To Expect */}
+              {log.what_to_expect && (
+                <View style={s.nextActionBox}>
+                  <Text style={s.nextActionLabel}>WHAT TO EXPECT</Text>
+                  <Text style={s.nextActionText}>{log.what_to_expect}</Text>
+                </View>
+              )}
+
+              {/* What To Do Now */}
+              {log.next_action && (
+                <View style={s.nextActionBox}>
+                  <Text style={s.nextActionLabel}>WHAT TO DO NOW</Text>
+                  <Text style={s.nextActionText}>{log.next_action}</Text>
+                </View>
+              )}
+
+              {/* Inspector unit */}
+              {log.inspector_unit && <DetailRow label="Inspector Unit" value={log.inspector_unit} colors={colors} />}
+
+              {/* Linked violation card */}
+              {hasLinkedViolation && (
+                <Pressable onPress={() => {
+                  setActiveTab('violation');
+                  const linked = allLogs.find(l => l.id === log.linked_violation_id || l.raw_dob_id === log.linked_violation_id);
+                  if (linked) setExpandedLogId(linked.id);
+                }}>
+                  <View style={[s.nextActionBox, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
+                    <Text style={[s.nextActionLabel, { color: '#ef4444' }]}>VIOLATION ISSUED</Text>
+                    <Text style={[s.nextActionText, { color: '#ef4444' }]}>Violation issued from this complaint — tap to view</Text>
+                  </View>
+                </Pressable>
+              )}
+
+              {/* DOB link */}
+              {log.dob_link && log.dob_link.trim().length > 0 && (
+                <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+              )}
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    );
+  };
+
+  const renderInspectionCard = (log) => {
+    const isExpanded = expandedLogId === log.id;
+    const result = (log.inspection_result || '').toUpperCase();
+    const resultConfig = result.includes('FAIL')
+      ? { color: '#ef4444', label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
+      : result.includes('PARTIAL')
+      ? { color: '#f59e0b', label: 'Partial', bg: 'rgba(245,158,11,0.1)' }
+      : { color: '#22c55e', label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
+
+    return (
+      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
+        <GlassCard style={s.logCard}>
+          <View style={s.logHeader}>
+            <View style={s.logHeaderLeft}>
+              <View style={[s.severityDot, { backgroundColor: resultConfig.color }]} />
+              <View style={[s.typeBadge, { borderColor: '#3b82f640' }]}>
+                <Text style={[s.typeText, { color: '#3b82f6' }]}>Inspection</Text>
+              </View>
+              <View style={[s.typeBadge, { borderColor: resultConfig.color + '40', backgroundColor: resultConfig.bg }]}>
+                <Text style={[s.typeText, { color: resultConfig.color }]}>{resultConfig.label}</Text>
+              </View>
+            </View>
+            <View style={s.logHeaderRight}>
+              <Text style={s.dateText}>{formatDate(log.inspection_date || log.detected_at)}</Text>
+              {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            </View>
+          </View>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          {isExpanded && (
+            <View style={s.expandedSection}>
+              <View style={s.divider} />
+              {log.inspection_type && <DetailRow label="Type" value={log.inspection_type} colors={colors} />}
+              {log.inspection_result && <DetailRow label="Result" value={log.inspection_result} colors={colors} />}
+              {log.inspection_result_description && <DetailRow label="Details" value={log.inspection_result_description} colors={colors} />}
+              {log.linked_job_number && <DetailRow label="Job #" value={log.linked_job_number} colors={colors} />}
+              {log.inspection_date && <DetailRow label="Date" value={formatDate(log.inspection_date)} colors={colors} />}
+              <View style={s.nextActionBox}>
+                <Text style={s.nextActionLabel}>ACTION</Text>
+                <Text style={s.nextActionText}>{log.next_action}</Text>
+              </View>
+              {log.dob_link && log.dob_link.trim().length > 0 && (
+                <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+              )}
+            </View>
+          )}
+        </GlassCard>
+      </Pressable>
+    );
+  };
+
+  const renderGenericCard = (log) => {
+    const isExpanded = expandedLogId === log.id;
+    const sevConfig = getSevConfig(log.severity);
+    const typeLabel = log.record_type === 'job_status' ? 'Job Filing' : log.record_type;
+    const typeColor = '#3b82f6';
+
+    return (
+      <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
+        <GlassCard style={s.logCard}>
+          <View style={s.logHeader}>
+            <View style={s.logHeaderLeft}>
+              <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
+              <View style={[s.typeBadge, { borderColor: typeColor + '40' }]}>
+                <Text style={[s.typeText, { color: typeColor }]}>{typeLabel}</Text>
+              </View>
+            </View>
+            <View style={s.logHeaderRight}>
+              {log.detected_at && <Text style={s.dateText}>{formatDate(log.detected_at)}</Text>}
+              {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
+            </View>
+          </View>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+
+          {isExpanded && (
+            <View style={s.expandedSection}>
+              <View style={s.divider} />
+              {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
+              {log.description && <DetailRow label="Description" value={log.description} colors={colors} />}
               <View style={s.nextActionBox}>
                 <Text style={s.nextActionLabel}>STATUS</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
@@ -424,6 +578,8 @@ export default function DOBLogsScreen() {
   const renderLogCard = (log) => {
     if (log.record_type === 'permit') return renderPermitCard(log);
     if (log.record_type === 'violation' || log.record_type === 'swo') return renderViolationCard(log);
+    if (log.record_type === 'complaint') return renderComplaintCard(log);
+    if (log.record_type === 'inspection') return renderInspectionCard(log);
     return renderGenericCard(log);
   };
 
@@ -498,6 +654,13 @@ export default function DOBLogsScreen() {
                 <Text style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
               </GlassCard>
             </Pressable>
+            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
+              <GlassCard style={[s.navCard, activeTab === 'inspection' && s.navCardActive]}>
+                <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? '#4ade80' : colors.text.muted} />
+                <Text style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
+                <Text style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
+              </GlassCard>
+            </Pressable>
           </View>
 
           {/* Active filter indicator */}
@@ -505,7 +668,7 @@ export default function DOBLogsScreen() {
             <Pressable onPress={() => setActiveTab('all')}>
               <View style={s.filterBanner}>
                 <Text style={s.filterText}>
-                  Showing: {activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : 'Complaints'}
+                  Showing: {activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : activeTab === 'inspection' ? 'Inspections' : 'Complaints'}
                 </Text>
                 <Text style={s.filterClear}>Show All</Text>
               </View>
@@ -539,7 +702,7 @@ export default function DOBLogsScreen() {
             <GlassCard style={s.emptyCard}>
               <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyTitle}>
-                {activeTab === 'all' ? 'No Records Found' : `No ${activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : 'Complaints'}`}
+                {activeTab === 'all' ? 'No Records Found' : `No ${activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : activeTab === 'inspection' ? 'Inspections' : 'Complaints'}`}
               </Text>
               <Text style={s.emptySubtitle}>
                 {!trackDobStatus ? 'Enable DOB tracking to start monitoring.' : 'Hit Sync Now to check for new records.'}

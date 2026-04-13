@@ -1,6 +1,5 @@
 import os
 import re
-import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
@@ -16,25 +15,12 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-NYC_ID_USERNAME = os.environ.get("NYC_ID_USERNAME", "")
-NYC_ID_PASSWORD = os.environ.get("NYC_ID_PASSWORD", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 OWNER_ALERT_EMAIL = os.environ.get("OWNER_ALERT_EMAIL", "")
 
 DOB_BIS_LICENSE_URL = "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryServlet"
 DOB_NOW_BUILD_URL = "https://a810-dobnow.nyc.gov/publish/Index.html"
 
-# RPA selectors the bot depends on — monitored by the health check
-RPA_CRITICAL_SELECTORS = {
-    "login_button": "text=Log In",
-    "nycid_username": "#username",
-    "nycid_password": "#password",
-    "nycid_submit": "button[type='submit']",
-    "job_search_input": "input[placeholder*='Job']",
-    "renew_permit_btn": "text=Renew Permit",
-    "save_btn": "text=Save",
-    "actions_dropdown": "button:has-text('Actions')",
-}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -81,6 +67,8 @@ class RenewalEligibility(BaseModel):
     permit_type: Optional[str] = None
     expiration_date: Optional[str] = None
     days_until_expiry: Optional[int] = None
+    renewal_path: Optional[str] = None  # "dob_now" or "bis_legacy"
+    paa_required: bool = False
     gc_license: Optional[GCLicenseInfo] = None
     blocking_reasons: List[str] = []
     insurance_flags: List[str] = []
@@ -273,13 +261,29 @@ async def check_renewal_eligibility(
     if permit.get("record_type") != "permit":
         raise HTTPException(status_code=400, detail="Record is not a permit")
 
+    # ── Determine renewal path (DOB NOW vs BIS legacy) ──
+    job_number = permit.get("job_number", "")
+    job_clean = job_number.replace("-", "").strip() if job_number else ""
+    is_dob_now = job_clean.upper().startswith("B")
+    is_bis_legacy = bool(job_clean) and job_clean.isdigit()
+    renewal_path = "dob_now" if is_dob_now else ("bis_legacy" if is_bis_legacy else "dob_now")
+
     eligibility = RenewalEligibility(
         permit_id=permit_dob_log_id,
         project_id=project_id,
         job_number=permit.get("job_number"),
         permit_type=permit.get("permit_type"),
         expiration_date=permit.get("expiration_date"),
+        renewal_path=renewal_path,
     )
+
+    # ── BIS legacy permits cannot be renewed automatically ──
+    if renewal_path == "bis_legacy":
+        eligibility.blocking_reasons.append(
+            "This permit was filed through the legacy BIS system. "
+            "Automated renewal is not available \u2014 contact your expediter "
+            "to file a Post Approval Amendment (PAA) or re-file through DOB NOW."
+        )
 
     # ── Check expiration window ──
     exp_str = permit.get("expiration_date")
@@ -295,6 +299,14 @@ async def check_renewal_eligibility(
             if days_left > 30:
                 eligibility.blocking_reasons.append(
                     f"Permit expires in {days_left} days. Renewal available within 30 days of expiry."
+                )
+            elif days_left < -60:
+                # Expired more than 60 days — PAA required
+                eligibility.paa_required = True
+                eligibility.blocking_reasons.append(
+                    "This permit has been expired for more than 60 days. "
+                    "Standard renewal is no longer available \u2014 a Post Approval "
+                    "Amendment (PAA) is required."
                 )
             elif days_left < 0:
                 eligibility.blocking_reasons.append(
@@ -359,183 +371,35 @@ async def check_renewal_eligibility(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DOB NOW RPA — PREPARER DRAFT
+# RENEWAL DATA ASSEMBLER (replaces Playwright RPA)
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def prepare_renewal_on_dob_now(
-    job_number: str,
-    license_number: str,
-    project_address: str,
-) -> Dict[str, Any]:
-    """
-    Playwright headless browser:
-      1. Log into DOB NOW: Build as Preparer (NYC.ID)
-      2. Search for the Job Number
-      3. Click "Renew Permit"
-      4. Save as Draft
-      5. Return deep-link URLs for the GC
+async def prepare_renewal_data(permit_data: dict) -> dict:
+    """Assemble renewal data for manual filing -- no browser automation."""
+    job_number = permit_data.get("job_number", "")
+    job_clean = job_number.replace("-", "").strip()
 
-    Returns dict with success, dob_filing_url, signature_url, error.
-    """
-    result = {
-        "success": False,
-        "dob_filing_url": None,
-        "signature_url": None,
-        "error": None,
+    return {
+        "renewal_path": "dob_now" if job_clean.upper().startswith("B") else "bis_legacy",
+        "dob_now_url": f"https://a810-dobnow.nyc.gov/publish/#!/service/DobDashboard/1/{job_clean}" if job_clean.upper().startswith("B") else None,
+        "copyable_fields": [
+            {"label": "Job Number", "value": job_number},
+            {"label": "Address", "value": permit_data.get("address", "")},
+            {"label": "GC License #", "value": permit_data.get("gc_license", "")},
+            {"label": "BIN", "value": permit_data.get("bin", "")},
+        ],
+        "checklist": [
+            "Log in to DOB NOW with your NYC.ID",
+            f"Navigate to Job #{job_number}",
+            "Select 'Renew Permit' from the Actions menu",
+            "Verify all pre-filled information is correct",
+            "Upload any required updated documents",
+            "Submit the renewal application",
+            "Pay the DOB fee",
+            "Download the receipt for your records",
+        ],
+        "paa_required": permit_data.get("paa_required", False),
     }
-
-    if not NYC_ID_USERNAME or not NYC_ID_PASSWORD:
-        result["error"] = (
-            "NYC.ID credentials not configured. "
-            "Set NYC_ID_USERNAME and NYC_ID_PASSWORD env vars."
-        )
-        logger.error(result["error"])
-        return result
-
-    if not job_number:
-        result["error"] = "Job number is required for renewal preparation."
-        return result
-
-    try:
-        from playwright.async_api import async_playwright
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-            )
-            page = await context.new_page()
-
-            # Step 1: Navigate to DOB NOW Build
-            logger.info(f"RPA: Navigating to DOB NOW for job {job_number}")
-            await page.goto(
-                DOB_NOW_BUILD_URL,
-                wait_until="networkidle",
-                timeout=30000,
-            )
-
-            # Step 2: Authenticate via NYC.ID
-            login_btn = page.locator(
-                RPA_CRITICAL_SELECTORS["login_button"]
-            ).first
-            if await login_btn.is_visible(timeout=5000):
-                await login_btn.click()
-                await page.wait_for_url(
-                    "**/account.nyc.gov/**", timeout=15000
-                )
-
-                await page.fill(
-                    RPA_CRITICAL_SELECTORS["nycid_username"],
-                    NYC_ID_USERNAME,
-                )
-                await page.fill(
-                    RPA_CRITICAL_SELECTORS["nycid_password"],
-                    NYC_ID_PASSWORD,
-                )
-                await page.click(RPA_CRITICAL_SELECTORS["nycid_submit"])
-                await page.wait_for_url(
-                    "**/a810-dobnow.nyc.gov/**", timeout=30000
-                )
-                logger.info("RPA: Authenticated with NYC.ID")
-
-            # Step 3: Search for Job Number
-            await page.wait_for_selector(
-                RPA_CRITICAL_SELECTORS["job_search_input"],
-                timeout=10000,
-            )
-            await page.fill(
-                RPA_CRITICAL_SELECTORS["job_search_input"],
-                job_number,
-            )
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(3000)
-
-            # Step 4: Click on the job row
-            job_row = page.locator(f"text={job_number}").first
-            if not await job_row.is_visible(timeout=5000):
-                result["error"] = f"Job {job_number} not found in DOB NOW"
-                await browser.close()
-                return result
-
-            await job_row.click()
-            await page.wait_for_timeout(2000)
-
-            # Step 5: Click "Renew Permit"
-            renew_btn = page.locator(
-                RPA_CRITICAL_SELECTORS["renew_permit_btn"]
-            ).first
-
-            if await renew_btn.is_visible(timeout=3000):
-                await renew_btn.click()
-                await page.wait_for_timeout(3000)
-                logger.info(
-                    f"RPA: Clicked 'Renew Permit' for job {job_number}"
-                )
-            else:
-                # Fallback: Actions dropdown → Renew
-                actions_btn = page.locator(
-                    RPA_CRITICAL_SELECTORS["actions_dropdown"]
-                ).first
-                if await actions_btn.is_visible(timeout=3000):
-                    await actions_btn.click()
-                    await page.wait_for_timeout(1000)
-                    renew_option = page.locator("text=Renew").first
-                    if await renew_option.is_visible(timeout=2000):
-                        await renew_option.click()
-                        await page.wait_for_timeout(3000)
-                    else:
-                        result["error"] = (
-                            "'Renew' option not available in Actions dropdown. "
-                            "The permit may not be eligible for renewal on DOB NOW."
-                        )
-                        await browser.close()
-                        return result
-                else:
-                    result["error"] = (
-                        "Cannot find 'Renew Permit' button or Actions dropdown. "
-                        "DOB NOW UI may have changed."
-                    )
-                    await browser.close()
-                    return result
-
-            # Step 6: Save as Draft
-            save_btn = page.locator(
-                RPA_CRITICAL_SELECTORS["save_btn"]
-            ).first
-            if await save_btn.is_visible(timeout=5000):
-                await save_btn.click()
-                await page.wait_for_timeout(2000)
-                logger.info(
-                    f"RPA: Saved renewal draft for job {job_number}"
-                )
-
-            # Step 7: Capture URLs
-            result["dob_filing_url"] = page.url
-
-            job_clean = job_number.replace("-", "")
-            result["signature_url"] = (
-                f"https://a810-dobnow.nyc.gov/publish/#!/"
-                f"job/{job_clean}/action/renewal/"
-                f"tab/statementsAndSignatures"
-            )
-
-            result["success"] = True
-            logger.info(
-                f"RPA: Renewal draft ready for job {job_number}. "
-                f"GC deep-link: {result['signature_url']}"
-            )
-            await browser.close()
-
-    except Exception as e:
-        result["error"] = f"RPA error: {str(e)}"
-        logger.error(f"RPA error for job {job_number}: {e}")
-
-    return result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -631,131 +495,31 @@ async def check_renewal_completion(db, renewal: dict) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DOB NOW HEALTH CHECK — Monitor for UI changes
+# DOB NOW HEALTH CHECK — Monitor DOB NOW availability
 # ══════════════════════════════════════════════════════════════════════════════
 
 async def run_dob_now_health_check(db):
     """
-    Daily health check that validates DOB NOW's UI hasn't changed.
-    Three checks:
-      1. DOM Selectors — verifies login page elements exist
-      2. JS Bundle Hash — detects redeployments
-      3. NYC.ID login page — verifies form fields
-    Sends Resend email alert if anything fails.
+    Daily health check that validates DOB NOW is reachable via HTTP.
+    Sends Resend email alert if the site is down.
     """
-    logger.info("🔍 DOB NOW health check starting...")
+    logger.info("DOB NOW health check starting...")
 
     issues = []
-    js_hash_current = None
 
     try:
-        from playwright.async_api import async_playwright
+        import httpx
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-
-            # Check 1: Load DOB NOW and verify login button
-            try:
-                await page.goto(
-                    DOB_NOW_BUILD_URL,
-                    wait_until="networkidle",
-                    timeout=30000,
-                )
-
-                login_visible = await page.locator(
-                    RPA_CRITICAL_SELECTORS["login_button"]
-                ).first.is_visible(timeout=5000)
-
-                if not login_visible:
-                    issues.append(
-                        "LOGIN BUTTON MISSING: The 'Log In' button was not "
-                        "found on the DOB NOW landing page. "
-                        "Selector may need updating."
-                    )
-            except Exception as e:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(DOB_NOW_BUILD_URL)
+            if resp.status_code != 200:
                 issues.append(
-                    f"PAGE LOAD FAILED: DOB NOW Build failed to load. "
-                    f"Error: {str(e)}"
+                    f"DOB NOW returned HTTP {resp.status_code}. "
+                    "The site may be down or undergoing maintenance."
                 )
-
-            # Check 2: Hash JS bundle URLs for change detection
-            try:
-                scripts = await page.evaluate("""
-                    () => Array.from(
-                        document.querySelectorAll('script[src]')
-                    )
-                    .map(s => s.src)
-                    .filter(src =>
-                        src.includes('dobnow') || src.includes('bundle')
-                    )
-                    .sort()
-                """)
-
-                if scripts:
-                    js_hash_current = hashlib.sha256(
-                        "|".join(scripts).encode()
-                    ).hexdigest()[:16]
-
-                    stored = await db.system_config.find_one(
-                        {"key": "dob_now_js_hash"}
-                    )
-                    if stored and stored.get("value") != js_hash_current:
-                        issues.append(
-                            f"JS BUNDLE CHANGED: DOB NOW deployed new "
-                            f"JavaScript. Old hash: {stored.get('value')}, "
-                            f"New hash: {js_hash_current}. "
-                            f"RPA selectors may need updating."
-                        )
-
-                    await db.system_config.update_one(
-                        {"key": "dob_now_js_hash"},
-                        {"$set": {
-                            "key": "dob_now_js_hash",
-                            "value": js_hash_current,
-                            "updated_at": datetime.now(timezone.utc),
-                        }},
-                        upsert=True,
-                    )
-            except Exception as e:
-                issues.append(f"JS HASH CHECK FAILED: {str(e)}")
-
-            # Check 3: Verify NYC.ID login page loads
-            try:
-                login_btn = page.locator(
-                    RPA_CRITICAL_SELECTORS["login_button"]
-                ).first
-                if await login_btn.is_visible(timeout=3000):
-                    await login_btn.click()
-                    await page.wait_for_url(
-                        "**/account.nyc.gov/**", timeout=10000
-                    )
-
-                    username_ok = await page.locator(
-                        RPA_CRITICAL_SELECTORS["nycid_username"]
-                    ).first.is_visible(timeout=5000)
-                    if not username_ok:
-                        issues.append(
-                            "NYC.ID LOGIN CHANGED: Username field "
-                            "(#username) not found."
-                        )
-
-                    password_ok = await page.locator(
-                        RPA_CRITICAL_SELECTORS["nycid_password"]
-                    ).first.is_visible(timeout=3000)
-                    if not password_ok:
-                        issues.append(
-                            "NYC.ID LOGIN CHANGED: Password field "
-                            "(#password) not found."
-                        )
-            except Exception as e:
-                issues.append(f"NYC.ID PAGE CHECK FAILED: {str(e)}")
-
-            await browser.close()
-
     except Exception as e:
         issues.append(
-            f"HEALTH CHECK CRASHED: Playwright failed to start. "
+            f"DOB NOW UNREACHABLE: Could not connect to DOB NOW. "
             f"Error: {str(e)}"
         )
 
@@ -836,16 +600,15 @@ async def _send_health_check_alert(issues: List[str]):
         html = f"""
         <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:600px;margin:0 auto;">
             <div style="background:#dc2626;color:white;padding:20px 24px;border-radius:8px 8px 0 0;">
-                <h1 style="margin:0;font-size:18px;">⚠️ DOB NOW UI Change Detected</h1>
+                <h1 style="margin:0;font-size:18px;">⚠️ DOB NOW Availability Issue</h1>
                 <p style="margin:4px 0 0;opacity:0.9;font-size:14px;">
-                    Permit Renewal RPA may need updating
+                    Permit renewal portal may be unavailable
                 </p>
             </div>
             <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 8px 8px;">
                 <p style="margin:0 0 16px;font-size:14px;color:#374151;">
                     The daily DOB NOW health check detected
-                    {len(issues)} issue(s) that may break the permit
-                    renewal automation:
+                    {len(issues)} issue(s):
                 </p>
                 {issues_html}
                 <div style="background:#f9fafb;border-radius:6px;padding:16px;margin-top:16px;">
@@ -853,10 +616,9 @@ async def _send_health_check_alert(issues: List[str]):
                         Required Action
                     </p>
                     <p style="margin:0;font-size:14px;color:#1f2937;">
-                        Review the RPA selectors in
-                        <code>permit_renewal.py</code>
-                        (RPA_CRITICAL_SELECTORS dict) and update any
-                        that no longer match DOB NOW's interface.
+                        Check DOB NOW availability and advise users
+                        if manual renewal filing may be temporarily
+                        unavailable.
                     </p>
                 </div>
                 <p style="margin:16px 0 0;font-size:12px;color:#9ca3af;">
@@ -873,7 +635,7 @@ async def _send_health_check_alert(issues: List[str]):
             "from": "Levelog Alerts <alerts@levelog.com>",
             "to": [recipient],
             "subject": (
-                f"⚠️ DOB NOW UI Change — Permit Renewal RPA Alert "
+                f"⚠️ DOB NOW Health Check Alert "
                 f"({len(issues)} issue{'s' if len(issues) != 1 else ''})"
             ),
             "html": html,
@@ -1239,24 +1001,17 @@ def create_permit_renewal_routes(
                 },
             )
 
-        # Run RPA
-        rpa_result = await prepare_renewal_on_dob_now(
-            job_number=eligibility.job_number or "",
-            license_number=(
+        # Assemble renewal data (no browser automation)
+        renewal_data_result = await prepare_renewal_data({
+            "job_number": eligibility.job_number or "",
+            "address": project.get("address", ""),
+            "gc_license": (
                 eligibility.gc_license.license_number
                 if eligibility.gc_license else ""
             ),
-            project_address=project.get("address", ""),
-        )
-
-        if not rpa_result["success"]:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"DOB NOW automation failed: "
-                    f"{rpa_result.get('error', 'Unknown error')}"
-                ),
-            )
+            "bin": project.get("bin", ""),
+            "paa_required": eligibility.paa_required,
+        })
 
         now = datetime.now(timezone.utc)
 
@@ -1281,6 +1036,7 @@ def create_permit_renewal_routes(
             "current_expiration": eligibility.expiration_date,
             "days_until_expiry": eligibility.days_until_expiry,
             "status": RenewalStatus.AWAITING_GC,
+            "renewal_path": renewal_data_result.get("renewal_path"),
             "gc_license_number": (
                 eligibility.gc_license.license_number
                 if eligibility.gc_license else None
@@ -1292,8 +1048,10 @@ def create_permit_renewal_routes(
             "insurance_all_current": True,
             "blocking_reasons": [],
             "insurance_flags": [],
-            "dob_filing_url": rpa_result.get("dob_filing_url"),
-            "dob_now_url": rpa_result.get("signature_url"),
+            "dob_now_url": renewal_data_result.get("dob_now_url"),
+            "copyable_fields": renewal_data_result.get("copyable_fields"),
+            "checklist": renewal_data_result.get("checklist"),
+            "paa_required": renewal_data_result.get("paa_required", False),
             "updated_at": now,
             "prepared_by": current_user.get("id"),
         }
