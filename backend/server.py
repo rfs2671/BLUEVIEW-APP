@@ -8062,42 +8062,42 @@ async def run_dob_sync_for_project(project: dict) -> list:
     now = datetime.now(timezone.utc)
  
     for raw_id, rec in new_records:
-        record_type = rec.get("_record_type", "unknown")
-        # raw_id already has work-type suffix applied during dedup phase above
-        severity = _determine_severity(rec, record_type)
-        summary = _generate_summary(rec, record_type)
-        next_action = _generate_next_action(rec, record_type, severity)
-        dob_link = _build_dob_link(rec, record_type)
- 
-        # Extract structured fields based on record type
-        extra_fields = {}
-        if record_type == "permit":
-            extra_fields = _extract_permit_fields(rec)
-        elif record_type in ("violation", "swo"):
-            extra_fields = _extract_violation_fields(rec)
-        elif record_type == "complaint":
-            extra_fields = _extract_complaint_fields(rec)
-        elif record_type == "inspection":
-            extra_fields = _extract_inspection_fields(rec)
-
-        dob_log = {
-            "project_id": project_id,
-            "company_id": company_id,
-            "nyc_bin": nyc_bin,
-            "record_type": record_type,
-            "raw_dob_id": raw_id,
-            "ai_summary": summary,
-            "severity": severity,
-            "next_action": next_action,
-            "dob_link": dob_link,
-            "detected_at": now,
-            "created_at": now,
-            "updated_at": now,
-            "is_deleted": False,
-            **extra_fields,
-        }
- 
         try:
+            record_type = rec.get("_record_type", "unknown")
+            # raw_id already has work-type suffix applied during dedup phase above
+            severity = _determine_severity(rec, record_type)
+            summary = _generate_summary(rec, record_type)
+            next_action = _generate_next_action(rec, record_type, severity)
+            dob_link = _build_dob_link(rec, record_type)
+
+            # Extract structured fields based on record type
+            extra_fields = {}
+            if record_type == "permit":
+                extra_fields = _extract_permit_fields(rec)
+            elif record_type in ("violation", "swo"):
+                extra_fields = _extract_violation_fields(rec)
+            elif record_type == "complaint":
+                extra_fields = _extract_complaint_fields(rec)
+            elif record_type == "inspection":
+                extra_fields = _extract_inspection_fields(rec)
+
+            dob_log = {
+                "project_id": project_id,
+                "company_id": company_id,
+                "nyc_bin": nyc_bin,
+                "record_type": record_type,
+                "raw_dob_id": raw_id,
+                "ai_summary": summary,
+                "severity": severity,
+                "next_action": next_action,
+                "dob_link": dob_link,
+                "detected_at": now,
+                "created_at": now,
+                "updated_at": now,
+                "is_deleted": False,
+                **extra_fields,
+            }
+
             existing = await db.dob_logs.find_one({"raw_dob_id": raw_id})
             if existing:
                 # Update mutable fields — status, severity, expiration, summary
@@ -8125,7 +8125,7 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 if severity == "Action":
                     await _send_critical_dob_alert(project, dob_log)
         except Exception as e:
-            logger.error(f"Failed to upsert dob_log for raw_id={raw_id}: {e}")
+            logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
  
     # Sprint 1: Cross-reference complaints to violations
     try:
