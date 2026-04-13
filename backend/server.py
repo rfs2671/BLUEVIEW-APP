@@ -137,8 +137,8 @@ scheduler = AsyncIOScheduler()
 app = FastAPI(title="Blueview API", version="2.0.0")
 
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
-    "https://blue-view.app",
-    "https://www.blue-view.app",
+    "https://levelog.com",
+    "https://www.levelog.com",
     "https://blueview2-production.up.railway.app",
     "http://localhost:8081",
     "http://localhost:19006",
@@ -5068,7 +5068,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
     )
     
     # Use specific origin instead of '*' to prevent cross-origin message interception
-    allowed_origin = ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "https://blue-view.app"
+    allowed_origin = ALLOWED_ORIGINS[0] if ALLOWED_ORIGINS else "https://levelog.com"
     return HTMLResponse(f"<html><body><h2>Dropbox connected successfully!</h2><p>You can close this window.</p><script>window.opener && window.opener.postMessage('dropbox-connected','{allowed_origin}'); setTimeout(()=>window.close(), 2000);</script></body></html>")
 
 @api_router.post("/dropbox/complete-auth")
@@ -7528,7 +7528,7 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
     try:
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({
-            "from": "Blueview Alerts <alerts@blue-view.app>",
+            "from": "Blueview Alerts <alerts@levelog.com>",
             "to": recipients,
             "subject": f"[CRITICAL] DOB Alert: {project_name} — {record_type}",
             "html": html,
@@ -8325,7 +8325,7 @@ async def check_and_send_reports():
         try:
             html = await generate_combined_report(project_id, today)
             resend.Emails.send({
-                "from": "Blueview Reports <reports@blue-view.app>",
+                "from": "Blueview Reports <reports@levelog.com>",
                 "to": email_list,
                 "subject": f"Daily Report - {project_name} - {today}",
                 "html": html,
@@ -8441,7 +8441,7 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
         creator = await db.users.find_one({"_id": to_query_id(creator_id)})
         creator_name = creator.get("name", "A team member") if creator else "A team member"
 
-        short_link = f"https://blue-view.app/a/{ann_id}"
+        short_link = f"https://levelog.com/a/{ann_id}"
         comment_text = annotation.get("comment", "")
 
         screenshot_block = ""
@@ -8468,7 +8468,7 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
 
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({
-            "from": "Blueview Plans <plans@blue-view.app>",
+            "from": "Blueview Plans <plans@levelog.com>",
             "to": recipient_emails,
             "subject": f"Plan Note — {project_name}",
             "html": html,
@@ -8498,7 +8498,7 @@ async def _send_reply_notification(annotation: dict, thread_entry: dict):
         project = await db.projects.find_one({"_id": to_query_id(annotation.get("project_id"))})
         project_name = project.get("name", "Unknown Project") if project else "Unknown Project"
 
-        short_link = f"https://blue-view.app/a/{ann_id}"
+        short_link = f"https://levelog.com/a/{ann_id}"
         reply_text = thread_entry.get("message", "")
 
         html = f"""
@@ -8520,7 +8520,7 @@ async def _send_reply_notification(annotation: dict, thread_entry: dict):
 
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({
-            "from": "Blueview Plans <plans@blue-view.app>",
+            "from": "Blueview Plans <plans@levelog.com>",
             "to": [creator["email"]],
             "subject": f"Reply on Plan Note — {project_name}",
             "html": html,
@@ -9326,8 +9326,8 @@ async def annotation_short_link(annotation_id: str, request: Request):
     """Short link redirect for annotation deep links."""
     from fastapi.responses import HTMLResponse
 
-    web_url = f"https://blue-view.app/plans?annotation={annotation_id}"
-    deep_link = f"blueview://annotation/{annotation_id}"
+    web_url = f"https://levelog.com/plans?annotation={annotation_id}"
+    deep_link = f"levelog://annotation/{annotation_id}"
 
     # Return HTML that tries the deep link first, falls back to web
     html = f"""<!DOCTYPE html>

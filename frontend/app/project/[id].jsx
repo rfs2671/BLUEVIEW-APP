@@ -310,7 +310,7 @@ export default function ProjectDetailScreen() {
     try {
       const result = await NfcHelper.registerNfcTag(
         projectId,
-        'https://blue-view.app'
+        'https://levelog.com'
       );
       if (result.success) {
         toast.success('Tag Scanned!', `Tag ID: ${result.tagId}`);

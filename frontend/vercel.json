@@ -3,6 +3,20 @@
   "installCommand": "npm install",
   "devCommand": "npm run dev",
   "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/:path(.*)",
+      "has": [{ "type": "host", "value": "blue-view.app" }],
+      "destination": "https://levelog.com/:path",
+      "permanent": true
+    },
+    {
+      "source": "/:path(.*)",
+      "has": [{ "type": "host", "value": "www.blue-view.app" }],
+      "destination": "https://levelog.com/:path",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     {
       "source": "/checkin/:path*",

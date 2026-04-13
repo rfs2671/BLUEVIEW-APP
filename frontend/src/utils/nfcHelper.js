@@ -50,9 +50,9 @@ export async function readNfcTag() {
  * 
  * @param {string} projectId - The project ID
  * @param {string} tagId - The tag ID
- * @param {string} baseUrl - Base URL (e.g., "https://blue-view.app")
+ * @param {string} baseUrl - Base URL (e.g., "https://levelog.com")
  */
-export async function writeNfcTag(projectId, tagId, baseUrl = 'https://blue-view.app') {
+export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.com') {
   try {
     // Request NDEF technology for writing
     await NfcManager.requestTechnology(NfcTech.Ndef);
@@ -91,7 +91,7 @@ export async function writeNfcTag(projectId, tagId, baseUrl = 'https://blue-view
  * Read AND Write NFC Tag in one operation
  * This is the main function for admin tag registration
  */
-export async function registerNfcTag(projectId, baseUrl = 'https://blue-view.app') {
+export async function registerNfcTag(projectId, baseUrl = 'https://levelog.com') {
   try {
     // Step 1: Request NDEF technology
     await NfcManager.requestTechnology(NfcTech.Ndef);
