@@ -7333,14 +7333,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
             "params": {"bin": nyc_bin, "$limit": "50"},
             "record_type": "job_status",
-            "id_field": "job__",
+            "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/w9ak-ipjd.json",
-            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
             "record_type": "job_status",
-            "id_field": "job__",
+            "id_field": "job_filing_number",
         })
     
     # ── VIOLATIONS: DOB NOW Safety (855j-jady) - NEWEST, check first ──
@@ -7349,14 +7349,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
             "params": {"bin": nyc_bin, "$limit": "50"},
             "record_type": "violation",
-            "id_field": "number",
+            "id_field": "violation_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/855j-jady.json",
             "params": {"house_number": house_num, "$where": f"upper(street) like '%{street_name}%'", "$limit": "50"},
             "record_type": "violation",
-            "id_field": "number",
+            "id_field": "violation_number",
         })
     
     # ── VIOLATIONS: BIS legacy (3h2n-5cm9) - older violations ──
