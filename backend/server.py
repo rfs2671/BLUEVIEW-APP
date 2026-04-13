@@ -7423,13 +7423,13 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job__",
         })
     
-    # ── DOB NOW INSPECTIONS (ic9t-2s3z) ──
+    # ── DOB INSPECTIONS (p937-wjvj) ──
     if bin_usable:
         endpoints.append({
-            "url": f"https://data.cityofnewyork.us/resource/ic9t-2s3z.json?$where=bin='{nyc_bin}'&$limit=50&$order=inspection_date DESC",
-            "params": {},
+            "url": "https://data.cityofnewyork.us/resource/p937-wjvj.json",
+            "params": {"bin": nyc_bin, "$limit": "50", "$order": "inspection_date DESC"},
             "record_type": "inspection",
-            "id_field": "inspection_tracking_number",
+            "id_field": "job_ticket_or_work_order_id",
         })
 
     # ── DOB COMPLAINTS RECEIVED (eabe-havv) - Primary DOB complaint source ──
@@ -7613,10 +7613,10 @@ def _classify_resolution_state(rec: dict) -> str:
     cert_status = str(rec.get("certification_status") or "").upper()
     current_status = str(rec.get("current_status") or "").upper()
     category = str(rec.get("violation_category") or "").upper()
-    hearing = rec.get("hearing_date_time") or ""
+    hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
-    if any(w in cert_status for w in ["CERTIFIED", "RESOLVED"]):
+    if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVED"]):
         return "certified"
     if any(w in current_status for w in ["DISMISSED"]):
         return "dismissed"
@@ -7735,7 +7735,7 @@ def _extract_complaint_fields(rec: dict) -> dict:
     cat_code = rec.get("complaint_category", "")
     if rec.get("community_board"):
         fields["complaint_source"] = "Neighbor/Community Complaint"
-    elif cat_code >= "4A" and cat_code <= "4W" or cat_code >= "6B" and cat_code <= "7N":
+    elif (cat_code >= "4A" and cat_code <= "4W") or (cat_code >= "6B" and cat_code <= "7N"):
         fields["complaint_source"] = "DOB Internal Inspection"
     else:
         fields["complaint_source"] = "311 Complaint"
@@ -7771,13 +7771,13 @@ def _extract_complaint_fields(rec: dict) -> dict:
 
 
 def _extract_inspection_fields(rec: dict) -> dict:
-    """Extract structured inspection fields from DOB NOW Inspections dataset."""
+    """Extract structured inspection fields from DOB Inspections dataset (p937-wjvj)."""
     fields = {}
     fields["inspection_date"] = rec.get("inspection_date") or rec.get("approved_date") or None
-    fields["inspection_type"] = rec.get("inspection_type") or rec.get("inspection_category") or None
+    fields["inspection_type"] = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or None
     fields["inspection_result"] = rec.get("result") or rec.get("inspection_result") or None
     fields["inspection_result_description"] = rec.get("result_description") or rec.get("comments") or None
-    fields["linked_job_number"] = rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
+    fields["linked_job_number"] = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -7873,8 +7873,8 @@ def _generate_summary(rec: dict, record_type: str) -> str:
         return summary
  
     if record_type == "inspection":
-        insp_type = rec.get("inspection_type") or rec.get("inspection_category") or "General"
-        job = rec.get("job_filing_number") or rec.get("job_number") or ""
+        insp_type = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or "General"
+        job = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or ""
         result = rec.get("result") or rec.get("inspection_result") or "Pending"
         job_str = f" for Job {job}" if job else ""
         return f"Inspection ({insp_type}){job_str} — Result: {result}"
@@ -8005,7 +8005,7 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return ""
 
     if record_type == "inspection":
-        job = str(rec.get("job_filing_number") or rec.get("job_number") or "").replace("-","").strip()
+        job = str(rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or "").replace("-","").strip()
         if job and job.upper().startswith("B"):
             return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job}&passdocnumber=01&requestid=1"
         if bin_val:
@@ -8535,19 +8535,30 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         logger.exception(f"DOB sync failed for project {project_id}: {e}")
         raise HTTPException(status_code=500, detail=f"DOB sync error: {str(e)}")
 
-    safe_logs = []
-    for log in new_logs:
-        try:
-            safe_logs.append(DOBLogResponse(**serialize_id(dict(log))))
-        except Exception as e:
-            logger.warning(f"Failed to serialize dob_log {log.get('raw_dob_id')}: {e}")
+    try:
+        safe_logs = []
+        for log in new_logs:
+            try:
+                safe_logs.append(DOBLogResponse(**serialize_id(dict(log))))
+            except Exception as e:
+                logger.warning(f"Failed to serialize dob_log {log.get('raw_dob_id')}: {e}")
 
-    return {
-        "message": f"DOB sync complete. {len(new_logs)} new record(s) found.",
-        "new_records": len(new_logs),
-        "critical_count": sum(1 for l in new_logs if l.get("severity") == "Critical"),
-        "logs": safe_logs,
-    }
+        action_count = sum(1 for l in new_logs if l.get("severity") == "Action")
+        return {
+            "message": f"DOB sync complete. {len(new_logs)} new record(s) found.",
+            "new_records": len(new_logs),
+            "critical_count": action_count,
+            "logs": safe_logs,
+        }
+    except Exception as e:
+        logger.exception(f"DOB sync serialization failed for project {project_id}: {e}")
+        # Still return success since sync completed — just can't serialize response
+        return {
+            "message": f"DOB sync complete. {len(new_logs)} new record(s) found but serialization failed: {str(e)}",
+            "new_records": len(new_logs),
+            "critical_count": 0,
+            "logs": [],
+        }
  
  
 # ==================== REPORT EMAIL SCHEDULER ====================
