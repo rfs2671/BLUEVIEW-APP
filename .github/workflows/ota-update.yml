@@ -8,6 +8,8 @@ on:
       - 'frontend/app/**'
       - 'frontend/src/**'
       - 'frontend/App.js'
+      - 'frontend/app.json'
+      - 'frontend/package.json'
 
 jobs:
   update:
