@@ -7395,7 +7395,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"bin__": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "50"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
