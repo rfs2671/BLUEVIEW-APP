@@ -20,15 +20,15 @@
   "rewrites": [
     {
       "source": "/checkin/:path*",
-      "destination": "https://blueview2-production.up.railway.app/checkin/:path*"
+      "destination": "https://api.levelog.com/checkin/:path*"
     },
     {
       "source": "/api/:path*",
-      "destination": "https://blueview2-production.up.railway.app/api/:path*"
+      "destination": "https://api.levelog.com/api/:path*"
     },
     {
       "source": "/a/:annotation_id",
-      "destination": "https://blueview2-production.up.railway.app/a/:annotation_id"
+      "destination": "https://api.levelog.com/a/:annotation_id"
     },
     {
       "source": "/:path*",

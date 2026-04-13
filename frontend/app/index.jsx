@@ -221,7 +221,7 @@ export default function DashboardScreen() {
                 style={{ width: 28, height: 28, resizeMode: 'contain' }}
               />
             </View>
-            <Text style={[s.logoText, { color: colors.text.primary }]}>BLUEVIEW</Text>
+            <Text style={[s.logoText, { color: colors.text.primary }]}>LEVELOG</Text>
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

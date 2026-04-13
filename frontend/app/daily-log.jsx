@@ -390,7 +390,7 @@ export default function DailyLogScreen() {
                 <Text style={[s.siteBadgeText, s.viewOnlyText]}>VIEW ONLY</Text>
               </View>
             ) : (
-              <Text style={s.logoText}>BLUEVIEW</Text>
+              <Text style={s.logoText}>LEVELOG</Text>
             )}
           </View>
           <View style={s.headerRight}>

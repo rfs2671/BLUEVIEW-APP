@@ -2,7 +2,7 @@ import { getToken } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
 const LAST_SYNC_KEY = 'blueview_last_sync';
 const SYNC_LOCK_KEY = 'blueview_sync_lock';
 

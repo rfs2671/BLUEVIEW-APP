@@ -243,7 +243,7 @@ export default function LogBooksScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.logoText}>BLUEVIEW</Text>
+          <Text style={styles.logoText}>LEVELOG</Text>
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}

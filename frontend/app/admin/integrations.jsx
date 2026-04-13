@@ -197,7 +197,7 @@ export default function AdminIntegrationsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -390,7 +390,7 @@ export default function AdminIntegrationsScreen() {
                     <Text style={s.integrationName}>WhatsApp</Text>
                     <Text style={s.integrationDesc}>
                       {!whatsappStatus.platform_configured
-                        ? 'WhatsApp integration is managed by Blueview. Contact support to enable.'
+                        ? 'WhatsApp integration is managed by Levelog. Contact support to enable.'
                         : !whatsappStatus.company_active
                         ? 'Connect WhatsApp to enable group messaging, site queries, and daily summaries.'
                         : 'Connected to WhatsApp Business'}
@@ -425,7 +425,7 @@ export default function AdminIntegrationsScreen() {
                 {whatsappStatus.company_active ? (
                   <View style={s.connectedSection}>
                     <View style={s.accountInfo}>
-                      <Text style={s.accountLabel}>YOUR BLUEVIEW ASSISTANT NUMBER</Text>
+                      <Text style={s.accountLabel}>YOUR LEVELOG ASSISTANT NUMBER</Text>
                       <Text style={s.whatsappNumber}>
                         {formatPhoneNumber(whatsappStatus.whatsapp_number)}
                       </Text>

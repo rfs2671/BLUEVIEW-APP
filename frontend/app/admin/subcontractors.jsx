@@ -200,7 +200,7 @@ export default function AdminSubcontractorsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={styles.logoText}>BLUEVIEW</Text>
+            <Text style={styles.logoText}>LEVELOG</Text>
           </View>
           <View style={styles.headerRight}>
             <GlassButton

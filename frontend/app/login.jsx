@@ -83,7 +83,7 @@ export default function LoginScreen() {
               style={{ width: 28, height: 28, resizeMode: 'contain' }}
             />
           </View>
-          <Text style={s.logoTextLoading}>BLUEVIEW</Text>
+          <Text style={s.logoTextLoading}>LEVELOG</Text>
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
       </AnimatedBackground>
@@ -102,13 +102,13 @@ export default function LoginScreen() {
                 style={{ width: 28, height: 28, resizeMode: 'contain' }}
               />
             </View>
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
 
           <GlassCard style={s.card}>
             <View style={s.welcomeSection}>
               <Text style={s.welcomeLabel}>WELCOME TO</Text>
-              <Text style={s.welcomeTitle}>Blueview</Text>
+              <Text style={s.welcomeTitle}>Levelog</Text>
             </View>
 
             <View style={s.form}>

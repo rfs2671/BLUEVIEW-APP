@@ -215,7 +215,7 @@ export default function WhatsAppGroupsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <GlassButton
             variant="icon"
@@ -318,7 +318,7 @@ export default function WhatsAppGroupsScreen() {
               {/* Modal Header */}
               <View style={s.modalHeader}>
                 <Text style={s.modalTitle}>
-                  {linkStep === 1 ? 'Add Blueview to your group' : 'Enter the code from your group'}
+                  {linkStep === 1 ? 'Add Levelog to your group' : 'Enter the code from your group'}
                 </Text>
                 <GlassButton
                   variant="icon"

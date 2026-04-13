@@ -130,7 +130,7 @@ export default function WorkersScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

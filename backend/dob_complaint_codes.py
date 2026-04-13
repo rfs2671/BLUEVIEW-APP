@@ -3,7 +3,7 @@ DOB Complaint Disposition & Category Codes
 ═══════════════════════════════════════════
 Complete lookup tables from NYC Open Data + DOB official PDF.
 Used by _determine_severity, _generate_next_action, and _extract_complaint_fields
-to provide intelligent complaint classification in Blueview.
+to provide intelligent complaint classification in Levelog.
 
 Sources:
   - Disposition codes: https://data.cityofnewyork.us/id/6v9u-ndjg
@@ -413,7 +413,7 @@ def classify_complaint(rec: dict) -> dict:
       - disposition_label: Human-readable disposition description
       - category_label: Human-readable category description
       - action: Recommended next action
-      - severity: 'Action' or 'Good' (for Blueview severity field)
+      - severity: 'Action' or 'Good' (for Levelog severity field)
     """
     disp_code = str(rec.get("disposition_code") or rec.get("status") or "").strip().upper()
     cat_code = str(rec.get("complaint_category") or "").strip()
@@ -430,7 +430,7 @@ def classify_complaint(rec: dict) -> dict:
     else:
         final_risk = disp_risk
 
-    # Map to Blueview severity
+    # Map to Levelog severity
     if final_risk in ("CRITICAL", "HIGH", "PENDING"):
         severity = "Action"
     else:

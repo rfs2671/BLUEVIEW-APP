@@ -864,13 +864,13 @@ async def _send_health_check_alert(issues: List[str]):
                 </p>
             </div>
             <p style="text-align:center;font-size:10px;color:#cbd5e1;margin-top:16px;letter-spacing:2px;">
-                BLUEVIEW COMPLIANCE
+                LEVELOG COMPLIANCE
             </p>
         </div>
         """
 
         resend.Emails.send({
-            "from": "Blueview Alerts <alerts@levelog.com>",
+            "from": "Levelog Alerts <alerts@levelog.com>",
             "to": [recipient],
             "subject": (
                 f"⚠️ DOB NOW UI Change — Permit Renewal RPA Alert "

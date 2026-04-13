@@ -165,7 +165,7 @@ export default function CheckInScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <GlassButton
             variant="icon"

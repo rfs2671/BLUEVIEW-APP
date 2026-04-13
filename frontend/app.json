@@ -2,7 +2,7 @@
   "expo": {
     "name": "Levelog",
     "slug": "levelog",
-    "owner": "blueview",
+    "owner": "levelog",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -26,7 +26,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.blueview.app",
+      "bundleIdentifier": "com.levelog.app",
       "infoPlist": {
         "NFCReaderUsageDescription": "This app needs NFC to register and scan check-in tags for workers.",
         "NSCameraUsageDescription": "This app needs camera access to take photos for daily logs and reports.",
@@ -39,7 +39,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#050a12"
       },
-      "package": "com.blueview.app",
+      "package": "com.levelog.app",
       "versionCode": 2,
       "permissions": [
         "INTERNET",

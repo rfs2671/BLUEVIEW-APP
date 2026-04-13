@@ -264,7 +264,7 @@ export default function WorkerDetailScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

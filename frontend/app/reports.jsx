@@ -209,7 +209,7 @@ export default function ReportsScreen() {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `Blueview_Report_${selectedProject.name?.replace(/\s+/g, '_') || 'report'}_${previewDate}.pdf`;
+        a.download = `Levelog_Report_${selectedProject.name?.replace(/\s+/g, '_') || 'report'}_${previewDate}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -280,7 +280,7 @@ export default function ReportsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Text style={s.logoText}>BLUEVIEW</Text>
+            <Text style={s.logoText}>LEVELOG</Text>
           </View>
           <GlassButton
             variant="icon"

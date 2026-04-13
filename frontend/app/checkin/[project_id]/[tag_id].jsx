@@ -175,7 +175,7 @@ export default function PublicCheckInScreen() {
             {/* Header */}
             <View style={s.header}>
               <Text style={s.headerLabel}>WORKER CHECK-IN</Text>
-              <Text style={s.headerTitle}>BlueView</Text>
+              <Text style={s.headerTitle}>Levelog</Text>
             </View>
 
             {/* Project Info Card */}

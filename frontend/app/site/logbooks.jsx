@@ -66,7 +66,7 @@ export default function SiteLogbooksViewer() {
   };
 
   // PDF handlers
-  const BASE_URL = 'https://blueview2-production.up.railway.app';
+  const BASE_URL = 'https://api.levelog.com';
 
   const handleViewLogPdf = async (logbookId) => {
     try {
@@ -84,7 +84,7 @@ export default function SiteLogbooksViewer() {
       const FileSystem = require('expo-file-system');
       const token = await getToken();
       const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
-      const filename = `Blueview_${logType}_${date}.pdf`;
+      const filename = `Levelog_${logType}_${date}.pdf`;
       const fileUri = FileSystem.cacheDirectory + filename;
       const download = await FileSystem.downloadAsync(url, fileUri);
       if (await Sharing.isAvailableAsync()) {

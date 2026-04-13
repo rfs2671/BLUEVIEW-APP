@@ -295,7 +295,7 @@ export default function PermitRenewalScreen() {
         await Linking.openURL(url);
         toast.info(
           'Opening DOB NOW',
-          'Log in with your NYC.ID, sign the filing, and pay the DOB fee. Blueview will detect completion automatically.'
+          'Log in with your NYC.ID, sign the filing, and pay the DOB fee. Levelog will detect completion automatically.'
         );
       } else {
         toast.error('Error', 'Cannot open DOB NOW URL');
@@ -699,7 +699,7 @@ export default function PermitRenewalScreen() {
                 </Text>
                 <Text style={s.infoBannerDesc}>
                   Expiring permits appear here automatically.
-                  Blueview prepares the draft — you just sign
+                  Levelog prepares the draft — you just sign
                   and pay on DOB NOW.
                 </Text>
               </View>

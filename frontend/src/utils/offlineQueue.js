@@ -6,7 +6,7 @@ import { getToken } from './api';
 const QUEUE_KEY = 'blueview_offline_queue';
 const MAX_RETRIES = 3;
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://blueview2-production.up.railway.app';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
 
 /**
  * Offline queue item structure:
