@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "Levelog",
-    "slug": "blue-view",
-    "owner": "blueview",
+    "slug": "levelog",
+    "owner": "rfs2671",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -10,7 +10,7 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "updates": {
-      "url": "https://u.expo.dev/1b4489c3-e63b-49de-a0b0-2d40cacac203"
+      "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51"
     },
     "runtimeVersion": "1.0.0",
     "splash": {
@@ -20,7 +20,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "1b4489c3-e63b-49de-a0b0-2d40cacac203"
+        "projectId": "818dd5ed-c372-4582-aea9-846381063a51"
       },
       "router": {}
     },
