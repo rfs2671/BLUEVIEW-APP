@@ -17,7 +17,6 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   User,
   Building2,
   Award,
@@ -53,7 +52,7 @@ export default function WorkerDetailScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: workerId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -148,11 +147,6 @@ export default function WorkerDetailScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
- 
   const handleSave = async () => {
     setSaving(true);
     try {
@@ -276,11 +270,6 @@ export default function WorkerDetailScreen() {
                 onPress={() => setEditMode(true)}
               />
             )}
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />    
           </View>
         </View>
 

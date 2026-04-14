@@ -373,15 +373,7 @@ const SettingsNavItem = ({ onPress, isActive }) => {
 const FloatingNav = () => {
   const router = useRouter();
   const pathname = usePathname();
-  const { user } = useAuth();
   const { isDark } = useTheme();
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
-  const handleToast = (type, message) => {
-    if (Platform.OS === 'web') {
-      console[type === 'error' ? 'error' : 'log'](`[${type.toUpperCase()}] ${message}`);
-    }
-  };
 
   // bg-white/90 in light, glass.background in dark
   const navBg = isDark
@@ -423,10 +415,10 @@ const FloatingNav = () => {
                   {/* Separator */}
                   <View style={[styles.separator, { backgroundColor: colors.border.subtle }]} />
 
-                  {/* Settings button */}
+                  {/* Settings button — navigates to /settings */}
                   <SettingsNavItem
-                    isActive={settingsOpen}
-                    onPress={() => setSettingsOpen(true)}
+                    isActive={pathname === '/settings'}
+                    onPress={() => router.push('/settings')}
                   />
                 </View>
               </ScrollView>
@@ -435,13 +427,6 @@ const FloatingNav = () => {
           <View style={styles.border} />
         </View>
       </View>
-
-      <SettingsModal
-        visible={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        user={user}
-        onToast={handleToast}
-      />
     </>
   );
 };

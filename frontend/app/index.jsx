@@ -6,7 +6,6 @@ import {
   Users,
   Building2,
   MapPin,
-  LogOut,
   UserCog,
   Smartphone,
   Cloud,
@@ -62,7 +61,7 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const { isDark, colors } = useTheme();
   const s = buildStyles(colors, isDark);
   const toast = useToast();
@@ -131,11 +130,6 @@ export default function DashboardScreen() {
 
   const getUserEmail = () => {
     return user?.email || '';
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   const stats = {
@@ -221,11 +215,6 @@ export default function DashboardScreen() {
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />
           </View>
         </View>
 

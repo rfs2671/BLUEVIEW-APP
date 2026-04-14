@@ -14,7 +14,6 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   QrCode,
   Nfc,
   Users,
@@ -40,7 +39,7 @@ export default function CheckInScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -86,11 +85,6 @@ export default function CheckInScreen() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   const handleSelectProject = (proj) => {
@@ -169,11 +163,6 @@ export default function CheckInScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

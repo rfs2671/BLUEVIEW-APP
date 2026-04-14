@@ -25,7 +25,6 @@ import {
   Check,
   X,
   ChevronDown,
-  LogOut,
   FileText,
   Building2,
   ShieldCheck,
@@ -75,7 +74,7 @@ export default function DailyLogScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState('previous'); 
@@ -274,11 +273,6 @@ export default function DailyLogScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const getProjectId = (project) => project?._id || project?.id;
 
   const formatDate = (dateStr) => {
@@ -397,11 +391,6 @@ export default function DailyLogScreen() {
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />
           </View>
         </View>
 

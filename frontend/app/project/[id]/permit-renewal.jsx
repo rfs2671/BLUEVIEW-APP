@@ -14,7 +14,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import {
   ArrowLeft,
-  LogOut,
   Shield,
   ShieldCheck,
   ShieldAlert,
@@ -209,7 +208,7 @@ export default function PermitRenewalScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -303,11 +302,6 @@ export default function PermitRenewalScreen() {
     } catch (error) {
       toast.error('Error', 'Failed to open DOB NOW');
     }
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   // ── Stats ─────────────────────────────────────────────────────────
@@ -703,12 +697,6 @@ export default function PermitRenewalScreen() {
               ) : null}
             </View>
           </View>
-          <Pressable
-            onPress={handleLogout}
-            style={s.logoutBtn}
-          >
-            <LogOut size={18} color={colors.text.muted} />
-          </Pressable>
         </View>
 
         <ScrollView
@@ -828,16 +816,6 @@ function buildStyles(colors, isDark) {
       fontSize: 13,
       color: colors.text.muted,
       marginTop: 1,
-    },
-    logoutBtn: {
-      width: 40,
-      height: 40,
-      borderRadius: borderRadius.full,
-      backgroundColor: colors.glass.background,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      alignItems: 'center',
-      justifyContent: 'center',
     },
     scroll: { flex: 1 },
     scrollContent: {

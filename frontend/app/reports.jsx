@@ -20,7 +20,6 @@ import {
   Check,
   Building2,
   ChevronDown,
-  LogOut,
   Eye,
   Clock,
   Mail,
@@ -63,7 +62,7 @@ export default function ReportsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -242,11 +241,6 @@ export default function ReportsScreen() {
 
   const isToday = previewDate === new Date().toISOString().split('T')[0];
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const formatDate = (dateStr) => {
     const d = new Date(dateStr + 'T12:00:00');
     return d.toLocaleDateString('en-US', {
@@ -284,11 +278,6 @@ export default function ReportsScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

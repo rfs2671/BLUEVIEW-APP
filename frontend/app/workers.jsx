@@ -12,7 +12,6 @@ import {
   Briefcase,
   Clock,
   MapPin,
-  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -33,7 +32,7 @@ export default function WorkersScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [selectedDate, setSelectedDate] = useState(() => new Date());
@@ -109,11 +108,6 @@ export default function WorkersScreen() {
     checkOutTime: checkin.check_out_time || checkin.checkOutTime || checkin.checkout_time,
   });
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const statItems = [
     { icon: Users, value: todayCheckIns.length, label: 'Workers' },
     { icon: Building2, value: uniqueProjects, label: 'Projects' },
@@ -135,11 +129,6 @@ export default function WorkersScreen() {
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />
           </View>
         </View>
           

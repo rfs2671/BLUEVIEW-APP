@@ -19,7 +19,6 @@ import {
   CloudRain,
   Wind,
   Users,
-  LogOut,
   History,
   Check,
   X,
@@ -59,7 +58,7 @@ const SAFETY_CHECKLIST_ITEMS = [
 
 export default function SiteDailyLogsScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
   const [activeTab, setActiveTab] = useState('today');
@@ -219,11 +218,6 @@ export default function SiteDailyLogsScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const formatDate = (dateStr) => {
     const date = new Date(dateStr);
     return date.toLocaleDateString('en-US', {
@@ -302,11 +296,6 @@ export default function SiteDailyLogsScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <View style={styles.tabContainer}>

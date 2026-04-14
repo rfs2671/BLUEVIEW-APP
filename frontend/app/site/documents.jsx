@@ -13,7 +13,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Home,
   Building2,
-  LogOut,
   FileText,
   File,
   FolderOpen,
@@ -57,7 +56,7 @@ export default function SiteDocumentsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -105,11 +104,6 @@ export default function SiteDocumentsScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -129,11 +123,6 @@ export default function SiteDocumentsScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         {/* Title */}

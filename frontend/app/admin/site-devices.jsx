@@ -19,7 +19,6 @@ import {
   Building2,
   Trash2,
   X,
-  LogOut,
   Key,
   CheckCircle,
   XCircle,
@@ -64,7 +63,7 @@ export default function SiteDevicesScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -180,11 +179,6 @@ export default function SiteDevicesScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const getSelectedProject = () => {
     return projects.find(p => (p._id || p.id) === newDevice.project_id);
   };
@@ -202,11 +196,6 @@ export default function SiteDevicesScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

@@ -22,7 +22,6 @@ import {
   CheckCircle,
   Clock,
   FileText,
-  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
@@ -42,7 +41,7 @@ export default function ProjectDropboxSettingsScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -185,11 +184,6 @@ export default function ProjectDropboxSettingsScreen() {
     fetchFolders(parentPath);
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -203,11 +197,6 @@ export default function ProjectDropboxSettingsScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

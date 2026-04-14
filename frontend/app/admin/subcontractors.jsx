@@ -15,7 +15,6 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   Building2,
   Plus,
   Trash2,
@@ -37,7 +36,7 @@ import HeaderBrand from '../../src/components/HeaderBrand';
 
 export default function AdminSubcontractorsScreen() {
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -95,11 +94,6 @@ export default function AdminSubcontractorsScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   const handleAddSubcontractor = async () => {
@@ -209,11 +203,6 @@ export default function AdminSubcontractorsScreen() {
               variant="icon"
               icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => setShowAddModal(true)}
-            />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
             />
           </View>
         </View>

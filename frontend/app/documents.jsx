@@ -14,7 +14,6 @@ import {
   FolderOpen,
   Building2,
   ChevronDown,
-  LogOut,
   RefreshCw,
   Cloud,
   Upload,
@@ -80,7 +79,7 @@ export default function DocumentsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const isCp = user?.role === 'cp';
@@ -236,11 +235,6 @@ export default function DocumentsScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   // CP goes back to /logbooks, admin goes to /
   const handleBack = () => {
     router.push(isCp ? '/logbooks' : '/');
@@ -261,11 +255,6 @@ export default function DocumentsScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

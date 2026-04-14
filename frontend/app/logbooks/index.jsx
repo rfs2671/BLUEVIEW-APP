@@ -11,7 +11,6 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  LogOut,
   ClipboardList,
   HardHat,
   ShieldCheck,
@@ -52,7 +51,7 @@ const FALLBACK_LOG_TYPES = [
 
 export default function LogBooksScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const { isDark, colors } = useTheme();
   const toast = useToast();
 
@@ -161,11 +160,6 @@ export default function LogBooksScreen() {
     return 'draft';
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const handleToggleScaffold = async () => {
     if (!selectedProject) return;
     const projectId = selectedProject._id || selectedProject.id;
@@ -246,11 +240,6 @@ export default function LogBooksScreen() {
         {/* Header */}
         <View style={styles.header}>
           <HeaderBrand />
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

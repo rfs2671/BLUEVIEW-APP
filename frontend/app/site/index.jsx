@@ -7,7 +7,6 @@ import {
   FolderOpen,
   UserCheck,
   Building2,
-  LogOut,
   PenTool,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
@@ -23,7 +22,7 @@ export default function SiteDeviceHomeScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
   const [todayLogsCount, setTodayLogsCount] = useState(0);
@@ -70,11 +69,6 @@ export default function SiteDeviceHomeScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const handleNavigate = (path) => {
     router.push(path);
   };
@@ -93,11 +87,6 @@ export default function SiteDeviceHomeScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         {/* Main Content */}

@@ -16,7 +16,6 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   MapPin,
   Users,
   Building2,
@@ -100,7 +99,7 @@ export default function ProjectDetailScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -290,11 +289,6 @@ export default function ProjectDetailScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   const handleScanNfcTag = async () => {
@@ -556,11 +550,6 @@ export default function ProjectDetailScreen() {
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
-            />
           </View>
         </View>
         

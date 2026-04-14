@@ -15,7 +15,6 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   Users,
   Plus,
   Edit3,
@@ -41,7 +40,7 @@ export default function AdminUsersScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -107,11 +106,6 @@ export default function AdminUsersScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchData();
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
   };
 
   const handleAddUser = async () => {
@@ -322,11 +316,6 @@ export default function AdminUsersScreen() {
               variant="icon"
               icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => setShowAddModal(true)}
-            />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
             />
           </View>
         </View>

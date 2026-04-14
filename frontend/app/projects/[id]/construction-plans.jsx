@@ -28,7 +28,6 @@ import {
   HardDrive,
   Folder,
   FolderOpen,
-  LogOut,
   CheckCircle,
   AlertCircle,
   Upload,
@@ -84,7 +83,7 @@ export default function ConstructionPlansScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -234,11 +233,6 @@ export default function ConstructionPlansScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   // Filter files
   const filteredFiles = files.filter((file) => {
     // Search filter
@@ -277,11 +271,6 @@ export default function ConstructionPlansScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

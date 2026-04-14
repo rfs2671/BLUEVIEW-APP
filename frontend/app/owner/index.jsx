@@ -14,7 +14,6 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   Building2,
   Plus,
   Edit3,
@@ -73,7 +72,7 @@ const ownerAPI = {
 
 export default function OwnerPortalScreen() {
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   // Auth state
@@ -131,13 +130,6 @@ export default function OwnerPortalScreen() {
     } else {
       toast.error('Access Denied', 'Invalid owner password');
     }
-  };
-
-  const handleLogout = async () => {
-    setOwnerAuthenticated(false);
-    setPassword('');
-    await logout();
-    router.replace('/login');
   };
 
   const fetchData = async () => {
@@ -369,11 +361,6 @@ export default function OwnerPortalScreen() {
             />
             <Text style={styles.logoText}>OWNER PORTAL</Text>
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

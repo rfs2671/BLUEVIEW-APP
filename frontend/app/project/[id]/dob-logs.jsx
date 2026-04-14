@@ -16,7 +16,6 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   Shield,
   AlertTriangle,
   CheckCircle,
@@ -83,7 +82,7 @@ export default function DOBLogsScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -167,7 +166,6 @@ export default function DOBLogsScreen() {
       toast.error('Error', error.response?.data?.detail || 'Could not save config');
     } finally { setSavingConfig(false); }
   };
-  const handleLogout = async () => { await logout(); router.replace('/login'); };
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
   // Counts from ALL logs (not filtered)
@@ -696,7 +694,6 @@ export default function DOBLogsScreen() {
           </View>
           <View style={s.headerRight}>
             {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}
-            <GlassButton variant="icon" icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={handleLogout} />
           </View>
         </View>
 

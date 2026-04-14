@@ -19,7 +19,6 @@ import {
   XCircle,
   ExternalLink,
   Unlink,
-  LogOut,
   FolderOpen,
   RefreshCw,
   ShieldAlert,
@@ -45,7 +44,7 @@ export default function AdminIntegrationsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -157,11 +156,6 @@ export default function AdminIntegrationsScreen() {
     }
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const handleActivateWhatsapp = async () => {
     setActivatingWhatsapp(true);
     try {
@@ -201,11 +195,6 @@ export default function AdminIntegrationsScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

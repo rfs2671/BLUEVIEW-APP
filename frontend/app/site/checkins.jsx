@@ -8,7 +8,6 @@ import {
   Building2,
   Clock,
   MapPin,
-  LogOut,
   RefreshCw,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
@@ -25,7 +24,7 @@ export default function SiteCheckInsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, logout, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -78,11 +77,6 @@ export default function SiteCheckInsScreen() {
     toast.success('Refreshed', 'Check-in data updated');
   };
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   const formatTime = (dateStr) => {
     if (!dateStr) return '--:--';
     const d = new Date(dateStr);
@@ -123,11 +117,6 @@ export default function SiteCheckInsScreen() {
       {siteProject?.name || 'Project'}
     </Text>
   </View>
-  <GlassButton
-    variant="icon"
-    icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-    onPress={handleLogout}
-  />
 </View>
 
         <ScrollView

@@ -22,7 +22,6 @@ import {
   Trash2,
   X,
   Search,
-  LogOut,
   CheckCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
@@ -44,7 +43,7 @@ export default function ProjectsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { logout, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -155,11 +154,6 @@ export default function ProjectsScreen() {
 
   const getProjectId = (project) => project._id || project.id;
 
-  const handleLogout = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -173,11 +167,6 @@ export default function ProjectsScreen() {
             />
             <HeaderBrand />
           </View>
-          <GlassButton
-            variant="icon"
-            icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={handleLogout}
-          />
         </View>
 
         <ScrollView

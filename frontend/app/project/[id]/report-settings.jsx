@@ -15,7 +15,6 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
-  LogOut,
   Mail,
   Plus,
   Trash2,
@@ -40,7 +39,7 @@ export default function ReportSettingsScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { id: projectId } = useLocalSearchParams();
-  const { logout, isAuthenticated, isLoading: authLoading, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
   // NEW: Track saved state for UI feedback
@@ -213,29 +212,6 @@ export default function ReportSettingsScreen() {
     setHasChanges(true);
   };
 
-  const handleLogout = async () => {
-    if (hasChanges) {
-      return Alert.alert(
-        'Unsaved Changes',
-        'You have unsaved changes. Save before logging out?',
-        [
-          { text: 'Discard', onPress: () => logoutUser() },
-          { text: 'Save & Logout', onPress: async () => {
-            await handleSave();
-            await logoutUser();
-          }},
-          { text: 'Cancel', style: 'cancel' },
-        ]
-      );
-    }
-    await logoutUser();
-  };
-
-  const logoutUser = async () => {
-    await logout();
-    router.replace('/login');
-  };
-
   if (!isAdmin) {
     return (
       <AnimatedBackground>
@@ -289,11 +265,6 @@ export default function ReportSettingsScreen() {
               icon={<RotateCw size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={handleRefresh}
               loading={refreshing}
-            />
-            <GlassButton
-              variant="icon"
-              icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}
-              onPress={handleLogout}
             />
           </View>
         </View>
