@@ -108,9 +108,9 @@ const _light = {
 
   text: {
     primary:   '#0A1929',
-    secondary: 'rgba(10, 25, 41, 0.50)',
-    muted:     'rgba(10, 25, 41, 0.40)',
-    subtle:    'rgba(10, 25, 41, 0.22)',
+    secondary: 'rgba(10, 25, 41, 0.75)',
+    muted:     'rgba(10, 25, 41, 0.65)',
+    subtle:    'rgba(10, 25, 41, 0.50)',
   },
 
   iconPod: {

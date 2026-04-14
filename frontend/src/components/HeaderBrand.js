@@ -39,9 +39,9 @@ export default function HeaderBrand({ style }) {
       ellipsizeMode="tail"
       style={[
         {
-          fontSize: 18,
+          fontSize: 27,
           fontWeight: '300',
-          letterSpacing: 5,
+          letterSpacing: 6,
           color: colors.text.primary,
           fontFamily: Platform.select({
             web: 'Montserrat, "Gotham", "Futura", "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif',

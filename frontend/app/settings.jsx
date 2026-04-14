@@ -7,6 +7,7 @@ import {
   Switch,
   ActivityIndicator,
   Pressable,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -430,7 +431,10 @@ export default function SettingsScreen() {
 // Build styles using live theme colors so they re-render on toggle
 function buildStyles(colors) {
   return StyleSheet.create({
-    container:    { flex: 1 },
+    container:    {
+      flex: 1,
+      ...(Platform.OS === 'web' ? { height: '100vh', maxHeight: '100vh', overflow: 'hidden' } : {}),
+    },
     loadingCenter:{ flex: 1, alignItems: 'center', justifyContent: 'center' },
     header: {
       flexDirection: 'row',
@@ -448,7 +452,10 @@ function buildStyles(colors) {
       fontWeight: '600',
       color: colors.text.primary,
     },
-    scroll:       { flex: 1 },
+    scroll:       {
+      flex: 1,
+      ...(Platform.OS === 'web' ? { overflowY: 'auto', minHeight: 0 } : {}),
+    },
     scrollContent: {
       padding: spacing.lg,
       paddingBottom: 110,
