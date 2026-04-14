@@ -89,6 +89,7 @@ function buildStyles(colors, isDark) {
     paddingVertical: spacing.md,
     color: colors.text.primary,
     fontSize: 16,
+    backgroundColor: 'transparent',
     outlineStyle: 'none',
   },
   inputWithLeftIcon: {
