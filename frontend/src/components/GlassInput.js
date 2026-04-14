@@ -1,7 +1,27 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { TextInput, View, StyleSheet, Platform } from 'react-native';
 import { borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+
+/* Inject a global CSS rule once to kill Chrome's autofill background */
+let autofillCSSInjected = false;
+function injectAutofillCSS() {
+  if (autofillCSSInjected || Platform.OS !== 'web') return;
+  autofillCSSInjected = true;
+  const style = document.createElement('style');
+  style.textContent = `
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active {
+      -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
+      -webkit-text-fill-color: rgba(255,255,255,0.9) !important;
+      background-color: transparent !important;
+      transition: background-color 5000s ease-in-out 0s !important;
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 const IconWrap = ({ children, style }) => (
   <View style={style}>
@@ -30,6 +50,8 @@ const GlassInput = ({
   const s = buildStyles(colors, isDark);
   const [isFocused, setIsFocused] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
+
+  useEffect(() => { injectAutofillCSS(); }, []);
 
   return (
     <View
