@@ -29,7 +29,6 @@ import HeaderBrand from '../src/components/HeaderBrand';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
-  { title: 'Insurance', subtitle: 'GC license & coverage', path: '/admin/insurance', icon: Shield },
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
