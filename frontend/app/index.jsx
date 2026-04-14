@@ -11,6 +11,7 @@ import {
   Smartphone,
   Cloud,
   ClipboardList,
+  Shield,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
@@ -27,6 +28,7 @@ import { spacing, borderRadius, typography } from '../src/styles/theme';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
+  { title: 'Insurance', subtitle: 'GC license & coverage', path: '/admin/insurance', icon: Shield },
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },

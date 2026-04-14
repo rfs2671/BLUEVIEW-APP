@@ -30,6 +30,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import GCAutocomplete from '../../src/components/GCAutocomplete';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
@@ -100,6 +101,7 @@ export default function OwnerPortalScreen() {
 
   // Form fields
   const [formCompanyName, setFormCompanyName] = useState('');
+  const [gcSelection, setGcSelection] = useState(null); // { license_number, business_name, ... } or null
   const [formAdminName, setFormAdminName] = useState('');
   const [formAdminEmail, setFormAdminEmail] = useState('');
   const [formAdminPassword, setFormAdminPassword] = useState('');
@@ -167,11 +169,21 @@ export default function OwnerPortalScreen() {
     }
 
     try {
-      const newCompany = await ownerAPI.createCompany({ name: formCompanyName });
+      const payload = { name: formCompanyName };
+      if (gcSelection) {
+        payload.gc_license_number = gcSelection.license_number;
+        payload.gc_business_name = gcSelection.business_name;
+        payload.gc_licensee_name = gcSelection.licensee_name;
+        payload.gc_license_status = gcSelection.license_status;
+        payload.gc_license_expiration = gcSelection.license_expiration;
+        payload.gc_resolved = true;
+      }
+      const newCompany = await ownerAPI.createCompany(payload);
       setCompanies([...companies, newCompany]);
       setFormCompanyName('');
+      setGcSelection(null);
       setShowCreateCompanyModal(false);
-      toast.success('Created', 'Company created successfully');
+      toast.success('Created', gcSelection ? 'Company created with GC license linked' : 'Company created successfully');
     } catch (error) {
       console.error('Failed to create company:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not create company');
@@ -401,6 +413,29 @@ export default function OwnerPortalScreen() {
               <View style={styles.companiesList}>
                 {companies.map((company) => {
                   const companyAdminCount = admins.filter(a => a.company_id === company.id).length;
+                  const hasGc = !!company.gc_license_number;
+                  const gcStatus = (company.gc_license_status || '').toUpperCase();
+                  const gcActive = gcStatus === 'ACTIVE';
+                  const insRecords = company.gc_insurance_records || [];
+                  const getInsColor = (expStr) => {
+                    if (!expStr) return '#6b7280';
+                    const d = new Date(expStr);
+                    if (isNaN(d.getTime())) return '#6b7280';
+                    const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
+                    if (daysLeft < 0) return '#ef4444';
+                    if (daysLeft <= 60) return '#f59e0b';
+                    return '#22c55e';
+                  };
+                  const insGL = insRecords.find(r => r.insurance_type === 'general_liability');
+                  const insWC = insRecords.find(r => r.insurance_type === 'workers_comp');
+                  const insDB = insRecords.find(r => r.insurance_type === 'disability');
+                  const fmtShort = (s) => {
+                    if (!s) return '--';
+                    const d = new Date(s);
+                    if (isNaN(d.getTime())) return s.length > 10 ? s.slice(0, 10) : s;
+                    return `${d.getMonth()+1}/${d.getDate()}/${String(d.getFullYear()).slice(2)}`;
+                  };
+
                   return (
                     <GlassCard key={company.id} style={styles.companyCard}>
                       <View style={styles.companyHeader}>
@@ -428,6 +463,39 @@ export default function OwnerPortalScreen() {
                           </Pressable>
                         </View>
                       </View>
+
+                      {/* GC License & Insurance info */}
+                      {hasGc ? (
+                        <View style={styles.gcInfoBlock}>
+                          <View style={styles.gcLicenseRow}>
+                            <Text style={[styles.gcLicenseText, { color: gcActive ? '#22c55e' : '#ef4444' }]}>
+                              GC-{company.gc_license_number} · {gcStatus || 'Unknown'}
+                            </Text>
+                          </View>
+                          {insRecords.length > 0 ? (
+                            <View style={styles.gcInsuranceRow}>
+                              <Text style={[styles.gcInsLabel, { color: getInsColor(insGL?.expiration_date) }]}>
+                                GL: {fmtShort(insGL?.expiration_date)}
+                              </Text>
+                              <Text style={styles.gcInsSep}>|</Text>
+                              <Text style={[styles.gcInsLabel, { color: getInsColor(insWC?.expiration_date) }]}>
+                                WC: {fmtShort(insWC?.expiration_date)}
+                              </Text>
+                              <Text style={styles.gcInsSep}>|</Text>
+                              <Text style={[styles.gcInsLabel, { color: getInsColor(insDB?.expiration_date) }]}>
+                                DB: {fmtShort(insDB?.expiration_date)}
+                              </Text>
+                            </View>
+                          ) : (
+                            <Text style={styles.gcNoInsurance}>No insurance on file</Text>
+                          )}
+                        </View>
+                      ) : company.gc_resolved === false && company.name ? (
+                        <View style={styles.gcUnverifiedBlock}>
+                          <AlertTriangle size={12} color="#f59e0b" />
+                          <Text style={styles.gcUnverifiedText}>Unverified — not matched to DOB</Text>
+                        </View>
+                      ) : null}
                     </GlassCard>
                   );
                 })}
@@ -486,13 +554,35 @@ export default function OwnerPortalScreen() {
                 </View>
 
                 <View style={styles.modalForm}>
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.inputLabel}>COMPANY NAME</Text>
-                    <GlassInput
+                  <View style={[styles.inputGroup, { zIndex: 100 }]}>
+                    <Text style={styles.inputLabel}>COMPANY NAME (GC LICENSE LOOKUP)</Text>
+                    <GCAutocomplete
                       value={formCompanyName}
-                      onChangeText={setFormCompanyName}
-                      placeholder="e.g., ABC Construction Inc."
+                      onChangeText={(text) => {
+                        setFormCompanyName(text);
+                        // If user edits after selecting, clear the selection
+                        if (gcSelection && text !== gcSelection.business_name) {
+                          setGcSelection(null);
+                        }
+                      }}
+                      onSelect={(gc) => {
+                        setGcSelection(gc);
+                        setFormCompanyName(gc.business_name || '');
+                      }}
+                      placeholder="Search by GC company name..."
                     />
+                    {gcSelection ? (
+                      <View style={styles.gcLinkedBadge}>
+                        <CheckCircle size={14} color="#22c55e" />
+                        <Text style={styles.gcLinkedText}>
+                          GC-{gcSelection.license_number} · {gcSelection.license_status || 'Active'}
+                        </Text>
+                      </View>
+                    ) : formCompanyName.length > 0 ? (
+                      <Text style={styles.gcUnlinkedText}>
+                        No GC license selected — company will be created without DOB link
+                      </Text>
+                    ) : null}
                   </View>
 
                   <GlassButton
@@ -932,6 +1022,68 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     padding: spacing.sm,
+  },
+  // GC info on company cards
+  gcInfoBlock: {
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  gcLicenseRow: {
+    marginBottom: 4,
+  },
+  gcLicenseText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  gcInsuranceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  gcInsLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  gcInsSep: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.2)',
+  },
+  gcNoInsurance: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    fontStyle: 'italic',
+  },
+  gcUnverifiedBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  gcUnverifiedText: {
+    fontSize: 11,
+    color: '#f59e0b',
+  },
+  // GC in create company modal
+  gcLinkedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+  },
+  gcLinkedText: {
+    fontSize: 12,
+    color: '#22c55e',
+    fontWeight: '500',
+  },
+  gcUnlinkedText: {
+    fontSize: 11,
+    color: colors.text.subtle,
+    marginTop: 6,
   },
   emptyCard: {
     alignItems: 'center',

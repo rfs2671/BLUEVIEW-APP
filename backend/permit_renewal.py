@@ -309,16 +309,74 @@ async def check_renewal_eligibility(
                     "Amendment (PAA) is required."
                 )
             elif days_left < 0:
-                eligibility.blocking_reasons.append(
-                    "Permit has already expired. Manual renewal required on DOB NOW."
-                )
+                # Expired within 60 days — still renewable on DOB NOW
+                # Do NOT block — just note it's expired so the user knows
+                pass
         except Exception:
             eligibility.blocking_reasons.append("Could not parse permit expiration date.")
     else:
         eligibility.blocking_reasons.append("No expiration date on permit record.")
 
-    # ── Scrape GC license + insurance ──
-    gc_info = await scrape_gc_license_info(company_name)
+    # ── Get GC license + insurance (prefer cached company data, fall back to BIS scrape) ──
+    gc_info = None
+    used_cache = False
+
+    # Try cached company data first
+    project = await db.projects.find_one({"_id": _to_oid(project_id)})
+    company_id = project.get("company_id") if project else None
+    if company_id:
+        company_doc = await db.companies.find_one({"_id": _to_oid(company_id), "is_deleted": {"$ne": True}})
+        if company_doc and company_doc.get("gc_resolved") and company_doc.get("gc_license_number"):
+            # Use cached data if verified within 7 days
+            last_verified = company_doc.get("gc_last_verified")
+            cache_fresh = False
+            if last_verified:
+                if isinstance(last_verified, datetime):
+                    if last_verified.tzinfo is None:
+                        last_verified = last_verified.replace(tzinfo=timezone.utc)
+                    cache_fresh = (datetime.now(timezone.utc) - last_verified).days < 7
+
+            if cache_fresh and company_doc.get("gc_insurance_records"):
+                # Build GCLicenseInfo from cached company data
+                gc_info = GCLicenseInfo(
+                    license_number=company_doc.get("gc_license_number"),
+                    business_name=company_doc.get("gc_business_name"),
+                    licensee_name=company_doc.get("gc_licensee_name"),
+                    license_status=company_doc.get("gc_license_status"),
+                    license_expiration=company_doc.get("gc_license_expiration"),
+                    insurance_records=[InsuranceRecord(**rec) for rec in company_doc["gc_insurance_records"]],
+                )
+                used_cache = True
+            else:
+                # Cache stale or empty — refresh from BIS using license number
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        insurance = await _fetch_insurance_details(client, company_doc["gc_license_number"])
+                    gc_info = GCLicenseInfo(
+                        license_number=company_doc.get("gc_license_number"),
+                        business_name=company_doc.get("gc_business_name"),
+                        licensee_name=company_doc.get("gc_licensee_name"),
+                        license_status=company_doc.get("gc_license_status"),
+                        license_expiration=company_doc.get("gc_license_expiration"),
+                        insurance_records=insurance,
+                    )
+                    # Update cache on company doc
+                    await db.companies.update_one(
+                        {"_id": _to_oid(company_id)},
+                        {"$set": {
+                            "gc_insurance_records": [rec.dict() for rec in insurance],
+                            "gc_last_verified": datetime.now(timezone.utc),
+                        }},
+                    )
+                    used_cache = True
+                except Exception as e:
+                    logger.warning(f"BIS refresh failed for license {company_doc['gc_license_number']}: {e}")
+
+    # Fall back to name-based BIS scrape if no cached data
+    if not gc_info:
+        gc_info = await scrape_gc_license_info(company_name)
+
     eligibility.gc_license = gc_info
 
     if not gc_info or not gc_info.license_number:

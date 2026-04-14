@@ -232,9 +232,24 @@ class Company(BaseModel):
     name: str
     created_at: datetime
     created_by: Optional[str] = None  # Owner who created it
+    # GC License fields
+    gc_license_number: Optional[str] = None
+    gc_business_name: Optional[str] = None
+    gc_licensee_name: Optional[str] = None
+    gc_license_status: Optional[str] = None
+    gc_license_expiration: Optional[str] = None
+    gc_insurance_records: Optional[list] = []
+    gc_resolved: bool = False
+    gc_last_verified: Optional[datetime] = None
 
 class CompanyCreate(BaseModel):
     name: str
+    gc_license_number: Optional[str] = None
+    gc_business_name: Optional[str] = None
+    gc_licensee_name: Optional[str] = None
+    gc_license_status: Optional[str] = None
+    gc_license_expiration: Optional[str] = None
+    gc_resolved: bool = False
     
 # ==================== MODELS ====================
 
@@ -2014,28 +2029,49 @@ async def get_companies(current_user = Depends(get_current_user)):
 
 @api_router.post("/owner/companies")
 async def create_company(company_data: CompanyCreate, current_user = Depends(get_current_user)):
-    """Create a new company (owner only)"""
+    """Create a new company (owner only). Optionally links to a GC license and fetches insurance from BIS."""
     if current_user.get("role") != "owner":
         raise HTTPException(status_code=403, detail="Owner access required")
-    
+
     # Check if company name already exists
     existing = await db.companies.find_one({"name": company_data.name, "is_deleted": {"$ne": True}})
     if existing:
         raise HTTPException(status_code=400, detail="Company name already exists")
-    
+
     now = datetime.now(timezone.utc)
     company_dict = {
         "name": company_data.name,
         "created_at": now,
         "updated_at": now,
         "created_by": current_user.get("id"),
-        "is_deleted": False
+        "is_deleted": False,
+        "gc_license_number": company_data.gc_license_number,
+        "gc_business_name": company_data.gc_business_name,
+        "gc_licensee_name": company_data.gc_licensee_name,
+        "gc_license_status": company_data.gc_license_status,
+        "gc_license_expiration": company_data.gc_license_expiration,
+        "gc_resolved": company_data.gc_resolved,
+        "gc_insurance_records": [],
+        "gc_last_verified": None,
     }
-    
+
+    # If GC license provided, fetch insurance from BIS (non-blocking — never fail company creation)
+    if company_data.gc_license_number and company_data.gc_resolved:
+        try:
+            from permit_renewal import _fetch_insurance_details
+            import httpx
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                insurance = await _fetch_insurance_details(client, company_data.gc_license_number)
+                company_dict["gc_insurance_records"] = [rec.dict() for rec in insurance]
+                company_dict["gc_last_verified"] = now
+        except Exception as e:
+            logger.warning(f"BIS insurance fetch failed for {company_data.gc_license_number}: {e}")
+            # Company still gets created — insurance will be empty
+
     result = await db.companies.insert_one(company_dict)
     company_dict["id"] = str(result.inserted_id)
     company_dict.pop("_id", None)
-    
+
     return company_dict
 
 @api_router.delete("/owner/companies/{company_id}", tags=["Owner"])
@@ -2064,6 +2100,287 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     await audit_log("company_hard_delete", str(current_user.get("_id", "")), "company", company_id)
 
     return {"message": "Company and all users permanently deleted"}
+
+
+# ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
+
+@api_router.post("/owner/seed-gc-licenses")
+async def seed_gc_licenses(current_user=Depends(get_current_user)):
+    """Bulk-load all GC licenses from NYC Open Data into gc_licenses collection (owner only)."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    import httpx
+    DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
+    PAGE_SIZE = 1000
+    offset = 0
+    inserted = 0
+    updated = 0
+    now = datetime.now(timezone.utc)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                resp = await client.get(DATASET_URL, params={
+                    "$where": "license_type='GENERAL CONTRACTOR'",
+                    "$limit": str(PAGE_SIZE),
+                    "$offset": str(offset),
+                })
+                if resp.status_code != 200:
+                    logger.error(f"NYC Open Data returned {resp.status_code}")
+                    break
+                records = resp.json()
+                if not records:
+                    break
+
+                for rec in records:
+                    lic_num = rec.get("license_number", "").strip()
+                    if not lic_num:
+                        continue
+                    doc = {
+                        "license_number": lic_num,
+                        "business_name": (rec.get("business_name") or "").strip(),
+                        "licensee_name": f"{rec.get('first_name', '')} {rec.get('last_name', '')}".strip(),
+                        "license_type": "GC",
+                        "license_status": (rec.get("license_status") or "").strip(),
+                        "license_expiration": None,  # Not available in Open Data — BIS only
+                        "insurance_records": [],
+                        "source": "nyc_open_data",
+                        "last_synced": now,
+                    }
+                    result = await db.gc_licenses.update_one(
+                        {"license_number": lic_num},
+                        {"$set": doc, "$setOnInsert": {"created_at": now}},
+                        upsert=True,
+                    )
+                    if result.upserted_id:
+                        inserted += 1
+                    elif result.modified_count > 0:
+                        updated += 1
+
+                offset += PAGE_SIZE
+                if len(records) < PAGE_SIZE:
+                    break
+    except Exception as e:
+        logger.exception(f"GC license seed error: {e}")
+        raise HTTPException(status_code=500, detail=f"Seed failed: {str(e)}")
+
+    # Ensure text index for autocomplete
+    try:
+        await db.gc_licenses.create_index("license_number", unique=True)
+        await db.gc_licenses.create_index([("business_name", 1)])
+    except Exception:
+        pass
+
+    return {"inserted": inserted, "updated": updated, "total_processed": offset}
+
+
+@api_router.post("/owner/run-gc-sync")
+async def run_gc_sync(current_user=Depends(get_current_user)):
+    """Re-sync GC licenses from NYC Open Data. Flags status changes for companies in our DB (owner only)."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    import httpx
+    DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
+    PAGE_SIZE = 1000
+    offset = 0
+    updated = 0
+    status_changes = []
+    now = datetime.now(timezone.utc)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while True:
+                resp = await client.get(DATASET_URL, params={
+                    "$where": "license_type='GENERAL CONTRACTOR'",
+                    "$limit": str(PAGE_SIZE),
+                    "$offset": str(offset),
+                })
+                if resp.status_code != 200:
+                    break
+                records = resp.json()
+                if not records:
+                    break
+
+                for rec in records:
+                    lic_num = rec.get("license_number", "").strip()
+                    if not lic_num:
+                        continue
+                    new_status = (rec.get("license_status") or "").strip()
+
+                    # Check for status change
+                    existing = await db.gc_licenses.find_one({"license_number": lic_num})
+                    old_status = existing.get("license_status") if existing else None
+
+                    await db.gc_licenses.update_one(
+                        {"license_number": lic_num},
+                        {"$set": {
+                            "business_name": (rec.get("business_name") or "").strip(),
+                            "licensee_name": f"{rec.get('first_name', '')} {rec.get('last_name', '')}".strip(),
+                            "license_status": new_status,
+                            "source": "nyc_open_data",
+                            "last_synced": now,
+                        }, "$setOnInsert": {"created_at": now, "license_type": "GC", "insurance_records": [], "license_expiration": None}},
+                        upsert=True,
+                    )
+
+                    if old_status and old_status != new_status:
+                        updated += 1
+                        status_changes.append({"license_number": lic_num, "old": old_status, "new": new_status})
+                        # Flag companies using this license
+                        await db.companies.update_many(
+                            {"gc_license_number": lic_num, "is_deleted": {"$ne": True}},
+                            {"$set": {"gc_license_status": new_status, "updated_at": now}},
+                        )
+
+                offset += PAGE_SIZE
+                if len(records) < PAGE_SIZE:
+                    break
+    except Exception as e:
+        logger.exception(f"GC sync error: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
+
+    return {"processed": offset, "status_changes": len(status_changes), "changes": status_changes[:50]}
+
+
+@api_router.get("/gc/autocomplete")
+async def gc_autocomplete(
+    q: str = Query(..., min_length=2, description="Search query"),
+    current_user=Depends(get_current_user),
+):
+    """Autocomplete GC license by business name. Searches local index first, falls back to BIS scrape."""
+    import re as _re
+
+    # Build regex prefix match (case-insensitive)
+    escaped = _re.escape(q.strip())
+    regex = {"$regex": escaped, "$options": "i"}
+
+    results = await db.gc_licenses.find(
+        {"business_name": regex, "license_status": {"$in": ["ACTIVE", "Active", "active"]}},
+    ).sort("business_name", 1).limit(10).to_list(10)
+
+    # If too few local results, try BIS scrape as fallback
+    if len(results) < 2:
+        try:
+            from permit_renewal import scrape_gc_license_info
+            bis_result = await scrape_gc_license_info(q.strip())
+            if bis_result and bis_result.license_number:
+                # Cache into gc_licenses collection
+                now = datetime.now(timezone.utc)
+                await db.gc_licenses.update_one(
+                    {"license_number": bis_result.license_number},
+                    {"$set": {
+                        "business_name": bis_result.business_name or q.strip(),
+                        "licensee_name": bis_result.licensee_name or "",
+                        "license_type": "GC",
+                        "license_status": bis_result.license_status or "ACTIVE",
+                        "license_expiration": bis_result.license_expiration,
+                        "source": "bis_scrape",
+                        "last_synced": now,
+                    }, "$setOnInsert": {"created_at": now, "insurance_records": []}},
+                    upsert=True,
+                )
+                # Check if already in results
+                existing_nums = {r.get("license_number") for r in results}
+                if bis_result.license_number not in existing_nums:
+                    bis_doc = await db.gc_licenses.find_one({"license_number": bis_result.license_number})
+                    if bis_doc:
+                        results.append(bis_doc)
+        except Exception as e:
+            logger.warning(f"BIS fallback failed for autocomplete '{q}': {e}")
+
+    return [
+        {
+            "license_number": r.get("license_number"),
+            "business_name": r.get("business_name"),
+            "licensee_name": r.get("licensee_name"),
+            "license_expiration": r.get("license_expiration"),
+            "license_status": r.get("license_status"),
+        }
+        for r in results
+    ]
+
+
+# ==================== ADMIN - INSURANCE & LICENSE (READ-ONLY) ====================
+
+@api_router.get("/admin/company/insurance")
+async def get_admin_company_insurance(current_user=Depends(get_admin_user)):
+    """Get GC license + insurance info for the admin's own company."""
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=404, detail="No company associated with your account")
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    return {
+        "company_id": str(company["_id"]),
+        "company_name": company.get("name"),
+        "gc_license_number": company.get("gc_license_number"),
+        "gc_business_name": company.get("gc_business_name"),
+        "gc_licensee_name": company.get("gc_licensee_name"),
+        "gc_license_status": company.get("gc_license_status"),
+        "gc_license_expiration": company.get("gc_license_expiration"),
+        "gc_insurance_records": company.get("gc_insurance_records", []),
+        "gc_resolved": company.get("gc_resolved", False),
+        "gc_last_verified": company.get("gc_last_verified"),
+    }
+
+
+@api_router.post("/admin/company/insurance/refresh")
+async def refresh_admin_company_insurance(current_user=Depends(get_admin_user)):
+    """Re-scrape BIS for this company's GC license insurance. Returns updated records."""
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=404, detail="No company associated with your account")
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    lic_num = company.get("gc_license_number")
+    if not lic_num:
+        raise HTTPException(status_code=400, detail="No GC license linked to this company. Contact your administrator.")
+
+    now = datetime.now(timezone.utc)
+    warning = None
+
+    try:
+        from permit_renewal import _fetch_insurance_details, scrape_gc_license_info
+        import httpx
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            insurance = await _fetch_insurance_details(client, lic_num)
+            insurance_dicts = [rec.dict() for rec in insurance]
+
+        # Also refresh license status from BIS
+        gc_info = await scrape_gc_license_info(company.get("gc_business_name") or company.get("name", ""))
+        update_fields = {
+            "gc_insurance_records": insurance_dicts,
+            "gc_last_verified": now,
+            "updated_at": now,
+        }
+        if gc_info:
+            update_fields["gc_license_status"] = gc_info.license_status or company.get("gc_license_status")
+            update_fields["gc_license_expiration"] = gc_info.license_expiration or company.get("gc_license_expiration")
+
+        await db.companies.update_one({"_id": to_query_id(company_id)}, {"$set": update_fields})
+
+    except Exception as e:
+        logger.error(f"BIS refresh failed for company {company_id} license {lic_num}: {e}")
+        warning = f"Could not reach DOB BIS. Showing cached data (last verified: {company.get('gc_last_verified', 'never')})."
+        insurance_dicts = company.get("gc_insurance_records", [])
+
+    return {
+        "gc_license_number": lic_num,
+        "gc_license_status": company.get("gc_license_status"),
+        "gc_license_expiration": company.get("gc_license_expiration"),
+        "gc_insurance_records": insurance_dicts,
+        "gc_last_verified": str(now),
+        "warning": warning,
+    }
+
 
 class CreateAdminRequest(BaseModel):
     name: str
@@ -8485,13 +8802,20 @@ async def get_dob_logs(
     total = await db.dob_logs.count_documents(query)
     logs = await db.dob_logs.find(query).sort("detected_at", -1).skip(skip).limit(limit).to_list(limit)
  
+    serialized_logs = []
+    for log in logs:
+        try:
+            serialized_logs.append(DOBLogResponse(**serialize_id(dict(log))))
+        except Exception as e:
+            logger.error(f"Failed to serialize dob_log {log.get('_id')}: {e}")
+
     return {
         "project_id": project_id,
         "project_name": project.get("name"),
         "nyc_bin": project.get("nyc_bin"),
         "track_dob_status": project.get("track_dob_status", False),
         "total": total,
-        "logs": [DOBLogResponse(**serialize_id(dict(log))) for log in logs],
+        "logs": serialized_logs,
     }
  
  

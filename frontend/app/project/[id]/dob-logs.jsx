@@ -31,6 +31,7 @@ import {
   ExternalLink,
   FileCheck,
   ClipboardCheck,
+  ShieldAlert,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -39,7 +40,7 @@ import GlassInput from '../../../src/components/GlassInput';
 import FloatingNav from '../../../src/components/FloatingNav';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
-import { dobAPI } from '../../../src/utils/api';
+import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 
@@ -98,6 +99,8 @@ export default function DOBLogsScreen() {
   const [configBin, setConfigBin] = useState('');
   const [configTracking, setConfigTracking] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
+  const [preparingId, setPreparingId] = useState(null);
+  const [renewalResult, setRenewalResult] = useState(null); // result from prepare call
 
   useEffect(() => {
     if (authLoading) return;
@@ -176,7 +179,7 @@ export default function DOBLogsScreen() {
   const getRealDate = (log) => {
     if (log.record_type === 'violation' || log.record_type === 'swo') return log.violation_date || log.detected_at;
     if (log.record_type === 'complaint') return log.complaint_date || log.detected_at;
-    if (log.record_type === 'permit') return log.issuance_date || log.filing_date || log.detected_at;
+    if (log.record_type === 'permit') return log.expiration_date || log.issuance_date || log.filing_date || log.detected_at;
     if (log.record_type === 'inspection') return log.inspection_date || log.detected_at;
     return log.detected_at;
   };
@@ -196,11 +199,45 @@ export default function DOBLogsScreen() {
     : allLogs.filter(l => l.record_type === activeTab)
   );
 
-  const expiringPermits = allLogs.filter(l => {
+  // Permits needing renewal: expiring within 30 days OR expired within 60 days
+  const renewablePermits = allLogs.filter(l => {
     if (l.record_type !== 'permit') return false;
-    const days = daysUntil(l.expiration_date);
-    return days !== null && days >= 0 && days <= 30;
+    if (l.expiration_date) {
+      const days = daysUntil(l.expiration_date);
+      if (days !== null) return days <= 30 && days >= -60;
+    }
+    const status = (l.permit_status || '').toLowerCase();
+    return status.includes('expired');
   });
+  const expiringPermits = renewablePermits.filter(l => {
+    const days = daysUntil(l.expiration_date);
+    return days !== null && days >= 0;
+  });
+  const expiredPermits = renewablePermits.filter(l => {
+    const days = daysUntil(l.expiration_date);
+    return days !== null && days < 0;
+  });
+
+  const handlePrepareRenewal = async (log) => {
+    setPreparingId(log.id);
+    try {
+      const resp = await apiClient.post('/api/permit-renewals/prepare', {
+        permit_dob_log_id: log.id,
+        project_id: projectId,
+      });
+      setRenewalResult(resp.data);
+      toast.success('Renewal Prepared', 'Review details below — complete on DOB NOW.');
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (typeof detail === 'object' && detail.blocking_reasons) {
+        toast.error('Not Eligible', detail.blocking_reasons.join('\n'));
+      } else {
+        toast.error('Error', typeof detail === 'string' ? detail : 'Could not prepare renewal');
+      }
+    } finally {
+      setPreparingId(null);
+    }
+  };
 
   // ── Card renderers ──
   const renderPermitCard = (log) => {
@@ -209,6 +246,12 @@ export default function DOBLogsScreen() {
     const days = daysUntil(log.expiration_date);
     const isExpired = days !== null && days < 0;
     const isExpiring = days !== null && days >= 0 && days <= 30;
+    const needsRenewal = isExpired || isExpiring;
+    const isPreparing = preparingId === log.id;
+    const jobNum = log.job_number || '';
+    // Determine if this is a BIS legacy permit (numeric job number)
+    const jobClean = jobNum.replace(/-/g, '').trim();
+    const isBisLegacy = jobClean && /^\d+$/.test(jobClean);
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -221,6 +264,29 @@ export default function DOBLogsScreen() {
               </View>
             </View>
             <View style={s.logHeaderRight}>
+              {needsRenewal && (
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    if (isBisLegacy) {
+                      Linking.openURL('https://a810-dobnow.nyc.gov/publish/');
+                    } else {
+                      handlePrepareRenewal(log);
+                    }
+                  }}
+                  disabled={isPreparing}
+                  style={[s.renewBubble, isExpired && s.renewBubbleUrgent]}
+                >
+                  {isPreparing ? (
+                    <ActivityIndicator size={12} color="#fff" />
+                  ) : (
+                    <FileCheck size={12} strokeWidth={2} color="#fff" />
+                  )}
+                  <Text style={s.renewBubbleText}>
+                    {isPreparing ? 'Preparing...' : 'Renew'}
+                  </Text>
+                </Pressable>
+              )}
               {(log.issuance_date || log.filing_date || log.detected_at) && <Text style={s.dateText}>{formatDate(log.issuance_date || log.filing_date || log.detected_at)}</Text>}
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
@@ -247,8 +313,30 @@ export default function DOBLogsScreen() {
                 <Text style={s.nextActionLabel}>ACTION</Text>
                 <Text style={s.nextActionText}>{log.next_action}</Text>
               </View>
-              {(isExpired || isExpiring) && (
-                <GlassButton title="Renew Permit" icon={<FileCheck size={16} strokeWidth={1.5} color="#22c55e" />} onPress={() => router.push(`/project/${projectId}/permit-renewal`)} style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]} />
+              {isBisLegacy && needsRenewal && (
+                <View style={s.bisLegacyBanner}>
+                  <AlertTriangle size={14} color="#f59e0b" />
+                  <Text style={s.bisLegacyText}>
+                    BIS Legacy Permit — automated renewal unavailable. Contact your expediter for a PAA or re-file on DOB NOW.
+                  </Text>
+                </View>
+              )}
+              {needsRenewal && !isBisLegacy && (
+                <GlassButton
+                  title={isPreparing ? 'Preparing...' : 'Prepare Renewal'}
+                  icon={isPreparing ? <ActivityIndicator size={14} color="#22c55e" /> : <FileCheck size={16} strokeWidth={1.5} color="#22c55e" />}
+                  onPress={() => handlePrepareRenewal(log)}
+                  disabled={isPreparing}
+                  style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]}
+                />
+              )}
+              {needsRenewal && (
+                <GlassButton
+                  title="Renew on DOB NOW"
+                  icon={<ExternalLink size={16} strokeWidth={1.5} color="#8b5cf6" />}
+                  onPress={() => Linking.openURL(jobNum ? 'https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard' : 'https://a810-dobnow.nyc.gov/publish/')}
+                  style={[s.dobLinkBtn, { borderColor: '#8b5cf640' }]}
+                />
               )}
               {log.dob_link && log.dob_link.trim().length > 0 && (
                 <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
@@ -675,18 +763,45 @@ export default function DOBLogsScreen() {
             </Pressable>
           )}
 
-          {/* Expiring permits warning */}
-          {expiringPermits.length > 0 && (
-            <GlassCard style={s.expiringCard}>
-              <View style={s.expiringHeader}>
-                <AlertTriangle size={16} strokeWidth={2} color="#f59e0b" />
-                <Text style={s.expiringTitle}>{expiringPermits.length} Permit{expiringPermits.length > 1 ? 's' : ''} Expiring Soon</Text>
-              </View>
-              {expiringPermits.map((p) => (
-                <Text key={p.id} style={s.expiringItem}>
-                  {p.job_number || 'Permit'}: expires {formatDate(p.expiration_date)} ({daysUntil(p.expiration_date)} days)
+          {/* Renewal status banner */}
+          {renewablePermits.length > 0 && (
+            <GlassCard style={s.renewalBanner}>
+              <View style={s.renewalBannerHeader}>
+                <ShieldAlert size={16} strokeWidth={2} color="#f59e0b" />
+                <Text style={s.renewalBannerTitle}>
+                  {renewablePermits.length} Permit{renewablePermits.length > 1 ? 's' : ''} Need Renewal
                 </Text>
-              ))}
+              </View>
+              <View style={s.renewalStatsRow}>
+                {expiringPermits.length > 0 && (
+                  <View style={s.renewalStat}>
+                    <Text style={[s.renewalStatNum, { color: '#f59e0b' }]}>{expiringPermits.length}</Text>
+                    <Text style={s.renewalStatLabel}>Expiring</Text>
+                  </View>
+                )}
+                {expiredPermits.length > 0 && (
+                  <View style={s.renewalStat}>
+                    <Text style={[s.renewalStatNum, { color: '#ef4444' }]}>{expiredPermits.length}</Text>
+                    <Text style={s.renewalStatLabel}>Expired</Text>
+                  </View>
+                )}
+              </View>
+              {renewablePermits.slice(0, 3).map((p) => {
+                const d = daysUntil(p.expiration_date);
+                return (
+                  <View key={p.id} style={s.renewalItem}>
+                    <Text style={s.renewalItemText} numberOfLines={1}>
+                      {p.work_type || p.permit_type || 'Permit'} ({p.job_number || '—'})
+                    </Text>
+                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? '#ef4444' : '#f59e0b' }]}>
+                      {d !== null ? (d < 0 ? `${Math.abs(d)}d overdue` : `${d}d left`) : 'Expired'}
+                    </Text>
+                  </View>
+                );
+              })}
+              {renewablePermits.length > 3 && (
+                <Text style={s.renewalMore}>+{renewablePermits.length - 3} more — filter by Permits to see all</Text>
+              )}
             </GlassCard>
           )}
 
@@ -785,10 +900,27 @@ function buildStyles(colors, isDark) {
     filterText: { fontSize: 13, color: '#4ade80', fontWeight: '500' },
     filterClear: { fontSize: 12, color: colors.text.muted, textDecorationLine: 'underline' },
 
-    expiringCard: { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)', marginBottom: spacing.lg },
-    expiringHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-    expiringTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
-    expiringItem: { fontSize: 13, color: colors.text.secondary, marginLeft: spacing.lg + spacing.sm, marginBottom: 4 },
+    // Renewal status banner
+    renewalBanner: { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)', marginBottom: spacing.lg },
+    renewalBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
+    renewalBannerTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
+    renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
+    renewalStat: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
+    renewalStatNum: { fontSize: 18, fontWeight: '700' },
+    renewalStatLabel: { fontSize: 12, color: colors.text.muted },
+    renewalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4, paddingLeft: spacing.lg + spacing.sm },
+    renewalItemText: { fontSize: 13, color: colors.text.secondary, flex: 1 },
+    renewalItemDays: { fontSize: 12, fontWeight: '600', marginLeft: spacing.sm },
+    renewalMore: { fontSize: 11, color: colors.text.muted, marginTop: 4, marginLeft: spacing.lg + spacing.sm },
+
+    // Renew bubble on permit cards
+    renewBubble: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22c55e', paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.full },
+    renewBubbleUrgent: { backgroundColor: '#ef4444' },
+    renewBubbleText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+
+    // BIS legacy banner
+    bisLegacyBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: 'rgba(245,158,11,0.08)', borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)' },
+    bisLegacyText: { fontSize: 13, color: '#f59e0b', flex: 1, lineHeight: 18 },
 
     // Full-width sync button
     syncButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: '#1565C0', paddingVertical: 14, borderRadius: borderRadius.lg, marginBottom: spacing.sm },

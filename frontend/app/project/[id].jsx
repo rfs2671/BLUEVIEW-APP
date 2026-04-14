@@ -42,7 +42,6 @@ import {
   Radio,
   Clock,
   Shield,
-  FileCheck,
   MessageCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
@@ -511,7 +510,6 @@ export default function ProjectDetailScreen() {
     { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/construction-plans`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
-    { title: 'Permit Renewals', icon: FileCheck, path: `/project/${projectId}/permit-renewal`, color: '#22c55e' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
   ];
 

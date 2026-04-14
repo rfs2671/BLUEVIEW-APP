@@ -63,15 +63,29 @@ const renewalAPI = {
     const now = new Date();
     const renewals = logs
       .filter(l => {
-        if (!l.expiration_date) return false;
-        const exp = new Date(l.expiration_date);
-        if (isNaN(exp.getTime())) return false;
-        const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
-        return daysLeft <= 30; // expired or expiring within 30 days
+        // Show permits expiring within 30 days or already expired (up to 60 days past)
+        if (l.expiration_date) {
+          const exp = new Date(l.expiration_date);
+          if (!isNaN(exp.getTime())) {
+            const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+            return daysLeft <= 30 && daysLeft >= -60;
+          }
+        }
+        // Also show permits with "expired" in their status even without a parseable date
+        const status = (l.permit_status || l.status || '').toLowerCase();
+        if (status.includes('expired') || status.includes('revoked')) return true;
+        // Also show permits flagged as needing action (severity === "Action")
+        if (l.severity === 'Action' && l.record_type === 'permit') return true;
+        return false;
       })
       .map(l => {
-        const exp = new Date(l.expiration_date);
-        const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+        let daysLeft = null;
+        if (l.expiration_date) {
+          const exp = new Date(l.expiration_date);
+          if (!isNaN(exp.getTime())) {
+            daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+          }
+        }
         return {
           id: l.id,
           permit_dob_log_id: l.id,
@@ -81,7 +95,7 @@ const renewalAPI = {
           permit_type: l.permit_type || l.work_type,
           current_expiration: l.expiration_date,
           days_until_expiry: daysLeft,
-          status: daysLeft <= 0 ? 'eligible' : 'eligible',
+          status: 'eligible',
           dob_now_url: null,
           gc_license_number: null,
           gc_license_status: null,
@@ -91,35 +105,17 @@ const renewalAPI = {
           blocking_reasons: [],
         };
       });
-    // Deduplicate: group all permits by base job number, keep only the LATEST expiration
-    const byJob = {};
+    // Deduplicate: group by full job number + work type since sub-permits
+    // (e.g. X01180463-S6 Sprinklers vs X01180463-I1 General Construction)
+    // are independent scopes of work with their own expiration dates
+    const byPermit = {};
     for (const r of renewals) {
-      const raw = r.job_number || r.id;
-      const key = raw.includes('-') ? raw.split('-')[0] : raw;
-      if (!byJob[key] || new Date(r.current_expiration) > new Date(byJob[key].current_expiration)) {
-        byJob[key] = r;
+      const key = `${r.job_number || r.id}:${r.permit_type || ''}`;
+      if (!byPermit[key] || new Date(r.current_expiration) > new Date(byPermit[key].current_expiration)) {
+        byPermit[key] = r;
       }
     }
-    // Also check ALL permits (not just expiring ones) for each base job — if any permit
-    // under the same base job has a future expiration > 30 days, the job is already renewed
-    const allPermitsByJob = {};
-    for (const l of logs) {
-      if (!l.job_number) continue;
-      const key = l.job_number.includes('-') ? l.job_number.split('-')[0] : l.job_number;
-      const exp = new Date(l.expiration_date);
-      if (isNaN(exp.getTime())) continue;
-      const daysLeft = Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
-      if (!allPermitsByJob[key] || daysLeft > allPermitsByJob[key]) {
-        allPermitsByJob[key] = daysLeft;
-      }
-    }
-    // Only show jobs where the newest permit is actually expired or expiring
-    const dedupedRenewals = Object.entries(byJob)
-      .filter(([key, r]) => {
-        const newestDays = allPermitsByJob[key] ?? r.days_until_expiry;
-        return newestDays <= 30;
-      })
-      .map(([, r]) => r);
+    const dedupedRenewals = Object.values(byPermit);
     return { renewals: dedupedRenewals, project_id: logsResp.data?.project_id, project_name: logsResp.data?.project_name };
   },
   prepare: async (permitDobLogId, projectId) => {
@@ -410,29 +406,29 @@ export default function PermitRenewalScreen() {
               </View>
             </View>
             <View style={s.cardHeaderRight}>
-              {daysLeft !== null && daysLeft >= 0 && (
+              {daysLeft !== null && (
                 <View
                   style={[
                     s.daysChip,
-                    isUrgent && s.daysChipUrgent,
+                    (isUrgent || daysLeft < 0) && s.daysChipUrgent,
                   ]}
                 >
                   <Clock
                     size={12}
                     color={
-                      isUrgent ? '#ef4444' : colors.text.muted
+                      (isUrgent || daysLeft < 0) ? '#ef4444' : colors.text.muted
                     }
                   />
                   <Text
                     style={[
                       s.daysText,
-                      isUrgent && {
+                      (isUrgent || daysLeft < 0) && {
                         color: '#ef4444',
                         fontWeight: '700',
                       },
                     ]}
                   >
-                    {daysLeft}d
+                    {daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d`}
                   </Text>
                 </View>
               )}

@@ -100,7 +100,7 @@ const RenewalAlertCard = ({ projectId }) => {
   return (
     <Pressable
       onPress={() =>
-        router.push(`/project/${projectId}/permit-renewal`)
+        router.push(`/project/${projectId}/dob-logs`)
       }
     >
       <GlassCard
