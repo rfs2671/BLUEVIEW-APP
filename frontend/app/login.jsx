@@ -79,7 +79,7 @@ export default function LoginScreen() {
         <View style={s.loadingContainer}>
           <Image
             source={require('../assets/logo-header.png')}
-            style={{ width: '100%', maxWidth: 440, height: 140, resizeMode: 'contain' }}
+            style={{ width: '100%', maxWidth: 440, height: 200, resizeMode: 'contain' }}
           />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
@@ -176,11 +176,12 @@ function buildStyles(colors, isDark) {
   },
   logoContainer: {
     alignItems: 'center',
-    marginBottom: spacing.md,
+    marginBottom: -spacing.md,
+    marginTop: spacing.xl,
   },
   logoImage: {
     width: '100%',
-    height: 140,
+    height: 200,
     alignSelf: 'center',
   },
   card: { padding: spacing.xl },
