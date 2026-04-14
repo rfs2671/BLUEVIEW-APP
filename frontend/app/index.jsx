@@ -219,7 +219,7 @@ export default function DashboardScreen() {
           <View style={s.headerLeft}>
             <Image
               source={require('../assets/logo-header.png')}
-              style={{ width: 120, height: 32, resizeMode: 'contain' }}
+              style={{ width: 360, height: 96, resizeMode: 'contain' }}
             />
           </View>
           <View style={s.headerRight}>

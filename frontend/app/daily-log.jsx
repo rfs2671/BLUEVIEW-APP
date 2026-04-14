@@ -391,7 +391,7 @@ export default function DailyLogScreen() {
                 <Text style={[s.siteBadgeText, s.viewOnlyText]}>VIEW ONLY</Text>
               </View>
             ) : (
-              <Image source={require('../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
+              <Image source={require('../assets/logo-header.png')} style={{ width: 360, height: 96, resizeMode: 'contain' }} />
             )}
           </View>
           <View style={s.headerRight}>

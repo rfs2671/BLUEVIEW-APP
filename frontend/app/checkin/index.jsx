@@ -166,7 +166,7 @@ export default function CheckInScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Image source={require('../../assets/logo-header.png')} style={{ width: 120, height: 32, resizeMode: 'contain' }} />
+            <Image source={require('../../assets/logo-header.png')} style={{ width: 360, height: 96, resizeMode: 'contain' }} />
           </View>
           <GlassButton
             variant="icon"
