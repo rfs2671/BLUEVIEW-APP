@@ -44,6 +44,7 @@ import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/ap
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
+import HeaderBrand from '../src/components/HeaderBrand';
 
 const TABS = [
   { key: 'today', label: "Today's Report" },
@@ -281,7 +282,7 @@ export default function ReportsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Image source={require('../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+            <HeaderBrand />
           </View>
           <GlassButton
             variant="icon"

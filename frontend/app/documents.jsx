@@ -34,6 +34,7 @@ import { useTheme } from '../src/context/ThemeContext';
 
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
 import PDFViewer from '../src/components/PDFViewer';
+import HeaderBrand from '../src/components/HeaderBrand';
 
 // File type icon mapping
 const getFileIcon = (fileName) => {
@@ -258,7 +259,7 @@ export default function DocumentsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={handleBack}
             />
-            <RNImage source={require('../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+            <HeaderBrand />
           </View>
           <GlassButton
             variant="icon"

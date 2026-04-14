@@ -43,6 +43,7 @@ import { useAuth } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
+import HeaderBrand from '../../../src/components/HeaderBrand';
 
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
@@ -691,7 +692,7 @@ export default function DOBLogsScreen() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <GlassButton variant="icon" icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => router.back()} />
-            <Image source={require('../../../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+            <HeaderBrand />
           </View>
           <View style={s.headerRight}>
             {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}

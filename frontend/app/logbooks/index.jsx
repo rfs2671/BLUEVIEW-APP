@@ -33,6 +33,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import HeaderBrand from '../../src/components/HeaderBrand';
 
 // Icon mapping for dynamic logbook types from API
 const ICON_MAP = {
@@ -244,7 +245,7 @@ export default function LogBooksScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <Image source={require('../../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+          <HeaderBrand />
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}

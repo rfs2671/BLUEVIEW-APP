@@ -27,6 +27,7 @@ import { useCheckIns } from '../src/hooks/useCheckIns';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
+import HeaderBrand from '../src/components/HeaderBrand';
 
 export default function WorkersScreen() {
   const { colors, isDark } = useTheme();
@@ -130,7 +131,7 @@ export default function WorkersScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Image source={require('../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+            <HeaderBrand />
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

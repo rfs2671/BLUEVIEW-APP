@@ -32,6 +32,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
+import HeaderBrand from '../../src/components/HeaderBrand';
 
 const INSURANCE_LABELS = {
   general_liability: 'General Liability',
@@ -148,10 +149,7 @@ export default function AdminInsuranceScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.back()}
             />
-            <Image
-              source={require('../../assets/logo-header.png')}
-              style={{ width: 180, height: 48, resizeMode: 'contain' }}
-            />
+            <HeaderBrand />
           </View>
           <GlassButton
             variant="icon"

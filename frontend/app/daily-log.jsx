@@ -54,6 +54,7 @@ import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
+import HeaderBrand from '../src/components/HeaderBrand';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -391,7 +392,7 @@ export default function DailyLogScreen() {
                 <Text style={[s.siteBadgeText, s.viewOnlyText]}>VIEW ONLY</Text>
               </View>
             ) : (
-              <Image source={require('../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+              <HeaderBrand />
             )}
           </View>
           <View style={s.headerRight}>

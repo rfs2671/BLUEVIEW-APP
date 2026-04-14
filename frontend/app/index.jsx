@@ -25,6 +25,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import HeaderBrand from '../src/components/HeaderBrand';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
@@ -217,10 +218,7 @@ export default function DashboardScreen() {
         {/* ── Header ──────────────────────────────────────────────────────── */}
         <View style={s.header}>
           <View style={s.headerLeft}>
-            <Image
-              source={require('../assets/logo-header.png')}
-              style={{ width: 180, height: 48, resizeMode: 'contain' }}
-            />
+            <HeaderBrand />
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />

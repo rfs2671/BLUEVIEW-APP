@@ -53,6 +53,7 @@ export default function SettingsScreen() {
   const [gcLegalName, setGcLegalName] = useState('');
   const [savingGc, setSavingGc] = useState(false);
   const [loadingGc, setLoadingGc] = useState(false);
+  const [currentPw,   setCurrentPw]   = useState('');
   const [newPw,       setNewPw]       = useState('');
   const [confirmPw,   setConfirmPw]   = useState('');
   const [savingPw,    setSavingPw]    = useState(false);

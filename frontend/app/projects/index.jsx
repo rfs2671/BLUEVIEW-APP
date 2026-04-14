@@ -38,6 +38,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
+import HeaderBrand from '../../src/components/HeaderBrand';
 
 export default function ProjectsScreen() {
   const { colors, isDark } = useTheme();
@@ -170,7 +171,7 @@ export default function ProjectsScreen() {
               icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => router.push('/')}
             />
-            <Image source={require('../../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
+            <HeaderBrand />
           </View>
           <GlassButton
             variant="icon"
