@@ -244,7 +244,7 @@ export default function LogBooksScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         {/* Header */}
         <View style={styles.header}>
-          <Image source={require('../../assets/logo-header.png')} style={{ width: 360, height: 96, resizeMode: 'contain' }} />
+          <Image source={require('../../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
           <GlassButton
             variant="icon"
             icon={<LogOut size={20} strokeWidth={1.5} color={colors.text.primary} />}

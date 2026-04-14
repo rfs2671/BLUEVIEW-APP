@@ -691,7 +691,7 @@ export default function DOBLogsScreen() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <GlassButton variant="icon" icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => router.back()} />
-            <Image source={require('../../../assets/logo-header.png')} style={{ width: 360, height: 96, resizeMode: 'contain' }} />
+            <Image source={require('../../../assets/logo-header.png')} style={{ width: 180, height: 48, resizeMode: 'contain' }} />
           </View>
           <View style={s.headerRight}>
             {isAdmin && <GlassButton variant="icon" icon={<Settings size={20} strokeWidth={1.5} color={colors.text.primary} />} onPress={openConfigModal} />}
