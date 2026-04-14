@@ -35,7 +35,7 @@ import CpNav from '../src/components/CpNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
-import { authAPI, apiClient } from '../src/utils/api';
+import apiClient, { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 
 const INSURANCE_LABELS = {
