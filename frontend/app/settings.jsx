@@ -7,7 +7,6 @@ import {
   Switch,
   ActivityIndicator,
   Pressable,
-  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -608,32 +607,15 @@ export default function SettingsScreen() {
     </>
   );
 
-  // On web, render body inside a real <div> with an EXPLICIT viewport-based
-  // height. We don't rely on flex:1 because the chain through
-  // AnimatedBackground -> SafeAreaView can silently break (no bounded
-  // height means the ScrollView grows to content size and never scrolls).
-  // Header is ~56px. We subtract a bit more for the top safe area.
-  const scrollArea = Platform.OS === 'web' ? (
-    <div
-      style={{
-        height: 'calc(100vh - 56px)',
-        maxHeight: 'calc(100vh - 56px)',
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        WebkitOverflowScrolling: 'touch',
-        width: '100%',
-      }}
-    >
-      <View style={s.scrollContent}>
-        {bodyContent}
-      </View>
-    </div>
-  ) : (
+  // Use a plain ScrollView with flex:1 — the SAME pattern used by
+  // app/index.jsx which scrolls fine. The previous attempts at
+  // height:100vh / overflow:hidden / a manual <div> were actually
+  // what broke scrolling.
+  const scrollArea = (
     <ScrollView
       style={s.scroll}
       contentContainerStyle={s.scrollContent}
-      showsVerticalScrollIndicator={true}
-      nestedScrollEnabled
+      showsVerticalScrollIndicator={false}
     >
       {bodyContent}
     </ScrollView>
@@ -667,10 +649,7 @@ export default function SettingsScreen() {
 // Build styles using live theme colors so they re-render on toggle
 function buildStyles(colors) {
   return StyleSheet.create({
-    container:    {
-      flex: 1,
-      ...(Platform.OS === 'web' ? { height: '100vh', maxHeight: '100vh', overflow: 'hidden' } : {}),
-    },
+    container:    { flex: 1 },
     loadingCenter:{ flex: 1, alignItems: 'center', justifyContent: 'center' },
     header: {
       flexDirection: 'row',
