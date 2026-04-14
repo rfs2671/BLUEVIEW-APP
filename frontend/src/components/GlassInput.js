@@ -1,7 +1,15 @@
 import React, { useState } from 'react';
-import { TextInput, View, StyleSheet } from 'react-native';
+import { TextInput, View, StyleSheet, Platform } from 'react-native';
 import { borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+
+const IconWrap = ({ children, style }) => (
+  <View style={style}>
+    <View style={{ backgroundColor: 'transparent' }}>
+      {children}
+    </View>
+  </View>
+);
 
 const GlassInput = ({
   value,
@@ -31,10 +39,12 @@ const GlassInput = ({
         isFocused && { backgroundColor: colors.glass.backgroundHover, borderColor: colors.border.strong },
         style,
       ]}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      {...(Platform.OS === 'web' ? {
+        onMouseEnter: () => setIsHovered(true),
+        onMouseLeave: () => setIsHovered(false),
+      } : {})}
     >
-      {leftIcon && <View style={s.leftIcon}>{leftIcon}</View>}
+      {leftIcon && <IconWrap style={s.leftIcon}>{leftIcon}</IconWrap>}
       <TextInput
         value={value}
         onChangeText={onChangeText}
@@ -56,7 +66,7 @@ const GlassInput = ({
         ]}
         {...props}
       />
-      {rightIcon && <View style={s.rightIcon}>{rightIcon}</View>}
+      {rightIcon && <IconWrap style={s.rightIcon}>{rightIcon}</IconWrap>}
     </View>
   );
 };

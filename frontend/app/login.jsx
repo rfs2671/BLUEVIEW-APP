@@ -78,8 +78,8 @@ export default function LoginScreen() {
       <AnimatedBackground>
         <View style={s.loadingContainer}>
           <Image
-            source={require('../assets/headicon.png')}
-            style={{ width: '80%', maxWidth: 300, height: 70, resizeMode: 'contain' }}
+            source={require('../assets/logo-header.png')}
+            style={{ width: '100%', maxWidth: 380, height: 70, resizeMode: 'contain' }}
           />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
@@ -94,7 +94,7 @@ export default function LoginScreen() {
           {/* Logo */}
           <View style={s.logoContainer}>
             <Image
-              source={require('../assets/headicon.png')}
+              source={require('../assets/logo-header.png')}
               style={s.logoImage}
               resizeMode="contain"
             />
