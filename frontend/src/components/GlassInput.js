@@ -95,12 +95,24 @@ function buildStyles(colors, isDark) {
   leftIcon: {
     position: 'absolute',
     left: spacing.lg,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 20,
     zIndex: 1,
+    backgroundColor: 'transparent',
   },
   rightIcon: {
     position: 'absolute',
     right: spacing.lg,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 20,
     zIndex: 1,
+    backgroundColor: 'transparent',
   },
 });
 }

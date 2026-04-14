@@ -319,7 +319,7 @@ export default function WhatsAppGroupsScreen() {
               {/* Modal Header */}
               <View style={s.modalHeader}>
                 <Text style={s.modalTitle}>
-                  {linkStep === 1 ? 'Add Levelog to your group' : 'Enter the code from your group'}
+                  {linkStep === 1 ? 'Add LeveLog to your group' : 'Enter the code from your group'}
                 </Text>
                 <GlassButton
                   variant="icon"

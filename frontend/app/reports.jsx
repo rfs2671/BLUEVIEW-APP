@@ -210,7 +210,7 @@ export default function ReportsScreen() {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `Levelog_Report_${selectedProject.name?.replace(/\s+/g, '_') || 'report'}_${previewDate}.pdf`;
+        a.download = `LeveLog_Report_${selectedProject.name?.replace(/\s+/g, '_') || 'report'}_${previewDate}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);

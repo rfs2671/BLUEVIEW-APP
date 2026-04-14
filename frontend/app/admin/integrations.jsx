@@ -391,7 +391,7 @@ export default function AdminIntegrationsScreen() {
                     <Text style={s.integrationName}>WhatsApp</Text>
                     <Text style={s.integrationDesc}>
                       {!whatsappStatus.platform_configured
-                        ? 'WhatsApp integration is managed by Levelog. Contact support to enable.'
+                        ? 'WhatsApp integration is managed by LeveLog. Contact support to enable.'
                         : !whatsappStatus.company_active
                         ? 'Connect WhatsApp to enable group messaging, site queries, and daily summaries.'
                         : 'Connected to WhatsApp Business'}

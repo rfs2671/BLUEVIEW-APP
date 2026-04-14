@@ -84,7 +84,7 @@ export default function SiteLogbooksViewer() {
       const FileSystem = require('expo-file-system');
       const token = await getToken();
       const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
-      const filename = `Levelog_${logType}_${date}.pdf`;
+      const filename = `LeveLog_${logType}_${date}.pdf`;
       const fileUri = FileSystem.cacheDirectory + filename;
       const download = await FileSystem.downloadAsync(url, fileUri);
       if (await Sharing.isAvailableAsync()) {

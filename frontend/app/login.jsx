@@ -78,8 +78,8 @@ export default function LoginScreen() {
       <AnimatedBackground>
         <View style={s.loadingContainer}>
           <Image
-            source={require('../assets/logo-header.png')}
-            style={{ width: 160, height: 44, resizeMode: 'contain' }}
+            source={require('../assets/headicon.png')}
+            style={{ width: '80%', maxWidth: 300, height: 70, resizeMode: 'contain' }}
           />
           <ActivityIndicator size="large" color={colors.primary} style={{ marginTop: spacing.lg }} />
         </View>
@@ -94,15 +94,16 @@ export default function LoginScreen() {
           {/* Logo */}
           <View style={s.logoContainer}>
             <Image
-              source={require('../assets/logo-header.png')}
-              style={{ width: 160, height: 44, resizeMode: 'contain' }}
+              source={require('../assets/headicon.png')}
+              style={s.logoImage}
+              resizeMode="contain"
             />
           </View>
 
           <GlassCard style={s.card}>
             <View style={s.welcomeSection}>
               <Text style={s.welcomeLabel}>WELCOME TO</Text>
-              <Text style={s.welcomeTitle}>Levelog</Text>
+              <Text style={s.welcomeTitle}>LeveLog</Text>
             </View>
 
             <View style={s.form}>
@@ -177,29 +178,10 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     marginBottom: spacing.xl,
   },
-  logoIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: borderRadius.lg,
-    backgroundColor: colors.glass.background,
-    borderWidth: 1,
-    borderColor: colors.glass.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.sm,
-  },
-  logoText: {
-    ...typography.label,
-    fontSize: 18,
-    color: colors.text.primary,
-    letterSpacing: 6,
-  },
-  logoTextLoading: {
-    ...typography.label,
-    fontSize: 18,
-    color: colors.text.primary,
-    letterSpacing: 6,
-    marginTop: spacing.sm,
+  logoImage: {
+    width: '100%',
+    height: 70,
+    alignSelf: 'center',
   },
   card: { padding: spacing.xl },
   welcomeSection: { marginBottom: spacing.xl },
