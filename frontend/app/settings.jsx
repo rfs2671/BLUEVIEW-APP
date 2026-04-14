@@ -608,14 +608,18 @@ export default function SettingsScreen() {
     </>
   );
 
-  // On web, render body inside a real <div> with forced overflow-y:auto.
-  // The RN-Web ScrollView height-chain is unreliable here, so we bypass it.
+  // On web, render body inside a real <div> with an EXPLICIT viewport-based
+  // height. We don't rely on flex:1 because the chain through
+  // AnimatedBackground -> SafeAreaView can silently break (no bounded
+  // height means the ScrollView grows to content size and never scrolls).
+  // Header is ~56px. We subtract a bit more for the top safe area.
   const scrollArea = Platform.OS === 'web' ? (
     <div
       style={{
-        flex: 1,
-        minHeight: 0,
+        height: 'calc(100vh - 56px)',
+        maxHeight: 'calc(100vh - 56px)',
         overflowY: 'auto',
+        overflowX: 'hidden',
         WebkitOverflowScrolling: 'touch',
         width: '100%',
       }}
