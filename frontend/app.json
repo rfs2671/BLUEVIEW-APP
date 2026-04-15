@@ -40,7 +40,6 @@
         "backgroundColor": "#050a12"
       },
       "package": "com.levelog.app",
-      "versionCode": 2,
       "permissions": [
         "INTERNET",
         "ACCESS_NETWORK_STATE",
