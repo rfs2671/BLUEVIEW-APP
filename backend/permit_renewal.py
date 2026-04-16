@@ -19,7 +19,46 @@ RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 OWNER_ALERT_EMAIL = os.environ.get("OWNER_ALERT_EMAIL", "")
 
 DOB_BIS_LICENSE_URL = "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryServlet"
+DOB_BIS_BASE_URL    = "https://a810-bisweb.nyc.gov/bisweb/"
 DOB_NOW_BUILD_URL = "https://a810-dobnow.nyc.gov/publish/Index.html"
+
+# Browser-like headers — BIS is behind Akamai which 403s bare requests.
+_BIS_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+async def _warmup_bis_cookies(client) -> None:
+    """Hit the BIS landing page first so Akamai drops the session cookies.
+    Subsequent requests using the same client then pass bot detection.
+    Silent on failure -- caller falls back to direct request."""
+    try:
+        await client.get(
+            DOB_BIS_BASE_URL,
+            headers={**_BIS_BROWSER_HEADERS, "Sec-Fetch-Site": "none"},
+            timeout=20.0,
+        )
+    except Exception as e:
+        logger.debug(f"BIS warmup failed (will retry without cookies): {e}")
 
 
 
@@ -194,18 +233,32 @@ def _parse_bis_license_html(html: str) -> Optional[GCLicenseInfo]:
 
 
 async def _fetch_insurance_details(client, license_number: str) -> List[InsuranceRecord]:
-    """Fetch insurance records for a given GC license from BIS."""
+    """Fetch insurance records for a given GC license from BIS.
+
+    BIS is behind Akamai bot protection -- bare requests 403. We warm up a
+    browser-like session first so Akamai drops its allow cookies, then hit
+    the license servlet with full browser headers.
+    """
     records = []
 
     try:
-        resp = await client.get(DOB_BIS_LICENSE_URL, params={
-            "requestid": "2",
-            "licno": license_number,
-        })
+        # Warmup for Akamai session cookies (httpx client persists them)
+        await _warmup_bis_cookies(client)
+
+        resp = await client.get(
+            DOB_BIS_LICENSE_URL,
+            params={"requestid": "2", "licno": license_number},
+            headers=_BIS_BROWSER_HEADERS,
+        )
         if resp.status_code != 200:
+            logger.warning(f"BIS returned {resp.status_code} for license {license_number}")
             return records
 
         html = resp.text
+        # Akamai sometimes serves a 200 with the block page -- detect it
+        if "Access Denied" in html and "edgesuite" in html.lower():
+            logger.warning(f"BIS served Akamai block page for license {license_number}")
+            return records
 
         insurance_patterns = [
             ("general_liability", r'General\s+Liability.*?(\d{1,2}/\d{1,2}/\d{2,4}).*?(\d{1,2}/\d{1,2}/\d{2,4})'),
