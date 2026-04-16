@@ -2171,6 +2171,105 @@ async def create_company(company_data: CompanyCreate, current_user = Depends(get
 
     return company_dict
 
+class LinkGcLicenseRequest(BaseModel):
+    gc_license_number: str
+
+
+@api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"])
+async def link_gc_license_to_company(
+    company_id: str,
+    body: LinkGcLicenseRequest,
+    current_user=Depends(get_current_user),
+):
+    """
+    Link an existing company to an NYC DOB GC license number, then fetch
+    insurance records from BIS. Owner only.
+    """
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    lic_num = body.gc_license_number.strip()
+    if not lic_num:
+        raise HTTPException(status_code=422, detail="License number required")
+
+    # Try local cache first; if not present, hit NYC Open Data directly
+    gc_doc = await db.gc_licenses.find_one({"license_number": lic_num})
+    now = datetime.now(timezone.utc)
+
+    if not gc_doc:
+        try:
+            import httpx
+            DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(DATASET_URL, params={
+                    "license_number": lic_num,
+                    "license_type": "GENERAL CONTRACTOR",
+                })
+                if resp.status_code == 200:
+                    records = resp.json()
+                    if records:
+                        rec = records[0]
+                        gc_doc = {
+                            "license_number": lic_num,
+                            "business_name": (rec.get("business_name") or "").strip(),
+                            "licensee_name": f"{rec.get('first_name', '')} {rec.get('last_name', '')}".strip(),
+                            "license_type": "GC",
+                            "license_status": (rec.get("license_status") or "").strip(),
+                            "license_expiration": None,
+                            "source": "nyc_open_data",
+                            "last_synced": now,
+                            "created_at": now,
+                            "insurance_records": [],
+                        }
+                        await db.gc_licenses.update_one(
+                            {"license_number": lic_num},
+                            {"$set": gc_doc},
+                            upsert=True,
+                        )
+        except Exception as e:
+            logger.warning(f"NYC Open Data lookup failed for license {lic_num}: {e}")
+
+    if not gc_doc:
+        raise HTTPException(status_code=404, detail=f"GC license {lic_num} not found in NYC Open Data.")
+
+    # Fetch insurance from BIS
+    insurance_dicts = []
+    try:
+        from permit_renewal import _fetch_insurance_details
+        import httpx
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            insurance = await _fetch_insurance_details(client, lic_num)
+            insurance_dicts = [rec.dict() for rec in insurance]
+    except Exception as e:
+        logger.warning(f"BIS insurance fetch failed for license {lic_num}: {e}")
+
+    # Write license + insurance onto the company
+    update_fields = {
+        "gc_license_number": lic_num,
+        "gc_business_name": gc_doc.get("business_name"),
+        "gc_licensee_name": gc_doc.get("licensee_name"),
+        "gc_license_status": gc_doc.get("license_status"),
+        "gc_license_expiration": gc_doc.get("license_expiration"),
+        "gc_resolved": True,
+        "gc_insurance_records": insurance_dicts,
+        "gc_last_verified": now,
+        "updated_at": now,
+    }
+    await db.companies.update_one({"_id": to_query_id(company_id)}, {"$set": update_fields})
+
+    return {
+        "company_id": company_id,
+        "gc_license_number": lic_num,
+        "gc_business_name": gc_doc.get("business_name"),
+        "gc_license_status": gc_doc.get("license_status"),
+        "gc_insurance_records_count": len(insurance_dicts),
+    }
+
+
 @api_router.delete("/owner/companies/{company_id}", tags=["Owner"])
 async def hard_delete_company(company_id: str, current_user=Depends(get_current_user)):
     """Hard delete a company and all its users (owner only)"""
