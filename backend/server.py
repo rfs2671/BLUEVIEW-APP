@@ -492,7 +492,8 @@ class TokenResponse(BaseModel):
     token: str
     token_type: str = "bearer"
 class UpdateProfileRequest(BaseModel):
-    name: str
+    name: Optional[str] = None
+    phone: Optional[str] = None
 
 class UpdatePasswordRequest(BaseModel):
     current_password: str
@@ -1689,28 +1690,124 @@ async def get_me(current_user = Depends(get_current_user)):
 @api_router.put("/auth/profile")
 async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_current_user)):
     """
-    Update the authenticated user's display name.
+    Update the authenticated user's display name and/or phone number.
     Available to all roles (admin, owner, cp, worker).
-    """
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=422, detail="Name cannot be empty")
 
+    Phone is normalized to E.164. An empty-string phone is treated as explicit
+    removal. Uniqueness is enforced within the user's company.
+    """
+    name_provided  = body.name  is not None
+    phone_provided = body.phone is not None
+
+    if not name_provided and not phone_provided:
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    set_ops: Dict[str, Any] = {}
     now = datetime.now(timezone.utc)
+
+    # ---- Name ----
+    if name_provided:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name cannot be empty")
+        set_ops["name"] = name
+        set_ops["full_name"] = name
+
+    # ---- Phone (may be normalized, may be explicit removal) ----
+    new_phone_normalized: Optional[str] = None
+    phone_is_removal = False
+    if phone_provided:
+        raw = (body.phone or "").strip()
+        if raw == "":
+            phone_is_removal = True
+            new_phone_normalized = ""
+        else:
+            new_phone_normalized = normalize_phone(raw)
+            set_ops["phone"] = new_phone_normalized
+        if phone_is_removal:
+            set_ops["phone"] = ""
+
+    # ---- Fetch current user from DB (authoritative) ----
+    user_doc = await db.users.find_one({"_id": to_query_id(current_user["id"])})
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    old_phone = (user_doc.get("phone") or "")
+    company_id = user_doc.get("company_id")
+
+    # ---- Uniqueness check (only when setting a non-empty phone) ----
+    if phone_provided and not phone_is_removal and new_phone_normalized:
+        if company_id:
+            collision = await db.users.find_one({
+                "company_id": company_id,
+                "phone": new_phone_normalized,
+                "_id": {"$ne": to_query_id(current_user["id"])},
+                "is_deleted": {"$ne": True},
+            })
+            if collision:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This phone number is already in use by another user in your company.",
+                )
+
+    set_ops["updated_at"] = now
+
     result = await db.users.update_one(
         {"_id": to_query_id(current_user["id"])},
-        {"$set": {
-            "name": name,
-            "full_name": name,      # kept in sync so /auth/me returns both consistently
-            "updated_at": now,
-        }}
+        {"$set": set_ops}
     )
-
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
 
-    logger.info(f"User {current_user['id']} updated their display name to '{name}'")
-    return {"message": "Profile updated", "name": name}
+    # ---- Sync whatsapp_contacts when phone changed and company WhatsApp is active ----
+    if phone_provided and company_id and new_phone_normalized != old_phone:
+        try:
+            wa_config = await db.whatsapp_config.find_one({"company_id": company_id})
+            if wa_config and wa_config.get("is_active"):
+                # Null out user_id on the old row (preserve message history)
+                if old_phone:
+                    await db.whatsapp_contacts.update_one(
+                        {"company_id": company_id, "phone": old_phone},
+                        {"$set": {"user_id": None}},
+                    )
+                # Upsert new row
+                if new_phone_normalized:
+                    display_name = set_ops.get("name") or user_doc.get("name", "")
+                    await db.whatsapp_contacts.update_one(
+                        {"company_id": company_id, "phone": new_phone_normalized},
+                        {"$set": {
+                            "company_id": company_id,
+                            "phone": new_phone_normalized,
+                            "user_id": str(current_user["id"]),
+                            "display_name": display_name,
+                        }},
+                        upsert=True,
+                    )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts sync failed for user {current_user['id']}: {e}")
+
+    # ---- Audit log phone changes specifically ----
+    if phone_provided and new_phone_normalized != old_phone:
+        try:
+            await audit_log(
+                "profile_phone_change",
+                str(current_user["id"]),
+                "user",
+                str(current_user["id"]),
+                {"old_phone": old_phone, "new_phone": new_phone_normalized},
+            )
+        except Exception as e:
+            logger.warning(f"audit_log (profile_phone_change) failed: {e}")
+
+    logger.info(
+        f"User {current_user['id']} updated profile: "
+        f"name_changed={name_provided}, phone_changed={phone_provided and new_phone_normalized != old_phone}"
+    )
+    return {
+        "message": "Profile updated",
+        "name": set_ops.get("name", user_doc.get("name", "")),
+        "phone": set_ops.get("phone", old_phone),
+    }
 
 
 @api_router.put("/auth/password")

@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
   User,
+  Phone,
   Lock,
   Moon,
   Sun,
@@ -74,6 +75,8 @@ export default function SettingsScreen() {
   const [name, setName]             = useState('');
   const [email, setEmail]           = useState('');
   const [savingName, setSavingName] = useState(false);
+  const [phone, setPhone]           = useState('');
+  const [savingPhone, setSavingPhone] = useState(false);
 
   // Password
   const [currentPw, setCurrentPw] = useState('');
@@ -101,6 +104,7 @@ export default function SettingsScreen() {
     if (user) {
       setName(user.name || user.full_name || '');
       setEmail(user.email || '');
+      setPhone(user.phone || '');
     }
   }, [user]);
 
@@ -207,6 +211,39 @@ export default function SettingsScreen() {
       toast.error('Error', e?.response?.data?.detail || 'Could not update name');
     } finally {
       setSavingName(false);
+    }
+  };
+
+  const handleSavePhone = async () => {
+    const trimmed = (phone || '').trim();
+    // Allow empty (explicit removal) OR 10-15 digits after stripping non-digit chars
+    if (trimmed !== '') {
+      const digits = trimmed.replace(/\D/g, '');
+      if (digits.length < 10 || digits.length > 15) {
+        toast.error('Invalid phone', 'Phone number must have 10-15 digits.');
+        return;
+      }
+    }
+    setSavingPhone(true);
+    try {
+      await authAPI.updateProfile({ phone: trimmed });
+      toast.success(
+        'Saved',
+        trimmed ? 'Phone number updated' : 'Phone number removed'
+      );
+    } catch (e) {
+      const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
+      if (status === 409) {
+        toast.error(
+          'Phone already in use',
+          detail || 'Another user in your company has this number.'
+        );
+      } else {
+        toast.error('Error', detail || 'Could not update phone');
+      }
+    } finally {
+      setSavingPhone(false);
     }
   };
 
@@ -318,7 +355,40 @@ export default function SettingsScreen() {
               />
             </View>
 
-            <View style={[s.fieldGroup, { marginTop: spacing.sm }]}>
+            <GlassButton
+              title={savingName ? 'Saving...' : 'Save Name'}
+              onPress={handleSaveName}
+              loading={savingName}
+              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
+              style={s.saveBtn}
+            />
+
+            <View style={[s.fieldGroup, { marginTop: spacing.md }]}>
+              <View style={s.fieldIconRow}>
+                <Phone size={16} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={s.fieldLabel}>Phone Number</Text>
+              </View>
+              <GlassInput
+                value={phone}
+                onChangeText={setPhone}
+                placeholder="e.g. 917-555-0101"
+                keyboardType="phone-pad"
+                autoCapitalize="none"
+              />
+              <Text style={s.hintText}>
+                Required for WhatsApp integration. Used to identify you when you message the Levelog Assistant.
+              </Text>
+            </View>
+
+            <GlassButton
+              title={savingPhone ? 'Saving...' : 'Save Phone'}
+              onPress={handleSavePhone}
+              loading={savingPhone}
+              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
+              style={s.saveBtn}
+            />
+
+            <View style={[s.fieldGroup, { marginTop: spacing.md }]}>
               <View style={s.fieldIconRow}>
                 <Text style={s.fieldLabel}>Email</Text>
               </View>
@@ -330,14 +400,6 @@ export default function SettingsScreen() {
               />
               <Text style={s.hintText}>Email cannot be changed here. Contact your administrator.</Text>
             </View>
-
-            <GlassButton
-              title={savingName ? 'Saving...' : 'Save Name'}
-              onPress={handleSaveName}
-              loading={savingName}
-              icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
-              style={s.saveBtn}
-            />
           </GlassCard>
 
           {/* ── INSURANCE & LICENSE (admin only) ───────────────────────── */}
