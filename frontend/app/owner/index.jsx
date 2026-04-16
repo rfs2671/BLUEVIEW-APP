@@ -103,6 +103,7 @@ export default function OwnerPortalScreen() {
   const [gcSelection, setGcSelection] = useState(null); // { license_number, business_name, ... } or null
   const [formAdminName, setFormAdminName] = useState('');
   const [formAdminEmail, setFormAdminEmail] = useState('');
+  const [formAdminPhone, setFormAdminPhone] = useState('');
   const [formAdminPassword, setFormAdminPassword] = useState('');
   const [formAdminCompanyId, setFormAdminCompanyId] = useState('');
 
@@ -190,12 +191,16 @@ export default function OwnerPortalScreen() {
 
     try {
       const selectedCompany = companies.find(c => c.id === formAdminCompanyId);
-      const newAdmin = await ownerAPI.createAdmin({
+      const payload = {
         name: formAdminName,
         email: formAdminEmail,
         password: formAdminPassword,
         company_name: selectedCompany.name,
-      });
+      };
+      if (formAdminPhone && formAdminPhone.trim()) {
+        payload.phone = formAdminPhone.trim();
+      }
+      const newAdmin = await ownerAPI.createAdmin(payload);
 
       setAdmins([...admins, newAdmin]);
       resetAdminForm();
@@ -299,6 +304,7 @@ export default function OwnerPortalScreen() {
   const resetAdminForm = () => {
     setFormAdminName('');
     setFormAdminEmail('');
+    setFormAdminPhone('');
     setFormAdminPassword('');
     setFormAdminCompanyId('');
   };
@@ -663,6 +669,17 @@ export default function OwnerPortalScreen() {
                       onChangeText={setFormAdminEmail}
                       placeholder="admin@company.com"
                       keyboardType="email-address"
+                      autoCapitalize="none"
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.inputLabel}>PHONE (OPTIONAL)</Text>
+                    <GlassInput
+                      value={formAdminPhone}
+                      onChangeText={setFormAdminPhone}
+                      placeholder="e.g. 917-555-0101"
+                      keyboardType="phone-pad"
                       autoCapitalize="none"
                     />
                   </View>

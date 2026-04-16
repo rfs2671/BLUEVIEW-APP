@@ -2484,6 +2484,7 @@ class CreateAdminRequest(BaseModel):
     email: str
     password: str
     company_name: str
+    phone: Optional[str] = None
 
 @api_router.post("/owner/admins")
 async def create_admin_with_company(admin_data: CreateAdminRequest, current_user = Depends(get_current_user)):
@@ -2515,6 +2516,21 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         company_result = await db.companies.insert_one(company_doc)
         company_id = str(company_result.inserted_id)
     
+    # Normalize and collision-check phone (if provided)
+    new_phone = ""
+    if admin_data.phone and admin_data.phone.strip():
+        new_phone = normalize_phone(admin_data.phone.strip())
+        collision = await db.users.find_one({
+            "company_id": company_id,
+            "phone": new_phone,
+            "is_deleted": {"$ne": True},
+        })
+        if collision:
+            raise HTTPException(
+                status_code=409,
+                detail="This phone number is already in use by another user in this company.",
+            )
+
     # Create admin user
     user_doc = {
         "email": admin_data.email,
@@ -2528,13 +2544,36 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         "assigned_projects": [],
         "is_deleted": False
     }
-    
+    if new_phone:
+        user_doc["phone"] = new_phone
+
     user_result = await db.users.insert_one(user_doc)
-    
+    new_user_id = str(user_result.inserted_id)
+
+    # If company WhatsApp is active, upsert the new admin into whatsapp_contacts.
+    # If not active, whatsapp_activate's auto-population sweep will pick them up later.
+    if new_phone:
+        try:
+            wa_config = await db.whatsapp_config.find_one({"company_id": company_id})
+            if wa_config and wa_config.get("is_active"):
+                await db.whatsapp_contacts.update_one(
+                    {"company_id": company_id, "phone": new_phone},
+                    {"$set": {
+                        "company_id": company_id,
+                        "phone": new_phone,
+                        "user_id": new_user_id,
+                        "display_name": admin_data.name,
+                    }},
+                    upsert=True,
+                )
+        except Exception as e:
+            logger.warning(f"whatsapp_contacts upsert failed for new admin {new_user_id}: {e}")
+
     return {
-        "id": str(user_result.inserted_id),
+        "id": new_user_id,
         "email": admin_data.email,
         "name": admin_data.name,
+        "phone": new_phone or None,
         "company_id": company_id,
         "company_name": company_name,
         "role": "admin",
