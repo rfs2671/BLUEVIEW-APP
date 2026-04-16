@@ -2175,6 +2175,66 @@ class LinkGcLicenseRequest(BaseModel):
     gc_license_number: str
 
 
+@api_router.get("/owner/debug/bis-license/{license_number}", tags=["Owner"])
+async def debug_bis_license(license_number: str, current_user=Depends(get_current_user)):
+    """Diagnostic: fetch the raw BIS license page and return a sanitized snippet
+    plus what the current regex extracts. Owner only."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    import httpx
+    from permit_renewal import DOB_BIS_LICENSE_URL, _fetch_insurance_details
+
+    raw_html = ""
+    status_code = 0
+    err = None
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            r = await client.get(
+                DOB_BIS_LICENSE_URL,
+                params={"requestid": "2", "licno": license_number},
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            status_code = r.status_code
+            raw_html = r.text
+    except Exception as e:
+        err = str(e)
+
+    # Strip HTML tags to see readable text
+    text = re.sub(r"<[^>]+>", " ", raw_html)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Try the current regex extraction
+    extracted = []
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            extracted = [rec.dict() for rec in await _fetch_insurance_details(client, license_number)]
+    except Exception as e:
+        extracted = [{"error": str(e)}]
+
+    # Look for date patterns and keywords
+    keywords = {
+        "General Liability": bool(re.search(r"General\s+Liability", raw_html, re.I)),
+        "Workers Comp":      bool(re.search(r"Worker[s']?\s*Comp", raw_html, re.I)),
+        "Disability":        bool(re.search(r"Disability", raw_html, re.I)),
+        "Insurance":         bool(re.search(r"Insurance", raw_html, re.I)),
+        "licensee name":     bool(re.search(r"KATZ|LAZAR", raw_html, re.I)),
+    }
+    dates = re.findall(r"\d{1,2}/\d{1,2}/\d{2,4}", raw_html)[:20]
+
+    return {
+        "license_number": license_number,
+        "status_code": status_code,
+        "html_length": len(raw_html),
+        "error": err,
+        "keywords_found": keywords,
+        "dates_found": dates,
+        "extracted_by_current_regex": extracted,
+        "text_snippet_first_2000": text[:2000],
+    }
+
+
+
 @api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"])
 async def link_gc_license_to_company(
     company_id: str,
