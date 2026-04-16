@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Key,
   MessageCircle,
+  UserPlus,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -57,6 +58,7 @@ export default function AdminIntegrationsScreen() {
   const [authCode, setAuthCode] = useState('');
   const [whatsappStatus, setWhatsappStatus] = useState({ platform_configured: false, company_active: false });
   const [activatingWhatsapp, setActivatingWhatsapp] = useState(false);
+  const [savingContact, setSavingContact] = useState(false);
 
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
@@ -168,6 +170,25 @@ export default function AdminIntegrationsScreen() {
       toast.error('Activation Error', error.response?.data?.detail || 'Could not activate WhatsApp');
     } finally {
       setActivatingWhatsapp(false);
+    }
+  };
+
+  const handleSaveContact = async () => {
+    setSavingContact(true);
+    try {
+      const result = await whatsappAPI.downloadVCard();
+      // On web, a download has been triggered -- give visible feedback.
+      // On native, the system "Add Contact" sheet speaks for itself.
+      const { Platform } = require('react-native');
+      if (Platform.OS === 'web') {
+        toast.success('Saved to Contacts', 'vCard downloaded. Open it to add the contact.');
+      }
+    } catch (error) {
+      console.error('Failed to save contact:', error);
+      const detail = error?.response?.data?.detail;
+      toast.error('Error', detail || 'Could not save contact. Please try again.');
+    } finally {
+      setSavingContact(false);
     }
   };
 
@@ -421,6 +442,25 @@ export default function AdminIntegrationsScreen() {
                         {formatPhoneNumber(whatsappStatus.whatsapp_number)}
                       </Text>
                     </View>
+                    <Pressable
+                      onPress={handleSaveContact}
+                      disabled={savingContact}
+                      style={({ pressed }) => [
+                        s.whatsappButton,
+                        pressed && s.dropboxButtonPressed,
+                        savingContact && s.dropboxButtonDisabled,
+                        { marginTop: spacing.sm, marginBottom: spacing.sm },
+                      ]}
+                    >
+                      {savingContact ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <>
+                          <UserPlus size={20} strokeWidth={2} color="#fff" />
+                          <Text style={s.dropboxButtonText}>Save to Contacts</Text>
+                        </>
+                      )}
+                    </Pressable>
                     <Text style={s.whatsappHint}>
                       Add this number to WhatsApp groups from each project page.
                     </Text>

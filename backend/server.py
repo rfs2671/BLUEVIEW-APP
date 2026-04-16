@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -10295,6 +10295,67 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
         "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
     }
+
+
+@api_router.get("/whatsapp/contact.vcf")
+async def whatsapp_contact_vcard(current_user=Depends(get_current_user)):
+    """
+    Return a vCard 3.0 for the Levelog Assistant WhatsApp number so the user
+    can save it to their native contacts app and add it to WhatsApp groups.
+    Requires the caller's company to have an active whatsapp_config.
+    """
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=400, detail="No company associated with this user.")
+
+    wa_config = await db.whatsapp_config.find_one({"company_id": company_id})
+    if not wa_config or not wa_config.get("is_active"):
+        raise HTTPException(
+            status_code=400,
+            detail="WhatsApp integration is not active for this company. Activate it first on the integrations page.",
+        )
+
+    # Per-company number first, then fall back to env (forward-compatible)
+    raw_number = (wa_config.get("whatsapp_number") or "").strip()
+    if not raw_number:
+        raw_number = os.environ.get("WAAPI_DISPLAY_NUMBER", "").strip()
+    if not raw_number:
+        raise HTTPException(status_code=500, detail="WhatsApp number is not configured on the server.")
+
+    # Normalize to E.164 (ensure leading +)
+    digits = re.sub(r"\D", "", raw_number)
+    if not digits:
+        raise HTTPException(status_code=500, detail="Invalid WhatsApp number format.")
+    e164 = f"+{digits}"
+
+    # vCard 3.0 — CRLF line endings (iOS strict), escape commas/semicolons in NOTE
+    note = (
+        "Site intelligence assistant. Ask: who is on site, DOB permit status, "
+        "open compliance items, material deliveries, and daily summaries."
+    ).replace(";", r"\;").replace(",", r"\,")
+
+    lines = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        "N:Assistant;Levelog;;;",
+        "FN:Levelog Assistant",
+        "ORG:Levelog",
+        "TITLE:Site Intelligence Bot",
+        f"TEL;TYPE=CELL,VOICE:{e164}",
+        f"X-WHATSAPP:{e164}",
+        f"NOTE:{note}",
+        "END:VCARD",
+    ]
+    vcard = "\r\n".join(lines) + "\r\n"
+
+    return Response(
+        content=vcard,
+        media_type="text/vcard",
+        headers={
+            "Content-Disposition": 'attachment; filename="levelog-assistant.vcf"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ---------- material request endpoints (auth required) ----------
