@@ -10575,6 +10575,15 @@ async def run_whatsapp_startup_migrations():
             [("project_id", 1), ("discipline", 1)],
             name="document_page_by_project_discipline",
         )
+
+        # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
+        # One active draft per group; auto-expire via TTL on expires_at.
+        await db.whatsapp_conversation_state.create_index(
+            "group_id", unique=True, name="convo_state_by_group"
+        )
+        await db.whatsapp_conversation_state.create_index(
+            "expires_at", expireAfterSeconds=0, name="convo_state_ttl"
+        )
     except Exception as e:
         logger.warning(f"run_whatsapp_startup_migrations: {e}")
 
@@ -11009,15 +11018,108 @@ def _floor_regex(val: str) -> str:
     return rf"\b{re.escape(v)}\b"
 
 
-async def _handle_plan_query(project_id: str, group_id: str, query: str) -> None:
-    """End-to-end: acknowledge, parse, search, render, send via WaAPI."""
+SHOW_VERBS = ("show me", "pull up", "send me", "find the", "open", "get me", "display")
+
+
+def _classify_plan_question(query: str) -> bool:
+    """Return True if the user is asking a visual question about a drawing
+    (VQA), False if they just want the image sent.
+
+    Heuristic: VQA if the query starts with or prominently features a
+    question word (what/how/where/why/which/when/is/are/does/do/can) AND
+    does NOT start with a show-verb. Also any '?' with no show-verb.
+    """
+    if not query:
+        return False
+    low = query.strip().lower()
+    # Explicit show-me requests → image send
+    for v in SHOW_VERBS:
+        if low.startswith(v):
+            return False
+    # Question words at start or after "@levelog"
+    stripped = re.sub(r"^@?levelog\s*[:,-]?\s*", "", low)
+    question_starters = (
+        "what", "how", "where", "why", "which", "when",
+        "is ", "are ", "does ", "do ", "can ", "could ", "would ",
+    )
+    for q in question_starters:
+        if stripped.startswith(q):
+            return True
+    if "?" in low:
+        return True
+    return False
+
+
+async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
+                           sheet_number: str, sheet_title: str) -> Optional[str]:
+    """Ask Qwen2.5-VL a question about a single rendered plan page.
+    Returns plain-text answer, or None on failure."""
+    if not QWEN_API_KEY or not jpeg_bytes:
+        return None
+    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+    prompt = (
+        f"This is {sheet_number} — {sheet_title}, a NYC construction drawing. "
+        f"Answer this question based only on what is visible in the drawing: "
+        f"{question.strip()}\n\n"
+        "Rules:\n"
+        "- Be concise (under 60 words).\n"
+        "- Quote exact dimensions, materials, or callouts when relevant.\n"
+        "- If the drawing doesn't contain the answer, reply exactly: "
+        "NOT_SHOWN_ON_SHEET"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client_http:
+            resp = await client_http.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {QWEN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": QWEN_MODEL,
+                    "max_tokens": 300,
+                    "temperature": 0,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }],
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Qwen VQA returned {resp.status_code}")
+                return None
+            return (resp.json()["choices"][0]["message"]["content"] or "").strip()
+    except Exception as e:
+        logger.warning(f"Qwen VQA failed: {e}")
+        return None
+
+
+async def _handle_plan_query(project_id: str, group_id: str, query: str,
+                              question: Optional[str] = None) -> None:
+    """End-to-end: acknowledge, parse, search, render, either send image or VQA.
+
+    If `question` is non-empty OR the query itself looks like a question,
+    we render the top match and send it to Qwen for visual Q&A, replying
+    with a text answer. Otherwise we send the image(s) as before.
+    """
     if not QWEN_API_KEY:
         await send_whatsapp_message(group_id, "Plan queries are not configured.")
         return
 
+    # Decide VQA vs image send
+    is_vqa = bool(question and question.strip()) or _classify_plan_question(query)
+    effective_question = (question or query).strip() if is_vqa else None
+
     # Immediate ack so the user knows we're on it (rendering can take 10s+)
     try:
-        await send_whatsapp_message(group_id, "🔍 Searching drawings…")
+        await send_whatsapp_message(
+            group_id,
+            "🔎 Checking the drawings…" if is_vqa else "🔍 Searching drawings…",
+        )
     except Exception:
         pass
 
@@ -11087,7 +11189,72 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str) -> None
         )
         return
 
-    # Render + upload + send each result
+    # ── VQA branch (Sprint 5) ──
+    # For each top candidate page, render, ask Qwen the question. Stop on the
+    # first page that gives an answer (not NOT_SHOWN_ON_SHEET). Fall back to
+    # sending the top image if no page answers.
+    if is_vqa and effective_question:
+        import io as _io
+        for result in results:
+            try:
+                file_id = result.get("file_id")
+                page_number = result.get("page_number")
+                sheet_number = result.get("sheet_number") or "Sheet"
+                sheet_title = result.get("sheet_title") or "Construction Drawing"
+                file_rec = await db.project_files.find_one({"_id": to_query_id(file_id)})
+                if not file_rec or not file_rec.get("r2_key"):
+                    continue
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
+                )
+                pdf_bytes = obj["Body"].read()
+                from pdf2image import convert_from_bytes
+                imgs = convert_from_bytes(
+                    pdf_bytes, dpi=150,
+                    first_page=page_number, last_page=page_number,
+                )
+                if not imgs:
+                    continue
+                buf = _io.BytesIO()
+                imgs[0].save(buf, format="JPEG", quality=85)
+                jpeg_bytes = buf.getvalue()
+                answer = await _qwen_visual_qa(
+                    jpeg_bytes, effective_question, sheet_number, sheet_title
+                )
+                if not answer:
+                    continue
+                if "NOT_SHOWN_ON_SHEET" in answer.upper():
+                    continue
+                # Got a real answer — reply with it, cite the sheet
+                reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
+                await send_whatsapp_message(group_id, reply_text)
+                # Log bot response
+                try:
+                    await db.whatsapp_messages.insert_one({
+                        "group_id":   group_id,
+                        "sender":     "bot",
+                        "body":       reply_text[:500],
+                        "type":       "bot_plan_response",
+                        "created_at": datetime.now(timezone.utc),
+                        "project_id": project_id,
+                    })
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                logger.warning(f"VQA attempt failed: {e}")
+                continue
+        # No page answered — fall back to image-send path below
+        try:
+            await send_whatsapp_message(
+                group_id,
+                "Couldn't answer that directly from the indexed drawings — "
+                "sending the closest matching sheet.",
+            )
+        except Exception:
+            pass
+
+    # Render + upload + send each result (image-send path)
     sent_urls: List[str] = []
     sent_captions: List[str] = []
     import uuid as _uuid
@@ -11385,37 +11552,300 @@ _AGENT_SYSTEM_PROMPT = (
 )
 
 
-async def _handle_start_checklist_stub(
-    project_id: str, group_id: str, items: list, sender: str
+# ==================== SPRINT 6 — INTERACTIVE CHECKLIST CREATION ====================
+
+async def _get_checklist_candidates(
+    company_id: Optional[str], project_id: str, limit: int = 40
+) -> list:
+    """Return the list of people who can be assigned a checklist item.
+
+    Mix of:
+      - Company admins / owners / CPs (users with a role)
+      - Workers in the roster (db.workers) for this company
+    Each entry: {id, kind: 'user'|'worker', name, trade, company}.
+    """
+    out = []
+
+    # Users
+    try:
+        uq: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+        if company_id:
+            uq["company_id"] = company_id
+        users = await db.users.find(uq, {"password": 0}).to_list(200)
+        for u in users:
+            role = (u.get("role") or "").lower()
+            if role not in ("admin", "owner", "cp", "superintendent"):
+                continue
+            out.append({
+                "id":      str(u.get("_id")),
+                "kind":    "user",
+                "name":    u.get("name") or u.get("full_name") or u.get("email") or "Unknown",
+                "trade":   (role or "").title(),
+                "company": u.get("company_name") or "",
+            })
+    except Exception:
+        pass
+
+    # Workers
+    try:
+        wq: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+        if company_id:
+            wq["company_id"] = company_id
+        workers = await db.workers.find(wq).to_list(200)
+        for w in workers:
+            out.append({
+                "id":      str(w.get("_id")),
+                "kind":    "worker",
+                "name":    w.get("name") or "Unknown",
+                "trade":   (w.get("trade") or "").title(),
+                "company": w.get("company") or "",
+            })
+    except Exception:
+        pass
+
+    # De-dup by (kind, id)
+    seen = set()
+    deduped = []
+    for c in out:
+        key = (c["kind"], c["id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+
+    return deduped[:limit]
+
+
+def _format_candidates_message(
+    items: list, candidates: list, max_candidates: int = 8
 ) -> str:
-    """Sprint 6 will implement the interactive assignment flow. Until then, log
-    intent and acknowledge."""
-    count = len(items or [])
-    if not count:
+    """Compose the bot's 'who should handle each item' prompt."""
+    lines = [f"📝 Got {len(items)} item{'s' if len(items) != 1 else ''} for a checklist:"]
+    for idx, it in enumerate(items[:10], 1):
+        lines.append(f"  {idx}. {it.get('text', '')}")
+    lines.append("")
+    lines.append("Who should I assign each to? Reply like:")
+    lines.append('  "1: Anthony, 2: Carlos, 3: skip"')
+    lines.append("")
+    lines.append("*Candidates:*")
+    for c in candidates[:max_candidates]:
+        trade = c.get("trade") or ""
+        co = c.get("company") or ""
+        tail = []
+        if trade: tail.append(trade)
+        if co:    tail.append(co)
+        suffix = f" ({', '.join(tail)})" if tail else ""
+        lines.append(f"  • {c['name']}{suffix}")
+    if len(candidates) > max_candidates:
+        lines.append(f"  … and {len(candidates) - max_candidates} more (use full names)")
+    lines.append("")
+    lines.append('Or reply "cancel" to discard.')
+    return "\n".join(lines)
+
+
+async def _handle_start_checklist(
+    project_id: str, group_id: str, items: list, sender: str,
+    company_id: Optional[str] = None,
+) -> str:
+    """Sprint 6: start the interactive checklist creation flow.
+
+    Saves a conversation state with draft items + candidate list, then returns
+    a prompt asking the user to assign each item."""
+    items = [i for i in (items or []) if (i.get("text") or "").strip()]
+    if not items:
         return "Tell me what items you want on the checklist."
-    # Stash as a draft so Sprint 6 can pick it up
+
+    candidates = await _get_checklist_candidates(company_id, project_id, limit=40)
+
+    now = datetime.now(timezone.utc)
+    normalized_items = [
+        {"text": i.get("text", "").strip(), "category": (i.get("category") or "other").lower()}
+        for i in items
+    ]
     try:
         await db.whatsapp_conversation_state.update_one(
             {"group_id": group_id},
             {"$set": {
-                "group_id":      group_id,
-                "project_id":    project_id,
-                "awaiting":      "checklist_assignment",
-                "draft_items":   [{"text": i.get("text", ""), "category": i.get("category", "other")} for i in items],
-                "created_by":    sender,
-                "created_at":    datetime.now(timezone.utc),
-                "expires_at":    datetime.now(timezone.utc) + timedelta(minutes=10),
+                "group_id":    group_id,
+                "project_id":  project_id,
+                "company_id":  company_id,
+                "awaiting":    "checklist_assignment",
+                "draft_items": normalized_items,
+                "candidates":  candidates,
+                "created_by":  sender,
+                "created_at":  now,
+                "expires_at":  now + timedelta(minutes=10),
             }},
             upsert=True,
         )
     except Exception as e:
         logger.warning(f"checklist draft save failed: {e}")
+        return "Could not start checklist — please try again."
 
-    lines = [f"📝 Got {count} item{'s' if count != 1 else ''} for a checklist:"]
-    for idx, it in enumerate(items[:10], 1):
-        lines.append(f"  {idx}. {it.get('text', '')}")
+    return _format_candidates_message(normalized_items, candidates)
+
+
+def _fuzzy_match_candidate(query: str, candidates: list):
+    """Return the best candidate match for a free-text name, or None if
+    ambiguous / no match. Uses case-insensitive substring + token match."""
+    if not query or not candidates:
+        return None
+    q = query.strip().lower()
+    if q in ("skip", "-", "none", "unassigned", ""):
+        return "SKIP"
+
+    # Exact full-name match
+    for c in candidates:
+        if c["name"].lower() == q:
+            return c
+    # First-name match (unique)
+    first_matches = [c for c in candidates if c["name"].split()[0].lower() == q]
+    if len(first_matches) == 1:
+        return first_matches[0]
+    # Substring match (unique)
+    subs = [c for c in candidates if q in c["name"].lower()]
+    if len(subs) == 1:
+        return subs[0]
+    # Token start match (unique)
+    starts = [c for c in candidates if c["name"].lower().startswith(q)]
+    if len(starts) == 1:
+        return starts[0]
+    # Ambiguous
+    if len(subs) > 1:
+        return {"AMBIGUOUS": [c["name"] for c in subs[:4]]}
+    return None
+
+
+def _parse_assignment_reply(body: str, num_items: int) -> list:
+    """Parse a reply like '1: Anthony, 2: Carlos, 3: skip' into a list of
+    (item_index, name_or_skip) pairs. Returns [] if parse fails entirely.
+
+    Accepts various separators: ',' ';' newline. Accepts '1 - Anthony', '1) Anthony'."""
+    if not body:
+        return []
+    text = body.strip()
+    if text.lower() in ("cancel", "abort", "stop"):
+        return [("CANCEL", None)]
+
+    # Split on newlines or commas or semicolons
+    parts = re.split(r"[,\n;]+", text)
+    out = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        m = re.match(r"^(\d+)\s*[:\-\)\.]?\s*(.+)$", p)
+        if not m:
+            continue
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            continue
+        if idx < 1 or idx > num_items:
+            continue
+        name = m.group(2).strip()
+        out.append((idx, name))
+    return out
+
+
+async def _handle_checklist_assignment_reply(
+    state: dict, body: str, group_id: str, sender: str,
+) -> Optional[str]:
+    """Process a user reply to the 'who should I assign' prompt. Returns the
+    text reply to send, or None if the reply doesn't look like an assignment
+    (caller should fall through to the agent)."""
+    items = state.get("draft_items") or []
+    candidates = state.get("candidates") or []
+    if not items:
+        return None
+
+    parsed = _parse_assignment_reply(body, len(items))
+    if not parsed:
+        return None
+
+    if parsed and parsed[0][0] == "CANCEL":
+        await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+        return "✓ Checklist discarded."
+
+    # Apply assignments — last one wins per index
+    assigned = {}  # idx -> candidate | 'SKIP'
+    ambiguous = []
+    unknown = []
+    for idx, name in parsed:
+        m = _fuzzy_match_candidate(name or "", candidates)
+        if m == "SKIP":
+            assigned[idx] = "SKIP"
+        elif isinstance(m, dict) and "AMBIGUOUS" in m:
+            ambiguous.append((idx, name, m["AMBIGUOUS"]))
+        elif m is None:
+            unknown.append((idx, name))
+        else:
+            assigned[idx] = m
+
+    if ambiguous:
+        lines = ["Need a more specific name for:"]
+        for idx, name, opts in ambiguous:
+            lines.append(f"  {idx}. '{name}' → {', '.join(opts)}")
+        lines.append("Reply with full name. State kept; you can also say 'cancel'.")
+        return "\n".join(lines)
+
+    if unknown:
+        lines = ["Didn't recognize:"]
+        for idx, name in unknown:
+            lines.append(f"  {idx}. '{name}'")
+        lines.append("Check the candidates list and reply again. State kept.")
+        return "\n".join(lines)
+
+    # Build the final checklist doc
+    project_id = state.get("project_id")
+    company_id = state.get("company_id")
+    now = datetime.now(timezone.utc)
+    today_start, today_end = get_today_range_est()
+
+    final_items = []
+    for i, it in enumerate(items, start=1):
+        ass = assigned.get(i)
+        if ass == "SKIP" or ass is None:
+            assigned_to = None
+        else:
+            assigned_to = ass.get("name")
+        final_items.append({
+            "text":          it.get("text", ""),
+            "assigned_to":   assigned_to,
+            "due_date":      None,
+            "category":      it.get("category", "other"),
+            "priority":      "medium",
+            "completed":     False,
+            "completed_at":  None,
+            "completed_by":  None,
+        })
+
+    project = await db.projects.find_one({"_id": to_query_id(project_id)}) if project_id else None
+    project_name = project.get("name", "Project") if project else "Project"
+
+    doc = {
+        "project_id":           project_id or "",
+        "company_id":           company_id or "",
+        "group_id":             group_id,
+        "generated_at":         now,
+        "date_range_start":     today_start,
+        "date_range_end":       today_end,
+        "items":                final_items,
+        "source_message_count": 0,  # manual creation
+        "source":               "interactive",
+        "created_by_phone":     state.get("created_by") or sender,
+        "is_deleted":           False,
+    }
+    await db.whatsapp_checklists.insert_one(doc)
+    await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+
+    # Compose confirmation message
+    lines = [f"✅ Checklist created for {project_name}:"]
+    for i, it in enumerate(final_items, start=1):
+        who = it.get("assigned_to") or "Unassigned"
+        lines.append(f"  {i}. {it['text']} → {who}")
     lines.append("")
-    lines.append("(Interactive assignment coming soon — saved as draft for now.)")
+    lines.append('View in Levelog app · Reply "done N" to mark complete.')
     return "\n".join(lines)
 
 
@@ -11554,12 +11984,11 @@ async def _dispatch_agent_tool(
         if name == "material_status":
             return await _handle_material_status(project_id)
         if name == "query_plan":
-            # Sprint 5 will enhance with VQA; for now, fall through to the
-            # existing _handle_plan_query if the user wants an image, or
-            # return a placeholder for VQA requests.
+            # Sprint 5: visual question answering. If `question` is given we
+            # dispatch in VQA mode (Qwen answers from the drawing). Else we
+            # just send the matching sheet image(s).
             question = args.get("question") or ""
             sheet_number = args.get("sheet_number") or ""
-            # Build a natural-ish query string from args
             bits = []
             if args.get("discipline"): bits.append(args["discipline"])
             if args.get("floor"):      bits.append(f"{args['floor']} floor")
@@ -11567,14 +11996,17 @@ async def _dispatch_agent_tool(
             if sheet_number:           bits.append(sheet_number)
             if args.get("keywords"):   bits.extend(args["keywords"])
             synth = " ".join(bits) or question or "plan"
-            # Fire-and-forget the image send; return a short ack to the agent
-            asyncio.create_task(_handle_plan_query(project_id, group_id, synth))
+            asyncio.create_task(
+                _handle_plan_query(project_id, group_id, synth, question=question or None)
+            )
             if question:
-                return f"(Plan search initiated for '{synth}' with question '{question[:80]}'. Visual Q&A coming in Sprint 5; sending the matching sheet for now.)"
-            return f"(Plan search initiated for '{synth}'. Sending the matching sheet image.)"
+                return f"(Plan VQA initiated for '{synth[:60]}' — question: '{question[:80]}'. Qwen will answer from the drawing.)"
+            return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
         if name == "start_checklist":
             items = args.get("items") or []
-            return await _handle_start_checklist_stub(project_id, group_id, items, sender)
+            return await _handle_start_checklist(
+                project_id, group_id, items, sender, company_id=company_id
+            )
         return f"(Unknown tool '{name}'.)"
     except Exception as e:
         logger.error(f"tool {name} failed: {e}", exc_info=True)
@@ -11648,6 +12080,32 @@ async def _process_whatsapp_message(payload: dict):
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
                 return
+
+            # ── Sprint 6: interactive checklist assignment flow ──
+            # If this group has an active draft checklist awaiting assignment,
+            # try to parse the reply BEFORE running any other handlers.
+            try:
+                convo_state = await db.whatsapp_conversation_state.find_one(
+                    {"group_id": group_id}
+                )
+            except Exception:
+                convo_state = None
+            if convo_state:
+                # Expired? drop it
+                exp = convo_state.get("expires_at")
+                if isinstance(exp, datetime):
+                    exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+                    if exp_aware < datetime.now(timezone.utc):
+                        await db.whatsapp_conversation_state.delete_one({"group_id": group_id})
+                        convo_state = None
+            if convo_state and convo_state.get("awaiting") == "checklist_assignment":
+                reply = await _handle_checklist_assignment_reply(
+                    convo_state, body or "", group_id, sender
+                )
+                if reply:
+                    await send_whatsapp_message(group_id, reply)
+                    return
+                # Not an assignment reply — fall through to agent
 
             # ── "done N" — mark checklist item complete ──
             # Must come before on-demand @levelog detection so short msgs match.
