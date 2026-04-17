@@ -11309,6 +11309,34 @@ async def _process_whatsapp_message(payload: dict):
                 )
                 return
 
+            # ── Intent-based replies in groups ──
+            # Classify the message; dispatch to a handler only if the matching
+            # feature flag is enabled. Mirrors the DM branch but for group
+            # context and using project_id from the linked group.
+            if body and len(body.strip()) >= 5:
+                try:
+                    group_intent = await classify_intent(body)
+                except Exception as _e:
+                    group_intent = None
+                if group_intent:
+                    reply = None
+                    try:
+                        if group_intent == "who_on_site" and features.get("who_on_site", True):
+                            reply = await _handle_who_on_site(str(project_id))
+                        elif group_intent == "dob_status" and features.get("dob_status", True):
+                            reply = await _handle_dob_status(str(project_id))
+                        elif group_intent == "open_items" and features.get("open_items", True):
+                            reply = await _handle_open_items(str(project_id))
+                        elif group_intent == "material_status" and features.get("material_detection", True):
+                            reply = await _handle_material_status(str(project_id))
+                        # Note: material_receipt is handled by the passive
+                        # detection block below; we don't route it here.
+                    except Exception as e:
+                        logger.error(f"group intent handler failed ({group_intent}): {e}", exc_info=True)
+                    if reply:
+                        await send_whatsapp_message(group_id, reply)
+                        return
+
             # Material request detection gated on the features flag
             if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
