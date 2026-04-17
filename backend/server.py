@@ -11382,6 +11382,32 @@ async def whatsapp_group_link_initiate(
     return {"code": code, "expires_in_seconds": 300}
 
 
+@api_router.get("/whatsapp/debug/pending-codes")
+async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
+    """Owner/admin only: list un-verified codes for this company so we can
+    see what the webhook actually stored vs what the user is typing."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    codes = await db.whatsapp_link_codes.find({
+        "company_id": company_id,
+        "verified": False,
+    }).sort("created_at", -1).to_list(20)
+    out = []
+    for c in codes:
+        out.append({
+            "code":            c.get("code"),
+            "project_id":      c.get("project_id"),
+            "group_id":        c.get("group_id"),
+            "group_verified":  c.get("group_verified"),
+            "created_at":      str(c.get("created_at")),
+            "expires_at":      str(c.get("expires_at")),
+            "verified":        c.get("verified"),
+        })
+    return {"codes": out}
+
+
 @api_router.post("/whatsapp/group-link/verify")
 async def whatsapp_group_link_verify(
     body: dict,
