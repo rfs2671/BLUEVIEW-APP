@@ -11769,8 +11769,20 @@ async def _retrieve_plan_candidates(
         "sheet_title":  {"$ne": "[SPECIFICATION PAGE]"},
     }
 
-    # Hard filters
-    disc = (parsed.get("discipline") or "").strip().upper() or None
+    # Hard filters — normalize discipline to the 2-letter code stored in the
+    # index ('ME', 'AR', 'ST', etc). The agent sometimes passes the full
+    # word ('Mechanical') or alternate casing; match tolerantly.
+    _DISC_ALIASES = {
+        "AR": "AR", "A": "AR", "ARCH": "AR", "ARCHITECTURAL": "AR",
+        "ST": "ST", "S": "ST", "STR": "ST", "STRUCTURAL": "ST",
+        "ME": "ME", "M": "ME", "MECH": "ME", "MECHANICAL": "ME", "HVAC": "ME", "MH": "ME",
+        "EL": "EL", "E": "EL", "ELEC": "EL", "ELECTRICAL": "EL",
+        "PL": "PL", "P": "PL", "PLMB": "PL", "PLUMBING": "PL",
+        "SP": "SP", "SPRK": "SP", "SPRINKLER": "SP", "FP": "SP",
+        "GN": "GN", "GEN": "GN", "GENERAL": "GN", "CIVIL": "GN", "SITE": "GN",
+    }
+    raw_disc = (parsed.get("discipline") or "").strip().upper()
+    disc = _DISC_ALIASES.get(raw_disc) or (raw_disc if len(raw_disc) == 2 else None)
     if disc:
         base_filter["discipline"] = disc
     floor = parsed.get("floor")
