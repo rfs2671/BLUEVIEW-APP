@@ -10166,12 +10166,41 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         except Exception:
             ts = 0
 
+        # Quoted message (reply context). WhatsApp puts the quoted message under
+        # quotedMsg / quotedMessage / contextInfo.quotedMessage depending on
+        # payload version. We only need its body text to detect @levelog
+        # threading.
+        quoted_body = ""
+        for path in (
+            ("quotedMsg",),
+            ("quotedMessage",),
+            ("contextInfo", "quotedMessage"),
+        ):
+            node = msg
+            for k in path:
+                if not isinstance(node, dict):
+                    node = None
+                    break
+                node = node.get(k)
+            if isinstance(node, dict):
+                quoted_body = (node.get("body") or node.get("conversation") or "").strip()
+                if quoted_body:
+                    break
+        if not quoted_body:
+            # Try inner._data paths too
+            inner_ctx = inner.get("quotedMsg") or inner.get("contextInfo") or {}
+            if isinstance(inner_ctx, dict):
+                q = inner_ctx.get("quotedMessage") or inner_ctx
+                if isinstance(q, dict):
+                    quoted_body = (q.get("body") or q.get("conversation") or "").strip()
+
         return {
             "message_id": msg_id,
             "from": from_field,
             "sender": author,
             "to": to_field,
             "body": body,
+            "quoted_body": quoted_body,
             "is_group": is_group,
             "group_id": from_field if is_group else None,
             "timestamp": ts,
@@ -10745,6 +10774,13 @@ def _default_bot_config() -> dict:
             "open_items": True,
             "material_detection": True,
             "plan_queries": False,
+            # "strict" (default): bot only replies when explicitly addressed
+            #   via @levelog / @<botphone> / "levelog ..." prefix, OR to a
+            #   voice note / follow-up text sent within 3 min of the sender's
+            #   own explicit @levelog message (the session window).
+            # "loose": also triggers on intent-starter words like "who",
+            #   "show", "what", "where", "find" anywhere in the message.
+            "address_mode": "strict",
         },
         "cross_project_summary": False,
     }
@@ -11660,32 +11696,131 @@ _BOT_ADDRESS_SOFT_TRIGGERS = [
 ]
 
 
-def _is_bot_addressed(body: str, bot_phone_digits: str, is_voice: bool) -> bool:
-    """Heuristic: was the bot addressed in this group message?
-
-    Returns True if any of:
-      - Voice note (all voice in linked groups route to agent)
-      - @mention of the bot's phone number (any digit variant)
-      - Message starts with '@levelog' or 'levelog'
-      - Message contains a soft intent trigger phrase
-    """
-    if is_voice:
-        return True
+def _has_explicit_bot_mention(body: str, bot_phone_digits: str) -> bool:
+    """Returns True iff the text explicitly mentions the bot by name/number."""
     if not body:
         return False
     low = body.strip().lower()
-    if low.startswith("@levelog") or low.startswith("levelog "):
+    if low.startswith("@levelog") or low.startswith("levelog ") or low == "levelog":
         return True
-    # @mention — strip non-digits from any @-prefixed token
-    if "@" in low:
+    # Also accept @levelog anywhere in the body (not just prefix)
+    if "@levelog" in low:
+        return True
+    # Phone-number mention — strip non-digits from any @-prefixed token
+    if "@" in low and bot_phone_digits:
         for token in re.findall(r"@[\w\d]+", low):
             digits = re.sub(r"\D", "", token)
             if digits and digits[-10:] == bot_phone_digits[-10:]:
                 return True
-    # Soft triggers (any of the common intent starters)
-    for t in _BOT_ADDRESS_SOFT_TRIGGERS:
-        if t in low:
+    return False
+
+
+# Key for the short-lived "sender just addressed the bot" session. When the
+# sender tags @levelog with text, we mark them active for BOT_SESSION_TTL
+# seconds — follow-up voice notes / short text replies from the same sender
+# within that window are also routed to the agent without requiring another
+# explicit mention. This matches how people naturally interact with the bot:
+# "@levelog who's on site" → (bot replies) → voice note "also show me the roof"
+BOT_SESSION_TTL_SECONDS = 180  # 3 minutes
+
+
+async def _mark_bot_session(group_id: str, sender: str) -> None:
+    """Record that `sender` just explicitly addressed the bot in this group.
+
+    Subsequent messages from the same sender within BOT_SESSION_TTL_SECONDS
+    are treated as bot-addressed. Uses whatsapp_conversation_state with a
+    TTL index so rows auto-expire.
+    """
+    try:
+        exp = datetime.now(timezone.utc) + timedelta(seconds=BOT_SESSION_TTL_SECONDS)
+        await db.whatsapp_conversation_state.update_one(
+            {"kind": "bot_session", "group_id": group_id, "sender": sender},
+            {"$set": {
+                "kind":       "bot_session",
+                "group_id":   group_id,
+                "sender":     sender,
+                "expires_at": exp,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.debug(f"mark_bot_session failed: {e}")
+
+
+async def _is_in_bot_session(group_id: str, sender: str) -> bool:
+    """True if the sender has an active session with the bot in this group."""
+    try:
+        row = await db.whatsapp_conversation_state.find_one({
+            "kind":     "bot_session",
+            "group_id": group_id,
+            "sender":   sender,
+        })
+        if not row:
+            return False
+        exp = row.get("expires_at")
+        if not exp:
+            return False
+        exp_aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+        return exp_aware > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
+async def _is_bot_addressed(
+    body: str,
+    bot_phone_digits: str,
+    is_voice: bool,
+    *,
+    group_id: str = "",
+    sender: str = "",
+    mode: str = "strict",
+    quoted_body: str = "",
+) -> bool:
+    """Decide whether this message should route through the agent.
+
+    Modes:
+      strict (default, recommended):
+        - Text: requires an explicit @levelog / levelog / @<botphone> mention,
+          OR is a reply to a bot message, OR is from a sender in an active
+          bot session (they just @mentioned within 3 min).
+        - Voice: only when quoting a bot message, or when the sender has an
+          active bot session, or when the quoted text itself mentions
+          @levelog.
+
+      loose (legacy):
+        - Voice always routes; text routes on any intent-starter word.
+    """
+    # Explicit mention — always True in either mode
+    if _has_explicit_bot_mention(body, bot_phone_digits):
+        if group_id and sender:
+            await _mark_bot_session(group_id, sender)
+        return True
+
+    # Quoted/reply context: "@levelog" appears in the message this one replies to
+    if quoted_body and _has_explicit_bot_mention(quoted_body, bot_phone_digits):
+        if group_id and sender:
+            await _mark_bot_session(group_id, sender)
+        return True
+
+    if mode == "loose":
+        # Legacy behavior — any voice, or any soft-trigger word
+        if is_voice:
             return True
+        if body:
+            low = body.strip().lower()
+            for t in _BOT_ADDRESS_SOFT_TRIGGERS:
+                if t in low:
+                    return True
+        return False
+
+    # Strict mode from here down
+    if group_id and sender and await _is_in_bot_session(group_id, sender):
+        # Sender recently addressed the bot — route follow-ups (text or voice)
+        # through the agent so "@levelog who's on site" → "voice: also show me
+        # the roof" works naturally.
+        return True
+
     return False
 
 
@@ -12581,7 +12716,18 @@ async def _process_whatsapp_message(payload: dict):
             bot_phone_digits = re.sub(
                 r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "")
             )
-            if _is_bot_addressed(body, bot_phone_digits, parsed.get("has_audio", False)):
+            address_mode = (features.get("address_mode") or "strict").lower()
+            quoted_body = parsed.get("quoted_body") or ""
+            is_addressed = await _is_bot_addressed(
+                body,
+                bot_phone_digits,
+                parsed.get("has_audio", False),
+                group_id=group_id,
+                sender=sender,
+                mode=address_mode,
+                quoted_body=quoted_body,
+            )
+            if is_addressed:
                 reply = await _run_group_agent(
                     project_id=str(project_id),
                     group_id=group_id,
