@@ -13709,7 +13709,21 @@ async def startup_event():
 
     # Project files (R2 cache) indexes
     await db.project_files.create_index("project_id")
-    await db.project_files.create_index([("project_id", 1), ("dropbox_path", 1)], unique=True, sparse=True)
+    # Uniqueness on (project_id, dropbox_path) must only apply to real Dropbox paths.
+    # Direct uploads store dropbox_path="" and would otherwise collide on a sparse index,
+    # because sparse skips missing fields but not empty strings.
+    try:
+        _pf_indexes = await db.project_files.index_information()
+        _old_name = "project_id_1_dropbox_path_1"
+        if _old_name in _pf_indexes and not _pf_indexes[_old_name].get("partialFilterExpression"):
+            await db.project_files.drop_index(_old_name)
+    except Exception as _e:
+        logger.warning(f"project_files unique index migration skipped: {_e}")
+    await db.project_files.create_index(
+        [("project_id", 1), ("dropbox_path", 1)],
+        unique=True,
+        partialFilterExpression={"dropbox_path": {"$gt": ""}},
+    )
     await db.project_files.create_index("dropbox_content_hash")
 
     # Create compound indexes for sync queries
