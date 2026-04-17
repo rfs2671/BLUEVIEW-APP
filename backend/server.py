@@ -12088,10 +12088,11 @@ async def _send_plan_image(
     temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
     try:
         await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
-        signed = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
-        if not signed:
-            logger.warning(f"plan send: presign returned empty for {temp_key}")
-            return False
+        # WaAPI does a HEAD preflight. R2 presigned URLs are method-scoped
+        # (signed GET returns 403 on HEAD), so we hand WaAPI a URL that
+        # points to our own backend proxy — it handles HEAD+GET cleanly.
+        tok = await _mint_temp_media_token(temp_key, "image/jpeg", ttl_seconds=3600)
+        media_url = _public_temp_media_url(tok)
     except Exception as e:
         logger.warning(f"plan send: temp upload failed sheet={sheet_ref}: {e}")
         return False
@@ -12107,7 +12108,7 @@ async def _send_plan_image(
                 },
                 json={
                     "chatId":   group_id,
-                    "mediaUrl": signed,
+                    "mediaUrl": media_url,
                     "caption":  caption,
                 },
             )
@@ -14256,6 +14257,104 @@ async def reindex_all_project_files(
     return {"queued": len(queued), "files": queued}
 
 
+# ==================== TEMP-MEDIA PROXY (for WaAPI preflight) ====================
+#
+# WaAPI's send-media does a HEAD preflight on the supplied URL before fetching
+# the body. R2 presigned URLs are method-scoped (a signed GET returns 403 on
+# HEAD), so WaAPI rejects them. We side-step by handing WaAPI a URL that
+# points to OUR backend — it accepts both HEAD and GET and proxies the bytes
+# from R2. Token is opaque and rows TTL-auto-expire via whatsapp_conversation_state.
+
+
+async def _mint_temp_media_token(r2_key: str, content_type: str = "image/jpeg",
+                                   ttl_seconds: int = 3600) -> str:
+    """Store an R2 key under an opaque token; return the token string."""
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(seconds=ttl_seconds)
+    try:
+        await db.temp_media_tokens.insert_one({
+            "token":        token,
+            "r2_key":       r2_key,
+            "content_type": content_type,
+            "created_at":   now,
+            "expires_at":   exp,
+        })
+        # Ensure TTL index exists (idempotent).
+        try:
+            await db.temp_media_tokens.create_index(
+                "expires_at", expireAfterSeconds=0, name="temp_media_ttl"
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"temp_media_tokens insert failed: {e}")
+    return token
+
+
+async def _resolve_temp_media_token(token: str) -> Optional[dict]:
+    try:
+        row = await db.temp_media_tokens.find_one({"token": token})
+    except Exception:
+        return None
+    if not row:
+        return None
+    exp = row.get("expires_at")
+    if isinstance(exp, datetime):
+        exp_aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+        if exp_aware < datetime.now(timezone.utc):
+            return None
+    return row
+
+
+# Both routes are mounted on the unauth'd app (not api_router with its
+# Depends(get_current_user) on other endpoints) because WaAPI doesn't
+# forward auth headers. Token IS the auth.
+@app.head("/api/public/temp-media/{token}")
+async def public_temp_media_head(token: str):
+    row = await _resolve_temp_media_token(token)
+    if not row:
+        return Response(status_code=404)
+    # HEAD must mirror GET headers but have no body.
+    return Response(
+        status_code=200,
+        headers={
+            "Content-Type":  row.get("content_type") or "image/jpeg",
+            "Cache-Control": "public, max-age=300",
+        },
+    )
+
+
+@app.get("/api/public/temp-media/{token}")
+async def public_temp_media_get(token: str):
+    row = await _resolve_temp_media_token(token)
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found or expired")
+    r2_key = row.get("r2_key") or ""
+    if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+        raise HTTPException(status_code=404, detail="Storage miss")
+    try:
+        obj = await asyncio.to_thread(
+            _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key
+        )
+        data = obj["Body"].read()
+    except Exception as e:
+        logger.error(f"temp-media R2 get failed {r2_key}: {e}")
+        raise HTTPException(status_code=502, detail="Storage fetch failed")
+    return Response(
+        content=data,
+        media_type=row.get("content_type") or "image/jpeg",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+def _public_temp_media_url(token: str) -> str:
+    """Build the fully-qualified URL WaAPI will HEAD+GET."""
+    base = os.environ.get("PUBLIC_BASE_URL", "https://api.levelog.com").rstrip("/")
+    return f"{base}/api/public/temp-media/{token}"
+
+
 @api_router.post("/debug/probe-waapi-endpoints")
 async def debug_probe_waapi_endpoints(
     body: dict,
@@ -14353,19 +14452,17 @@ async def debug_test_plan_image_send(
     if not jpeg:
         return result
 
-    # Step 2 — upload temp + presign
+    # Step 2 — upload temp + mint token-based URL
     import uuid as _uuid
     temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
     try:
         await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
-        signed = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
+        tok = await _mint_temp_media_token(temp_key, "image/jpeg", ttl_seconds=3600)
+        media_url = _public_temp_media_url(tok)
         result["steps"]["upload_temp"] = {"ok": True, "temp_key": temp_key}
-        result["steps"]["presign"] = {"ok": bool(signed), "length": len(signed) if signed else 0,
-                                      "prefix": (signed or "")[:120]}
+        result["steps"]["token_url"] = {"ok": True, "url": media_url}
     except Exception as e:
         result["steps"]["upload_temp"] = {"ok": False, "error": str(e)[:300]}
-        return result
-    if not signed:
         return result
 
     # Step 3 — WaAPI send-media
@@ -14379,7 +14476,7 @@ async def debug_test_plan_image_send(
                 },
                 json={
                     "chatId":   group_id,
-                    "mediaUrl": signed,
+                    "mediaUrl": media_url,
                     "caption":  f"[diagnostic] {page.get('sheet_number')}",
                 },
             )
