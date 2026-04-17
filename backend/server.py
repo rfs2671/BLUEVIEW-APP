@@ -12228,17 +12228,32 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "You respond to messages in a project's group chat. "
     "Use the available tools to answer questions about workers, DOB compliance, open items, "
     "materials, construction drawings, and project info. Create checklists when asked. "
+    # Hard routing rules — read these before choosing a tool.
+    "ROUTING RULES (read EACH message on its own; do not copy past tool choices):\n"
+    "  • 'permit', 'permits', 'active permits', 'permit status', 'GC permit', 'DM permit', "
+    "    'PL permit', 'EL permit', 'MH permit' → active_permits. Never query_plan for these.\n"
+    "  • 'violation', 'violations', 'DOB status', 'complaints', 'BIN' → dob_status.\n"
+    "  • 'open items', 'punch list', 'to-do', 'outstanding', 'unresolved' → open_items.\n"
+    "  • 'who's on site', 'how many workers', 'is X here', 'trade count' → who_on_site.\n"
+    "  • 'list workers', 'show workers', 'all carpenters', 'my roster' → list_workers.\n"
+    "  • 'materials', 'deliveries', 'what's on order' → material_status.\n"
+    "  • 'address', 'BIN', 'BBL', 'which project', 'project info' → project_info.\n"
+    "  • 'plan', 'drawing', 'sheet', 'elevation', 'section', 'detail', 'schedule', "
+    "    'show me <sheet#>', 'pull up A-101/ME-401/S-2' → query_plan. ONLY for visual "
+    "    construction drawings, never for permits or workers.\n"
+    "  • 'create checklist', 'make checklist' → start_checklist.\n"
     # Drawing prefixes the crew commonly uses in requests like
     # "show me AR roof", "pull up ME-401", "M-2 2nd floor":
-    "NYC drawings use discipline prefixes: AR = Architectural (A-#), "
-    "ST = Structural (S-#), ME / M = Mechanical, EL / E = Electrical, "
-    "PL / P = Plumbing, SP = Sprinkler, GN = General. Treat 'AR' and 'A' as Architectural, "
-    "'ME' and 'M' as Mechanical, etc. "
-    "For any 'show me X' request, call query_plan IMMEDIATELY with your best-guess "
-    "discipline/floor/keywords from the text. Never ask the user to rephrase a drawing request. "
-    "Previous turns in this chat are in the conversation history — use them. "
+    "NYC drawing discipline prefixes for query_plan: AR / A = Architectural, "
+    "ST / S = Structural, ME / M = Mechanical, EL / E = Electrical, "
+    "PL / P = Plumbing, SP = Sprinkler, GN = General. "
+    "For a 'show me <sheet>' request, call query_plan IMMEDIATELY with best-guess args. "
+    "Never ask the user to rephrase a drawing request.\n"
+    "Previous turns in this chat are conversation history — use them for context BUT "
+    "pick your tool based on the CURRENT user message alone. Do not echo a previous tool "
+    "choice if the new message asks about a different topic.\n"
     "If the user is clearly answering a clarifying question you asked earlier, "
-    "combine both turns and call the right tool. "
+    "combine both turns and call the right tool.\n"
     "Keep replies under 80 words unless listing many items. "
     "Use the tool return values directly — do not fabricate data. Never invent worker names, "
     "permit numbers, or plan details that weren't returned by a tool."
@@ -12599,7 +12614,7 @@ async def _run_group_agent(
                 recent = recent[:-1]
         # Drop error/ack replies from the history so the model doesn't read
         # "too many tool calls" or "searching drawings…" as precedent and
-        # decide to give up.
+        # decide to give up or re-route the same way.
         NOISE_PREFIXES = (
             "too many tool calls",
             "🔍 searching drawings",
@@ -12607,7 +12622,7 @@ async def _run_group_agent(
             "plan queries are not configured",
             "couldn't find that sheet",
         )
-        for m in recent[-8:]:  # keep context small & cheap
+        for m in recent[-6:]:  # keep context small (was 8) to reduce pattern-lock
             role = "assistant" if m.get("sender") == "bot" else "user"
             msg_body = (m.get("body") or "").strip()
             if not msg_body:
