@@ -102,6 +102,25 @@ def _upload_to_r2(file_bytes: bytes, r2_key: str, content_type: str = "applicati
         return f"{R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
     return f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{r2_key}"
 
+
+def _presign_r2_get(r2_key: str, expires_in: int = 3600) -> str:
+    """Return a short-lived signed GET URL for a private R2 object.
+
+    Works even when the bucket has no public R2.dev subdomain enabled.
+    Returns '' if R2 is not configured or signing fails.
+    """
+    if not _r2_client or not R2_BUCKET_NAME or not r2_key:
+        return ""
+    try:
+        return _r2_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": R2_BUCKET_NAME, "Key": r2_key},
+            ExpiresIn=expires_in,
+        )
+    except Exception as e:
+        logger.error(f"R2 presign failed for {r2_key}: {e}")
+        return ""
+
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET')
 if not JWT_SECRET:
@@ -6095,6 +6114,11 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if cached_files:
         files = []
         for rec in cached_files:
+            r2_key = rec.get("r2_key", "")
+            stored_url = rec.get("r2_url", "")
+            signed_url = ""
+            if r2_key:
+                signed_url = await asyncio.to_thread(_presign_r2_get, r2_key)
             files.append({
                 "name": rec.get("name", ""),
                 "path": rec.get("dropbox_path", ""),
@@ -6102,7 +6126,7 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
                 "type": "file",
                 "size": rec.get("size", 0),
                 "modified": rec.get("modified", ""),
-                "r2_url": rec.get("r2_url", ""),
+                "r2_url": signed_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
                 "source": rec.get("source", "dropbox_sync"),
             })
@@ -6336,6 +6360,10 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
     file_rec = await db.project_files.find_one({
         "project_id": project_id, "company_id": company_id, "dropbox_path": file_path
     })
+    if file_rec and file_rec.get("r2_key"):
+        signed = await asyncio.to_thread(_presign_r2_get, file_rec["r2_key"])
+        if signed:
+            return {"url": signed, "cached": False, "source": "r2_signed"}
     if file_rec and file_rec.get("r2_url"):
         return {"url": file_rec["r2_url"], "cached": True, "source": "r2"}
 
@@ -6473,10 +6501,11 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
     if filename.lower().endswith(".pdf") and QWEN_API_KEY:
         asyncio.create_task(_index_pdf_file(project_id, company_id, file_record))
 
+    signed_url = await asyncio.to_thread(_presign_r2_get, r2_key)
     return {
         "id": file_record["_id"],
         "name": filename,
-        "r2_url": r2_url,
+        "r2_url": signed_url or r2_url,
         "size": len(file_bytes),
         "source": "direct_upload",
     }

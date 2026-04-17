@@ -7,6 +7,8 @@ export default function Root({ children }) {
         <meta charSet="utf-8" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
         <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+        <title>LeveLog</title>
+        <meta name="description" content="LeveLog — NYC DOB construction compliance platform" />
         <ScrollViewStyleReset />
         <script dangerouslySetInnerHTML={{
           __html: `
