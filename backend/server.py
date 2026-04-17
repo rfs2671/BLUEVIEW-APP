@@ -11132,10 +11132,29 @@ async def _process_whatsapp_message(payload: dict):
         # --- GROUP message ---
         if parsed["is_group"]:
             group_id = parsed["group_id"]
+
+            # ── Link-code detection runs FIRST, before any group-linked check.
+            # This is how an unlinked group becomes linked: user pastes the
+            # 6-digit code we generated, webhook fires, we record group_id on
+            # the pending link code, user clicks Verify in the app.
+            body_for_code = parsed.get("body") or ""
+            code_match = re.match(r"^\s*(\d{6})\s*$", body_for_code)
+            if code_match:
+                code_val = code_match.group(1)
+                code_doc = await db.whatsapp_link_codes.find_one({"code": code_val})
+                if code_doc and not code_doc.get("verified"):
+                    await db.whatsapp_link_codes.update_one(
+                        {"_id": code_doc["_id"]},
+                        {"$set": {"group_id": group_id, "group_verified": True}},
+                    )
+                    logger.info(
+                        f"whatsapp link: group {group_id} registered code {code_val}"
+                    )
+
             # Look up linked group
             group_doc = await db.whatsapp_groups.find_one({"wa_group_id": group_id, "active": True})
             if not group_doc:
-                return  # Not a linked group — ignore
+                return  # Not a linked group — ignore further processing
             project_id = group_doc["project_id"]
             msg_company_id = group_doc.get("company_id")
 
@@ -11164,16 +11183,6 @@ async def _process_whatsapp_message(payload: dict):
                 "timestamp": datetime.fromtimestamp(parsed["timestamp"], tz=timezone.utc) if parsed["timestamp"] else now,
                 "created_at": now,
             })
-
-            # Check for link-code pattern (6-digit code from group) — this is
-            # group-linking infrastructure, unaffected by bot_enabled.
-            if body and re.match(r"^\d{6}$", body.strip()):
-                code_doc = await db.whatsapp_link_codes.find_one({"code": body.strip()})
-                if code_doc and not code_doc.get("verified"):
-                    await db.whatsapp_link_codes.update_one(
-                        {"_id": code_doc["_id"]},
-                        {"$set": {"group_id": group_id, "group_verified": True}}
-                    )
 
             # Master kill switch — stop all bot-initiated behavior below this point
             if not bot_enabled:
