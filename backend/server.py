@@ -11778,26 +11778,39 @@ async def _retrieve_plan_candidates(
         floor = str(int(floor))
 
     # ── 1. Sheet-number exact match ───────────────────────────────────────
+    # Sheet numbers are often stamped with decimal subsheet suffixes
+    # (M-200, M-200.00, A-301.1). If the user types the base id we want
+    # all variants to hit. Pattern: start ^, optional trailing .digits, end.
     sheet_q = (parsed.get("sheet_number") or "").strip()
     if not sheet_q:
-        # Also scan the raw query for an A-301-style token (parser may have
-        # missed it or the user pasted a bare sheet id).
         for tok in re.findall(r"[A-Za-z]{1,3}-?\d{1,4}[A-Za-z]?", original_query or ""):
             if _is_sheet_number_query(tok):
                 sheet_q = tok
                 break
     if sheet_q:
-        # Normalize "A301" → "A-301" for match attempts
-        candidates_patterns = {sheet_q.upper()}
-        m = re.match(r"^([A-Z]{1,3})-?(\d{1,4}[A-Z]?)$", sheet_q.upper())
+        q_upper = sheet_q.upper()
+        # Build up the set of prefixes to accept
+        prefixes = {q_upper}
+        m = re.match(r"^([A-Z]{1,3})-?(\d{1,4}[A-Z]?)(\.\d+)?$", q_upper)
         if m:
-            candidates_patterns.add(f"{m.group(1)}-{m.group(2)}")
-            candidates_patterns.add(f"{m.group(1)}{m.group(2)}")
+            prefixes.add(f"{m.group(1)}-{m.group(2)}")
+            prefixes.add(f"{m.group(1)}{m.group(2)}")
+            # Also accept the exact decimal form the user gave us
+            if m.group(3):
+                prefixes.add(f"{m.group(1)}-{m.group(2)}{m.group(3)}")
+        # Regex: ^(PFX1|PFX2)(\.\d+)?$  — tolerate decimal subsheet
+        pattern = (
+            f"^({'|'.join(re.escape(p) for p in prefixes)})"
+            r"(\.\d+)?$"
+        )
         fq = dict(base_filter)
-        fq["sheet_number"] = {"$regex": f"^({'|'.join(re.escape(p) for p in candidates_patterns)})$", "$options": "i"}
-        hit = await db.document_page_index.find_one(fq)
-        if hit:
-            return [hit]
+        fq["sheet_number"] = {"$regex": pattern, "$options": "i"}
+        # Multiple hits possible when a family shares a base (M-200, M-200.1…);
+        # prefer the shortest — it's the "most canonical" base sheet.
+        hits = await db.document_page_index.find(fq).to_list(10)
+        if hits:
+            hits.sort(key=lambda p: len(p.get("sheet_number") or ""))
+            return [hits[0]]
         # Fall through to full search if no exact match
 
     # ── 2. Load candidate pool + parallel search ──────────────────────────
@@ -11840,6 +11853,7 @@ async def _retrieve_plan_candidates(
         scored_kw = []
         for p in pool:
             bag = " ".join(filter(None, [
+                (p.get("sheet_number") or "").upper(),
                 (p.get("sheet_title") or "").upper(),
                 " ".join(p.get("keywords") or []).upper(),
                 (p.get("materials") or "").upper(),
