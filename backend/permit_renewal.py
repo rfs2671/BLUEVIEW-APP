@@ -18,9 +18,15 @@ logger = logging.getLogger(__name__)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 OWNER_ALERT_EMAIL = os.environ.get("OWNER_ALERT_EMAIL", "")
 
+# Blocked by Akamai — license lookup replaced with NYC Open Data (w5r2-853r).
+# Kept for reference and backward compatibility with old log messages.
 DOB_BIS_LICENSE_URL = "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryServlet"
 DOB_BIS_BASE_URL    = "https://a810-bisweb.nyc.gov/bisweb/"
 DOB_NOW_BUILD_URL = "https://a810-dobnow.nyc.gov/publish/Index.html"
+
+# NYC Open Data Socrata endpoint for DCA General Contractor licenses.
+# Free, no auth required, no bot protection.
+NYC_OPEN_DATA_GC_LICENSES_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
 
 # Browser-like headers — BIS is behind Akamai which 403s bare requests.
 _BIS_BROWSER_HEADERS = {
@@ -77,13 +83,16 @@ class RenewalStatus(str, Enum):
 
 
 class InsuranceRecord(BaseModel):
-    """Insurance information scraped from DOB Licensing Portal."""
+    """Insurance information. Historically scraped from DOB BIS; now manually
+    entered by admins (see PUT /api/admin/company/insurance/manual)."""
     insurance_type: str
     carrier_name: Optional[str] = None
     policy_number: Optional[str] = None
     effective_date: Optional[str] = None
     expiration_date: Optional[str] = None
     is_current: bool = False
+    # "manual_entry" for records added via Settings; None/other for legacy scraped rows.
+    source: Optional[str] = None
 
 
 class GCLicenseInfo(BaseModel):
@@ -163,39 +172,93 @@ def _to_oid(s: str):
 
 async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
     """
-    Query NYC DOB BIS Licensing Portal by company name.
-    Extracts GC license number, status, and insurance records.
+    Look up a General Contractor license by business name using NYC Open Data.
+
+    Replaces the old BIS HTML scraper, which is now blocked by Akamai Bot Manager.
+    The Open Data endpoint is free, unauthenticated, and returns JSON.
+
+    Signature is preserved so all existing callers continue to work. Insurance
+    records are always empty from this function now — insurance is managed via
+    manual entry in Settings (see PUT /api/admin/company/insurance/manual).
     """
     import httpx
 
-    logger.info(f"BIS scrape: looking up GC license for '{company_name}'")
+    name = (company_name or "").upper().strip()
+    if not name:
+        return None
+
+    logger.info(f"NYC Open Data: looking up GC license for '{name}'")
+
+    # Escape single quotes for SoQL LIKE
+    safe_name = name.replace("'", "''")
+    where = f"license_type='GENERAL CONTRACTOR' AND upper(business_name) LIKE '%{safe_name}%'"
 
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.get(DOB_BIS_LICENSE_URL, params={
-                "requestid": "1",
-                "licnm": company_name.upper().strip(),
-                "licno": "",
-                "lictp": "G",
-                "go2": "Submit",
-            })
-
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                NYC_OPEN_DATA_GC_LICENSES_URL,
+                params={"$where": where, "$limit": "5"},
+            )
             if resp.status_code != 200:
-                logger.warning(f"BIS license query returned {resp.status_code}")
+                logger.warning(
+                    f"NYC Open Data GC lookup returned {resp.status_code} for '{name}'"
+                )
                 return None
 
-            html = resp.text
-            info = _parse_bis_license_html(html)
+            records = resp.json()
+            if not records:
+                return None
 
-            if info and info.license_number:
-                info.insurance_records = await _fetch_insurance_details(
-                    client, info.license_number
+            # Prefer an ACTIVE license if any are present; otherwise first result
+            def _status(r):
+                return (r.get("license_status") or "").upper()
+
+            active = [r for r in records if _status(r) == "ACTIVE"]
+            chosen = active[0] if active else records[0]
+
+            licensee = f"{chosen.get('first_name', '')} {chosen.get('last_name', '')}".strip()
+
+            info = GCLicenseInfo(
+                license_number=(chosen.get("license_number") or "").strip() or None,
+                license_type="General Contractor",
+                licensee_name=licensee or None,
+                business_name=(chosen.get("business_name") or "").strip() or None,
+                license_status=(chosen.get("license_status") or "").strip() or None,
+                # NYC Open Data's GC dataset does not expose expiration — leave None.
+                license_expiration=None,
+                # Insurance data is no longer auto-fetched; use manual entry.
+                insurance_records=[],
+            )
+
+            # Cache into gc_licenses so autocomplete still works.
+            try:
+                now = datetime.now(timezone.utc)
+                # Database handle is on the permit_renewal module at import time via server,
+                # but we may not have it here. Instead, the autocomplete endpoint already
+                # handles its own caching path, so we skip silently if the db isn't available.
+                from server import db as _db  # type: ignore
+                await _db.gc_licenses.update_one(
+                    {"license_number": info.license_number},
+                    {"$set": {
+                        "license_number": info.license_number,
+                        "business_name": info.business_name or "",
+                        "licensee_name": info.licensee_name or "",
+                        "license_type": "GC",
+                        "license_status": info.license_status or "",
+                        "license_expiration": info.license_expiration,
+                        "source": "nyc_open_data",
+                        "last_synced": now,
+                    }, "$setOnInsert": {"created_at": now, "insurance_records": []}},
+                    upsert=True,
                 )
+            except Exception:
+                # Non-fatal — caching is best-effort
+                pass
 
             return info
 
     except Exception as e:
-        logger.error(f"BIS scrape error for '{company_name}': {e}")
+        logger.error(f"NYC Open Data GC lookup error for '{name}': {e}")
         return None
 
 
@@ -233,16 +296,33 @@ def _parse_bis_license_html(html: str) -> Optional[GCLicenseInfo]:
 
 
 async def _fetch_insurance_details(client, license_number: str) -> List[InsuranceRecord]:
-    """Fetch insurance records for a given GC license from BIS.
+    """No-op stub — insurance auto-fetch is disabled.
 
-    BIS is behind Akamai bot protection -- bare requests 403. We warm up a
-    browser-like session first so Akamai drops its allow cookies, then hit
-    the license servlet with full browser headers.
+    The NYC DOB BIS Licensing Portal is behind Akamai Bot Manager and blocks
+    all non-residential traffic (including Render's outbound IPs). NYC Open
+    Data does not expose contractor insurance records.
+
+    Insurance is now entered manually by admins via
+    PUT /api/admin/company/insurance/manual and stored on the company doc.
+
+    This function is preserved as a stub because it is referenced from several
+    call sites; returning an empty list lets those flows continue gracefully
+    without introducing any changes at the call-site level.
     """
+    logger.info(
+        "Insurance auto-fetch disabled — using manually entered records "
+        f"(called for license {license_number})"
+    )
+    return []
+
+
+async def _fetch_insurance_details_LEGACY_DISABLED(client, license_number: str):
+    """Previous BIS scraper body, retained verbatim for reference only.
+    NOT wired up. Do not call. Kept because the regex patterns may become
+    useful if DOB ever ships an API."""
     records = []
 
     try:
-        # Warmup for Akamai session cookies (httpx client persists them)
         await _warmup_bis_cookies(client)
 
         resp = await client.get(
@@ -255,7 +335,6 @@ async def _fetch_insurance_details(client, license_number: str) -> List[Insuranc
             return records
 
         html = resp.text
-        # Akamai sometimes serves a 200 with the block page -- detect it
         if "Access Denied" in html and "edgesuite" in html.lower():
             logger.warning(f"BIS served Akamai block page for license {license_number}")
             return records
