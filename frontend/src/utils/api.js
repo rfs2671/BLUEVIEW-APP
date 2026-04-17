@@ -394,6 +394,12 @@ export const dropboxAPI = {
     });
     return response.data;
   },
+
+  deleteFile: async (projectId, fileId) => {
+    // Hard-delete: removes R2 object + Mongo row. Owner/admin only.
+    const response = await apiClient.delete(`/api/projects/${projectId}/files/${fileId}`);
+    return response.data;
+  },
 };
 
 /**

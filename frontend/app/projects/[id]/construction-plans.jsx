@@ -31,6 +31,7 @@ import {
   CheckCircle,
   AlertCircle,
   Upload,
+  Trash2,
 } from 'lucide-react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -222,14 +223,64 @@ export default function ConstructionPlansScreen() {
 
   const handleDownloadFile = async (file) => {
     try {
-      const { url } = await dropboxAPI.getFileUrl(projectId, file.path);
+      // Direct-upload files carry their download URL on the record itself;
+      // only fall back to the Dropbox temp-link endpoint for synced files.
+      let url = file.directUrl || file.r2_url || null;
+      if (url && url.startsWith('/')) {
+        const tok = (typeof window !== 'undefined' && window.localStorage)
+          ? window.localStorage.getItem('blueview_token')
+          : null;
+        const base = process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
+        url = base + url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok || '');
+      }
+      if (!url && file.path) {
+        const res = await dropboxAPI.getFileUrl(projectId, file.path);
+        url = res?.url;
+      }
       if (url) {
         await Linking.openURL(url);
         toast.success('Download', 'File download started');
+      } else {
+        toast.error('Error', 'No download URL available for this file');
       }
     } catch (error) {
       console.error('Failed to download:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not download file');
+    }
+  };
+
+  const handleDeleteFile = async (file) => {
+    const canDelete = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
+    if (!canDelete) {
+      toast.error('Not allowed', 'Only company owners or admins can delete files.');
+      return;
+    }
+    // Confirm with the user. On web, window.confirm; on native, Alert.alert.
+    let confirmed = false;
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      confirmed = window.confirm(`Permanently delete "${file.name}"? This cannot be undone.`);
+    } else {
+      const { Alert } = require('react-native');
+      confirmed = await new Promise((resolve) => {
+        Alert.alert(
+          'Delete file?',
+          `Permanently delete "${file.name}"? This cannot be undone.`,
+          [
+            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+            { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
+          ]
+        );
+      });
+    }
+    if (!confirmed) return;
+
+    try {
+      await dropboxAPI.deleteFile(projectId, file.id);
+      toast.success('Deleted', `${file.name} deleted`);
+      fetchFiles();
+    } catch (error) {
+      console.error('Delete failed:', error);
+      toast.error('Delete Error', error.response?.data?.detail || 'Could not delete file');
     }
   };
 
@@ -481,6 +532,17 @@ export default function ConstructionPlansScreen() {
                           >
                             <Download size={18} strokeWidth={1.5} color={colors.text.muted} />
                           </Pressable>
+                          {['owner', 'admin'].includes(String(user?.role || '').toLowerCase()) && (
+                            <Pressable
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                handleDeleteFile(file);
+                              }}
+                              style={s.fileActionBtn}
+                            >
+                              <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                            </Pressable>
+                          )}
                         </View>
                       </Pressable>
                     );

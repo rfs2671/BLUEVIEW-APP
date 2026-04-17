@@ -6557,6 +6557,61 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
 
 
+@api_router.delete("/projects/{project_id}/files/{file_id}")
+async def delete_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
+    """Hard-delete a project file: removes from R2 and Mongo. Admin/owner only.
+
+    For Dropbox-synced files we only remove the Mongo row — Dropbox is the
+    source of truth there and we don't want to reach into the user's Dropbox.
+    """
+    # Permission check: only company owner / admin may hard-delete files.
+    role = str(current_user.get("role") or "").lower()
+    if role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only company owners or admins can delete files")
+
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    user_company_id = str(current_user.get("company_id") or "")
+    if user_company_id and rec.get("company_id") and rec["company_id"] != user_company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    r2_key = rec.get("r2_key", "")
+    r2_deleted = False
+    if r2_key and _r2_client and R2_BUCKET_NAME:
+        try:
+            await asyncio.to_thread(
+                _r2_client.delete_object,
+                Bucket=R2_BUCKET_NAME,
+                Key=r2_key,
+            )
+            r2_deleted = True
+        except Exception as e:
+            logger.error(f"R2 delete_object failed key={r2_key}: {e}")
+            # Continue: still remove DB row so the file stops appearing.
+
+    delete_result = await db.project_files.delete_one({"_id": rec_oid})
+
+    logger.info(
+        f"File hard-deleted by {current_user.get('email')}: "
+        f"name={rec.get('name')} r2_key={r2_key or '-'} r2_deleted={r2_deleted} "
+        f"mongo_deleted={delete_result.deleted_count}"
+    )
+    return {
+        "deleted": True,
+        "file_id": file_id,
+        "name": rec.get("name", ""),
+        "r2_deleted": r2_deleted,
+        "mongo_deleted": delete_result.deleted_count == 1,
+    }
+
+
 # ==================== DROPBOX WEBHOOK ====================
 
 @api_router.get("/dropbox/webhook")
