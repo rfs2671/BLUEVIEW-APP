@@ -69,6 +69,8 @@ export default function WhatsAppGroupsScreen() {
   const [verifying, setVerifying] = useState(false);
   const [initiating, setInitiating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [generatedCode, setGeneratedCode] = useState('');  // 6-digit code from initiate
+  const [codeCopied, setCodeCopied] = useState(false);
 
   // Countdown timer
   const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
@@ -178,19 +180,34 @@ export default function WhatsAppGroupsScreen() {
     setLinkStep(1);
     setVerifyCode('');
     setCopied(false);
+    setGeneratedCode('');
+    setCodeCopied(false);
     if (timerRef.current) clearInterval(timerRef.current);
   };
 
   const handleInitiateLink = async () => {
     setInitiating(true);
     try {
-      await whatsappAPI.initiateLink(projectId);
+      const result = await whatsappAPI.initiateLink(projectId);
+      setGeneratedCode(result?.code || '');
+      setVerifyCode(result?.code || '');  // pre-fill input so user just hits Verify
       setLinkStep(2);
     } catch (error) {
       console.error('Failed to initiate link:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not initiate group link');
     } finally {
       setInitiating(false);
+    }
+  };
+
+  const handleCopyCode = async () => {
+    if (!generatedCode) return;
+    try {
+      await Clipboard.setStringAsync(generatedCode);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch (e) {
+      toast.error('Error', 'Could not copy code');
     }
   };
 
@@ -522,27 +539,32 @@ export default function WhatsAppGroupsScreen() {
               ) : (
                 <View style={s.modalBody}>
                   <Text style={s.modalDesc}>
-                    Look for a 6-digit code in the group chat
+                    1. Copy this code   2. Paste it as a message in your WhatsApp group   3. Tap Verify
                   </Text>
+
+                  {/* Generated code display + copy button */}
+                  <View style={s.phoneDisplay}>
+                    <Text style={[s.phoneNumber, { letterSpacing: 6 }]}>
+                      {generatedCode || '------'}
+                    </Text>
+                    <Pressable onPress={handleCopyCode} style={s.copyBtn}>
+                      {codeCopied ? (
+                        <CheckCircle size={20} strokeWidth={1.5} color={WHATSAPP_GREEN} />
+                      ) : (
+                        <Copy size={20} strokeWidth={1.5} color={colors.text.muted} />
+                      )}
+                      <Text style={[s.copyText, codeCopied && { color: WHATSAPP_GREEN }]}>
+                        {codeCopied ? 'Copied!' : 'Copy'}
+                      </Text>
+                    </Pressable>
+                  </View>
 
                   {/* Countdown */}
                   <View style={s.countdownWrap}>
-                    <Text style={[s.countdownText, countdown === 0 && { color: colors.status.error }]}>
-                      {countdown > 0 ? formatCountdown(countdown) : 'Code expired'}
+                    <Text style={[s.countdownText, countdown === 0 && { color: colors.status.error }, { fontSize: 14 }]}>
+                      {countdown > 0 ? `Code expires in ${formatCountdown(countdown)}` : 'Code expired — close and try again'}
                     </Text>
                   </View>
-
-                  {/* Code Input */}
-                  <TextInput
-                    style={s.codeInput}
-                    value={verifyCode}
-                    onChangeText={(t) => setVerifyCode(t.replace(/\D/g, '').slice(0, 6))}
-                    placeholder="000000"
-                    placeholderTextColor={colors.text.subtle}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    textAlign="center"
-                  />
 
                   <Pressable
                     onPress={handleVerifyLink}
