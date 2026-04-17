@@ -10445,11 +10445,23 @@ async def _handle_dob_status(project_id: str) -> str:
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         return "Project not found."
-    dob_cfg = project.get("dob_config", {})
-    bin_number = dob_cfg.get("bin_number", "N/A")
-    lines = [f"*DOB Status for {project.get('name', 'Unknown')}*"]
+
+    # BIN lives at the top level as nyc_bin in current schema; fall back to
+    # the legacy dob_config.bin_number for older records.
+    bin_number = (
+        project.get("nyc_bin")
+        or (project.get("dob_config") or {}).get("bin_number")
+        or "N/A"
+    )
+    bbl = project.get("nyc_bbl") or (project.get("dob_config") or {}).get("bbl") or ""
+
+    lines = [f"*DOB Status for {project.get('name') or 'this project'}*"]
     lines.append(f"BIN: {bin_number}")
-    # Recent violations
+    if bbl:
+        lines.append(f"BBL: {bbl}")
+
+    # Recent violations — be defensive about None-valued fields (Mongo stores
+    # explicit None, and None[:80] raises TypeError).
     recent = await db.dob_logs.find({
         "project_id": project_id,
         "record_type": "violation",
@@ -10457,10 +10469,11 @@ async def _handle_dob_status(project_id: str) -> str:
     if recent:
         lines.append(f"\nRecent violations ({len(recent)}):")
         for v in recent:
-            desc = v.get("description", v.get("raw_dob_id", ""))[:80]
+            desc = v.get("description") or v.get("raw_dob_id") or v.get("violation_number") or "(no details)"
+            desc = str(desc)[:80]
             lines.append(f"  - {desc}")
     else:
-        lines.append("\nNo recent violations found.")
+        lines.append("\nNo recent violations on file.")
     return "\n".join(lines)
 
 
