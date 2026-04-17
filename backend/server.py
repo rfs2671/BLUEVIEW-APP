@@ -10194,6 +10194,44 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                 if isinstance(q, dict):
                     quoted_body = (q.get("body") or q.get("conversation") or "").strip()
 
+        # Mentions — WhatsApp's native @-mention (tap @ then pick a contact)
+        # doesn't put "@Levelog" in the body as text; it stores the mentioned
+        # contact's JID(s) in mentionedJidList / mentionedIds / contextInfo.
+        # The body contains the bare phone number like "@15165494475 show me…"
+        # (with the human-readable contact name rendered only client-side).
+        mentioned_jids: list = []
+        for path in (
+            ("mentionedJidList",),
+            ("mentionedIds",),
+            ("contextInfo", "mentionedJid"),
+            ("contextInfo", "mentionedJidList"),
+        ):
+            node = msg
+            for k in path:
+                if not isinstance(node, dict):
+                    node = None
+                    break
+                node = node.get(k)
+            if isinstance(node, list):
+                mentioned_jids.extend(str(j) for j in node if j)
+        # Also look inside _data
+        for path in (
+            ("mentionedJidList",),
+            ("mentionedIds",),
+            ("contextInfo", "mentionedJid"),
+        ):
+            node = inner
+            for k in path:
+                if not isinstance(node, dict):
+                    node = None
+                    break
+                node = node.get(k)
+            if isinstance(node, list):
+                mentioned_jids.extend(str(j) for j in node if j)
+        # De-duplicate while preserving order
+        seen = set()
+        mentioned_jids = [j for j in mentioned_jids if not (j in seen or seen.add(j))]
+
         return {
             "message_id": msg_id,
             "from": from_field,
@@ -10201,6 +10239,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "to": to_field,
             "body": body,
             "quoted_body": quoted_body,
+            "mentioned_jids": mentioned_jids,
             "is_group": is_group,
             "group_id": from_field if is_group else None,
             "timestamp": ts,
@@ -11740,22 +11779,61 @@ _BOT_ADDRESS_SOFT_TRIGGERS = [
 ]
 
 
-def _has_explicit_bot_mention(body: str, bot_phone_digits: str) -> bool:
-    """Returns True iff the text explicitly mentions the bot by name/number."""
+def _jid_digits(jid: str) -> str:
+    """Return just the digits from a WhatsApp JID like '15165494475@c.us' or
+    '15165494475@s.whatsapp.net'. Empty string for unknown/lid shapes."""
+    if not jid:
+        return ""
+    # Drop the @domain suffix, then strip anything non-digit.
+    head = jid.split("@", 1)[0]
+    return re.sub(r"\D", "", head)
+
+
+def _has_explicit_bot_mention(
+    body: str,
+    bot_phone_digits: str,
+    mentioned_jids: Optional[list] = None,
+) -> bool:
+    """Returns True iff the bot was explicitly addressed.
+
+    Matches (any of):
+      - WhatsApp native @mention: the bot's JID appears in mentioned_jids
+        (this is what happens when the user types '@' and picks the bot
+        contact — body just contains '@<digits>', not '@levelog').
+      - Bare '@<bot-phone-digits>' token in the body (covers vendors that
+        don't populate mentionedJidList).
+      - Literal text '@levelog' or 'levelog ' prefix (typed fallback —
+        still useful for clients / copies where the native mention was
+        lost).
+    """
+    # 1. Native @-mention via JID list (the primary, correct path)
+    if mentioned_jids and bot_phone_digits:
+        suffix = bot_phone_digits[-10:]
+        for jid in mentioned_jids:
+            jid_digits = _jid_digits(str(jid))
+            if jid_digits and jid_digits[-10:] == suffix:
+                return True
+
     if not body:
         return False
     low = body.strip().lower()
-    if low.startswith("@levelog") or low.startswith("levelog ") or low == "levelog":
-        return True
-    # Also accept @levelog anywhere in the body (not just prefix)
-    if "@levelog" in low:
-        return True
-    # Phone-number mention — strip non-digits from any @-prefixed token
-    if "@" in low and bot_phone_digits:
+
+    # 2. Bare phone-number @mention in the body text
+    if bot_phone_digits:
+        suffix = bot_phone_digits[-10:]
         for token in re.findall(r"@[\w\d]+", low):
             digits = re.sub(r"\D", "", token)
-            if digits and digits[-10:] == bot_phone_digits[-10:]:
+            if digits and digits[-10:] == suffix:
                 return True
+
+    # 3. Literal text fallback — people will still type '@Levelog' in
+    # contexts where the native @mention is lost (web paste, some 3rd-party
+    # clients, or just habit).
+    if low.startswith("@levelog") or low.startswith("levelog ") or low == "levelog":
+        return True
+    if "@levelog" in low:
+        return True
+
     return False
 
 
@@ -11820,6 +11898,8 @@ async def _is_bot_addressed(
     sender: str = "",
     mode: str = "strict",
     quoted_body: str = "",
+    mentioned_jids: Optional[list] = None,
+    quoted_mentioned_jids: Optional[list] = None,
 ) -> bool:
     """Decide whether this message should route through the agent.
 
@@ -11836,13 +11916,14 @@ async def _is_bot_addressed(
         - Voice always routes; text routes on any intent-starter word.
     """
     # Explicit mention — always True in either mode
-    if _has_explicit_bot_mention(body, bot_phone_digits):
+    if _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids):
         if group_id and sender:
             await _mark_bot_session(group_id, sender)
         return True
 
-    # Quoted/reply context: "@levelog" appears in the message this one replies to
-    if quoted_body and _has_explicit_bot_mention(quoted_body, bot_phone_digits):
+    # Quoted/reply context: the bot was mentioned in the message this one
+    # is replying to (either via native @mention JID or literal text).
+    if _has_explicit_bot_mention(quoted_body, bot_phone_digits, quoted_mentioned_jids):
         if group_id and sender:
             await _mark_bot_session(group_id, sender)
         return True
@@ -12848,13 +12929,14 @@ async def _process_whatsapp_message(payload: dict):
             )
             address_mode = (features.get("address_mode") or "strict").lower()
             quoted_body = parsed.get("quoted_body") or ""
-            # Did the user literally type @levelog / @<phone> in this message
-            # (or its quoted-reply parent)? If yes we lift the NOREPLY escape
-            # hatch for the agent — an explicitly addressed message MUST get
-            # some reply.
+            mentioned_jids = parsed.get("mentioned_jids") or []
+            # Did the user explicitly @-mention the bot (native WhatsApp
+            # @mention, literal @levelog text, or a quoted reply to either)?
+            # If yes we lift the NOREPLY escape hatch for the agent — an
+            # explicitly addressed message MUST get some reply.
             explicit_mention = (
-                _has_explicit_bot_mention(body, bot_phone_digits)
-                or (quoted_body and _has_explicit_bot_mention(quoted_body, bot_phone_digits))
+                _has_explicit_bot_mention(body, bot_phone_digits, mentioned_jids)
+                or _has_explicit_bot_mention(quoted_body, bot_phone_digits, None)
             )
             is_addressed = await _is_bot_addressed(
                 body,
@@ -12864,6 +12946,7 @@ async def _process_whatsapp_message(payload: dict):
                 sender=sender,
                 mode=address_mode,
                 quoted_body=quoted_body,
+                mentioned_jids=mentioned_jids,
             )
             if is_addressed:
                 reply = await _run_group_agent(
