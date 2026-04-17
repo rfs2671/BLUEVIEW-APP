@@ -10946,7 +10946,8 @@ _WHATSAPP_CONFIG_KEYS = {
     "cross_project_summary",
 }
 _WHATSAPP_FEATURE_KEYS = {
-    "who_on_site", "dob_status", "open_items", "material_detection", "plan_queries"
+    "who_on_site", "dob_status", "open_items", "material_detection", "plan_queries",
+    "address_mode",
 }
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -11029,6 +11030,18 @@ async def run_whatsapp_startup_migrations():
             [("project_id", 1), ("discipline", 1)],
             name="document_page_by_project_discipline",
         )
+        # Migration 4b (plan-query v2): fast exact-match lookup on sheet
+        # number per project. Alphanumeric sheet IDs ('A-301', 'ME-401')
+        # are poorly served by vector search; regex / exact match on this
+        # field always takes priority over semantic retrieval.
+        await db.document_page_index.create_index(
+            [("project_id", 1), ("sheet_number", 1)],
+            name="document_page_by_sheet_number",
+        )
+        await db.document_page_index.create_index(
+            [("project_id", 1), ("floor", 1)],
+            name="document_page_by_floor",
+        )
 
         # Migration 5 — whatsapp_conversation_state (Sprint 6 consumer).
         # One active draft per group; auto-expire via TTL on expires_at.
@@ -11080,6 +11093,167 @@ def detect_discipline(filename: str) -> str:
     return "other"
 
 
+# ------------- Plan-query index prompts -------------
+#
+# The indexing prompt is intentionally verbose. Its output is the ONLY basis
+# for the downstream embedding + semantic search, so anything missing here is
+# permanently invisible to the query pipeline. Qwen-VL handles multi-section
+# structured extraction well; keep the section headers stable so the parser
+# fallback and human reviewers can grep it.
+_PLAN_INDEX_PROMPT = (
+    "You are indexing a NYC construction drawing for a searchable database "
+    "used by field workers and general contractors. Your output will be the "
+    "sole basis for answering technical questions about this sheet.\n\n"
+    "Extract and return every piece of the following information exactly as "
+    "it appears in the drawing. Do not paraphrase. Do not summarize. Quote "
+    "all text verbatim. If a field is not present on this sheet, write NONE "
+    "for that field. Be exhaustive — a field worker's safety depends on this "
+    "data being complete.\n\n"
+    "Return the answer with these exact labeled sections, one per line or "
+    "bulleted beneath the label:\n"
+    "SHEET_ID: the sheet number exactly as printed (examples: A-301, ME-401, S-102, PL-201)\n"
+    "SHEET_TITLE: the full title as printed on the title block\n"
+    "DISCIPLINE: Architectural | Structural | Mechanical | Electrical | Plumbing | Sprinkler | Civil | General\n"
+    "FLOOR: every floor, level, or zone this sheet covers\n"
+    "SPACES_AND_ROOMS: all room names, unit types, corridor labels, space identifiers\n"
+    "DIMENSIONS: every explicit dimension callout, ceiling height, clear width, slab thickness, structural depth shown\n"
+    "MATERIALS_AND_SPECS: every material, product name, gauge, thickness, fire rating, R-value, performance spec, keynote text verbatim "
+    "(examples: 5/8\" Type X GWB, 3-5/8\" 20GA metal stud at 16\" OC, DensGlass Gold sheathing, R-19 batt insulation, 2-hour fire-rated assembly)\n"
+    "CODE_REFS: Local Law citations, NYC Building Code sections, IBC refs, special inspection flags, fire-rating assembly numbers\n"
+    "DETAIL_AND_SECTION_REFS: all detail bubbles, section cut markers, enlarged plan callouts with their reference numbers\n"
+    "NOTES: all general notes, keynotes, and sheet-specific notes in full\n"
+)
+
+
+def _parse_plan_summary(text: str) -> dict:
+    """Extract structured fields from a Qwen indexing summary.
+
+    Section labels come from _PLAN_INDEX_PROMPT. Tolerant to minor label
+    drift ('SHEET ID', 'Sheet_Id', 'Sheet ID:'). Unmatched sections get None.
+    """
+    out = {
+        "sheet_number":  None,
+        "sheet_title":   None,
+        "discipline":    None,
+        "floor":         None,
+        "spaces":        None,
+        "dimensions":    None,
+        "materials":     None,
+        "code_refs":     None,
+        "detail_refs":   None,
+        "notes":         None,
+    }
+    if not text:
+        return out
+    label_map = {
+        "SHEET_ID":                  "sheet_number",
+        "SHEETID":                   "sheet_number",
+        "SHEET_TITLE":               "sheet_title",
+        "SHEETTITLE":                "sheet_title",
+        "DISCIPLINE":                "discipline",
+        "FLOOR":                     "floor",
+        "FLOOR_OR_LEVEL":            "floor",
+        "SPACES_AND_ROOMS":          "spaces",
+        "SPACES":                    "spaces",
+        "DIMENSIONS":                "dimensions",
+        "MATERIALS_AND_SPECS":       "materials",
+        "MATERIALS":                 "materials",
+        "CODE_REFS":                 "code_refs",
+        "CODE_REFERENCES":           "code_refs",
+        "DETAIL_AND_SECTION_REFS":   "detail_refs",
+        "DETAIL_REFS":               "detail_refs",
+        "DETAILS":                   "detail_refs",
+        "NOTES":                     "notes",
+    }
+    # Split on label: at start of line. Use a tolerant regex that accepts
+    # "Sheet ID:", "SHEET_ID:", "Sheet_Id -", etc.
+    # Strategy: find all (label_norm, value) pairs by scanning for labeled
+    # sections anchored at line starts.
+    lines = text.splitlines()
+    current_key = None
+    current_buf: list = []
+    def _flush():
+        nonlocal current_key, current_buf
+        if current_key and current_buf:
+            val = "\n".join(current_buf).strip(" \t:-\n")
+            if val and val.upper() != "NONE":
+                out[current_key] = val
+        current_key = None
+        current_buf = []
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            if current_key:
+                current_buf.append("")
+            continue
+        m = re.match(r"^[*_\-\s]*([A-Za-z][A-Za-z _\-]+?)\s*[:\-–]\s*(.*)$", line)
+        if m:
+            label_raw = re.sub(r"[^A-Za-z]", "_", m.group(1).strip().upper()).strip("_")
+            label_norm = re.sub(r"__+", "_", label_raw)
+            if label_norm in label_map:
+                _flush()
+                current_key = label_map[label_norm]
+                rest = m.group(2).strip(" -:\t")
+                current_buf = [rest] if rest else []
+                continue
+        if current_key:
+            current_buf.append(line)
+    _flush()
+    return out
+
+
+async def _generate_embedding(text: str) -> Optional[list]:
+    """Generate an OpenAI embedding (text-embedding-3-small, 1536 dim).
+
+    Returns None on any failure — callers must tolerate missing embeddings.
+    """
+    if not OPENAI_API_KEY or not text:
+        return None
+    # OpenAI caps at 8192 tokens per input; truncate aggressively at char level.
+    text = text.strip()[:20000]
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/embeddings",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": "text-embedding-3-small", "input": text},
+            )
+            if resp.status_code != 200:
+                logger.warning(f"embedding API {resp.status_code}: {resp.text[:200]}")
+                return None
+            data = resp.json()
+            return data["data"][0]["embedding"]
+    except Exception as e:
+        logger.warning(f"embedding failed: {e}")
+        return None
+
+
+async def _upload_page_jpeg_to_r2(project_id: str, file_id: str,
+                                    page_number: int, jpeg_bytes: bytes) -> str:
+    """Store a per-page rendered JPEG to R2 at
+    `plans/{project_id}/{file_id}/page_{N}.jpg` and return the key."""
+    r2_key = f"plans/{project_id}/{file_id}/page_{page_number}.jpg"
+    try:
+        await asyncio.to_thread(
+            _upload_to_r2, jpeg_bytes, r2_key, "image/jpeg"
+        )
+        return r2_key
+    except Exception as e:
+        logger.warning(f"page jpeg upload failed {r2_key}: {e}")
+        return ""
+
+
+def _is_sheet_number_query(s: str) -> bool:
+    """Heuristic: does this token look like a sheet id (A-301, ME-401)?"""
+    if not s:
+        return False
+    s = s.strip().upper()
+    return bool(re.match(r"^[A-Z]{1,3}-?\d{1,4}[A-Z]?$", s))
+
+
 async def _index_single_page(
     *,
     project_id: str,
@@ -11092,73 +11266,80 @@ async def _index_single_page(
     page_text: str,
     page_image_bytes: Optional[bytes],
 ):
-    """Index one page. Uses PyMuPDF text length as a pre-filter so dense
-    text ('specs') never gets sent to Qwen (cost + accuracy)."""
-    now = datetime.now(timezone.utc)
+    """Index one page: Qwen summary + embedding + R2 JPEG storage.
 
-    # Dense text = spec pages, skip Qwen, still store so coverage is complete.
+    PyMuPDF-extracted text length gates the Qwen call — pages with >800
+    characters of extractable text are likely spec sheets and get marked
+    as such instead of consuming VLM tokens on dense type.
+    """
+    now = datetime.now(timezone.utc)
+    base_doc = {
+        "project_id":    project_id,
+        "company_id":    company_id,
+        "file_id":       file_id,
+        "file_name":     file_name,
+        "file_hash":     file_hash,
+        "discipline":    discipline,
+        "page_number":   page_number,
+        "indexed_at":    now,
+        "index_version": 2,
+    }
+
+    # Spec sheets: store but skip VLM.
     if page_text and len(page_text.strip()) > 800:
+        doc = dict(base_doc)
+        doc.update({
+            "sheet_number":       None,
+            "sheet_title":        "[SPECIFICATION PAGE]",
+            "floor":              None,
+            "keywords":           [],
+            "summary":            "",
+            "spaces":             None,
+            "dimensions":         None,
+            "materials":          None,
+            "code_refs":          None,
+            "detail_refs":        None,
+            "notes":              None,
+            "embedding":          None,
+            "page_jpeg_r2_key":   "",
+            "is_spec_page":       True,
+        })
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
-            {"$set": {
-                "project_id": project_id,
-                "company_id": company_id,
-                "file_id": file_id,
-                "file_name": file_name,
-                "file_hash": file_hash,
-                "discipline": discipline,
-                "page_number": page_number,
-                "sheet_number": None,
-                "sheet_title": "[SPECIFICATION PAGE]",
-                "floor": None,
-                "keywords": [],
-                "indexed_at": now,
-                "index_version": 1,
-            }},
+            {"$set": doc},
             upsert=True,
         )
         return
 
     if not page_image_bytes:
-        # Cannot send without image bytes — record as unknown page
+        doc = dict(base_doc)
+        doc.update({
+            "sheet_number":       None,
+            "sheet_title":        None,
+            "floor":              None,
+            "keywords":           [],
+            "summary":            "",
+            "embedding":          None,
+            "page_jpeg_r2_key":   "",
+            "is_spec_page":       False,
+        })
         await db.document_page_index.update_one(
             {"file_id": file_id, "page_number": page_number},
-            {"$set": {
-                "project_id": project_id,
-                "company_id": company_id,
-                "file_id": file_id,
-                "file_name": file_name,
-                "file_hash": file_hash,
-                "discipline": discipline,
-                "page_number": page_number,
-                "sheet_number": None,
-                "sheet_title": None,
-                "floor": None,
-                "keywords": [],
-                "indexed_at": now,
-                "index_version": 1,
-            }},
+            {"$set": doc},
             upsert=True,
         )
         return
 
-    b64 = base64.b64encode(page_image_bytes).decode("ascii")
-    prompt_text = (
-        "Look at the title block of this construction drawing (usually bottom "
-        "right or bottom center). Extract: sheet_number (e.g. ME-401, A-201), "
-        "sheet_title (e.g. FOURTH FLOOR MECHANICAL PLAN), floor_reference "
-        "(e.g. 4TH, 4, ROOF, CELLAR, TYPICAL). "
-        'Use null for any field NOT indicated. Return ONLY JSON: '
-        '{"sheet_number": ..., "sheet_title": ..., "floor": ...}'
+    # 1. Upload per-page JPEG to R2 (used at query time so we don't re-render).
+    page_jpeg_r2_key = await _upload_page_jpeg_to_r2(
+        project_id, file_id, page_number, page_image_bytes
     )
 
-    sheet_number = None
-    sheet_title = None
-    floor = None
-    keywords: List[str] = []
-
+    # 2. Qwen summary.
+    summary_text = ""
+    b64 = base64.b64encode(page_image_bytes).decode("ascii")
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client_http:
+        async with httpx.AsyncClient(timeout=90.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -11166,121 +11347,164 @@ async def _index_single_page(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": QWEN_MODEL,
-                    "max_tokens": 150,
+                    "model":       QWEN_MODEL,
+                    "max_tokens":  1500,
                     "temperature": 0,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                                },
-                                {"type": "text", "text": prompt_text},
-                            ],
-                        }
-                    ],
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": _PLAN_INDEX_PROMPT},
+                        ],
+                    }],
                 },
             )
             if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"].strip()
-                # Some vendors wrap JSON in backticks / language tags — strip.
-                if content.startswith("```"):
-                    content = re.sub(r"^```[a-zA-Z]*", "", content).rstrip("`").strip()
-                import json as _json
-                try:
-                    parsed = _json.loads(content)
-                except Exception:
-                    parsed = {}
-                sheet_number = parsed.get("sheet_number") or None
-                sheet_title = parsed.get("sheet_title") or None
-                floor = parsed.get("floor") or None
-                # Build keywords from sheet_title words for fast search
-                if isinstance(sheet_title, str):
-                    words = re.findall(r"[A-Za-z0-9\-]{2,}", sheet_title.upper())
-                    keywords = list({w for w in words if len(w) >= 2})[:20]
+                summary_text = resp.json()["choices"][0]["message"].get("content", "") or ""
             else:
                 logger.warning(
-                    f"Qwen returned {resp.status_code} for "
+                    f"Qwen index returned {resp.status_code} for "
                     f"{file_name} page {page_number}"
                 )
     except Exception as e:
         logger.warning(
-            f"Qwen call failed for {file_name} page {page_number}: {e}"
+            f"Qwen index call failed for {file_name} page {page_number}: {e}"
         )
 
-    # Normalize floor values to simple digits where possible
-    if isinstance(floor, str):
-        floor = floor.strip() or None
+    parsed = _parse_plan_summary(summary_text)
+    sheet_number = (parsed.get("sheet_number") or "").strip() or None
+    sheet_title  = (parsed.get("sheet_title") or "").strip() or None
+    floor        = (parsed.get("floor") or "").strip() or None
 
+    # Build keywords from title + materials + spaces for fast keyword search.
+    kw_source = " ".join(filter(None, [
+        sheet_title, parsed.get("spaces"), parsed.get("materials"),
+    ]))
+    words = re.findall(r"[A-Za-z0-9\-]{3,}", kw_source.upper())
+    # Drop short stopwords even after length filter
+    _STOP = {"THE", "AND", "FOR", "PER", "WITH", "FROM", "THIS", "THAT", "ARE"}
+    keywords = list({w for w in words if w not in _STOP})[:40]
+
+    # 3. Embedding of the full summary text.
+    embedding = await _generate_embedding(summary_text) if summary_text else None
+
+    doc = dict(base_doc)
+    doc.update({
+        "sheet_number":       sheet_number,
+        "sheet_title":        sheet_title,
+        "floor":              floor,
+        "keywords":           keywords,
+        "summary":            summary_text,
+        "spaces":             parsed.get("spaces"),
+        "dimensions":         parsed.get("dimensions"),
+        "materials":          parsed.get("materials"),
+        "code_refs":          parsed.get("code_refs"),
+        "detail_refs":        parsed.get("detail_refs"),
+        "notes":              parsed.get("notes"),
+        "embedding":          embedding,
+        "page_jpeg_r2_key":   page_jpeg_r2_key,
+        "is_spec_page":       False,
+    })
     await db.document_page_index.update_one(
         {"file_id": file_id, "page_number": page_number},
-        {"$set": {
-            "project_id": project_id,
-            "company_id": company_id,
-            "file_id": file_id,
-            "file_name": file_name,
-            "file_hash": file_hash,
-            "discipline": discipline,
-            "page_number": page_number,
-            "sheet_number": sheet_number,
-            "sheet_title": sheet_title,
-            "floor": floor,
-            "keywords": keywords,
-            "indexed_at": now,
-            "index_version": 1,
-        }},
+        {"$set": doc},
         upsert=True,
     )
 
 
-def _pdf_pages_render_and_text(pdf_bytes: bytes, dpi: int = 150):
-    """Generator yielding (page_number, page_text, jpeg_bytes_or_None).
+# Minimum rendering DPI for the plan-query pipeline. Construction drawings
+# carry dimension callouts and material specs in tiny type; anything lower
+# than 250 becomes unreadable by Qwen-VL. 300 for enlarged-detail sheets.
+_PLAN_RENDER_DPI = 250
+_PLAN_RENDER_DPI_DETAIL = 300
 
-    Uses pdf2image (already in requirements) + pdfplumber-style text
-    extraction via PyPDF2 if available, else skips the text pre-filter
-    for that page.
-    """
-    # Render images
-    from pdf2image import convert_from_bytes
-    images = convert_from_bytes(pdf_bytes, dpi=dpi)
 
-    # Try text extraction via PyPDF2 (likely already installed as a dep of
-    # the rest of the stack). Fall back to empty string per page if missing.
-    page_texts: List[str] = []
+def _render_dpi_for(file_name: str, page_number: int) -> int:
+    """Pick the DPI for rendering this page. Detail sheets get a bump."""
+    low = (file_name or "").lower()
+    if any(tok in low for tok in ("detail", "enlarged", "schedule", "d-")):
+        return _PLAN_RENDER_DPI_DETAIL
+    return _PLAN_RENDER_DPI
+
+
+def _pdf_total_pages(pdf_bytes: bytes) -> int:
+    try:
+        from pypdf import PdfReader
+        import io as _io
+        return len(PdfReader(_io.BytesIO(pdf_bytes)).pages)
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader as LegacyReader  # type: ignore
+            import io as _io
+            return len(LegacyReader(_io.BytesIO(pdf_bytes)).pages)
+        except Exception:
+            # Last resort — render page 1 only to probe; returns 0 if render fails
+            from pdf2image.pdf2image import pdfinfo_from_bytes
+            try:
+                info = pdfinfo_from_bytes(pdf_bytes)
+                return int(info.get("Pages") or 0)
+            except Exception:
+                return 0
+
+
+def _pdf_page_texts(pdf_bytes: bytes) -> List[str]:
+    """Extract text per page. Returns [] if extraction unavailable."""
     try:
         from pypdf import PdfReader
         import io as _io
         reader = PdfReader(_io.BytesIO(pdf_bytes))
-        for p in reader.pages:
-            try:
-                page_texts.append(p.extract_text() or "")
-            except Exception:
-                page_texts.append("")
+        return [(p.extract_text() or "") for p in reader.pages]
     except Exception:
         try:
             from PyPDF2 import PdfReader as LegacyReader  # type: ignore
             import io as _io
             reader = LegacyReader(_io.BytesIO(pdf_bytes))
-            for p in reader.pages:
-                try:
-                    page_texts.append(p.extract_text() or "")
-                except Exception:
-                    page_texts.append("")
+            return [(p.extract_text() or "") for p in reader.pages]
         except Exception:
-            page_texts = ["" for _ in images]
+            return []
 
+
+def _render_pdf_page(pdf_bytes: bytes, page_number: int, dpi: int) -> Optional[bytes]:
+    """Render a single PDF page to JPEG bytes.
+
+    We render one page at a time (first_page/last_page = page_number) so
+    peak memory stays bounded — all-at-once renders OOM on large multi-page
+    architectural sets on small Railway instances.
+    """
+    from pdf2image import convert_from_bytes
     import io as _io
-    for idx, img in enumerate(images, start=1):
+    try:
+        imgs = convert_from_bytes(
+            pdf_bytes, dpi=dpi,
+            first_page=page_number, last_page=page_number,
+        )
+        if not imgs:
+            return None
         buf = _io.BytesIO()
-        try:
-            img.save(buf, format="JPEG", quality=82)
-            jpeg_bytes = buf.getvalue()
-        except Exception:
-            jpeg_bytes = None
-        text = page_texts[idx - 1] if idx - 1 < len(page_texts) else ""
-        yield idx, text, jpeg_bytes
+        imgs[0].save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+    except Exception as e:
+        logger.warning(f"render page {page_number} at {dpi} dpi failed: {e}")
+        return None
+
+
+def _pdf_pages_render_and_text(pdf_bytes: bytes, dpi: int = _PLAN_RENDER_DPI,
+                                 file_name: str = ""):
+    """Generator yielding (page_number, page_text, jpeg_bytes_or_None).
+
+    Renders each page separately to bound memory. DPI may be overridden
+    per-page by _render_dpi_for() based on filename heuristics.
+    """
+    total = _pdf_total_pages(pdf_bytes)
+    if total <= 0:
+        return
+    texts = _pdf_page_texts(pdf_bytes)
+    for page_num in range(1, total + 1):
+        page_dpi = _render_dpi_for(file_name, page_num)
+        jpeg_bytes = _render_pdf_page(pdf_bytes, page_num, page_dpi)
+        text = texts[page_num - 1] if page_num - 1 < len(texts) else ""
+        yield page_num, text, jpeg_bytes
 
 
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
@@ -11324,53 +11548,57 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
         import hashlib
         file_hash = hashlib.md5(pdf_bytes).hexdigest()
 
-        # If any existing index entry for this file already has the same
-        # hash we assume the file's content is unchanged and bail out.
+        # Skip only if an existing entry has the same hash AND was produced
+        # by the current index_version (2). Earlier versions used a minimal
+        # prompt + no embedding and must be reprocessed.
         existing = await db.document_page_index.find_one({
-            "file_id": file_id,
-            "file_hash": file_hash,
+            "file_id":      file_id,
+            "file_hash":    file_hash,
+            "index_version": {"$gte": 2},
         })
         if existing:
             logger.info(
-                f"Plan index: {file_name} already indexed at current hash — "
-                f"skipping"
+                f"Plan index: {file_name} already indexed at current hash + "
+                f"version — skipping"
             )
             return
 
-        # Render + classify each page. Bound concurrency with a per-file
-        # semaphore so we don't fire 200 Qwen calls at once.
-        try:
-            pages = list(_pdf_pages_render_and_text(pdf_bytes, dpi=150))
-        except Exception as e:
-            logger.error(f"Plan index: PDF render failed for {file_name}: {e}")
+        # Total page count up front so we can log progress.
+        total = _pdf_total_pages(pdf_bytes)
+        if total <= 0:
+            logger.error(f"Plan index: page count = 0 for {file_name}")
             return
+        texts = _pdf_page_texts(pdf_bytes) or ["" for _ in range(total)]
 
-        sem = asyncio.Semaphore(5)
-        total = len(pages)
+        # Render page-by-page (bounded memory) and fire Qwen in parallel with
+        # a small semaphore so peak concurrency is 3 per file.
+        sem = asyncio.Semaphore(3)
 
-        async def _run(p):
-            num, text, jpeg = p
+        async def _process_page(page_num: int):
             async with sem:
+                dpi = _render_dpi_for(file_name, page_num)
+                jpeg = await asyncio.to_thread(
+                    _render_pdf_page, pdf_bytes, page_num, dpi
+                )
+                text = texts[page_num - 1] if page_num - 1 < len(texts) else ""
                 await _index_single_page(
                     project_id=project_id,
                     company_id=company_id,
                     file_id=file_id,
                     file_name=file_name,
                     file_hash=file_hash,
-                    page_number=num,
+                    page_number=page_num,
                     discipline=discipline,
                     page_text=text,
                     page_image_bytes=jpeg,
                 )
 
-        # Log progress every 10 pages by chunking
-        CHUNK = 10
-        for start in range(0, total, CHUNK):
-            batch = pages[start:start + CHUNK]
-            await asyncio.gather(*[_run(p) for p in batch])
-            logger.info(
-                f"Plan index: {file_name}: {min(start + CHUNK, total)}/{total}"
-            )
+        # Chunked progress logging.
+        CHUNK = 5
+        for start in range(1, total + 1, CHUNK):
+            end = min(start + CHUNK - 1, total)
+            await asyncio.gather(*[_process_page(n) for n in range(start, end + 1)])
+            logger.info(f"Plan index: {file_name}: {end}/{total}")
 
         logger.info(f"Plan index complete: {file_name} ({total} pages)")
 
@@ -11420,9 +11648,35 @@ def _has_plan_query_trigger(text: str) -> bool:
     return has_noun
 
 
+_PLAN_QUERY_PARSER_PROMPT = (
+    "You are parsing a construction worker's WhatsApp message into a structured "
+    "drawing search query for a NYC residential project.\n\n"
+    "Return a JSON object with exactly these fields:\n"
+    "  sheet_number: exact sheet ID if mentioned (A-301, ME-401, S-102), else null\n"
+    "  discipline: one of AR, ST, ME, EL, PL, SP, GN — inferred from context, else null\n"
+    "  floor: floor number or name if mentioned (3, roof, cellar, penthouse), else null\n"
+    "  sheet_type: one of plan, elevation, section, detail, schedule, riser, diagram, else null\n"
+    "  keywords: array of 2-4 key construction terms that would appear on a drawing\n"
+    "  question: the verbatim question to answer from the drawing, or null if the user "
+    "wants the image ('show me', 'pull up', 'send me', 'find the')\n"
+    "  dob_route: true if the message is about permits, violations, or DOB status and "
+    "should NOT be treated as a plan query; else false\n\n"
+    "Routing rules:\n"
+    "- 'show me / pull up / send me / find the' → question=null (image send).\n"
+    "- 'what is / how thick / what gauge / required clearance / what's the spec' "
+    "or question marks → extract as question.\n"
+    "- Permit / violation / DOB keyword → set dob_route=true and leave other fields null.\n"
+    "- Return ONLY valid JSON, no explanation."
+)
+
+
 async def _parse_plan_query(query: str) -> dict:
-    """Parse a natural-language plan request into a search spec."""
-    if not OPENAI_API_KEY:
+    """Parse a natural-language plan request into a structured search spec.
+
+    Returns dict with keys: sheet_number, discipline, floor, sheet_type,
+    keywords (list), question (str|None), dob_route (bool).
+    """
+    if not OPENAI_API_KEY or not query:
         return {}
     try:
         async with httpx.AsyncClient(timeout=20.0) as client_http:
@@ -11435,18 +11689,11 @@ async def _parse_plan_query(query: str) -> dict:
                 json={
                     "model": "gpt-4o-mini",
                     "temperature": 0,
-                    "max_tokens": 200,
+                    "max_tokens": 250,
                     "response_format": {"type": "json_object"},
                     "messages": [
-                        {"role": "system", "content": (
-                            "Parse this construction drawing request. Return ONLY JSON: "
-                            '{"discipline": "AR|ME|EL|PL|SP|ST|GN|null", '
-                            '"floor": "floor number/name as string or null", '
-                            '"sheet_type": "plan|elevation|section|detail|schedule|null", '
-                            '"sheet_number": "exact sheet number if mentioned e.g. ME-401 or null", '
-                            '"keywords": ["other relevant terms"]}'
-                        )},
-                        {"role": "user", "content": query},
+                        {"role": "system", "content": _PLAN_QUERY_PARSER_PROMPT},
+                        {"role": "user",   "content": query},
                     ],
                 },
             )
@@ -11454,10 +11701,157 @@ async def _parse_plan_query(query: str) -> dict:
                 return {}
             import json as _json
             parsed = _json.loads(resp.json()["choices"][0]["message"]["content"])
-            return parsed if isinstance(parsed, dict) else {}
+            if not isinstance(parsed, dict):
+                return {}
+            # Normalize types
+            if "keywords" in parsed and not isinstance(parsed["keywords"], list):
+                parsed["keywords"] = []
+            parsed["dob_route"] = bool(parsed.get("dob_route"))
+            return parsed
     except Exception as e:
         logger.warning(f"plan query parse failed: {e}")
         return {}
+
+
+def _cosine_similarity(a: list, b: list) -> float:
+    """Cosine similarity over two equal-length embedding vectors. 0 if malformed."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0 or nb <= 0:
+        return 0.0
+    import math
+    return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+async def _retrieve_plan_candidates(
+    project_id: str,
+    parsed: dict,
+    original_query: str,
+    limit: int = 3,
+) -> list:
+    """Retrieve top plan-page candidates for a query.
+
+    Priority order:
+      1. If parser returned a sheet_number, do an exact (case-insensitive)
+         match on the sheet_number field and return it directly.
+      2. Otherwise, run two parallel searches:
+           a. Vector similarity against the summary embedding.
+           b. Keyword match on sheet_title + keywords + materials.
+         Merge via Reciprocal Rank Fusion and return top `limit`.
+
+    Hard filters: discipline + floor (if extracted), and always exclude
+    spec pages (is_spec_page=True or sheet_title='[SPECIFICATION PAGE]').
+    """
+    base_filter: Dict[str, Any] = {
+        "project_id":   project_id,
+        "is_spec_page": {"$ne": True},
+        "sheet_title":  {"$ne": "[SPECIFICATION PAGE]"},
+    }
+
+    # Hard filters
+    disc = (parsed.get("discipline") or "").strip().upper() or None
+    if disc:
+        base_filter["discipline"] = disc
+    floor = parsed.get("floor")
+    if isinstance(floor, (int, float)):
+        floor = str(int(floor))
+
+    # ── 1. Sheet-number exact match ───────────────────────────────────────
+    sheet_q = (parsed.get("sheet_number") or "").strip()
+    if not sheet_q:
+        # Also scan the raw query for an A-301-style token (parser may have
+        # missed it or the user pasted a bare sheet id).
+        for tok in re.findall(r"[A-Za-z]{1,3}-?\d{1,4}[A-Za-z]?", original_query or ""):
+            if _is_sheet_number_query(tok):
+                sheet_q = tok
+                break
+    if sheet_q:
+        # Normalize "A301" → "A-301" for match attempts
+        candidates_patterns = {sheet_q.upper()}
+        m = re.match(r"^([A-Z]{1,3})-?(\d{1,4}[A-Z]?)$", sheet_q.upper())
+        if m:
+            candidates_patterns.add(f"{m.group(1)}-{m.group(2)}")
+            candidates_patterns.add(f"{m.group(1)}{m.group(2)}")
+        fq = dict(base_filter)
+        fq["sheet_number"] = {"$regex": f"^({'|'.join(re.escape(p) for p in candidates_patterns)})$", "$options": "i"}
+        hit = await db.document_page_index.find_one(fq)
+        if hit:
+            return [hit]
+        # Fall through to full search if no exact match
+
+    # ── 2. Load candidate pool + parallel search ──────────────────────────
+    pool = await db.document_page_index.find(base_filter).limit(400).to_list(400)
+    if not pool:
+        return []
+
+    # Optional floor filter (soft — use regex on floor field + sheet_title)
+    if floor:
+        fr = _floor_regex(str(floor))
+        if fr:
+            pat = re.compile(fr, re.I)
+            filtered = [
+                p for p in pool
+                if pat.search(str(p.get("floor") or ""))
+                or pat.search(str(p.get("sheet_title") or ""))
+            ]
+            if filtered:
+                pool = filtered
+
+    # 2a. Vector similarity
+    query_embedding = await _generate_embedding(original_query)
+    vector_ranked = []
+    if query_embedding:
+        scored = []
+        for p in pool:
+            emb = p.get("embedding") or []
+            sim = _cosine_similarity(query_embedding, emb)
+            scored.append((sim, p))
+        scored.sort(key=lambda x: -x[0])
+        vector_ranked = [p for _s, p in scored if _s > 0.05]
+
+    # 2b. Keyword match
+    keywords = [str(k).upper() for k in (parsed.get("keywords") or []) if k]
+    # Also split the raw query into keywords as a safety net
+    extra_kws = re.findall(r"[A-Z][A-Z0-9\-]{2,}", (original_query or "").upper())
+    keywords = list({*keywords, *extra_kws})
+    keyword_ranked = []
+    if keywords:
+        scored_kw = []
+        for p in pool:
+            bag = " ".join(filter(None, [
+                (p.get("sheet_title") or "").upper(),
+                " ".join(p.get("keywords") or []).upper(),
+                (p.get("materials") or "").upper(),
+                (p.get("spaces") or "").upper(),
+            ]))
+            score = sum(1 for k in keywords if k in bag)
+            if score > 0:
+                scored_kw.append((score, p))
+        scored_kw.sort(key=lambda x: -x[0])
+        keyword_ranked = [p for _s, p in scored_kw]
+
+    # ── 3. Reciprocal Rank Fusion ─────────────────────────────────────────
+    # RRF constant k=60 (standard choice). Score = sum(1 / (k + rank)).
+    K = 60
+    rrf: Dict[str, dict] = {}
+    scores: Dict[str, float] = {}
+    for rank, p in enumerate(vector_ranked[:50], start=1):
+        pid = str(p["_id"])
+        rrf[pid] = p
+        scores[pid] = scores.get(pid, 0) + 1.0 / (K + rank)
+    for rank, p in enumerate(keyword_ranked[:50], start=1):
+        pid = str(p["_id"])
+        rrf[pid] = p
+        scores[pid] = scores.get(pid, 0) + 1.0 / (K + rank)
+    ordered = sorted(rrf.values(), key=lambda p: -scores[str(p["_id"])])
+    return ordered[:limit]
 
 
 def _floor_regex(val: str) -> str:
@@ -11504,22 +11898,78 @@ def _classify_plan_question(query: str) -> bool:
     return False
 
 
+async def _fetch_page_jpeg(page_rec: dict) -> Optional[bytes]:
+    """Fetch the pre-rendered JPEG for a page from R2.
+
+    Indexed pages (v2+) store the R2 key at `page_jpeg_r2_key`. If missing
+    (legacy index), fall back to on-the-fly render of the source PDF —
+    slower, but keeps the query path working during the migration.
+    """
+    key = page_rec.get("page_jpeg_r2_key")
+    if key and _r2_client and R2_BUCKET_NAME:
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key
+            )
+            return obj["Body"].read()
+        except Exception as e:
+            logger.warning(f"R2 get page jpeg {key} failed: {e}")
+
+    # Fallback: render live from the source PDF.
+    file_id = page_rec.get("file_id")
+    page_num = page_rec.get("page_number") or 1
+    file_rec = None
+    try:
+        file_rec = await db.project_files.find_one({"_id": ObjectId(file_id)}) if file_id else None
+    except Exception:
+        file_rec = None
+    if not file_rec or not file_rec.get("r2_key"):
+        return None
+    try:
+        obj = await asyncio.to_thread(
+            _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
+        )
+        pdf_bytes = obj["Body"].read()
+    except Exception as e:
+        logger.warning(f"source pdf fetch failed: {e}")
+        return None
+    dpi = _render_dpi_for(file_rec.get("name", ""), page_num)
+    return await asyncio.to_thread(_render_pdf_page, pdf_bytes, page_num, dpi)
+
+
+_VQA_PROMPT = (
+    "You are answering a field question about a NYC construction drawing for "
+    "a live construction crew.\n\n"
+    "Sheet: {sheet_number} — {sheet_title}\n\n"
+    "Question: {user_question}\n\n"
+    "Instructions:\n"
+    "- Answer using only information that is explicitly visible in this drawing. "
+    "Make no assumptions.\n"
+    "- If the answer is a dimension, material, or specification, quote it exactly "
+    "as shown on the drawing. Include units, gauge, fire rating, or any qualifying "
+    "note text as printed.\n"
+    "- If the answer appears in a note or keynote, include the note number and "
+    "quote the note text.\n"
+    "- If multiple values exist for the same element in different zones, rooms, "
+    "or floors, list each value with its location context.\n"
+    "- Maximum 80 words. No preamble. No 'based on the drawing' opener. Give only "
+    "the answer.\n"
+    "- If this specific information is not shown anywhere on this sheet, reply "
+    "with exactly this single word and nothing else: NOT_SHOWN_ON_SHEET"
+)
+
+
 async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
                            sheet_number: str, sheet_title: str) -> Optional[str]:
     """Ask Qwen2.5-VL a question about a single rendered plan page.
-    Returns plain-text answer, or None on failure."""
+    Returns plain-text answer (possibly 'NOT_SHOWN_ON_SHEET'), or None on failure."""
     if not QWEN_API_KEY or not jpeg_bytes:
         return None
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
-    prompt = (
-        f"This is {sheet_number} — {sheet_title}, a NYC construction drawing. "
-        f"Answer this question based only on what is visible in the drawing: "
-        f"{question.strip()}\n\n"
-        "Rules:\n"
-        "- Be concise (under 60 words).\n"
-        "- Quote exact dimensions, materials, or callouts when relevant.\n"
-        "- If the drawing doesn't contain the answer, reply exactly: "
-        "NOT_SHOWN_ON_SHEET"
+    prompt = _VQA_PROMPT.format(
+        sheet_number=sheet_number or "(unknown)",
+        sheet_title=sheet_title or "(unknown)",
+        user_question=question.strip(),
     )
     try:
         async with httpx.AsyncClient(timeout=90.0) as client_http:
@@ -11552,291 +12002,151 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         return None
 
 
+async def _send_plan_image(
+    group_id: str, page_rec: dict, caption: str,
+) -> bool:
+    """Fetch a page's pre-rendered JPEG from R2, upload a presigned copy to
+    WaAPI-accessible storage, and send-image to the group. Returns True on
+    success."""
+    jpeg = await _fetch_page_jpeg(page_rec)
+    if not jpeg:
+        return False
+    import uuid as _uuid
+    temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
+    try:
+        await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
+        signed = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
+        if not signed:
+            return False
+    except Exception as e:
+        logger.warning(f"plan send: temp upload failed: {e}")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
+                headers={
+                    "Authorization": f"Bearer {WAAPI_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={"chatId": group_id, "image": signed, "caption": caption},
+            )
+            return 200 <= resp.status_code < 300
+    except Exception as e:
+        logger.warning(f"WaAPI send-image failed: {e}")
+        return False
+
+
 async def _handle_plan_query(project_id: str, group_id: str, query: str,
                               question: Optional[str] = None) -> None:
-    """End-to-end: acknowledge, parse, search, render, either send image or VQA.
+    """End-to-end plan-query pipeline (spec-compliant v2).
 
-    If `question` is non-empty OR the query itself looks like a question,
-    we render the top match and send it to Qwen for visual Q&A, replying
-    with a text answer. Otherwise we send the image(s) as before.
+    Flow:
+      1. Immediate ack.
+      2. Parse → structured spec (sheet_number, discipline, floor, keywords,
+         question, dob_route). Bail to DOB handler if dob_route.
+      3. Retrieve: sheet-number exact match first; else vector + keyword
+         with Reciprocal Rank Fusion. Top 3 candidates.
+      4. If parser says no question (show-me verb) → send top 1 or 2 images.
+      5. If parser extracted a question → VQA loop through candidates.
     """
     if not QWEN_API_KEY:
         await send_whatsapp_message(group_id, "Plan queries are not configured.")
         return
 
-    # Decide VQA vs image send
-    is_vqa = bool(question and question.strip()) or _classify_plan_question(query)
-    effective_question = (question or query).strip() if is_vqa else None
-
-    # Immediate ack so the user knows we're on it (rendering can take 10s+)
+    # 1. Immediate ack (needs to be fast — construction sites have poor signal)
     try:
-        await send_whatsapp_message(
-            group_id,
-            "🔎 Checking the drawings…" if is_vqa else "🔍 Searching drawings…",
-        )
+        await send_whatsapp_message(group_id, "🔎 Checking the drawings…")
     except Exception:
         pass
 
+    # 2. Parse
     parsed = await _parse_plan_query(query)
-    discipline = (parsed.get("discipline") or "").strip() or None
-    floor = parsed.get("floor") or None
-    sheet_number_query = (parsed.get("sheet_number") or "").strip() or None
-    keywords = parsed.get("keywords") or []
+    if parsed.get("dob_route"):
+        # Parser flagged this as a DOB/permits question — route to dob_status.
+        txt = await _handle_dob_status(project_id)
+        await send_whatsapp_message(group_id, txt)
+        return
 
-    # Build MongoDB query
-    base_query: Dict[str, Any] = {
-        "project_id": project_id,
-        "sheet_title": {"$ne": "[SPECIFICATION PAGE]"},
-    }
+    # `question` param from the agent-router overrides parser's question.
+    effective_question = (question or "").strip() or parsed.get("question")
+    if effective_question and effective_question.strip().lower() in ("null", "none", ""):
+        effective_question = None
+    # Also honor the legacy classifier as a safety net on the raw text.
+    if not effective_question and _classify_plan_question(query):
+        effective_question = query.strip()
 
-    if sheet_number_query:
-        # Fast path — exact sheet number match, case-insensitive
-        base_query["sheet_number"] = {
-            "$regex": f"^{re.escape(sheet_number_query)}$",
-            "$options": "i",
-        }
-    else:
-        and_clauses: List[Dict[str, Any]] = []
-        if discipline:
-            and_clauses.append({"discipline": discipline})
-        if floor:
-            fr = _floor_regex(str(floor))
-            if fr:
-                and_clauses.append({"$or": [
-                    {"floor": {"$regex": fr, "$options": "i"}},
-                    {"sheet_title": {"$regex": fr, "$options": "i"}},
-                ]})
-        if keywords:
-            kw_clauses = []
-            for kw in keywords[:6]:
-                if isinstance(kw, str) and len(kw.strip()) >= 2:
-                    pat = {"$regex": re.escape(kw.strip()), "$options": "i"}
-                    kw_clauses.append({"sheet_title": pat})
-                    kw_clauses.append({"keywords": pat})
-            if kw_clauses:
-                and_clauses.append({"$or": kw_clauses})
-        if and_clauses:
-            base_query["$and"] = and_clauses
-
-    results = await db.document_page_index.find(base_query).limit(5).to_list(5)
-
-    # Sort client-side: exact discipline match first, then floor, then keyword.
-    def _rank(doc):
-        score = 0
-        if discipline and doc.get("discipline") == discipline:
-            score += 100
-        if floor and (
-            str(doc.get("floor") or "").lower() == str(floor).lower()
-            or re.search(_floor_regex(str(floor)) or "", doc.get("sheet_title") or "", re.I)
-        ):
-            score += 50
-        return -score  # ascending
-    results.sort(key=_rank)
-    results = results[:3]
-
-    if not results:
+    # 3. Retrieve
+    candidates = await _retrieve_plan_candidates(
+        project_id, parsed, query, limit=3
+    )
+    if not candidates:
         await send_whatsapp_message(
             group_id,
-            "Couldn't find that sheet in the indexed drawings. "
-            "Try being more specific (e.g., 'ME-401' or '4th floor mechanical plan'). "
-            "Make sure plans are synced and indexed in the app.",
+            "Couldn't find a matching sheet in the indexed drawings. "
+            "Try a sheet number (A-301, ME-401) or a description like "
+            "'4th floor mechanical plan'. If your plans are new, make sure "
+            "they've finished indexing in the app.",
         )
         return
 
-    # ── VQA branch (Sprint 5) ──
-    # For each top candidate page, render, ask Qwen the question. Stop on the
-    # first page that gives an answer (not NOT_SHOWN_ON_SHEET). Fall back to
-    # sending the top image if no page answers.
-    if is_vqa and effective_question:
-        import io as _io
-        for result in results:
-            try:
-                file_id = result.get("file_id")
-                page_number = result.get("page_number")
-                sheet_number = result.get("sheet_number") or "Sheet"
-                sheet_title = result.get("sheet_title") or "Construction Drawing"
-                file_rec = await db.project_files.find_one({"_id": to_query_id(file_id)})
-                if not file_rec or not file_rec.get("r2_key"):
-                    continue
-                obj = await asyncio.to_thread(
-                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
-                )
-                pdf_bytes = obj["Body"].read()
-                from pdf2image import convert_from_bytes
-                imgs = convert_from_bytes(
-                    pdf_bytes, dpi=150,
-                    first_page=page_number, last_page=page_number,
-                )
-                if not imgs:
-                    continue
-                buf = _io.BytesIO()
-                imgs[0].save(buf, format="JPEG", quality=85)
-                jpeg_bytes = buf.getvalue()
-                answer = await _qwen_visual_qa(
-                    jpeg_bytes, effective_question, sheet_number, sheet_title
-                )
-                if not answer:
-                    continue
-                if "NOT_SHOWN_ON_SHEET" in answer.upper():
-                    continue
-                # Got a real answer — reply with it, cite the sheet
-                reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
-                await send_whatsapp_message(group_id, reply_text)
-                # Log bot response
-                try:
-                    await db.whatsapp_messages.insert_one({
-                        "group_id":   group_id,
-                        "sender":     "bot",
-                        "body":       reply_text[:500],
-                        "type":       "bot_plan_response",
-                        "created_at": datetime.now(timezone.utc),
-                        "project_id": project_id,
-                    })
-                except Exception:
-                    pass
-                return
-            except Exception as e:
-                logger.warning(f"VQA attempt failed: {e}")
-                continue
-        # No page answered — fall back to image-send path below
-        try:
-            await send_whatsapp_message(
-                group_id,
-                "Couldn't answer that directly from the indexed drawings — "
-                "sending the closest matching sheet.",
-            )
-        except Exception:
-            pass
-
-    # Render + upload + send each result (image-send path)
-    sent_urls: List[str] = []
-    sent_captions: List[str] = []
-    import uuid as _uuid
-    for i, result in enumerate(results):
-        try:
-            file_id = result.get("file_id")
-            page_number = result.get("page_number")
-            sheet_number = result.get("sheet_number") or "Sheet"
-            sheet_title = result.get("sheet_title") or "Construction Drawing"
-
-            file_rec = await db.project_files.find_one({"_id": to_query_id(file_id)})
-            if not file_rec or not file_rec.get("r2_key"):
-                continue
-
-            # Download PDF + render the target page
-            try:
-                obj = await asyncio.to_thread(
-                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
-                )
-                pdf_bytes = obj["Body"].read()
-            except Exception as e:
-                logger.warning(f"plan query: R2 get failed: {e}")
-                continue
-
-            # Render just the target page at 150 DPI (re-render at 100 if huge)
-            try:
-                from pdf2image import convert_from_bytes
-                imgs = convert_from_bytes(
-                    pdf_bytes,
-                    dpi=150,
-                    first_page=page_number,
-                    last_page=page_number,
-                )
-                if not imgs:
-                    continue
-                import io as _io
-                buf = _io.BytesIO()
-                imgs[0].save(buf, format="JPEG", quality=82)
-                jpeg_bytes = buf.getvalue()
-                if len(jpeg_bytes) > 5 * 1024 * 1024:
-                    buf = _io.BytesIO()
-                    imgs_low = convert_from_bytes(
-                        pdf_bytes,
-                        dpi=100,
-                        first_page=page_number,
-                        last_page=page_number,
-                    )
-                    imgs_low[0].save(buf, format="JPEG", quality=82)
-                    jpeg_bytes = buf.getvalue()
-            except Exception as e:
-                logger.warning(f"plan query: render failed: {e}")
-                continue
-
-            # Upload to R2 at temp/whatsapp/{group}/{uuid}.jpg
-            # NOTE: R2 lifecycle rule required: temp/whatsapp/ prefix, 7-day expiry
-            temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
-            try:
-                await asyncio.to_thread(
-                    _upload_to_r2, jpeg_bytes, temp_key, "image/jpeg"
-                )
-                # WaAPI fetches the image by URL from its own servers, so CORS
-                # is a non-issue — we only need the URL to actually resolve.
-                # The raw `pub-*.r2.dev/<key>` format 404s unless the bucket
-                # has Public Access enabled, which it doesn't; a short-lived
-                # presigned GET URL works regardless of bucket visibility.
-                r2_url = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
-                if not r2_url:
-                    raise RuntimeError("presign returned empty URL")
-            except Exception as e:
-                logger.warning(f"plan query: R2 upload/presign failed: {e}")
-                continue
-
+    # 4a. Image-send path (parser said user wants the image, no question)
+    if not effective_question:
+        # Send top 1-2 candidates.
+        sent_any = False
+        for i, rec in enumerate(candidates[:2]):
+            sheet_number = rec.get("sheet_number") or "Sheet"
+            sheet_title  = rec.get("sheet_title")  or "Construction Drawing"
             caption = f"{sheet_number} — {sheet_title}"
-
-            # Send via WaAPI send-image, fall back to text on error
-            sent_ok = False
-            try:
-                async with httpx.AsyncClient(timeout=40.0) as client_http:
-                    resp = await client_http.post(
-                        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
-                        headers={
-                            "Authorization": f"Bearer {WAAPI_TOKEN}",
-                            "Content-Type": "application/json",
-                        },
-                        json={
-                            "chatId": group_id,
-                            "image": r2_url,
-                            "caption": caption,
-                        },
-                    )
-                    sent_ok = 200 <= resp.status_code < 300
-                    if not sent_ok:
-                        logger.warning(
-                            f"WaAPI send-image returned {resp.status_code}"
-                        )
-            except Exception as e:
-                logger.warning(f"WaAPI send-image error: {e}")
-
-            if not sent_ok:
-                # Text fallback
+            ok = await _send_plan_image(group_id, rec, caption)
+            if ok:
+                sent_any = True
+            else:
+                # Text fallback if image send fails
                 await send_whatsapp_message(
                     group_id,
-                    f"Found: {caption}. View it in the Levelog app under Construction Plans.",
+                    f"Found: {caption}. Open it in the Levelog app under Plans & Files.",
                 )
+            if i + 1 < min(2, len(candidates)):
+                await asyncio.sleep(1.2)
+        if not sent_any:
+            logger.info(
+                f"plan query image send: all {len(candidates[:2])} candidates failed"
+            )
+        return
 
-            sent_urls.append(r2_url)
-            sent_captions.append(caption)
-
-            # Rate-limit subsequent sends
-            if i < len(results) - 1:
-                await asyncio.sleep(1.5)
+    # 4b. VQA path — iterate candidates, stop on first real answer
+    for rec in candidates:
+        try:
+            sheet_number = rec.get("sheet_number") or "Sheet"
+            sheet_title  = rec.get("sheet_title")  or "Construction Drawing"
+            jpeg = await _fetch_page_jpeg(rec)
+            if not jpeg:
+                continue
+            answer = await _qwen_visual_qa(
+                jpeg, effective_question, sheet_number, sheet_title,
+            )
+            if not answer or "NOT_SHOWN_ON_SHEET" in answer.upper():
+                continue
+            # Got an answer — format with sheet citation per spec.
+            reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
+            await send_whatsapp_message(group_id, reply_text)
+            return
         except Exception as e:
-            logger.error(f"plan query result send failed: {e}")
+            logger.warning(f"VQA attempt failed for {rec.get('sheet_number')}: {e}")
+            continue
 
-    # Log a synthetic bot_plan_response entry for conversation history
-    try:
-        await db.whatsapp_messages.insert_one({
-            "group_id": group_id,
-            "sender": "bot",
-            "body": sent_captions[0] if sent_captions else "(plan response)",
-            "media_urls": sent_urls,
-            "type": "bot_plan_response",
-            "created_at": datetime.now(timezone.utc),
-            "project_id": project_id,
-            "company_id": None,
-        })
-    except Exception:
-        pass
+    # All candidates exhausted — per spec, send the top image and note that
+    # the answer couldn't be confirmed directly.
+    top = candidates[0]
+    top_sheet = top.get("sheet_number") or "Sheet"
+    top_title = top.get("sheet_title")  or "Construction Drawing"
+    await send_whatsapp_message(
+        group_id,
+        f"Couldn't confirm an answer from the indexed drawings. Sending the "
+        f"closest match: *{top_sheet}* — {top_title}",
+    )
+    await _send_plan_image(group_id, top, f"{top_sheet} — {top_title}")
 
 
 # ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
@@ -13544,6 +13854,14 @@ async def whatsapp_update_group_config(
                 detail=f"Unknown feature keys: {sorted(unknown_features)}",
             )
         for k, v in f.items():
+            # address_mode is the one non-boolean feature — it's a string enum.
+            if k == "address_mode":
+                if v not in ("strict", "loose"):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="features.address_mode must be 'strict' or 'loose'",
+                    )
+                continue
             if not isinstance(v, bool):
                 raise HTTPException(
                     status_code=422,
@@ -13792,6 +14110,47 @@ async def reindex_project_document(
         "file_name": file_rec.get("name"),
         "total_pages": total_pages,
     }
+
+
+@api_router.post("/projects/{project_id}/reindex-all")
+async def reindex_all_project_files(
+    project_id: str,
+    current_user=Depends(get_admin_user),
+):
+    """Admin-only: queue a full re-index of every PDF on this project.
+
+    Useful after a prompt/DPI upgrade — the per-file hash cache is scoped
+    by index_version, so v1-indexed pages will get reprocessed automatically
+    by _index_pdf_file once spawned.
+    """
+    if not QWEN_API_KEY:
+        raise HTTPException(status_code=503, detail="Plan indexing is not configured")
+    company_id = get_user_company_id(current_user)
+
+    q: Dict[str, Any] = {
+        "project_id": project_id,
+        "name":       {"$regex": r"\.pdf$", "$options": "i"},
+        "r2_key":     {"$exists": True, "$ne": ""},
+    }
+    if company_id:
+        q["company_id"] = company_id
+    files = await db.project_files.find(q).to_list(500)
+    if not files:
+        return {"queued": 0, "files": []}
+
+    queued = []
+    for fr in files:
+        # Wipe existing index entries so stale v1 pages don't linger.
+        await db.document_page_index.delete_many({"file_id": str(fr["_id"])})
+        asyncio.create_task(
+            _index_pdf_file(
+                project_id,
+                fr.get("company_id") or company_id or "",
+                dict(fr),
+            )
+        )
+        queued.append(fr.get("name"))
+    return {"queued": len(queued), "files": queued}
 
 
 @api_router.get("/projects/{project_id}/document-index-status")
