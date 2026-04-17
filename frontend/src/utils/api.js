@@ -386,8 +386,10 @@ export const dropboxAPI = {
   },
 
   uploadFile: async (projectId, formData) => {
+    // Do NOT set Content-Type manually — the browser/axios needs to set it
+    // with the boundary param, e.g. 'multipart/form-data; boundary=----xxxx'.
+    // Setting it bare strips the boundary and breaks multipart parsing on 2nd+ uploads.
     const response = await apiClient.post(`/api/projects/${projectId}/upload-file`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 120000,
     });
     return response.data;

@@ -6362,6 +6362,36 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
 
 # ==================== DIRECT FILE UPLOAD (R2) ====================
 
+def _sanitize_upload_filename(raw: str) -> str:
+    """Normalize an uploaded filename for safe R2 storage.
+
+    - URL-decodes any %XX escapes (React Native / some browsers send them encoded).
+    - Strips directory path components (basename only).
+    - Collapses multiple spaces.
+    - Replaces characters that make R2 public URLs awkward (#, ?) with '_'.
+    - Keeps spaces, parentheses, dashes — those are fine in keys, R2/browsers
+      handle them with single URL-encoding in flight.
+    """
+    import urllib.parse as _urlparse
+    from pathlib import PurePosixPath
+    name = raw or "upload.pdf"
+    # Strip any path, take basename
+    name = PurePosixPath(name.replace("\\", "/")).name or "upload.pdf"
+    # Decode %XX until stable (handle double-encoding seen in some clients)
+    for _ in range(3):
+        decoded = _urlparse.unquote(name)
+        if decoded == name:
+            break
+        name = decoded
+    # Replace characters that break R2 URLs
+    for ch in ["#", "?", "\n", "\r", "\t"]:
+        name = name.replace(ch, "_")
+    name = " ".join(name.split())  # collapse whitespace
+    if not name.lower().endswith(".pdf"):
+        name = name + ".pdf"
+    return name[:180]  # cap length
+
+
 @api_router.post("/projects/{project_id}/upload-file")
 async def upload_project_file(project_id: str, file: UploadFile = File(...), current_user = Depends(get_current_user)):
     """Upload a file directly to R2 storage for a project (PDF only, max 100 MB)."""
@@ -6374,13 +6404,19 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         raise HTTPException(status_code=403, detail="Access denied to this project")
     company_id = company_id or project.get("company_id")
 
-    # Validate file type
-    filename = file.filename or "upload.pdf"
+    # Validate file type (accept .pdf regardless of case; decode if URL-encoded)
+    filename = _sanitize_upload_filename(file.filename or "upload.pdf")
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     # Read and validate size (100 MB max)
-    file_bytes = await file.read()
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        logger.error(f"upload read failed for {filename}: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     max_size = 100 * 1024 * 1024
     if len(file_bytes) > max_size:
         raise HTTPException(status_code=400, detail="File too large. Maximum 100 MB.")
@@ -6388,12 +6424,24 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
     if not _r2_client:
         raise HTTPException(status_code=503, detail="File storage (R2) is not configured")
 
+    # De-dup: if a record with the same name already exists on this project,
+    # suffix with a timestamp so we don't overwrite the original in R2.
+    existing_same = await db.project_files.find_one({
+        "project_id": project_id,
+        "name": filename,
+        "is_deleted": {"$ne": True},
+    })
+    if existing_same:
+        stem, _, ext = filename.rpartition(".")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        filename = f"{stem or filename}-{ts}.{ext or 'pdf'}"
+
     r2_key = f"{company_id}/{project_id}/{filename}"
     try:
         r2_url = await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, "application/pdf")
     except Exception as e:
-        logger.error(f"Direct upload R2 error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to upload file")
+        logger.error(f"Direct upload R2 error (key={r2_key}): {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Storage error: {str(e)[:200]}")
 
     now = datetime.now(timezone.utc)
     file_record = {
@@ -6412,7 +6460,11 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         "updated_at": now,
         "uploaded_by": current_user.get("id"),
     }
-    result = await db.project_files.insert_one(file_record)
+    try:
+        result = await db.project_files.insert_one(file_record)
+    except Exception as e:
+        logger.error(f"project_files insert failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Metadata write error: {str(e)[:200]}")
     file_record["_id"] = str(result.inserted_id)
     file_record.pop("created_at", None)
     file_record.pop("updated_at", None)
@@ -12813,6 +12865,59 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
         "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
     }
+
+
+@api_router.post("/projects/{project_id}/repair-file-names")
+async def repair_file_names(project_id: str, current_user=Depends(get_admin_user)):
+    """Fix existing project_files rows whose `name` / `r2_key` contain URL-encoded
+    sequences (%20, %2F, etc.). Renames the R2 object and updates the DB record.
+    Safe to run repeatedly."""
+    import urllib.parse as _urlparse
+    company_id = get_user_company_id(current_user)
+    query: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True}}
+    if company_id:
+        query["company_id"] = company_id
+    files = await db.project_files.find(query).to_list(500)
+    repaired = []
+    for f in files:
+        raw = f.get("name") or ""
+        decoded = _sanitize_upload_filename(raw)
+        if decoded == raw:
+            continue
+        if not _r2_client:
+            continue
+        old_key = f.get("r2_key") or f"{f.get('company_id', '')}/{project_id}/{raw}"
+        new_key = f"{f.get('company_id', '')}/{project_id}/{decoded}"
+        try:
+            # Copy to new key (R2 is S3-compatible)
+            await asyncio.to_thread(
+                _r2_client.copy_object,
+                Bucket=R2_BUCKET_NAME,
+                CopySource={"Bucket": R2_BUCKET_NAME, "Key": old_key},
+                Key=new_key,
+                ContentType="application/pdf",
+            )
+            # Delete old
+            await asyncio.to_thread(
+                _r2_client.delete_object, Bucket=R2_BUCKET_NAME, Key=old_key
+            )
+        except Exception as e:
+            logger.warning(f"repair_file_names: copy/delete failed for {old_key}: {e}")
+            continue
+
+        new_url = f"{R2_PUBLIC_URL.rstrip('/')}/{new_key}" if R2_PUBLIC_URL else f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{new_key}"
+        await db.project_files.update_one(
+            {"_id": f["_id"]},
+            {"$set": {
+                "name":    decoded,
+                "r2_key":  new_key,
+                "r2_url":  new_url,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        repaired.append({"old_name": raw, "new_name": decoded})
+
+    return {"repaired_count": len(repaired), "repaired": repaired}
 
 
 @api_router.post("/projects/{project_id}/reindex-document")
