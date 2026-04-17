@@ -10031,8 +10031,12 @@ async def classify_intent(message: str) -> Optional[str]:
 
 # ---------- intent handlers ----------
 
-async def _handle_who_on_site(project_id: str) -> str:
-    """Return formatted worker list by company for a project."""
+async def _handle_who_on_site(
+    project_id: str,
+    trade: Optional[str] = None,
+    company: Optional[str] = None,
+) -> str:
+    """Return formatted worker list on site. Optionally filter by trade or company."""
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -10040,19 +10044,105 @@ async def _handle_who_on_site(project_id: str) -> str:
         "status": "checked_in",
         "is_deleted": {"$ne": True},
     }).to_list(500)
-    if not checkins:
+
+    def _match(ci: dict) -> bool:
+        if trade:
+            t = (ci.get("worker_trade") or ci.get("trade") or "").lower()
+            if trade.lower() not in t:
+                return False
+        if company:
+            c = (ci.get("worker_company") or ci.get("company") or ci.get("company_name") or "").lower()
+            if company.lower() not in c:
+                return False
+        return True
+
+    filtered = [ci for ci in checkins if _match(ci)]
+    n = len(filtered)
+
+    filter_desc = ""
+    if trade and company:
+        filter_desc = f" ({trade} at {company})"
+    elif trade:
+        filter_desc = f" ({trade})"
+    elif company:
+        filter_desc = f" ({company})"
+
+    if not filtered:
+        if trade or company:
+            return f"No {trade or company} workers checked in on site today{filter_desc}."
         return "No workers currently checked in on site."
-    # Group by company
-    by_company: Dict[str, list] = {}
-    for ci in checkins:
-        co = ci.get("company_name", "Unknown")
-        name = ci.get("worker_name", "Unknown")
-        by_company.setdefault(co, []).append(name)
-    lines = [f"*Workers on site today ({len(checkins)} total):*"]
-    for company, workers in sorted(by_company.items()):
-        lines.append(f"\n_{company}_ ({len(workers)}):")
-        for w in sorted(workers):
-            lines.append(f"  - {w}")
+
+    # Group by company (or trade if filtering by company)
+    if company:
+        by_key: Dict[str, list] = {}
+        for ci in filtered:
+            key = (ci.get("worker_trade") or ci.get("trade") or "General").title()
+            by_key.setdefault(key, []).append(ci.get("worker_name", "Unknown"))
+        lines = [f"*{n} on site today{filter_desc}:*"]
+        for k, names in sorted(by_key.items()):
+            lines.append(f"\n_{k}_ ({len(names)}):")
+            for nm in sorted(names):
+                lines.append(f"  - {nm}")
+    else:
+        by_company: Dict[str, list] = {}
+        for ci in filtered:
+            co = ci.get("worker_company") or ci.get("company") or ci.get("company_name") or "Unknown"
+            by_company.setdefault(co, []).append(ci.get("worker_name", "Unknown"))
+        lines = [f"*{n} on site today{filter_desc}:*"]
+        for co, names in sorted(by_company.items()):
+            lines.append(f"\n_{co}_ ({len(names)}):")
+            for nm in sorted(names):
+                lines.append(f"  - {nm}")
+    return "\n".join(lines)
+
+
+async def _handle_list_workers(
+    company_id: Optional[str],
+    trade: Optional[str] = None,
+    company: Optional[str] = None,
+) -> str:
+    """Return the full worker roster, optionally filtered by trade/company.
+    Not limited to who's on site today — the full roster."""
+    query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if company_id:
+        query["company_id"] = company_id
+    workers = await db.workers.find(query).to_list(1000)
+
+    def _match(w: dict) -> bool:
+        if trade:
+            t = (w.get("trade") or "").lower()
+            if trade.lower() not in t:
+                return False
+        if company:
+            c = (w.get("company") or "").lower()
+            if company.lower() not in c:
+                return False
+        return True
+
+    filtered = [w for w in workers if _match(w)]
+    n = len(filtered)
+    if not filtered:
+        if trade or company:
+            return f"No workers match filter ({trade or company})."
+        return "No workers in the roster yet."
+
+    filter_desc = ""
+    if trade and company:
+        filter_desc = f" — {trade} at {company}"
+    elif trade:
+        filter_desc = f" — {trade}"
+    elif company:
+        filter_desc = f" — {company}"
+
+    by_trade: Dict[str, list] = {}
+    for w in filtered:
+        t = (w.get("trade") or "General").title()
+        by_trade.setdefault(t, []).append(w.get("name", "Unknown"))
+    lines = [f"*{n} workers{filter_desc}:*"]
+    for t, names in sorted(by_trade.items()):
+        lines.append(f"\n_{t}_ ({len(names)}):")
+        for nm in sorted(names):
+            lines.append(f"  - {nm}")
     return "\n".join(lines)
 
 
@@ -11120,6 +11210,377 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str) -> None
         pass
 
 
+# ==================== SPRINT 4 — AGENTIC INTENT ROUTER ====================
+
+_BOT_ADDRESS_SOFT_TRIGGERS = [
+    "who", "show", "how many", "how much", "what", "where", "find", "pull", "open",
+    "dob", "violation", "punch", "open items", "material", "delivery",
+    "create checklist", "make checklist", "new checklist", "add checklist",
+    "assign", "done ",
+]
+
+
+def _is_bot_addressed(body: str, bot_phone_digits: str, is_voice: bool) -> bool:
+    """Heuristic: was the bot addressed in this group message?
+
+    Returns True if any of:
+      - Voice note (all voice in linked groups route to agent)
+      - @mention of the bot's phone number (any digit variant)
+      - Message starts with '@levelog' or 'levelog'
+      - Message contains a soft intent trigger phrase
+    """
+    if is_voice:
+        return True
+    if not body:
+        return False
+    low = body.strip().lower()
+    if low.startswith("@levelog") or low.startswith("levelog "):
+        return True
+    # @mention — strip non-digits from any @-prefixed token
+    if "@" in low:
+        for token in re.findall(r"@[\w\d]+", low):
+            digits = re.sub(r"\D", "", token)
+            if digits and digits[-10:] == bot_phone_digits[-10:]:
+                return True
+    # Soft triggers (any of the common intent starters)
+    for t in _BOT_ADDRESS_SOFT_TRIGGERS:
+        if t in low:
+            return True
+    return False
+
+
+# Tool schema for the GPT-4o-mini agent
+_AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "who_on_site",
+            "description": (
+                "Return the workers currently checked in on site today. "
+                "Optionally filter by trade (e.g. 'carpenter', 'electrician', 'framer') "
+                "or by subcontractor company name."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "trade":   {"type": "string", "description": "Trade filter, e.g. 'carpenter'"},
+                    "company": {"type": "string", "description": "Subcontractor company filter"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_workers",
+            "description": (
+                "Return the full roster of workers for the project's company, optionally "
+                "filtered. Use this when the user asks about workers in general ('how many "
+                "carpenters do we have'), not who is currently on site."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "trade":   {"type": "string"},
+                    "company": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dob_status",
+            "description": "Return DOB status, permits, and recent violations for the project.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_items",
+            "description": "Return open (uncorrected) items from today's daily jobsite log.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "material_status",
+            "description": "Return outstanding material requests for the project.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_plan",
+            "description": (
+                "Look up a construction drawing. Use for any request about plans, drawings, "
+                "elevations, sections, details, schedules, or sheets. Pass the user's "
+                "original question so the plan pages can be visually analyzed (e.g. "
+                "'what's the thickness of the exterior wall?'). If the user just wants the "
+                "sheet shown, pass question=null."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "discipline":   {"type": "string", "description": "AR|ME|EL|PL|SP|ST|GN"},
+                    "floor":        {"type": "string"},
+                    "sheet_type":   {"type": "string", "description": "plan|elevation|section|detail|schedule"},
+                    "sheet_number": {"type": "string", "description": "e.g. ME-401"},
+                    "keywords":     {"type": "array", "items": {"type": "string"}},
+                    "question":     {"type": "string", "description": "The user's question to answer from the drawing"},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_checklist",
+            "description": (
+                "Begin a multi-turn flow to create an action-item checklist. Use this when "
+                "the user says 'create checklist', 'make checklist', or lists items they "
+                "want assigned. Parse out the items from the message."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text":     {"type": "string"},
+                                "category": {"type": "string", "description": "safety|materials|coordination|inspection|other"},
+                            },
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["items"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+_AGENT_SYSTEM_PROMPT = (
+    "You are Levelog Assistant, a concise WhatsApp bot for a NYC construction crew. "
+    "You respond to messages in a project's group chat. "
+    "Use the available tools to answer questions about workers, DOB compliance, open items, "
+    "materials, and construction drawings. Create checklists when asked. "
+    "If the user's message is unclear or off-topic, reply with a short clarification. "
+    "If the message does not seem to need a tool or a reply (e.g. casual chatter between workers "
+    "not directed at you), respond with the single word NOREPLY and no other text. "
+    "Keep replies under 80 words unless listing many items. "
+    "Use the tool return values directly — do not fabricate data. Never invent worker names, "
+    "permit numbers, or plan details that weren't returned by a tool."
+)
+
+
+async def _handle_start_checklist_stub(
+    project_id: str, group_id: str, items: list, sender: str
+) -> str:
+    """Sprint 6 will implement the interactive assignment flow. Until then, log
+    intent and acknowledge."""
+    count = len(items or [])
+    if not count:
+        return "Tell me what items you want on the checklist."
+    # Stash as a draft so Sprint 6 can pick it up
+    try:
+        await db.whatsapp_conversation_state.update_one(
+            {"group_id": group_id},
+            {"$set": {
+                "group_id":      group_id,
+                "project_id":    project_id,
+                "awaiting":      "checklist_assignment",
+                "draft_items":   [{"text": i.get("text", ""), "category": i.get("category", "other")} for i in items],
+                "created_by":    sender,
+                "created_at":    datetime.now(timezone.utc),
+                "expires_at":    datetime.now(timezone.utc) + timedelta(minutes=10),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"checklist draft save failed: {e}")
+
+    lines = [f"📝 Got {count} item{'s' if count != 1 else ''} for a checklist:"]
+    for idx, it in enumerate(items[:10], 1):
+        lines.append(f"  {idx}. {it.get('text', '')}")
+    lines.append("")
+    lines.append("(Interactive assignment coming soon — saved as draft for now.)")
+    return "\n".join(lines)
+
+
+async def _run_group_agent(
+    *,
+    project_id: str,
+    group_id: str,
+    company_id: Optional[str],
+    sender: str,
+    body: str,
+    features: Dict[str, Any],
+) -> Optional[str]:
+    """Run the tool-use agent over a bot-addressed message. Returns the reply
+    text to send (or None for NOREPLY / silence)."""
+    if not OPENAI_API_KEY:
+        return None
+
+    # Strip known prefixes
+    trimmed = body.strip()
+    low = trimmed.lower()
+    for pfx in ("@levelog", "levelog "):
+        if low.startswith(pfx):
+            trimmed = trimmed[len(pfx):].strip(" :,-")
+            break
+    # Also strip @<botnumber> mentions
+    trimmed = re.sub(r"@\d{10,}", "", trimmed).strip()
+
+    messages = [
+        {"role": "system", "content": _AGENT_SYSTEM_PROMPT},
+        {"role": "user",   "content": trimmed or body},
+    ]
+
+    # Filter the tool list by per-group feature flags
+    enabled_tools = []
+    for t in _AGENT_TOOLS:
+        name = t["function"]["name"]
+        if name == "who_on_site" and not features.get("who_on_site", True):
+            continue
+        if name == "list_workers" and not features.get("who_on_site", True):
+            continue
+        if name == "dob_status" and not features.get("dob_status", True):
+            continue
+        if name == "open_items" and not features.get("open_items", True):
+            continue
+        if name == "material_status" and not features.get("material_detection", True):
+            continue
+        if name == "query_plan" and not features.get("plan_queries", False):
+            continue
+        enabled_tools.append(t)
+
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as client_http:
+            for _turn in range(3):  # max 3 tool rounds
+                resp = await client_http.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "gpt-4o-mini",
+                        "temperature": 0.2,
+                        "max_tokens": 500,
+                        "tools": enabled_tools,
+                        "tool_choice": "auto",
+                        "messages": messages,
+                    },
+                )
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]["message"]
+                tool_calls = choice.get("tool_calls") or []
+                content = choice.get("content") or ""
+
+                # No tool calls — we have the final reply
+                if not tool_calls:
+                    if content.strip().upper() == "NOREPLY":
+                        return None
+                    return content.strip() or None
+
+                # Append assistant turn and execute each tool
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                })
+                import json as _json
+                for tc in tool_calls:
+                    tc_name = tc["function"]["name"]
+                    try:
+                        tc_args = _json.loads(tc["function"].get("arguments") or "{}")
+                    except Exception:
+                        tc_args = {}
+                    tool_result = await _dispatch_agent_tool(
+                        tc_name,
+                        tc_args,
+                        project_id=project_id,
+                        group_id=group_id,
+                        company_id=company_id,
+                        sender=sender,
+                    )
+                    messages.append({
+                        "role":         "tool",
+                        "tool_call_id": tc["id"],
+                        "name":         tc_name,
+                        "content":      tool_result,
+                    })
+            # Max turns reached — synthesize something from last content
+            return "Too many tool calls; please restate your question."
+    except Exception as e:
+        logger.error(f"group agent error: {e}", exc_info=True)
+        return None
+
+
+async def _dispatch_agent_tool(
+    name: str, args: dict, *, project_id: str, group_id: str,
+    company_id: Optional[str], sender: str,
+) -> str:
+    """Invoke one of the agent tools and return its text result."""
+    try:
+        if name == "who_on_site":
+            return await _handle_who_on_site(
+                project_id,
+                trade=args.get("trade"),
+                company=args.get("company"),
+            )
+        if name == "list_workers":
+            return await _handle_list_workers(
+                company_id=company_id,
+                trade=args.get("trade"),
+                company=args.get("company"),
+            )
+        if name == "dob_status":
+            return await _handle_dob_status(project_id)
+        if name == "open_items":
+            return await _handle_open_items(project_id)
+        if name == "material_status":
+            return await _handle_material_status(project_id)
+        if name == "query_plan":
+            # Sprint 5 will enhance with VQA; for now, fall through to the
+            # existing _handle_plan_query if the user wants an image, or
+            # return a placeholder for VQA requests.
+            question = args.get("question") or ""
+            sheet_number = args.get("sheet_number") or ""
+            # Build a natural-ish query string from args
+            bits = []
+            if args.get("discipline"): bits.append(args["discipline"])
+            if args.get("floor"):      bits.append(f"{args['floor']} floor")
+            if args.get("sheet_type"): bits.append(args["sheet_type"])
+            if sheet_number:           bits.append(sheet_number)
+            if args.get("keywords"):   bits.extend(args["keywords"])
+            synth = " ".join(bits) or question or "plan"
+            # Fire-and-forget the image send; return a short ack to the agent
+            asyncio.create_task(_handle_plan_query(project_id, group_id, synth))
+            if question:
+                return f"(Plan search initiated for '{synth}' with question '{question[:80]}'. Visual Q&A coming in Sprint 5; sending the matching sheet for now.)"
+            return f"(Plan search initiated for '{synth}'. Sending the matching sheet image.)"
+        if name == "start_checklist":
+            items = args.get("items") or []
+            return await _handle_start_checklist_stub(project_id, group_id, items, sender)
+        return f"(Unknown tool '{name}'.)"
+    except Exception as e:
+        logger.error(f"tool {name} failed: {e}", exc_info=True)
+        return f"(Tool error: {str(e)[:120]})"
+
+
 # ==================== WHATSAPP MESSAGE PROCESSOR ====================
 
 async def _process_whatsapp_message(payload: dict):
@@ -11301,41 +11762,27 @@ async def _process_whatsapp_message(payload: dict):
                         logger.error(f"on-demand checklist failed: {e}", exc_info=True)
                     return
 
-            # ── Plan query (construction drawing lookup) ──
-            # Gated on features.plan_queries (default False in bot_config).
-            if features.get("plan_queries", False) and body and _has_plan_query_trigger(body):
-                asyncio.create_task(
-                    _handle_plan_query(str(project_id), group_id, body)
+            # ── Sprint 4: Agentic intent router ──
+            # Run the tool-use agent only if the bot was addressed. This covers
+            # voice notes, @mentions of the bot number, '@levelog' prefix, and
+            # soft intent trigger phrases. The agent can call tools for
+            # who_on_site, dob_status, open_items, material_status, query_plan,
+            # list_workers, and start_checklist.
+            bot_phone_digits = re.sub(
+                r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "")
+            )
+            if _is_bot_addressed(body, bot_phone_digits, parsed.get("has_audio", False)):
+                reply = await _run_group_agent(
+                    project_id=str(project_id),
+                    group_id=group_id,
+                    company_id=msg_company_id,
+                    sender=sender,
+                    body=body,
+                    features=features,
                 )
+                if reply:
+                    await send_whatsapp_message(group_id, reply)
                 return
-
-            # ── Intent-based replies in groups ──
-            # Classify the message; dispatch to a handler only if the matching
-            # feature flag is enabled. Mirrors the DM branch but for group
-            # context and using project_id from the linked group.
-            if body and len(body.strip()) >= 5:
-                try:
-                    group_intent = await classify_intent(body)
-                except Exception as _e:
-                    group_intent = None
-                if group_intent:
-                    reply = None
-                    try:
-                        if group_intent == "who_on_site" and features.get("who_on_site", True):
-                            reply = await _handle_who_on_site(str(project_id))
-                        elif group_intent == "dob_status" and features.get("dob_status", True):
-                            reply = await _handle_dob_status(str(project_id))
-                        elif group_intent == "open_items" and features.get("open_items", True):
-                            reply = await _handle_open_items(str(project_id))
-                        elif group_intent == "material_status" and features.get("material_detection", True):
-                            reply = await _handle_material_status(str(project_id))
-                        # Note: material_receipt is handled by the passive
-                        # detection block below; we don't route it here.
-                    except Exception as e:
-                        logger.error(f"group intent handler failed ({group_intent}): {e}", exc_info=True)
-                    if reply:
-                        await send_whatsapp_message(group_id, reply)
-                        return
 
             # Material request detection gated on the features flag
             if features.get("material_detection", True) and body and len(body) >= 15:
