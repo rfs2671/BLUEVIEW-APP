@@ -6419,21 +6419,42 @@ def _sanitize_upload_filename(raw: str) -> str:
     return name[:180]  # cap length
 
 
+async def _log_upload_attempt(record: dict):
+    """Fire-and-forget log of upload attempts to help diagnose failures."""
+    try:
+        record["received_at"] = datetime.now(timezone.utc)
+        await db.upload_attempts_log.insert_one(record)
+    except Exception:
+        pass  # never let logging break the request
+
+
 @api_router.post("/projects/{project_id}/upload-file")
-async def upload_project_file(project_id: str, file: UploadFile = File(...), current_user = Depends(get_current_user)):
+async def upload_project_file(project_id: str, request: Request, file: UploadFile = File(...), current_user = Depends(get_current_user)):
     """Upload a file directly to R2 storage for a project (PDF only, max 100 MB)."""
+    _log_base = {
+        "project_id":      project_id,
+        "raw_filename":    file.filename or "",
+        "content_type":    file.content_type or "",
+        "actor_email":     current_user.get("email", ""),
+        "remote_addr":     request.client.host if request and request.client else "",
+        "user_agent":      request.headers.get("user-agent", "") if request else "",
+    }
+
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
+        await _log_upload_attempt({**_log_base, "outcome": "404_project_not_found"})
         raise HTTPException(status_code=404, detail="Project not found")
 
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
+        await _log_upload_attempt({**_log_base, "outcome": "403_wrong_company"})
         raise HTTPException(status_code=403, detail="Access denied to this project")
     company_id = company_id or project.get("company_id")
 
     # Validate file type (accept .pdf regardless of case; decode if URL-encoded)
     filename = _sanitize_upload_filename(file.filename or "upload.pdf")
     if not filename.lower().endswith(".pdf"):
+        await _log_upload_attempt({**_log_base, "outcome": "400_not_pdf", "sanitized_filename": filename})
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     # Read and validate size (100 MB max)
@@ -6441,14 +6462,18 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         file_bytes = await file.read()
     except Exception as e:
         logger.error(f"upload read failed for {filename}: {e}", exc_info=True)
+        await _log_upload_attempt({**_log_base, "outcome": "400_read_failed", "error": str(e)[:500]})
         raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}")
     if not file_bytes:
+        await _log_upload_attempt({**_log_base, "outcome": "400_empty_file", "sanitized_filename": filename})
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
     max_size = 100 * 1024 * 1024
     if len(file_bytes) > max_size:
+        await _log_upload_attempt({**_log_base, "outcome": "400_too_large", "size": len(file_bytes)})
         raise HTTPException(status_code=400, detail="File too large. Maximum 100 MB.")
 
     if not _r2_client:
+        await _log_upload_attempt({**_log_base, "outcome": "503_r2_not_configured", "size": len(file_bytes)})
         raise HTTPException(status_code=503, detail="File storage (R2) is not configured")
 
     # De-dup: if a record with the same name already exists on this project,
@@ -6468,6 +6493,7 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         r2_url = await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, "application/pdf")
     except Exception as e:
         logger.error(f"Direct upload R2 error (key={r2_key}): {e}", exc_info=True)
+        await _log_upload_attempt({**_log_base, "outcome": "500_r2_error", "r2_key": r2_key, "error": str(e)[:500]})
         raise HTTPException(status_code=500, detail=f"Storage error: {str(e)[:200]}")
 
     now = datetime.now(timezone.utc)
@@ -6491,6 +6517,7 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         result = await db.project_files.insert_one(file_record)
     except Exception as e:
         logger.error(f"project_files insert failed: {e}", exc_info=True)
+        await _log_upload_attempt({**_log_base, "outcome": "500_mongo_error", "error": str(e)[:500]})
         raise HTTPException(status_code=500, detail=f"Metadata write error: {str(e)[:200]}")
     file_record["_id"] = str(result.inserted_id)
     file_record.pop("created_at", None)
@@ -6501,12 +6528,48 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
         asyncio.create_task(_index_pdf_file(project_id, company_id, file_record))
 
     proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
+    await _log_upload_attempt({
+        **_log_base,
+        "outcome": "200_ok",
+        "sanitized_filename": filename,
+        "r2_key": r2_key,
+        "size": len(file_bytes),
+        "file_id": file_record["_id"],
+    })
     return {
         "id": file_record["_id"],
         "name": filename,
         "r2_url": proxy_url,
         "size": len(file_bytes),
         "source": "direct_upload",
+    }
+
+
+@api_router.get("/debug/upload-log")
+async def debug_upload_log(current_user=Depends(get_current_user)):
+    """Last 30 upload attempts with outcome — owner/admin only."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    rows = await db.upload_attempts_log.find().sort("received_at", -1).limit(30).to_list(30)
+    return {
+        "count": len(rows),
+        "recent": [
+            {
+                "received_at":   str(r.get("received_at")),
+                "outcome":       r.get("outcome"),
+                "raw_filename":  r.get("raw_filename"),
+                "sanitized":     r.get("sanitized_filename"),
+                "size":          r.get("size"),
+                "actor":         r.get("actor_email"),
+                "remote_addr":   r.get("remote_addr"),
+                "user_agent":    (r.get("user_agent") or "")[:200],
+                "error":         r.get("error"),
+                "content_type":  r.get("content_type"),
+                "r2_key":        r.get("r2_key"),
+            }
+            for r in rows
+        ],
     }
 
 

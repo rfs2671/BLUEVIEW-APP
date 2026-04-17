@@ -165,6 +165,7 @@ export default function ConstructionPlansScreen() {
   };
 
   const handleUploadFile = async () => {
+    let pickedName = 'file';
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
@@ -172,31 +173,58 @@ export default function ConstructionPlansScreen() {
       });
       if (result.canceled) return;
       const file = result.assets?.[0];
-      if (!file) return;
+      if (!file) {
+        toast.error('Upload Error', 'No file was selected');
+        return;
+      }
+      pickedName = file.name || 'file.pdf';
 
       setUploading(true);
-      toast.info('Uploading', `Uploading ${file.name}...`);
+      toast.info('Uploading', `Uploading ${pickedName}...`);
 
-      // Create FormData
+      // Build FormData. On web, expo-document-picker exposes the native File
+      // via `file.file` — prefer that over `fetch(file.uri).blob()` which adds
+      // an extra hop (and fails silently if the blob URL was revoked).
       const formData = new FormData();
       if (Platform.OS === 'web') {
-        const response = await fetch(file.uri);
-        const blob = await response.blob();
-        formData.append('file', blob, file.name);
+        let blob = file.file;  // native File instance if available
+        if (!blob) {
+          if (!file.uri) {
+            throw new Error('Web upload: no file.file or file.uri provided by picker');
+          }
+          try {
+            const resp = await fetch(file.uri);
+            if (!resp.ok) throw new Error(`fetch(${file.uri}) returned ${resp.status}`);
+            blob = await resp.blob();
+          } catch (fetchErr) {
+            throw new Error(`Could not read picked file: ${fetchErr.message || fetchErr}`);
+          }
+        }
+        if (!blob || (blob.size === 0)) {
+          throw new Error('Picked file is empty (0 bytes)');
+        }
+        formData.append('file', blob, pickedName);
       } else {
         formData.append('file', {
           uri: file.uri,
-          name: file.name,
+          name: pickedName,
           type: 'application/pdf',
         });
       }
 
       await dropboxAPI.uploadFile(projectId, formData);
-      toast.success('Uploaded', `${file.name} uploaded successfully`);
+      toast.success('Uploaded', `${pickedName} uploaded successfully`);
       fetchFiles(); // refresh the file list
     } catch (error) {
+      // Surface the real reason so the user sees more than "Could not upload file".
       console.error('Upload failed:', error);
-      toast.error('Upload Error', error.response?.data?.detail || 'Could not upload file');
+      const detail =
+        error?.response?.data?.detail ||
+        error?.response?.statusText ||
+        error?.message ||
+        (typeof error === 'string' ? error : null) ||
+        'Could not upload file';
+      toast.error('Upload Error', detail);
     } finally {
       setUploading(false);
     }
