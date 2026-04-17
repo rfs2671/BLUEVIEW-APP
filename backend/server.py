@@ -14220,6 +14220,92 @@ async def reindex_all_project_files(
     return {"queued": len(queued), "files": queued}
 
 
+@api_router.post("/projects/{project_id}/debug/test-plan-image-send")
+async def debug_test_plan_image_send(
+    project_id: str,
+    body: dict,
+    current_user=Depends(get_admin_user),
+):
+    """Admin diagnostic — try to send a specific sheet's pre-rendered JPEG
+    to a WhatsApp group and return the exact WaAPI response + our internal
+    step results. Use this to figure out why image sends fall back to text
+    without needing to tail Railway logs.
+
+    Body: {"sheet_number": "Z-101.00", "group_id": "<wa_group_id>"}
+    """
+    sheet = (body or {}).get("sheet_number", "").strip()
+    group_id = (body or {}).get("group_id", "").strip()
+    if not sheet or not group_id:
+        raise HTTPException(status_code=422, detail="sheet_number and group_id required")
+
+    page = await db.document_page_index.find_one({
+        "project_id": project_id,
+        "sheet_number": {"$regex": f"^{re.escape(sheet)}(\\.\\d+)?$", "$options": "i"},
+    })
+    if not page:
+        raise HTTPException(status_code=404, detail=f"No indexed page for sheet {sheet}")
+
+    result = {
+        "sheet_number":     page.get("sheet_number"),
+        "sheet_title":      page.get("sheet_title"),
+        "page_jpeg_r2_key": page.get("page_jpeg_r2_key"),
+        "steps": {},
+    }
+
+    # Step 1 — fetch the jpeg
+    jpeg = await _fetch_page_jpeg(page)
+    result["steps"]["fetch_jpeg"] = {
+        "ok": bool(jpeg),
+        "size": len(jpeg) if jpeg else 0,
+    }
+    if not jpeg:
+        return result
+
+    # Step 2 — upload temp + presign
+    import uuid as _uuid
+    temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
+    try:
+        await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
+        signed = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
+        result["steps"]["upload_temp"] = {"ok": True, "temp_key": temp_key}
+        result["steps"]["presign"] = {"ok": bool(signed), "length": len(signed) if signed else 0,
+                                      "prefix": (signed or "")[:120]}
+    except Exception as e:
+        result["steps"]["upload_temp"] = {"ok": False, "error": str(e)[:300]}
+        return result
+    if not signed:
+        return result
+
+    # Step 3 — WaAPI send-image
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as client_http:
+            resp = await client_http.post(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
+                headers={
+                    "Authorization": f"Bearer {WAAPI_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "chatId": group_id,
+                    "image":  signed,
+                    "caption": f"[diagnostic] {page.get('sheet_number')}",
+                },
+            )
+            try:
+                body_json = resp.json()
+            except Exception:
+                body_json = None
+            result["steps"]["waapi_send_image"] = {
+                "status":     resp.status_code,
+                "ok":         200 <= resp.status_code < 300,
+                "body_text":  resp.text[:800],
+                "body_json":  body_json,
+            }
+    except Exception as e:
+        result["steps"]["waapi_send_image"] = {"error": str(e)[:300]}
+    return result
+
+
 @api_router.get("/projects/{project_id}/debug/indexed-pages")
 async def debug_indexed_pages(
     project_id: str,
