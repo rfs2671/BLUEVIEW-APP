@@ -12095,40 +12095,37 @@ async def _send_plan_image(
     except Exception as e:
         logger.warning(f"plan send: temp upload failed sheet={sheet_ref}: {e}")
         return False
+    # WaAPI endpoint is `send-media` with a `mediaUrl` field (NOT send-image
+    # with `image`, which returns 404). Discovered via probe-waapi-endpoints.
     try:
         async with httpx.AsyncClient(timeout=40.0) as client_http:
             resp = await client_http.post(
-                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
                 headers={
                     "Authorization": f"Bearer {WAAPI_TOKEN}",
                     "Content-Type": "application/json",
                 },
-                json={"chatId": group_id, "image": signed, "caption": caption},
+                json={
+                    "chatId":   group_id,
+                    "mediaUrl": signed,
+                    "caption":  caption,
+                },
             )
             ok = 200 <= resp.status_code < 300
-            # Always log the status + first 400 chars of body so we can diagnose
-            # silent failures when the JSON doesn't throw but a nested field
-            # indicates WaAPI-side rejection.
             body_preview = ""
             try:
                 body_preview = resp.text[:400]
             except Exception:
                 pass
             logger.info(
-                f"plan send: WaAPI send-image status={resp.status_code} ok={ok} "
+                f"plan send: WaAPI send-media status={resp.status_code} ok={ok} "
                 f"sheet={sheet_ref} body={body_preview!r}"
             )
             if ok:
-                # Some WaAPI responses are 200 but body contains {"success": false}
+                # WaAPI sometimes returns 200 with {data: {status: 'error'}}.
                 try:
                     j = resp.json()
-                    # Accept either top-level `data.status`/`success` truthiness
                     if isinstance(j, dict):
-                        if j.get("success") is False:
-                            logger.warning(
-                                f"plan send: WaAPI returned success=false: {j}"
-                            )
-                            return False
                         inner = j.get("data") or {}
                         if isinstance(inner, dict) and inner.get("status") == "error":
                             logger.warning(
@@ -12139,7 +12136,7 @@ async def _send_plan_image(
                     pass
             return ok
     except Exception as e:
-        logger.warning(f"WaAPI send-image exception sheet={sheet_ref}: {e}")
+        logger.warning(f"WaAPI send-media exception sheet={sheet_ref}: {e}")
         return False
 
 
@@ -14371,33 +14368,33 @@ async def debug_test_plan_image_send(
     if not signed:
         return result
 
-    # Step 3 — WaAPI send-image
+    # Step 3 — WaAPI send-media
     try:
         async with httpx.AsyncClient(timeout=40.0) as client_http:
             resp = await client_http.post(
-                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
                 headers={
                     "Authorization": f"Bearer {WAAPI_TOKEN}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "chatId": group_id,
-                    "image":  signed,
-                    "caption": f"[diagnostic] {page.get('sheet_number')}",
+                    "chatId":   group_id,
+                    "mediaUrl": signed,
+                    "caption":  f"[diagnostic] {page.get('sheet_number')}",
                 },
             )
             try:
                 body_json = resp.json()
             except Exception:
                 body_json = None
-            result["steps"]["waapi_send_image"] = {
+            result["steps"]["waapi_send_media"] = {
                 "status":     resp.status_code,
                 "ok":         200 <= resp.status_code < 300,
                 "body_text":  resp.text[:800],
                 "body_json":  body_json,
             }
     except Exception as e:
-        result["steps"]["waapi_send_image"] = {"error": str(e)[:300]}
+        result["steps"]["waapi_send_media"] = {"error": str(e)[:300]}
     return result
 
 
