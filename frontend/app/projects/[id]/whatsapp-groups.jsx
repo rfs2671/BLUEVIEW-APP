@@ -21,6 +21,7 @@ import {
   X,
   Copy,
   CheckCircle,
+  Settings,
 } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -32,6 +33,7 @@ import { whatsappAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import GroupConfigPanel, { isConfigNonDefault } from '../../../src/components/whatsapp/GroupConfigPanel';
 
 const WHATSAPP_GREEN = '#25D366';
 const COUNTDOWN_SECONDS = 300; // 5 minutes
@@ -49,6 +51,7 @@ export default function WhatsAppGroupsScreen() {
   const [groups, setGroups] = useState([]);
   const [whatsappStatus, setWhatsappStatus] = useState(null);
   const [unlinking, setUnlinking] = useState(null);
+  const [configOpenId, setConfigOpenId] = useState(null);  // groupId whose config panel is expanded
 
   // Modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
@@ -246,40 +249,85 @@ export default function WhatsAppGroupsScreen() {
                 <View style={s.groupsList}>
                   {groups.map((group) => {
                     const groupId = group._id || group.id;
+                    const isConfigOpen = configOpenId === groupId;
+                    const nonDefault = isConfigNonDefault(group.bot_config);
                     return (
-                      <GlassCard key={groupId} style={s.groupItem}>
-                        <View style={s.groupRow}>
-                          <View style={s.groupIconWrap}>
-                            <MessageCircle size={22} strokeWidth={1.5} color={WHATSAPP_GREEN} />
-                          </View>
-                          <View style={s.groupInfo}>
-                            <Text style={s.groupName} numberOfLines={1}>
-                              {group.group_name || group.name || 'WhatsApp Group'}
-                            </Text>
-                            {group.message_count != null && (
-                              <View style={s.messageBadge}>
-                                <Text style={s.messageBadgeText}>
-                                  {group.message_count} messages
+                      <View key={groupId}>
+                        <GlassCard style={s.groupItem}>
+                          <View style={s.groupRow}>
+                            <View style={s.groupIconWrap}>
+                              <MessageCircle size={22} strokeWidth={1.5} color={WHATSAPP_GREEN} />
+                            </View>
+                            <View style={s.groupInfo}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={s.groupName} numberOfLines={1}>
+                                  {group.group_name || group.name || 'WhatsApp Group'}
                                 </Text>
+                                {nonDefault && (
+                                  <View
+                                    style={{
+                                      width: 8,
+                                      height: 8,
+                                      borderRadius: 4,
+                                      backgroundColor: colors.primary,
+                                    }}
+                                  />
+                                )}
                               </View>
-                            )}
+                              {group.message_count != null && (
+                                <View style={s.messageBadge}>
+                                  <Text style={s.messageBadgeText}>
+                                    {group.message_count} messages
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                            <Pressable
+                              onPress={() => setConfigOpenId(isConfigOpen ? null : groupId)}
+                              style={({ pressed }) => [
+                                s.iconBtn,
+                                pressed && { opacity: 0.7 },
+                                isConfigOpen && { backgroundColor: colors.glass.background },
+                              ]}
+                            >
+                              <Settings
+                                size={18}
+                                strokeWidth={1.5}
+                                color={isConfigOpen ? colors.primary : colors.text.secondary}
+                              />
+                            </Pressable>
+                            <Pressable
+                              onPress={() => handleUnlinkGroup(groupId)}
+                              disabled={unlinking === groupId}
+                              style={({ pressed }) => [
+                                s.iconBtn,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                            >
+                              {unlinking === groupId ? (
+                                <ActivityIndicator size="small" color={colors.status.error} />
+                              ) : (
+                                <Trash2 size={18} strokeWidth={1.5} color={colors.status.error} />
+                              )}
+                            </Pressable>
                           </View>
-                          <Pressable
-                            onPress={() => handleUnlinkGroup(groupId)}
-                            disabled={unlinking === groupId}
-                            style={({ pressed }) => [
-                              s.unlinkBtn,
-                              pressed && { opacity: 0.7 },
-                            ]}
-                          >
-                            {unlinking === groupId ? (
-                              <ActivityIndicator size="small" color={colors.status.error} />
-                            ) : (
-                              <Trash2 size={18} strokeWidth={1.5} color={colors.status.error} />
-                            )}
-                          </Pressable>
-                        </View>
-                      </GlassCard>
+                        </GlassCard>
+                        {isConfigOpen && (
+                          <GroupConfigPanel
+                            group={group}
+                            onSaved={(updated) => {
+                              setGroups((prev) =>
+                                prev.map((g) =>
+                                  (g._id || g.id) === groupId
+                                    ? { ...g, bot_config: updated.bot_config || g.bot_config }
+                                    : g,
+                                ),
+                              );
+                            }}
+                            onClose={() => setConfigOpenId(null)}
+                          />
+                        )}
+                      </View>
                     );
                   })}
                 </View>
@@ -507,6 +555,13 @@ function buildStyles(colors, isDark) {
     unlinkBtn: {
       width: 40,
       height: 40,
+      borderRadius: borderRadius.full,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    iconBtn: {
+      width: 36,
+      height: 36,
       borderRadius: borderRadius.full,
       alignItems: 'center',
       justifyContent: 'center',

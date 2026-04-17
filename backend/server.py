@@ -4,6 +4,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 import resend
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File, Form
@@ -10270,6 +10271,131 @@ async def _find_project_for_contact(contact: dict) -> Optional[str]:
 
 # ---------- inbound processing ----------
 
+# ==================== WHATSAPP BOT CONFIG ====================
+
+def _default_bot_config() -> dict:
+    """Default bot_config assigned to newly linked or migrated groups.
+
+    IMPORTANT: daily_summary_enabled defaults to False everywhere. Old groups
+    without a config pick up these defaults via the startup migration so they
+    do NOT start receiving unsolicited summaries on first deploy of this code.
+    Admins must explicitly opt in per group.
+    """
+    return {
+        "bot_enabled": True,  # master kill switch — False short-circuits everything
+        "daily_summary_enabled": False,
+        "daily_summary_time": "17:00",       # 24h EST HH:MM
+        "daily_summary_days": [1, 2, 3, 4, 5],  # ISO weekday Mon=1 Sun=7
+        "checklist_extraction_enabled": False,
+        "checklist_frequency": "daily",       # "daily" | "on_demand"
+        "checklist_time": "16:00",
+        "features": {
+            "who_on_site": True,
+            "dob_status": True,
+            "open_items": True,
+            "material_detection": True,
+            "plan_queries": False,
+        },
+        "cross_project_summary": False,
+    }
+
+
+_WHATSAPP_CONFIG_KEYS = {
+    "bot_enabled", "daily_summary_enabled", "daily_summary_time",
+    "daily_summary_days", "checklist_extraction_enabled",
+    "checklist_frequency", "checklist_time", "features",
+    "cross_project_summary",
+}
+_WHATSAPP_FEATURE_KEYS = {
+    "who_on_site", "dob_status", "open_items", "material_detection", "plan_queries"
+}
+_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+async def _whatsapp_send_log_try_mark(
+    group_id: str, job_type: str, sent_date_est: str
+) -> bool:
+    """Attempt to record that a scheduled send happened for this group/job/date.
+
+    Returns True if the caller should proceed with the send (first attempt today).
+    Returns False if a duplicate key error fires (already sent) -- caller must skip.
+
+    Backed by a MongoDB unique compound index. Survives server restarts. No
+    in-memory state anywhere.
+    """
+    from pymongo.errors import DuplicateKeyError
+    try:
+        await db.whatsapp_send_log.insert_one({
+            "group_id": group_id,
+            "job_type": job_type,
+            "sent_date_est": sent_date_est,
+            "created_at": datetime.now(timezone.utc),
+        })
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def run_whatsapp_startup_migrations():
+    """Idempotent startup migrations for the WhatsApp feature set.
+
+    Safe to call on every server boot. Runs:
+    - Set default bot_config on any existing whatsapp_groups without one.
+    - Create whatsapp_send_log collection + unique compound + TTL index.
+    - Create whatsapp_checklists compound index (used in Sprint 2).
+    - Create document_page_index unique compound (used in Sprint 3).
+    """
+    try:
+        # Migration 1 — backfill bot_config on legacy group docs
+        result = await db.whatsapp_groups.update_many(
+            {"bot_config": {"$exists": False}},
+            {"$set": {"bot_config": _default_bot_config()}},
+        )
+        if result.modified_count:
+            logger.info(
+                f"WhatsApp migration: backfilled bot_config on "
+                f"{result.modified_count} existing group doc(s)"
+            )
+
+        # Migration 2 — send_log dedup collection
+        await db.whatsapp_send_log.create_index(
+            [("group_id", 1), ("job_type", 1), ("sent_date_est", 1)],
+            unique=True,
+            name="whatsapp_send_log_unique",
+        )
+        # 45-day TTL so the collection doesn't grow forever
+        await db.whatsapp_send_log.create_index(
+            "created_at",
+            expireAfterSeconds=60 * 60 * 24 * 45,
+            name="whatsapp_send_log_ttl",
+        )
+
+        # Migration 3 — whatsapp_checklists indexes (Sprint 2 consumer)
+        await db.whatsapp_checklists.create_index(
+            [("project_id", 1), ("generated_at", -1)],
+            name="checklists_by_project_recent",
+        )
+        await db.whatsapp_checklists.create_index(
+            [("group_id", 1), ("generated_at", -1)],
+            name="checklists_by_group_recent",
+        )
+
+        # Migration 4 — document_page_index unique compound (Sprint 3 consumer)
+        await db.document_page_index.create_index(
+            [("file_id", 1), ("page_number", 1)],
+            unique=True,
+            name="document_page_unique",
+        )
+        await db.document_page_index.create_index(
+            [("project_id", 1), ("discipline", 1)],
+            name="document_page_by_project_discipline",
+        )
+    except Exception as e:
+        logger.warning(f"run_whatsapp_startup_migrations: {e}")
+
+
+# ==================== WHATSAPP MESSAGE PROCESSOR ====================
+
 async def _process_whatsapp_message(payload: dict):
     """Background task to process an inbound WhatsApp message."""
     try:
@@ -10287,6 +10413,12 @@ async def _process_whatsapp_message(payload: dict):
             project_id = group_doc["project_id"]
             msg_company_id = group_doc.get("company_id")
 
+            # Per-group bot config (legacy docs without a config get all-default
+            # behavior via .get() defaults — the startup migration backfills.)
+            bot_config = group_doc.get("bot_config", {}) or {}
+            features = bot_config.get("features", {}) or {}
+            bot_enabled = bot_config.get("bot_enabled", True)
+
             # Transcribe audio if present
             body = parsed["body"]
             if parsed["has_audio"]:
@@ -10294,7 +10426,7 @@ async def _process_whatsapp_message(payload: dict):
                 if audio_bytes:
                     body = await transcribe_audio(audio_bytes)
 
-            # Store message
+            # Store message (always — history is not subject to bot_enabled)
             await db.whatsapp_messages.insert_one({
                 "group_id": group_id,
                 "project_id": project_id,
@@ -10307,7 +10439,8 @@ async def _process_whatsapp_message(payload: dict):
                 "created_at": now,
             })
 
-            # Check for link-code pattern (6-digit code from group)
+            # Check for link-code pattern (6-digit code from group) — this is
+            # group-linking infrastructure, unaffected by bot_enabled.
             if body and re.match(r"^\d{6}$", body.strip()):
                 code_doc = await db.whatsapp_link_codes.find_one({"code": body.strip()})
                 if code_doc and not code_doc.get("verified"):
@@ -10316,8 +10449,12 @@ async def _process_whatsapp_message(payload: dict):
                         {"$set": {"group_id": group_id, "group_verified": True}}
                     )
 
-            # Material request detection for group messages
-            if body and len(body) >= 15:
+            # Master kill switch — stop all bot-initiated behavior below this point
+            if not bot_enabled:
+                return
+
+            # Material request detection gated on the features flag
+            if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
                 if detection:
                     req_doc = await _create_material_request(
@@ -10457,18 +10594,24 @@ async def whatsapp_group_link_verify(
     group_id = code_doc.get("group_id")
     if not group_id and not code_doc.get("group_verified"):
         raise HTTPException(status_code=400, detail="Code not yet verified by group. Send the code in the WhatsApp group first.")
-    # Create group link
+    # Create group link. Seed bot_config on first insert only ($setOnInsert)
+    # so re-linking an existing group doesn't clobber the admin's config.
     now = datetime.now(timezone.utc)
     await db.whatsapp_groups.update_one(
         {"company_id": company_id, "wa_group_id": group_id},
-        {"$set": {
-            "project_id": project_id,
-            "company_id": company_id,
-            "wa_group_id": group_id,
-            "linked_by": str(current_user["_id"]),
-            "linked_at": now,
-            "active": True,
-        }},
+        {
+            "$set": {
+                "project_id": project_id,
+                "company_id": company_id,
+                "wa_group_id": group_id,
+                "linked_by": str(current_user["_id"]),
+                "linked_at": now,
+                "active": True,
+            },
+            "$setOnInsert": {
+                "bot_config": _default_bot_config(),
+            },
+        },
         upsert=True,
     )
     # Mark code as used
@@ -10483,7 +10626,7 @@ async def whatsapp_group_link_verify(
 
 @api_router.get("/whatsapp/groups/{project_id}")
 async def whatsapp_get_groups(project_id: str, current_user=Depends(get_current_user)):
-    """List linked WhatsApp groups for a project, with message counts."""
+    """List linked WhatsApp groups for a project, with message counts + bot_config."""
     company_id = get_user_company_id(current_user)
     groups = await db.whatsapp_groups.find({
         "project_id": project_id,
@@ -10493,14 +10636,179 @@ async def whatsapp_get_groups(project_id: str, current_user=Depends(get_current_
     results = []
     for g in groups:
         msg_count = await db.whatsapp_messages.count_documents({"group_id": g["wa_group_id"]})
+        # Merge stored config over defaults so legacy docs without one still
+        # return a complete object — frontend never has to handle missing fields.
+        cfg = _default_bot_config()
+        stored = g.get("bot_config") or {}
+        cfg.update({k: v for k, v in stored.items() if k in _WHATSAPP_CONFIG_KEYS})
+        # Merge features subdoc specifically so partial feature dicts work too.
+        if "features" in stored and isinstance(stored["features"], dict):
+            merged_features = dict(cfg["features"])
+            merged_features.update({
+                k: v for k, v in stored["features"].items() if k in _WHATSAPP_FEATURE_KEYS
+            })
+            cfg["features"] = merged_features
         results.append({
             "id": str(g["_id"]),
             "wa_group_id": g["wa_group_id"],
             "project_id": g["project_id"],
             "linked_at": g.get("linked_at"),
             "message_count": msg_count,
+            "group_name": g.get("group_name"),
+            "bot_config": cfg,
         })
     return results
+
+
+@api_router.put("/whatsapp/groups/{group_doc_id}/config")
+async def whatsapp_update_group_config(
+    group_doc_id: str,
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Update bot_config for a linked WhatsApp group.
+
+    Admin/owner only, must belong to the group's company. Accepts a partial
+    or full config object. Unknown keys rejected. Time fields validated HH:MM.
+    Days list validated 1-7.
+    """
+    # Role gate — only admins/owners can modify bot config
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin or owner access required")
+
+    group = await db.whatsapp_groups.find_one({"_id": to_query_id(group_doc_id)})
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    user_company_id = get_user_company_id(current_user)
+    if user_company_id and group.get("company_id") != user_company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # ---- Validate payload ----
+    if not isinstance(body, dict) or not body:
+        raise HTTPException(status_code=422, detail="Request body must be a non-empty object")
+
+    unknown = set(body.keys()) - _WHATSAPP_CONFIG_KEYS
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown config keys: {sorted(unknown)}",
+        )
+
+    set_ops: Dict[str, Any] = {}
+
+    if "bot_enabled" in body:
+        if not isinstance(body["bot_enabled"], bool):
+            raise HTTPException(status_code=422, detail="bot_enabled must be a boolean")
+        set_ops["bot_config.bot_enabled"] = body["bot_enabled"]
+
+    if "daily_summary_enabled" in body:
+        if not isinstance(body["daily_summary_enabled"], bool):
+            raise HTTPException(status_code=422, detail="daily_summary_enabled must be a boolean")
+        set_ops["bot_config.daily_summary_enabled"] = body["daily_summary_enabled"]
+
+    if "daily_summary_time" in body:
+        t = body["daily_summary_time"]
+        if not isinstance(t, str) or not _HHMM_RE.match(t):
+            raise HTTPException(status_code=422, detail="daily_summary_time must be HH:MM (24h)")
+        set_ops["bot_config.daily_summary_time"] = t
+
+    if "daily_summary_days" in body:
+        d = body["daily_summary_days"]
+        if not isinstance(d, list) or not all(isinstance(x, int) and 1 <= x <= 7 for x in d):
+            raise HTTPException(
+                status_code=422,
+                detail="daily_summary_days must be a list of ints 1-7 (Mon=1 Sun=7)",
+            )
+        set_ops["bot_config.daily_summary_days"] = d
+
+    if "checklist_extraction_enabled" in body:
+        if not isinstance(body["checklist_extraction_enabled"], bool):
+            raise HTTPException(
+                status_code=422, detail="checklist_extraction_enabled must be a boolean"
+            )
+        set_ops["bot_config.checklist_extraction_enabled"] = body["checklist_extraction_enabled"]
+
+    if "checklist_frequency" in body:
+        f = body["checklist_frequency"]
+        if f not in ("daily", "on_demand"):
+            raise HTTPException(
+                status_code=422, detail="checklist_frequency must be 'daily' or 'on_demand'"
+            )
+        set_ops["bot_config.checklist_frequency"] = f
+
+    if "checklist_time" in body:
+        t = body["checklist_time"]
+        if not isinstance(t, str) or not _HHMM_RE.match(t):
+            raise HTTPException(status_code=422, detail="checklist_time must be HH:MM (24h)")
+        set_ops["bot_config.checklist_time"] = t
+
+    if "cross_project_summary" in body:
+        if not isinstance(body["cross_project_summary"], bool):
+            raise HTTPException(status_code=422, detail="cross_project_summary must be a boolean")
+        set_ops["bot_config.cross_project_summary"] = body["cross_project_summary"]
+
+    if "features" in body:
+        f = body["features"]
+        if not isinstance(f, dict):
+            raise HTTPException(status_code=422, detail="features must be an object")
+        unknown_features = set(f.keys()) - _WHATSAPP_FEATURE_KEYS
+        if unknown_features:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown feature keys: {sorted(unknown_features)}",
+            )
+        for k, v in f.items():
+            if not isinstance(v, bool):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"features.{k} must be a boolean",
+                )
+            set_ops[f"bot_config.features.{k}"] = v
+
+    # Cross-field validation — days list required non-empty if daily summary enabled
+    # Handles either the effective new state OR combo of request + stored state.
+    merged_enabled = set_ops.get("bot_config.daily_summary_enabled")
+    if merged_enabled is None:
+        merged_enabled = (group.get("bot_config") or {}).get("daily_summary_enabled", False)
+    merged_days = set_ops.get("bot_config.daily_summary_days")
+    if merged_days is None:
+        merged_days = (group.get("bot_config") or {}).get("daily_summary_days", [1, 2, 3, 4, 5])
+    if merged_enabled and not merged_days:
+        raise HTTPException(
+            status_code=422,
+            detail="daily_summary_days cannot be empty when daily_summary_enabled is true",
+        )
+
+    set_ops["updated_at"] = datetime.now(timezone.utc)
+
+    await db.whatsapp_groups.update_one(
+        {"_id": to_query_id(group_doc_id)},
+        {"$set": set_ops},
+    )
+
+    updated = await db.whatsapp_groups.find_one({"_id": to_query_id(group_doc_id)})
+
+    # Return the same shape as the list endpoint entry for this group
+    cfg = _default_bot_config()
+    stored = updated.get("bot_config") or {}
+    cfg.update({k: v for k, v in stored.items() if k in _WHATSAPP_CONFIG_KEYS})
+    if "features" in stored and isinstance(stored["features"], dict):
+        merged_features = dict(cfg["features"])
+        merged_features.update({
+            k: v for k, v in stored["features"].items() if k in _WHATSAPP_FEATURE_KEYS
+        })
+        cfg["features"] = merged_features
+
+    return {
+        "id": str(updated["_id"]),
+        "wa_group_id": updated.get("wa_group_id"),
+        "project_id": updated.get("project_id"),
+        "group_name": updated.get("group_name"),
+        "linked_at": updated.get("linked_at"),
+        "bot_config": cfg,
+    }
 
 
 @api_router.delete("/whatsapp/groups/{group_doc_id}")
@@ -10675,67 +10983,209 @@ async def cancel_material_request(request_id: str, current_user=Depends(get_curr
 
 # ---------- daily summary scheduler ----------
 
-async def _send_whatsapp_daily_summaries():
-    """Mon-Fri 5 PM EST: summarize each project's WhatsApp messages and send to linked groups."""
+def _current_est_time_and_date():
+    """Return (HH:MM string, ISO weekday 1-7, YYYY-MM-DD date string) in EST/EDT."""
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    now_est = datetime.now(timezone.utc).astimezone(eastern)
+    return (
+        now_est.strftime("%H:%M"),
+        now_est.isoweekday(),  # Mon=1 Sun=7
+        now_est.strftime("%Y-%m-%d"),
+    )
+
+
+def _within_30min_window(now_hhmm: str, target_hhmm: str) -> bool:
+    """True if now_hhmm is within [target_hhmm, target_hhmm + 30 minutes).
+
+    Computed on whole minutes. A 17:00 target window covers 17:00 through
+    17:29 inclusive. A 23:50 target covers 23:50 through 00:19 (wraps).
+    """
     try:
-        today_start, today_end = get_today_range_est()
-        # Find all active groups
-        groups = await db.whatsapp_groups.find({"active": True}).to_list(200)
+        nh, nm = [int(x) for x in now_hhmm.split(":")]
+        th, tm = [int(x) for x in target_hhmm.split(":")]
+    except Exception:
+        return False
+    now_minutes = (nh * 60 + nm) % (24 * 60)
+    target_minutes = (th * 60 + tm) % (24 * 60)
+    diff = (now_minutes - target_minutes) % (24 * 60)
+    return 0 <= diff < 30
+
+
+async def _summarize_and_send_for_group(group_doc: dict) -> None:
+    """Build and send a daily summary for one group. Caller handles dedup."""
+    project_id = group_doc.get("project_id")
+    group_id = group_doc.get("wa_group_id")
+    if not project_id or not group_id:
+        return
+
+    today_start, today_end = get_today_range_est()
+    messages = await db.whatsapp_messages.find({
+        "group_id": group_id,
+        "created_at": {"$gte": today_start, "$lt": today_end},
+    }).sort("created_at", 1).to_list(500)
+    if not messages:
+        return
+
+    # Build convo text. Skip bot_plan_response messages so the summary
+    # doesn't describe the bot's own image sends as if a person said them.
+    convo_lines = []
+    for m in messages:
+        msg_type = m.get("type")
+        sender = m.get("sender", "unknown")
+        body_text = m.get("body", "")
+        if msg_type == "bot_plan_response":
+            # Render as a system note, not a human line
+            if body_text:
+                convo_lines.append(f"[bot sent plan sheet: {body_text}]")
+            continue
+        if body_text:
+            convo_lines.append(f"{sender}: {body_text}")
+    if not convo_lines:
+        return
+    conversation_text = "\n".join(convo_lines[:200])
+
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = project.get("name", "Project") if project else "Project"
+
+    if not OPENAI_API_KEY:
+        logger.info(f"Daily summary skipped for {project_name}: no OPENAI_API_KEY")
+        return
+
+    try:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        gpt_payload = {
+            "model": "gpt-4o",
+            "temperature": 0.3,
+            "max_tokens": 500,
+            "messages": [
+                {"role": "system", "content": (
+                    "You are a construction project assistant. Summarize the day's WhatsApp "
+                    "group messages into a concise daily digest. Focus on: key decisions, "
+                    "issues raised, action items, and safety concerns. Format with bullet points. "
+                    "Keep it under 300 words. Lines wrapped in [brackets] are automated system "
+                    "notes, not human messages — treat them as context only."
+                )},
+                {"role": "user", "content": f"Project: {project_name}\n\nMessages:\n{conversation_text}"},
+            ],
+        }
+        async with httpx.AsyncClient(timeout=30) as client_http:
+            resp = await client_http.post(url, json=gpt_payload, headers=headers)
+            resp.raise_for_status()
+            summary = resp.json()["choices"][0]["message"]["content"].strip()
+        header = f"*Daily Summary - {project_name}*\n_{datetime.now(timezone.utc).strftime('%B %d, %Y')}_\n"
+        await send_whatsapp_message(group_id, header + "\n" + summary)
+    except Exception as e:
+        logger.error(f"Daily summary GPT failed for {project_name}: {e}")
+
+
+async def _send_whatsapp_daily_summaries():
+    """Runs every 30 min. For each active group:
+    - skip if bot_enabled == False
+    - skip if daily_summary_enabled == False
+    - skip if today's ISO weekday not in daily_summary_days
+    - skip if current EST time not within [configured_time, +30min)
+    - dedup via whatsapp_send_log (MongoDB unique key) so re-fires within
+      the window send at most once per day per group.
+    """
+    try:
+        now_hhmm, iso_weekday, today_est = _current_est_time_and_date()
+        groups = await db.whatsapp_groups.find({"active": True}).to_list(500)
         for group_doc in groups:
-            project_id = group_doc.get("project_id")
-            group_id = group_doc.get("wa_group_id")
-            if not project_id or not group_id:
+            cfg = group_doc.get("bot_config") or {}
+            if not cfg.get("bot_enabled", True):
                 continue
-            # Get today's messages — filter by group_id to prevent cross-group leaking
+            if not cfg.get("daily_summary_enabled", False):
+                continue
+            days = cfg.get("daily_summary_days", [1, 2, 3, 4, 5])
+            if iso_weekday not in (days or []):
+                continue
+            configured = cfg.get("daily_summary_time", "17:00")
+            if not _within_30min_window(now_hhmm, configured):
+                continue
+
+            group_id = group_doc.get("wa_group_id")
+            if not group_id:
+                continue
+
+            # MongoDB-backed dedup — survives restarts.
+            first_send = await _whatsapp_send_log_try_mark(
+                group_id, "daily_summary", today_est
+            )
+            if not first_send:
+                continue
+
+            try:
+                await _summarize_and_send_for_group(group_doc)
+            except Exception as e:
+                logger.error(f"daily summary send failed for {group_id}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"WhatsApp daily summary job error: {e}", exc_info=True)
+
+
+async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversation_text: str):
+    """Sprint 2 stub — full implementation lands in Sprint 2."""
+    logger.info(
+        f"checklist extraction not yet implemented (project={project_id}, group={group_id})"
+    )
+    return None
+
+
+async def _run_whatsapp_checklist_extractions():
+    """Runs every 30 min. Finds groups configured for daily checklist extraction
+    whose configured time matches the current EST window, dedups via send_log,
+    and calls _extract_whatsapp_checklist."""
+    try:
+        now_hhmm, _iso_weekday, today_est = _current_est_time_and_date()
+        groups = await db.whatsapp_groups.find({"active": True}).to_list(500)
+        for group_doc in groups:
+            cfg = group_doc.get("bot_config") or {}
+            if not cfg.get("bot_enabled", True):
+                continue
+            if not cfg.get("checklist_extraction_enabled", False):
+                continue
+            if cfg.get("checklist_frequency", "daily") != "daily":
+                continue
+            configured = cfg.get("checklist_time", "16:00")
+            if not _within_30min_window(now_hhmm, configured):
+                continue
+
+            group_id = group_doc.get("wa_group_id")
+            project_id = group_doc.get("project_id")
+            if not group_id or not project_id:
+                continue
+
+            first_send = await _whatsapp_send_log_try_mark(
+                group_id, "checklist", today_est
+            )
+            if not first_send:
+                continue
+
+            # Build conversation text for the last 24 hours
+            today_start, today_end = get_today_range_est()
             messages = await db.whatsapp_messages.find({
                 "group_id": group_id,
                 "created_at": {"$gte": today_start, "$lt": today_end},
             }).sort("created_at", 1).to_list(500)
-            if not messages:
-                continue
-            # Build conversation text for GPT
             convo_lines = []
             for m in messages:
+                if m.get("type") == "bot_plan_response":
+                    continue
                 sender = m.get("sender", "unknown")
-                body = m.get("body", "")
-                if body:
-                    convo_lines.append(f"{sender}: {body}")
+                body_text = m.get("body", "")
+                if body_text:
+                    convo_lines.append(f"{sender}: {body_text}")
             if not convo_lines:
                 continue
-            conversation_text = "\n".join(convo_lines[:200])  # cap at 200 messages
-            # Get project name
-            project = await db.projects.find_one({"_id": to_query_id(project_id)})
-            project_name = project.get("name", "Project") if project else "Project"
-            # Summarize with GPT-4o
-            if not OPENAI_API_KEY:
-                continue
+            convo_text = "\n".join(convo_lines[:400])
+
             try:
-                url = "https://api.openai.com/v1/chat/completions"
-                headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-                gpt_payload = {
-                    "model": "gpt-4o",
-                    "temperature": 0.3,
-                    "max_tokens": 500,
-                    "messages": [
-                        {"role": "system", "content": (
-                            "You are a construction project assistant. Summarize the day's WhatsApp "
-                            "group messages into a concise daily digest. Focus on: key decisions, "
-                            "issues raised, action items, and safety concerns. Format with bullet points. "
-                            "Keep it under 300 words."
-                        )},
-                        {"role": "user", "content": f"Project: {project_name}\n\nMessages:\n{conversation_text}"},
-                    ],
-                }
-                async with httpx.AsyncClient(timeout=30) as client_http:
-                    resp = await client_http.post(url, json=gpt_payload, headers=headers)
-                    resp.raise_for_status()
-                    summary = resp.json()["choices"][0]["message"]["content"].strip()
-                header = f"*Daily Summary - {project_name}*\n_{datetime.now(timezone.utc).strftime('%B %d, %Y')}_\n"
-                await send_whatsapp_message(group_id, header + "\n" + summary)
+                await _extract_whatsapp_checklist(project_id, group_id, convo_text)
             except Exception as e:
-                logger.error(f"Daily summary GPT failed for {project_name}: {e}")
+                logger.error(f"checklist extraction failed for {group_id}: {e}", exc_info=True)
     except Exception as e:
-        logger.error(f"WhatsApp daily summary job error: {e}", exc_info=True)
+        logger.error(f"WhatsApp checklist scheduler error: {e}", exc_info=True)
 
 
 # Include the router in the main app
@@ -11080,11 +11530,20 @@ async def startup_event():
         replace_existing=True,
     )
 
-    # WhatsApp daily summary — Mon-Fri 5 PM EST (22:00 UTC)
+    # WhatsApp daily summary — runs every 30 minutes, sends when each group's
+    # configured time/day matches the current EST window. Dedup is MongoDB-backed
+    # via whatsapp_send_log so it survives restarts.
     scheduler.add_job(
         _send_whatsapp_daily_summaries,
-        CronTrigger(hour=22, minute=0, day_of_week='mon-fri'),
+        IntervalTrigger(minutes=30),
         id='whatsapp_daily_summary',
+        replace_existing=True,
+    )
+    # WhatsApp checklist extraction — same cadence, different job_type in dedup log.
+    scheduler.add_job(
+        _run_whatsapp_checklist_extractions,
+        IntervalTrigger(minutes=30),
+        id='whatsapp_checklist_extraction',
         replace_existing=True,
     )
 
@@ -11092,7 +11551,11 @@ async def startup_event():
     logger.info("📧 Report email scheduler started")
     logger.info("🏗️ DOB compliance scanner scheduled (every 30 minutes)")
     logger.info("🔍 Nightly compliance check scheduled (10 PM)")
-    logger.info("💬 WhatsApp daily summary scheduled (Mon-Fri 5 PM EST)")
+    logger.info("💬 WhatsApp daily summary scheduled (every 30 min, per-group config)")
+    logger.info("✅ WhatsApp checklist extraction scheduled (every 30 min, per-group config)")
+
+    # WhatsApp startup migrations — bot_config backfill, indexes, TTL
+    await run_whatsapp_startup_migrations()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])

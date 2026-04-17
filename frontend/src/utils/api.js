@@ -876,6 +876,19 @@ export const whatsappAPI = {
   },
 
   /**
+   * Update per-group bot configuration. Frontend sends the full bot_config
+   * object on every save (simpler than diffing). Backend uses $set with dot
+   * notation so partial updates from other clients still work.
+   */
+  updateGroupConfig: async (groupDocId, config) => {
+    const response = await apiClient.put(
+      `/api/whatsapp/groups/${groupDocId}/config`,
+      config,
+    );
+    return response.data;
+  },
+
+  /**
    * Download the Levelog Assistant vCard and save to contacts.
    *
    * Web:    fetches as blob and triggers a browser download.
