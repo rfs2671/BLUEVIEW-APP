@@ -12172,13 +12172,22 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
         await send_whatsapp_message(group_id, txt)
         return
 
-    # `question` param from the agent-router overrides parser's question.
-    effective_question = (question or "").strip() or parsed.get("question")
-    if effective_question and effective_question.strip().lower() in ("null", "none", ""):
+    # `question` param from the agent-router overrides parser's question —
+    # except the agent often hallucinates a question for "show me" phrases
+    # where the user clearly wants the image, not an answer. So we defer
+    # to _classify_plan_question on the original text: if it says image-
+    # send (show-verb prefix, no '?'), we FORCE image-send mode regardless
+    # of what the agent passed.
+    raw_low = (query or "").strip().lower()
+    user_wants_image = any(raw_low.startswith(v) for v in SHOW_VERBS)
+    if user_wants_image:
         effective_question = None
-    # Also honor the legacy classifier as a safety net on the raw text.
-    if not effective_question and _classify_plan_question(query):
-        effective_question = query.strip()
+    else:
+        effective_question = (question or "").strip() or parsed.get("question")
+        if effective_question and effective_question.strip().lower() in ("null", "none", ""):
+            effective_question = None
+        if not effective_question and _classify_plan_question(query):
+            effective_question = query.strip()
 
     # 3. Retrieve
     candidates = await _retrieve_plan_candidates(
