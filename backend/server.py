@@ -9841,34 +9841,75 @@ async def send_whatsapp_message(chat_id: str, message: str):
 
 
 def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
-    """Normalize a WaAPI inbound webhook payload to a standard format."""
+    """Normalize a WaAPI inbound webhook payload to a standard format.
+
+    WaAPI puts most fields inside msg._data (the raw WhatsApp-Web payload).
+    Some fields are duplicated at msg level, others are only inside _data.
+    We read with a `_data`-first fallback so either shape works.
+    """
     if vendor == "waapi":
         data = payload.get("data", {})
         msg = data.get("message", data)
-        is_group = "@g.us" in msg.get("from", "")
-        body = msg.get("body", "")
-        # Audio detection
-        has_audio = msg.get("type") == "audio" or msg.get("type") == "ptt"
+        inner = (msg.get("_data") or {}) if isinstance(msg.get("_data"), dict) else {}
+
+        def _pick(field, default=""):
+            # Prefer top-level, fall back to _data
+            v = msg.get(field)
+            if v is None or v == "":
+                v = inner.get(field, default)
+            return v if v is not None else default
+
+        from_field = _pick("from", "")
+        to_field = _pick("to", "")
+        body = _pick("body", "")
+        mtype = _pick("type", "")
+        author = _pick("author", "") or from_field  # in groups, author = sender
+
+        is_group = "@g.us" in from_field
+
+        # Audio / voice notes
+        has_audio = mtype in ("audio", "ptt")
         audio_url = None
         if has_audio:
-            media = msg.get("media") or msg.get("_data", {})
+            media = msg.get("media") or inner or {}
             audio_url = media.get("url") or media.get("directPath")
-        # Image detection
-        has_image = False
+
+        # Images
+        has_image = (mtype == "image")
         image_url = None
-        if msg.get("type") == "image":
-            has_image = True
+        if has_image:
             media = msg.get("media") or {}
             image_url = media.get("url") or media.get("directPath") or None
+
+        # Message id can live at msg.id.id (nested), msg.id (string), or inner.id.id
+        raw_id = msg.get("id")
+        if isinstance(raw_id, dict):
+            msg_id = raw_id.get("id", "")
+        elif raw_id:
+            msg_id = str(raw_id)
+        else:
+            inner_id = inner.get("id")
+            if isinstance(inner_id, dict):
+                msg_id = inner_id.get("id", "")
+            else:
+                msg_id = str(inner_id or "")
+
+        # Timestamp — WaAPI uses 't' (epoch seconds) inside _data, 'timestamp' elsewhere
+        ts = msg.get("timestamp") or inner.get("t") or inner.get("timestamp") or 0
+        try:
+            ts = int(ts)
+        except Exception:
+            ts = 0
+
         return {
-            "message_id": msg.get("id", {}).get("id", "") if isinstance(msg.get("id"), dict) else str(msg.get("id", "")),
-            "from": msg.get("from", ""),
-            "sender": msg.get("author", msg.get("from", "")),
-            "to": msg.get("to", ""),
+            "message_id": msg_id,
+            "from": from_field,
+            "sender": author,
+            "to": to_field,
             "body": body,
             "is_group": is_group,
-            "group_id": msg.get("from", "") if is_group else None,
-            "timestamp": msg.get("timestamp", 0),
+            "group_id": from_field if is_group else None,
+            "timestamp": ts,
             "has_audio": has_audio,
             "audio_url": audio_url,
             "has_image": has_image,
