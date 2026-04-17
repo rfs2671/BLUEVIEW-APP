@@ -12142,7 +12142,8 @@ async def _send_plan_image(
 
 
 async def _handle_plan_query(project_id: str, group_id: str, query: str,
-                              question: Optional[str] = None) -> None:
+                              question: Optional[str] = None,
+                              parsed_override: Optional[dict] = None) -> None:
     """End-to-end plan-query pipeline (spec-compliant v2).
 
     Flow:
@@ -12164,8 +12165,13 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
     except Exception:
         pass
 
-    # 2. Parse
-    parsed = await _parse_plan_query(query)
+    # 2. Parse — prefer the structured spec from the agent router if it's
+    # available (avoids a second gpt-4o-mini call and a lossy re-parse of
+    # the synth string).
+    if isinstance(parsed_override, dict) and parsed_override:
+        parsed = dict(parsed_override)
+    else:
+        parsed = await _parse_plan_query(query)
     if parsed.get("dob_route"):
         # Parser flagged this as a DOB/permits question — route to dob_status.
         txt = await _handle_dob_status(project_id)
@@ -12174,13 +12180,16 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
 
     # `question` param from the agent-router overrides parser's question —
     # except the agent often hallucinates a question for "show me" phrases
-    # where the user clearly wants the image, not an answer. So we defer
-    # to _classify_plan_question on the original text: if it says image-
-    # send (show-verb prefix, no '?'), we FORCE image-send mode regardless
-    # of what the agent passed.
-    raw_low = (query or "").strip().lower()
-    user_wants_image = any(raw_low.startswith(v) for v in SHOW_VERBS)
-    if user_wants_image:
+    # where the user clearly wants the image, not an answer. Check for
+    # show-verb prefix in BOTH the synth query AND the agent's question
+    # (agent frequently echoes the user's full "show me..." utterance into
+    # the question slot). If either looks like a show-verb request, force
+    # image-send mode.
+    def _looks_like_show_verb(s: str) -> bool:
+        s = (s or "").strip().lower()
+        return any(s.startswith(v) for v in SHOW_VERBS)
+
+    if _looks_like_show_verb(query) or _looks_like_show_verb(question or ""):
         effective_question = None
     else:
         effective_question = (question or "").strip() or parsed.get("question")
@@ -13258,8 +13267,23 @@ async def _dispatch_agent_tool(
             if sheet_number:           bits.append(sheet_number)
             if args.get("keywords"):   bits.extend(args["keywords"])
             synth = " ".join(bits) or question or "plan"
+            # Pass the structured spec straight through so _handle_plan_query
+            # doesn't have to re-parse the synth via another LLM call. The
+            # parser also loses floor/discipline on messy synth strings.
+            parsed_override = {
+                "sheet_number": sheet_number or None,
+                "discipline":   args.get("discipline") or None,
+                "floor":        args.get("floor") or None,
+                "sheet_type":   args.get("sheet_type") or None,
+                "keywords":     args.get("keywords") or [],
+                "question":     question or None,
+            }
             asyncio.create_task(
-                _handle_plan_query(project_id, group_id, synth, question=question or None)
+                _handle_plan_query(
+                    project_id, group_id, synth,
+                    question=question or None,
+                    parsed_override=parsed_override,
+                )
             )
             if question:
                 return f"(Plan VQA initiated for '{synth[:60]}' — question: '{question[:80]}'. Qwen will answer from the drawing.)"
