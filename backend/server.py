@@ -11781,7 +11781,7 @@ _BOT_ADDRESS_SOFT_TRIGGERS = [
 
 def _jid_digits(jid: str) -> str:
     """Return just the digits from a WhatsApp JID like '15165494475@c.us' or
-    '15165494475@s.whatsapp.net'. Empty string for unknown/lid shapes."""
+    '153906327875707@lid'. Empty string for unknown/empty input."""
     if not jid:
         return ""
     # Drop the @domain suffix, then strip anything non-digit.
@@ -11789,42 +11789,80 @@ def _jid_digits(jid: str) -> str:
     return re.sub(r"\D", "", head)
 
 
+def _bot_identifier_digits() -> list:
+    """All digit-strings we recognize as the bot.
+
+    WhatsApp gives the bot two separate IDs:
+      - its E.164 phone number (what you'd dial) — WAAPI_DISPLAY_NUMBER
+      - its LID (a random ~15-digit identifier used in mentions and some
+        group events) — WAAPI_BOT_LID
+
+    Native @mentions in modern WhatsApp Web reference the LID, NOT the
+    phone number, so matching by phone alone misses real @mentions.
+    """
+    out = []
+    phone = re.sub(r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "") or "")
+    if phone:
+        out.append(phone)
+    lid = re.sub(r"\D", "", os.environ.get("WAAPI_BOT_LID", "") or "")
+    if lid:
+        out.append(lid)
+    return out
+
+
+def _digits_match_bot(digits: str, bot_ids: Optional[list] = None) -> bool:
+    """Case-insensitive digit-suffix match against any configured bot id."""
+    if not digits:
+        return False
+    ids = bot_ids if bot_ids is not None else _bot_identifier_digits()
+    for bot_id in ids:
+        if not bot_id:
+            continue
+        # Exact equality first (ideal for LID which is opaque),
+        # then last-10 suffix to tolerate country-code variants on phone numbers.
+        if digits == bot_id:
+            return True
+        if len(bot_id) >= 10 and len(digits) >= 10 and digits[-10:] == bot_id[-10:]:
+            return True
+    return False
+
+
 def _has_explicit_bot_mention(
     body: str,
-    bot_phone_digits: str,
+    bot_phone_digits: str,  # kept for backwards compat; prefer _bot_identifier_digits()
     mentioned_jids: Optional[list] = None,
 ) -> bool:
     """Returns True iff the bot was explicitly addressed.
 
     Matches (any of):
-      - WhatsApp native @mention: the bot's JID appears in mentioned_jids
-        (this is what happens when the user types '@' and picks the bot
-        contact — body just contains '@<digits>', not '@levelog').
-      - Bare '@<bot-phone-digits>' token in the body (covers vendors that
-        don't populate mentionedJidList).
-      - Literal text '@levelog' or 'levelog ' prefix (typed fallback —
-        still useful for clients / copies where the native mention was
-        lost).
+      - WhatsApp native @mention: the bot's JID (phone or LID) appears in
+        mentioned_jids. Modern clients use @lid here.
+      - Bare '@<digits>' token in the body that matches bot phone or LID.
+        (some vendors don't populate mentionedJidList.)
+      - Literal text '@levelog' or 'levelog ' prefix (typed fallback).
     """
+    # Build the set of bot identifiers — union of phone + LID + the legacy
+    # `bot_phone_digits` arg the call site passed in.
+    bot_ids = _bot_identifier_digits()
+    if bot_phone_digits and bot_phone_digits not in bot_ids:
+        bot_ids.append(bot_phone_digits)
+
     # 1. Native @-mention via JID list (the primary, correct path)
-    if mentioned_jids and bot_phone_digits:
-        suffix = bot_phone_digits[-10:]
+    if mentioned_jids:
         for jid in mentioned_jids:
-            jid_digits = _jid_digits(str(jid))
-            if jid_digits and jid_digits[-10:] == suffix:
+            if _digits_match_bot(_jid_digits(str(jid)), bot_ids):
                 return True
 
     if not body:
         return False
     low = body.strip().lower()
 
-    # 2. Bare phone-number @mention in the body text
-    if bot_phone_digits:
-        suffix = bot_phone_digits[-10:]
-        for token in re.findall(r"@[\w\d]+", low):
-            digits = re.sub(r"\D", "", token)
-            if digits and digits[-10:] == suffix:
-                return True
+    # 2. Bare @<digits> token in the body text (WhatsApp renders the
+    #    mention as a styled pill, but the raw body carries '@<digits>').
+    for token in re.findall(r"@[\w\d]+", low):
+        digits = re.sub(r"\D", "", token)
+        if _digits_match_bot(digits, bot_ids):
+            return True
 
     # 3. Literal text fallback — people will still type '@Levelog' in
     # contexts where the native @mention is lost (web paste, some 3rd-party
@@ -12453,8 +12491,9 @@ async def _run_group_agent(
         if low.startswith(pfx):
             trimmed = trimmed[len(pfx):].strip(" :,-")
             break
-    # Also strip @<botnumber> mentions
-    trimmed = re.sub(r"@\d{10,}", "", trimmed).strip()
+    # Also strip @<digits> mentions (phone OR LID — LIDs are ~13–15 digits,
+    # phone numbers 10–15). Accept 7+ so we catch short country-codeless too.
+    trimmed = re.sub(r"@\d{7,}", "", trimmed).strip()
 
     # Pull recent conversation so the LLM remembers its own prior turns.
     # Without this, when the bot asks for clarification and the user replies,
