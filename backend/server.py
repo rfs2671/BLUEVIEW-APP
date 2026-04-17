@@ -3891,20 +3891,39 @@ async def get_worker_certifications(worker_id: str, current_user=Depends(get_cur
 @api_router.post("/workers/{worker_id}/certifications")
 async def add_worker_certification(worker_id: str, cert: WorkerCertification, admin=Depends(get_admin_user)):
     """Add a certification to a worker's record."""
-    worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
-    if not worker:
-        raise HTTPException(status_code=404, detail="Worker not found")
-    now = datetime.now(timezone.utc)
-    cert_dict = cert.model_dump()
-    cert_dict["added_by"] = admin.get("id")
-    cert_dict["added_at"] = now
-    await db.workers.update_one(
-        {"_id": to_query_id(worker_id)},
-        {"$push": {"certifications": cert_dict}, "$set": {"updated_at": now}}
-    )
-    updated = await db.workers.find_one({"_id": to_query_id(worker_id)})
-    validation = validate_worker_certifications(updated)
-    return {"message": "Certification added", "certification": cert_dict, "validation": validation}
+    try:
+        worker = await db.workers.find_one({"_id": to_query_id(worker_id), "is_deleted": {"$ne": True}})
+        if not worker:
+            raise HTTPException(status_code=404, detail="Worker not found")
+        now = datetime.now(timezone.utc)
+        cert_dict = cert.model_dump()
+        cert_dict["added_by"] = str(admin.get("id") or admin.get("_id") or "")
+        cert_dict["added_at"] = now
+        await db.workers.update_one(
+            {"_id": to_query_id(worker_id)},
+            {"$push": {"certifications": cert_dict}, "$set": {"updated_at": now}}
+        )
+        updated = await db.workers.find_one({"_id": to_query_id(worker_id)})
+        try:
+            validation = validate_worker_certifications(updated)
+        except Exception as e:
+            logger.warning(f"validate_worker_certifications failed: {e}")
+            validation = {"cleared": False, "blocks": [], "warnings": []}
+
+        # Make the response JSON-safe — datetime objects from Pydantic v2 .model_dump()
+        # are real datetime.datetime instances and FastAPI will only serialize them
+        # if returned via JSONResponse or the Pydantic response_model path.
+        from fastapi.encoders import jsonable_encoder
+        return jsonable_encoder({
+            "message": "Certification added",
+            "certification": cert_dict,
+            "validation": validation,
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"add_worker_certification crashed for worker {worker_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)[:200]}")
 
 @api_router.delete("/workers/{worker_id}/certifications/{cert_index}")
 async def remove_worker_certification(worker_id: str, cert_index: int, admin=Depends(get_admin_user)):
