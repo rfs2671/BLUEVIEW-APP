@@ -14153,6 +14153,49 @@ async def reindex_all_project_files(
     return {"queued": len(queued), "files": queued}
 
 
+@api_router.get("/projects/{project_id}/debug/indexed-pages")
+async def debug_indexed_pages(
+    project_id: str,
+    current_user=Depends(get_current_user),
+    limit: int = 50,
+):
+    """Admin diagnostic — show what v2 indexing actually stored for this
+    project's pages. Returns the interesting fields only (no raw summaries
+    over 400 chars, no full embedding array)."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    company_id = get_user_company_id(current_user)
+    q: Dict[str, Any] = {"project_id": project_id}
+    if company_id:
+        q["company_id"] = company_id
+    rows = await db.document_page_index.find(q).sort([
+        ("file_name", 1), ("page_number", 1),
+    ]).limit(limit).to_list(limit)
+    out = []
+    for r in rows:
+        summary = r.get("summary") or ""
+        emb = r.get("embedding")
+        out.append({
+            "file_name":        r.get("file_name"),
+            "page":             r.get("page_number"),
+            "index_version":    r.get("index_version"),
+            "discipline":       r.get("discipline"),
+            "sheet_number":     r.get("sheet_number"),
+            "sheet_title":      r.get("sheet_title"),
+            "floor":            r.get("floor"),
+            "is_spec_page":     r.get("is_spec_page"),
+            "keywords_count":   len(r.get("keywords") or []),
+            "summary_length":   len(summary),
+            "summary_preview":  summary[:400],
+            "has_embedding":    bool(emb) and isinstance(emb, list) and len(emb) > 0,
+            "embedding_dim":    (len(emb) if isinstance(emb, list) else 0),
+            "page_jpeg_r2_key": r.get("page_jpeg_r2_key") or "",
+            "materials_preview": (r.get("materials") or "")[:200],
+        })
+    return {"count": len(out), "pages": out}
+
+
 @api_router.get("/projects/{project_id}/document-index-status")
 async def get_document_index_status(
     project_id: str,
