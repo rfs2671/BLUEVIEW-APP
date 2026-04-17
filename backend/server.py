@@ -4173,7 +4173,12 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
     result = await db.checkins.insert_one(checkin_record)
     checkin_record["id"] = str(result.inserted_id)
     checkin_record.pop("_id", None)
-    return checkin_record
+    # JSON-safe — checkin_record carries raw datetime fields that FastAPI's
+    # default serializer will choke on without a response_model.
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(checkin_record)
+
+
 @api_router.post("/checkin")
 async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
     """Public endpoint - allows workers to check in via NFC or manual.
