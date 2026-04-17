@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions } from 'react-native';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle } from 'lucide-react-native';
 import { dropboxAPI, annotationsAPI } from '../utils/api';
@@ -26,10 +26,21 @@ async function resolvePdfSrc(rawUrl) {
   return abs;
 }
 
-// pdf.js viewer hosted by Mozilla — renders reliably in WebView on both iOS
-// and Android. We pass the resolved PDF URL via the `file` query param.
+// On Android, WebView can't natively render PDFs — we wrap the URL in
+// Mozilla's hosted pdf.js viewer. On iOS, WKWebView renders application/pdf
+// content natively via PDFKit with smooth pinch/zoom/pan, so we load the
+// PDF URL directly.
 function pdfJsViewerUrl(pdfUrl) {
   return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}`;
+}
+
+function webViewSourceForPdf(pdfUrl) {
+  if (Platform.OS === 'ios') {
+    // PDFKit via WKWebView: smooth native zoom/scroll.
+    return { uri: pdfUrl };
+  }
+  // Android: pdf.js fallback.
+  return { uri: pdfJsViewerUrl(pdfUrl) };
 }
 
 export default function PDFViewer({ visible, file, projectId, onClose }) {
@@ -48,6 +59,12 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const [newComment, setNewComment] = useState('');
   const [replyText, setReplyText] = useState('');
   const [containerLayout, setContainerLayout] = useState(null);
+
+  // Memoize the WebView source so unrelated state updates (note sheet, reply
+  // input, annotation taps) don't create a new object reference and force a
+  // WebView reload. Without this, every pinch-zoom-induced re-render dropped
+  // the user back to page 1.
+  const webViewSource = useMemo(() => (url ? webViewSourceForPdf(url) : null), [url]);
 
   useEffect(() => {
     if (visible && projectId) {
@@ -226,16 +243,29 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
             style={{ flex: 1 }}
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
           >
-            {/* WebView for PDF — pdf.js is reliable on both iOS and Android. */}
+            {/* WebView for PDF — iOS uses PDFKit natively (smooth pinch-zoom);
+                Android wraps the URL in pdf.js since its WebView can't render
+                PDFs on its own. */}
             {React.createElement(
               require('react-native-webview').default,
               {
-                source: { uri: pdfJsViewerUrl(url) },
+                source: webViewSource,
                 style: { flex: 1, backgroundColor: '#050a12' },
                 originWhitelist: ['*'],
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 mixedContentMode: 'always',
+                // Keep in-memory page cache across zoom/pan so the viewer
+                // doesn't re-fetch when the user pinches.
+                cacheEnabled: true,
+                // Let the platform handle pinch-zoom + scrolling natively.
+                scalesPageToFit: true,
+                allowsBackForwardNavigationGestures: false,
+                // iOS PDFKit needs this to let the user pinch-zoom freely.
+                scrollEnabled: true,
+                // Prevent the WebView from reloading on orientation/size change
+                // (some Android builds re-mount the native view otherwise).
+                androidLayerType: 'hardware',
                 onError: () => setError(true),
                 startInLoadingState: true,
                 renderLoading: () => (
