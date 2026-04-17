@@ -12909,7 +12909,9 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
                 _r2_client.delete_object, Bucket=R2_BUCKET_NAME, Key=old_key
             )
         except Exception as e:
-            logger.warning(f"repair_file_names: copy/delete failed for {old_key}: {e}")
+            err_msg = f"copy/delete failed: old_key={old_key!r} new_key={new_key!r} error={str(e)[:300]}"
+            logger.warning(f"repair_file_names: {err_msg}")
+            debug_info[-1]["r2_error"] = err_msg
             continue
 
         new_url = f"{R2_PUBLIC_URL.rstrip('/')}/{new_key}" if R2_PUBLIC_URL else f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{new_key}"
