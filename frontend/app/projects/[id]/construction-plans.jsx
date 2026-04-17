@@ -47,6 +47,7 @@ import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
 const DROPBOX_BLUE = '#0061FF';
 
@@ -98,6 +99,8 @@ export default function ConstructionPlansScreen() {
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [fileToDelete, setFileToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -249,38 +252,30 @@ export default function ConstructionPlansScreen() {
     }
   };
 
-  const handleDeleteFile = async (file) => {
+  // Opens the themed confirmation modal. Actual delete happens in confirmDeleteFile().
+  const handleDeleteFile = (file) => {
     const canDelete = ['owner', 'admin'].includes(String(user?.role || '').toLowerCase());
     if (!canDelete) {
       toast.error('Not allowed', 'Only company owners or admins can delete files.');
       return;
     }
-    // Confirm with the user. On web, window.confirm; on native, Alert.alert.
-    let confirmed = false;
-    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
-      confirmed = window.confirm(`Permanently delete "${file.name}"? This cannot be undone.`);
-    } else {
-      const { Alert } = require('react-native');
-      confirmed = await new Promise((resolve) => {
-        Alert.alert(
-          'Delete file?',
-          `Permanently delete "${file.name}"? This cannot be undone.`,
-          [
-            { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-            { text: 'Delete', style: 'destructive', onPress: () => resolve(true) },
-          ]
-        );
-      });
-    }
-    if (!confirmed) return;
+    setFileToDelete(file);
+  };
 
+  const confirmDeleteFile = async () => {
+    if (!fileToDelete || deleting) return;
+    const file = fileToDelete;
+    setDeleting(true);
     try {
       await dropboxAPI.deleteFile(projectId, file.id);
-      toast.success('Deleted', `${file.name} deleted`);
+      toast.success('Deleted', `${file.name} permanently deleted`);
+      setFileToDelete(null);
       fetchFiles();
     } catch (error) {
       console.error('Delete failed:', error);
       toast.error('Delete Error', error.response?.data?.detail || 'Could not delete file');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -573,6 +568,22 @@ export default function ConstructionPlansScreen() {
           file={selectedPdfFile}
           projectId={projectId}
           onClose={() => { setPdfViewerVisible(false); setSelectedPdfFile(null); }}
+        />
+
+        <ConfirmDialog
+          visible={!!fileToDelete}
+          title="Delete this file?"
+          message={fileToDelete ? `You are about to permanently delete "${fileToDelete.name}".` : ''}
+          details={[
+            'Removes the file from Cloudflare R2 storage',
+            'Removes the database record and any annotations',
+            'This action cannot be undone',
+          ]}
+          confirmLabel={deleting ? 'Deleting…' : 'Delete permanently'}
+          cancelLabel="Cancel"
+          destructive
+          onConfirm={confirmDeleteFile}
+          onCancel={() => { if (!deleting) setFileToDelete(null); }}
         />
       </SafeAreaView>
     </AnimatedBackground>
