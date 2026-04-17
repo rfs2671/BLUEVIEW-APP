@@ -14259,6 +14259,57 @@ async def reindex_all_project_files(
     return {"queued": len(queued), "files": queued}
 
 
+@api_router.post("/debug/probe-waapi-endpoints")
+async def debug_probe_waapi_endpoints(
+    body: dict,
+    current_user=Depends(get_admin_user),
+):
+    """Probe multiple WaAPI action paths with the same test payload to see
+    which endpoint actually accepts our image sends. Returns {path: status}.
+
+    Body: {"image_url": "<presigned_r2_url>", "group_id": "<wa_group_id>"}
+    """
+    image_url = (body or {}).get("image_url", "").strip()
+    group_id = (body or {}).get("group_id", "").strip()
+    if not image_url or not group_id:
+        raise HTTPException(status_code=422, detail="image_url and group_id required")
+    if not WAAPI_INSTANCE_ID or not WAAPI_TOKEN:
+        raise HTTPException(status_code=503, detail="WaAPI not configured")
+
+    paths_to_try = [
+        ("client/action/send-image",       {"chatId": group_id, "image":    image_url, "caption": "probe"}),
+        ("client/action/send-media",       {"chatId": group_id, "mediaUrl": image_url, "caption": "probe"}),
+        ("client/action/send-media",       {"chatId": group_id, "media":    image_url, "caption": "probe"}),
+        ("client/action/send-media-url",   {"chatId": group_id, "mediaUrl": image_url, "caption": "probe"}),
+        ("client/action/send-file-picture",{"chatId": group_id, "image":    image_url, "caption": "probe"}),
+        ("client/action/send-message",     {"chatId": group_id, "mediaUrl": image_url, "message": "probe"}),
+    ]
+    results = {}
+    async with httpx.AsyncClient(timeout=25.0) as client_http:
+        for path, payload in paths_to_try:
+            try:
+                resp = await client_http.post(
+                    f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/{path}",
+                    headers={
+                        "Authorization": f"Bearer {WAAPI_TOKEN}",
+                        "Content-Type":  "application/json",
+                    },
+                    json=payload,
+                )
+                try:
+                    j = resp.json()
+                except Exception:
+                    j = None
+                results[f"{path} fields={list(payload.keys())}"] = {
+                    "status": resp.status_code,
+                    "body_preview": resp.text[:300],
+                    "json": j,
+                }
+            except Exception as e:
+                results[path] = {"error": str(e)[:200]}
+    return {"base_url": WAAPI_BASE_URL, "instance": WAAPI_INSTANCE_ID, "results": results}
+
+
 @api_router.post("/projects/{project_id}/debug/test-plan-image-send")
 async def debug_test_plan_image_send(
     project_id: str,
