@@ -11268,9 +11268,13 @@ async def _index_single_page(
 ):
     """Index one page: Qwen summary + embedding + R2 JPEG storage.
 
-    PyMuPDF-extracted text length gates the Qwen call — pages with >800
-    characters of extractable text are likely spec sheets and get marked
-    as such instead of consuming VLM tokens on dense type.
+    Extractable-text length is used as a rough gate for SPEC-only pages
+    (walls-of-text with no drawing). Architectural drawings have long
+    title blocks + keynote lists that can push text past 1000 chars
+    while still being primarily VISUAL, so the threshold has to be set
+    high enough to let those through. We also require the text to look
+    paragraph-style (long lines) rather than labels-and-dimensions-style
+    (short fragments).
     """
     now = datetime.now(timezone.utc)
     base_doc = {
@@ -11285,8 +11289,18 @@ async def _index_single_page(
         "index_version": 2,
     }
 
-    # Spec sheets: store but skip VLM.
-    if page_text and len(page_text.strip()) > 800:
+    # Spec-sheet detection: must be BOTH long (>5000 chars — a drawing with
+    # annotations rarely gets that high) AND paragraph-style (avg non-empty
+    # line length ≥40 chars). Architectural drawings have many short labels
+    # and fail the second check even when they have lots of keynote text.
+    stripped = (page_text or "").strip()
+    is_spec = False
+    if len(stripped) > 5000:
+        lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+        if lines:
+            avg_len = sum(len(ln) for ln in lines) / len(lines)
+            is_spec = avg_len >= 40
+    if is_spec:
         doc = dict(base_doc)
         doc.update({
             "sheet_number":       None,
