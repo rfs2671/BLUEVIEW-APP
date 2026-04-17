@@ -12217,7 +12217,8 @@ async def _run_group_agent(
 
     try:
         async with httpx.AsyncClient(timeout=40.0) as client_http:
-            for _turn in range(3):  # max 3 tool rounds
+            last_content = ""  # track so we can fall back gracefully on overrun
+            for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={
@@ -12237,6 +12238,8 @@ async def _run_group_agent(
                 choice = resp.json()["choices"][0]["message"]
                 tool_calls = choice.get("tool_calls") or []
                 content = choice.get("content") or ""
+                if content:
+                    last_content = content
 
                 # No tool calls — we have the final reply
                 if not tool_calls:
@@ -12244,7 +12247,29 @@ async def _run_group_agent(
                         return None
                     return content.strip() or None
 
-                # Append assistant turn and execute each tool
+                # Short-circuit: query_plan and start_checklist both dispatch
+                # asynchronously — the async worker will send its own user-facing
+                # messages (acknowledgement + image or checklist prompt). Running
+                # more LLM rounds after calling them just wastes tokens and risks
+                # double-replies. Stop here and let the async work speak.
+                async_dispatch_tools = {"query_plan", "start_checklist"}
+                if any(tc["function"]["name"] in async_dispatch_tools for tc in tool_calls):
+                    # Execute them (fire-and-forget semantics inside the handlers)
+                    import json as _json
+                    for tc in tool_calls:
+                        tc_name = tc["function"]["name"]
+                        try:
+                            tc_args = _json.loads(tc["function"].get("arguments") or "{}")
+                        except Exception:
+                            tc_args = {}
+                        await _dispatch_agent_tool(
+                            tc_name, tc_args,
+                            project_id=project_id, group_id=group_id,
+                            company_id=company_id, sender=sender,
+                        )
+                    return None  # the async handler sends the reply
+
+                # Append assistant turn and execute each tool (synchronous tools)
                 messages.append({
                     "role": "assistant",
                     "content": content,
@@ -12271,8 +12296,16 @@ async def _run_group_agent(
                         "name":         tc_name,
                         "content":      tool_result,
                     })
-            # Max turns reached — synthesize something from last content
-            return "Too many tool calls; please restate your question."
+            # Max turns reached — return whatever assistant text we've seen if
+            # any (often the model has already said something useful mid-loop);
+            # otherwise fall back silently rather than dumping a "too many
+            # tool calls" message into the group chat.
+            if last_content and last_content.strip().upper() != "NOREPLY":
+                return last_content.strip()
+            logger.warning(
+                f"agent: max turns hit for group={group_id} sender={sender} body={body[:80]!r}"
+            )
+            return None
     except Exception as e:
         logger.error(f"group agent error: {e}", exc_info=True)
         return None
