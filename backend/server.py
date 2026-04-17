@@ -11995,27 +11995,37 @@ _AGENT_TOOLS = [
 ]
 
 
-_AGENT_SYSTEM_PROMPT = (
+_AGENT_SYSTEM_PROMPT_BASE = (
     "You are Levelog Assistant, a concise WhatsApp bot for a NYC construction crew. "
     "You respond to messages in a project's group chat. "
     "Use the available tools to answer questions about workers, DOB compliance, open items, "
-    "materials, and construction drawings. Create checklists when asked. "
+    "materials, construction drawings, and project info. Create checklists when asked. "
     # Drawing prefixes the crew commonly uses in requests like
     # "show me AR roof", "pull up ME-401", "M-2 2nd floor":
     "NYC drawings use discipline prefixes: AR = Architectural (A-#), "
     "ST = Structural (S-#), ME / M = Mechanical, EL / E = Electrical, "
     "PL / P = Plumbing, SP = Sprinkler, GN = General. Treat 'AR' and 'A' as Architectural, "
     "'ME' and 'M' as Mechanical, etc. "
-    "For 'show me X' requests, call query_plan immediately with your best-guess "
-    "discipline/floor/keywords from the text rather than asking the user to rephrase. "
+    "For any 'show me X' request, call query_plan IMMEDIATELY with your best-guess "
+    "discipline/floor/keywords from the text. Never ask the user to rephrase a drawing request. "
     "Previous turns in this chat are in the conversation history — use them. "
     "If the user is clearly answering a clarifying question you asked earlier, "
     "combine both turns and call the right tool. "
-    "If the user's message is off-topic (casual chatter between workers not directed at you), "
-    "respond with the single word NOREPLY and no other text. "
     "Keep replies under 80 words unless listing many items. "
     "Use the tool return values directly — do not fabricate data. Never invent worker names, "
     "permit numbers, or plan details that weren't returned by a tool."
+)
+
+_AGENT_NOREPLY_CLAUSE = (
+    " If the user's message is off-topic (casual chatter between workers not directed at you), "
+    "respond with the single word NOREPLY and no other text."
+)
+
+_AGENT_EXPLICIT_CLAUSE = (
+    " The user just addressed you explicitly with '@levelog' or the bot's phone mention. "
+    "This message is definitely for you. You MUST call a tool OR give a direct text reply — "
+    "never respond NOREPLY for an explicitly-addressed message. If you don't know which tool "
+    "fits, make your best guess and try."
 )
 
 
@@ -12324,6 +12334,7 @@ async def _run_group_agent(
     sender: str,
     body: str,
     features: Dict[str, Any],
+    explicit_mention: bool = False,
 ) -> Optional[str]:
     """Run the tool-use agent over a bot-addressed message. Returns the reply
     text to send (or None for NOREPLY / silence)."""
@@ -12357,26 +12368,47 @@ async def _run_group_agent(
             last = recent[-1]
             if (last.get("body") or "").strip() == (body or "").strip():
                 recent = recent[:-1]
+        # Drop error/ack replies from the history so the model doesn't read
+        # "too many tool calls" or "searching drawings…" as precedent and
+        # decide to give up.
+        NOISE_PREFIXES = (
+            "too many tool calls",
+            "🔍 searching drawings",
+            "🔎 checking the drawings",
+            "plan queries are not configured",
+            "couldn't find that sheet",
+        )
         for m in recent[-8:]:  # keep context small & cheap
             role = "assistant" if m.get("sender") == "bot" else "user"
             msg_body = (m.get("body") or "").strip()
             if not msg_body:
                 continue
-            # Annotate user messages with sender phone so the model can tell
-            # different people apart in the group.
-            if role == "user":
+            if role == "assistant":
+                low = msg_body.lower()
+                if any(low.startswith(p) for p in NOISE_PREFIXES):
+                    continue
+                history_msgs.append({"role": "assistant", "content": msg_body})
+            else:
+                # Annotate user messages with sender phone so the model can
+                # tell different people apart in the group.
                 who = str(m.get("sender") or "")[-4:] or "user"
                 history_msgs.append({
                     "role":    "user",
                     "content": f"[{who}] {msg_body}",
                 })
-            else:
-                history_msgs.append({"role": "assistant", "content": msg_body})
     except Exception as e:
         logger.warning(f"agent: loading history failed: {e}")
 
+    # Build the system prompt. If the user addressed us explicitly, drop the
+    # permissive "feel free to NOREPLY" clause and insert a much stronger
+    # "this message is definitely for you, MUST reply" instruction instead.
+    if explicit_mention:
+        system_prompt = _AGENT_SYSTEM_PROMPT_BASE + _AGENT_EXPLICIT_CLAUSE
+    else:
+        system_prompt = _AGENT_SYSTEM_PROMPT_BASE + _AGENT_NOREPLY_CLAUSE
+
     messages = [
-        {"role": "system", "content": _AGENT_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         *history_msgs,
         {"role": "user",   "content": trimmed or body},
     ]
@@ -12425,11 +12457,34 @@ async def _run_group_agent(
                 if content:
                     last_content = content
 
+                # Diagnostic — always log the model's choice so "agent ran but
+                # said nothing" failures show up in Railway logs.
+                tc_names = [tc.get("function", {}).get("name", "") for tc in tool_calls]
+                logger.info(
+                    f"agent turn={_turn} group={group_id[-10:] if group_id else '?'} "
+                    f"sender={sender[-4:]} explicit={explicit_mention} "
+                    f"tools={tc_names} content={(content or '')[:120]!r}"
+                )
+
                 # No tool calls — we have the final reply
                 if not tool_calls:
-                    if content.strip().upper() == "NOREPLY":
+                    stripped = content.strip()
+                    if stripped.upper() == "NOREPLY":
+                        # If the user explicitly addressed us, NOREPLY is a
+                        # policy violation — force a polite fallback so we
+                        # don't ghost them.
+                        if explicit_mention:
+                            logger.warning(
+                                f"agent: NOREPLY despite explicit mention; "
+                                f"fallback for body={body[:80]!r}"
+                            )
+                            return (
+                                "I'm not sure how to help with that yet. "
+                                "Try: who's on site, open items, DOB status, "
+                                "show me <sheet>, or what's the project address."
+                            )
                         return None
-                    return content.strip() or None
+                    return stripped or None
 
                 # Short-circuit: query_plan and start_checklist both dispatch
                 # asynchronously — the async worker will send its own user-facing
@@ -12769,6 +12824,14 @@ async def _process_whatsapp_message(payload: dict):
             )
             address_mode = (features.get("address_mode") or "strict").lower()
             quoted_body = parsed.get("quoted_body") or ""
+            # Did the user literally type @levelog / @<phone> in this message
+            # (or its quoted-reply parent)? If yes we lift the NOREPLY escape
+            # hatch for the agent — an explicitly addressed message MUST get
+            # some reply.
+            explicit_mention = (
+                _has_explicit_bot_mention(body, bot_phone_digits)
+                or (quoted_body and _has_explicit_bot_mention(quoted_body, bot_phone_digits))
+            )
             is_addressed = await _is_bot_addressed(
                 body,
                 bot_phone_digits,
@@ -12786,6 +12849,7 @@ async def _process_whatsapp_message(payload: dict):
                     sender=sender,
                     body=body,
                     features=features,
+                    explicit_mention=explicit_mention,
                 )
                 if reply:
                     await send_whatsapp_message(group_id, reply)
