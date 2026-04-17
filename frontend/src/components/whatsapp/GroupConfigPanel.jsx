@@ -157,7 +157,13 @@ function FeatureRow({ label, icon, value, onChange, disabled, badge, colors }) {
 }
 
 // ─── Main panel ─────────────────────────────────────────────────────
-export default function GroupConfigPanel({ group, onSaved, onClose }) {
+export default function GroupConfigPanel({
+  group,
+  onSaved,
+  onClose,
+  qwenConfigured = false,
+  hasIndexedDocs = false,
+}) {
   const { colors } = useTheme();
   const s = useMemo(() => buildInnerStyles(colors), [colors]);
   const toast = useToast();
@@ -207,9 +213,13 @@ export default function GroupConfigPanel({ group, onSaved, onClose }) {
     }
   };
 
-  // If plan_queries should show a "coming soon" badge — Sprint 3 wires the
-  // real toggle. For now always show the badge so the UI reads as spec'd.
-  const planQueriesBadge = 'Soon';
+  // Plan queries toggle behavior:
+  // - No Qwen key on server → show "Requires Qwen API" badge, no toggle
+  // - Qwen configured but no indexed docs → "Index documents first" badge, no toggle
+  // - Qwen configured AND at least one indexed page → real Switch
+  let planQueriesBadge = null;
+  if (!qwenConfigured) planQueriesBadge = 'Requires Qwen API';
+  else if (!hasIndexedDocs) planQueriesBadge = 'Index documents first';
 
   return (
     <GlassCard style={s.panel}>
@@ -348,6 +358,7 @@ export default function GroupConfigPanel({ group, onSaved, onClose }) {
           label="Plan Queries"
           icon={<Compass size={18} strokeWidth={1.5} color={colors.text.secondary} />}
           value={config.features?.plan_queries}
+          onChange={(v) => updateFeature('plan_queries', v)}
           badge={planQueriesBadge}
           colors={colors}
         />

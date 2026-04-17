@@ -22,6 +22,10 @@ import {
   Copy,
   CheckCircle,
   Settings,
+  FileText,
+  RotateCw,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -29,7 +33,7 @@ import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
-import { whatsappAPI, projectsAPI } from '../../../src/utils/api';
+import { whatsappAPI, projectsAPI, documentsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
@@ -52,6 +56,11 @@ export default function WhatsAppGroupsScreen() {
   const [whatsappStatus, setWhatsappStatus] = useState(null);
   const [unlinking, setUnlinking] = useState(null);
   const [configOpenId, setConfigOpenId] = useState(null);  // groupId whose config panel is expanded
+
+  // Document index state (Sprint 3)
+  const [indexStatus, setIndexStatus] = useState(null);  // {qwen_configured, files:[...]}
+  const [indexOpen, setIndexOpen] = useState(false);
+  const [reindexing, setReindexing] = useState(null); // file_id currently being re-indexed
 
   // Modal state
   const [showLinkModal, setShowLinkModal] = useState(false);
@@ -101,19 +110,40 @@ export default function WhatsAppGroupsScreen() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, groupsData, waStatus] = await Promise.all([
+      const [projectData, groupsData, waStatus, idxStatus] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         whatsappAPI.getGroups(projectId).catch(() => []),
         whatsappAPI.getStatus().catch(() => null),
+        documentsAPI.getIndexStatus(projectId).catch(() => null),
       ]);
       setProject(projectData);
       setGroups(Array.isArray(groupsData) ? groupsData : []);
       setWhatsappStatus(waStatus);
+      setIndexStatus(idxStatus);
     } catch (error) {
       console.error('Failed to fetch data:', error);
       toast.error('Load Error', 'Could not load WhatsApp groups');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleReindex = async (fileId) => {
+    setReindexing(fileId);
+    try {
+      await documentsAPI.reindexFile(projectId, fileId);
+      toast.success('Indexing', 'Re-index started. Check back in a moment.');
+      // Refresh status after a short delay
+      setTimeout(async () => {
+        try {
+          const s = await documentsAPI.getIndexStatus(projectId);
+          setIndexStatus(s);
+        } catch {}
+      }, 2500);
+    } catch (e) {
+      toast.error('Error', e?.response?.data?.detail || 'Re-index failed');
+    } finally {
+      setReindexing(null);
     }
   };
 
@@ -315,6 +345,11 @@ export default function WhatsAppGroupsScreen() {
                         {isConfigOpen && (
                           <GroupConfigPanel
                             group={group}
+                            qwenConfigured={!!indexStatus?.qwen_configured}
+                            hasIndexedDocs={
+                              Array.isArray(indexStatus?.files)
+                              && indexStatus.files.some((f) => (f.indexed_pages || 0) > 0)
+                            }
                             onSaved={(updated) => {
                               setGroups((prev) =>
                                 prev.map((g) =>
@@ -341,6 +376,85 @@ export default function WhatsAppGroupsScreen() {
                   </Text>
                 </GlassCard>
               )}
+
+              {/* Document Index (Sprint 3) — only render when relevant */}
+              {(() => {
+                const anyFiles = (indexStatus?.files || []).length > 0;
+                const anyPlanQueryGroup = groups.some((g) => g?.bot_config?.features?.plan_queries);
+                if (!anyFiles && !anyPlanQueryGroup) return null;
+                return (
+                  <GlassCard style={{ marginTop: spacing.lg, padding: spacing.md }}>
+                    <Pressable
+                      onPress={() => setIndexOpen((v) => !v)}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}
+                    >
+                      <FileText size={18} strokeWidth={1.5} color={colors.text.secondary} />
+                      <Text style={{ flex: 1, fontSize: 14, fontWeight: '600', color: colors.text.primary }}>
+                        Plan Query Index
+                      </Text>
+                      {indexOpen
+                        ? <ChevronDown size={18} color={colors.text.muted} />
+                        : <ChevronRight size={18} color={colors.text.muted} />}
+                    </Pressable>
+                    {indexOpen && (
+                      <View style={{ marginTop: spacing.md }}>
+                        {!indexStatus?.qwen_configured ? (
+                          <Text style={{ fontSize: 13, color: colors.text.muted, lineHeight: 18 }}>
+                            Plan queries require Qwen API setup. Contact your administrator.
+                          </Text>
+                        ) : (indexStatus?.files || []).length === 0 ? (
+                          <Text style={{ fontSize: 13, color: colors.text.muted }}>
+                            No PDFs yet. Upload plans to this project first.
+                          </Text>
+                        ) : (
+                          <>
+                            {indexStatus.files.map((f) => (
+                              <View
+                                key={f.file_id}
+                                style={{
+                                  flexDirection: 'row', alignItems: 'center',
+                                  paddingVertical: spacing.sm,
+                                  borderTopWidth: 1,
+                                  borderTopColor: colors.glass.border,
+                                }}
+                              >
+                                <View style={{ flex: 1 }}>
+                                  <Text
+                                    numberOfLines={1}
+                                    style={{ fontSize: 13, color: colors.text.primary }}
+                                  >
+                                    {f.file_name}
+                                  </Text>
+                                  <Text style={{ fontSize: 11, color: colors.text.muted, marginTop: 2 }}>
+                                    {f.indexed_pages || 0} / {f.total_pages || 0} pages indexed
+                                  </Text>
+                                </View>
+                                <Pressable
+                                  onPress={() => handleReindex(f.file_id)}
+                                  disabled={reindexing === f.file_id}
+                                  style={({ pressed }) => [
+                                    { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
+                                    pressed && { opacity: 0.7 },
+                                  ]}
+                                >
+                                  {reindexing === f.file_id ? (
+                                    <ActivityIndicator size="small" color={colors.text.primary} />
+                                  ) : (
+                                    <RotateCw size={16} strokeWidth={1.5} color={colors.text.secondary} />
+                                  )}
+                                </Pressable>
+                              </View>
+                            ))}
+                            <Text style={{ fontSize: 11, color: colors.text.subtle, marginTop: spacing.sm }}>
+                              Indexing runs automatically when documents are synced.
+                            </Text>
+                          </>
+                        )}
+                      </View>
+                    )}
+                  </GlassCard>
+                );
+              })()}
             </>
           )}
         </ScrollView>

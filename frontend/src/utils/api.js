@@ -948,6 +948,25 @@ export const whatsappAPI = {
 };
 
 /**
+ * Document indexing (Sprint 3 — plan queries).
+ */
+export const documentsAPI = {
+  getIndexStatus: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/document-index-status`,
+    );
+    return response.data;
+  },
+  reindexFile: async (projectId, fileId) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/reindex-document`,
+      { file_id: fileId },
+    );
+    return response.data;
+  },
+};
+
+/**
  * WhatsApp checklists — server-extracted action items from group conversations.
  */
 export const checklistAPI = {

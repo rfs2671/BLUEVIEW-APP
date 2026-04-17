@@ -133,6 +133,14 @@ WHATSAPP_VENDOR = os.environ.get("WHATSAPP_VENDOR", "waapi")
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
+# Qwen2.5-VL via Together AI (OpenAI-compatible) — used for plan indexing
+# and query-time sheet matching. 7B model chosen over 72B: title-block
+# extraction is a structured task where accuracy is effectively the same
+# but 7B is ~10x cheaper and ~3x lower latency.
+QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
+QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "https://api.together.xyz/v1")
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+
 SCREENSHOT_ENABLED = False
 
 scheduler = AsyncIOScheduler()
@@ -6215,10 +6223,23 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
                         {"_id": existing["_id"]},
                         {"$set": file_record}
                     )
+                    file_record["_id"] = existing["_id"]
                 else:
                     file_record["cache_version"] = 1
                     file_record["created_at"] = now
-                    await db.project_files.insert_one(file_record)
+                    insert_res = await db.project_files.insert_one(file_record)
+                    file_record["_id"] = insert_res.inserted_id
+
+                # Sprint 3: spawn plan indexing for PDFs when a file is new/changed.
+                # Hash cache inside _index_pdf_file also catches unchanged bytes.
+                if (
+                    QWEN_API_KEY
+                    and filename.lower().endswith(".pdf")
+                    and r2_url
+                ):
+                    asyncio.create_task(
+                        _index_pdf_file(project_id, company_id, dict(file_record))
+                    )
 
                 synced += 1
             except Exception as entry_err:
@@ -6366,6 +6387,10 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
     file_record["_id"] = str(result.inserted_id)
     file_record.pop("created_at", None)
     file_record.pop("updated_at", None)
+
+    # Sprint 3: spawn plan indexing for PDFs (no-op if QWEN_API_KEY unset)
+    if filename.lower().endswith(".pdf") and QWEN_API_KEY:
+        asyncio.create_task(_index_pdf_file(project_id, company_id, file_record))
 
     return {
         "id": file_record["_id"],
@@ -10394,6 +10419,637 @@ async def run_whatsapp_startup_migrations():
         logger.warning(f"run_whatsapp_startup_migrations: {e}")
 
 
+# ==================== SPRINT 3 — PLAN QUERY PIPELINE ====================
+
+# Module-level concurrency guard so a first-sync of a project with 500 PDFs
+# doesn't spawn 500 simultaneous indexers. Combined with the per-file page
+# semaphore (size 5) the worst case is 3 files * 5 pages = 15 in-flight Qwen
+# requests.
+_PDF_INDEX_FILE_SEMAPHORE = asyncio.Semaphore(3)
+
+
+_DISCIPLINE_PATTERNS = [
+    ("AR", re.compile(r"\b(?:ar|arch|architectural)\b", re.I)),
+    ("ME", re.compile(r"\b(?:me|mech|mechanical|hvac|mh)\b", re.I)),
+    ("EL", re.compile(r"\b(?:el|elec|electrical)\b", re.I)),
+    ("PL", re.compile(r"\b(?:pl|plmb|plumbing)\b", re.I)),
+    ("SP", re.compile(r"\b(?:sp|sprk|sprinkler|fp|fire\s*protection)\b", re.I)),
+    ("ST", re.compile(r"\b(?:st|str|strl|structural)\b", re.I)),
+    ("GN", re.compile(r"\b(?:gn|gen|general|site|civil|cv)\b", re.I)),
+]
+
+
+def detect_discipline(filename: str) -> str:
+    """Classify a drawing file name into an AEC discipline code.
+
+    Checks the full filename + any path components. Case-insensitive.
+    Returns 'other' when no pattern matches.
+    """
+    if not filename:
+        return "other"
+    # Split path components and filename into words to match
+    raw = filename.replace("\\", "/")
+    parts = [p for p in raw.split("/") if p]
+    joined = " ".join(parts)
+    for code, pat in _DISCIPLINE_PATTERNS:
+        if pat.search(joined):
+            return code
+    return "other"
+
+
+async def _index_single_page(
+    *,
+    project_id: str,
+    company_id: str,
+    file_id: str,
+    file_name: str,
+    file_hash: str,
+    page_number: int,
+    discipline: str,
+    page_text: str,
+    page_image_bytes: Optional[bytes],
+):
+    """Index one page. Uses PyMuPDF text length as a pre-filter so dense
+    text ('specs') never gets sent to Qwen (cost + accuracy)."""
+    now = datetime.now(timezone.utc)
+
+    # Dense text = spec pages, skip Qwen, still store so coverage is complete.
+    if page_text and len(page_text.strip()) > 800:
+        await db.document_page_index.update_one(
+            {"file_id": file_id, "page_number": page_number},
+            {"$set": {
+                "project_id": project_id,
+                "company_id": company_id,
+                "file_id": file_id,
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "discipline": discipline,
+                "page_number": page_number,
+                "sheet_number": None,
+                "sheet_title": "[SPECIFICATION PAGE]",
+                "floor": None,
+                "keywords": [],
+                "indexed_at": now,
+                "index_version": 1,
+            }},
+            upsert=True,
+        )
+        return
+
+    if not page_image_bytes:
+        # Cannot send without image bytes — record as unknown page
+        await db.document_page_index.update_one(
+            {"file_id": file_id, "page_number": page_number},
+            {"$set": {
+                "project_id": project_id,
+                "company_id": company_id,
+                "file_id": file_id,
+                "file_name": file_name,
+                "file_hash": file_hash,
+                "discipline": discipline,
+                "page_number": page_number,
+                "sheet_number": None,
+                "sheet_title": None,
+                "floor": None,
+                "keywords": [],
+                "indexed_at": now,
+                "index_version": 1,
+            }},
+            upsert=True,
+        )
+        return
+
+    b64 = base64.b64encode(page_image_bytes).decode("ascii")
+    prompt_text = (
+        "Look at the title block of this construction drawing (usually bottom "
+        "right or bottom center). Extract: sheet_number (e.g. ME-401, A-201), "
+        "sheet_title (e.g. FOURTH FLOOR MECHANICAL PLAN), floor_reference "
+        "(e.g. 4TH, 4, ROOF, CELLAR, TYPICAL). "
+        'Use null for any field NOT indicated. Return ONLY JSON: '
+        '{"sheet_number": ..., "sheet_title": ..., "floor": ...}'
+    )
+
+    sheet_number = None
+    sheet_title = None
+    floor = None
+    keywords: List[str] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client_http:
+            resp = await client_http.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {QWEN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": QWEN_MODEL,
+                    "max_tokens": 150,
+                    "temperature": 0,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                                },
+                                {"type": "text", "text": prompt_text},
+                            ],
+                        }
+                    ],
+                },
+            )
+            if resp.status_code == 200:
+                content = resp.json()["choices"][0]["message"]["content"].strip()
+                # Some vendors wrap JSON in backticks / language tags — strip.
+                if content.startswith("```"):
+                    content = re.sub(r"^```[a-zA-Z]*", "", content).rstrip("`").strip()
+                import json as _json
+                try:
+                    parsed = _json.loads(content)
+                except Exception:
+                    parsed = {}
+                sheet_number = parsed.get("sheet_number") or None
+                sheet_title = parsed.get("sheet_title") or None
+                floor = parsed.get("floor") or None
+                # Build keywords from sheet_title words for fast search
+                if isinstance(sheet_title, str):
+                    words = re.findall(r"[A-Za-z0-9\-]{2,}", sheet_title.upper())
+                    keywords = list({w for w in words if len(w) >= 2})[:20]
+            else:
+                logger.warning(
+                    f"Qwen returned {resp.status_code} for "
+                    f"{file_name} page {page_number}"
+                )
+    except Exception as e:
+        logger.warning(
+            f"Qwen call failed for {file_name} page {page_number}: {e}"
+        )
+
+    # Normalize floor values to simple digits where possible
+    if isinstance(floor, str):
+        floor = floor.strip() or None
+
+    await db.document_page_index.update_one(
+        {"file_id": file_id, "page_number": page_number},
+        {"$set": {
+            "project_id": project_id,
+            "company_id": company_id,
+            "file_id": file_id,
+            "file_name": file_name,
+            "file_hash": file_hash,
+            "discipline": discipline,
+            "page_number": page_number,
+            "sheet_number": sheet_number,
+            "sheet_title": sheet_title,
+            "floor": floor,
+            "keywords": keywords,
+            "indexed_at": now,
+            "index_version": 1,
+        }},
+        upsert=True,
+    )
+
+
+def _pdf_pages_render_and_text(pdf_bytes: bytes, dpi: int = 150):
+    """Generator yielding (page_number, page_text, jpeg_bytes_or_None).
+
+    Uses pdf2image (already in requirements) + pdfplumber-style text
+    extraction via PyPDF2 if available, else skips the text pre-filter
+    for that page.
+    """
+    # Render images
+    from pdf2image import convert_from_bytes
+    images = convert_from_bytes(pdf_bytes, dpi=dpi)
+
+    # Try text extraction via PyPDF2 (likely already installed as a dep of
+    # the rest of the stack). Fall back to empty string per page if missing.
+    page_texts: List[str] = []
+    try:
+        from pypdf import PdfReader
+        import io as _io
+        reader = PdfReader(_io.BytesIO(pdf_bytes))
+        for p in reader.pages:
+            try:
+                page_texts.append(p.extract_text() or "")
+            except Exception:
+                page_texts.append("")
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader as LegacyReader  # type: ignore
+            import io as _io
+            reader = LegacyReader(_io.BytesIO(pdf_bytes))
+            for p in reader.pages:
+                try:
+                    page_texts.append(p.extract_text() or "")
+                except Exception:
+                    page_texts.append("")
+        except Exception:
+            page_texts = ["" for _ in images]
+
+    import io as _io
+    for idx, img in enumerate(images, start=1):
+        buf = _io.BytesIO()
+        try:
+            img.save(buf, format="JPEG", quality=82)
+            jpeg_bytes = buf.getvalue()
+        except Exception:
+            jpeg_bytes = None
+        text = page_texts[idx - 1] if idx - 1 < len(page_texts) else ""
+        yield idx, text, jpeg_bytes
+
+
+async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
+    """Download a PDF from R2 and index each page into document_page_index.
+
+    Quiet no-op when QWEN_API_KEY isn't set (we still can't run text-only
+    pre-filtering without risking blank entries, so the whole index skip
+    is the safest behavior — the feature is off when key is absent).
+
+    File-hash cache: if every page for this file_id is already indexed with
+    a matching file_hash, skip entirely. This makes repeated Dropbox syncs
+    essentially free.
+    """
+    if not QWEN_API_KEY:
+        logger.info("Plan index skipped — QWEN_API_KEY not configured")
+        return
+    if not _r2_client or not file_record.get("r2_key"):
+        logger.info(
+            f"Plan index skipped (no R2 object) for "
+            f"{file_record.get('name')}"
+        )
+        return
+
+    async with _PDF_INDEX_FILE_SEMAPHORE:
+        file_id = str(file_record.get("_id") or file_record.get("id") or "")
+        file_name = file_record.get("name") or "unknown.pdf"
+        r2_key = file_record["r2_key"]
+        discipline = detect_discipline(file_name)
+
+        # Download bytes
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key
+            )
+            pdf_bytes = obj["Body"].read()
+        except Exception as e:
+            logger.error(f"Plan index: R2 download failed for {r2_key}: {e}")
+            return
+
+        # Compute MD5 for hash-cache
+        import hashlib
+        file_hash = hashlib.md5(pdf_bytes).hexdigest()
+
+        # If any existing index entry for this file already has the same
+        # hash we assume the file's content is unchanged and bail out.
+        existing = await db.document_page_index.find_one({
+            "file_id": file_id,
+            "file_hash": file_hash,
+        })
+        if existing:
+            logger.info(
+                f"Plan index: {file_name} already indexed at current hash — "
+                f"skipping"
+            )
+            return
+
+        # Render + classify each page. Bound concurrency with a per-file
+        # semaphore so we don't fire 200 Qwen calls at once.
+        try:
+            pages = list(_pdf_pages_render_and_text(pdf_bytes, dpi=150))
+        except Exception as e:
+            logger.error(f"Plan index: PDF render failed for {file_name}: {e}")
+            return
+
+        sem = asyncio.Semaphore(5)
+        total = len(pages)
+
+        async def _run(p):
+            num, text, jpeg = p
+            async with sem:
+                await _index_single_page(
+                    project_id=project_id,
+                    company_id=company_id,
+                    file_id=file_id,
+                    file_name=file_name,
+                    file_hash=file_hash,
+                    page_number=num,
+                    discipline=discipline,
+                    page_text=text,
+                    page_image_bytes=jpeg,
+                )
+
+        # Log progress every 10 pages by chunking
+        CHUNK = 10
+        for start in range(0, total, CHUNK):
+            batch = pages[start:start + CHUNK]
+            await asyncio.gather(*[_run(p) for p in batch])
+            logger.info(
+                f"Plan index: {file_name}: {min(start + CHUNK, total)}/{total}"
+            )
+
+        logger.info(f"Plan index complete: {file_name} ({total} pages)")
+
+
+async def _project_has_full_index(project_id: str) -> bool:
+    """Return True when every PDF in the project's files has at least one
+    document_page_index entry with a matching file_hash — used to skip
+    re-sync indexing entirely when nothing has changed.
+    """
+    pdf_files = await db.project_files.find({
+        "project_id": project_id,
+        "name": {"$regex": r"\.pdf$", "$options": "i"},
+    }).to_list(200)
+    if not pdf_files:
+        return True
+    for fr in pdf_files:
+        file_id = str(fr.get("_id"))
+        if not fr.get("r2_key"):
+            return False
+        hit = await db.document_page_index.find_one({"file_id": file_id})
+        if not hit:
+            return False
+    return True
+
+
+# ==================== PLAN QUERY HANDLER ====================
+
+PLAN_TRIGGER_VERBS = [
+    "show me", "find the", "pull up", "send me",
+    "where is", "what does", "which sheet", "get me", "open",
+]
+PLAN_DRAWING_NOUNS = [
+    "plan", "elevation", "section", "detail", "schedule",
+    "sheet", "drawing", "blueprint",
+]
+
+
+def _has_plan_query_trigger(text: str) -> bool:
+    """Two-condition match: trigger verb AND drawing noun both present."""
+    if not text:
+        return False
+    low = text.lower()
+    has_verb = any(v in low for v in PLAN_TRIGGER_VERBS)
+    if not has_verb:
+        return False
+    has_noun = any(n in low for n in PLAN_DRAWING_NOUNS)
+    return has_noun
+
+
+async def _parse_plan_query(query: str) -> dict:
+    """Parse a natural-language plan request into a search spec."""
+    if not OPENAI_API_KEY:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client_http:
+            resp = await client_http.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0,
+                    "max_tokens": 200,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": (
+                            "Parse this construction drawing request. Return ONLY JSON: "
+                            '{"discipline": "AR|ME|EL|PL|SP|ST|GN|null", '
+                            '"floor": "floor number/name as string or null", '
+                            '"sheet_type": "plan|elevation|section|detail|schedule|null", '
+                            '"sheet_number": "exact sheet number if mentioned e.g. ME-401 or null", '
+                            '"keywords": ["other relevant terms"]}'
+                        )},
+                        {"role": "user", "content": query},
+                    ],
+                },
+            )
+            if resp.status_code != 200:
+                return {}
+            import json as _json
+            parsed = _json.loads(resp.json()["choices"][0]["message"]["content"])
+            return parsed if isinstance(parsed, dict) else {}
+    except Exception as e:
+        logger.warning(f"plan query parse failed: {e}")
+        return {}
+
+
+def _floor_regex(val: str) -> str:
+    """Build a safe regex for floor matching. Numeric floors require a word
+    boundary + FLOOR context so '4' doesn't match '14TH FLOOR' or 'BASEMENT 4'.
+    """
+    v = (val or "").strip()
+    if not v:
+        return ""
+    if v.isdigit():
+        return rf"\b{v}(?:ST|ND|RD|TH)?\s+FLOOR\b"
+    return rf"\b{re.escape(v)}\b"
+
+
+async def _handle_plan_query(project_id: str, group_id: str, query: str) -> None:
+    """End-to-end: acknowledge, parse, search, render, send via WaAPI."""
+    if not QWEN_API_KEY:
+        await send_whatsapp_message(group_id, "Plan queries are not configured.")
+        return
+
+    # Immediate ack so the user knows we're on it (rendering can take 10s+)
+    try:
+        await send_whatsapp_message(group_id, "🔍 Searching drawings…")
+    except Exception:
+        pass
+
+    parsed = await _parse_plan_query(query)
+    discipline = (parsed.get("discipline") or "").strip() or None
+    floor = parsed.get("floor") or None
+    sheet_number_query = (parsed.get("sheet_number") or "").strip() or None
+    keywords = parsed.get("keywords") or []
+
+    # Build MongoDB query
+    base_query: Dict[str, Any] = {
+        "project_id": project_id,
+        "sheet_title": {"$ne": "[SPECIFICATION PAGE]"},
+    }
+
+    if sheet_number_query:
+        # Fast path — exact sheet number match, case-insensitive
+        base_query["sheet_number"] = {
+            "$regex": f"^{re.escape(sheet_number_query)}$",
+            "$options": "i",
+        }
+    else:
+        and_clauses: List[Dict[str, Any]] = []
+        if discipline:
+            and_clauses.append({"discipline": discipline})
+        if floor:
+            fr = _floor_regex(str(floor))
+            if fr:
+                and_clauses.append({"$or": [
+                    {"floor": {"$regex": fr, "$options": "i"}},
+                    {"sheet_title": {"$regex": fr, "$options": "i"}},
+                ]})
+        if keywords:
+            kw_clauses = []
+            for kw in keywords[:6]:
+                if isinstance(kw, str) and len(kw.strip()) >= 2:
+                    pat = {"$regex": re.escape(kw.strip()), "$options": "i"}
+                    kw_clauses.append({"sheet_title": pat})
+                    kw_clauses.append({"keywords": pat})
+            if kw_clauses:
+                and_clauses.append({"$or": kw_clauses})
+        if and_clauses:
+            base_query["$and"] = and_clauses
+
+    results = await db.document_page_index.find(base_query).limit(5).to_list(5)
+
+    # Sort client-side: exact discipline match first, then floor, then keyword.
+    def _rank(doc):
+        score = 0
+        if discipline and doc.get("discipline") == discipline:
+            score += 100
+        if floor and (
+            str(doc.get("floor") or "").lower() == str(floor).lower()
+            or re.search(_floor_regex(str(floor)) or "", doc.get("sheet_title") or "", re.I)
+        ):
+            score += 50
+        return -score  # ascending
+    results.sort(key=_rank)
+    results = results[:3]
+
+    if not results:
+        await send_whatsapp_message(
+            group_id,
+            "Couldn't find that sheet in the indexed drawings. "
+            "Try being more specific (e.g., 'ME-401' or '4th floor mechanical plan'). "
+            "Make sure plans are synced and indexed in the app.",
+        )
+        return
+
+    # Render + upload + send each result
+    sent_urls: List[str] = []
+    sent_captions: List[str] = []
+    import uuid as _uuid
+    for i, result in enumerate(results):
+        try:
+            file_id = result.get("file_id")
+            page_number = result.get("page_number")
+            sheet_number = result.get("sheet_number") or "Sheet"
+            sheet_title = result.get("sheet_title") or "Construction Drawing"
+
+            file_rec = await db.project_files.find_one({"_id": to_query_id(file_id)})
+            if not file_rec or not file_rec.get("r2_key"):
+                continue
+
+            # Download PDF + render the target page
+            try:
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
+                )
+                pdf_bytes = obj["Body"].read()
+            except Exception as e:
+                logger.warning(f"plan query: R2 get failed: {e}")
+                continue
+
+            # Render just the target page at 150 DPI (re-render at 100 if huge)
+            try:
+                from pdf2image import convert_from_bytes
+                imgs = convert_from_bytes(
+                    pdf_bytes,
+                    dpi=150,
+                    first_page=page_number,
+                    last_page=page_number,
+                )
+                if not imgs:
+                    continue
+                import io as _io
+                buf = _io.BytesIO()
+                imgs[0].save(buf, format="JPEG", quality=82)
+                jpeg_bytes = buf.getvalue()
+                if len(jpeg_bytes) > 5 * 1024 * 1024:
+                    buf = _io.BytesIO()
+                    imgs_low = convert_from_bytes(
+                        pdf_bytes,
+                        dpi=100,
+                        first_page=page_number,
+                        last_page=page_number,
+                    )
+                    imgs_low[0].save(buf, format="JPEG", quality=82)
+                    jpeg_bytes = buf.getvalue()
+            except Exception as e:
+                logger.warning(f"plan query: render failed: {e}")
+                continue
+
+            # Upload to R2 at temp/whatsapp/{group}/{uuid}.jpg
+            # NOTE: R2 lifecycle rule required: temp/whatsapp/ prefix, 7-day expiry
+            temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
+            try:
+                r2_url = await asyncio.to_thread(
+                    _upload_to_r2, jpeg_bytes, temp_key, "image/jpeg"
+                )
+            except Exception as e:
+                logger.warning(f"plan query: R2 upload failed: {e}")
+                continue
+
+            caption = f"{sheet_number} — {sheet_title}"
+
+            # Send via WaAPI send-image, fall back to text on error
+            sent_ok = False
+            try:
+                async with httpx.AsyncClient(timeout=40.0) as client_http:
+                    resp = await client_http.post(
+                        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-image",
+                        headers={
+                            "Authorization": f"Bearer {WAAPI_TOKEN}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "chatId": group_id,
+                            "image": r2_url,
+                            "caption": caption,
+                        },
+                    )
+                    sent_ok = 200 <= resp.status_code < 300
+                    if not sent_ok:
+                        logger.warning(
+                            f"WaAPI send-image returned {resp.status_code}"
+                        )
+            except Exception as e:
+                logger.warning(f"WaAPI send-image error: {e}")
+
+            if not sent_ok:
+                # Text fallback
+                await send_whatsapp_message(
+                    group_id,
+                    f"Found: {caption}. View it in the Levelog app under Construction Plans.",
+                )
+
+            sent_urls.append(r2_url)
+            sent_captions.append(caption)
+
+            # Rate-limit subsequent sends
+            if i < len(results) - 1:
+                await asyncio.sleep(1.5)
+        except Exception as e:
+            logger.error(f"plan query result send failed: {e}")
+
+    # Log a synthetic bot_plan_response entry for conversation history
+    try:
+        await db.whatsapp_messages.insert_one({
+            "group_id": group_id,
+            "sender": "bot",
+            "body": sent_captions[0] if sent_captions else "(plan response)",
+            "media_urls": sent_urls,
+            "type": "bot_plan_response",
+            "created_at": datetime.now(timezone.utc),
+            "project_id": project_id,
+            "company_id": None,
+        })
+    except Exception:
+        pass
+
+
 # ==================== WHATSAPP MESSAGE PROCESSOR ====================
 
 async def _process_whatsapp_message(payload: dict):
@@ -10565,6 +11221,14 @@ async def _process_whatsapp_message(payload: dict):
                     except Exception as e:
                         logger.error(f"on-demand checklist failed: {e}", exc_info=True)
                     return
+
+            # ── Plan query (construction drawing lookup) ──
+            # Gated on features.plan_queries (default False in bot_config).
+            if features.get("plan_queries", False) and body and _has_plan_query_trigger(body):
+                asyncio.create_task(
+                    _handle_plan_query(str(project_id), group_id, body)
+                )
+                return
 
             # Material request detection gated on the features flag
             if features.get("material_detection", True) and body and len(body) >= 15:
@@ -11002,6 +11666,119 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
         "company_active": company_active,
         "whatsapp_number": whatsapp_number,
         "vendor": WHATSAPP_VENDOR,
+    }
+
+
+@api_router.post("/projects/{project_id}/reindex-document")
+async def reindex_project_document(
+    project_id: str,
+    body: dict,
+    current_user=Depends(get_admin_user),
+):
+    """Admin-only: re-index a single PDF. Clears existing page entries first
+    so the file_hash cache can't block the re-run."""
+    file_id = (body or {}).get("file_id")
+    if not file_id:
+        raise HTTPException(status_code=422, detail="file_id is required")
+
+    # Verify company match
+    file_rec = await db.project_files.find_one({"_id": to_query_id(file_id)})
+    if not file_rec:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_rec.get("project_id") != project_id:
+        raise HTTPException(status_code=400, detail="File is not part of this project")
+    company_id = get_user_company_id(current_user)
+    if company_id and file_rec.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not QWEN_API_KEY:
+        raise HTTPException(status_code=503, detail="Plan indexing is not configured")
+    if not file_rec.get("r2_key"):
+        raise HTTPException(status_code=400, detail="File has no R2 storage key")
+
+    # Wipe existing entries for this file
+    await db.document_page_index.delete_many({"file_id": str(file_rec["_id"])})
+
+    # Count pages for the response (best-effort)
+    total_pages = 0
+    try:
+        obj = await asyncio.to_thread(
+            _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=file_rec["r2_key"]
+        )
+        pdf_bytes = obj["Body"].read()
+        try:
+            from pypdf import PdfReader
+            import io as _io
+            total_pages = len(PdfReader(_io.BytesIO(pdf_bytes)).pages)
+        except Exception:
+            total_pages = 0
+    except Exception:
+        pass
+
+    # Spawn background re-index
+    asyncio.create_task(
+        _index_pdf_file(project_id, file_rec.get("company_id") or company_id or "", dict(file_rec))
+    )
+    return {
+        "status": "indexing",
+        "file_name": file_rec.get("name"),
+        "total_pages": total_pages,
+    }
+
+
+@api_router.get("/projects/{project_id}/document-index-status")
+async def get_document_index_status(
+    project_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Per-file indexing status for a project. Includes a top-level flag
+    that tells the frontend whether the server has a Qwen key at all."""
+    company_id = get_user_company_id(current_user)
+    query: Dict[str, Any] = {"project_id": project_id}
+    if company_id:
+        query["company_id"] = company_id
+    # PDFs only
+    query["name"] = {"$regex": r"\.pdf$", "$options": "i"}
+
+    files_out = []
+    try:
+        from pypdf import PdfReader
+        import io as _io
+    except Exception:
+        PdfReader = None  # type: ignore
+        _io = None        # type: ignore
+
+    files = await db.project_files.find(query).to_list(500)
+    for fr in files:
+        file_id = str(fr.get("_id"))
+        total_pages = 0
+        # Try to read page count from the PDF (cheap if file is small)
+        if PdfReader is not None and _io is not None and fr.get("r2_key") and _r2_client:
+            try:
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=fr["r2_key"]
+                )
+                total_pages = len(PdfReader(_io.BytesIO(obj["Body"].read())).pages)
+            except Exception:
+                total_pages = 0
+        indexed = await db.document_page_index.count_documents({
+            "file_id": file_id,
+            "sheet_title": {"$ne": "[SPECIFICATION PAGE]"},
+        })
+        most_recent = await db.document_page_index.find_one(
+            {"file_id": file_id},
+            sort=[("indexed_at", -1)],
+        )
+        files_out.append({
+            "file_id": file_id,
+            "file_name": fr.get("name"),
+            "total_pages": total_pages,
+            "indexed_pages": indexed,
+            "last_indexed_at": (most_recent or {}).get("indexed_at"),
+        })
+
+    return {
+        "qwen_configured": bool(QWEN_API_KEY),
+        "files": files_out,
     }
 
 
