@@ -386,11 +386,22 @@ export const dropboxAPI = {
   },
 
   uploadFile: async (projectId, formData) => {
-    // Do NOT set Content-Type manually — the browser/axios needs to set it
-    // with the boundary param, e.g. 'multipart/form-data; boundary=----xxxx'.
-    // Setting it bare strips the boundary and breaks multipart parsing on 2nd+ uploads.
+    // Web:   axios auto-sets `multipart/form-data; boundary=...` when the body
+    //        is a browser FormData, BUT only if the header is absent. Our default
+    //        `Content-Type: application/json` would otherwise stick, so we pass
+    //        `undefined` to force axios to drop it and let the browser fill it in.
+    // Native: React Native's XHR will auto-set the multipart header if we pass
+    //         `multipart/form-data` with no boundary. We also need to disable
+    //         axios's transformRequest (which would otherwise JSON-stringify our
+    //         FormData) by passing the body through as-is.
+    const isWeb = typeof window !== 'undefined' && !!window.document;
+    const headers = isWeb
+      ? { 'Content-Type': undefined }
+      : { 'Content-Type': 'multipart/form-data' };
     const response = await apiClient.post(`/api/projects/${projectId}/upload-file`, formData, {
       timeout: 120000,
+      headers,
+      transformRequest: (data) => data,
     });
     return response.data;
   },
