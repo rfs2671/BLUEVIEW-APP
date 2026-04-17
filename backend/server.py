@@ -13690,6 +13690,30 @@ async def startup_event():
     _r2_client = _get_r2_client()
     if _r2_client:
         logger.info(f"R2 storage configured: bucket={R2_BUCKET_NAME}")
+        # Ensure CORS lets the web app fetch presigned URLs directly from R2.
+        try:
+            await asyncio.to_thread(
+                _r2_client.put_bucket_cors,
+                Bucket=R2_BUCKET_NAME,
+                CORSConfiguration={
+                    "CORSRules": [{
+                        "AllowedOrigins": [
+                            "https://www.levelog.com",
+                            "https://levelog.com",
+                            "https://app.levelog.com",
+                            "http://localhost:19006",
+                            "http://localhost:8081",
+                        ],
+                        "AllowedMethods": ["GET", "HEAD"],
+                        "AllowedHeaders": ["*"],
+                        "ExposeHeaders": ["Content-Length", "Content-Type", "ETag"],
+                        "MaxAgeSeconds": 3600,
+                    }]
+                },
+            )
+            logger.info("R2 bucket CORS policy applied")
+        except Exception as _cors_err:
+            logger.error(f"Failed to apply R2 CORS policy: {_cors_err}")
     else:
         logger.warning("R2 storage not configured — file delivery will use Dropbox only")
 
