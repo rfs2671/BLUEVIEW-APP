@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libharfbuzz0b \
     libffi-dev \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY requirements.txt .
