@@ -11907,7 +11907,14 @@ _AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_items",
-            "description": "Return open (uncorrected) items from today's daily jobsite log.",
+            "description": (
+                "Return open / uncorrected / outstanding items from today's daily jobsite "
+                "log (punch list, to-do items, unresolved issues, safety findings that still "
+                "need correction). Use for phrases like 'open items', 'outstanding items', "
+                "'what's still open', 'punch list', 'to-do list', 'unresolved issues', "
+                "'anything open', 'what's pending'. Do NOT use for construction drawings "
+                "— that's query_plan."
+            ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
     },
@@ -11924,8 +11931,12 @@ _AGENT_TOOLS = [
         "function": {
             "name": "query_plan",
             "description": (
-                "Look up a construction drawing. Use for any request about plans, drawings, "
-                "elevations, sections, details, schedules, or sheets. Pass the user's "
+                "Look up a construction drawing. Use for requests about PLANS, DRAWINGS, "
+                "ELEVATIONS, SECTIONS, DETAILS, SCHEDULES, or SHEETS — typically phrased "
+                "'show me...', 'pull up...', 'find the...', 'what does the X sheet say', "
+                "or naming a sheet number like 'A-101' / 'ME-401' / 'S-2'. Do NOT use this "
+                "for checklist/punch items (that's open_items), for people (that's "
+                "who_on_site), or for materials (that's material_status). Pass the user's "
                 "original question so the plan pages can be visually analyzed (e.g. "
                 "'what's the thickness of the exterior wall?'). If the user just wants the "
                 "sheet shown, pass question=null."
