@@ -11382,6 +11382,28 @@ async def whatsapp_group_link_initiate(
     return {"code": code, "expires_in_seconds": 300}
 
 
+@api_router.get("/whatsapp/debug/recent-messages")
+async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user)):
+    """Owner/admin: show the last 20 whatsapp_messages stored. Confirms whether
+    the webhook is actually delivering events into the DB."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    msgs = await db.whatsapp_messages.find().sort("created_at", -1).limit(20).to_list(20)
+    return {
+        "count": await db.whatsapp_messages.estimated_document_count(),
+        "recent": [
+            {
+                "from": m.get("sender"),
+                "group_id": m.get("group_id"),
+                "body": (m.get("body") or "")[:140],
+                "created_at": str(m.get("created_at")),
+            }
+            for m in msgs
+        ],
+    }
+
+
 @api_router.get("/whatsapp/debug/pending-codes")
 async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
     """Owner/admin only: list un-verified codes for this company so we can
