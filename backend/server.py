@@ -10778,6 +10778,76 @@ async def _handle_project_info(project_id: str) -> str:
     return "\n".join(lines)
 
 
+async def _handle_active_permits(project_id: str) -> str:
+    """Return currently-active DOB permits for this project.
+
+    Reads from db.dob_logs where record_type='permit' and the permit is
+    issued/active and not expired. Groups by permit type/subtype.
+    """
+    if not project_id:
+        return "Could not determine project."
+    try:
+        permits = await db.dob_logs.find({
+            "project_id":  project_id,
+            "record_type": "permit",
+            "is_deleted":  {"$ne": True},
+        }).sort("expiration_date", -1).to_list(100)
+    except Exception as e:
+        logger.error(f"active_permits query failed: {e}", exc_info=True)
+        return "Couldn't load permit data right now — please try again in a minute."
+
+    if not permits:
+        return (
+            "No permits on file for this project in our DB. "
+            "If you expect permits, run a DOB sync from the project page."
+        )
+
+    # Classify: active if status is issued-like and not past expiration.
+    now = datetime.now(timezone.utc)
+    active_status = {"permit issued", "issued", "active", "pre-filed"}
+
+    def _parse_iso(v):
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        try:
+            s = str(v).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    active = []
+    for p in permits:
+        stat = str(p.get("permit_status") or "").strip().lower()
+        exp = _parse_iso(p.get("expiration_date"))
+        if stat in active_status and (exp is None or exp > now):
+            active.append((p, exp))
+
+    if not active:
+        total = len(permits)
+        return f"No active permits right now (found {total} on file, all expired or closed)."
+
+    # Sort active by expiration (soonest first)
+    active.sort(key=lambda x: (x[1] or datetime.max.replace(tzinfo=timezone.utc)))
+
+    lines = [f"*Active permits ({len(active)}):*"]
+    for p, exp in active[:15]:
+        ptype = p.get("permit_type") or "Permit"
+        sub = p.get("permit_subtype") or ""
+        job = p.get("job_number") or p.get("raw_dob_id") or ""
+        label = f"{ptype}" + (f"/{sub}" if sub else "")
+        if job:
+            label += f" — Job {job}"
+        if exp:
+            label += f" (exp {exp.strftime('%Y-%m-%d')})"
+        lines.append(f"  • {label}")
+    if len(active) > 15:
+        lines.append(f"…and {len(active) - 15} more.")
+    return "\n".join(lines)
+
+
 async def _handle_material_status(project_id: str) -> str:
     """Return formatted status of open/partial material requests."""
     if not project_id:
@@ -12045,7 +12115,22 @@ _AGENT_TOOLS = [
                 "need correction). Use for phrases like 'open items', 'outstanding items', "
                 "'what's still open', 'punch list', 'to-do list', 'unresolved issues', "
                 "'anything open', 'what's pending'. Do NOT use for construction drawings "
-                "— that's query_plan."
+                "— that's query_plan. Do NOT use for DOB permits — that's active_permits."
+            ),
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "active_permits",
+            "description": (
+                "List currently-active DOB permits on the project — GC, DM (demolition), "
+                "EW (equipment/work), PL (plumbing), EL (electrical), MH (mechanical), "
+                "SP (sprinkler), etc. Use for 'active permits', 'what permits are open', "
+                "'show me permits', 'permit status', 'is the GC permit active', 'permits "
+                "expiring', or any question about issued / non-expired DOB job filings. Do "
+                "NOT use for violations — violations are in dob_status."
             ),
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
         },
@@ -12716,6 +12801,8 @@ async def _dispatch_agent_tool(
             return await _handle_project_info(project_id)
         if name == "dob_status":
             return await _handle_dob_status(project_id)
+        if name == "active_permits":
+            return await _handle_active_permits(project_id)
         if name == "open_items":
             return await _handle_open_items(project_id)
         if name == "material_status":
