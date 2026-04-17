@@ -654,10 +654,12 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
             except (ValueError, TypeError):
                 has_valid_sst = True
         elif isinstance(exp, datetime):
-            if exp > now:
+            # Mongo can return naive datetimes; coerce to UTC for safe compare.
+            exp_aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+            if exp_aware > now:
                 has_valid_sst = True
             else:
-                expired_sst = exp
+                expired_sst = exp_aware
 
     if not has_valid_sst:
         if expired_sst:
@@ -684,6 +686,9 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
                     exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
                 except (ValueError, TypeError):
                     continue
+            # Coerce naive datetimes to UTC so the comparison below works.
+            if exp_dt and exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
             if exp_dt and now < exp_dt <= thirty_days:
                 warnings.append({
                     "type": "CERT_EXPIRING_SOON",
