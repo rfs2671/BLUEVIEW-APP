@@ -10083,6 +10083,22 @@ async def send_whatsapp_message(chat_id: str, message: str):
         async with httpx.AsyncClient(timeout=15) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
+            # Log outbound bot turn into whatsapp_messages so the agent's
+            # history loader can recall it on the next user message (makes
+            # multi-turn clarifications work). Best-effort — never fail send.
+            try:
+                now = datetime.now(timezone.utc)
+                await db.whatsapp_messages.insert_one({
+                    "group_id":   chat_id,
+                    "sender":     "bot",
+                    "body":       message,
+                    "has_audio":  False,
+                    "message_id": "",
+                    "timestamp":  now,
+                    "created_at": now,
+                })
+            except Exception as _log_err:
+                logger.debug(f"whatsapp_messages bot-log skipped: {_log_err}")
             return resp.json()
     except Exception as e:
         logger.error(f"WhatsApp send failed to {chat_id}: {e}")
@@ -11800,9 +11816,19 @@ _AGENT_SYSTEM_PROMPT = (
     "You respond to messages in a project's group chat. "
     "Use the available tools to answer questions about workers, DOB compliance, open items, "
     "materials, and construction drawings. Create checklists when asked. "
-    "If the user's message is unclear or off-topic, reply with a short clarification. "
-    "If the message does not seem to need a tool or a reply (e.g. casual chatter between workers "
-    "not directed at you), respond with the single word NOREPLY and no other text. "
+    # Drawing prefixes the crew commonly uses in requests like
+    # "show me AR roof", "pull up ME-401", "M-2 2nd floor":
+    "NYC drawings use discipline prefixes: AR = Architectural (A-#), "
+    "ST = Structural (S-#), ME / M = Mechanical, EL / E = Electrical, "
+    "PL / P = Plumbing, SP = Sprinkler, GN = General. Treat 'AR' and 'A' as Architectural, "
+    "'ME' and 'M' as Mechanical, etc. "
+    "For 'show me X' requests, call query_plan immediately with your best-guess "
+    "discipline/floor/keywords from the text rather than asking the user to rephrase. "
+    "Previous turns in this chat are in the conversation history — use them. "
+    "If the user is clearly answering a clarifying question you asked earlier, "
+    "combine both turns and call the right tool. "
+    "If the user's message is off-topic (casual chatter between workers not directed at you), "
+    "respond with the single word NOREPLY and no other text. "
     "Keep replies under 80 words unless listing many items. "
     "Use the tool return values directly — do not fabricate data. Never invent worker names, "
     "permit numbers, or plan details that weren't returned by a tool."
@@ -12130,8 +12156,44 @@ async def _run_group_agent(
     # Also strip @<botnumber> mentions
     trimmed = re.sub(r"@\d{10,}", "", trimmed).strip()
 
+    # Pull recent conversation so the LLM remembers its own prior turns.
+    # Without this, when the bot asks for clarification and the user replies,
+    # the follow-up is read as a brand-new question with no context.
+    history_msgs: List[Dict[str, str]] = []
+    try:
+        recent = await db.whatsapp_messages.find(
+            {"group_id": group_id}
+        ).sort("created_at", -1).limit(10).to_list(10)
+        recent.reverse()  # oldest → newest
+        # Drop the in-flight current message if it's already logged (it is:
+        # see _process_whatsapp_message line ~12325, which inserts before
+        # running the agent). We match on message_id when available, else
+        # by body equality within the most recent row.
+        if recent and recent[-1].get("sender") != "bot":
+            last = recent[-1]
+            if (last.get("body") or "").strip() == (body or "").strip():
+                recent = recent[:-1]
+        for m in recent[-8:]:  # keep context small & cheap
+            role = "assistant" if m.get("sender") == "bot" else "user"
+            msg_body = (m.get("body") or "").strip()
+            if not msg_body:
+                continue
+            # Annotate user messages with sender phone so the model can tell
+            # different people apart in the group.
+            if role == "user":
+                who = str(m.get("sender") or "")[-4:] or "user"
+                history_msgs.append({
+                    "role":    "user",
+                    "content": f"[{who}] {msg_body}",
+                })
+            else:
+                history_msgs.append({"role": "assistant", "content": msg_body})
+    except Exception as e:
+        logger.warning(f"agent: loading history failed: {e}")
+
     messages = [
         {"role": "system", "content": _AGENT_SYSTEM_PROMPT},
+        *history_msgs,
         {"role": "user",   "content": trimmed or body},
     ]
 
