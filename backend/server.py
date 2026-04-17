@@ -170,6 +170,10 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ
     "https://levelog.com",
     "https://www.levelog.com",
     "https://api.levelog.com",
+    # Mozilla's hosted pdf.js viewer is embedded in the native WebView to render
+    # PDFs — its JS fetches the file via cross-origin GET, so the backend must
+    # allow its origin on the streaming endpoint.
+    "https://mozilla.github.io",
     "http://localhost:8081",
     "http://localhost:19006",
     "http://localhost:3000",

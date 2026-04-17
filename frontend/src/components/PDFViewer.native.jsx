@@ -1,10 +1,36 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle } from 'lucide-react-native';
 import { dropboxAPI, annotationsAPI } from '../utils/api';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
+
+const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
+
+// Resolve whatever URL the backend gave us into something a native WebView can render.
+// Backend-proxy paths (`/api/projects/.../files/.../content`) get upgraded to an
+// absolute api.levelog.com URL and carry a `?token=` JWT so the stream endpoint
+// accepts the request (WebViews can't set Authorization headers).
+async function resolvePdfSrc(rawUrl) {
+  if (!rawUrl) return null;
+  let abs = rawUrl;
+  if (rawUrl.startsWith('/')) abs = `${API_BASE}${rawUrl}`;
+  if (abs.includes('/api/projects/') && abs.includes('/files/') && abs.endsWith('/content')) {
+    try {
+      const tok = await AsyncStorage.getItem('blueview_token');
+      if (tok) abs += (abs.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+    } catch {}
+  }
+  return abs;
+}
+
+// pdf.js viewer hosted by Mozilla — renders reliably in WebView on both iOS
+// and Android. We pass the resolved PDF URL via the `file` query param.
+function pdfJsViewerUrl(pdfUrl) {
+  return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}`;
+}
 
 export default function PDFViewer({ visible, file, projectId, onClose }) {
   const { colors } = useTheme();
@@ -24,13 +50,27 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const [containerLayout, setContainerLayout] = useState(null);
 
   useEffect(() => {
-    if (visible && file?.path && projectId) {
+    if (visible && projectId) {
       setLoading(true);
       setError(false);
       setUrl(null);
-      dropboxAPI.getFileUrl(projectId, file.path)
-        .then(res => { setUrl(res.url); setLoading(false); })
-        .catch(() => { setError(true); setLoading(false); });
+      // Direct-upload files expose their URL on the record itself (either
+      // `directUrl` pushed by construction-plans.jsx or the raw `r2_url`
+      // from the list response). Only fall back to the Dropbox temp-link
+      // endpoint for files that don't have a direct URL (i.e. Dropbox-
+      // synced files whose `path` is still populated).
+      if (file?.directUrl || file?.r2_url) {
+        resolvePdfSrc(file.directUrl || file.r2_url)
+          .then(src => { setUrl(src); setLoading(false); })
+          .catch(() => { setError(true); setLoading(false); });
+      } else if (file?.path) {
+        dropboxAPI.getFileUrl(projectId, file.path)
+          .then(async res => { setUrl(await resolvePdfSrc(res.url)); setLoading(false); })
+          .catch(() => { setError(true); setLoading(false); });
+      } else {
+        setError(true);
+        setLoading(false);
+      }
     }
   }, [visible, file, projectId]);
 
@@ -186,12 +226,16 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
             style={{ flex: 1 }}
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
           >
-            {/* WebView for PDF */}
+            {/* WebView for PDF — pdf.js is reliable on both iOS and Android. */}
             {React.createElement(
               require('react-native-webview').default,
               {
-                source: { uri: `https://docs.google.com/gview?embedded=true&url=${encodeURIComponent(url)}` },
+                source: { uri: pdfJsViewerUrl(url) },
                 style: { flex: 1, backgroundColor: '#050a12' },
+                originWhitelist: ['*'],
+                javaScriptEnabled: true,
+                domStorageEnabled: true,
+                mixedContentMode: 'always',
                 onError: () => setError(true),
                 startInLoadingState: true,
                 renderLoading: () => (
