@@ -26,6 +26,8 @@ import {
   CheckCircle,
   AlertTriangle,
   Clock,
+  Edit3,
+  CalendarDays,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
@@ -96,6 +98,13 @@ export default function SettingsScreen() {
   const [insLoading, setInsLoading]       = useState(false);
   const [insRefreshing, setInsRefreshing] = useState(false);
 
+  // Manual insurance entry form
+  const [showInsuranceForm, setShowInsuranceForm] = useState(false);
+  const [insGL, setInsGL] = useState('');
+  const [insWC, setInsWC] = useState('');
+  const [insDB, setInsDB] = useState('');
+  const [savingInsurance, setSavingInsurance] = useState(false);
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) router.replace('/login');
   }, [isAuthenticated, authLoading]);
@@ -151,17 +160,51 @@ export default function SettingsScreen() {
       const resp = await apiClient.post('/api/admin/company/insurance/refresh');
       setInsData(prev => ({
         ...prev,
-        gc_insurance_records: resp.data.gc_insurance_records,
+        // Do NOT overwrite manually-entered records with the refresh response.
+        // Backend preserves them; we mirror that behavior here.
+        gc_insurance_records: resp.data.gc_insurance_records || prev?.gc_insurance_records || [],
         gc_license_status: resp.data.gc_license_status || prev?.gc_license_status,
         gc_license_expiration: resp.data.gc_license_expiration || prev?.gc_license_expiration,
         gc_last_verified: resp.data.gc_last_verified,
       }));
-      if (resp.data.warning) toast.warning('Warning', resp.data.warning);
-      else toast.success('Refreshed', 'Insurance data updated from DOB');
+      if (resp.data.warning) toast.info('License refreshed', resp.data.warning);
+      else toast.success('Refreshed', 'License data updated');
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not refresh from DOB');
+      toast.error('Error', e?.response?.data?.detail || 'Could not refresh license');
     } finally {
       setInsRefreshing(false);
+    }
+  };
+
+  const openInsuranceForm = () => {
+    // Pre-fill from existing records if any
+    const recs = insData?.gc_insurance_records || [];
+    const find = (type) => (recs.find(r => r.insurance_type === type)?.expiration_date) || '';
+    setInsGL(find('general_liability'));
+    setInsWC(find('workers_comp'));
+    setInsDB(find('disability'));
+    setShowInsuranceForm(true);
+  };
+
+  const handleSaveInsurance = async () => {
+    if (!insGL.trim() || !insWC.trim() || !insDB.trim()) {
+      toast.error('Missing dates', 'All three insurance expiry dates are required.');
+      return;
+    }
+    setSavingInsurance(true);
+    try {
+      const resp = await apiClient.put('/api/admin/company/insurance/manual', {
+        general_liability_expiry: insGL.trim(),
+        workers_comp_expiry:      insWC.trim(),
+        disability_expiry:        insDB.trim(),
+      });
+      setInsData(resp.data);
+      setShowInsuranceForm(false);
+      toast.success('Saved', 'Insurance expiry dates updated.');
+    } catch (e) {
+      toast.error('Invalid dates', e?.response?.data?.detail || 'Could not save insurance.');
+    } finally {
+      setSavingInsurance(false);
     }
   };
 
@@ -460,9 +503,15 @@ export default function SettingsScreen() {
                       <Text style={{ fontSize: 14, fontWeight: '500', color: colors.text.primary, marginTop: spacing.sm }}>
                         No Insurance Records
                       </Text>
-                      <Text style={{ fontSize: 12, color: colors.text.muted, marginTop: 4, textAlign: 'center' }}>
-                        Tap "Refresh from DOB" to pull insurance data.
+                      <Text style={{ fontSize: 12, color: colors.text.muted, marginTop: 4, textAlign: 'center', paddingHorizontal: spacing.md }}>
+                        Enter your certificate of insurance expiry dates to enable permit renewal eligibility checks.
                       </Text>
+                      <GlassButton
+                        title="Enter Insurance"
+                        icon={<Edit3 size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={openInsuranceForm}
+                        style={[s.saveBtn, { marginTop: spacing.md }]}
+                      />
                     </GlassCard>
                   ) : (
                     records.map((rec, idx) => {
@@ -502,15 +551,94 @@ export default function SettingsScreen() {
                     })
                   )}
 
-                  <GlassButton
-                    title={insRefreshing ? 'Refreshing...' : 'Refresh from DOB'}
-                    icon={insRefreshing
-                      ? <ActivityIndicator size={16} color={colors.text.primary} />
-                      : <RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                    onPress={handleRefreshInsurance}
-                    disabled={insRefreshing}
-                    style={s.saveBtn}
-                  />
+                  {/* Inline manual-entry form */}
+                  {showInsuranceForm && (
+                    <GlassCard style={[s.card, { borderColor: 'rgba(245,158,11,0.3)' }]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md }}>
+                        <CalendarDays size={18} strokeWidth={1.5} color="#f59e0b" />
+                        <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary, flex: 1 }}>
+                          Enter Certificate of Insurance Dates
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 12, color: colors.text.muted, marginBottom: spacing.md }}>
+                        Use MM/DD/YYYY format. All three dates must be current.
+                      </Text>
+
+                      <View style={s.fieldGroup}>
+                        <Text style={s.fieldLabel}>General Liability Expiry</Text>
+                        <GlassInput
+                          value={insGL}
+                          onChangeText={setInsGL}
+                          placeholder="MM/DD/YYYY"
+                          keyboardType="numbers-and-punctuation"
+                          autoCapitalize="none"
+                        />
+                      </View>
+
+                      <View style={[s.fieldGroup, { marginTop: spacing.sm }]}>
+                        <Text style={s.fieldLabel}>Workers' Comp Expiry</Text>
+                        <GlassInput
+                          value={insWC}
+                          onChangeText={setInsWC}
+                          placeholder="MM/DD/YYYY"
+                          keyboardType="numbers-and-punctuation"
+                          autoCapitalize="none"
+                        />
+                      </View>
+
+                      <View style={[s.fieldGroup, { marginTop: spacing.sm }]}>
+                        <Text style={s.fieldLabel}>Disability / DB Expiry</Text>
+                        <GlassInput
+                          value={insDB}
+                          onChangeText={setInsDB}
+                          placeholder="MM/DD/YYYY"
+                          keyboardType="numbers-and-punctuation"
+                          autoCapitalize="none"
+                        />
+                      </View>
+
+                      <View style={{ flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md }}>
+                        <GlassButton
+                          title="Cancel"
+                          variant="secondary"
+                          onPress={() => setShowInsuranceForm(false)}
+                          style={{ flex: 1 }}
+                        />
+                        <GlassButton
+                          title={savingInsurance ? 'Saving...' : 'Save Insurance Dates'}
+                          loading={savingInsurance}
+                          icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                          onPress={handleSaveInsurance}
+                          style={{ flex: 2 }}
+                        />
+                      </View>
+                    </GlassCard>
+                  )}
+
+                  {/* Actions row: Update Insurance (primary) + Refresh License (secondary) */}
+                  {!showInsuranceForm && (
+                    <>
+                      {records.length > 0 && (
+                        <GlassButton
+                          title="Update Insurance"
+                          icon={<Edit3 size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                          onPress={openInsuranceForm}
+                          style={s.saveBtn}
+                        />
+                      )}
+
+                      <GlassButton
+                        title={insRefreshing ? 'Refreshing...' : 'Refresh License'}
+                        variant="secondary"
+                        icon={insRefreshing
+                          ? <ActivityIndicator size={16} color={colors.text.primary} />
+                          : <RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={handleRefreshInsurance}
+                        disabled={insRefreshing}
+                        style={[s.saveBtn, { marginTop: spacing.sm }]}
+                      />
+                    </>
+                  )}
 
                   {!!insData?.gc_last_verified && (
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, justifyContent: 'center', marginTop: spacing.sm }}>

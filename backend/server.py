@@ -2587,7 +2587,12 @@ async def get_admin_company_insurance(current_user=Depends(get_admin_user)):
 
 @api_router.post("/admin/company/insurance/refresh")
 async def refresh_admin_company_insurance(current_user=Depends(get_admin_user)):
-    """Re-scrape BIS for this company's GC license insurance. Returns updated records."""
+    """Refresh the company's GC license status/name from NYC Open Data.
+
+    Insurance records are NOT touched by this endpoint — they are now managed
+    manually via PUT /admin/company/insurance/manual. DOB BIS was the only
+    source for insurance and is blocked by Akamai bot protection.
+    """
     company_id = get_user_company_id(current_user)
     if not company_id:
         raise HTTPException(status_code=404, detail="No company associated with your account")
@@ -2601,40 +2606,163 @@ async def refresh_admin_company_insurance(current_user=Depends(get_admin_user)):
         raise HTTPException(status_code=400, detail="No GC license linked to this company. Contact your administrator.")
 
     now = datetime.now(timezone.utc)
-    warning = None
+    warning = "Insurance records are manually managed. Use 'Update Insurance' to change expiry dates."
 
+    # Pull current status via NYC Open Data using the existing scrape_gc_license_info
+    # implementation (which was rewritten in Commit 1 to hit Open Data).
     try:
-        from permit_renewal import _fetch_insurance_details, scrape_gc_license_info
-        import httpx
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            insurance = await _fetch_insurance_details(client, lic_num)
-            insurance_dicts = [rec.dict() for rec in insurance]
-
-        # Also refresh license status from BIS
-        gc_info = await scrape_gc_license_info(company.get("gc_business_name") or company.get("name", ""))
+        from permit_renewal import scrape_gc_license_info
+        gc_info = await scrape_gc_license_info(
+            company.get("gc_business_name") or company.get("name", "")
+        )
         update_fields = {
-            "gc_insurance_records": insurance_dicts,
             "gc_last_verified": now,
             "updated_at": now,
         }
         if gc_info:
-            update_fields["gc_license_status"] = gc_info.license_status or company.get("gc_license_status")
-            update_fields["gc_license_expiration"] = gc_info.license_expiration or company.get("gc_license_expiration")
+            if gc_info.license_status:
+                update_fields["gc_license_status"] = gc_info.license_status
+            if gc_info.license_expiration:
+                update_fields["gc_license_expiration"] = gc_info.license_expiration
+            if gc_info.business_name:
+                update_fields["gc_business_name"] = gc_info.business_name
+            if gc_info.licensee_name:
+                update_fields["gc_licensee_name"] = gc_info.licensee_name
 
         await db.companies.update_one({"_id": to_query_id(company_id)}, {"$set": update_fields})
+        # Re-read so we return fresh values
+        company = await db.companies.find_one({"_id": to_query_id(company_id)})
 
     except Exception as e:
-        logger.error(f"BIS refresh failed for company {company_id} license {lic_num}: {e}")
-        warning = f"Could not reach DOB BIS. Showing cached data (last verified: {company.get('gc_last_verified', 'never')})."
-        insurance_dicts = company.get("gc_insurance_records", [])
+        logger.error(f"License refresh failed for company {company_id} license {lic_num}: {e}")
+        warning = "Could not reach NYC Open Data. Showing cached license data."
 
     return {
         "gc_license_number": lic_num,
         "gc_license_status": company.get("gc_license_status"),
         "gc_license_expiration": company.get("gc_license_expiration"),
-        "gc_insurance_records": insurance_dicts,
+        # Preserve manually-entered records — never overwrite.
+        "gc_insurance_records": company.get("gc_insurance_records", []),
         "gc_last_verified": str(now),
         "warning": warning,
+    }
+
+
+class ManualInsuranceRequest(BaseModel):
+    general_liability_expiry: str
+    workers_comp_expiry: str
+    disability_expiry: str
+
+
+@api_router.put("/admin/company/insurance/manual")
+async def set_admin_company_insurance_manual(
+    body: ManualInsuranceRequest,
+    current_user=Depends(get_admin_user),
+):
+    """
+    Admin manually sets the 3 required insurance expiry dates for their company.
+    Replaces the BIS-scraped records, since BIS is blocked by Akamai.
+
+    Dates must be parseable (MM/DD/YYYY preferred), must be in the future,
+    and must be within 5 years from today.
+    """
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=404, detail="No company associated with your account")
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id), "is_deleted": {"$ne": True}})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    from dateutil import parser as dateparser
+
+    field_specs = [
+        ("general_liability", "General Liability", body.general_liability_expiry),
+        ("workers_comp",      "Workers' Comp",     body.workers_comp_expiry),
+        ("disability",        "Disability",        body.disability_expiry),
+    ]
+
+    now = datetime.now(timezone.utc)
+    max_future = now + timedelta(days=365 * 5)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    parsed = []
+    for ins_type, label, raw in field_specs:
+        raw = (raw or "").strip()
+        if not raw:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} expiration date is required.",
+            )
+        try:
+            dt = dateparser.parse(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} date '{raw}' could not be parsed. Use MM/DD/YYYY.",
+            )
+
+        if dt < today_midnight:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} expiration is in the past ({raw}). Enter a current or future date.",
+            )
+        if dt > max_future:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{label} expiration is more than 5 years out ({raw}). Double-check the year.",
+            )
+
+        parsed.append((ins_type, label, dt))
+
+    today_str = now.strftime("%m/%d/%Y")
+    records = []
+    for ins_type, label, dt in parsed:
+        records.append({
+            "insurance_type": ins_type,
+            "carrier_name":   None,
+            "policy_number":  None,
+            "effective_date": today_str,
+            "expiration_date": dt.strftime("%m/%d/%Y"),
+            "is_current":     True,
+            "source":         "manual_entry",
+        })
+
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {
+            "gc_insurance_records": records,
+            "gc_last_verified": now,
+            "updated_at": now,
+        }},
+    )
+
+    # Audit
+    try:
+        await audit_log(
+            "insurance_manual_update",
+            str(current_user.get("id", "")),
+            "company",
+            str(company_id),
+            {"records": records},
+        )
+    except Exception as e:
+        logger.warning(f"audit_log(insurance_manual_update) failed: {e}")
+
+    company = await db.companies.find_one({"_id": to_query_id(company_id)})
+    return {
+        "company_id":            str(company["_id"]),
+        "company_name":          company.get("name"),
+        "gc_license_number":     company.get("gc_license_number"),
+        "gc_business_name":      company.get("gc_business_name"),
+        "gc_licensee_name":      company.get("gc_licensee_name"),
+        "gc_license_status":     company.get("gc_license_status"),
+        "gc_license_expiration": company.get("gc_license_expiration"),
+        "gc_insurance_records":  company.get("gc_insurance_records", []),
+        "gc_resolved":           company.get("gc_resolved", False),
+        "gc_last_verified":      company.get("gc_last_verified"),
     }
 
 
