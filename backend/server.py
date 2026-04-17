@@ -11335,11 +11335,15 @@ async def whatsapp_group_link_initiate(
     # Generate unique 6-digit code
     code = "".join(random.choices(_string.digits, k=6))
     now = datetime.now(timezone.utc)
+    # get_current_user returns the user dict via serialize_id, which strips
+    # _id and replaces it with id. Use .get('id') with a fallback so this
+    # also tolerates older payload shapes.
+    creator_id = str(current_user.get("id") or current_user.get("_id") or "")
     await db.whatsapp_link_codes.insert_one({
         "code": code,
         "project_id": project_id,
         "company_id": company_id,
-        "created_by": str(current_user["_id"]),
+        "created_by": creator_id,
         "verified": False,
         "group_verified": False,
         "group_id": None,
@@ -11374,6 +11378,7 @@ async def whatsapp_group_link_verify(
     # Create group link. Seed bot_config on first insert only ($setOnInsert)
     # so re-linking an existing group doesn't clobber the admin's config.
     now = datetime.now(timezone.utc)
+    linker_id = str(current_user.get("id") or current_user.get("_id") or "")
     await db.whatsapp_groups.update_one(
         {"company_id": company_id, "wa_group_id": group_id},
         {
@@ -11381,7 +11386,7 @@ async def whatsapp_group_link_verify(
                 "project_id": project_id,
                 "company_id": company_id,
                 "wa_group_id": group_id,
-                "linked_by": str(current_user["_id"]),
+                "linked_by": linker_id,
                 "linked_at": now,
                 "active": True,
             },
