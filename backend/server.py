@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, Request, BackgroundTasks
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -6116,17 +6116,17 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
         for rec in cached_files:
             r2_key = rec.get("r2_key", "")
             stored_url = rec.get("r2_url", "")
-            signed_url = ""
-            if r2_key:
-                signed_url = await asyncio.to_thread(_presign_r2_get, r2_key)
+            rec_id = str(rec.get("_id", ""))
+            # Prefer backend proxy URL (no CORS headaches, enforces auth).
+            proxy_url = f"/api/projects/{project_id}/files/{rec_id}/content" if r2_key and rec_id else ""
             files.append({
                 "name": rec.get("name", ""),
                 "path": rec.get("dropbox_path", ""),
-                "id": str(rec.get("_id", "")),
+                "id": rec_id,
                 "type": "file",
                 "size": rec.get("size", 0),
                 "modified": rec.get("modified", ""),
-                "r2_url": signed_url or stored_url,
+                "r2_url": proxy_url or stored_url,
                 "cache_version": rec.get("cache_version", 0),
                 "source": rec.get("source", "dropbox_sync"),
             })
@@ -6361,9 +6361,8 @@ async def get_dropbox_file_url(project_id: str, file_path: str, current_user = D
         "project_id": project_id, "company_id": company_id, "dropbox_path": file_path
     })
     if file_rec and file_rec.get("r2_key"):
-        signed = await asyncio.to_thread(_presign_r2_get, file_rec["r2_key"])
-        if signed:
-            return {"url": signed, "cached": False, "source": "r2_signed"}
+        proxy = f"/api/projects/{project_id}/files/{str(file_rec['_id'])}/content"
+        return {"url": proxy, "cached": False, "source": "r2_proxy"}
     if file_rec and file_rec.get("r2_url"):
         return {"url": file_rec["r2_url"], "cached": True, "source": "r2"}
 
@@ -6501,14 +6500,61 @@ async def upload_project_file(project_id: str, file: UploadFile = File(...), cur
     if filename.lower().endswith(".pdf") and QWEN_API_KEY:
         asyncio.create_task(_index_pdf_file(project_id, company_id, file_record))
 
-    signed_url = await asyncio.to_thread(_presign_r2_get, r2_key)
+    proxy_url = f"/api/projects/{project_id}/files/{file_record['_id']}/content"
     return {
         "id": file_record["_id"],
         "name": filename,
-        "r2_url": signed_url or r2_url,
+        "r2_url": proxy_url,
         "size": len(file_bytes),
         "source": "direct_upload",
     }
+
+
+@api_router.get("/projects/{project_id}/files/{file_id}/content")
+async def stream_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
+    """Stream a project file from R2 through the backend.
+
+    Auth: bearer header or `?token=` query param (handled by get_current_user —
+    query-token works for <iframe src> / <object> viewers that can't set headers).
+    """
+    try:
+        rec_oid = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file id")
+    rec = await db.project_files.find_one({"_id": rec_oid, "project_id": project_id})
+    if not rec:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    user_company_id = str(current_user.get("company_id") or "")
+    if user_company_id and rec.get("company_id") and rec["company_id"] != user_company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    r2_key = rec.get("r2_key", "")
+    if not r2_key or not _r2_client or not R2_BUCKET_NAME:
+        raise HTTPException(status_code=404, detail="File not stored in R2")
+
+    try:
+        obj = await asyncio.to_thread(_r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=r2_key)
+    except Exception as e:
+        logger.error(f"R2 get_object failed key={r2_key}: {e}")
+        raise HTTPException(status_code=502, detail="Storage fetch failed")
+
+    body = obj["Body"]
+    content_type = obj.get("ContentType") or mimetypes.guess_type(rec.get("name", "") or r2_key)[0] or "application/octet-stream"
+    filename = rec.get("name", "file")
+
+    def _iter():
+        try:
+            for chunk in iter(lambda: body.read(65536), b""):
+                yield chunk
+        finally:
+            try: body.close()
+            except Exception: pass
+
+    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    if obj.get("ContentLength"):
+        headers["Content-Length"] = str(obj["ContentLength"])
+    return StreamingResponse(_iter(), media_type=content_type, headers=headers)
 
 
 # ==================== DROPBOX WEBHOOK ====================

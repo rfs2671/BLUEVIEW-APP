@@ -1,7 +1,27 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, ScrollView } from 'react-native';
 import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI } from '../utils/api';
+
+const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
+
+// Resolve a URL returned by the backend into something an <iframe src> can load.
+// Handles three shapes: relative `/api/...` (backend-proxy), absolute backend proxy,
+// or any other absolute URL (already presigned / Dropbox / R2 public). Backend-proxy
+// URLs get a `?token=` query param appended so the iframe request is authenticated.
+async function resolvePdfSrc(rawUrl) {
+  if (!rawUrl) return null;
+  let abs = rawUrl;
+  if (rawUrl.startsWith('/')) abs = `${API_BASE}${rawUrl}`;
+  if (abs.includes('/api/projects/') && abs.includes('/files/') && abs.endsWith('/content')) {
+    try {
+      const tok = await AsyncStorage.getItem('blueview_token');
+      if (tok) abs += (abs.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+    } catch {}
+  }
+  return abs;
+}
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
@@ -24,12 +44,20 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
-    if (visible && file?.path && projectId) {
+    if (visible && projectId) {
       setLoading(true);
       setError(false);
-      dropboxAPI.getFileUrl(projectId, file.path)
-        .then(res => { setUrl(res.url); setLoading(false); })
-        .catch(() => { setError(true); setLoading(false); });
+      // Direct-upload path: r2_url is already a backend-proxy URL or presigned URL.
+      if (file?.directUrl || file?.r2_url) {
+        resolvePdfSrc(file.directUrl || file.r2_url).then(src => { setUrl(src); setLoading(false); });
+      } else if (file?.path) {
+        dropboxAPI.getFileUrl(projectId, file.path)
+          .then(async res => { setUrl(await resolvePdfSrc(res.url)); setLoading(false); })
+          .catch(() => { setError(true); setLoading(false); });
+      } else {
+        setError(true);
+        setLoading(false);
+      }
     }
     return () => { setUrl(null); };
   }, [visible, file, projectId]);
