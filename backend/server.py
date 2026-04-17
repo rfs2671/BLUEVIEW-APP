@@ -12874,14 +12874,21 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
     Safe to run repeatedly."""
     import urllib.parse as _urlparse
     company_id = get_user_company_id(current_user)
+    # Do NOT filter by company_id — some legacy rows may have been written
+    # without a company_id field, and the caller already matched project_id
+    # which is scope enough.
     query: Dict[str, Any] = {"project_id": project_id, "is_deleted": {"$ne": True}}
-    if company_id:
-        query["company_id"] = company_id
     files = await db.project_files.find(query).to_list(500)
+    debug_info = []
     repaired = []
     for f in files:
         raw = f.get("name") or ""
         decoded = _sanitize_upload_filename(raw)
+        debug_info.append({
+            "raw": raw, "decoded": decoded, "changed": decoded != raw,
+            "has_r2_key": bool(f.get("r2_key")),
+            "company_id": f.get("company_id"),
+        })
         if decoded == raw:
             continue
         if not _r2_client:
@@ -12917,7 +12924,7 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
         )
         repaired.append({"old_name": raw, "new_name": decoded})
 
-    return {"repaired_count": len(repaired), "repaired": repaired}
+    return {"repaired_count": len(repaired), "repaired": repaired, "debug": debug_info}
 
 
 @api_router.post("/projects/{project_id}/reindex-document")
