@@ -11339,14 +11339,60 @@ async def _handle_bot_added_to_group(group_id: str):
 
 @api_router.post("/whatsapp/webhook")
 async def whatsapp_webhook(request: Request):
-    """Public webhook for WaAPI — returns 200 immediately, processes in background."""
+    """Public webhook for WaAPI — returns 200 immediately, processes in background.
+    Also logs every raw payload into whatsapp_webhook_log for debugging."""
+    raw_body = b""
     try:
-        payload = await request.json()
+        raw_body = await request.body()
+    except Exception:
+        pass
+
+    # Dump raw payload into a debug collection so we can inspect what WaAPI sends
+    try:
+        await db.whatsapp_webhook_log.insert_one({
+            "received_at": datetime.now(timezone.utc),
+            "headers": {k: v for k, v in request.headers.items()
+                        if k.lower() not in ("cookie", "authorization")},
+            "remote_addr": request.client.host if request.client else None,
+            "raw_body_preview": raw_body[:4000].decode("utf-8", errors="replace"),
+            "raw_body_length": len(raw_body),
+        })
+    except Exception as e:
+        logger.warning(f"webhook log insert failed: {e}")
+
+    payload = None
+    try:
+        import json as _json
+        payload = _json.loads(raw_body.decode("utf-8")) if raw_body else None
     except Exception:
         return {"status": "ok"}
-    # Fire-and-forget background processing
-    asyncio.create_task(_process_whatsapp_message(payload))
+
+    if payload:
+        asyncio.create_task(_process_whatsapp_message(payload))
     return {"status": "ok"}
+
+
+@api_router.get("/whatsapp/debug/webhook-log")
+async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
+    """Return the last 20 raw webhook hits so we can see what WaAPI is sending."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    rows = await db.whatsapp_webhook_log.find().sort("received_at", -1).limit(20).to_list(20)
+    total = await db.whatsapp_webhook_log.estimated_document_count()
+    return {
+        "total": total,
+        "recent": [
+            {
+                "received_at":     str(r.get("received_at")),
+                "remote_addr":     r.get("remote_addr"),
+                "body_length":     r.get("raw_body_length"),
+                "body_preview":    (r.get("raw_body_preview") or "")[:1500],
+                "user_agent":      (r.get("headers") or {}).get("user-agent"),
+            }
+            for r in rows
+        ],
+    }
 
 
 # ---------- group linking flow (auth required) ----------
