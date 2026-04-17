@@ -11382,6 +11382,41 @@ async def whatsapp_group_link_initiate(
     return {"code": code, "expires_in_seconds": 300}
 
 
+@api_router.get("/whatsapp/debug/waapi-config")
+async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
+    """Return which WaAPI instance the backend is actually pointing at.
+    Helps diagnose mismatches between the dashboard and the env vars."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Probe WaAPI for instance status
+    status_data = None
+    status_err = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client_http:
+            resp = await client_http.get(
+                f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}",
+                headers={"Authorization": f"Bearer {WAAPI_TOKEN}"},
+            )
+            status_data = {
+                "http_status": resp.status_code,
+                "body_preview": resp.text[:500],
+            }
+    except Exception as e:
+        status_err = str(e)
+
+    return {
+        "configured_instance_id": WAAPI_INSTANCE_ID or "(empty)",
+        "configured_base_url": WAAPI_BASE_URL,
+        "configured_display_number": os.environ.get("WAAPI_DISPLAY_NUMBER", "(empty)"),
+        "token_present": bool(WAAPI_TOKEN),
+        "token_length": len(WAAPI_TOKEN) if WAAPI_TOKEN else 0,
+        "waapi_instance_probe": status_data,
+        "waapi_instance_probe_error": status_err,
+    }
+
+
 @api_router.get("/whatsapp/debug/recent-messages")
 async def whatsapp_debug_recent_messages(current_user=Depends(get_current_user)):
     """Owner/admin: show the last 20 whatsapp_messages stored. Confirms whether
