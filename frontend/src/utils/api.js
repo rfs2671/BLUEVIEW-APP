@@ -947,4 +947,25 @@ export const whatsappAPI = {
   },
 };
 
+/**
+ * WhatsApp checklists — server-extracted action items from group conversations.
+ */
+export const checklistAPI = {
+  getForProject: async (projectId, params = {}) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/whatsapp-checklists`,
+      { params },
+    );
+    return response.data;
+  },
+
+  updateItem: async (checklistId, itemIndex, data) => {
+    const response = await apiClient.put(
+      `/api/whatsapp-checklists/${checklistId}/items/${itemIndex}`,
+      data,
+    );
+    return response.data;
+  },
+};
+
 export default apiClient;

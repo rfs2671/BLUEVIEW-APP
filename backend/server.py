@@ -10453,6 +10453,119 @@ async def _process_whatsapp_message(payload: dict):
             if not bot_enabled:
                 return
 
+            # ── "done N" — mark checklist item complete ──
+            # Must come before on-demand @levelog detection so short msgs match.
+            if body:
+                done_match = re.match(r"^\s*done\s+(\d+)\s*$", body.strip(), re.IGNORECASE)
+                if done_match:
+                    try:
+                        n = int(done_match.group(1))
+                    except Exception:
+                        n = 0
+                    # Find most recent non-deleted checklist for this group
+                    latest = await db.whatsapp_checklists.find_one(
+                        {"group_id": group_id, "is_deleted": {"$ne": True}},
+                        sort=[("generated_at", -1)],
+                    )
+                    if not latest:
+                        await send_whatsapp_message(
+                            group_id,
+                            "No active checklist found for this group.",
+                        )
+                        return
+                    items_list = latest.get("items") or []
+                    if n < 1 or n > len(items_list):
+                        await send_whatsapp_message(
+                            group_id,
+                            f"Item {n} not found. This checklist has {len(items_list)} items.",
+                        )
+                        return
+                    idx = n - 1
+                    items_list[idx]["completed"] = True
+                    items_list[idx]["completed_at"] = now
+                    items_list[idx]["completed_by"] = sender
+                    await db.whatsapp_checklists.update_one(
+                        {"_id": latest["_id"]},
+                        {"$set": {"items": items_list}},
+                    )
+                    # Which checklist? Show time so multiple checklists per day
+                    # are distinguishable.
+                    try:
+                        from zoneinfo import ZoneInfo
+                        gen_est = latest.get("generated_at")
+                        if isinstance(gen_est, datetime):
+                            if gen_est.tzinfo is None:
+                                gen_est = gen_est.replace(tzinfo=timezone.utc)
+                            gen_local = gen_est.astimezone(ZoneInfo("America/New_York"))
+                            label = gen_local.strftime("%-I:%M %p") if hasattr(gen_local, 'strftime') else str(gen_local)
+                            # Windows fallback — strftime %-I is POSIX only
+                            label = gen_local.strftime("%I:%M %p").lstrip("0")
+                        else:
+                            label = "today's"
+                    except Exception:
+                        label = "today's"
+                    await send_whatsapp_message(
+                        group_id,
+                        f"✓ Item {n} of {label} checklist marked complete.",
+                    )
+                    return
+
+            # ── On-demand @levelog checklist / !checklist trigger ──
+            if body:
+                ondemand = False
+                lower = body.strip().lower()
+                for kw in ("@levelog checklist", "@levelog  checklist", "!checklist"):
+                    if kw in lower:
+                        ondemand = True
+                        break
+                if ondemand:
+                    # Condition 1: feature must be enabled for this group
+                    if not bot_config.get("checklist_extraction_enabled", False):
+                        # Silent — do not respond per spec
+                        return
+                    # Condition 2: sender must be a registered admin/owner/cp
+                    contact = await db.whatsapp_contacts.find_one(
+                        {"phone": sender, "user_id": {"$ne": None}}
+                    )
+                    sender_role = None
+                    if contact and contact.get("user_id"):
+                        user_doc = await db.users.find_one(
+                            {"_id": to_query_id(contact["user_id"])}
+                        )
+                        if user_doc:
+                            sender_role = (user_doc.get("role") or "").lower()
+                    if sender_role not in ("admin", "owner", "cp"):
+                        await send_whatsapp_message(
+                            group_id,
+                            "You need admin or manager access to request a checklist. "
+                            "If you are an admin, add your phone in Settings → Personal "
+                            "Details so the bot can recognize you.",
+                        )
+                        return
+                    # Build conversation text for the last 24 hours (EST-today window)
+                    today_start_od, today_end_od = get_today_range_est()
+                    msgs_od = await db.whatsapp_messages.find({
+                        "group_id": group_id,
+                        "created_at": {"$gte": today_start_od, "$lt": today_end_od},
+                    }).sort("created_at", 1).to_list(500)
+                    convo_lines_od = []
+                    for m in msgs_od:
+                        if m.get("type") == "bot_plan_response":
+                            continue
+                        s_sender = m.get("sender", "unknown")
+                        s_body = m.get("body", "")
+                        if s_body:
+                            convo_lines_od.append(f"{s_sender}: {s_body}")
+                    convo_text_od = "\n".join(convo_lines_od[:400])
+                    # On-demand does NOT go through send_log dedup — user requested it
+                    try:
+                        await _extract_whatsapp_checklist(
+                            str(project_id), group_id, convo_text_od
+                        )
+                    except Exception as e:
+                        logger.error(f"on-demand checklist failed: {e}", exc_info=True)
+                    return
+
             # Material request detection gated on the features flag
             if features.get("material_detection", True) and body and len(body) >= 15:
                 detection = await _detect_material_request(body, str(project_id), msg_company_id)
@@ -10892,6 +11005,95 @@ async def whatsapp_status(current_user=Depends(get_current_user)):
     }
 
 
+@api_router.get("/projects/{project_id}/whatsapp-checklists")
+async def list_project_whatsapp_checklists(
+    project_id: str,
+    group_id: Optional[str] = Query(None),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (EST) filter"),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+    current_user=Depends(get_current_user),
+):
+    """List WhatsApp-extracted checklists for a project."""
+    company_id = get_user_company_id(current_user)
+    query: Dict[str, Any] = {
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+    }
+    if company_id:
+        query["company_id"] = company_id
+    if group_id:
+        query["group_id"] = group_id
+    if date:
+        try:
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo("America/New_York")
+            day_start_est = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=eastern)
+            day_start_utc = day_start_est.astimezone(timezone.utc)
+            day_end_utc = day_start_utc + timedelta(hours=24)
+            query["generated_at"] = {"$gte": day_start_utc, "$lt": day_end_utc}
+        except Exception:
+            raise HTTPException(status_code=422, detail="date must be YYYY-MM-DD")
+
+    total = await db.whatsapp_checklists.count_documents(query)
+    cursor = (
+        db.whatsapp_checklists
+        .find(query)
+        .sort("generated_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
+    items = []
+    async for doc in cursor:
+        items.append(serialize_id(doc))
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "has_more": (skip + limit) < total,
+    }
+
+
+@api_router.put("/whatsapp-checklists/{checklist_id}/items/{item_index}")
+async def update_whatsapp_checklist_item(
+    checklist_id: str,
+    item_index: int,
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Mark a single item complete/incomplete from the app."""
+    if "completed" not in body or not isinstance(body["completed"], bool):
+        raise HTTPException(status_code=422, detail="completed (bool) is required")
+
+    doc = await db.whatsapp_checklists.find_one({"_id": to_query_id(checklist_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+
+    company_id = get_user_company_id(current_user)
+    if company_id and doc.get("company_id") and doc["company_id"] != company_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    items = list(doc.get("items") or [])
+    if item_index < 0 or item_index >= len(items):
+        raise HTTPException(status_code=404, detail="item_index out of range")
+
+    now = datetime.now(timezone.utc)
+    items[item_index] = {
+        **items[item_index],
+        "completed": body["completed"],
+        "completed_at": now if body["completed"] else None,
+        "completed_by": current_user.get("name") or current_user.get("email") if body["completed"] else None,
+    }
+
+    await db.whatsapp_checklists.update_one(
+        {"_id": to_query_id(checklist_id)},
+        {"$set": {"items": items, "updated_at": now}},
+    )
+    updated = await db.whatsapp_checklists.find_one({"_id": to_query_id(checklist_id)})
+    return serialize_id(updated)
+
+
 @api_router.get("/whatsapp/contact.vcf")
 async def whatsapp_contact_vcard(current_user=Depends(get_current_user)):
     """
@@ -11124,12 +11326,193 @@ async def _send_whatsapp_daily_summaries():
         logger.error(f"WhatsApp daily summary job error: {e}", exc_info=True)
 
 
+CHECKLIST_SYSTEM_PROMPT = """You are a construction project assistant analyzing WhatsApp group conversations from a NYC construction site.
+Extract all action items, commitments, and open issues from the conversation.
+
+For each item found return:
+- text: imperative form ("Order 200 sheets of drywall", "Call inspector re: floor 3")
+- assigned_to: person name or phone if mentioned, null if unclear
+- due_date: specific date or relative term if mentioned, null if none
+- category: safety | materials | coordination | inspection | other
+- priority: high (safety issues, DOB/inspection, blockers), medium (deliveries, coordination), low (general)
+
+Focus on: explicit requests, commitments made, unresolved issues, safety concerns, inspection prep, material shortages.
+Ignore: greetings, already-resolved confirmations, jokes, reactions.
+
+Return ONLY valid JSON: {"items": [...]}
+If no action items found return: {"items": []}"""
+
+
+_CATEGORY_EMOJI = {
+    "safety": "⚠️",
+    "materials": "📦",
+    "coordination": "🤝",
+    "inspection": "🔍",
+    "other": "•",
+}
+
+
+def _format_checklist_message(project_name: str, items: list) -> str:
+    """Produce the WhatsApp-formatted checklist message body."""
+    now_est = _current_est_time_and_date()[2]
+    high = [i for i in items if (i.get("priority") or "").lower() == "high"]
+    med  = [i for i in items if (i.get("priority") or "").lower() == "medium"]
+    rest = [i for i in items if (i.get("priority") or "").lower() not in ("high", "medium")]
+
+    lines = [
+        f"✅ *Action Items — {project_name}*",
+        f"_{now_est}_",
+        "",
+    ]
+    def _render(bucket, header):
+        if not bucket:
+            return
+        lines.append(header)
+        for idx_global, it in bucket:
+            txt = (it.get("text") or "").strip()
+            if not txt:
+                continue
+            who = (it.get("assigned_to") or "").strip() or "Unassigned"
+            lines.append(f"• {idx_global}. {txt} → {who}")
+        lines.append("")
+
+    # Assign global 1-based indices matching storage order so "done N"
+    # maps to the same slot the user sees.
+    indexed = list(enumerate(items, start=1))
+    idx_high = [(i, it) for (i, it) in indexed if (it.get("priority") or "").lower() == "high"]
+    idx_med  = [(i, it) for (i, it) in indexed if (it.get("priority") or "").lower() == "medium"]
+    idx_rest = [(i, it) for (i, it) in indexed if (it.get("priority") or "").lower() not in ("high", "medium")]
+
+    _render(idx_high, "🔴 HIGH PRIORITY")
+    _render(idx_med,  "🟡 MEDIUM")
+    _render(idx_rest, "⚪ OTHER")
+
+    lines.append(f"_{len(items)} items · Reply \"done 1\" to mark complete_")
+    return "\n".join(lines).rstrip()
+
+
 async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversation_text: str):
-    """Sprint 2 stub — full implementation lands in Sprint 2."""
-    logger.info(
-        f"checklist extraction not yet implemented (project={project_id}, group={group_id})"
-    )
-    return None
+    """Call GPT-4o-mini to extract action items from a group conversation,
+    persist to whatsapp_checklists, and send a formatted message back to
+    the group. No-ops silently if no actionable items are found.
+    """
+    if not conversation_text or not conversation_text.strip():
+        return None
+    if not OPENAI_API_KEY:
+        logger.info(
+            f"checklist extraction skipped (no OPENAI_API_KEY) "
+            f"project={project_id} group={group_id}"
+        )
+        return None
+
+    # Call GPT-4o-mini — structured extraction, forced JSON
+    try:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "gpt-4o-mini",
+            "temperature": 0.2,
+            "max_tokens": 900,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": CHECKLIST_SYSTEM_PROMPT},
+                {"role": "user",   "content": conversation_text[:12000]},
+            ],
+        }
+        async with httpx.AsyncClient(timeout=40.0) as client_http:
+            resp = await client_http.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        logger.error(
+            f"checklist GPT call failed (project={project_id}, group={group_id}): {e}"
+        )
+        return None
+
+    # Parse JSON
+    try:
+        import json as _json
+        data = _json.loads(content)
+        raw_items = data.get("items") or []
+        if not isinstance(raw_items, list):
+            raw_items = []
+    except Exception:
+        logger.warning(
+            f"checklist JSON parse failed for project={project_id} group={group_id}"
+        )
+        return None
+
+    # Normalize + filter
+    VALID_CATEGORY = {"safety", "materials", "coordination", "inspection", "other"}
+    VALID_PRIORITY = {"high", "medium", "low"}
+    items = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        text_val = (raw.get("text") or "").strip()
+        if not text_val:
+            continue
+        category = (raw.get("category") or "other").strip().lower()
+        if category not in VALID_CATEGORY:
+            category = "other"
+        priority = (raw.get("priority") or "low").strip().lower()
+        if priority not in VALID_PRIORITY:
+            priority = "low"
+        items.append({
+            "text": text_val[:500],
+            "assigned_to": (raw.get("assigned_to") or None),
+            "due_date": (raw.get("due_date") or None),
+            "category": category,
+            "priority": priority,
+            "completed": False,
+            "completed_at": None,
+            "completed_by": None,
+        })
+
+    # Empty extraction => no DB write, no message
+    if not items:
+        logger.info(
+            f"checklist extraction yielded 0 items (project={project_id}, group={group_id})"
+        )
+        return None
+
+    # Lookup project + company info
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = project.get("name", "Project") if project else "Project"
+    company_id = (project.get("company_id") if project else None) or ""
+
+    now_utc = datetime.now(timezone.utc)
+    today_start, today_end = get_today_range_est()
+
+    # Count messages in scope for metadata
+    source_count = await db.whatsapp_messages.count_documents({
+        "group_id": group_id,
+        "created_at": {"$gte": today_start, "$lt": today_end},
+    })
+
+    doc = {
+        "project_id": project_id,
+        "company_id": company_id,
+        "group_id": group_id,
+        "generated_at": now_utc,
+        "date_range_start": today_start,
+        "date_range_end": today_end,
+        "items": items,
+        "source_message_count": source_count,
+        "is_deleted": False,
+    }
+    result = await db.whatsapp_checklists.insert_one(doc)
+
+    # Format + send to group
+    try:
+        message = _format_checklist_message(project_name, items)
+        await send_whatsapp_message(group_id, message)
+    except Exception as e:
+        logger.error(
+            f"checklist send failed (project={project_id}, group={group_id}): {e}"
+        )
+
+    return str(result.inserted_id)
 
 
 async def _run_whatsapp_checklist_extractions():

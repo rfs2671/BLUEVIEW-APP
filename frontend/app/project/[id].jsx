@@ -42,6 +42,7 @@ import {
   Clock,
   Shield,
   MessageCircle,
+  ListChecks,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -673,6 +674,31 @@ export default function ProjectDetailScreen() {
                     </Text>
                   </>
                 )}
+              </View>
+              <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
+            </Pressable>
+          )}
+
+          {/* Action Items (visible when a group has checklist extraction enabled) */}
+          {whatsappActive && whatsappGroups.some((g) => g?.bot_config?.checklist_extraction_enabled) && (
+            <Pressable
+              onPress={() => router.push(`/projects/${projectId}/whatsapp-checklists`)}
+              style={({ pressed }) => [
+                { flexDirection: 'row', alignItems: 'center', padding: spacing.md,
+                  borderRadius: 12, backgroundColor: 'rgba(59,130,246,0.08)',
+                  borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
+                  marginBottom: spacing.md },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <ListChecks size={20} strokeWidth={1.5} color="#3b82f6" />
+              <View style={{ flex: 1, marginLeft: spacing.sm }}>
+                <Text style={{ color: '#3b82f6', fontSize: 13, fontWeight: '600' }}>
+                  Action Items
+                </Text>
+                <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
+                  View and complete items extracted from WhatsApp
+                </Text>
               </View>
               <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
             </Pressable>
