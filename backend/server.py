@@ -10697,6 +10697,35 @@ Return JSON: {{"matches": [{{"request_id": "id", "item_name": "name", "quantity_
     return "\n".join(report_lines)
 
 
+async def _handle_project_info(project_id: str) -> str:
+    """Return a short, human-readable summary of the project bound to this group."""
+    if not project_id:
+        return "Could not determine which project this group is linked to."
+    try:
+        project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    except Exception:
+        project = None
+    if not project:
+        return "Project not found."
+
+    name = project.get("name") or "(unnamed project)"
+    address = project.get("address") or project.get("formatted_address") or "—"
+    bin_ = project.get("nyc_bin") or project.get("bin") or ""
+    bbl = project.get("nyc_bbl") or project.get("bbl") or ""
+    gc = project.get("gc_legal_name") or project.get("gc_name") or ""
+    status = project.get("status") or "active"
+
+    lines = [f"📍 *{name}*", address]
+    if bin_:
+        lines.append(f"BIN: {bin_}")
+    if bbl:
+        lines.append(f"BBL: {bbl}")
+    if gc:
+        lines.append(f"GC: {gc}")
+    lines.append(f"Status: {status}")
+    return "\n".join(lines)
+
+
 async def _handle_material_status(project_id: str) -> str:
     """Return formatted status of open/partial material requests."""
     if not project_id:
@@ -11916,6 +11945,24 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "project_info",
+            "description": (
+                "Return basic information about the project linked to this group — "
+                "name, address, NYC BIN/BBL, GC name, and active permit status. "
+                "Use for questions like 'what's the address', 'what project is this', "
+                "'what's the BIN', or 'how many projects do I have' (answers with this "
+                "project; the bot is scoped to one project per group)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "start_checklist",
             "description": (
                 "Begin a multi-turn flow to create an action-item checklist. Use this when "
@@ -12464,6 +12511,8 @@ async def _dispatch_agent_tool(
                 trade=args.get("trade"),
                 company=args.get("company"),
             )
+        if name == "project_info":
+            return await _handle_project_info(project_id)
         if name == "dob_status":
             return await _handle_dob_status(project_id)
         if name == "open_items":
