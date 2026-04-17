@@ -12030,21 +12030,60 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         return None
 
 
+def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 2400,
+                                  max_size_bytes: int = 4 * 1024 * 1024,
+                                  min_quality: int = 55) -> bytes:
+    """Resize + re-encode a JPEG so it fits WhatsApp's image delivery limits.
+
+    WhatsApp caps inline images around 5 MB and downscales anything very
+    large. Our indexed JPEGs are 250-300 DPI architectural sheets often
+    reaching 5-7 MB — WaAPI's send-image can reject these silently with
+    a 404. Compress to fit under `max_size_bytes` while staying readable.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(src_bytes))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        # Downscale if the larger side exceeds max_dim
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_dim:
+            scale = max_dim / longest
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        # Iteratively lower quality until we fit.
+        for q in (85, 80, 75, 70, 65, min_quality):
+            buf = _io.BytesIO()
+            img.save(buf, format="JPEG", quality=q, optimize=True)
+            data = buf.getvalue()
+            if len(data) <= max_size_bytes:
+                return data
+        return data  # best-effort — even if over, ship it
+    except Exception as e:
+        logger.warning(f"jpeg compress failed: {e}")
+        return src_bytes
+
+
 async def _send_plan_image(
     group_id: str, page_rec: dict, caption: str,
 ) -> bool:
-    """Fetch a page's pre-rendered JPEG from R2, upload a presigned copy to
-    WaAPI-accessible storage, and send-image to the group. Returns True on
-    success."""
+    """Fetch a page's pre-rendered JPEG from R2, downscale to WhatsApp-safe
+    size, upload to R2 via presigned URL, and send-image to the group.
+    Returns True on success."""
     sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
-    jpeg = await _fetch_page_jpeg(page_rec)
-    if not jpeg:
+    jpeg_src = await _fetch_page_jpeg(page_rec)
+    if not jpeg_src:
         logger.warning(
             f"plan send: jpeg fetch returned empty for sheet={sheet_ref} "
             f"key={page_rec.get('page_jpeg_r2_key')}"
         )
         return False
-    logger.info(f"plan send: jpeg ok for sheet={sheet_ref} size={len(jpeg)} bytes")
+    jpeg = await asyncio.to_thread(_compress_jpeg_for_whatsapp, jpeg_src)
+    logger.info(
+        f"plan send: jpeg ok for sheet={sheet_ref} "
+        f"src_size={len(jpeg_src)} compressed_size={len(jpeg)}"
+    )
     import uuid as _uuid
     temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
     try:
@@ -14252,11 +14291,16 @@ async def debug_test_plan_image_send(
         "steps": {},
     }
 
-    # Step 1 — fetch the jpeg
-    jpeg = await _fetch_page_jpeg(page)
+    # Step 1 — fetch the jpeg (and compress for WhatsApp delivery)
+    jpeg_src = await _fetch_page_jpeg(page)
+    if jpeg_src:
+        jpeg = await asyncio.to_thread(_compress_jpeg_for_whatsapp, jpeg_src)
+    else:
+        jpeg = None
     result["steps"]["fetch_jpeg"] = {
         "ok": bool(jpeg),
-        "size": len(jpeg) if jpeg else 0,
+        "src_size": len(jpeg_src) if jpeg_src else 0,
+        "compressed_size": len(jpeg) if jpeg else 0,
     }
     if not jpeg:
         return result
