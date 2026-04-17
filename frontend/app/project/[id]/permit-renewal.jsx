@@ -152,6 +152,13 @@ const STATUS_CONFIG = {
     icon: ShieldCheck,
     description: 'This permit is eligible for automated renewal. Tap "Prepare Renewal" to create a draft on DOB NOW.',
   },
+  needs_insurance: {
+    label: 'Insurance Required',
+    color: '#f59e0b',
+    bg: '#f59e0b15',
+    icon: ShieldAlert,
+    description: 'Enter your certificate of insurance dates in Settings to enable renewal eligibility.',
+  },
   ineligible_insurance: {
     label: 'Insurance Update Required',
     color: '#f59e0b',
@@ -315,7 +322,7 @@ export default function PermitRenewalScreen() {
     (r) => r.status === 'completed'
   ).length;
   const blockedCount = renewals.filter((r) =>
-    ['ineligible_insurance', 'ineligible_license', 'failed'].includes(
+    ['needs_insurance', 'ineligible_insurance', 'ineligible_license', 'failed'].includes(
       r.status
     )
   ).length;
@@ -513,8 +520,39 @@ export default function PermitRenewalScreen() {
                 </View>
               )}
 
-              {/* Blocking Reasons */}
-              {renewal.blocking_reasons?.length > 0 && (
+              {/* needs_insurance: soft-prompt CTA sending the admin to Settings */}
+              {renewal.status === 'needs_insurance' && (
+                <GlassCard
+                  style={{
+                    backgroundColor: '#f59e0b15',
+                    borderColor: '#f59e0b40',
+                    borderWidth: 1,
+                    marginBottom: 12,
+                    padding: 14,
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                    <ShieldAlert size={18} color="#f59e0b" style={{ marginTop: 2 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: '#f59e0b', marginBottom: 4 }}>
+                        Insurance Required
+                      </Text>
+                      <Text style={{ fontFamily: typography.regular, fontSize: 13, color: colors.text.secondary, lineHeight: 18 }}>
+                        Your insurance expiry dates haven't been entered yet. This is required to verify renewal eligibility.
+                      </Text>
+                      <GlassButton
+                        title="Go to Settings"
+                        icon={<ExternalLink size={14} color={colors.text.primary} />}
+                        onPress={() => router.push('/settings')}
+                        style={{ marginTop: 12, alignSelf: 'flex-start' }}
+                      />
+                    </View>
+                  </View>
+                </GlassCard>
+              )}
+
+              {/* Blocking Reasons — hidden for needs_insurance (CTA card above covers it) */}
+              {renewal.status !== 'needs_insurance' && renewal.blocking_reasons?.length > 0 && (
                 <View style={s.blockingBlock}>
                   <AlertTriangle size={14} color="#f59e0b" />
                   {renewal.blocking_reasons.map((reason, i) => (

@@ -74,7 +74,8 @@ async def _warmup_bis_cookies(client) -> None:
 
 class RenewalStatus(str, Enum):
     ELIGIBLE = "eligible"
-    INELIGIBLE_INSURANCE = "ineligible_insurance"
+    NEEDS_INSURANCE = "needs_insurance"          # Insurance dates have never been entered.
+    INELIGIBLE_INSURANCE = "ineligible_insurance"  # Entered but expired or short of renewal window.
     INELIGIBLE_LICENSE = "ineligible_license"
     DRAFT_READY = "draft_ready"
     AWAITING_GC = "awaiting_gc"
@@ -120,6 +121,10 @@ class RenewalEligibility(BaseModel):
     gc_license: Optional[GCLicenseInfo] = None
     blocking_reasons: List[str] = []
     insurance_flags: List[str] = []
+    # True when the company has never entered insurance expiry dates. Distinct
+    # from ineligible_insurance (entered but expired). Drives a soft CTA in the
+    # UI rather than a hard block.
+    insurance_not_entered: bool = False
 
 
 class PermitRenewalCreate(BaseModel):
@@ -380,12 +385,16 @@ async def check_renewal_eligibility(
     permit_dob_log_id: str,
     project_id: str,
     company_name: str,
+    company_id: Optional[str] = None,
 ) -> RenewalEligibility:
     """
     Full eligibility check:
     1. Verify permit exists and is expiring within 30 days
-    2. Scrape BIS for GC license + insurance
-    3. Validate all insurance covers 1 year from renewal date
+    2. Look up GC license status from NYC Open Data
+    3. Read manually-entered insurance records from the company doc and
+       validate each covers 1 year from renewal date.
+
+    company_id is optional — falls back to project.company_id if not provided.
     """
     permit = await db.dob_logs.find_one({"_id": _to_oid(permit_dob_log_id)})
     if not permit:
@@ -449,68 +458,33 @@ async def check_renewal_eligibility(
     else:
         eligibility.blocking_reasons.append("No expiration date on permit record.")
 
-    # ── Get GC license + insurance (prefer cached company data, fall back to BIS scrape) ──
-    gc_info = None
-    used_cache = False
-
-    # Try cached company data first
+    # ── Get GC license (Open Data via scrape_gc_license_info; no longer BIS) ──
+    # ── Insurance now read from company doc's manually-entered records. ──
     project = await db.projects.find_one({"_id": _to_oid(project_id)})
-    company_id = project.get("company_id") if project else None
-    if company_id:
-        company_doc = await db.companies.find_one({"_id": _to_oid(company_id), "is_deleted": {"$ne": True}})
-        if company_doc and company_doc.get("gc_resolved") and company_doc.get("gc_license_number"):
-            # Use cached data if verified within 7 days
-            last_verified = company_doc.get("gc_last_verified")
-            cache_fresh = False
-            if last_verified:
-                if isinstance(last_verified, datetime):
-                    if last_verified.tzinfo is None:
-                        last_verified = last_verified.replace(tzinfo=timezone.utc)
-                    cache_fresh = (datetime.now(timezone.utc) - last_verified).days < 7
+    resolved_company_id = company_id or (project.get("company_id") if project else None)
 
-            if cache_fresh and company_doc.get("gc_insurance_records"):
-                # Build GCLicenseInfo from cached company data
-                gc_info = GCLicenseInfo(
-                    license_number=company_doc.get("gc_license_number"),
-                    business_name=company_doc.get("gc_business_name"),
-                    licensee_name=company_doc.get("gc_licensee_name"),
-                    license_status=company_doc.get("gc_license_status"),
-                    license_expiration=company_doc.get("gc_license_expiration"),
-                    insurance_records=[InsuranceRecord(**rec) for rec in company_doc["gc_insurance_records"]],
-                )
-                used_cache = True
-            else:
-                # Cache stale or empty — refresh from BIS using license number
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=20.0) as client:
-                        insurance = await _fetch_insurance_details(client, company_doc["gc_license_number"])
-                    gc_info = GCLicenseInfo(
-                        license_number=company_doc.get("gc_license_number"),
-                        business_name=company_doc.get("gc_business_name"),
-                        licensee_name=company_doc.get("gc_licensee_name"),
-                        license_status=company_doc.get("gc_license_status"),
-                        license_expiration=company_doc.get("gc_license_expiration"),
-                        insurance_records=insurance,
-                    )
-                    # Update cache on company doc
-                    await db.companies.update_one(
-                        {"_id": _to_oid(company_id)},
-                        {"$set": {
-                            "gc_insurance_records": [rec.dict() for rec in insurance],
-                            "gc_last_verified": datetime.now(timezone.utc),
-                        }},
-                    )
-                    used_cache = True
-                except Exception as e:
-                    logger.warning(f"BIS refresh failed for license {company_doc['gc_license_number']}: {e}")
+    company_doc = None
+    if resolved_company_id:
+        company_doc = await db.companies.find_one(
+            {"_id": _to_oid(resolved_company_id), "is_deleted": {"$ne": True}}
+        )
 
-    # Fall back to name-based BIS scrape if no cached data
-    if not gc_info:
+    # Build GCLicenseInfo — prefer cached company license fields.
+    gc_info: Optional[GCLicenseInfo] = None
+    if company_doc and company_doc.get("gc_license_number"):
+        gc_info = GCLicenseInfo(
+            license_number=company_doc.get("gc_license_number"),
+            business_name=company_doc.get("gc_business_name"),
+            licensee_name=company_doc.get("gc_licensee_name"),
+            license_status=company_doc.get("gc_license_status"),
+            license_expiration=company_doc.get("gc_license_expiration"),
+            insurance_records=[],  # populated below from company doc's manual entries
+        )
+    else:
+        # Cold path: look up by company name via NYC Open Data.
         gc_info = await scrape_gc_license_info(company_name)
 
-    eligibility.gc_license = gc_info
-
+    # ── License status check ──
     if not gc_info or not gc_info.license_number:
         eligibility.blocking_reasons.append(
             f"GC License not found for '{company_name}'. "
@@ -523,11 +497,32 @@ async def check_renewal_eligibility(
                 f"'{gc_info.license_status}'. Must be Active."
             )
 
+    # ── Insurance: read manually-entered records from the company doc ──
+    manual_records_raw = (company_doc or {}).get("gc_insurance_records", []) or []
+
+    if not manual_records_raw:
+        # Soft prompt — not a hard block. Frontend shows a 'Go to Settings' CTA.
+        eligibility.insurance_not_entered = True
+    else:
+        try:
+            parsed_records = [InsuranceRecord(**rec) for rec in manual_records_raw]
+        except Exception as e:
+            logger.warning(
+                f"Could not parse gc_insurance_records for company {resolved_company_id}: {e}"
+            )
+            parsed_records = []
+
+        if gc_info is None:
+            # License lookup failed but insurance data exists — don't lose it.
+            gc_info = GCLicenseInfo(insurance_records=parsed_records)
+        else:
+            gc_info.insurance_records = parsed_records
+
         renewal_target = datetime.now(timezone.utc) + timedelta(days=365)
         required_types = {"general_liability", "workers_comp", "disability"}
         found_types = set()
 
-        for ins in gc_info.insurance_records:
+        for ins in parsed_records:
             found_types.add(ins.insurance_type)
             if ins.expiration_date:
                 try:
@@ -550,13 +545,20 @@ async def check_renewal_eligibility(
         for m in missing:
             label = m.replace("_", " ").title()
             eligibility.insurance_flags.append(
-                f"{label} insurance not found on DOB Licensing Portal."
+                f"{label} insurance not entered in Settings."
             )
 
         if eligibility.insurance_flags:
             eligibility.blocking_reasons.append("Insurance Update Required")
 
-    eligibility.eligible = len(eligibility.blocking_reasons) == 0
+    eligibility.gc_license = gc_info
+
+    # insurance_not_entered is a soft prompt — keeps eligible=False so the
+    # CTA shows, but does NOT add to blocking_reasons.
+    eligibility.eligible = (
+        len(eligibility.blocking_reasons) == 0
+        and not eligibility.insurance_not_entered
+    )
     return eligibility
 
 
@@ -919,8 +921,17 @@ async def nightly_renewal_scan(db):
 
                 # Run eligibility check
                 eligibility = await check_renewal_eligibility(
-                    db, permit_id, project_id, company_name
+                    db, permit_id, project_id, company_name, company_id=company_id
                 )
+
+                # Pick the right status. needs_insurance is distinct from
+                # ineligible_insurance -- the former means "never entered".
+                if eligibility.eligible:
+                    status_value = RenewalStatus.ELIGIBLE
+                elif eligibility.insurance_not_entered:
+                    status_value = RenewalStatus.NEEDS_INSURANCE
+                else:
+                    status_value = RenewalStatus.INELIGIBLE_INSURANCE
 
                 # Create renewal record
                 now = datetime.now(timezone.utc)
@@ -935,11 +946,7 @@ async def nightly_renewal_scan(db):
                     "permit_type": eligibility.permit_type,
                     "current_expiration": eligibility.expiration_date,
                     "days_until_expiry": eligibility.days_until_expiry,
-                    "status": (
-                        RenewalStatus.ELIGIBLE
-                        if eligibility.eligible
-                        else RenewalStatus.INELIGIBLE_INSURANCE
-                    ),
+                    "status": status_value,
                     "gc_license_number": (
                         eligibility.gc_license.license_number
                         if eligibility.gc_license else None
@@ -1143,7 +1150,8 @@ def create_permit_renewal_routes(
             )
 
         eligibility = await check_renewal_eligibility(
-            db, body.permit_dob_log_id, body.project_id, company_name
+            db, body.permit_dob_log_id, body.project_id, company_name,
+            company_id=company_id,
         )
         return eligibility.model_dump()
 
@@ -1176,7 +1184,8 @@ def create_permit_renewal_routes(
             )
 
         eligibility = await check_renewal_eligibility(
-            db, body.permit_dob_log_id, body.project_id, company_name
+            db, body.permit_dob_log_id, body.project_id, company_name,
+            company_id=company_id,
         )
 
         if not eligibility.eligible:
