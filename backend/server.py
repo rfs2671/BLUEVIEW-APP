@@ -12036,18 +12036,25 @@ async def _send_plan_image(
     """Fetch a page's pre-rendered JPEG from R2, upload a presigned copy to
     WaAPI-accessible storage, and send-image to the group. Returns True on
     success."""
+    sheet_ref = page_rec.get("sheet_number") or page_rec.get("_id")
     jpeg = await _fetch_page_jpeg(page_rec)
     if not jpeg:
+        logger.warning(
+            f"plan send: jpeg fetch returned empty for sheet={sheet_ref} "
+            f"key={page_rec.get('page_jpeg_r2_key')}"
+        )
         return False
+    logger.info(f"plan send: jpeg ok for sheet={sheet_ref} size={len(jpeg)} bytes")
     import uuid as _uuid
     temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
     try:
         await asyncio.to_thread(_upload_to_r2, jpeg, temp_key, "image/jpeg")
         signed = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
         if not signed:
+            logger.warning(f"plan send: presign returned empty for {temp_key}")
             return False
     except Exception as e:
-        logger.warning(f"plan send: temp upload failed: {e}")
+        logger.warning(f"plan send: temp upload failed sheet={sheet_ref}: {e}")
         return False
     try:
         async with httpx.AsyncClient(timeout=40.0) as client_http:
@@ -12059,9 +12066,41 @@ async def _send_plan_image(
                 },
                 json={"chatId": group_id, "image": signed, "caption": caption},
             )
-            return 200 <= resp.status_code < 300
+            ok = 200 <= resp.status_code < 300
+            # Always log the status + first 400 chars of body so we can diagnose
+            # silent failures when the JSON doesn't throw but a nested field
+            # indicates WaAPI-side rejection.
+            body_preview = ""
+            try:
+                body_preview = resp.text[:400]
+            except Exception:
+                pass
+            logger.info(
+                f"plan send: WaAPI send-image status={resp.status_code} ok={ok} "
+                f"sheet={sheet_ref} body={body_preview!r}"
+            )
+            if ok:
+                # Some WaAPI responses are 200 but body contains {"success": false}
+                try:
+                    j = resp.json()
+                    # Accept either top-level `data.status`/`success` truthiness
+                    if isinstance(j, dict):
+                        if j.get("success") is False:
+                            logger.warning(
+                                f"plan send: WaAPI returned success=false: {j}"
+                            )
+                            return False
+                        inner = j.get("data") or {}
+                        if isinstance(inner, dict) and inner.get("status") == "error":
+                            logger.warning(
+                                f"plan send: WaAPI data.status=error: {inner}"
+                            )
+                            return False
+                except Exception:
+                    pass
+            return ok
     except Exception as e:
-        logger.warning(f"WaAPI send-image failed: {e}")
+        logger.warning(f"WaAPI send-image exception sheet={sheet_ref}: {e}")
         return False
 
 
