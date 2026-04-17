@@ -11561,11 +11561,19 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             # NOTE: R2 lifecycle rule required: temp/whatsapp/ prefix, 7-day expiry
             temp_key = f"temp/whatsapp/{group_id}/{_uuid.uuid4()}.jpg"
             try:
-                r2_url = await asyncio.to_thread(
+                await asyncio.to_thread(
                     _upload_to_r2, jpeg_bytes, temp_key, "image/jpeg"
                 )
+                # WaAPI fetches the image by URL from its own servers, so CORS
+                # is a non-issue — we only need the URL to actually resolve.
+                # The raw `pub-*.r2.dev/<key>` format 404s unless the bucket
+                # has Public Access enabled, which it doesn't; a short-lived
+                # presigned GET URL works regardless of bucket visibility.
+                r2_url = await asyncio.to_thread(_presign_r2_get, temp_key, 3600)
+                if not r2_url:
+                    raise RuntimeError("presign returned empty URL")
             except Exception as e:
-                logger.warning(f"plan query: R2 upload failed: {e}")
+                logger.warning(f"plan query: R2 upload/presign failed: {e}")
                 continue
 
             caption = f"{sheet_number} — {sheet_title}"
