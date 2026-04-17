@@ -10802,7 +10802,9 @@ def _default_bot_config() -> dict:
             "dob_status": True,
             "open_items": True,
             "material_detection": True,
-            "plan_queries": False,
+            # Default ON — the tool is the bot's whole reason to know the
+            # plans, and it's gated behind the indexing pipeline anyway.
+            "plan_queries": True,
             # "strict" (default): bot only replies when explicitly addressed
             #   via @levelog / @<botphone> / "levelog ..." prefix, OR to a
             #   voice note / follow-up text sent within 3 min of the sender's
