@@ -1,8 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { View, Text, StyleSheet, Modal, Pressable, ActivityIndicator, Linking, TextInput, ScrollView, Dimensions, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle } from 'lucide-react-native';
-import { dropboxAPI, annotationsAPI } from '../utils/api';
+import { X, Download, FileText, ExternalLink, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
+import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+
+// Build a stable document identifier for an annotation. Direct-upload files
+// have empty `path` so we use a `file:{id}` sentinel that the backend
+// treats as a first-class document_path key.
+function documentKeyFor(file) {
+  if (!file) return '';
+  if (file.path) return file.path;
+  const id = file.id || file._id;
+  return id ? `file:${id}` : '';
+}
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
@@ -91,22 +101,42 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     }
   }, [visible, file, projectId]);
 
-  // Load annotations
+  // Load annotations — direct-upload files use `file:{id}` as the key.
+  const docKey = documentKeyFor(file);
   const loadAnnotations = useCallback(async () => {
-    if (!projectId || !file?.path) return;
+    if (!projectId || !docKey) return;
     try {
-      const data = await annotationsAPI.getForDocument(projectId, file.path);
+      const data = await annotationsAPI.getForDocument(projectId, docKey);
       setAnnotations(Array.isArray(data) ? data : (data.items || []));
     } catch (e) {
       console.error('Failed to load annotations:', e);
     }
-  }, [projectId, file?.path]);
+  }, [projectId, docKey]);
 
   useEffect(() => {
-    if (visible && file?.path && projectId) {
+    if (visible && docKey && projectId) {
       loadAnnotations();
     }
-  }, [visible, file, projectId, loadAnnotations]);
+  }, [visible, docKey, projectId, loadAnnotations]);
+
+  // Load the company roster for the recipient picker.
+  const [companyRoster, setCompanyRoster] = useState([]);
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState([]);
+  const [showRecipientPicker, setShowRecipientPicker] = useState(false);
+  useEffect(() => {
+    if (!visible) return;
+    let mounted = true;
+    usersAPI.companyRoster()
+      .then((list) => { if (mounted) setCompanyRoster(list || []); })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, [visible]);
+
+  const toggleRecipient = useCallback((id) => {
+    setSelectedRecipientIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }, []);
 
   const handleOverlayPress = useCallback((e) => {
     if (!pinModeActive || !containerLayout) return;
@@ -122,22 +152,26 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const handleCreateNote = useCallback(async () => {
     if (!pendingPosition) return;
     try {
-      await annotationsAPI.create({
-        project_id: projectId,
-        document_path: file.path,
+      const payload = {
+        project_id:  projectId,
         page_number: 1,
-        position: pendingPosition,
-        comment: newComment || '',
-        recipients: 'all',
-      });
+        position:    pendingPosition,
+        comment:     newComment || '',
+        recipients:  selectedRecipientIds.length ? selectedRecipientIds : 'all',
+      };
+      if (file?.id) payload.file_id = file.id;
+      if (file?.path) payload.document_path = file.path;
+      await annotationsAPI.create(payload);
       setShowNoteSheet(false);
       setPendingPosition(null);
       setNewComment('');
+      setSelectedRecipientIds([]);
+      setShowRecipientPicker(false);
       await loadAnnotations();
     } catch (e) {
       console.error('Failed to create annotation:', e);
     }
-  }, [pendingPosition, projectId, file?.path, newComment, loadAnnotations]);
+  }, [pendingPosition, projectId, file?.id, file?.path, newComment, selectedRecipientIds, loadAnnotations]);
 
   const handleReply = useCallback(async () => {
     if (!selectedAnnotation || !replyText.trim()) return;
@@ -145,7 +179,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
       await annotationsAPI.reply(selectedAnnotation._id || selectedAnnotation.id, replyText.trim());
       setReplyText('');
       await loadAnnotations();
-      const updated = await annotationsAPI.getForDocument(projectId, file.path);
+      const updated = await annotationsAPI.getForDocument(projectId, docKey);
       const list = Array.isArray(updated) ? updated : (updated.items || []);
       const found = list.find(a => (a._id || a.id) === (selectedAnnotation._id || selectedAnnotation.id));
       if (found) setSelectedAnnotation(found);
@@ -326,12 +360,105 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               onChangeText={setNewComment}
               multiline
             />
+
+            {/* Recipient picker */}
+            <View style={{ marginTop: 10 }}>
+              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600', marginBottom: 5 }}>
+                SEND TO
+              </Text>
+              <Pressable
+                onPress={() => setShowRecipientPicker((v) => !v)}
+                style={{
+                  flexDirection: 'row', alignItems: 'center',
+                  backgroundColor: 'rgba(255,255,255,0.06)',
+                  borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+                  borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
+                }}
+              >
+                <Users size={16} strokeWidth={1.5} color="#93c5fd" />
+                <Text style={{ color: '#e2e8f0', fontSize: 14, marginLeft: 8, flex: 1 }}>
+                  {selectedRecipientIds.length === 0
+                    ? 'Everyone on the project'
+                    : `${selectedRecipientIds.length} selected`}
+                </Text>
+                <Text style={{ color: '#64748b', fontSize: 12 }}>
+                  {showRecipientPicker ? '▲' : '▼'}
+                </Text>
+              </Pressable>
+
+              {showRecipientPicker && (
+                <View
+                  style={{
+                    marginTop: 6, maxHeight: 180,
+                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+                    borderRadius: 8, backgroundColor: '#0b1220',
+                  }}
+                >
+                  <ScrollView style={{ maxHeight: 180 }}>
+                    <Pressable
+                      onPress={() => setSelectedRecipientIds([])}
+                      style={{
+                        flexDirection: 'row', alignItems: 'center',
+                        paddingHorizontal: 10, paddingVertical: 9,
+                        borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)',
+                      }}
+                    >
+                      <View style={{
+                        width: 18, height: 18, borderRadius: 4,
+                        borderWidth: 1, borderColor: '#3b82f6',
+                        backgroundColor: selectedRecipientIds.length === 0 ? '#3b82f6' : 'transparent',
+                        marginRight: 10,
+                      }} />
+                      <Text style={{ color: '#e2e8f0', fontSize: 14 }}>Everyone</Text>
+                    </Pressable>
+                    {companyRoster.map((u) => {
+                      const checked = selectedRecipientIds.includes(u.id);
+                      return (
+                        <Pressable
+                          key={u.id}
+                          onPress={() => toggleRecipient(u.id)}
+                          style={{
+                            flexDirection: 'row', alignItems: 'center',
+                            paddingHorizontal: 10, paddingVertical: 9,
+                            borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.04)',
+                          }}
+                        >
+                          <View style={{
+                            width: 18, height: 18, borderRadius: 4,
+                            borderWidth: 1, borderColor: '#3b82f6',
+                            backgroundColor: checked ? '#3b82f6' : 'transparent',
+                            marginRight: 10,
+                          }} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={{ color: '#e2e8f0', fontSize: 14 }}>{u.name}</Text>
+                            {!!u.role && (
+                              <Text style={{ color: '#64748b', fontSize: 11 }}>{u.role}</Text>
+                            )}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                    {companyRoster.length === 0 && (
+                      <Text style={{ color: '#64748b', fontSize: 12, padding: 14, textAlign: 'center' }}>
+                        No other users on this company.
+                      </Text>
+                    )}
+                  </ScrollView>
+                </View>
+              )}
+            </View>
+
             <View style={styles.sheetActions}>
               <Pressable style={styles.sheetSendBtn} onPress={handleCreateNote}>
                 <Send size={16} strokeWidth={1.5} color="#fff" />
                 <Text style={styles.sheetSendText}>Send</Text>
               </Pressable>
-              <Pressable style={styles.sheetCancelBtn} onPress={() => { setShowNoteSheet(false); setPendingPosition(null); }}>
+              <Pressable style={styles.sheetCancelBtn} onPress={() => {
+                setShowNoteSheet(false);
+                setPendingPosition(null);
+                setSelectedRecipientIds([]);
+                setShowRecipientPicker(false);
+              }}>
                 <Text style={styles.sheetCancelText}>Cancel</Text>
               </Pressable>
             </View>

@@ -856,6 +856,17 @@ export const annotationsAPI = {
 };
 
 /**
+ * Lightweight company user roster for recipient pickers.
+ * Available to ANY authenticated user (not admin-only).
+ */
+export const usersAPI = {
+  companyRoster: async () => {
+    const response = await apiClient.get('/api/users/company-roster');
+    return Array.isArray(response.data) ? response.data : [];
+  },
+};
+
+/**
  * WhatsApp Integration APIs
  */
 export const whatsappAPI = {

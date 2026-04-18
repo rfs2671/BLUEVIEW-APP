@@ -9882,18 +9882,58 @@ async def _send_reply_notification(annotation: dict, thread_entry: dict):
         logger.error(f"Failed to send reply notification: {e}")
 
 
+@api_router.get("/users/company-roster")
+async def get_company_roster(current_user=Depends(get_current_user)):
+    """Minimal user roster for the current user's company. Any authenticated
+    user can call this — used by the annotation recipient picker. Returns
+    only safe fields (id, name, email, role) and excludes deleted users.
+    """
+    company_id = get_user_company_id(current_user)
+    query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if company_id:
+        query["company_id"] = company_id
+    users = await db.users.find(
+        query,
+        {"password": 0, "_id": 1, "name": 1, "full_name": 1, "email": 1, "role": 1},
+    ).sort("name", 1).to_list(500)
+    out = []
+    for u in users:
+        out.append({
+            "id":    str(u.get("_id")),
+            "name":  u.get("name") or u.get("full_name") or u.get("email") or "Unknown",
+            "email": u.get("email") or "",
+            "role":  u.get("role") or "",
+        })
+    return out
+
+
 @api_router.post("/annotations")
 async def create_annotation(data: dict, background_tasks: BackgroundTasks, current_user=Depends(get_current_user)):
-    """Create a document annotation (plan note)."""
+    """Create a document annotation (plan note).
+
+    Accepts EITHER `document_path` (legacy, Dropbox-synced files) or `file_id`
+    (direct-uploaded files which have no dropbox path). file_id is
+    canonicalized as `file:{id}` and used as the document_path key.
+    """
     project_id = data.get("project_id")
-    document_path = data.get("document_path")
+    document_path = (data.get("document_path") or "").strip()
+    file_id = (data.get("file_id") or "").strip()
     page_number = data.get("page_number", 1)
     position = data.get("position", {"x": 0.5, "y": 0.5})
     comment = data.get("comment", "")
     recipients_input = data.get("recipients", "all")
 
-    if not project_id or not document_path:
-        raise HTTPException(status_code=400, detail="project_id and document_path are required")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    # Prefer file_id when present — it's stable across renames / R2 keys
+    # (direct-upload files have empty dropbox_path).
+    if file_id:
+        document_path = f"file:{file_id}"
+    if not document_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Either document_path or file_id is required",
+        )
 
     user_id = current_user.get("id") or str(current_user.get("_id"))
     company_id = get_user_company_id(current_user)
@@ -9907,11 +9947,14 @@ async def create_annotation(data: dict, background_tasks: BackgroundTasks, curre
         recipient_ids = [str(u["_id"]) for u in all_users]
     else:
         recipient_ids = recipients_input if isinstance(recipients_input, list) else [recipients_input]
+        # Coerce any IDs to strings
+        recipient_ids = [str(r) for r in recipient_ids if r]
 
     now = datetime.now(timezone.utc)
     doc = {
         "project_id": project_id,
         "document_path": document_path,
+        "file_id": file_id or None,
         "page_number": page_number,
         "position": position,
         "comment": comment,
@@ -9946,7 +9989,11 @@ async def create_annotation(data: dict, background_tasks: BackgroundTasks, curre
 
 @api_router.get("/annotations/{project_id}/{document_path:path}")
 async def get_annotations_for_document(project_id: str, document_path: str, current_user=Depends(get_current_user)):
-    """Get annotations for a document with server-side visibility filtering."""
+    """Get annotations for a document with server-side visibility filtering.
+
+    `document_path` may be either a real Dropbox path ("/Projects/…/A-101.pdf")
+    or the sentinel form `file:{id}` used by direct-uploaded files.
+    """
     user_id = current_user.get("id") or str(current_user.get("_id"))
     user_role = current_user.get("role")
 
