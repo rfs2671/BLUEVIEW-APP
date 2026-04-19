@@ -8613,12 +8613,58 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
         logger.error(f"Failed to send critical DOB alert: {e}")
 
 
-# ==================== DOB ALERT THROTTLE (24h dedupe) ====================
-# Same system_config pattern as the manual /dob-sync rate limiter. Without a
-# throttle, `_send_critical_dob_alert` fires on every scheduler tick that
-# rediscovers the same Critical record — which spams owners.
+# ==================== DOB ALERT GATING ====================
+#
+# Two layers, both keyed in system_config:
+#
+#  1. Initial-scan suppression. The first time a source (`dob`, `311`, `bis`)
+#     scans a project, it pulls in the entire historical backlog. Emailing
+#     every single one of those to the owner is worthless noise — the records
+#     show in the app regardless. After the initial scan completes, we mark
+#     the project/source pair done; from then on, newly-discovered records
+#     can alert.
+#
+#  2. 24h per-record throttle. Mirrors the /dob-sync rate limiter shape.
+#     Without this, every 30-min scheduler tick that rediscovers the same
+#     Critical record resends the email.
 
 _DOB_ALERT_THROTTLE_HOURS = 24
+
+
+async def _initial_scan_done(project_id: str, source: str) -> bool:
+    """True if `source` has already completed at least one full scan for
+    this project. `source` is one of 'dob' (nightly DOB sync / NYC Open
+    Data), '311' (311 Service Requests poll), 'bis' (BIS scraper)."""
+    if not project_id or not source:
+        return False
+    try:
+        doc = await db.system_config.find_one(
+            {"key": f"initial_scan_done:{source}:{project_id}"}
+        )
+        return bool(doc)
+    except Exception as e:
+        logger.warning(f"initial_scan_done read failed: {e}")
+        # On DB hiccups, err toward "done" so we don't silently suppress
+        # real alerts forever.
+        return True
+
+
+async def _mark_initial_scan_done(project_id: str, source: str) -> None:
+    if not project_id or not source:
+        return
+    try:
+        await db.system_config.update_one(
+            {"key": f"initial_scan_done:{source}:{project_id}"},
+            {"$set": {
+                "key":          f"initial_scan_done:{source}:{project_id}",
+                "source":       source,
+                "project_id":   project_id,
+                "completed_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"initial_scan mark failed: {e}")
 
 
 async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
@@ -8661,20 +8707,40 @@ async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
         logger.warning(f"alert throttle write failed: {e}")
 
 
-async def _send_critical_dob_alert_throttled(project: dict, dob_log: dict) -> bool:
-    """Wrapper that enforces the 24h throttle per (project, raw_dob_id).
+async def _send_critical_dob_alert_throttled(
+    project: dict, dob_log: dict, source: str = "dob",
+) -> bool:
+    """Wrapper that enforces:
 
-    Returns True if an alert was sent, False if suppressed by throttle.
-    Existing callers can swap in this function without signature changes.
+      1. Initial-scan suppression: first scan of the (project, source) pair
+         never emails. Records still get inserted and shown in the app —
+         this just mutes the notification firehose during backfill.
+      2. 24h per-record throttle.
+
+    `source` is one of 'dob', '311', 'bis'. Returns True if an alert was
+    actually sent, False if suppressed. Existing callers that don't pass
+    `source` get the default 'dob' which matches the nightly scan.
     """
     project_id = str(project.get("_id") or project.get("id") or "")
     raw_dob_id = str(dob_log.get("raw_dob_id") or "")
-    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+
+    # Gate 1 — initial-scan suppression
+    if not await _initial_scan_done(project_id, source):
         logger.info(
-            f"DOB alert throttled (within 24h) project={project.get('name')} "
+            f"DOB alert suppressed (initial scan in progress) "
+            f"source={source} project={project.get('name')} "
             f"raw_dob_id={raw_dob_id}"
         )
         return False
+
+    # Gate 2 — 24h per-record throttle
+    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+        logger.info(
+            f"DOB alert throttled (within 24h) source={source} "
+            f"project={project.get('name')} raw_dob_id={raw_dob_id}"
+        )
+        return False
+
     await _send_critical_dob_alert(project, dob_log)
     await _mark_dob_alert_sent(project_id, raw_dob_id)
     return True
@@ -8839,7 +8905,10 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             if severity == "Action":
                 action_count += 1
                 # Fire critical alert through the throttled wrapper.
-                await _send_critical_dob_alert_throttled(project, doc)
+                # Initial-scan suppression here means the very first 311
+                # poll for a project quietly backfills the historical
+                # complaints without spamming the owner.
+                await _send_critical_dob_alert_throttled(project, doc, source="311")
         except Exception as e:
             # The unique index on raw_dob_id will reject duplicates; swallow.
             msg = str(e).lower()
@@ -8850,6 +8919,9 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 f"unique_key={unique_key}: {e}"
             )
 
+    # Mark the 311 initial scan done for this project so subsequent polls
+    # can email when genuinely new complaints show up.
+    await _mark_initial_scan_done(project_id, "311")
     return {"new": new_count, "actions": action_count, "skipped": False}
 
 
@@ -9453,16 +9525,18 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     {"$set": update_fields},
                 )
                 dob_log["id"] = str(existing["_id"])
-                # Only alert if severity escalated to Action
+                # Only alert if severity escalated to Action — and route
+                # through the throttled wrapper so initial-scan
+                # suppression + 24h dedupe apply.
                 old_severity = existing.get("severity", "")
                 if severity == "Action" and old_severity != "Action":
-                    await _send_critical_dob_alert(project, dob_log)
+                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
             else:
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
                 if severity == "Action":
-                    await _send_critical_dob_alert(project, dob_log)
+                    await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
         except Exception as e:
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
  
@@ -9508,6 +9582,10 @@ async def run_dob_sync_for_project(project: dict) -> list:
         f"DOB sync for project {project_id}: {len(inserted_logs)} new records "
         f"({sum(1 for l in inserted_logs if l.get('severity') == 'Critical')} critical)"
     )
+    # Mark the initial DOB scan done for this project so subsequent scans
+    # can send email alerts. The first scan of a newly-tracked project
+    # pulls in the entire historical backlog — silent during that run.
+    await _mark_initial_scan_done(project_id, "dob")
     return inserted_logs
  
  

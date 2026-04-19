@@ -135,12 +135,50 @@ def _get_db():
 
 
 # ---------------------------------------------------------------------------
-# Alert dedupe — mirrors the 24-hour throttle in server.py so this scraper
-# and the main server share the same dedup window. Both write to
-# `system_config` with the same key schema.
+# Alert gating — mirrors the two-layer logic in server.py so this scraper
+# and the main API share the same dedup schema + the same "initial scan
+# is silent" behavior. Both write to `system_config`.
 # ---------------------------------------------------------------------------
 
 ALERT_WINDOW_HOURS = 24
+
+
+async def _initial_scan_done(project_id: str) -> bool:
+    """True once the first full BIS scan of this project has completed.
+    Before that marker, no emails fire from this source — the backfill
+    would otherwise blast the owner with old historical violations."""
+    if not project_id:
+        return False
+    try:
+        db = _get_db()
+        doc = await db.system_config.find_one(
+            {"key": f"initial_scan_done:bis:{project_id}"}
+        )
+        return bool(doc)
+    except Exception as e:
+        logger.warning(f"initial_scan_done read failed: {e}")
+        # On DB hiccups, err toward "done" so we don't silently suppress
+        # real alerts forever.
+        return True
+
+
+async def _mark_initial_scan_done(project_id: str) -> None:
+    if not project_id:
+        return
+    try:
+        db = _get_db()
+        await db.system_config.update_one(
+            {"key": f"initial_scan_done:bis:{project_id}"},
+            {"$set": {
+                "key":          f"initial_scan_done:bis:{project_id}",
+                "source":       "bis",
+                "project_id":   project_id,
+                "completed_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"initial_scan mark failed: {e}")
 
 
 async def _alert_recently_sent(project_id: str, raw_dob_id: str) -> bool:
@@ -183,11 +221,26 @@ async def _mark_alert_sent(project_id: str, raw_dob_id: str) -> None:
 
 
 async def _send_critical_alert(project: dict, record: dict) -> None:
-    """Mirrors the main server's `_send_critical_dob_alert`, same email shape
-    (so owners don't see a different template from the standalone scraper).
-    Throttled to 24h per (project, raw_dob_id)."""
+    """Mirrors the main server's `_send_critical_dob_alert`, same email
+    shape (so owners don't see a different template from the standalone
+    scraper). Two gates:
+      1. Initial BIS scan of this project must already be complete —
+         otherwise historical backfill would spam the owner.
+      2. 24h per-record throttle, shared via system_config with the
+         backend so both processes never double-send.
+    """
     project_id = str(project.get("_id") or project.get("id") or "")
     raw_dob_id = str(record.get("raw_dob_id") or "")
+
+    # Gate 1 — initial-scan suppression
+    if not await _initial_scan_done(project_id):
+        logger.info(
+            f"alert suppressed (initial BIS scan in progress) "
+            f"project={project.get('name')} raw_dob_id={raw_dob_id}"
+        )
+        return
+
+    # Gate 2 — 24h per-record throttle
     if await _alert_recently_sent(project_id, raw_dob_id):
         logger.info(
             f"alert throttled (24h) project={project.get('name')} "
@@ -587,6 +640,9 @@ async def _process_project(playwright, project: dict) -> Dict[str, int]:
             if "duplicate key" not in msg:
                 logger.warning(f"complaint insert failed BIN={bin_number} id={cid}: {e}")
 
+    # Mark the initial BIS scan done for this project so the next scan
+    # can start firing email alerts on newly-discovered records.
+    await _mark_initial_scan_done(project_id)
     return stats
 
 
