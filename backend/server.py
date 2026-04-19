@@ -14617,6 +14617,41 @@ async def whatsapp_webhook(request: Request):
     return {"status": "ok"}
 
 
+@api_router.get("/whatsapp/debug/bot-identifiers")
+async def whatsapp_debug_bot_ids(current_user=Depends(get_current_user)):
+    """Dump the digit-strings the addressing matcher recognizes as 'the bot'.
+
+    If your native @mention isn't being detected, compare the LID the
+    webhook payloads carry (see /whatsapp/debug/webhook-log) against the
+    list this returns. A missing LID here = env var isn't loaded, or has
+    whitespace/quote corruption.
+    """
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    env_phone_raw = os.environ.get("WAAPI_DISPLAY_NUMBER", "")
+    env_lid_raw = os.environ.get("WAAPI_BOT_LID", "")
+    return {
+        "env_waapi_display_number": {
+            "raw_repr": repr(env_phone_raw),
+            "digits_only": re.sub(r"\D", "", env_phone_raw),
+        },
+        "env_waapi_bot_lid": {
+            "raw_repr": repr(env_lid_raw),
+            "digits_only": re.sub(r"\D", "", env_lid_raw),
+        },
+        "learned_lids_since_restart": sorted(_LEARNED_BOT_LIDS),
+        "full_matcher_set": _bot_identifier_digits(),
+        "note": (
+            "If native @mentions still fail, look at "
+            "/whatsapp/debug/webhook-log and find the @<digits> token in a "
+            "recent inbound body. It must be exactly equal to one of "
+            "full_matcher_set entries, or share the last 10 digits with a "
+            "phone entry."
+        ),
+    }
+
+
 @api_router.get("/whatsapp/debug/webhook-log")
 async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
     """Return the last 20 raw webhook hits so we can see what WaAPI is sending."""
