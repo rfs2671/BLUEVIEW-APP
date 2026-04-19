@@ -12328,10 +12328,34 @@ _PLAN_QUERY_PARSER_PROMPT = (
     "wants the image ('show me', 'pull up', 'send me', 'find the')\n"
     "  dob_route: true if the message is about permits, violations, or DOB status and "
     "should NOT be treated as a plan query; else false\n\n"
+    "Spatial → floor/discipline inference (always apply before returning):\n"
+    "- 'backyard', 'yard', 'rear yard', 'courtyard', 'garden' → floor='1', "
+    "  likely discipline='PL' if drainage/sewer/water, else 'GN' for site/landscape.\n"
+    "- 'front yard', 'front walk', 'sidewalk', 'street', 'curb' → floor='1', "
+    "  discipline='GN'.\n"
+    "- 'basement', 'cellar', 'sub-basement' → floor='cellar' or 'basement'.\n"
+    "- 'rooftop', 'roof' → floor='roof'.\n"
+    "- 'penthouse', 'PH' → floor='penthouse'.\n"
+    "- 'ground floor', 'first floor', '1st floor', 'lobby' → floor='1'.\n"
+    "- 'mezzanine' → floor='mezzanine'.\n\n"
+    "Topic → discipline inference:\n"
+    "- drain / drainage / sewer / trap / cleanout / waste line / water line / "
+    "  hose bib / floor drain / roof drain → discipline='PL'.\n"
+    "- HVAC / ductwork / AHU / VAV / boiler / chiller / supply grille / "
+    "  return grille / diffuser → discipline='ME'.\n"
+    "- outlet / receptacle / panel / feeder / circuit / switch / lighting / "
+    "  riser (electrical) → discipline='EL'.\n"
+    "- standpipe / fire pump / sprinkler head / zone valve → discipline='SP'.\n"
+    "- beam / column / footing / slab / rebar / girder / shear wall → 'ST'.\n"
+    "- partition / door / ceiling / finish / stair / elevator → 'AR'.\n"
+    "- site work / landscape / retaining wall / fence / pavers → 'GN'.\n\n"
+    "Keywords should always include the spatial noun (e.g. BACKYARD, ROOF, "
+    "BASEMENT) AND the topic noun (DRAIN, DUCT, OUTLET) so keyword retrieval "
+    "can match even if discipline inference is wrong.\n\n"
     "Routing rules:\n"
     "- 'show me / pull up / send me / find the' → question=null (image send).\n"
-    "- 'what is / how thick / what gauge / required clearance / what's the spec' "
-    "or question marks → extract as question.\n"
+    "- 'what is / how thick / how many / where / any / is there / required / "
+    "  what size / how far' or any '?' → extract as question.\n"
     "- Permit / violation / DOB keyword → set dob_route=true and leave other fields null.\n"
     "- Return ONLY valid JSON, no explanation."
 )
@@ -12643,23 +12667,23 @@ async def _fetch_page_jpeg(page_rec: dict) -> Optional[bytes]:
 
 _VQA_PROMPT = (
     "You are answering a field question about a NYC construction drawing for "
-    "a live construction crew.\n\n"
+    "a crew member on site with a phone in hand. They need a fast, specific answer.\n\n"
     "Sheet: {sheet_number} — {sheet_title}\n\n"
     "Question: {user_question}\n\n"
-    "Instructions:\n"
-    "- Answer using only information that is explicitly visible in this drawing. "
-    "Make no assumptions.\n"
-    "- If the answer is a dimension, material, or specification, quote it exactly "
-    "as shown on the drawing. Include units, gauge, fire rating, or any qualifying "
-    "note text as printed.\n"
-    "- If the answer appears in a note or keynote, include the note number and "
-    "quote the note text.\n"
-    "- If multiple values exist for the same element in different zones, rooms, "
-    "or floors, list each value with its location context.\n"
-    "- Maximum 80 words. No preamble. No 'based on the drawing' opener. Give only "
-    "the answer.\n"
-    "- If this specific information is not shown anywhere on this sheet, reply "
-    "with exactly this single word and nothing else: NOT_SHOWN_ON_SHEET"
+    "Answer format — follow exactly:\n"
+    "- If the question is yes/no, START with 'Yes.' or 'No.' then the specifics.\n"
+    "- If the question is 'how many / where / what size / how far', START with "
+    "the count or value, THEN the dimension/location quoted from the drawing.\n"
+    "- Quote dimensions, pipe sizes, materials, note numbers EXACTLY as shown "
+    "(e.g. '2 floor drains, 4\\\" trap, 2'-10\\\" from building line', "
+    "'3/4\\\" CW line per Note 4').\n"
+    "- Maximum 40 words. No preamble. No 'based on the drawing' or 'according "
+    "to this sheet'. Just the answer.\n"
+    "- If multiple instances exist in different rooms/zones, list each with a "
+    "1-word location tag (e.g. 'Kitchen: FD-1 at 3'-2\\\". Bath: FD-2 at wall.').\n"
+    "- NEVER invent dimensions. Only quote what is literally printed on the sheet.\n"
+    "- If this specific information is not shown on this sheet, reply with "
+    "exactly this single word and nothing else: NOT_SHOWN_ON_SHEET"
 )
 
 
@@ -12913,7 +12937,9 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             )
         return
 
-    # 4b. VQA path — iterate candidates, stop on first real answer
+    # 4b. VQA path — iterate candidates, stop on first real answer.
+    # On success we send BOTH the short text answer AND the sheet image so
+    # the crew can verify the answer against the drawing in one message.
     for rec in candidates:
         try:
             sheet_number = rec.get("sheet_number") or "Sheet"
@@ -12929,6 +12955,18 @@ async def _handle_plan_query(project_id: str, group_id: str, query: str,
             # Got an answer — format with sheet citation per spec.
             reply_text = f"*{sheet_number}* — {sheet_title}\n\n{answer}"
             await send_whatsapp_message(group_id, reply_text)
+            # Follow up with the drawing image so the crew has visual
+            # reference. Silent failure is fine — they already have the
+            # answer text.
+            try:
+                await asyncio.sleep(0.6)
+                await _send_plan_image(
+                    group_id, rec, f"{sheet_number} — {sheet_title}",
+                )
+            except Exception as e:
+                logger.warning(
+                    f"plan image send after VQA failed sheet={sheet_number}: {e}"
+                )
             return
         except Exception as e:
             logger.warning(f"VQA attempt failed for {rec.get('sheet_number')}: {e}")
