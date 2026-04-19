@@ -704,7 +704,19 @@ LICENSE_QUERY_URL = (
     "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryByLicenseNumberServlet"
     "?allkey={lic}&requestid=0"
 )
-INSURANCE_CACHE_HOURS = 24
+# Insurance is event-driven, not time-driven. We fetch when any of:
+#   (a) we have zero insurance records for this license yet (first time
+#       we've ever seen the company — covers new-project on-boarding so
+#       automated permit renewal has data to work with),
+#   (b) the earliest current insurance expiration is ≤ 30 days away
+#       (catches the GC's actual renewal, so we surface the new dates),
+#   (c) safety ceiling: we haven't checked in > 14 days regardless
+#       (handles case where stored dates got corrupted and both checks
+#       above pass incorrectly — cheap backstop).
+# This is MUCH less traffic than the old every-24h model while still
+# never missing a real policy turnover.
+INSURANCE_REFRESH_WITHIN_DAYS = 30
+INSURANCE_HARD_REFRESH_DAYS   = 14
 
 # Map the various BIS row labels to the canonical insurance_type values
 # the backend and frontend already use (same as manual entry).
@@ -833,28 +845,124 @@ def _insurance_is_current(expiration_date: Optional[str]) -> bool:
     return False
 
 
+def _parse_ins_date(v: Optional[str]) -> Optional[datetime]:
+    """Parse MM/DD/YYYY or MM/DD/YY into UTC datetime, or None."""
+    if not v:
+        return None
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(v, fmt).replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+    return None
+
+
 async def _insurance_fetch_due(license_number: str) -> bool:
-    """True if we haven't run a scrape for this license# in the last 24h."""
+    """Event-driven fetch gate.
+
+    Returns True iff any of:
+      (a) no company currently has scraper-written insurance records
+          for this license number (brand-new project / first touch),
+      (b) earliest still-current insurance record expires in ≤ 30 days
+          (so the GC is likely mid-renewal; pick up the new policy),
+      (c) cache says we haven't run in > 14 days anyway (cheap
+          backstop for corrupted state).
+
+    Unlike the old 24h TTL, this doesn't re-hit BIS hourly for
+    licenses whose insurance is far from expiring.
+    """
     if not license_number:
         return False
+
     try:
         db = _get_db()
+    except Exception as e:
+        logger.warning(f"insurance gate: db unavailable: {e}")
+        return True  # on hiccup, err toward running
+
+    now = datetime.now(timezone.utc)
+
+    # (a) Any company actually storing bis_scraper-written records for this
+    # license? If not — either no company has this license yet, or we've
+    # never fetched for this license. Either way, fetch now.
+    try:
+        companies_with_records = await db.companies.count_documents({
+            "gc_license_number": license_number,
+            "gc_insurance_records": {
+                "$elemMatch": {"source": "bis_scraper"},
+            },
+            "is_deleted": {"$ne": True},
+        })
+    except Exception as e:
+        logger.warning(f"insurance gate: company read failed {license_number}: {e}")
+        return True
+    if companies_with_records == 0:
+        logger.info(
+            f"insurance gate license={license_number}: no scraper records on "
+            f"any company → fetching (initial / on-boarding)"
+        )
+        return True
+
+    # (b) Earliest current expiration across all companies on this license.
+    # If ≤ 30 days, fetch.
+    try:
+        cursor = db.companies.find(
+            {
+                "gc_license_number": license_number,
+                "gc_insurance_records.source": "bis_scraper",
+                "is_deleted": {"$ne": True},
+            },
+            {"gc_insurance_records": 1},
+        )
+        earliest_exp: Optional[datetime] = None
+        async for company in cursor:
+            for rec in company.get("gc_insurance_records") or []:
+                if rec.get("source") != "bis_scraper":
+                    continue
+                if not rec.get("is_current"):
+                    continue
+                dt = _parse_ins_date(rec.get("expiration_date"))
+                if not dt:
+                    continue
+                if earliest_exp is None or dt < earliest_exp:
+                    earliest_exp = dt
+    except Exception as e:
+        logger.warning(f"insurance gate: expiry read failed {license_number}: {e}")
+        return True
+
+    if earliest_exp is not None:
+        days_left = (earliest_exp - now).days
+        if days_left <= INSURANCE_REFRESH_WITHIN_DAYS:
+            logger.info(
+                f"insurance gate license={license_number}: earliest exp in "
+                f"{days_left}d ≤ {INSURANCE_REFRESH_WITHIN_DAYS}d → fetching"
+            )
+            return True
+
+    # (c) Hard-refresh backstop. If we happen to have records but the cache
+    # says we haven't looked in > 14 days, fetch once just to be safe.
+    try:
         doc = await db.system_config.find_one(
             {"key": f"insurance_fetch:{license_number}"}
         )
-    except Exception as e:
-        logger.warning(f"insurance cache read failed {license_number}: {e}")
-        # On DB hiccup, err toward running (don't silently skip forever).
-        return True
-    if not doc:
-        return True
-    last = doc.get("last_fetched_at")
-    if not isinstance(last, datetime):
-        return True
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
-    return hours >= INSURANCE_CACHE_HOURS
+    except Exception:
+        doc = None
+    if doc:
+        last = doc.get("last_fetched_at")
+        if isinstance(last, datetime):
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            days = (now - last).total_seconds() / 86400.0
+            if days >= INSURANCE_HARD_REFRESH_DAYS:
+                logger.info(
+                    f"insurance gate license={license_number}: hard-refresh "
+                    f"({days:.1f}d since last fetch)"
+                )
+                return True
+
+    # Otherwise skip — insurance is fresh, not near expiration, and we've
+    # checked within the backstop window.
+    return False
 
 
 async def _mark_insurance_fetched(license_number: str, records_found: int) -> None:
