@@ -274,48 +274,94 @@ async def _send_critical_alert(project: dict, record: dict) -> None:
     if not recipients:
         return
 
-    project_name = project.get("name", "Unknown Project")
-    summary      = record.get("ai_summary", "No summary available")
-    next_action  = record.get("next_action", "Review immediately")
-    rtype        = record.get("record_type", "alert").upper().replace("_", " ")
+    project_name = project.get("name", "your project")
+    summary      = record.get("ai_summary")  or "A new DOB record was found."
+    next_action  = record.get("next_action") or "Open Levelog to review the details."
+    rt_raw       = record.get("record_type", "")
+    rt           = _humanize_record_type(rt_raw)
+    dob_link     = record.get("dob_link") or ""
+    detected_at  = record.get("detected_at") or datetime.now(timezone.utc)
+    if isinstance(detected_at, datetime):
+        detected_str = detected_at.strftime("%b %d, %Y at %I:%M %p UTC")
+    else:
+        detected_str = str(detected_at)
 
-    html = f"""
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #dc2626; color: white; padding: 20px 24px; border-radius: 8px 8px 0 0;">
-            <h1 style="margin: 0; font-size: 18px;">⚠️ CRITICAL DOB Alert</h1>
-            <p style="margin: 4px 0 0; opacity: 0.9; font-size: 14px;">{project_name}</p>
-        </div>
-        <div style="background: #fff; border: 1px solid #e5e7eb; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
-            <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 6px; padding: 16px; margin-bottom: 16px;">
-                <p style="margin: 0 0 4px; font-size: 11px; color: #991b1b; text-transform: uppercase; letter-spacing: 0.5px;">{rtype}</p>
-                <p style="margin: 0; font-size: 15px; color: #1f2937; font-weight: 500;">{summary}</p>
-            </div>
-            <div style="background: #f9fafb; border-radius: 6px; padding: 16px;">
-                <p style="margin: 0 0 4px; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px;">Required Action</p>
-                <p style="margin: 0; font-size: 14px; color: #1f2937;">{next_action}</p>
-            </div>
-            <p style="margin: 16px 0 0; font-size: 12px; color: #9ca3af;">
-                Source: BIS scraper
-            </p>
-        </div>
-        <p style="text-align: center; font-size: 10px; color: #cbd5e1; margin-top: 16px; letter-spacing: 2px;">LEVELOG COMPLIANCE</p>
-    </div>
-    """
+    link_line = f"\n\nDetails: {dob_link}" if dob_link else ""
+    text_body = (
+        f"Hi,\n\n"
+        f"Levelog picked up a new {rt} on {project_name}.\n\n"
+        f"Summary: {summary}\n\n"
+        f"Recommended next step: {next_action}\n\n"
+        f"Detected {detected_str}."
+        f"{link_line}\n\n"
+        f"You're receiving this because you're listed as an admin or owner "
+        f"on this Levelog project. Reply to this email if you have questions.\n\n"
+        f"— Levelog"
+    )
+
+    link_html = (
+        f'<p style="margin:16px 0 0;"><a href="{dob_link}" '
+        f'style="color:#1d4ed8;text-decoration:none;">View on NYC DOB</a></p>'
+        if dob_link else ""
+    )
+    html_body = f"""<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:24px;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.55;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" width="560" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+    <tr><td style="padding:24px 28px;">
+      <p style="margin:0 0 12px;font-size:14px;color:#6b7280;">Levelog</p>
+      <h1 style="margin:0 0 18px;font-size:18px;font-weight:600;color:#111827;">
+        New {rt} on {project_name}
+      </h1>
+      <p style="margin:0 0 14px;font-size:15px;">Hi,</p>
+      <p style="margin:0 0 14px;font-size:15px;">
+        Levelog picked up a new {rt} on <strong>{project_name}</strong>. Here are the details:
+      </p>
+      <p style="margin:0 0 14px;font-size:15px;"><strong>Summary:</strong> {summary}</p>
+      <p style="margin:0 0 14px;font-size:15px;"><strong>Recommended next step:</strong> {next_action}</p>
+      <p style="margin:0 0 14px;font-size:13px;color:#6b7280;">Detected {detected_str}.</p>
+      {link_html}
+      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
+      <p style="margin:0;font-size:12px;color:#6b7280;">
+        You're receiving this because you're listed as an admin or owner on this Levelog project.
+        Reply to this email if you have questions.
+      </p>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+    subject = f"New {rt} on {project_name}"
+
     try:
         _resend.api_key = RESEND_KEY
         _resend.Emails.send({
-            "from":    "Levelog Alerts <alerts@levelog.com>",
-            "to":      recipients,
-            "subject": f"[CRITICAL] DOB Alert: {project_name} — {rtype}",
-            "html":    html,
+            "from":     "Levelog <notifications@levelog.com>",
+            "to":       recipients,
+            "subject":  subject,
+            "html":     html_body,
+            "text":     text_body,
+            "reply_to": "support@levelog.com",
         })
         await _mark_alert_sent(project_id, raw_dob_id)
         logger.info(
-            f"critical alert sent project={project_name} "
-            f"raw_dob_id={raw_dob_id} recipients={len(recipients)}"
+            f"DOB notification sent project={project_name} "
+            f"({rt}) raw_dob_id={raw_dob_id} recipients={len(recipients)}"
         )
     except Exception as e:
         logger.error(f"resend send failed: {e}")
+
+
+def _humanize_record_type(rt: str) -> str:
+    rt = (rt or "alert").lower().replace("_", " ")
+    pretty = {
+        "violation":  "violation",
+        "complaint":  "complaint",
+        "permit":     "permit update",
+        "inspection": "inspection result",
+        "swo":        "stop work order",
+    }
+    return pretty.get(rt, rt)
 
 
 # ---------------------------------------------------------------------------
