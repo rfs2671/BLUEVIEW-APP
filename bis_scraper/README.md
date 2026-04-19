@@ -1,6 +1,12 @@
 # Blueview BIS Scraper
 
-Standalone worker that scrapes the NYC DOB BIS Property Profile page for every project with `track_dob_status=True` and a valid `nyc_bin`, extracts the violations and complaints tables, diffs them against `db.dob_logs`, inserts new records, and fires critical email alerts through the same 24-hour throttle the main API uses.
+Standalone worker that does three things on every tick, in order:
+
+1. **Property Profile scrape** — loads the NYC DOB BIS Property Profile page for every project with `track_dob_status=True` and a valid `nyc_bin`, extracts the violations + complaints tables, diffs them against `db.dob_logs`, inserts new records, and fires email alerts through the shared 24-hour throttle. **On the same page** it also reads the active-permit rows to extract the GC license number and stores it on the company document (if none is set).
+
+2. **License insurance fetch** — for every unique license number surfaced in Step 1, hits the BIS Licensing portal (throttled to once per 24 h per license number — not per project, since many projects share the same GC) and parses the insurance table.
+
+3. **Insurance upsert** — writes the insurance records onto every company that has that license number, using the exact schema manual entry writes to (`gc_insurance_records` array with `{insurance_type, carrier_name, policy_number, effective_date, expiration_date, is_current, source}`). The existing Settings / Insurance UI reads this with no frontend changes. Manual entries (`source='manual_entry'`) are never overwritten — the scraper only fills in or refreshes entries it owns.
 
 **This runs as a separate Railway service.** Don't deploy it to the backend service — it needs a Chromium runtime the FastAPI server doesn't include and can't share.
 

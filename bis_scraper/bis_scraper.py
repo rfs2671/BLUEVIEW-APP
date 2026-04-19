@@ -374,13 +374,18 @@ def _humanize_record_type(rt: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _table_looks_like(table_text: str, *, kind: str) -> bool:
-    """Heuristic: does this table's text content look like a violations or
-    complaints list? Uses header keywords + row count."""
+    """Heuristic: does this table's text content look like a violations,
+    complaints, or active-permits list? Uses header keywords + row count."""
     low = table_text.lower()
     if kind == "violations":
         keys = ("violation", "vio", "ecb", "oath")
     elif kind == "complaints":
         keys = ("complaint", "comp #", "comp no")
+    elif kind == "permits":
+        # Active permit rows on BIS have either "permit" or job-filing
+        # language + a status column with ISSUED / ACTIVE / RENEWED.
+        # Some builds also title it "Jobs / Filings".
+        keys = ("permit", "job filing", "filing#", "issued")
     else:
         return False
     # Need at least one keyword AND at least one number-like token
@@ -389,16 +394,72 @@ def _table_looks_like(table_text: str, *, kind: str) -> bool:
     return has_keyword and has_numbers
 
 
-def _extract_tables(html: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Return (violations, complaints) — each as a list of dicts with the
-    row text columns extracted. Raw enough that downstream severity rules
-    can scan the whole row text; structured enough that we can grab an id.
-    """
+# --- License-number row parsing ----------------------------------------------
+#
+# Active permit rows on the BIS Property Profile page carry the filer/GC
+# license number in one of a few columns depending on the table variant.
+# The value is typically 6-7 digits, sometimes prefixed (e.g. "GC123456").
+# We detect by header ("License", "Lic #", "Licensee License Nbr") OR by
+# fallback regex on the row cells.
+
+_LICENSE_HEADER_HINTS = re.compile(
+    r"licensee?.*(?:license|lic).*(?:no|nbr|#|number)|^lic\.?\s*(?:#|no|nbr)\s*$|^license\s*(?:#|no|nbr)",
+    re.I,
+)
+# 6–7 digit numeric license number, optionally preceded by 1–3 letter prefix
+# (GC, HIC, PL, EL etc). Matches "GC123456", "123456", "1234567".
+_LICENSE_VALUE_RE = re.compile(r"^\s*([A-Z]{0,3})\s*-?\s*(\d{6,7})\s*$")
+
+
+def _extract_license_from_row(headers: List[str], values: List[str]) -> Optional[str]:
+    """Given one permit-row's headers and cell values, return the license
+    number if present. Prefers the column whose header matches the hint;
+    falls back to first cell that looks license-shaped."""
+    # Header-targeted lookup
+    if headers and len(headers) == len(values):
+        for h, v in zip(headers, values):
+            if _LICENSE_HEADER_HINTS.search(h or ""):
+                m = _LICENSE_VALUE_RE.match(v or "")
+                if m:
+                    num = m.group(2)
+                    return num
+    # Fallback: any cell that matches the license-shape pattern AND is
+    # clearly not a job-filing number (8+ digits) or ECB (7+ digits with
+    # trailing borough letter).
+    for v in values:
+        m = _LICENSE_VALUE_RE.match(v or "")
+        if m:
+            num = m.group(2)
+            # 6-7 digits is the license range; skip 10+ digit job filings.
+            if 6 <= len(num) <= 7:
+                return num
+    return None
+
+
+def _is_active_permit_row(row_text: str) -> bool:
+    """Only harvest licenses from rows that look like ACTIVE permits —
+    don't pick up licenses attached to 2014 closed jobs."""
+    low = row_text.lower()
+    if any(k in low for k in ("issued", "active", "re-issued", "reissued")):
+        return True
+    # Some BIS variants use "X" / checkmark under an "Is Open" column;
+    # be permissive if no close-out language is present and the row has
+    # a recent-looking date (we don't parse dates here — conservative: if
+    # the row says 'expired' or 'dismissed', reject).
+    if any(k in low for k in ("expired", "dismissed", "withdrawn", "superseded", "closed")):
+        return False
+    return True
+
+
+def _extract_tables(html: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
+    """Return (violations, complaints, active_license_numbers).
+    License numbers come from the active permit rows on the same page."""
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
 
-    violations: List[Dict[str, Any]] = []
-    complaints: List[Dict[str, Any]] = []
+    violations:       List[Dict[str, Any]] = []
+    complaints:       List[Dict[str, Any]] = []
+    active_licenses:  List[str]            = []
 
     for table in tables:
         text = table.get_text(" ", strip=True)
@@ -407,6 +468,8 @@ def _extract_tables(html: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any
             kind = "violations"
         elif _table_looks_like(text, kind="complaints"):
             kind = "complaints"
+        elif _table_looks_like(text, kind="permits"):
+            kind = "permits"
         else:
             continue
 
@@ -424,6 +487,17 @@ def _extract_tables(html: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any
                 continue
             values = [c.get_text(" ", strip=True) for c in cells]
             row_text = " ".join(values)
+
+            if kind == "permits":
+                # Don't store permit rows (we don't alert on permits from
+                # this scraper — DOB sync handles those). But DO pull the
+                # license number if this looks like an active permit.
+                if _is_active_permit_row(row_text):
+                    lic = _extract_license_from_row(headers, values)
+                    if lic and lic not in active_licenses:
+                        active_licenses.append(lic)
+                continue
+
             rec: Dict[str, Any] = {
                 "_row_text": row_text,
                 "_cells":    values,
@@ -437,7 +511,7 @@ def _extract_tables(html: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any
             else:
                 complaints.append(rec)
 
-    return violations, complaints
+    return violations, complaints, active_licenses
 
 
 def _pick_id_from_cells(cells: List[str]) -> str:
@@ -515,6 +589,451 @@ def _next_action(severity: str, record_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# License capture — Step 1 continuation.
+# ---------------------------------------------------------------------------
+
+async def _save_discovered_license(company_id: str, license_number: str,
+                                     bin_number: str) -> None:
+    """Store the GC license number on the company doc if nothing is set yet.
+
+    We explicitly don't overwrite a value that was placed by manual entry
+    or by the NYC Open Data refresh — those are authoritative. Empty
+    string / missing → fill it in. That way the scraper helps bootstrap
+    new companies but never stomps a human decision.
+    """
+    if not company_id or not license_number:
+        return
+    try:
+        db = _get_db()
+        # Try to match the Mongo _id shape the backend uses.
+        from bson import ObjectId
+        try:
+            oid = ObjectId(company_id)
+            match = {"_id": oid}
+        except Exception:
+            match = {"_id": company_id}
+
+        existing = await db.companies.find_one(match, {"gc_license_number": 1})
+        if not existing:
+            logger.warning(
+                f"license save: company {company_id} not found "
+                f"(bin={bin_number})"
+            )
+            return
+        if existing.get("gc_license_number"):
+            # Already populated — don't overwrite.
+            return
+        await db.companies.update_one(
+            match,
+            {"$set": {
+                "gc_license_number":       license_number,
+                "gc_license_source":       "bis_scraper",
+                "gc_license_discovered_at": datetime.now(timezone.utc),
+                "updated_at":              datetime.now(timezone.utc),
+            }},
+        )
+        logger.info(
+            f"license saved on company={company_id} "
+            f"license_number={license_number} source_bin={bin_number}"
+        )
+    except Exception as e:
+        logger.warning(f"license save failed company={company_id}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Insurance fetch — Steps 2 + 3.
+#
+# We run insurance enrichment ONCE per unique license number per 24h, not
+# once per project, because multiple projects often share the same GC.
+# Dedup is in system_config, same shape as other per-key cooldowns in the
+# backend.
+#
+# Source of truth: BIS Licensing portal. Query by license number → the
+# response page contains an Insurance table with the three records that
+# matter for permit eligibility:
+#    - General Liability
+#    - Workers Compensation
+#    - Disability Benefits
+# Expiration dates there are the authoritative numbers for renewal.
+# ---------------------------------------------------------------------------
+
+LICENSE_QUERY_URL = (
+    "https://a810-bisweb.nyc.gov/bisweb/LicenseQueryByLicenseNumberServlet"
+    "?allkey={lic}&requestid=0"
+)
+INSURANCE_CACHE_HOURS = 24
+
+# Map the various BIS row labels to the canonical insurance_type values
+# the backend and frontend already use (same as manual entry).
+_INS_TYPE_MAP = [
+    ("general liability",    "general_liability"),
+    ("general_liability",    "general_liability"),
+    ("gen liab",             "general_liability"),
+    ("glc",                  "general_liability"),
+    ("workers comp",         "workers_comp"),
+    ("workers' comp",        "workers_comp"),
+    ("workmen",              "workers_comp"),
+    ("work comp",            "workers_comp"),
+    ("wc",                   "workers_comp"),
+    ("disability",           "disability"),
+    ("dbl",                  "disability"),
+]
+_DATE_IN_CELL_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{2,4})\b")
+
+
+def _classify_insurance_row(row_text: str) -> Optional[str]:
+    """Return one of {'general_liability','workers_comp','disability'} if the
+    row looks like that kind of insurance, else None."""
+    low = row_text.lower()
+    for hint, canonical in _INS_TYPE_MAP:
+        if hint in low:
+            return canonical
+    return None
+
+
+def _parse_insurance_table(html: str) -> List[Dict[str, Any]]:
+    """Parse the Licensing-portal HTML for insurance records.
+
+    Returns list of dicts shaped like manual entry writes to
+    companies.gc_insurance_records:
+        {insurance_type, carrier_name, policy_number,
+         effective_date, expiration_date, is_current, source}
+    """
+    out: List[Dict[str, Any]] = []
+    soup = BeautifulSoup(html, "html.parser")
+    for table in soup.find_all("table"):
+        text = table.get_text(" ", strip=True).lower()
+        # Only insurance tables contain all three keywords on the SAME table.
+        if "general liability" not in text and "workers" not in text \
+                and "disability" not in text:
+            continue
+
+        headers: List[str] = []
+        header_row = table.find("tr")
+        if header_row:
+            header_cells = header_row.find_all(["th", "td"])
+            headers = [c.get_text(" ", strip=True) for c in header_cells]
+
+        # Best-effort: if we see a clear "Expiration" header, remember its
+        # index — the date in that column wins over any other date in the row.
+        header_low = [h.lower() for h in headers]
+        exp_idx: Optional[int] = None
+        eff_idx: Optional[int] = None
+        carrier_idx: Optional[int] = None
+        policy_idx: Optional[int] = None
+        for i, h in enumerate(header_low):
+            if "expir" in h:
+                exp_idx = i
+            elif "effect" in h or "issued" in h:
+                eff_idx = i
+            elif "carrier" in h or "insurer" in h or "company" in h:
+                carrier_idx = i
+            elif "policy" in h:
+                policy_idx = i
+
+        rows = table.find_all("tr")
+        for row in rows[1:] if headers else rows:
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            values = [c.get_text(" ", strip=True) for c in cells]
+            row_text = " ".join(values)
+            kind = _classify_insurance_row(row_text)
+            if not kind:
+                continue
+
+            # Pull effective / expiration dates. Prefer header-indexed cells;
+            # fall back to "first date in row is effective, last is expiration".
+            exp_val = _cell_or_none(values, exp_idx)
+            eff_val = _cell_or_none(values, eff_idx)
+            carrier = _cell_or_none(values, carrier_idx)
+            policy  = _cell_or_none(values, policy_idx)
+            if not exp_val or not eff_val:
+                all_dates = _DATE_IN_CELL_RE.findall(row_text)
+                if not exp_val and all_dates:
+                    exp_val = all_dates[-1]
+                if not eff_val and len(all_dates) >= 2:
+                    eff_val = all_dates[0]
+
+            # Decide is_current based on expiration date vs today.
+            is_current = _insurance_is_current(exp_val)
+
+            out.append({
+                "insurance_type":  kind,
+                "carrier_name":    carrier,
+                "policy_number":   policy,
+                "effective_date":  eff_val,
+                "expiration_date": exp_val,
+                "is_current":      is_current,
+                "source":          "bis_scraper",
+            })
+    return out
+
+
+def _cell_or_none(values: List[str], idx: Optional[int]) -> Optional[str]:
+    if idx is None or idx < 0 or idx >= len(values):
+        return None
+    v = (values[idx] or "").strip()
+    return v or None
+
+
+def _insurance_is_current(expiration_date: Optional[str]) -> bool:
+    if not expiration_date:
+        return False
+    # Accept MM/DD/YYYY or M/D/YY forms.
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            dt = datetime.strptime(expiration_date, fmt).replace(tzinfo=timezone.utc)
+            return dt > datetime.now(timezone.utc)
+        except Exception:
+            continue
+    return False
+
+
+async def _insurance_fetch_due(license_number: str) -> bool:
+    """True if we haven't run a scrape for this license# in the last 24h."""
+    if not license_number:
+        return False
+    try:
+        db = _get_db()
+        doc = await db.system_config.find_one(
+            {"key": f"insurance_fetch:{license_number}"}
+        )
+    except Exception as e:
+        logger.warning(f"insurance cache read failed {license_number}: {e}")
+        # On DB hiccup, err toward running (don't silently skip forever).
+        return True
+    if not doc:
+        return True
+    last = doc.get("last_fetched_at")
+    if not isinstance(last, datetime):
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+    return hours >= INSURANCE_CACHE_HOURS
+
+
+async def _mark_insurance_fetched(license_number: str, records_found: int) -> None:
+    if not license_number:
+        return
+    try:
+        db = _get_db()
+        await db.system_config.update_one(
+            {"key": f"insurance_fetch:{license_number}"},
+            {"$set": {
+                "key":             f"insurance_fetch:{license_number}",
+                "license_number":  license_number,
+                "last_fetched_at": datetime.now(timezone.utc),
+                "last_record_count": records_found,
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"insurance cache write failed {license_number}: {e}")
+
+
+async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
+    """Load the licensing portal page via Playwright and return the HTML."""
+    browser = None
+    try:
+        launch_kwargs: Dict[str, Any] = {"headless": True}
+        if PROXY_URL:
+            launch_kwargs["proxy"] = {"server": PROXY_URL}
+        browser = await playwright.chromium.launch(**launch_kwargs)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+        )
+        page = await context.new_page()
+        page.set_default_timeout(30_000)
+        # Warmup (same Akamai dance as the Property Profile scraper).
+        try:
+            await page.goto(
+                "https://a810-bisweb.nyc.gov/bisweb/",
+                wait_until="domcontentloaded",
+                timeout=10_000,
+            )
+            await page.wait_for_timeout(400)
+        except PlaywrightTimeout:
+            logger.warning(
+                f"license {license_number}: warmup timeout; trying direct load"
+            )
+        url = LICENSE_QUERY_URL.format(lic=license_number)
+        await page.goto(url, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1_200)
+        try:
+            await page.wait_for_selector("table", timeout=10_000)
+        except PlaywrightTimeout:
+            logger.warning(f"license {license_number}: no <table> after 10s")
+            return None
+        return await page.content()
+    except Exception as e:
+        logger.error(
+            f"license {license_number}: playwright error: "
+            f"{e.__class__.__name__}: {e}"
+        )
+        return None
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
+async def _upsert_company_insurance(
+    company_ids: List[str], records: List[Dict[str, Any]],
+    license_number: str,
+) -> None:
+    """Write the scraped insurance records into db.companies[*]
+    .gc_insurance_records — matching the shape manual entry uses so the
+    existing settings/UI read them with no frontend changes.
+
+    We merge by insurance_type: any existing entry with source='manual_entry'
+    is preserved (manual wins). Existing bis_scraper entries are replaced by
+    the latest scrape. Existing entries without a source are treated as stale
+    bis-scraper rows and also replaced.
+    """
+    if not company_ids or not records:
+        return
+    db = _get_db()
+    now = datetime.now(timezone.utc)
+    from bson import ObjectId
+
+    scraped_by_type = {r["insurance_type"]: r for r in records if r.get("insurance_type")}
+
+    for cid in company_ids:
+        try:
+            try:
+                oid = ObjectId(cid)
+                match = {"_id": oid}
+            except Exception:
+                match = {"_id": cid}
+
+            existing = await db.companies.find_one(match, {"gc_insurance_records": 1})
+            if not existing:
+                continue
+            prior: List[Dict[str, Any]] = existing.get("gc_insurance_records") or []
+
+            # Keep manual entries; replace everything else from scraped_by_type.
+            merged: List[Dict[str, Any]] = []
+            seen_types = set()
+            for p in prior:
+                itype = p.get("insurance_type")
+                src   = p.get("source") or ""
+                if src == "manual_entry":
+                    merged.append(p)
+                    seen_types.add(itype)
+                    continue
+                # Non-manual: replace with fresh scraped version if we have one,
+                # otherwise keep the old (so we don't lose data if scrape
+                # regresses — e.g. row disappears temporarily).
+                if itype in scraped_by_type:
+                    merged.append(scraped_by_type[itype])
+                    seen_types.add(itype)
+                else:
+                    merged.append(p)
+                    seen_types.add(itype)
+            # Add any scraped types that weren't already represented.
+            for itype, rec in scraped_by_type.items():
+                if itype not in seen_types:
+                    merged.append(rec)
+
+            set_ops: Dict[str, Any] = {
+                "gc_insurance_records": merged,
+                "gc_last_verified":     now,
+                "updated_at":           now,
+            }
+            # Opportunistically fill license_number on companies that
+            # somehow got insurance before a license was written.
+            if license_number and not existing.get("gc_license_number"):
+                set_ops["gc_license_number"] = license_number
+                set_ops["gc_license_source"] = "bis_scraper"
+
+            await db.companies.update_one(match, {"$set": set_ops})
+            logger.info(
+                f"insurance upserted on company={cid} "
+                f"license={license_number} types="
+                + ",".join(sorted(scraped_by_type.keys()))
+            )
+        except Exception as e:
+            logger.warning(
+                f"insurance upsert failed company={cid} "
+                f"license={license_number}: {e}"
+            )
+
+
+async def _companies_for_license(license_number: str) -> List[str]:
+    """Return every company_id that currently has this license number set,
+    plus every company_id whose tracked project BIN produced this license
+    in the same scan run. In practice it's the intersection we need when
+    deciding who to update."""
+    db = _get_db()
+    ids: List[str] = []
+    try:
+        async for c in db.companies.find(
+            {"gc_license_number": license_number},
+            {"_id": 1},
+        ):
+            ids.append(str(c["_id"]))
+    except Exception as e:
+        logger.warning(f"companies lookup by license failed: {e}")
+    return ids
+
+
+async def _run_insurance_step(playwright, license_to_companies: Dict[str, List[str]]) -> None:
+    """Steps 2 + 3: for each unique license seen in this scan run, fetch
+    insurance (once per 24h) and upsert onto the associated companies."""
+    if not license_to_companies:
+        return
+    for lic, seed_companies in license_to_companies.items():
+        if not lic:
+            continue
+        try:
+            if not await _insurance_fetch_due(lic):
+                logger.info(f"insurance cache hit (<24h) license={lic}; skip")
+                continue
+
+            html = await _scrape_insurance(playwright, lic)
+            if not html:
+                logger.warning(f"insurance scrape returned nothing license={lic}")
+                await _mark_insurance_fetched(lic, 0)
+                continue
+            if DEBUG_HTML:
+                logger.info(
+                    f"license {lic}: html_len={len(html)} preview={html[:400]!r}"
+                )
+            records = _parse_insurance_table(html)
+            logger.info(
+                f"license {lic}: parsed {len(records)} insurance records"
+            )
+
+            # Which companies to update? Any company whose current
+            # gc_license_number matches this license, unioned with the
+            # companies seeded from this scan's Step-1 discovery.
+            db_companies = await _companies_for_license(lic)
+            targets = sorted(set(db_companies) | set(seed_companies))
+            if not targets:
+                logger.info(f"license {lic}: no companies match — nothing to upsert")
+                await _mark_insurance_fetched(lic, len(records))
+                continue
+
+            if records:
+                await _upsert_company_insurance(targets, records, lic)
+            await _mark_insurance_fetched(lic, len(records))
+        except Exception as e:
+            logger.error(
+                f"insurance pipeline failed license={lic}: "
+                f"{e.__class__.__name__}: {e}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Playwright scrape.
 # ---------------------------------------------------------------------------
 
@@ -582,13 +1101,18 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
 # Per-BIN workflow: scrape → parse → diff → insert → alert.
 # ---------------------------------------------------------------------------
 
-async def _process_project(playwright, project: dict) -> Dict[str, int]:
-    stats = {"v_new": 0, "v_crit": 0, "c_new": 0, "c_crit": 0}
+async def _process_project(playwright, project: dict) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "v_new": 0, "v_crit": 0, "c_new": 0, "c_crit": 0,
+        "licenses": [],      # list of license#s discovered on this BIN
+        "company_id": "",    # passed up so scan_all can aggregate license→companies
+    }
     bin_number = (project.get("nyc_bin") or "").strip()
     if not bin_number:
         return stats
     project_id = str(project.get("_id"))
     company_id = project.get("company_id", "")
+    stats["company_id"] = company_id
     pname      = project.get("name") or "(unnamed)"
 
     html = await _scrape_bin(playwright, bin_number)
@@ -597,11 +1121,21 @@ async def _process_project(playwright, project: dict) -> Dict[str, int]:
     if DEBUG_HTML:
         logger.info(f"BIN {bin_number}: html_len={len(html)} preview={html[:400]!r}")
 
-    violations, complaints = _extract_tables(html)
+    violations, complaints, active_licenses = _extract_tables(html)
     logger.info(
         f"BIN {bin_number} project={pname}: "
-        f"found {len(violations)} violation rows, {len(complaints)} complaint rows"
+        f"found {len(violations)} violation rows, "
+        f"{len(complaints)} complaint rows, "
+        f"{len(active_licenses)} active-permit license#s"
     )
+    stats["licenses"] = active_licenses
+
+    # Step 1 — stash the license number on the company doc. We only write
+    # if the company doesn't already have one (manual entry wins; so does
+    # NYC Open Data). Pick the first license encountered — in practice all
+    # active permits at a property are filed by the same GC.
+    if active_licenses and company_id:
+        await _save_discovered_license(company_id, active_licenses[0], bin_number)
 
     # --- Ingest violations ---
     for v in violations:
@@ -786,6 +1320,11 @@ async def scan_all() -> None:
     totals = {"v_new": 0, "v_crit": 0, "c_new": 0, "c_crit": 0, "processed": 0, "failed": 0}
     sem = asyncio.Semaphore(CONCURRENCY)
 
+    # license → list of company_ids that surfaced this license during the
+    # current scan run. A single license may appear on multiple projects
+    # (shared GC), so we dedupe before running the insurance step.
+    license_to_companies: Dict[str, List[str]] = {}
+
     async with async_playwright() as playwright:
         async def _one(p):
             async with sem:
@@ -794,6 +1333,11 @@ async def scan_all() -> None:
                     totals["processed"] += 1
                     for k in ("v_new", "v_crit", "c_new", "c_crit"):
                         totals[k] += st.get(k, 0)
+                    cid = st.get("company_id") or ""
+                    for lic in (st.get("licenses") or []):
+                        license_to_companies.setdefault(lic, [])
+                        if cid and cid not in license_to_companies[lic]:
+                            license_to_companies[lic].append(cid)
                 except Exception as e:
                     totals["failed"] += 1
                     logger.error(
@@ -803,11 +1347,23 @@ async def scan_all() -> None:
 
         await asyncio.gather(*[_one(p) for p in projects])
 
+        # Step 2 + 3 — once all BINs are processed, fan out to the
+        # Licensing portal per unique license number. This stays under
+        # the outer async_playwright context so the Chromium runtime is
+        # reused across both phases.
+        if license_to_companies:
+            logger.info(
+                f"insurance step: {len(license_to_companies)} unique licenses "
+                f"from this scan"
+            )
+            await _run_insurance_step(playwright, license_to_companies)
+
     elapsed = (datetime.now(timezone.utc) - started).total_seconds()
     logger.info(
         f"BIS scan complete: processed={totals['processed']} failed={totals['failed']} "
         f"v_new={totals['v_new']} v_crit={totals['v_crit']} "
-        f"c_new={totals['c_new']} c_crit={totals['c_crit']} elapsed={elapsed:.1f}s"
+        f"c_new={totals['c_new']} c_crit={totals['c_crit']} "
+        f"licenses_seen={len(license_to_companies)} elapsed={elapsed:.1f}s"
     )
 
 
