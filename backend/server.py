@@ -14261,22 +14261,28 @@ async def _process_whatsapp_message(payload: dict):
             features = bot_config.get("features", {}) or {}
             bot_enabled = bot_config.get("bot_enabled", True)
 
-            # Transcribe audio if present
+            # Transcribe own-audio if present (direct voicenote by sender).
+            # Preserve the ORIGINAL body text for addressing detection —
+            # mention tokens like '@153906327875707' live there and must
+            # survive any transcript splicing below.
             body = parsed["body"]
+            original_body = body
             if parsed["has_audio"]:
                 audio_bytes = await download_audio(parsed)
                 if audio_bytes:
-                    body = await transcribe_audio(audio_bytes)
+                    transcript = await transcribe_audio(audio_bytes)
+                    if transcript:
+                        body = transcript
 
             # Quoted-voicenote path: when a user replies to a voicenote
             # with an @Levelog text, the text carries the addressing but
-            # the actual question lives in the quoted audio. Download +
-            # transcribe the quoted voicenote by its id and splice the
-            # transcript into body so the agent sees the real question.
+            # the actual question lives in the quoted audio. We download
+            # and transcribe the quoted voicenote, but only mutate `body`
+            # WITHOUT dropping the @mention token — because addressing
+            # detection below reads `body` and needs to see '@<lid>' when
+            # WaAPI doesn't surface mentionedJidList.
             if parsed.get("quoted_is_audio") and parsed.get("quoted_message_id"):
                 try:
-                    # Re-use the same download path by faking a parsed dict
-                    # pointing at the quoted message's id.
                     q_audio = await download_audio({
                         "message_id": parsed["quoted_message_id"],
                         "audio_url":  None,
@@ -14284,19 +14290,11 @@ async def _process_whatsapp_message(payload: dict):
                     if q_audio:
                         q_text = await transcribe_audio(q_audio)
                         if q_text:
-                            # If the reply text is basically just the
-                            # @mention (WaAPI strips the display name to
-                            # a phone number like "@15165494475"), replace
-                            # body entirely with the voicenote transcript.
-                            # Otherwise append so the user's typed
-                            # clarification stays.
-                            stripped = re.sub(
-                                r"@\d{10,15}\b", "", body or "", flags=re.IGNORECASE
-                            ).strip()
-                            if len(stripped) < 4:
-                                body = q_text
-                            else:
-                                body = f"{stripped} {q_text}".strip()
+                            # Append the transcript after the original
+                            # reply text. The @mention stays in place,
+                            # so _has_explicit_bot_mention still finds it.
+                            prefix = (body or "").strip()
+                            body = f"{prefix} {q_text}".strip() if prefix else q_text
                             logger.info(
                                 f"whatsapp quoted-voicenote transcribed "
                                 f"len={len(q_text)}: {q_text[:120]!r}"
