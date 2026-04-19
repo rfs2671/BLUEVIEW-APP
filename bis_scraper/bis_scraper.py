@@ -883,7 +883,13 @@ async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
     await asyncio.sleep(random.uniform(2.0, 9.0))
     browser = None
     try:
-        launch_kwargs: Dict[str, Any] = {"headless": True}
+        # Non-headless under Xvfb (see Dockerfile). Akamai fingerprints
+        # chromium-headless-shell reliably; a real Chromium window
+        # rendering into a virtual display passes.
+        launch_kwargs: Dict[str, Any] = {
+            "headless": False,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
         if PW_PROXY:
             launch_kwargs["proxy"] = PW_PROXY
         browser = await playwright.chromium.launch(**launch_kwargs)
@@ -1114,7 +1120,13 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
     await asyncio.sleep(random.uniform(2.0, 9.0))
     browser = None
     try:
-        launch_kwargs: Dict[str, Any] = {"headless": True}
+        # Non-headless under Xvfb (see Dockerfile). Akamai fingerprints
+        # chromium-headless-shell reliably; a real Chromium window
+        # rendering into a virtual display passes.
+        launch_kwargs: Dict[str, Any] = {
+            "headless": False,
+            "args": ["--disable-blink-features=AutomationControlled"],
+        }
         if PW_PROXY:
             launch_kwargs["proxy"] = PW_PROXY
 
