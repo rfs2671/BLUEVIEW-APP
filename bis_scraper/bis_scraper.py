@@ -90,6 +90,34 @@ SCAN_MIN    = int(os.environ.get("BIS_SCAN_INTERVAL_MIN", "60"))
 CONCURRENCY = int(os.environ.get("BIS_SCAN_CONCURRENCY", "2"))
 DEBUG_HTML  = os.environ.get("BIS_DEBUG_HTML", "0") == "1"
 
+
+def _build_playwright_proxy() -> Optional[Dict[str, str]]:
+    """Convert WEBSHARE_PROXY_URL (http://user:pass@host:port) into the
+    dict shape Playwright Chromium expects. Chromium IGNORES inline
+    credentials in `server` — it needs `username`/`password` as
+    separate keys, otherwise CONNECT goes out with no Proxy-Auth and
+    Webshare returns 407, which Playwright surfaces as a 30s
+    `Page.goto` timeout. This was the exact symptom in every BIN
+    attempt before.
+    """
+    if not PROXY_URL:
+        return None
+    from urllib.parse import urlparse
+    parsed = urlparse(PROXY_URL)
+    if not parsed.hostname or not parsed.port:
+        # Malformed; let Playwright surface whatever error it wants.
+        return {"server": PROXY_URL}
+    server = f"{parsed.scheme or 'http'}://{parsed.hostname}:{parsed.port}"
+    cfg: Dict[str, str] = {"server": server}
+    if parsed.username:
+        cfg["username"] = parsed.username
+    if parsed.password:
+        cfg["password"] = parsed.password
+    return cfg
+
+
+PW_PROXY = _build_playwright_proxy()
+
 BIS_URL = "https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin}"
 
 # NYC BIN rules: 7 digits, first digit encodes borough (1=MN, 2=BX, 3=BK,
@@ -838,8 +866,8 @@ async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
     browser = None
     try:
         launch_kwargs: Dict[str, Any] = {"headless": True}
-        if PROXY_URL:
-            launch_kwargs["proxy"] = {"server": PROXY_URL}
+        if PW_PROXY:
+            launch_kwargs["proxy"] = PW_PROXY
         browser = await playwright.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
             user_agent=(
@@ -1044,8 +1072,8 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
     browser = None
     try:
         launch_kwargs: Dict[str, Any] = {"headless": True}
-        if PROXY_URL:
-            launch_kwargs["proxy"] = {"server": PROXY_URL}
+        if PW_PROXY:
+            launch_kwargs["proxy"] = PW_PROXY
 
         browser = await playwright.chromium.launch(**launch_kwargs)
         context = await browser.new_context(
