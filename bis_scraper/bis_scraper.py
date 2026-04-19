@@ -34,6 +34,7 @@ Deploy notes: see README.md in this directory.
 from __future__ import annotations
 
 import asyncio
+import random
 import logging
 import os
 import re
@@ -877,6 +878,9 @@ async def _mark_insurance_fetched(license_number: str, records_found: int) -> No
 
 async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
     """Load the licensing portal page via Playwright and return the HTML."""
+    # Same human-pacing jitter as the BIN scraper — unique licenses are
+    # processed after the BIN step so this spreads the second burst too.
+    await asyncio.sleep(random.uniform(2.0, 9.0))
     browser = None
     try:
         launch_kwargs: Dict[str, Any] = {"headless": True}
@@ -915,7 +919,7 @@ async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
             logger.warning(
                 f"license {license_number}: warmup networkidle timeout; continuing"
             )
-        await page.wait_for_timeout(2_500)
+        await page.wait_for_timeout(int(random.uniform(3_000, 8_000)))
         url = LICENSE_QUERY_URL.format(lic=license_number)
         await page.goto(url, wait_until="domcontentloaded")
         await page.wait_for_timeout(1_200)
@@ -1102,6 +1106,12 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
     """Load the BIS Property Profile page and return the full HTML, or
     None on any failure. Swallows Playwright-level errors and logs them
     so one bad BIN doesn't take down the batch."""
+    # Pre-scan jitter so the two concurrent workers don't fire at the
+    # exact same wall-clock second every cycle. 2-9s random offset
+    # breaks the "7 BINs in a tight burst" shape that trips rate
+    # heuristics, without adding meaningful latency to the overall
+    # hourly scan.
+    await asyncio.sleep(random.uniform(2.0, 9.0))
     browser = None
     try:
         launch_kwargs: Dict[str, Any] = {"headless": True}
@@ -1143,9 +1153,12 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
             )
         except PlaywrightTimeout:
             logger.warning(f"BIN {bin_number}: warmup networkidle timeout; continuing")
-        # Give Akamai's sensor_data a chance to POST back and refresh
-        # the cookie. 2.5s is the published Akamai validation window.
-        await page.wait_for_timeout(2_500)
+        # Human-like dwell on the root page before navigating to the
+        # servlet: real users read the homepage for 3-8s. 2.5s was
+        # the floor for Akamai's sensor_data validation; extending
+        # the window with jitter makes the request pattern look less
+        # like "automation warming up a cookie jar."
+        await page.wait_for_timeout(int(random.uniform(3_000, 8_000)))
 
         url = BIS_URL.format(bin=bin_number)
         await page.goto(url, wait_until="domcontentloaded")
