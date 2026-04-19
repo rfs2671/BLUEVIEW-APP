@@ -57,12 +57,25 @@ except ImportError:  # pragma: no cover — resend is optional
 # Logging — structured enough to grep in Railway logs.
 # ---------------------------------------------------------------------------
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [bis_scraper] %(levelname)s %(message)s",
+_log_fmt = logging.Formatter(
+    "%(asctime)s [bis_scraper] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Route INFO and below to stdout, WARNING+ to stderr. Railway labels stderr
+# red regardless of the Python level — without this split, every INFO line
+# shows up as "error" in their log UI.
+_out_handler = logging.StreamHandler(sys.stdout)
+_out_handler.setLevel(logging.DEBUG)
+_out_handler.addFilter(lambda r: r.levelno < logging.WARNING)
+_out_handler.setFormatter(_log_fmt)
+_err_handler = logging.StreamHandler(sys.stderr)
+_err_handler.setLevel(logging.WARNING)
+_err_handler.setFormatter(_log_fmt)
+logging.basicConfig(level=logging.INFO, handlers=[_out_handler, _err_handler])
 logger = logging.getLogger("bis_scraper")
+# Tone down APScheduler's own INFO messages (they also land on stderr
+# otherwise, adding red noise to every tick).
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +91,24 @@ CONCURRENCY = int(os.environ.get("BIS_SCAN_CONCURRENCY", "2"))
 DEBUG_HTML  = os.environ.get("BIS_DEBUG_HTML", "0") == "1"
 
 BIS_URL = "https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin={bin}"
+
+# NYC BIN rules: 7 digits, first digit encodes borough (1=MN, 2=BX, 3=BK,
+# 4=QN, 5=SI). A BIN like 2000000 (zeros after the borough digit) is a
+# placeholder the DOB issues when a building has no real BIN yet — it will
+# never resolve to an actual property profile and will always warmup-
+# timeout, wasting scan time. Filter these out before we launch Chromium.
+_PLACEHOLDER_BIN_PATTERN = re.compile(r"^[1-5]0{6}$")
+
+
+def _is_real_bin(bin_number: str) -> bool:
+    b = (bin_number or "").strip()
+    if not b.isdigit():
+        return False
+    if len(b) != 7:
+        return False
+    if _PLACEHOLDER_BIN_PATTERN.match(b):
+        return False
+    return True
 
 # Per the spec: Critical severity for any of:
 #   - "STOP WORK" anywhere in the violations table
@@ -411,12 +442,19 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
         page = await context.new_page()
         page.set_default_timeout(30_000)
 
-        # Warm-up — sets Akamai cookies.
+        # Warm-up — sets Akamai cookies. 10s is plenty when the upstream
+        # is healthy; if it can't get through in that time the actual
+        # page load will fail the same way and we'd rather not spend
+        # 30s on every BIN just to confirm that.
         try:
-            await page.goto("https://a810-bisweb.nyc.gov/bisweb/", wait_until="domcontentloaded")
-            await page.wait_for_timeout(600)
+            await page.goto(
+                "https://a810-bisweb.nyc.gov/bisweb/",
+                wait_until="domcontentloaded",
+                timeout=10_000,
+            )
+            await page.wait_for_timeout(400)
         except PlaywrightTimeout:
-            logger.warning(f"BIN {bin_number}: warmup timeout; continuing")
+            logger.warning(f"BIN {bin_number}: warmup timeout; trying direct load")
 
         url = BIS_URL.format(bin=bin_number)
         await page.goto(url, wait_until="domcontentloaded")
@@ -608,7 +646,7 @@ def _build_dob_log_doc(*, project: dict, project_id: str, company_id: str,
 async def _load_tracked_projects() -> List[dict]:
     db = _get_db()
     try:
-        return await db.projects.find({
+        raw = await db.projects.find({
             "track_dob_status": True,
             "nyc_bin":          {"$exists": True, "$ne": ""},
             "is_deleted":       {"$ne": True},
@@ -616,6 +654,20 @@ async def _load_tracked_projects() -> List[dict]:
     except Exception as e:
         logger.error(f"project lookup failed: {e}")
         return []
+    # Drop projects with placeholder BINs — they always warmup-timeout.
+    kept, skipped = [], []
+    for p in raw:
+        if _is_real_bin(p.get("nyc_bin", "")):
+            kept.append(p)
+        else:
+            skipped.append((p.get("name") or "?", p.get("nyc_bin") or "-"))
+    if skipped:
+        logger.info(
+            f"skipped {len(skipped)} projects with placeholder/invalid BINs: "
+            + ", ".join(f"{n}({b})" for n, b in skipped[:5])
+            + (" …" if len(skipped) > 5 else "")
+        )
+    return kept
 
 
 async def scan_all() -> None:
