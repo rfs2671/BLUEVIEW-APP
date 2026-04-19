@@ -897,7 +897,15 @@ async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
         try:
             await page.wait_for_selector("table", timeout=10_000)
         except PlaywrightTimeout:
-            logger.warning(f"license {license_number}: no <table> after 10s")
+            try:
+                fallback_html = await page.content()
+            except Exception:
+                fallback_html = ""
+            logger.warning(
+                f"license {license_number}: no <table> after 10s; "
+                f"html_len={len(fallback_html)} "
+                f"preview={fallback_html[:600]!r}"
+            )
             return None
         return await page.content()
     except Exception as e:
@@ -1110,7 +1118,17 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
         try:
             await page.wait_for_selector("table", timeout=10_000)
         except PlaywrightTimeout:
-            logger.warning(f"BIN {bin_number}: no <table> after 10s")
+            # Grab whatever the page contains so we can see if Akamai
+            # served a block page, a JS challenge, or something else.
+            try:
+                fallback_html = await page.content()
+            except Exception:
+                fallback_html = ""
+            logger.warning(
+                f"BIN {bin_number}: no <table> after 10s; "
+                f"html_len={len(fallback_html)} "
+                f"preview={fallback_html[:600]!r}"
+            )
             return None
         html = await page.content()
         return html
