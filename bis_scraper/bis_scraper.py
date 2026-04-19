@@ -47,6 +47,20 @@ from bs4 import BeautifulSoup
 from motor.motor_asyncio import AsyncIOMotorClient
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
+# playwright-stealth patches Chromium to hide the handful of telltales
+# that Akamai Bot Manager fingerprints for "headless browser" — missing
+# `navigator.plugins`, `navigator.webdriver=true`, Chrome runtime gaps,
+# iframe.contentWindow shape, etc. Without this BIS serves a 335-byte
+# Access Denied page even through residential proxies. Import is kept
+# optional so a locally-run scraper without the dep still boots.
+try:
+    from playwright_stealth import stealth_async  # type: ignore
+    _STEALTH_OK = True
+except Exception:
+    _STEALTH_OK = False
+    async def stealth_async(page):  # type: ignore
+        return None
+
 try:
     import resend as _resend
 except ImportError:  # pragma: no cover — resend is optional
@@ -876,21 +890,32 @@ async def _scrape_insurance(playwright, license_number: str) -> Optional[str]:
             ),
             viewport={"width": 1280, "height": 900},
             locale="en-US",
+            extra_http_headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Dest": "document",
+            },
         )
         page = await context.new_page()
+        await stealth_async(page)
         page.set_default_timeout(30_000)
-        # Warmup (same Akamai dance as the Property Profile scraper).
+        # Warmup: wait for Akamai's sensor_data POST to land before
+        # navigating to the servlet.
         try:
             await page.goto(
                 "https://a810-bisweb.nyc.gov/bisweb/",
-                wait_until="domcontentloaded",
-                timeout=10_000,
+                wait_until="networkidle",
+                timeout=20_000,
             )
-            await page.wait_for_timeout(400)
         except PlaywrightTimeout:
             logger.warning(
-                f"license {license_number}: warmup timeout; trying direct load"
+                f"license {license_number}: warmup networkidle timeout; continuing"
             )
+        await page.wait_for_timeout(2_500)
         url = LICENSE_QUERY_URL.format(lic=license_number)
         await page.goto(url, wait_until="domcontentloaded")
         await page.wait_for_timeout(1_200)
@@ -1091,24 +1116,36 @@ async def _scrape_bin(playwright, bin_number: str) -> Optional[str]:
             ),
             viewport={"width": 1280, "height": 900},
             locale="en-US",
+            extra_http_headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Upgrade-Insecure-Requests": "1",
+                "Sec-Fetch-Site": "none",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-User": "?1",
+                "Sec-Fetch-Dest": "document",
+            },
         )
-        # BIS loads cookies on the root page, then uses them for the query.
         page = await context.new_page()
+        # Hide headless telltales BEFORE first navigation; otherwise
+        # Akamai's sensor_data captures the patched-vs-raw diff.
+        await stealth_async(page)
         page.set_default_timeout(30_000)
 
-        # Warm-up — sets Akamai cookies. 10s is plenty when the upstream
-        # is healthy; if it can't get through in that time the actual
-        # page load will fail the same way and we'd rather not spend
-        # 30s on every BIN just to confirm that.
+        # Warm-up — navigate to the BIS root and wait for Akamai's
+        # sensor_data POST to complete so `_abck` is set to a valid
+        # value. networkidle usually resolves after the sensor fires.
         try:
             await page.goto(
                 "https://a810-bisweb.nyc.gov/bisweb/",
-                wait_until="domcontentloaded",
-                timeout=10_000,
+                wait_until="networkidle",
+                timeout=20_000,
             )
-            await page.wait_for_timeout(400)
         except PlaywrightTimeout:
-            logger.warning(f"BIN {bin_number}: warmup timeout; trying direct load")
+            logger.warning(f"BIN {bin_number}: warmup networkidle timeout; continuing")
+        # Give Akamai's sensor_data a chance to POST back and refresh
+        # the cookie. 2.5s is the published Akamai validation window.
+        await page.wait_for_timeout(2_500)
 
         url = BIS_URL.format(bin=bin_number)
         await page.goto(url, wait_until="domcontentloaded")
@@ -1436,7 +1473,8 @@ async def _run_forever() -> None:
     scheduler.start()
     logger.info(
         f"bis_scraper started, interval={SCAN_MIN}m, concurrency={CONCURRENCY}, "
-        f"proxy={'on' if PROXY_URL else 'off'}"
+        f"proxy={'on' if PROXY_URL else 'off'}, "
+        f"stealth={'on' if _STEALTH_OK else 'off'}"
     )
 
     # Block forever; scheduler runs in the background asyncio loop.
