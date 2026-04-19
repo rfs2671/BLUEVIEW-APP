@@ -10748,6 +10748,29 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         msg = data.get("message", data)
         inner = (msg.get("_data") or {}) if isinstance(msg.get("_data"), dict) else {}
 
+        # Auto-learn bot LID: if this webhook is for a message FROM us
+        # (fromMe=true) whose author JID is a @lid, that IS our bot's
+        # LID. Learn it once; subsequent inbound @mentions will match
+        # even without WAAPI_BOT_LID configured.
+        try:
+            msg_id_blob = msg.get("id") or inner.get("id") or {}
+            from_me = False
+            if isinstance(msg_id_blob, dict):
+                from_me = bool(msg_id_blob.get("fromMe"))
+            if from_me:
+                for cand in (
+                    msg.get("author"),
+                    inner.get("author"),
+                    msg.get("from"),
+                    inner.get("from"),
+                    msg_id_blob.get("participant") if isinstance(msg_id_blob, dict) else None,
+                ):
+                    if isinstance(cand, str) and "@lid" in cand:
+                        _learn_bot_lid(_jid_digits(cand))
+                        break
+        except Exception:
+            pass
+
         def _pick(field, default=""):
             # Prefer top-level, fall back to _data
             v = msg.get(field)
@@ -13161,6 +13184,21 @@ def _jid_digits(jid: str) -> str:
     return re.sub(r"\D", "", head)
 
 
+_LEARNED_BOT_LIDS: set = set()
+
+
+def _learn_bot_lid(lid_digits: str) -> None:
+    """Remember a LID we've seen WhatsApp route to/from our bot.
+
+    Call this when we observe a webhook with fromMe=true whose author
+    is a @lid JID — that author IS the bot's LID. Cached in-process so
+    subsequent webhooks get matched even if WAAPI_BOT_LID isn't set.
+    Survives restarts only if WAAPI_BOT_LID is configured.
+    """
+    if lid_digits and len(lid_digits) >= 10:
+        _LEARNED_BOT_LIDS.add(lid_digits)
+
+
 def _bot_identifier_digits() -> list:
     """All digit-strings we recognize as the bot.
 
@@ -13171,6 +13209,9 @@ def _bot_identifier_digits() -> list:
 
     Native @mentions in modern WhatsApp Web reference the LID, NOT the
     phone number, so matching by phone alone misses real @mentions.
+    Also accepts LIDs we've auto-learned from outbound (fromMe=true)
+    webhooks at runtime — saves having to reconfigure if WhatsApp ever
+    rotates the LID.
     """
     out = []
     phone = re.sub(r"\D", "", os.environ.get("WAAPI_DISPLAY_NUMBER", "") or "")
@@ -13179,6 +13220,7 @@ def _bot_identifier_digits() -> list:
     lid = re.sub(r"\D", "", os.environ.get("WAAPI_BOT_LID", "") or "")
     if lid:
         out.append(lid)
+    out.extend(_LEARNED_BOT_LIDS)
     return out
 
 
