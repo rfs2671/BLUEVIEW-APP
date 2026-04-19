@@ -10899,42 +10899,154 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
 
 
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
-    """Download audio bytes from parsed message audio URL."""
+    """Download audio bytes for a voicenote.
+
+    WhatsApp delivers voicenote media as an encrypted `directPath` in
+    the webhook — raw GETs against that path return 404. We have to
+    go through WaAPI's download-media endpoint (or mediaUrl if WaAPI
+    already re-hosted it).
+
+    Order of attempts:
+      1. If audio_url is an https URL pointing at WaAPI's CDN
+         (contains 'waapi'), try the GET with the WaAPI Bearer token.
+      2. Otherwise, POST to the WaAPI download-media endpoint with
+         the messageId — this returns base64 bytes we decode.
+      3. Last resort, try the raw URL with no auth in case WaAPI
+         already re-hosted it on an open CDN.
+    """
+    message_id = parsed_msg.get("message_id")
     audio_url = parsed_msg.get("audio_url")
-    if not audio_url:
-        return None
-    try:
-        headers = {}
-        if WAAPI_TOKEN and "waapi" in audio_url:
-            headers["Authorization"] = f"Bearer {WAAPI_TOKEN}"
-        async with httpx.AsyncClient(timeout=30) as client_http:
-            resp = await client_http.get(audio_url, headers=headers)
-            resp.raise_for_status()
-            return resp.content
-    except Exception as e:
-        logger.error(f"Audio download failed: {e}")
-        return None
+
+    # Attempt 2 first when we have a usable WaAPI instance — it's the
+    # canonical path and doesn't depend on the (unreliable) direct URL.
+    if WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id:
+        # WaAPI v1 exposes multiple equivalent endpoints for media download;
+        # try the most common names in order. We stop on the first 2xx.
+        paths = [
+            "client/action/download-media",
+            "client/action/get-media",
+            "client/action/get-media-by-message-id",
+        ]
+        for path in paths:
+            try:
+                async with httpx.AsyncClient(timeout=45) as client_http:
+                    resp = await client_http.post(
+                        f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/{path}",
+                        headers={
+                            "Authorization": f"Bearer {WAAPI_TOKEN}",
+                            "Content-Type":  "application/json",
+                        },
+                        json={"messageId": message_id},
+                    )
+                    if 200 <= resp.status_code < 300:
+                        j = resp.json() if resp.content else {}
+                        # WaAPI wraps results under "data" typically; also
+                        # accept a top-level base64 / mediaBase64 / url.
+                        inner = j.get("data") if isinstance(j, dict) else None
+                        inner = inner if isinstance(inner, dict) else j or {}
+                        b64 = (
+                            inner.get("base64")
+                            or inner.get("mediaBase64")
+                            or inner.get("data")
+                        )
+                        if isinstance(b64, str) and b64:
+                            # Some responses include a data:audio/ogg;base64, prefix.
+                            if "," in b64 and b64.startswith("data:"):
+                                b64 = b64.split(",", 1)[1]
+                            try:
+                                return base64.b64decode(b64)
+                            except Exception as e:
+                                logger.warning(
+                                    f"audio download: b64 decode failed via {path}: {e}"
+                                )
+                        media_url = inner.get("mediaUrl") or inner.get("url")
+                        if isinstance(media_url, str) and media_url.startswith("http"):
+                            # WaAPI handed us a CDN URL instead of inline bytes.
+                            try:
+                                resp2 = await client_http.get(media_url)
+                                if 200 <= resp2.status_code < 300 and resp2.content:
+                                    return resp2.content
+                            except Exception as e:
+                                logger.warning(
+                                    f"audio download: CDN GET failed: {e}"
+                                )
+                    else:
+                        logger.info(
+                            f"audio download: {path} returned "
+                            f"{resp.status_code}, trying next"
+                        )
+            except Exception as e:
+                logger.warning(f"audio download: {path} exception: {e}")
+                continue
+
+    # Attempt 1/3: fall back to the raw URL GET if we have one.
+    if audio_url:
+        try:
+            headers = {}
+            if WAAPI_TOKEN and "waapi" in audio_url:
+                headers["Authorization"] = f"Bearer {WAAPI_TOKEN}"
+            async with httpx.AsyncClient(timeout=30) as client_http:
+                resp = await client_http.get(audio_url, headers=headers)
+                if 200 <= resp.status_code < 300 and resp.content:
+                    return resp.content
+                logger.warning(
+                    f"audio download: direct GET returned "
+                    f"{resp.status_code} size={len(resp.content)}"
+                )
+        except Exception as e:
+            logger.warning(f"audio download: direct GET exception: {e}")
+
+    logger.error(f"audio download: all strategies failed msg_id={message_id}")
+    return None
 
 
 async def transcribe_audio(audio_bytes: bytes) -> str:
-    """Transcribe audio bytes using OpenAI Whisper API. Primary language: Yiddish."""
+    """Transcribe a voicenote via OpenAI Whisper.
+
+    No `language` hint is sent — Whisper auto-detects, which handles
+    English, Yiddish, Spanish, Hebrew, etc. without forcing the wrong
+    decoder. Previously we hard-coded 'yi' (Yiddish) which made
+    English voicenotes return empty and the agent hallucinate a
+    'text only' reply.
+
+    A 'prompt' hint is still useful: it biases Whisper toward
+    construction vocabulary + the handful of languages our crews
+    actually speak.
+    """
     if not OPENAI_API_KEY:
         logger.warning("Transcription skipped — OPENAI_API_KEY not set")
         return ""
+    if not audio_bytes or len(audio_bytes) < 200:
+        logger.warning(f"Transcription skipped — audio too small ({len(audio_bytes) if audio_bytes else 0} bytes)")
+        return ""
     try:
-        import json as _json
         url = "https://api.openai.com/v1/audio/transcriptions"
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-        # Build multipart form
         files_payload = {
             "file": ("audio.ogg", io.BytesIO(audio_bytes), "audio/ogg"),
             "model": (None, "whisper-1"),
-            "language": (None, "yi"),  # Yiddish primary
+            # Biasing vocabulary, NOT a language lock.
+            "prompt": (
+                None,
+                "NYC construction site radio: permits, violations, "
+                "DOB, inspection, plumbing, electrical, mechanical, "
+                "sheet A-101, ME-401, P-1, hoist, scaffold, riser.",
+            ),
         }
         async with httpx.AsyncClient(timeout=60) as client_http:
             resp = await client_http.post(url, headers=headers, files=files_payload)
-            resp.raise_for_status()
-            return resp.json().get("text", "")
+            if resp.status_code != 200:
+                logger.error(
+                    f"Whisper transcription failed status={resp.status_code} "
+                    f"body={resp.text[:300]}"
+                )
+                return ""
+            text = (resp.json().get("text") or "").strip()
+            if not text:
+                logger.warning(
+                    f"Whisper returned empty text for {len(audio_bytes)}B audio"
+                )
+            return text
     except Exception as e:
         logger.error(f"Whisper transcription failed: {e}")
         return ""
