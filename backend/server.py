@@ -6549,6 +6549,161 @@ async def upload_project_file(project_id: str, request: Request, file: UploadFil
     }
 
 
+@api_router.get("/debug/bis-scraper-state")
+async def debug_bis_scraper_state(current_user=Depends(get_current_user)):
+    """Dump the state the BIS scraper has written to Mongo, so we can
+    verify it's actually getting through DOB's Akamai gate without
+    tailing Railway logs.
+
+    Reports (owner/admin only):
+      - Per-project initial-scan markers (source='bis')
+      - Per-license insurance fetch cache entries + record counts
+      - Companies whose gc_license_number/gc_insurance_records came
+        from the scraper
+      - Recent dob_logs written with source='bis_scraper'
+      - Tracked projects the scraper should be hitting (for reference)
+    """
+    role = (current_user.get("role") or "").lower()
+    if role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    company_id = get_user_company_id(current_user)
+    now = datetime.now(timezone.utc)
+
+    # 1. Tracked projects the scraper should be scanning.
+    proj_filter: Dict[str, Any] = {
+        "track_dob_status": True,
+        "nyc_bin":          {"$exists": True, "$ne": ""},
+        "is_deleted":       {"$ne": True},
+    }
+    if company_id:
+        proj_filter["company_id"] = company_id
+    tracked = await db.projects.find(
+        proj_filter,
+        {"name": 1, "nyc_bin": 1, "company_id": 1},
+    ).to_list(200)
+
+    # 2. initial_scan_done:bis markers per project.
+    bis_markers = await db.system_config.find(
+        {"key": {"$regex": "^initial_scan_done:bis:"}}
+    ).to_list(500)
+    markers_by_pid: Dict[str, Any] = {}
+    for m in bis_markers:
+        pid = str(m.get("project_id") or m.get("key", "").split(":")[-1] or "")
+        if pid:
+            markers_by_pid[pid] = m.get("completed_at")
+
+    # 3. Insurance fetch cache — per unique license.
+    fetches = await db.system_config.find(
+        {"key": {"$regex": "^insurance_fetch:"}}
+    ).sort("last_fetched_at", -1).to_list(200)
+    fetch_rows = []
+    for f in fetches:
+        last = f.get("last_fetched_at")
+        if isinstance(last, datetime):
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            hours_ago = round((now - last).total_seconds() / 3600.0, 1)
+        else:
+            hours_ago = None
+        fetch_rows.append({
+            "license_number":      f.get("license_number"),
+            "last_fetched_at":     str(last) if last else None,
+            "hours_since_fetch":   hours_ago,
+            "last_record_count":   f.get("last_record_count"),
+        })
+
+    # 4. Companies with scraper-sourced license or insurance.
+    comp_filter: Dict[str, Any] = {
+        "$or": [
+            {"gc_license_source": "bis_scraper"},
+            {"gc_insurance_records.source": "bis_scraper"},
+        ],
+    }
+    if company_id:
+        comp_filter["_id"] = to_query_id(company_id)
+    companies = await db.companies.find(comp_filter).to_list(200)
+    company_rows = []
+    for c in companies:
+        ins = c.get("gc_insurance_records") or []
+        scraper_ins = [
+            {
+                "type":       i.get("insurance_type"),
+                "expiration": i.get("expiration_date"),
+                "is_current": i.get("is_current"),
+                "carrier":    i.get("carrier_name"),
+                "source":     i.get("source"),
+            }
+            for i in ins
+        ]
+        company_rows.append({
+            "company_id":          str(c.get("_id")),
+            "name":                c.get("name") or c.get("gc_business_name"),
+            "gc_license_number":   c.get("gc_license_number"),
+            "gc_license_source":   c.get("gc_license_source"),
+            "gc_last_verified":    str(c.get("gc_last_verified") or ""),
+            "insurance_records":   scraper_ins,
+        })
+
+    # 5. Recent dob_logs with source='bis_scraper' (cap 20).
+    log_filter: Dict[str, Any] = {"source": "bis_scraper"}
+    if company_id:
+        log_filter["company_id"] = company_id
+    recent_logs = await db.dob_logs.find(log_filter).sort("detected_at", -1).limit(20).to_list(20)
+    log_rows = [{
+        "detected_at":  str(r.get("detected_at")),
+        "project_id":   r.get("project_id"),
+        "record_type":  r.get("record_type"),
+        "severity":     r.get("severity"),
+        "raw_dob_id":   r.get("raw_dob_id"),
+        "summary":      (r.get("ai_summary") or "")[:200],
+    } for r in recent_logs]
+
+    bis_log_total = await db.dob_logs.count_documents(log_filter)
+
+    # 6. Per-project summary — join tracked list with markers + company license.
+    project_rows = []
+    for p in tracked:
+        pid = str(p.get("_id"))
+        cid = p.get("company_id") or ""
+        comp = None
+        try:
+            comp = await db.companies.find_one(
+                {"_id": to_query_id(cid)} if cid else {"_id": None},
+                {"gc_license_number": 1, "gc_license_source": 1},
+            )
+        except Exception:
+            comp = None
+        project_rows.append({
+            "project_id":           pid,
+            "name":                 p.get("name"),
+            "nyc_bin":              p.get("nyc_bin"),
+            "initial_scan_done_at": str(markers_by_pid.get(pid) or ""),
+            "company_id":           cid,
+            "company_license":      (comp or {}).get("gc_license_number"),
+            "license_source":       (comp or {}).get("gc_license_source"),
+        })
+
+    return {
+        "now":                      now.isoformat(),
+        "tracked_project_count":    len(tracked),
+        "projects":                 project_rows,
+        "insurance_fetch_cache":    fetch_rows,
+        "companies_with_scraper_data": company_rows,
+        "recent_bis_dob_logs":      log_rows,
+        "total_bis_dob_logs":       bis_log_total,
+        "interpretation": {
+            "scraper_is_hitting_bis": (
+                bool(recent_logs) or bool(markers_by_pid) or bool(fetches)
+            ),
+            "scraper_is_capturing_licenses": bool(company_rows),
+            "scraper_is_fetching_insurance": any(
+                (r.get("last_record_count") or 0) > 0 for r in fetch_rows
+            ),
+        },
+    }
+
+
 @api_router.get("/debug/upload-log")
 async def debug_upload_log(current_user=Depends(get_current_user)):
     """Last 30 upload attempts with outcome — owner/admin only."""
