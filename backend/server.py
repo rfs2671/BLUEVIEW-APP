@@ -8611,7 +8611,301 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
         logger.info(f"Critical DOB alert sent for {project_name} to {len(recipients)} recipients")
     except Exception as e:
         logger.error(f"Failed to send critical DOB alert: {e}")
- 
+
+
+# ==================== DOB ALERT THROTTLE (24h dedupe) ====================
+# Same system_config pattern as the manual /dob-sync rate limiter. Without a
+# throttle, `_send_critical_dob_alert` fires on every scheduler tick that
+# rediscovers the same Critical record — which spams owners.
+
+_DOB_ALERT_THROTTLE_HOURS = 24
+
+
+async def _dob_alert_recently_sent(project_id: str, raw_dob_id: str,
+                                     window_hours: int = _DOB_ALERT_THROTTLE_HOURS) -> bool:
+    """Returns True if we've already emailed this (project, record) combo
+    inside the window. Keyed on `dob_alert_sent:{project}:{raw_dob_id}`."""
+    if not project_id or not raw_dob_id:
+        return False
+    try:
+        doc = await db.system_config.find_one(
+            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"}
+        )
+        if not doc:
+            return False
+        last = doc.get("last_alert_at")
+        if not isinstance(last, datetime):
+            return False
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        elapsed_hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600.0
+        return elapsed_hours < window_hours
+    except Exception as e:
+        logger.warning(f"alert throttle read failed: {e}")
+        return False  # on error, err toward sending rather than silent-drop
+
+
+async def _mark_dob_alert_sent(project_id: str, raw_dob_id: str) -> None:
+    if not project_id or not raw_dob_id:
+        return
+    try:
+        await db.system_config.update_one(
+            {"key": f"dob_alert_sent:{project_id}:{raw_dob_id}"},
+            {"$set": {
+                "key":           f"dob_alert_sent:{project_id}:{raw_dob_id}",
+                "last_alert_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning(f"alert throttle write failed: {e}")
+
+
+async def _send_critical_dob_alert_throttled(project: dict, dob_log: dict) -> bool:
+    """Wrapper that enforces the 24h throttle per (project, raw_dob_id).
+
+    Returns True if an alert was sent, False if suppressed by throttle.
+    Existing callers can swap in this function without signature changes.
+    """
+    project_id = str(project.get("_id") or project.get("id") or "")
+    raw_dob_id = str(dob_log.get("raw_dob_id") or "")
+    if await _dob_alert_recently_sent(project_id, raw_dob_id):
+        logger.info(
+            f"DOB alert throttled (within 24h) project={project.get('name')} "
+            f"raw_dob_id={raw_dob_id}"
+        )
+        return False
+    await _send_critical_dob_alert(project, dob_log)
+    await _mark_dob_alert_sent(project_id, raw_dob_id)
+    return True
+
+
+# ==================== 311 FAST POLL (Feature 1) ====================
+# NYC 311 Service Requests dataset (`erm2-nwe9`) — distinct from the
+# DOB-specific complaints dataset `eabe-havv` already polled by the nightly
+# scan. 311 catches the faster-moving stuff: neighbor calls about noise /
+# construction / illegal conversions / elevator outages / boiler issues.
+#
+# Runs every 30 minutes via APScheduler. Dedup key is the 311 `unique_key`,
+# stored in `dob_logs.raw_dob_id` with a `311:` prefix to avoid collision
+# with DOB complaint numbers.
+
+_NYC_311_ENDPOINT = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
+
+# 311 complaint_type values that map to DOB-relevant inspector action.
+# Curated per operator feedback: neighbor calls that actually produce
+# inspector visits / violations against the building.
+_311_ACTION_COMPLAINT_TYPES = {
+    "Construction",
+    "General Construction/Plumbing",
+    "Construction Equipment",
+    "Scaffold Safety",
+    "Illegal Construction",
+    "After Hours Work Illegal",
+    "Non-Residential Building Condition",
+    "Structural - Private",
+    "Boiler",
+    "Elevator",
+    "Facade",
+    "Unsafe Building",
+    "Derrick/Suspension/Adjustable Scaffold",
+    "Illegal Conversion",
+}
+_311_ACTION_SET_LOWER = {t.lower() for t in _311_ACTION_COMPLAINT_TYPES}
+
+
+def _severity_for_311(complaint_type: str) -> str:
+    """Return 'Action' for construction/structural categories, else 'Monitor'."""
+    if not complaint_type:
+        return "Monitor"
+    return "Action" if complaint_type.strip().lower() in _311_ACTION_SET_LOWER else "Monitor"
+
+
+def _fmt_311_summary(rec: dict) -> str:
+    """One-line human summary for dob_logs.ai_summary."""
+    ct = (rec.get("complaint_type") or "").strip() or "311 Complaint"
+    desc = (rec.get("descriptor") or "").strip()
+    agency = (rec.get("agency") or "").strip()
+    parts = [ct]
+    if desc and desc != ct:
+        parts.append(desc)
+    if agency:
+        parts.append(f"({agency})")
+    return " — ".join(parts)[:220]
+
+
+def _next_action_for_311(rec: dict) -> str:
+    status = (rec.get("status") or "").strip().lower()
+    if status in ("closed", "resolved"):
+        return "311 complaint is closed. Review disposition and file with the project record."
+    return (
+        "Inspector may visit within 48 hours. Pull the cited area, brief the super, "
+        "and make sure relevant permits are posted + current."
+    )
+
+
+async def _fetch_311_for_bin(client: "httpx.AsyncClient", bin_number: str) -> List[dict]:
+    """Fetch recent 311 service requests for a BIN. Sorted newest-first, limit 100."""
+    try:
+        resp = await client.get(
+            _NYC_311_ENDPOINT,
+            params={
+                "bin":     bin_number,
+                "$limit":  "100",
+                "$order":  "created_date DESC",
+            },
+            timeout=20.0,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"311 fetch {bin_number} returned {resp.status_code}")
+            return []
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"311 fetch {bin_number} failed: {e}")
+        return []
+
+
+async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") -> dict:
+    """Fetch + upsert new 311 records for one project. Returns a small stats dict."""
+    project_id = str(project.get("_id"))
+    company_id = project.get("company_id", "")
+    nyc_bin = (project.get("nyc_bin") or "").strip()
+    if not nyc_bin:
+        return {"new": 0, "actions": 0, "skipped": True}
+
+    records = await _fetch_311_for_bin(client, nyc_bin)
+    new_count = 0
+    action_count = 0
+    now = datetime.now(timezone.utc)
+
+    for rec in records:
+        unique_key = str(rec.get("unique_key") or "").strip()
+        if not unique_key:
+            continue
+        raw_dob_id = f"311:{unique_key}"
+
+        # Dedupe against prior inserts — the `raw_dob_id` unique index handles
+        # collisions, but we still want to know if it existed so we don't
+        # fire an alert on known records.
+        existing = await db.dob_logs.find_one({"raw_dob_id": raw_dob_id})
+        if existing:
+            continue
+
+        ctype = (rec.get("complaint_type") or "").strip()
+        severity = _severity_for_311(ctype)
+
+        address_parts = [
+            (rec.get("incident_address") or "").strip(),
+            (rec.get("city") or "").strip(),
+        ]
+        incident_address = ", ".join(p for p in address_parts if p)
+
+        doc = {
+            "project_id":        project_id,
+            "company_id":        company_id,
+            "nyc_bin":           nyc_bin,
+            "record_type":       "complaint",
+            "raw_dob_id":        raw_dob_id,
+            "ai_summary":        _fmt_311_summary(rec),
+            "severity":          severity,
+            "next_action":       _next_action_for_311(rec),
+            "dob_link":          (
+                f"https://portal.311.nyc.gov/sr-details/?id={unique_key}"
+            ),
+            "detected_at":       now,
+            "created_at":        now,
+            "updated_at":        now,
+            "is_deleted":        False,
+            # 311-shaped extras — keep them on the same document so the
+            # frontend timeline shows the same fields as DOB complaints.
+            "complaint_number":  unique_key,
+            "complaint_type":    ctype or None,
+            "complaint_status":  rec.get("status") or None,
+            "complaint_date":    rec.get("created_date"),
+            "closed_date":       rec.get("closed_date"),
+            "description":       (rec.get("descriptor") or "").strip() or None,
+            "incident_address":  incident_address or None,
+            "complaint_source":  "311",
+            "source":            "311",   # extra tag so analytics can split 311 vs DOB
+            "agency":            (rec.get("agency") or "").strip() or None,
+            "agency_name":       (rec.get("agency_name") or "").strip() or None,
+            "resolution_description": (rec.get("resolution_description") or "").strip() or None,
+        }
+
+        try:
+            await db.dob_logs.insert_one(doc)
+            new_count += 1
+            if severity == "Action":
+                action_count += 1
+                # Fire critical alert through the throttled wrapper.
+                await _send_critical_dob_alert_throttled(project, doc)
+        except Exception as e:
+            # The unique index on raw_dob_id will reject duplicates; swallow.
+            msg = str(e).lower()
+            if "duplicate key" in msg:
+                continue
+            logger.warning(
+                f"311 insert failed project={project.get('name')} "
+                f"unique_key={unique_key}: {e}"
+            )
+
+    return {"new": new_count, "actions": action_count, "skipped": False}
+
+
+async def _poll_311_fast_complaints() -> None:
+    """APScheduler job: poll 311 for every tracked BIN.
+
+    Runs every 30 minutes. Safe to run alongside `dob_nightly_scan` — the two
+    hit different datasets (erm2-nwe9 vs eabe-havv) and dedupe by a
+    namespaced `raw_dob_id` (`311:<unique_key>` here, bare ID there).
+    """
+    started = datetime.now(timezone.utc)
+    try:
+        projects = await db.projects.find({
+            "track_dob_status": True,
+            "nyc_bin":          {"$exists": True, "$ne": ""},
+            "is_deleted":       {"$ne": True},
+        }).to_list(500)
+    except Exception as e:
+        logger.error(f"311 poll: project lookup failed: {e}")
+        return
+
+    if not projects:
+        logger.info("311 poll: no tracked projects — skip")
+        return
+
+    total_new = 0
+    total_action = 0
+    total_processed = 0
+    async with httpx.AsyncClient(
+        headers={"User-Agent": "Levelog/1.0 (311 poller)"},
+    ) as client:
+        # Cap concurrency so we don't hammer the NYC Open Data endpoint.
+        sem = asyncio.Semaphore(5)
+
+        async def _one(p):
+            nonlocal total_new, total_action, total_processed
+            async with sem:
+                try:
+                    stats = await _ingest_311_for_project(p, client)
+                    if not stats.get("skipped"):
+                        total_processed += 1
+                        total_new += stats.get("new", 0)
+                        total_action += stats.get("actions", 0)
+                except Exception as e:
+                    logger.warning(
+                        f"311 poll project={p.get('name')} failed: {e}"
+                    )
+
+        await asyncio.gather(*[_one(p) for p in projects])
+
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    logger.info(
+        f"311 poll complete: projects={total_processed} new_records={total_new} "
+        f"action_alerts={total_action} elapsed={elapsed:.1f}s"
+    )
+
  
 def _extract_permit_fields(rec: dict) -> dict:
     """Extract structured permit fields from raw DOB record."""
@@ -15623,6 +15917,16 @@ async def startup_event():
         minutes=30,
         id='dob_nightly_scan',
         replace_existing=True,
+    )
+
+    # 311 fast poll — every 30 minutes, staggered 15 min off the DOB scan so
+    # the two don't spike the outbound HTTP client at the same time.
+    scheduler.add_job(
+        _poll_311_fast_complaints,
+        IntervalTrigger(minutes=30),
+        id='dob_311_fast_poll',
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=15),
     )
 
     # Nightly compliance check — missing logbooks, missing SSP, expiring licenses
