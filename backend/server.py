@@ -10797,11 +10797,16 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         except Exception:
             ts = 0
 
-        # Quoted message (reply context). WhatsApp puts the quoted message under
-        # quotedMsg / quotedMessage / contextInfo.quotedMessage depending on
-        # payload version. We only need its body text to detect @levelog
-        # threading.
+        # Quoted message (reply context). WhatsApp puts the quoted message
+        # under quotedMsg / quotedMessage / contextInfo.quotedMessage
+        # depending on payload version. We need:
+        #   - body text (for @levelog threading on text replies),
+        #   - type + messageId (for voicenote-replied-to-with-@levelog, so
+        #     we can pull the voicenote audio out and transcribe it).
         quoted_body = ""
+        quoted_type = ""
+        quoted_message_id = ""
+        quoted_node = None
         for path in (
             ("quotedMsg",),
             ("quotedMessage",),
@@ -10814,16 +10819,41 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
                     break
                 node = node.get(k)
             if isinstance(node, dict):
+                quoted_node = node
                 quoted_body = (node.get("body") or node.get("conversation") or "").strip()
-                if quoted_body:
+                quoted_type = (node.get("type") or "").strip()
+                if quoted_body or quoted_type:
                     break
-        if not quoted_body:
-            # Try inner._data paths too
+        if quoted_node is None:
             inner_ctx = inner.get("quotedMsg") or inner.get("contextInfo") or {}
             if isinstance(inner_ctx, dict):
                 q = inner_ctx.get("quotedMessage") or inner_ctx
                 if isinstance(q, dict):
+                    quoted_node = q
                     quoted_body = (q.get("body") or q.get("conversation") or "").strip()
+                    quoted_type = (q.get("type") or "").strip()
+        # quotedStanzaID / quotedParticipant / stanzaId — WaAPI surfaces one of
+        # these as the id of the quoted message. Check both the outer msg
+        # context and the inner _data context.
+        for src in (msg, inner):
+            if not isinstance(src, dict):
+                continue
+            ctx = src.get("contextInfo") or src.get("context_info") or {}
+            if isinstance(ctx, dict):
+                for key in ("stanzaId", "stanzaID", "quotedStanzaID", "quotedStanzaId", "quotedMessageId"):
+                    v = ctx.get(key)
+                    if isinstance(v, str) and v:
+                        quoted_message_id = v
+                        break
+            if quoted_message_id:
+                break
+        # Fallback: if the quoted node itself carries an id, use it.
+        if not quoted_message_id and isinstance(quoted_node, dict):
+            qid = quoted_node.get("id")
+            if isinstance(qid, dict):
+                qid = qid.get("id")
+            if isinstance(qid, str) and qid:
+                quoted_message_id = qid
 
         # Mentions — WhatsApp's native @-mention (tap @ then pick a contact)
         # doesn't put "@Levelog" in the body as text; it stores the mentioned
@@ -10863,6 +10893,17 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
         seen = set()
         mentioned_jids = [j for j in mentioned_jids if not (j in seen or seen.add(j))]
 
+        # Flag: the quoted message is a voicenote (ptt/audio). Used by the
+        # processor to fetch + transcribe the quoted audio when a text
+        # reply with @levelog quotes a voicenote.
+        quoted_is_audio = quoted_type.lower() in ("audio", "ptt", "voice") or (
+            isinstance(quoted_node, dict) and (
+                "ptt" in (quoted_node.get("type") or "").lower()
+                or bool(quoted_node.get("audioMessage"))
+                or bool(quoted_node.get("pttMessage"))
+            )
+        )
+
         return {
             "message_id": msg_id,
             "from": from_field,
@@ -10870,6 +10911,9 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             "to": to_field,
             "body": body,
             "quoted_body": quoted_body,
+            "quoted_type": quoted_type,
+            "quoted_is_audio": quoted_is_audio,
+            "quoted_message_id": quoted_message_id,
             "mentioned_jids": mentioned_jids,
             "is_group": is_group,
             "group_id": from_field if is_group else None,
@@ -14181,6 +14225,42 @@ async def _process_whatsapp_message(payload: dict):
                 audio_bytes = await download_audio(parsed)
                 if audio_bytes:
                     body = await transcribe_audio(audio_bytes)
+
+            # Quoted-voicenote path: when a user replies to a voicenote
+            # with an @Levelog text, the text carries the addressing but
+            # the actual question lives in the quoted audio. Download +
+            # transcribe the quoted voicenote by its id and splice the
+            # transcript into body so the agent sees the real question.
+            if parsed.get("quoted_is_audio") and parsed.get("quoted_message_id"):
+                try:
+                    # Re-use the same download path by faking a parsed dict
+                    # pointing at the quoted message's id.
+                    q_audio = await download_audio({
+                        "message_id": parsed["quoted_message_id"],
+                        "audio_url":  None,
+                    })
+                    if q_audio:
+                        q_text = await transcribe_audio(q_audio)
+                        if q_text:
+                            # If the reply text is basically just the
+                            # @mention (WaAPI strips the display name to
+                            # a phone number like "@15165494475"), replace
+                            # body entirely with the voicenote transcript.
+                            # Otherwise append so the user's typed
+                            # clarification stays.
+                            stripped = re.sub(
+                                r"@\d{10,15}\b", "", body or "", flags=re.IGNORECASE
+                            ).strip()
+                            if len(stripped) < 4:
+                                body = q_text
+                            else:
+                                body = f"{stripped} {q_text}".strip()
+                            logger.info(
+                                f"whatsapp quoted-voicenote transcribed "
+                                f"len={len(q_text)}: {q_text[:120]!r}"
+                            )
+                except Exception as e:
+                    logger.warning(f"quoted voicenote transcribe failed: {e}")
 
             # Store message (always — history is not subject to bot_enabled)
             await db.whatsapp_messages.insert_one({
