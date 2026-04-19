@@ -11463,7 +11463,22 @@ async def _handle_active_permits(project_id: str) -> str:
     # Sort active by expiration (soonest first)
     active.sort(key=lambda x: (x[1] or datetime.max.replace(tzinfo=timezone.utc)))
 
-    lines = [f"*Active permits ({len(active)}):*"]
+    # Pre-compute days-to-expiry so the LLM composing the final reply
+    # can't hallucinate "no permits expiring soon" when one clearly is.
+    # Bucket: <=30 days = URGENT, <=90 = soon, >90 = ok.
+    expiring_30 = [a for a in active if a[1] and (a[1] - now).days <= 30]
+    expiring_90 = [a for a in active if a[1] and 30 < (a[1] - now).days <= 90]
+
+    header_bits = [f"*Active permits ({len(active)}):*"]
+    if expiring_30:
+        header_bits.append(
+            f"⚠️ {len(expiring_30)} permit(s) expiring within 30 days — renewal needed now."
+        )
+    if expiring_90:
+        header_bits.append(
+            f"🟡 {len(expiring_90)} permit(s) expiring within 31–90 days."
+        )
+    lines = header_bits
     for p, exp in active[:15]:
         ptype = p.get("permit_type") or "Permit"
         sub = p.get("permit_subtype") or ""
@@ -11472,7 +11487,14 @@ async def _handle_active_permits(project_id: str) -> str:
         if job:
             label += f" — Job {job}"
         if exp:
-            label += f" (exp {exp.strftime('%Y-%m-%d')})"
+            days = (exp - now).days
+            if days <= 30:
+                flag = f" ⚠️ *{days}d left*"
+            elif days <= 90:
+                flag = f" 🟡 {days}d left"
+            else:
+                flag = ""
+            label += f" (exp {exp.strftime('%Y-%m-%d')}{flag})"
         lines.append(f"  • {label}")
     if len(active) > 15:
         lines.append(f"…and {len(active) - 15} more.")
@@ -12458,6 +12480,17 @@ async def _retrieve_plan_candidates(
 
     # ── 2. Load candidate pool + parallel search ──────────────────────────
     pool = await db.document_page_index.find(base_filter).limit(400).to_list(400)
+    if not pool and base_filter.get("discipline"):
+        # Discipline filter was too strict (e.g. user asked about "drains in
+        # backyard" — parser tagged it PL, but the drainage is actually on
+        # a site/GN sheet). Retry without discipline; floor/spec filters
+        # stay in place.
+        logger.info(
+            f"plan retrieval: discipline={base_filter['discipline']} filter "
+            f"returned empty pool, retrying without discipline filter"
+        )
+        relaxed = {k: v for k, v in base_filter.items() if k != "discipline"}
+        pool = await db.document_page_index.find(relaxed).limit(400).to_list(400)
     if not pool:
         return []
 
@@ -13331,7 +13364,13 @@ _AGENT_SYSTEM_PROMPT_BASE = (
     "combine both turns and call the right tool.\n"
     "Keep replies under 80 words unless listing many items. "
     "Use the tool return values directly — do not fabricate data. Never invent worker names, "
-    "permit numbers, or plan details that weren't returned by a tool."
+    "permit numbers, or plan details that weren't returned by a tool.\n"
+    "CRITICAL — DATE/EXPIRY MATH: Tool output for permits already includes the number "
+    "of days until each expiration (e.g. '⚠️ 11d left'). If the user asks 'expiring in next "
+    "N days' or 'need renewal', COUNT the permits whose days-left is ≤ N from the tool output. "
+    "Never say 'no permits are expiring' or 'no permits due for renewal' if the tool output "
+    "contains any ⚠️ or 🟡 flag or any days-left value ≤ N. Trust the tool's numbers over "
+    "your own date estimation."
 )
 
 _AGENT_NOREPLY_CLAUSE = (
