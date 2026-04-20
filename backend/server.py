@@ -14412,6 +14412,13 @@ async def _process_whatsapp_message(payload: dict):
                     audio_bytes = await download_audio(parsed)
                     direct_audio_diag["download_size"] = len(audio_bytes) if audio_bytes else 0
                     if audio_bytes:
+                        # Magic bytes — tell us if this is real OGG/Opus
+                        # audio (starts 'OggS'=4f6767 53) or encrypted
+                        # noise we need to decrypt with the mediaKey.
+                        direct_audio_diag["first16_hex"] = audio_bytes[:16].hex()
+                        direct_audio_diag["first8_ascii"] = audio_bytes[:8].decode(
+                            "ascii", errors="replace"
+                        )
                         transcript = await transcribe_audio(audio_bytes)
                         direct_audio_diag["transcript_len"] = len(transcript or "")
                         direct_audio_diag["transcript_preview"] = (transcript or "")[:200]
