@@ -1710,11 +1710,23 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # If no company_id provided, this is invalid (except for testing)
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
         raise HTTPException(status_code=400, detail="Company ID required")
-    
+
+    # CP role hard-requires a company — without one every company-gated
+    # endpoint will 403 and their session looks broken. Explicit error
+    # text for this case on top of the generic Company ID required rule.
+    _role = user_dict.get("role") or getattr(user_data, "role", None)
+    _cid = user_dict.get("company_id") or getattr(user_data, "company_id", None)
+    if (_role == "cp") and not _cid:
+        raise HTTPException(
+            status_code=422,
+            detail="company_id is required when creating a CP user. "
+                   "Assign them to a company first.",
+        )
+
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
     del user_dict["password"]
-    
+
     return UserResponse(**user_dict)
 
 @api_router.get("/auth/me")
@@ -1934,6 +1946,18 @@ async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_use
     user_dict["company_id"] = admin.get("company_id")
     if admin.get("company_name"):
         user_dict["company_name"] = admin.get("company_name")
+
+    # CP role hard-requires a company — without one every company-gated
+    # endpoint will 403 and their session looks broken. Block creation
+    # up front so the admin sees a clear, actionable error.
+    _role = user_dict.get("role") or getattr(user_data, "role", None)
+    _cid = user_dict.get("company_id") or getattr(user_data, "company_id", None)
+    if (_role == "cp") and not _cid:
+        raise HTTPException(
+            status_code=422,
+            detail="company_id is required when creating a CP user. "
+                   "Assign them to a company first.",
+        )
 
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -7226,17 +7250,38 @@ async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depe
 
 @api_router.get("/cp/profile")
 async def get_cp_profile(current_user = Depends(get_current_user)):
-    """Get CP profile including saved signature"""
-    user_id = current_user.get("id")
-    user = await db.users.find_one({"_id": to_query_id(user_id)})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {
-        "cp_name": user.get("cp_name") or user.get("name"),
-        "cp_title": user.get("cp_title", "Competent Person"),
-        "cp_signature": user.get("cp_signature"),
-        "has_signature": bool(user.get("cp_signature")),
-    }
+    """Return the CP profile (name + saved signature) for the logged-in user.
+
+    Defensive by design: returns a safe skeleton on any error rather than
+    a 500 / 404. The frontend useCpProfile hook silently swallows errors
+    so a failure here would mask the problem AND leave the UI half-broken.
+    Returning the skeleton keeps the pad empty, signup-ready, and lets
+    the user continue.
+    """
+    try:
+        user_id = current_user.get("id")
+        user = await db.users.find_one({"_id": to_query_id(user_id)})
+        if not user:
+            return {
+                "cp_name": None,
+                "cp_title": "Competent Person",
+                "cp_signature": None,
+                "has_signature": False,
+            }
+        return {
+            "cp_name": user.get("cp_name") or user.get("name"),
+            "cp_title": user.get("cp_title", "Competent Person"),
+            "cp_signature": user.get("cp_signature"),
+            "has_signature": bool(user.get("cp_signature")),
+        }
+    except Exception as e:
+        logger.error(f"get_cp_profile error: {e}")
+        return {
+            "cp_name": None,
+            "cp_title": "Competent Person",
+            "cp_signature": None,
+            "has_signature": False,
+        }
 
 @api_router.put("/cp/profile")
 async def update_cp_profile(data: CPProfileUpdate, current_user = Depends(get_current_user)):

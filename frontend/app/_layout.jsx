@@ -7,7 +7,7 @@ import { useRouter, usePathname } from 'expo-router';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
-import { ToastProvider } from '../src/components/Toast';
+import { ToastProvider, useToast } from '../src/components/Toast';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -82,6 +82,7 @@ function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
+  const toast = useToast();
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
@@ -111,6 +112,24 @@ function RouteGuard() {
         pathname === '/login';
       if (!allowed) {
         router.replace('/logbooks');
+      }
+    }
+
+    // CP user exists but has no company assignment — authenticated but every
+    // company-gated API endpoint will 403. Contain them to safe paths and surface
+    // a clear action instead of a cascade of silent errors.
+    if (user?.role === 'cp' && !user?.company_id) {
+      const safePaths = ['/logbooks', '/login', '/settings'];
+      const currentPath = pathname || '';
+      const isOnSafePath = safePaths.some(p => currentPath.startsWith(p));
+      if (!isOnSafePath) {
+        router.replace('/logbooks');
+        setTimeout(() => {
+          toast.error(
+            'Account Setup Incomplete',
+            'Ask your admin to assign you to a company in Settings → Team.'
+          );
+        }, 400);
       }
     }
   }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname]);
