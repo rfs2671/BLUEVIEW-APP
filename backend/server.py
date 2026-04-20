@@ -11014,6 +11014,13 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                         json={"messageId": message_id},
                     )
                     if 200 <= resp.status_code < 300:
+                        # Always trace 2xx too — we may be returning without
+                        # a decoded payload and want to know what was there.
+                        probe_trace.append({
+                            "path":   path,
+                            "status": resp.status_code,
+                            "body":   (resp.text or "")[:600],
+                        })
                         j = resp.json() if resp.content else {}
                         # WaAPI wraps results under "data" typically; also
                         # accept a top-level base64 / mediaBase64 / url.
