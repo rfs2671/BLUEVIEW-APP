@@ -11,6 +11,7 @@ import {
   Cloud,
   ClipboardList,
   Shield,
+  HardHat,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
@@ -31,6 +32,8 @@ const adminActions = [
   { title: 'Checklists', subtitle: 'Safety & inspection', path: '/admin/checklists', icon: ClipboardList },
   { title: 'Site Devices', subtitle: 'Kiosk credentials', path: '/admin/site-devices', icon: Smartphone },
   { title: 'Integrations', subtitle: 'Connect Dropbox', path: '/admin/integrations', icon: Cloud },
+  { title: 'Superintendents', subtitle: 'CS one-job rule', path: '/admin/superintendent', icon: HardHat },
+  { title: 'Safety Staff', subtitle: 'SSC / SSM registry', path: '/admin/safety-staff', icon: Shield },
 ];
 
 // 2-column grid tile
