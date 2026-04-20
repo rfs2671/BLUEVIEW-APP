@@ -434,7 +434,7 @@ export default function LogBooksScreen() {
               <Text style={styles.summaryTitle}>Today's Completion</Text>
               <View style={styles.summaryRow}>
                 {(() => {
-                  const submitted = LOG_TYPES.filter(lt => getLogStatus(lt.key) === 'submitted').length;
+                  const submitted = visibleLogs.filter(lt => getLogStatus(lt.key) === 'submitted').length;
                   const total = visibleLogs.length;
                   const pct = total > 0 ? Math.round((submitted / total) * 100) : 0;
                   return (
