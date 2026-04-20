@@ -10,7 +10,6 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
-import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -26,11 +25,18 @@ export default function SSCDailySafetyLog() {
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+
+  // SSC/SSM signature state — local to this logbook so a cached
+  // personal CP signature from useCpProfile doesn't pre-lock the pad.
+  // The pad opens empty on every new log; admin can type + draw from
+  // scratch. On load we seed only from the existing logbook document,
+  // never from the user-profile cache.
+  const [cpName, setCpName] = useState('');
+  const [cpSignature, setCpSignature] = useState(null);
 
   // Form fields
   const [projectAddress, setProjectAddress] = useState('');
@@ -130,8 +136,6 @@ export default function SSCDailySafetyLog() {
         savedId = created.id || created._id;
         setExistingLogId(savedId);
       }
-
-      await autoSave(cpName, cpSignature);
 
       if (submitStatus === 'submitted' && cpSignature && savedId) {
         recordSignatureEvent({
@@ -356,6 +360,7 @@ export default function SSCDailySafetyLog() {
               onNameChange={setCpName}
               existingSignature={cpSignature}
               onSignatureCapture={setCpSignature}
+              autoLock={false}
             />
           </GlassCard>
 

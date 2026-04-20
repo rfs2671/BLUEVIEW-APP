@@ -30,6 +30,7 @@ import {
   CheckCircle,
   XCircle,
   Home,
+  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -58,8 +59,13 @@ const SAFETY_CHECKLIST_ITEMS = [
 
 export default function SiteDailyLogsScreen() {
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
   const toast = useToast();
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
 
   const [activeTab, setActiveTab] = useState('today');
   const [loading, setLoading] = useState(true);
@@ -296,6 +302,13 @@ export default function SiteDailyLogsScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
+          <Pressable
+            onPress={handleLogout}
+            style={styles.logoutBtn}
+            hitSlop={12}
+          >
+            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
+          </Pressable>
         </View>
 
         <View style={styles.tabContainer}>
@@ -542,6 +555,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
+  logoutBtn: { padding: 8, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.05)' },
   siteBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, backgroundColor: 'rgba(74,222,128,0.15)', paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(74,222,128,0.3)' },
   siteBadgeText: { fontSize: 10, fontWeight: '600', color: '#4ade80', letterSpacing: 0.5 },
   projectName: { fontSize: 16, fontWeight: '500', color: colors.text.primary, flex: 1 },

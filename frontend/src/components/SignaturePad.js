@@ -54,13 +54,17 @@ const SignaturePad = ({
   title = 'Signature',
   disabled = false,
   existingSignature = null,
+  // autoLock=false keeps the pad editable even when existingSignature
+  // is passed — used on forms where the caller wants the signer to
+  // retype/redraw each time instead of inheriting a cached signature.
+  autoLock = true,
 }) => {
   const { isDark, colors } = useTheme();
   const styles = buildStyles(colors, isDark);
 
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
-  const [isSigned, setIsSigned] = useState(!!existingSignature);
+  const [isSigned, setIsSigned] = useState(autoLock ? !!existingSignature : false);
   const [signatureData, setSignatureData] = useState(existingSignature);
   const containerRef = useRef(null);
 

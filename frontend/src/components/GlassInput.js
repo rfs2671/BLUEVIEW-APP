@@ -31,7 +31,7 @@ const IconWrap = ({ children, style }) => (
   </View>
 );
 
-const GlassInput = ({
+const GlassInput = React.forwardRef(({
   value,
   onChangeText,
   placeholder,
@@ -45,7 +45,7 @@ const GlassInput = ({
   multiline = false,
   numberOfLines = 1,
   ...props
-}) => {
+}, ref) => {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const [isFocused, setIsFocused] = useState(false);
@@ -68,6 +68,7 @@ const GlassInput = ({
     >
       {leftIcon && <IconWrap style={s.leftIcon}>{leftIcon}</IconWrap>}
       <TextInput
+        ref={ref}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -91,7 +92,7 @@ const GlassInput = ({
       {rightIcon && <IconWrap style={s.rightIcon}>{rightIcon}</IconWrap>}
     </View>
   );
-};
+});
 
 function buildStyles(colors, isDark) {
   return StyleSheet.create({

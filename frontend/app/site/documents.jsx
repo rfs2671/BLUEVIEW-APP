@@ -17,6 +17,7 @@ import {
   File,
   FolderOpen,
   Download,
+  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -56,7 +57,12 @@ export default function SiteDocumentsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
   const toast = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -123,6 +129,13 @@ export default function SiteDocumentsScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
+          <Pressable
+            onPress={handleLogout}
+            style={s.logoutBtn}
+            hitSlop={12}
+          >
+            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
+          </Pressable>
         </View>
 
         {/* Title */}
@@ -199,6 +212,11 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+  },
+  logoutBtn: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
   siteBadge: {
     flexDirection: 'row',

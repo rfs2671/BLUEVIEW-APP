@@ -3365,9 +3365,20 @@ async def get_checkin_info(project_id: str, tag_id: str):
 
 @api_router.post("/checkin/upload-osha")
 async def upload_osha_card(file_data: dict, current_user = Depends(get_current_user)):
-    """OCR an OSHA/SST card photo using Gemini AI."""
+    """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
+
+    Mirrors the httpx+Together shape used by _qwen_visual_qa(). Input is
+    a base64 image + content_type; output is the same {name, sst_number,
+    issued, expiration, box_2d} JSON the frontend already consumes.
+    """
     import httpx
     import json as json_mod
+
+    if not QWEN_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Vision API not configured. Set QWEN_API_KEY.",
+        )
 
     image_b64 = file_data.get("image")
     content_type = file_data.get("content_type", "image/jpeg")
@@ -3379,41 +3390,58 @@ async def upload_osha_card(file_data: dict, current_user = Depends(get_current_u
     if "," in image_b64:
         image_b64 = image_b64.split(",", 1)[1]
 
-    gemini_key = os.environ.get("GEMINI_API_KEY")
-    if not gemini_key:
-        raise HTTPException(status_code=500, detail="AI service not configured")
+    image_url = f"data:{content_type};base64,{image_b64}"
 
+    extraction_prompt = (
+        "Extract the following from this SST/OSHA safety training card image. "
+        "Return ONLY valid JSON, no markdown:\n"
+        "{\"name\": \"full name on card\", "
+        "\"sst_number\": \"the ID number or card number shown on the card\", "
+        "\"issued\": \"issued date if visible\", "
+        "\"expiration\": \"expiration date if visible\", "
+        "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
+        "If a field is not visible, set it to null. 'box_2d' should be the "
+        "normalized coordinates (0-1000) tightly framing the card. Return "
+        "the JSON object only."
+    )
+
+    text = ""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            response = await http_client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
-                headers={"Content-Type": "application/json"},
+        async with httpx.AsyncClient(timeout=60.0) as client_http:
+            resp = await client_http.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {QWEN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
                 json={
-                    "contents": [{
-                        "parts": [
-                            {
-                                "inlineData": {
-                                    "mimeType": content_type,
-                                    "data": image_b64,
-                                }
-                            },
-                            {
-								"text": "Extract the following from this SST/OSHA safety training card image. Return ONLY valid JSON, no markdown:\n{\"name\": \"full name on card\", \"sst_number\": \"the ID number or card number shown on the card\", \"issued\": \"issued date if visible\", \"expiration\": \"expiration date if visible\", \"box_2d\": [ymin, xmin, ymax, xmax]}\nIf a field is not visible, set it to null. 'box_2d' should be the normalized coordinates (0-1000) tightly framing the card. Return the JSON object only."
-                            },
-                        ]
-                    }]
+                    "model": QWEN_MODEL,
+                    "max_tokens": 500,
+                    "temperature": 0,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url",
+                             "image_url": {"url": image_url}},
+                            {"type": "text", "text": extraction_prompt},
+                        ],
+                    }],
                 },
             )
+            if resp.status_code != 200:
+                logger.error(
+                    f"Qwen vision error {resp.status_code}: {resp.text[:300]}"
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Vision API error: {resp.status_code}",
+                )
 
-        if response.status_code != 200:
-            logger.error(f"Gemini API error: {response.text}")
-            raise HTTPException(status_code=502, detail="AI processing failed")
-
-        result = response.json()
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
+            result = resp.json()
+            raw_text = result["choices"][0]["message"]["content"]
 
         # Parse JSON from response
-        text = text.strip()
+        text = (raw_text or "").strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0]
 
@@ -3421,12 +3449,21 @@ async def upload_osha_card(file_data: dict, current_user = Depends(get_current_u
         return extracted
 
     except json_mod.JSONDecodeError:
-        return {"name": None, "sst_number": None, "issued": None, "expiration": None, "raw_text": text}
+        return {
+            "name":       None,
+            "sst_number": None,
+            "issued":     None,
+            "expiration": None,
+            "raw_text":   text,
+        }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"OSHA OCR error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"OCR processing failed: {str(e)}",
+        )
 
 @api_router.get("/checkin/{project_id}/companies")
 async def get_project_companies(project_id: str):
@@ -5849,7 +5886,26 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
         )
     
     if token_response.status_code != 200:
-        return HTMLResponse(f"<html><body><h2>Failed to connect</h2><p>{token_response.text}</p><script>window.close();</script></body></html>")
+        try:
+            err = token_response.json()
+            msg = (
+                err.get("error_description")
+                or err.get("error_summary")
+                or err.get("error")
+                or "Connection failed"
+            )
+        except Exception:
+            msg = token_response.text[:300] if token_response.text else "Unknown error"
+        return HTMLResponse(
+            f"""<html><body style="font-family:sans-serif;padding:40px;background:#0a0e1a;color:#f1f5f9;text-align:center">
+            <h2 style="color:#ef4444;margin-bottom:16px">Dropbox Connection Failed</h2>
+            <p style="color:#94a3b8;margin-bottom:12px">{msg}</p>
+            <p style="color:#64748b;font-size:13px">If this says 'too_many_users': go to dropbox.com/developers/apps
+            and either submit the app for Production or add this user email as a Tester.</p>
+            <script>setTimeout(()=>window.close(),8000);</script>
+            </body></html>""",
+            status_code=200,
+        )
     
     token_data = token_response.json()
     
@@ -5914,8 +5970,13 @@ async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_u
         )
     
     if token_response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to exchange code for token")
-    
+        try:
+            err = token_response.json()
+            msg = (err.get("error_description") or err.get("error") or "Token exchange failed")
+        except Exception:
+            msg = token_response.text[:200] or "Token exchange failed"
+        raise HTTPException(status_code=422, detail=f"Dropbox error: {msg}")
+
     token_data = token_response.json()
     company_id = get_user_company_id(current_user)
     now = datetime.now(timezone.utc)

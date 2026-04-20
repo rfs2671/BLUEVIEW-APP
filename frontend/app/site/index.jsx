@@ -8,6 +8,7 @@ import {
   UserCheck,
   Building2,
   PenTool,
+  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -22,7 +23,7 @@ export default function SiteDeviceHomeScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
   const toast = useToast();
 
   const [todayLogsCount, setTodayLogsCount] = useState(0);
@@ -73,6 +74,11 @@ export default function SiteDeviceHomeScreen() {
     router.push(path);
   };
 
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -87,6 +93,13 @@ export default function SiteDeviceHomeScreen() {
               {siteProject?.name || 'Project'}
             </Text>
           </View>
+          <Pressable
+            onPress={handleLogout}
+            style={s.logoutBtn}
+            hitSlop={12}
+          >
+            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
+          </Pressable>
         </View>
 
         {/* Main Content */}
@@ -177,6 +190,11 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: spacing.md,
+    },
+    logoutBtn: {
+      padding: 8,
+      borderRadius: 8,
+      backgroundColor: 'rgba(255,255,255,0.05)',
     },
     siteBadge: {
       flexDirection: 'row',

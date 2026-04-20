@@ -1,6 +1,6 @@
 import { Home } from 'lucide-react-native';
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -9,6 +9,7 @@ import {
   Clock,
   MapPin,
   RefreshCw,
+  LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -24,8 +25,13 @@ export default function SiteCheckInsScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
   const toast = useToast();
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/login');
+  };
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -103,21 +109,28 @@ export default function SiteCheckInsScreen() {
       <SafeAreaView style={s.container} edges={['top']}>
         {/* Header */}
         <View style={s.header}>
-  <View style={s.headerLeft}>
-    <GlassButton
-      variant="icon"
-      icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
-      onPress={() => router.push('/site')}
-    />
-    <View style={s.siteBadge}>
-      <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
-      <Text style={s.siteBadgeText}>SITE DEVICE</Text>
-    </View>
-    <Text style={s.projectName} numberOfLines={1}>
-      {siteProject?.name || 'Project'}
-    </Text>
-  </View>
-</View>
+          <View style={s.headerLeft}>
+            <GlassButton
+              variant="icon"
+              icon={<Home size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/site')}
+            />
+            <View style={s.siteBadge}>
+              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Text style={s.siteBadgeText}>SITE DEVICE</Text>
+            </View>
+            <Text style={s.projectName} numberOfLines={1}>
+              {siteProject?.name || 'Project'}
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleLogout}
+            style={s.logoutBtn}
+            hitSlop={12}
+          >
+            <LogOut size={18} strokeWidth={1.5} color="#64748b" />
+          </Pressable>
+        </View>
 
         <ScrollView
           style={s.scrollView}
@@ -273,6 +286,11 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     gap: spacing.md,
     flex: 1,
+  },
+  logoutBtn: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
   siteBadge: {
     flexDirection: 'row',

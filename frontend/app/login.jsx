@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
@@ -30,6 +30,8 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const pwdRef = useRef(null);
 
   useEffect(() => {
     if (isAuthenticated && !authLoading) {
@@ -106,51 +108,68 @@ export default function LoginScreen() {
               <Text style={s.welcomeTitle}>LeveLog</Text>
             </View>
 
-            <View style={s.form}>
-              <View style={s.inputGroup}>
-                <Text style={s.inputLabel}>EMAIL</Text>
-                <GlassInput
-                  value={email}
-                  onChangeText={setEmail}
-                  placeholder="Enter your email"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  leftIcon={<Mail size={20} strokeWidth={1.5} color={colors.text.subtle} />}
-                />
-              </View>
+            {(() => {
+              const formContent = (
+                <View style={s.form}>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>EMAIL</Text>
+                    <GlassInput
+                      value={email}
+                      onChangeText={setEmail}
+                      placeholder="Enter your email"
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      returnKeyType="next"
+                      onSubmitEditing={() => pwdRef.current?.focus()}
+                      leftIcon={<Mail size={20} strokeWidth={1.5} color={colors.text.subtle} />}
+                    />
+                  </View>
 
-              <View style={s.inputGroup}>
-                <Text style={s.inputLabel}>PASSWORD</Text>
-                <GlassInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Enter password"
-                  secureTextEntry={!showPassword}
-                  leftIcon={<Lock size={20} strokeWidth={1.5} color={colors.text.subtle} />}
-                  rightIcon={
-                    <Pressable onPress={() => setShowPassword(!showPassword)}>
-                      {showPassword ? (
-                        <EyeOff size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                      ) : (
-                        <Eye size={20} strokeWidth={1.5} color={colors.text.subtle} />
-                      )}
-                    </Pressable>
-                  }
-                />
-              </View>
+                  <View style={s.inputGroup}>
+                    <Text style={s.inputLabel}>PASSWORD</Text>
+                    <GlassInput
+                      ref={pwdRef}
+                      value={password}
+                      onChangeText={setPassword}
+                      placeholder="Enter password"
+                      secureTextEntry={!showPassword}
+                      returnKeyType="go"
+                      onSubmitEditing={handleSubmit}
+                      leftIcon={<Lock size={20} strokeWidth={1.5} color={colors.text.subtle} />}
+                      rightIcon={
+                        <Pressable onPress={() => setShowPassword(!showPassword)}>
+                          {showPassword ? (
+                            <EyeOff size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                          ) : (
+                            <Eye size={20} strokeWidth={1.5} color={colors.text.subtle} />
+                          )}
+                        </Pressable>
+                      }
+                    />
+                  </View>
 
-              {error ? (
-                <Text style={s.errorText}>{error}</Text>
-              ) : null}
+                  {error ? (
+                    <Text style={s.errorText}>{error}</Text>
+                  ) : null}
 
-              <GlassButton
-                title={loading ? 'Signing in...' : 'Sign In'}
-                icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
-                onPress={handleSubmit}
-                loading={loading}
-                style={s.submitBtn}
-              />
-            </View>
+                  <GlassButton
+                    title={loading ? 'Signing in...' : 'Sign In'}
+                    icon={!loading ? <ArrowRight size={18} strokeWidth={1.5} color={colors.text.primary} /> : null}
+                    onPress={handleSubmit}
+                    loading={loading}
+                    style={s.submitBtn}
+                  />
+                </View>
+              );
+              return Platform.OS === 'web' ? (
+                <form
+                  style={{ display: 'contents' }}
+                  onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}
+                >
+                  {formContent}
+                </form>
+              ) : formContent;
+            })()}
           </GlassCard>
         </View>
       </SafeAreaView>
