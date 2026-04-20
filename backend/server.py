@@ -11216,8 +11216,13 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                                 "ascii8":        audio_bytes_found[:8].decode(
                                     "ascii", errors="replace"
                                 ),
-                                "decrypted":     is_decoded or magic != magic,
+                                "was_encrypted": not is_decoded,
+                                "decrypt_done":  not is_decoded and magic.startswith("4f6767"),
                             })
+                            logger.info(
+                                f"audio success probe: size={len(audio_bytes_found)} "
+                                f"magic={magic} was_enc={not is_decoded}"
+                            )
                             try:
                                 await db.whatsapp_audio_probe.insert_one({
                                     "message_id":  message_id,
@@ -11225,8 +11230,10 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                                     "received_at": datetime.now(timezone.utc),
                                     "outcome":     "success",
                                 })
-                            except Exception:
-                                pass
+                            except Exception as _ins_err:
+                                logger.error(
+                                    f"audio probe insert failed: {_ins_err}"
+                                )
                             return audio_bytes_found
 
                         # Fall back to URL discovery.
@@ -14531,12 +14538,16 @@ async def _process_whatsapp_message(payload: dict):
                     audio_bytes = await download_audio(parsed)
                     direct_audio_diag["download_size"] = len(audio_bytes) if audio_bytes else 0
                     if audio_bytes:
-                        # Magic bytes — tell us if this is real OGG/Opus
-                        # audio (starts 'OggS'=4f6767 53) or encrypted
-                        # noise we need to decrypt with the mediaKey.
                         direct_audio_diag["first16_hex"] = audio_bytes[:16].hex()
                         direct_audio_diag["first8_ascii"] = audio_bytes[:8].decode(
                             "ascii", errors="replace"
+                        )
+                        direct_audio_diag["is_ogg"] = audio_bytes.startswith(b"OggS")
+                        direct_audio_diag["looks_encrypted"] = not any(
+                            audio_bytes.startswith(m) for m in (
+                                b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3",
+                                b"\xff\xf2", b"RIFF",
+                            )
                         )
                         transcript = await transcribe_audio(audio_bytes)
                         direct_audio_diag["transcript_len"] = len(transcript or "")
