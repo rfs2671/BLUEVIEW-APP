@@ -11870,6 +11870,224 @@ async def _handle_project_info(project_id: str) -> str:
     return "\n".join(lines)
 
 
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://app.levelog.com")
+
+
+def _permit_renewal_deep_link(project_id: str, permit_id: str) -> str:
+    """Deep link to the mobile/web renewal screen with the permit preselected.
+
+    The frontend reads ?permit=<id> and auto-selects. If the user isn't
+    signed in, the login screen preserves the return URL so they land
+    back on renewal after auth.
+    """
+    return (
+        f"{APP_BASE_URL.rstrip('/')}/project/{project_id}/permit-renewal"
+        f"?permit={permit_id}"
+    )
+
+
+def _permit_matches_hint(permit: dict, hint: str) -> int:
+    """Score a permit 0-N against a free-text hint. Higher = better match."""
+    if not hint:
+        return 0
+    h = hint.lower()
+    score = 0
+    for field, weight in (
+        ("permit_type",    4),
+        ("permit_subtype", 3),
+        ("job_number",     5),
+        ("raw_dob_id",     2),
+        ("work_type",      1),
+    ):
+        v = str(permit.get(field) or "").lower()
+        if not v:
+            continue
+        if h == v:
+            score += weight * 3
+        elif h in v or v in h:
+            score += weight
+        else:
+            # Token overlap
+            htoks = set(re.findall(r"[a-z0-9]+", h))
+            vtoks = set(re.findall(r"[a-z0-9]+", v))
+            if htoks & vtoks:
+                score += max(1, weight // 2)
+    # Well-known abbreviation expansions
+    aliases = [
+        ("pl", "plumbing"), ("me", "mechanical"), ("el", "electrical"),
+        ("sp", "sprinkler"), ("mh", "mechanical"), ("gc", "general construction"),
+        ("dm", "demolition"), ("eq", "equipment"), ("sh", "sheeting"),
+        ("fn", "foundation"), ("nb", "new building"), ("fo", "footing"),
+        ("ea", "earthwork"),
+    ]
+    ptype = str(permit.get("permit_type") or "").lower()
+    psub = str(permit.get("permit_subtype") or "").lower()
+    for short, long in aliases:
+        if (short in h and (long in ptype or long in psub)) or \
+           (long in h and (short == ptype or short == psub)):
+            score += 5
+    # "Soonest" / "expiring" preference handled by caller
+    return score
+
+
+async def _handle_start_permit_renewal(
+    project_id: str, group_id: str, sender: str, permit_hint: str
+) -> str:
+    """Resolve permit → check eligibility → send deep link or blocker list."""
+    if not project_id:
+        return "Could not determine which project this is."
+
+    # Load the same active-permit set the user sees.
+    try:
+        permits = await db.dob_logs.find({
+            "project_id":  project_id,
+            "record_type": "permit",
+            "is_deleted":  {"$ne": True},
+        }).to_list(200)
+    except Exception as e:
+        logger.error(f"start_permit_renewal load failed: {e}", exc_info=True)
+        return "Couldn't load permits right now — please try again in a minute."
+
+    now = datetime.now(timezone.utc)
+    active_status = {"permit issued", "issued", "active", "pre-filed"}
+
+    def _parse_iso(v):
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+        try:
+            s = str(v).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    active = []
+    for p in permits:
+        stat = str(p.get("permit_status") or "").strip().lower()
+        exp = _parse_iso(p.get("expiration_date"))
+        if stat in active_status and (exp is None or exp > now):
+            active.append((p, exp))
+
+    if not active:
+        return "No active permits on file for this project — nothing to renew."
+
+    # "Soonest" / "expiring" shortcut
+    hint_low = (permit_hint or "").lower()
+    prefer_soonest = any(
+        w in hint_low for w in ("soonest", "expiring", "most urgent", "first")
+    )
+
+    if prefer_soonest:
+        active.sort(key=lambda x: (x[1] or datetime.max.replace(tzinfo=timezone.utc)))
+        top = active[0]
+        scored = [(100, top[0], top[1])]
+    else:
+        scored = [
+            (_permit_matches_hint(p, permit_hint), p, exp) for p, exp in active
+        ]
+        scored = [s for s in scored if s[0] > 0]
+        scored.sort(key=lambda x: -x[0])
+
+    if not scored:
+        # Nothing matched the hint — list the options.
+        lines = [f"I don't see a permit matching '{permit_hint}'. Active permits:"]
+        active.sort(key=lambda x: (x[1] or datetime.max.replace(tzinfo=timezone.utc)))
+        for p, exp in active[:10]:
+            label = f"{p.get('permit_type') or 'Permit'}"
+            if p.get("permit_subtype"):
+                label += f"/{p['permit_subtype']}"
+            if p.get("job_number"):
+                label += f" — {p['job_number']}"
+            if exp:
+                label += f" (exp {exp.strftime('%Y-%m-%d')})"
+            lines.append(f"  • {label}")
+        lines.append("Which one should I renew?")
+        return "\n".join(lines)
+
+    # If top two scores are tied or very close, ask for clarification.
+    if len(scored) >= 2 and scored[1][0] >= max(scored[0][0] - 1, 1):
+        lines = [f"Multiple permits match '{permit_hint}':"]
+        for score, p, exp in scored[:5]:
+            label = f"{p.get('permit_type') or 'Permit'}"
+            if p.get("permit_subtype"):
+                label += f"/{p['permit_subtype']}"
+            if p.get("job_number"):
+                label += f" — {p['job_number']}"
+            if exp:
+                label += f" (exp {exp.strftime('%Y-%m-%d')})"
+            lines.append(f"  • {label}")
+        lines.append("Which one? Reply with the job number or full type.")
+        return "\n".join(lines)
+
+    target, target_exp = scored[0][1], scored[0][2]
+    permit_id = str(target["_id"])
+
+    # Eligibility — call the existing engine. Needs company name.
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    company_doc = None
+    if project and project.get("company_id"):
+        company_doc = await db.companies.find_one(
+            {"_id": to_query_id(project["company_id"])}
+        )
+    company_name = (company_doc or {}).get("name") or ""
+
+    try:
+        from backend.permit_renewal import check_renewal_eligibility
+        elig = await check_renewal_eligibility(
+            db, permit_id, project_id, company_name,
+            company_id=str(project["company_id"]) if project else None,
+        )
+    except Exception as e:
+        logger.error(f"eligibility check failed: {e}", exc_info=True)
+        deep = _permit_renewal_deep_link(project_id, permit_id)
+        return (
+            f"Couldn't run the automatic eligibility check, but I can take you "
+            f"straight to the renewal screen:\n{deep}"
+        )
+
+    ptype = target.get("permit_type") or "Permit"
+    sub = target.get("permit_subtype")
+    label = f"{ptype}" + (f"/{sub}" if sub else "")
+    job = target.get("job_number") or ""
+    exp_str = target_exp.strftime("%Y-%m-%d") if target_exp else "unknown"
+    days_left = elig.days_until_expiry if elig and elig.days_until_expiry is not None else None
+
+    deep = _permit_renewal_deep_link(project_id, permit_id)
+
+    header = f"*Renewal — {label}*"
+    if job:
+        header += f" (Job {job})"
+    header += f"\nExpires {exp_str}" + (f" ({days_left}d left)" if days_left is not None else "")
+
+    if not elig.eligible and elig.blocking_reasons:
+        bullets = "\n".join(f"  • {r}" for r in elig.blocking_reasons[:6])
+        extra = ""
+        if elig.insurance_flags:
+            extra = "\n\nInsurance to update first:\n" + "\n".join(
+                f"  • {f}" for f in elig.insurance_flags[:5]
+            )
+        return (
+            f"{header}\n\n"
+            f"Not ready to auto-renew yet:\n{bullets}{extra}\n\n"
+            f"Open the renewal screen anyway to review and file manually:\n{deep}"
+        )
+
+    if elig.insurance_not_entered:
+        return (
+            f"{header}\n\n"
+            f"Ready to renew, but I don't have insurance on file for this company yet.\n"
+            f"Add General Liability, Workers Comp, and Disability in Settings, "
+            f"then tap here:\n{deep}"
+        )
+
+    return (
+        f"{header}\n\n"
+        f"Eligible to renew — all checks pass. Open the renewal form:\n{deep}"
+    )
+
+
 async def _handle_active_permits(project_id: str) -> str:
     """Return currently-active DOB permits for this project.
 
@@ -13819,6 +14037,38 @@ _AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "start_permit_renewal",
+            "description": (
+                "Start a DOB permit renewal for a specific permit. Call this when the "
+                "user says 'renew the plumbing permit', 'start renewal for PL', "
+                "'yes renew that one', 'renew B00995273-S1'. Resolves a free-text "
+                "permit hint (permit type, subtype, job number, or ordinal like "
+                "'first one') to a single permit record, runs eligibility checks "
+                "(insurance coverage, license status, expiration window), then "
+                "either surfaces blockers or sends the user a direct deep link "
+                "to the Levelog renewal screen pre-loaded with that permit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "permit_hint": {
+                        "type": "string",
+                        "description": (
+                            "User's free-text identifier for the permit: permit type "
+                            "(e.g. 'plumbing', 'PL', 'mechanical'), subtype, job "
+                            "number like 'B00995273-S1', ordinal like 'first' / "
+                            "'the plumbing one', or 'the one expiring soonest'."
+                        ),
+                    },
+                },
+                "required": ["permit_hint"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "start_checklist",
             "description": (
                 "Begin a multi-turn flow to create an action-item checklist. Use this when "
@@ -13850,45 +14100,79 @@ _AGENT_TOOLS = [
 
 
 _AGENT_SYSTEM_PROMPT_BASE = (
-    "You are Levelog Assistant, a concise WhatsApp bot for a NYC construction crew. "
-    "You respond to messages in a project's group chat. "
-    "Use the available tools to answer questions about workers, DOB compliance, open items, "
-    "materials, construction drawings, and project info. Create checklists when asked. "
-    # Hard routing rules — read these before choosing a tool.
-    "ROUTING RULES (read EACH message on its own; do not copy past tool choices):\n"
-    "  • 'permit', 'permits', 'active permits', 'permit status', 'GC permit', 'DM permit', "
-    "    'PL permit', 'EL permit', 'MH permit' → active_permits. Never query_plan for these.\n"
-    "  • 'violation', 'violations', 'DOB status', 'complaints', 'BIN' → dob_status.\n"
-    "  • 'open items', 'punch list', 'to-do', 'outstanding', 'unresolved' → open_items.\n"
-    "  • 'who's on site', 'how many workers', 'is X here', 'trade count' → who_on_site.\n"
-    "  • 'list workers', 'show workers', 'all carpenters', 'my roster' → list_workers.\n"
-    "  • 'materials', 'deliveries', 'what's on order' → material_status.\n"
-    "  • 'address', 'BIN', 'BBL', 'which project', 'project info' → project_info.\n"
-    "  • 'plan', 'drawing', 'sheet', 'elevation', 'section', 'detail', 'schedule', "
-    "    'show me <sheet#>', 'pull up A-101/ME-401/S-2' → query_plan. ONLY for visual "
-    "    construction drawings, never for permits or workers.\n"
-    "  • 'create checklist', 'make checklist' → start_checklist.\n"
-    # Drawing prefixes the crew commonly uses in requests like
-    # "show me AR roof", "pull up ME-401", "M-2 2nd floor":
-    "NYC drawing discipline prefixes for query_plan: AR / A = Architectural, "
-    "ST / S = Structural, ME / M = Mechanical, EL / E = Electrical, "
-    "PL / P = Plumbing, SP = Sprinkler, GN = General. "
-    "For a 'show me <sheet>' request, call query_plan IMMEDIATELY with best-guess args. "
-    "Never ask the user to rephrase a drawing request.\n"
-    "Previous turns in this chat are conversation history — use them for context BUT "
-    "pick your tool based on the CURRENT user message alone. Do not echo a previous tool "
-    "choice if the new message asks about a different topic.\n"
-    "If the user is clearly answering a clarifying question you asked earlier, "
-    "combine both turns and call the right tool.\n"
-    "Keep replies under 80 words unless listing many items. "
-    "Use the tool return values directly — do not fabricate data. Never invent worker names, "
-    "permit numbers, or plan details that weren't returned by a tool.\n"
-    "CRITICAL — DATE/EXPIRY MATH: Tool output for permits already includes the number "
-    "of days until each expiration (e.g. '⚠️ 11d left'). If the user asks 'expiring in next "
-    "N days' or 'need renewal', COUNT the permits whose days-left is ≤ N from the tool output. "
-    "Never say 'no permits are expiring' or 'no permits due for renewal' if the tool output "
-    "contains any ⚠️ or 🟡 flag or any days-left value ≤ N. Trust the tool's numbers over "
-    "your own date estimation."
+    "You are Levelog Assistant — a WhatsApp bot for a NYC GC/expediter who needs "
+    "a smart, proactive teammate in their project group chat. Act like the "
+    "project manager's right hand: brief, specific, and always one step ahead.\n\n"
+    "CAPABILITIES (via tools):\n"
+    "  • Active permits + who's expiring + renewal (active_permits, start_permit_renewal)\n"
+    "  • DOB violations + complaints + 311 + BIN (dob_status)\n"
+    "  • Open items / punch list / materials (open_items, material_status)\n"
+    "  • Crew roster + who's on site (list_workers, who_on_site)\n"
+    "  • Project metadata — address/BIN/BBL (project_info)\n"
+    "  • Construction drawings visual Q&A + image send (query_plan)\n"
+    "  • Checklist assignment flow (start_checklist)\n\n"
+    "ROUTING (pick based on the current message, not history):\n"
+    "  • 'permit', 'active permits', 'PL/ME/EL/SP permit', 'which permits expire' → "
+    "    active_permits. Never query_plan for these.\n"
+    "  • 'renew <permit>', 'start renewal', 'yes renew', 'renew the plumbing one' → "
+    "    start_permit_renewal with permit_hint.\n"
+    "  • 'violation', 'DOB status', 'complaints', '311', 'BIN' → dob_status.\n"
+    "  • 'open items', 'punch list', 'to-do', 'outstanding' → open_items.\n"
+    "  • 'who's on site', 'how many workers', 'trade count' → who_on_site.\n"
+    "  • 'list workers', 'all carpenters', 'roster' → list_workers.\n"
+    "  • 'materials', 'deliveries', 'on order' → material_status.\n"
+    "  • 'address', 'BIN', 'BBL', 'project info' → project_info.\n"
+    "  • 'plan', 'drawing', 'sheet', elevation/section/detail/schedule, "
+    "    'show me A-101/ME-401', any question about what's shown on a drawing → "
+    "    query_plan. ONLY for visual drawings.\n"
+    "  • 'create checklist' → start_checklist.\n\n"
+    "PROACTIVE NEXT-STEP DOCTRINE — this is what makes you feel human:\n"
+    "After every tool call, look at the result and offer the obvious next action "
+    "as a 1-line question. The user should rarely have to ask for the follow-up.\n"
+    "  • active_permits returned ⚠️ flags → end with: 'Want me to start renewal "
+    "    for <permit>?'\n"
+    "  • dob_status returned open violations → end with: 'Want the filing details "
+    "    or a checklist for fixing these?'\n"
+    "  • query_plan sent a sheet → end with: 'Need a specific measurement or "
+    "    detail from it?'\n"
+    "  • material_status shows missing items → end with: 'Want me to create a "
+    "    follow-up checklist for the sub?'\n"
+    "  • start_permit_renewal returned insurance blockers → end with: 'Want "
+    "    the direct Settings link to upload insurance?'\n"
+    "Never append a next-step question when the user's message was ALREADY "
+    "answering your previous one. Don't pester.\n\n"
+    "MULTI-STEP REASONING:\n"
+    "If a single user message needs two tools (e.g. 'any permits expiring and do "
+    "we have insurance coverage for the renewal?'), call both and combine results "
+    "in one reply. The tool system runs them in parallel when possible.\n\n"
+    "PERMIT RENEWAL FLOW:\n"
+    "When the user says yes/confirm/renew after you suggested a renewal, call "
+    "start_permit_renewal with the permit they implied (latest ⚠️ from your prior "
+    "turn). The tool returns either a deep-link URL the user can tap to open the "
+    "Levelog renewal screen, a blocker list with the link anyway, or a missing-info "
+    "prompt. Pass through whatever the tool says verbatim — the link MUST appear "
+    "in your reply so the user can tap it.\n\n"
+    "CLARIFICATION DISCIPLINE:\n"
+    "Only ask a clarifying question when: (a) a permit/sheet/worker identifier is "
+    "truly ambiguous after a tool result, or (b) renewal needs data not in the DB. "
+    "Never ask 'which permit?' when there's only one active permit matching.\n\n"
+    "DATA TRUST:\n"
+    "Tool output for permits includes '⚠️ Nd left' flags. When the user asks "
+    "'expiring in next N days' or 'need renewal', count permits whose days-left ≤ N "
+    "from the tool output. Never say 'no permits expiring' if the output has any "
+    "⚠️ or 🟡 flag. Trust tool numbers over your own date arithmetic.\n\n"
+    "DRAWING DISCIPLINE:\n"
+    "NYC sheet prefixes: AR/A=Architectural, ST/S=Structural, ME/M=Mechanical, "
+    "EL/E=Electrical, PL/P=Plumbing, SP=Sprinkler, GN=General. "
+    "Spatial terms map to discipline + floor: 'backyard/rear yard' → floor=1, "
+    "discipline=PL if drainage else GN; 'rooftop' → floor=roof; 'basement/cellar' "
+    "→ floor=cellar. For 'show me <sheet>' call query_plan with best-guess args — "
+    "never ask the user to rephrase a drawing request.\n\n"
+    "STYLE:\n"
+    "Keep replies under 80 words unless listing many items. Use the tool's exact "
+    "numbers, dates, job numbers — don't round or summarize them away. Never "
+    "invent data that wasn't returned. When a link is in the tool output, keep "
+    "it intact — that URL is how the user takes the next action."
 )
 
 _AGENT_NOREPLY_CLAUSE = (
@@ -14488,6 +14772,11 @@ async def _dispatch_agent_tool(
             if question:
                 return f"(Plan VQA initiated for '{synth[:60]}' — question: '{question[:80]}'. Qwen will answer from the drawing.)"
             return f"(Plan search initiated for '{synth[:60]}'. Sending the matching sheet image.)"
+        if name == "start_permit_renewal":
+            return await _handle_start_permit_renewal(
+                project_id, group_id, sender,
+                permit_hint=args.get("permit_hint") or "",
+            )
         if name == "start_checklist":
             items = args.get("items") or []
             return await _handle_start_checklist(
@@ -14543,111 +14832,32 @@ async def _process_whatsapp_message(payload: dict):
             features = bot_config.get("features", {}) or {}
             bot_enabled = bot_config.get("bot_enabled", True)
 
-            # Transcribe own-audio if present (direct voicenote by sender).
+            # Voicenotes are not processed by the bot for now. WaAPI's
+            # download-media returns encrypted .enc bytes and the
+            # mediaKey resolution was unreliable. Text-only is the
+            # product decision. Silently ignore — message still stored
+            # in history below. Quoted voicenotes (text reply to a
+            # voicenote with @Levelog) are also silently ignored.
             body = parsed["body"]
-            if parsed["has_audio"]:
-                direct_audio_diag = {
-                    "path":               "direct_voicenote",
-                    "quoted_is_audio":    False,
-                    "quoted_message_id":  "",
-                    "quoted_type":        "",
-                    "has_audio":          True,
-                    "audio_url_present":  bool(parsed.get("audio_url")),
-                    "audio_url_sample":   (parsed.get("audio_url") or "")[:200],
-                    "download_size":      0,
-                    "transcript_len":     0,
-                    "transcript_preview": "",
-                    "error":              "",
-                }
+            if parsed.get("has_audio") or parsed.get("quoted_is_audio"):
                 try:
-                    audio_bytes = await download_audio(parsed)
-                    # Pull any decrypt diag that download_audio recorded.
-                    dl_diag = parsed.pop(_AUDIO_DIAG_KEY, {}) if isinstance(parsed, dict) else {}
-                    for k, v in dl_diag.items():
-                        direct_audio_diag[f"dl_{k}"] = v
-                    direct_audio_diag["download_size"] = len(audio_bytes) if audio_bytes else 0
-                    if audio_bytes:
-                        direct_audio_diag["first16_hex"] = audio_bytes[:16].hex()
-                        direct_audio_diag["first8_ascii"] = audio_bytes[:8].decode(
-                            "ascii", errors="replace"
-                        )
-                        direct_audio_diag["is_ogg"] = audio_bytes.startswith(b"OggS")
-                        direct_audio_diag["looks_encrypted"] = not any(
-                            audio_bytes.startswith(m) for m in (
-                                b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3",
-                                b"\xff\xf2", b"RIFF",
-                            )
-                        )
-                        transcript = await transcribe_audio(audio_bytes)
-                        direct_audio_diag["transcript_len"] = len(transcript or "")
-                        direct_audio_diag["transcript_preview"] = (transcript or "")[:200]
-                        if transcript:
-                            body = transcript
-                except Exception as e:
-                    direct_audio_diag["error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                try:
-                    await db.whatsapp_audio_diag.insert_one({
-                        **direct_audio_diag,
-                        "group_id":    group_id,
-                        "sender":      sender,
-                        "message_id":  parsed.get("message_id"),
-                        "received_at": datetime.now(timezone.utc),
+                    await db.whatsapp_messages.insert_one({
+                        "group_id":   group_id,
+                        "project_id": project_id,
+                        "company_id": msg_company_id,
+                        "sender":     sender,
+                        "body":       body or "(voicenote — ignored)",
+                        "has_audio":  True,
+                        "message_id": parsed.get("message_id"),
+                        "timestamp":  datetime.fromtimestamp(
+                            parsed["timestamp"], tz=timezone.utc
+                        ) if parsed.get("timestamp") else now,
+                        "created_at": now,
+                        "skipped":    "voice_disabled",
                     })
                 except Exception:
                     pass
-
-            # Quoted-voicenote path: when a user replies to a voicenote
-            # with an @Levelog text, the text carries the addressing but
-            # the actual question lives in the quoted audio. We download
-            # and transcribe the quoted voicenote, but only mutate `body`
-            # WITHOUT dropping the @mention token — because addressing
-            # detection below reads `body` and needs to see '@<lid>' when
-            # WaAPI doesn't surface mentionedJidList.
-            audio_diag: Dict[str, Any] = {
-                "path":               "none",
-                "quoted_is_audio":    parsed.get("quoted_is_audio"),
-                "quoted_message_id":  parsed.get("quoted_message_id"),
-                "quoted_type":        parsed.get("quoted_type"),
-                "has_audio":          parsed.get("has_audio"),
-                "audio_url_present":  bool(parsed.get("audio_url")),
-                "download_size":      0,
-                "transcript_len":     0,
-                "transcript_preview": "",
-                "error":              "",
-            }
-            if parsed.get("quoted_is_audio") and parsed.get("quoted_message_id"):
-                audio_diag["path"] = "quoted_voicenote"
-                try:
-                    q_audio = await download_audio({
-                        "message_id": parsed["quoted_message_id"],
-                        "audio_url":  None,
-                    })
-                    audio_diag["download_size"] = len(q_audio) if q_audio else 0
-                    if q_audio:
-                        q_text = await transcribe_audio(q_audio)
-                        audio_diag["transcript_len"] = len(q_text or "")
-                        audio_diag["transcript_preview"] = (q_text or "")[:200]
-                        if q_text:
-                            prefix = (body or "").strip()
-                            body = f"{prefix} {q_text}".strip() if prefix else q_text
-                            logger.info(
-                                f"whatsapp quoted-voicenote transcribed "
-                                f"len={len(q_text)}: {q_text[:120]!r}"
-                            )
-                except Exception as e:
-                    audio_diag["error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                    logger.warning(f"quoted voicenote transcribe failed: {e}")
-            # Persist the diagnosis for a debug endpoint to query.
-            try:
-                await db.whatsapp_audio_diag.insert_one({
-                    **audio_diag,
-                    "group_id":    group_id,
-                    "sender":      sender,
-                    "message_id":  parsed.get("message_id"),
-                    "received_at": datetime.now(timezone.utc),
-                })
-            except Exception:
-                pass
+                return
 
             # Store message (always — history is not subject to bot_enabled)
             await db.whatsapp_messages.insert_one({
