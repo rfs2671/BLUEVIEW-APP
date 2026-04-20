@@ -11026,34 +11026,93 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                         json={"messageId": message_id},
                     )
                     if 200 <= resp.status_code < 300:
-                        # Always trace 2xx too — we may be returning without
-                        # a decoded payload and want to know what was there.
                         probe_trace.append({
                             "path":   path,
                             "status": resp.status_code,
-                            "body":   (resp.text or "")[:600],
+                            "body":   (resp.text or "")[:4000],
                         })
                         j = resp.json() if resp.content else {}
-                        # WaAPI wraps results under "data" typically; also
-                        # accept a top-level base64 / mediaBase64 / url.
-                        inner = j.get("data") if isinstance(j, dict) else None
-                        inner = inner if isinstance(inner, dict) else j or {}
-                        b64 = (
-                            inner.get("base64")
-                            or inner.get("mediaBase64")
-                            or inner.get("data")
-                        )
-                        if isinstance(b64, str) and b64:
-                            # Some responses include a data:audio/ogg;base64, prefix.
-                            if "," in b64 and b64.startswith("data:"):
-                                b64 = b64.split(",", 1)[1]
-                            try:
-                                return base64.b64decode(b64)
-                            except Exception as e:
-                                logger.warning(
-                                    f"audio download: b64 decode failed via {path}: {e}"
-                                )
-                        media_url = inner.get("mediaUrl") or inner.get("url")
+
+                        # Recursively walk the response looking for a
+                        # base64 audio payload or a media URL. WaAPI
+                        # nests under data.data.media / data.data.message,
+                        # different plans may vary.
+                        def _find_audio(node: Any, depth: int = 0) -> Optional[bytes]:
+                            if depth > 8 or node is None:
+                                return None
+                            if isinstance(node, str):
+                                # Heuristic: base64 audio blobs are >500 chars
+                                # and start with common OGG/OPUS magic-encoded
+                                # prefixes. data: URI has the mime prefix.
+                                s = node
+                                if s.startswith("data:") and ";base64," in s:
+                                    try:
+                                        return base64.b64decode(s.split(",", 1)[1])
+                                    except Exception:
+                                        return None
+                                # Heuristic: pure base64 of audio (>500 chars,
+                                # only base64 alphabet) — try decode.
+                                if len(s) > 500 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", s):
+                                    try:
+                                        b = base64.b64decode(s, validate=False)
+                                        # Very rough sanity: ogg starts b"OggS".
+                                        if len(b) > 200:
+                                            return b
+                                    except Exception:
+                                        return None
+                                return None
+                            if isinstance(node, dict):
+                                # Check common explicit keys first.
+                                for key in (
+                                    "base64", "mediaBase64", "audioBase64",
+                                    "dataUrl", "dataURL",
+                                ):
+                                    v = node.get(key)
+                                    if isinstance(v, str) and len(v) > 100:
+                                        r = _find_audio(v, depth + 1)
+                                        if r:
+                                            return r
+                                # Then any string child long enough.
+                                for k, v in node.items():
+                                    r = _find_audio(v, depth + 1)
+                                    if r:
+                                        return r
+                            elif isinstance(node, list):
+                                for item in node:
+                                    r = _find_audio(item, depth + 1)
+                                    if r:
+                                        return r
+                            return None
+
+                        audio_bytes_found = _find_audio(j)
+                        if audio_bytes_found:
+                            return audio_bytes_found
+
+                        # Fall back to URL discovery.
+                        def _find_url(node: Any, depth: int = 0) -> Optional[str]:
+                            if depth > 8 or node is None:
+                                return None
+                            if isinstance(node, str):
+                                if node.startswith("http") and ("." in node):
+                                    return node
+                                return None
+                            if isinstance(node, dict):
+                                for key in ("mediaUrl", "url", "downloadUrl", "directUrl"):
+                                    v = node.get(key)
+                                    if isinstance(v, str) and v.startswith("http"):
+                                        return v
+                                for v in node.values():
+                                    r = _find_url(v, depth + 1)
+                                    if r:
+                                        return r
+                            elif isinstance(node, list):
+                                for item in node:
+                                    r = _find_url(item, depth + 1)
+                                    if r:
+                                        return r
+                            return None
+
+                        media_url = _find_url(j)
                         if isinstance(media_url, str) and media_url.startswith("http"):
                             # WaAPI handed us a CDN URL instead of inline bytes.
                             try:
