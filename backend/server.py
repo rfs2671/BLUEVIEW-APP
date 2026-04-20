@@ -14261,71 +14261,39 @@ async def _process_whatsapp_message(payload: dict):
             features = bot_config.get("features", {}) or {}
             bot_enabled = bot_config.get("bot_enabled", True)
 
-            # Transcribe own-audio if present (direct voicenote by sender).
-            # Preserve the ORIGINAL body text for addressing detection —
-            # mention tokens like '@153906327875707' live there and must
-            # survive any transcript splicing below.
+            # Voicenote handling is currently disabled — WaAPI's media
+            # download endpoints are unreliable and the transcription
+            # pipeline was producing empty-question responses that
+            # frustrated users. The bot now silently ignores any
+            # voicenote-shaped input. Text addressing and all other
+            # flows are unchanged.
             body = parsed["body"]
-            original_body = body
-            if parsed["has_audio"]:
-                audio_bytes = await download_audio(parsed)
-                if audio_bytes:
-                    transcript = await transcribe_audio(audio_bytes)
-                    if transcript:
-                        body = transcript
-
-            # Quoted-voicenote path: when a user replies to a voicenote
-            # with an @Levelog text, the text carries the addressing but
-            # the actual question lives in the quoted audio. We download
-            # and transcribe the quoted voicenote, but only mutate `body`
-            # WITHOUT dropping the @mention token — because addressing
-            # detection below reads `body` and needs to see '@<lid>' when
-            # WaAPI doesn't surface mentionedJidList.
-            audio_diag: Dict[str, Any] = {
-                "path":               "none",
-                "quoted_is_audio":    parsed.get("quoted_is_audio"),
-                "quoted_message_id":  parsed.get("quoted_message_id"),
-                "quoted_type":        parsed.get("quoted_type"),
-                "has_audio":          parsed.get("has_audio"),
-                "audio_url_present":  bool(parsed.get("audio_url")),
-                "download_size":      0,
-                "transcript_len":     0,
-                "transcript_preview": "",
-                "error":              "",
-            }
-            if parsed.get("quoted_is_audio") and parsed.get("quoted_message_id"):
-                audio_diag["path"] = "quoted_voicenote"
+            if parsed.get("has_audio") or parsed.get("quoted_is_audio"):
+                # Still store the inbound message below for history.
+                # But bail out BEFORE the agent runs so we don't reply
+                # with a generic 'please provide your question' fallback.
                 try:
-                    q_audio = await download_audio({
-                        "message_id": parsed["quoted_message_id"],
-                        "audio_url":  None,
+                    await db.whatsapp_messages.insert_one({
+                        "group_id":   group_id,
+                        "project_id": project_id,
+                        "company_id": msg_company_id,
+                        "sender":     sender,
+                        "body":       body or "(voicenote)",
+                        "has_audio":  True,
+                        "message_id": parsed.get("message_id"),
+                        "timestamp":  datetime.fromtimestamp(
+                            parsed["timestamp"], tz=timezone.utc
+                        ) if parsed.get("timestamp") else now,
+                        "created_at": now,
+                        "skipped":    "voice_disabled",
                     })
-                    audio_diag["download_size"] = len(q_audio) if q_audio else 0
-                    if q_audio:
-                        q_text = await transcribe_audio(q_audio)
-                        audio_diag["transcript_len"] = len(q_text or "")
-                        audio_diag["transcript_preview"] = (q_text or "")[:200]
-                        if q_text:
-                            prefix = (body or "").strip()
-                            body = f"{prefix} {q_text}".strip() if prefix else q_text
-                            logger.info(
-                                f"whatsapp quoted-voicenote transcribed "
-                                f"len={len(q_text)}: {q_text[:120]!r}"
-                            )
-                except Exception as e:
-                    audio_diag["error"] = f"{type(e).__name__}: {str(e)[:200]}"
-                    logger.warning(f"quoted voicenote transcribe failed: {e}")
-            # Persist the diagnosis for a debug endpoint to query.
-            try:
-                await db.whatsapp_audio_diag.insert_one({
-                    **audio_diag,
-                    "group_id":    group_id,
-                    "sender":      sender,
-                    "message_id":  parsed.get("message_id"),
-                    "received_at": datetime.now(timezone.utc),
-                })
-            except Exception:
-                pass
+                except Exception:
+                    pass
+                logger.info(
+                    f"whatsapp: ignoring voicenote msg_id={parsed.get('message_id')} "
+                    f"group={group_id} sender={sender}"
+                )
+                return
 
             # Store message (always — history is not subject to bot_enabled)
             await db.whatsapp_messages.insert_one({
