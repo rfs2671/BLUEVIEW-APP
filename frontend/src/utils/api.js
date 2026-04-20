@@ -373,6 +373,24 @@ export const dropboxAPI = {
     return response.data;
   },
 
+  // Site-device visibility config: which subfolders of the linked
+  // project folder the kiosk role is allowed to see. Empty list = kiosk
+  // sees nothing. Admins/CPs always see everything.
+  getSiteDeviceSubfolders: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/dropbox-subfolders`
+    );
+    return response.data;
+  },
+
+  setSiteDeviceSubfolders: async (projectId, subfolders) => {
+    const response = await apiClient.put(
+      `/api/projects/${projectId}/site-device-subfolders`,
+      { subfolders }
+    );
+    return response.data;
+  },
+
   syncProject: async (projectId) => {
     const response = await apiClient.post(`/api/projects/${projectId}/sync-dropbox`);
     return response.data;

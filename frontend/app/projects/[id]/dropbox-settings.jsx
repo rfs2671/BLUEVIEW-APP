@@ -22,6 +22,9 @@ import {
   CheckCircle,
   Clock,
   FileText,
+  Smartphone,
+  Check,
+  Square,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
@@ -58,6 +61,14 @@ export default function ProjectDropboxSettingsScreen() {
   const [folders, setFolders] = useState([]);
   const [currentPath, setCurrentPath] = useState('');
   const [loadingFolders, setLoadingFolders] = useState(false);
+
+  // Site device visibility — list top-level subfolders under the
+  // project's linked Dropbox folder, let admin pick which ones the
+  // kiosk role can see. Empty selection = kiosk sees nothing.
+  const [siteDeviceSubfolders, setSiteDeviceSubfolders] = useState([]);
+  const [siteDeviceSelected, setSiteDeviceSelected] = useState([]);
+  const [loadingSiteVisibility, setLoadingSiteVisibility] = useState(false);
+  const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
 
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
@@ -99,6 +110,12 @@ export default function ProjectDropboxSettingsScreen() {
         } catch (e) {
           setFileCount(0);
         }
+
+        // Load site-device visibility settings (admin-only endpoint —
+        // non-admins get 403 which we swallow silently).
+        if (user?.role === 'admin' || user?.role === 'owner') {
+          fetchSiteDeviceVisibility();
+        }
       }
     } catch (error) {
       console.error('Failed to fetch data:', error);
@@ -120,6 +137,52 @@ export default function ProjectDropboxSettingsScreen() {
       setFolders([]);
     } finally {
       setLoadingFolders(false);
+    }
+  };
+
+  const fetchSiteDeviceVisibility = async () => {
+    if (!projectId) return;
+    setLoadingSiteVisibility(true);
+    try {
+      const data = await dropboxAPI.getSiteDeviceSubfolders(projectId);
+      setSiteDeviceSubfolders(Array.isArray(data?.subfolders) ? data.subfolders : []);
+      setSiteDeviceSelected(Array.isArray(data?.selected) ? data.selected : []);
+    } catch (e) {
+      console.warn('Site device visibility load failed:', e?.message);
+      setSiteDeviceSubfolders([]);
+      setSiteDeviceSelected([]);
+    } finally {
+      setLoadingSiteVisibility(false);
+    }
+  };
+
+  const toggleSiteSubfolder = (name) => {
+    if (!isAdmin) return;
+    setSiteDeviceSelected((prev) => {
+      const low = (name || '').toLowerCase();
+      const has = prev.some((s) => s.toLowerCase() === low);
+      return has
+        ? prev.filter((s) => s.toLowerCase() !== low)
+        : [...prev, name];
+    });
+  };
+
+  const handleSaveSiteVisibility = async () => {
+    if (!isAdmin) return;
+    setSavingSiteVisibility(true);
+    try {
+      await dropboxAPI.setSiteDeviceSubfolders(projectId, siteDeviceSelected);
+      toast.success(
+        'Saved',
+        siteDeviceSelected.length === 0
+          ? 'Site device will see no files'
+          : `Site device visibility updated (${siteDeviceSelected.length} folder(s))`
+      );
+    } catch (e) {
+      console.error('Save site visibility failed:', e);
+      toast.error('Error', e.response?.data?.detail || 'Could not save');
+    } finally {
+      setSavingSiteVisibility(false);
     }
   };
 
@@ -147,9 +210,11 @@ export default function ProjectDropboxSettingsScreen() {
       setSelectedFolder(folderPath);
       setShowFolderPicker(false);
       toast.success('Linked', 'Dropbox folder linked successfully');
-      
+
       // Trigger initial sync
       handleSync();
+      // Refresh available subfolders so the site-device card updates.
+      if (isAdmin) fetchSiteDeviceVisibility();
     } catch (error) {
       console.error('Failed to link folder:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not link folder');
@@ -344,6 +409,80 @@ export default function ProjectDropboxSettingsScreen() {
                         onPress={() => router.push(`/projects/${projectId}/construction-plans`)}
                         style={s.viewFilesBtn}
                       />
+                    </GlassCard>
+                  )}
+
+                  {/* Site Device Visibility — admin-only, per-project allowlist */}
+                  {selectedFolder && isAdmin && (
+                    <GlassCard style={s.siteVizCard}>
+                      <View style={s.siteVizHeader}>
+                        <Smartphone size={16} strokeWidth={1.5} color={colors.text.muted} />
+                        <Text style={s.cardLabel}>SITE DEVICE VISIBILITY</Text>
+                      </View>
+                      <Text style={s.siteVizDesc}>
+                        Pick which subfolders the on-site kiosk can see. Admins and
+                        CPs always see the full project folder. Leave empty to block
+                        the kiosk from all files.
+                      </Text>
+
+                      {loadingSiteVisibility ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={colors.text.primary}
+                          style={s.foldersLoading}
+                        />
+                      ) : siteDeviceSubfolders.length === 0 ? (
+                        <Text style={s.noFolders}>
+                          No subfolders found directly under the linked folder.
+                          Create subfolders in Dropbox (e.g. "Approved Plans",
+                          "Access Agreements"), then reload this page.
+                        </Text>
+                      ) : (
+                        <View style={s.siteVizList}>
+                          {siteDeviceSubfolders.map((name) => {
+                            const checked = siteDeviceSelected.some(
+                              (s) => s.toLowerCase() === name.toLowerCase()
+                            );
+                            return (
+                              <Pressable
+                                key={name}
+                                onPress={() => toggleSiteSubfolder(name)}
+                                style={({ pressed }) => [
+                                  s.siteVizRow,
+                                  pressed && s.siteVizRowPressed,
+                                ]}
+                              >
+                                {checked ? (
+                                  <View style={s.checkboxChecked}>
+                                    <Check size={14} strokeWidth={2} color="#fff" />
+                                  </View>
+                                ) : (
+                                  <View style={s.checkboxEmpty}>
+                                    <Square size={14} strokeWidth={1.5} color={colors.text.muted} />
+                                  </View>
+                                )}
+                                <Folder size={16} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                                <Text style={s.siteVizName}>{name}</Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      )}
+
+                      <View style={s.siteVizActions}>
+                        <GlassButton
+                          title={
+                            savingSiteVisibility
+                              ? 'Saving...'
+                              : siteDeviceSelected.length === 0
+                                ? 'Save (kiosk sees nothing)'
+                                : `Save (${siteDeviceSelected.length} selected)`
+                          }
+                          onPress={handleSaveSiteVisibility}
+                          loading={savingSiteVisibility}
+                          disabled={loadingSiteVisibility}
+                        />
+                      </View>
                     </GlassCard>
                   )}
                 </>
@@ -600,6 +739,64 @@ function buildStyles(colors, isDark) {
   },
   viewFilesBtn: {
     marginTop: spacing.sm,
+  },
+  siteVizCard: {
+    marginTop: spacing.md,
+    padding: spacing.lg,
+  },
+  siteVizHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  siteVizDesc: {
+    fontSize: 13,
+    color: colors.text.muted,
+    lineHeight: 18,
+    marginBottom: spacing.md,
+  },
+  siteVizList: {
+    gap: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  siteVizRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  siteVizRowPressed: {
+    opacity: 0.7,
+  },
+  siteVizName: {
+    fontSize: 14,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  checkboxChecked: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    backgroundColor: '#4ade80',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxEmpty: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  siteVizActions: {
+    marginTop: spacing.xs,
   },
   folderPicker: {
     marginTop: spacing.md,

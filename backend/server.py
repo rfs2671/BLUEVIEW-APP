@@ -593,6 +593,11 @@ class ProjectResponse(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
+    # Site-device visibility allowlist: top-level subfolder names
+    # (relative to dropbox_folder_path) that users with role=site_device
+    # are allowed to see. Empty list = site devices see nothing.
+    # Admins/CPs always see the full folder regardless.
+    site_device_subfolders: List[str] = []
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -6159,6 +6164,133 @@ async def get_dropbox_folders(path: str = "", current_user = Depends(get_current
     
     return folders
 
+def _normalize_subfolder_names(names: List[str]) -> List[str]:
+    """Strip leading slashes + trailing slashes, drop empties, dedupe
+    (case-insensitive by comparison but preserve caller casing).
+    Used so both 'Approved Plans' and '/Approved Plans/' end up as
+    the single canonical 'Approved Plans' entry."""
+    seen_lower = set()
+    out = []
+    for raw in names or []:
+        if not isinstance(raw, str):
+            continue
+        n = raw.strip().strip("/").strip()
+        if not n:
+            continue
+        low = n.lower()
+        if low in seen_lower:
+            continue
+        seen_lower.add(low)
+        out.append(n)
+    return out
+
+
+def _path_is_under_allowed_subfolder(
+    file_path: str, folder_path: str, allowed_subfolders: List[str]
+) -> bool:
+    """True iff file_path lives under any allowed subfolder of
+    folder_path. Path comparison is case-insensitive because Dropbox
+    preserves case in `name` but stores a lowercased `path_lower`; we
+    call this with either, so normalize both sides."""
+    if not file_path or not allowed_subfolders:
+        return False
+    fp = file_path.lower()
+    base = (folder_path or "").lower().rstrip("/")
+    # Strip the base project folder prefix so comparisons are relative.
+    rel = fp[len(base):] if base and fp.startswith(base) else fp
+    rel = rel.lstrip("/")
+    for sub in allowed_subfolders:
+        sub_low = sub.lower().strip("/").strip()
+        if not sub_low:
+            continue
+        if rel == sub_low or rel.startswith(sub_low + "/"):
+            return True
+    return False
+
+
+@api_router.get("/projects/{project_id}/dropbox-subfolders")
+async def list_dropbox_subfolders(
+    project_id: str, current_user = Depends(get_admin_user)
+):
+    """Admin-only: list the top-level subfolders under the project's
+    linked Dropbox folder. Used by the 'Site Device Visibility' UI to
+    render checkboxes for which subfolders the kiosk can see."""
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    company_id = company_id or project.get("company_id")
+    folder_path = project.get("dropbox_folder_path") or ""
+    if not folder_path:
+        return {"subfolders": [], "selected": [], "folder_path": ""}
+
+    try:
+        resp = await dropbox_api_call(
+            company_id, "post",
+            "https://api.dropboxapi.com/2/files/list_folder",
+            json={"path": folder_path, "recursive": False},
+        )
+        subfolders: List[str] = []
+        if resp.status_code == 200:
+            for entry in resp.json().get("entries", []):
+                if entry.get(".tag") == "folder":
+                    subfolders.append(entry.get("name", ""))
+            subfolders = [s for s in subfolders if s]
+            subfolders.sort(key=lambda x: x.lower())
+    except Exception as e:
+        logger.warning(
+            f"list subfolders failed for project {project_id}: {e}"
+        )
+        subfolders = []
+
+    return {
+        "folder_path": folder_path,
+        "subfolders": subfolders,
+        "selected": _normalize_subfolder_names(
+            project.get("site_device_subfolders") or []
+        ),
+    }
+
+
+@api_router.put("/projects/{project_id}/site-device-subfolders")
+async def set_site_device_subfolders(
+    project_id: str,
+    data: dict,
+    current_user = Depends(get_admin_user),
+):
+    """Admin-only: set the list of subfolder names (relative to the
+    project's Dropbox folder) that site-device users are allowed to
+    see. Passing [] locks site devices out completely (safe default).
+    Names are stripped + deduped server-side; do not include slashes.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    subfolders_raw = data.get("subfolders")
+    if not isinstance(subfolders_raw, list):
+        raise HTTPException(
+            status_code=400,
+            detail="subfolders must be an array of folder names",
+        )
+    cleaned = _normalize_subfolder_names(subfolders_raw)
+    await db.projects.update_one(
+        {"_id": to_query_id(project_id)},
+        {"$set": {
+            "site_device_subfolders": cleaned,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    return {
+        "message": "Site device visibility updated",
+        "site_device_subfolders": cleaned,
+    }
+
+
 @api_router.post("/projects/{project_id}/link-dropbox")
 async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
     """Link a Dropbox folder to a project"""
@@ -6181,7 +6313,13 @@ async def link_dropbox_to_project(project_id: str, data: dict, current_user = De
 
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
-    """Get files from project's linked Dropbox folder (R2-backed with Dropbox fallback)"""
+    """Get files from project's linked Dropbox folder (R2-backed with Dropbox fallback).
+
+    Role-based visibility: users with role=site_device only see files
+    whose path sits under one of the project's site_device_subfolders.
+    Empty list → site devices see nothing (safe default). Admins/CPs
+    see the full folder regardless.
+    """
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -6193,6 +6331,23 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     company_id = company_id or project.get("company_id")
     folder_path = project.get("dropbox_folder_path")
 
+    is_site_device = (
+        current_user.get("site_mode")
+        or current_user.get("role") == "site_device"
+    )
+    allowed_subfolders = _normalize_subfolder_names(
+        project.get("site_device_subfolders") or []
+    )
+
+    def _visible_to_site(path: str) -> bool:
+        return _path_is_under_allowed_subfolder(
+            path, folder_path or "", allowed_subfolders
+        )
+
+    # Short-circuit: site device with no subfolders configured sees nothing.
+    if is_site_device and not allowed_subfolders:
+        return []
+
     # Check project_files collection first (R2 cache + direct uploads)
     cached_files = await db.project_files.find({
         "project_id": project_id,
@@ -6203,6 +6358,9 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if cached_files:
         files = []
         for rec in cached_files:
+            dropbox_path = rec.get("dropbox_path", "")
+            if is_site_device and not _visible_to_site(dropbox_path):
+                continue
             r2_key = rec.get("r2_key", "")
             stored_url = rec.get("r2_url", "")
             rec_id = str(rec.get("_id", ""))
@@ -6210,7 +6368,7 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
             proxy_url = f"/api/projects/{project_id}/files/{rec_id}/content" if r2_key and rec_id else ""
             files.append({
                 "name": rec.get("name", ""),
-                "path": rec.get("dropbox_path", ""),
+                "path": dropbox_path,
                 "id": rec_id,
                 "type": "file",
                 "size": rec.get("size", 0),
@@ -6225,10 +6383,12 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if not folder_path:
         return []
 
+    # Site devices need a RECURSIVE listing so we can see files inside
+    # the allowed subfolders, not just top-level entries.
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": folder_path, "recursive": False}
+        json={"path": folder_path, "recursive": bool(is_site_device)}
     )
 
     if response.status_code != 200:
@@ -6237,9 +6397,16 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     data = response.json()
     files = []
     for entry in data.get("entries", []):
+        path_lower = entry.get("path_lower", "")
+        if is_site_device:
+            # Only files; drop any folder entries from the recursive scan.
+            if entry.get(".tag") != "file":
+                continue
+            if not _visible_to_site(path_lower):
+                continue
         file_info = {
             "name": entry["name"],
-            "path": entry["path_lower"],
+            "path": path_lower,
             "id": entry.get("id", ""),
             "type": entry[".tag"],
             "r2_url": "",
