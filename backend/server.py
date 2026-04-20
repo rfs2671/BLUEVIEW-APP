@@ -10983,16 +10983,24 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
     """
     message_id = parsed_msg.get("message_id")
     audio_url = parsed_msg.get("audio_url")
+    probe_trace: List[Dict[str, Any]] = []
 
     # Attempt 2 first when we have a usable WaAPI instance — it's the
     # canonical path and doesn't depend on the (unreliable) direct URL.
     if WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id:
         # WaAPI v1 exposes multiple equivalent endpoints for media download;
         # try the most common names in order. We stop on the first 2xx.
+        # Each failure writes a trace entry so the debug endpoint can show
+        # which names actually exist on this account.
         paths = [
             "client/action/download-media",
             "client/action/get-media",
             "client/action/get-media-by-message-id",
+            "client/action/media-download",
+            "client/action/getMediaUrl",
+            "client/action/download",
+            "message/download-media",
+            "messages/download-media",
         ]
         for path in paths:
             try:
@@ -11038,11 +11046,17 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                                     f"audio download: CDN GET failed: {e}"
                                 )
                     else:
+                        probe_trace.append({
+                            "path": path,
+                            "status": resp.status_code,
+                            "body": (resp.text or "")[:250],
+                        })
                         logger.info(
                             f"audio download: {path} returned "
-                            f"{resp.status_code}, trying next"
+                            f"{resp.status_code} body={(resp.text or '')[:200]!r}"
                         )
             except Exception as e:
+                probe_trace.append({"path": path, "error": str(e)[:200]})
                 logger.warning(f"audio download: {path} exception: {e}")
                 continue
 
@@ -11056,12 +11070,29 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                 resp = await client_http.get(audio_url, headers=headers)
                 if 200 <= resp.status_code < 300 and resp.content:
                     return resp.content
+                probe_trace.append({
+                    "path": "direct_get",
+                    "status": resp.status_code,
+                    "size":   len(resp.content),
+                })
                 logger.warning(
                     f"audio download: direct GET returned "
                     f"{resp.status_code} size={len(resp.content)}"
                 )
         except Exception as e:
+            probe_trace.append({"path": "direct_get", "error": str(e)[:200]})
             logger.warning(f"audio download: direct GET exception: {e}")
+
+    # Persist full probe trace so the debug endpoint surfaces what each
+    # WaAPI endpoint responded with. Best-effort — we don't block on this.
+    try:
+        await db.whatsapp_audio_probe.insert_one({
+            "message_id":  message_id,
+            "trace":       probe_trace,
+            "received_at": datetime.now(timezone.utc),
+        })
+    except Exception:
+        pass
 
     logger.error(f"audio download: all strategies failed msg_id={message_id}")
     return None
@@ -14663,6 +14694,28 @@ async def whatsapp_webhook(request: Request):
     if payload:
         asyncio.create_task(_process_whatsapp_message(payload))
     return {"status": "ok"}
+
+
+@api_router.get("/whatsapp/debug/audio-probe")
+async def whatsapp_debug_audio_probe(
+    current_user=Depends(get_current_user), limit: int = 10
+):
+    """Recent download-audio probe traces — which WaAPI endpoints were
+    tried and what each returned."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        rows = await db.whatsapp_audio_probe.find().sort(
+            "received_at", -1
+        ).limit(min(limit, 50)).to_list(min(limit, 50))
+        for r in rows:
+            r.pop("_id", None)
+            if isinstance(r.get("received_at"), datetime):
+                r["received_at"] = r["received_at"].isoformat()
+        return {"count": len(rows), "recent": rows}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @api_router.get("/whatsapp/debug/audio-diag")
