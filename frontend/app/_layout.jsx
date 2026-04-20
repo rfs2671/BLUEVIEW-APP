@@ -12,7 +12,7 @@ import { ToastProvider, useToast } from '../src/components/Toast';
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, errorInfo: null };
   }
 
   static getDerivedStateFromError(error) {
@@ -21,19 +21,37 @@ class ErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     console.error('App crash caught by ErrorBoundary:', error, errorInfo);
+    this.setState({ errorInfo });
   }
 
   render() {
     if (this.state.hasError) {
+      const msg =
+        (this.state.error && (this.state.error.message || String(this.state.error))) ||
+        'Unknown error';
+      // Surface the stack so users can screenshot it to support. Trim
+      // to keep the screen readable on phone.
+      const stack = String(
+        (this.state.errorInfo && this.state.errorInfo.componentStack) ||
+        (this.state.error && this.state.error.stack) ||
+        ''
+      ).slice(0, 800);
+
       return (
         <View style={errorStyles.container}>
           <Text style={errorStyles.title}>Something went wrong</Text>
           <Text style={errorStyles.message}>
             The app encountered an unexpected error. Please restart.
           </Text>
+          <View style={errorStyles.detailBox}>
+            <Text selectable style={errorStyles.errorName}>{msg}</Text>
+            {stack ? (
+              <Text selectable style={errorStyles.stack}>{stack}</Text>
+            ) : null}
+          </View>
           <Pressable
             style={errorStyles.button}
-            onPress={() => this.setState({ hasError: false, error: null })}
+            onPress={() => this.setState({ hasError: false, error: null, errorInfo: null })}
           >
             <Text style={errorStyles.buttonText}>Try Again</Text>
           </Pressable>
@@ -76,13 +94,44 @@ const errorStyles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
+  detailBox: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 20,
+    maxWidth: 520,
+    width: '100%',
+  },
+  errorName: {
+    color: '#fca5a5',
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  stack: {
+    color: '#94a3b8',
+    fontSize: 11,
+    lineHeight: 14,
+  },
 });
 
 function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
-  const toast = useToast();
+  // useToast throws if ToastContext isn't provided. Under normal
+  // mounting order it is (ToastProvider wraps AppShell which contains
+  // us), but a single render-order hiccup or hot-reload can flip
+  // this into a tree-crashing render error. Catch it defensively —
+  // the toast is a UX sprinkle, not a correctness requirement.
+  let toast = null;
+  try {
+    toast = useToast();
+  } catch (_e) {
+    toast = null;
+  }
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
@@ -124,12 +173,18 @@ function RouteGuard() {
       const isOnSafePath = safePaths.some(p => currentPath.startsWith(p));
       if (!isOnSafePath) {
         router.replace('/logbooks');
-        setTimeout(() => {
-          toast.error(
-            'Account Setup Incomplete',
-            'Ask your admin to assign you to a company in Settings → Team.'
-          );
-        }, 400);
+        if (toast && typeof toast.error === 'function') {
+          setTimeout(() => {
+            try {
+              toast.error(
+                'Account Setup Incomplete',
+                'Ask your admin to assign you to a company in Settings → Team.'
+              );
+            } catch (_e) {
+              // Non-blocking — redirect already happened.
+            }
+          }, 400);
+        }
       }
     }
   }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname]);
