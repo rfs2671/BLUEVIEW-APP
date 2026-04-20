@@ -48,6 +48,7 @@ import FloatingNav from '../src/components/FloatingNav';
 import SignaturePad from '../src/components/SignaturePad';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
+import { csRegistrationAPI } from '../src/utils/api';
 import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
@@ -86,6 +87,7 @@ export default function DailyLogScreen() {
   const [existingLog, setExistingLog] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
+  const [csLicenseNumber, setCsLicenseNumber] = useState('');
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -141,12 +143,34 @@ export default function DailyLogScreen() {
     }
   };
 
+  const fetchAndPrefillCS = async (projectId) => {
+    // Auto-fill superintendent from CS registration. Non-blocking —
+    // CS lookup failure must never break the daily log flow.
+    try {
+      const csData = await csRegistrationAPI.getForProject(projectId);
+      if (csData?.registered && csData.full_name) {
+        // Only pre-fill if the field is empty — do not overwrite a
+        // superintendent who has already signed today's log.
+        setFormData((prev) => ({
+          ...prev,
+          superintendent_name: prev.superintendent_name || csData.full_name,
+        }));
+        setCsLicenseNumber(csData.license_number || '');
+      } else {
+        setCsLicenseNumber('');
+      }
+    } catch (e) {
+      console.warn('CS lookup failed (non-blocking):', e?.message);
+      setCsLicenseNumber('');
+    }
+  };
+
   const fetchLogsForProject = async (projectId) => {
     try {
       setAllLogs(dailyLogs);
       const today = new Date().toISOString().split('T')[0];
       const todayLog = dailyLogs.find((l) => l.date === today);
-      
+
       if (todayLog) {
         setExistingLog(todayLog);
         populateFormFromLog(todayLog);
@@ -154,6 +178,9 @@ export default function DailyLogScreen() {
         setExistingLog(null);
         resetForm();
       }
+      // Always fetch CS — fills the superintendent name if the form is
+      // fresh, and gives us the license number for the badge regardless.
+      await fetchAndPrefillCS(projectId);
     } catch (error) {
       console.error('Failed to fetch logs:', error);
       setAllLogs([]);
@@ -714,6 +741,20 @@ export default function DailyLogScreen() {
                         setFormData({ ...formData, superintendent_signature: sig })
                       }
                     />
+                    {csLicenseNumber ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                        <Text style={{ fontSize: 11, color: colors.text.muted }}>CS LICENSE:</Text>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            color: colors.text.muted,
+                            fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                          }}
+                        >
+                          {csLicenseNumber}
+                        </Text>
+                      </View>
+                    ) : null}
                   </View>
 
                   <View style={s.signatureSection}>

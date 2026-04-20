@@ -39,7 +39,7 @@ import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { dailyLogsAPI } from '../../src/utils/api';
+import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 const weatherOptions = [
@@ -73,6 +73,7 @@ export default function SiteDailyLogsScreen() {
   const [existingLog, setExistingLog] = useState(null);
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
+  const [csLicenseNumber, setCsLicenseNumber] = useState('');
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -115,13 +116,33 @@ export default function SiteDailyLogsScreen() {
 
       const today = new Date().toISOString().split('T')[0];
       const todayLog = logsList.find((l) => l.date === today);
-      
+
       if (todayLog) {
         setExistingLog(todayLog);
         populateFormFromLog(todayLog);
       } else {
         setExistingLog(null);
         resetForm();
+      }
+
+      // Auto-fill superintendent from CS registration. Non-blocking —
+      // only pre-fills if the field is empty (existing signed log is
+      // never overwritten). Also gives us the license number for the
+      // badge under the signature pad.
+      try {
+        const csData = await csRegistrationAPI.getForProject(siteProject.id);
+        if (csData?.registered && csData.full_name) {
+          setFormData((prev) => ({
+            ...prev,
+            superintendent_name: prev.superintendent_name || csData.full_name,
+          }));
+          setCsLicenseNumber(csData.license_number || '');
+        } else {
+          setCsLicenseNumber('');
+        }
+      } catch (e) {
+        console.warn('CS lookup failed (non-blocking):', e?.message);
+        setCsLicenseNumber('');
       }
     } catch (error) {
       console.error('Failed to fetch logs:', error);
@@ -454,6 +475,20 @@ export default function SiteDailyLogsScreen() {
                   onNameChange={(n) => setFormData({...formData, superintendent_name: n})}
                   existingSignature={formData.superintendent_signature}
                   onSignatureCapture={(s) => setFormData({...formData, superintendent_signature: s})} />
+                {csLicenseNumber ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                    <Text style={{ fontSize: 11, color: colors.text.muted }}>CS LICENSE:</Text>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: colors.text.muted,
+                        fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+                      }}
+                    >
+                      {csLicenseNumber}
+                    </Text>
+                  </View>
+                ) : null}
               </View>
 
               <GlassButton title={saving ? 'Saving...' : existingLog ? 'Update Log' : 'Submit Log'}
