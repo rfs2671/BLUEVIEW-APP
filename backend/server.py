@@ -14281,18 +14281,31 @@ async def _process_whatsapp_message(payload: dict):
             # WITHOUT dropping the @mention token — because addressing
             # detection below reads `body` and needs to see '@<lid>' when
             # WaAPI doesn't surface mentionedJidList.
+            audio_diag: Dict[str, Any] = {
+                "path":               "none",
+                "quoted_is_audio":    parsed.get("quoted_is_audio"),
+                "quoted_message_id":  parsed.get("quoted_message_id"),
+                "quoted_type":        parsed.get("quoted_type"),
+                "has_audio":          parsed.get("has_audio"),
+                "audio_url_present":  bool(parsed.get("audio_url")),
+                "download_size":      0,
+                "transcript_len":     0,
+                "transcript_preview": "",
+                "error":              "",
+            }
             if parsed.get("quoted_is_audio") and parsed.get("quoted_message_id"):
+                audio_diag["path"] = "quoted_voicenote"
                 try:
                     q_audio = await download_audio({
                         "message_id": parsed["quoted_message_id"],
                         "audio_url":  None,
                     })
+                    audio_diag["download_size"] = len(q_audio) if q_audio else 0
                     if q_audio:
                         q_text = await transcribe_audio(q_audio)
+                        audio_diag["transcript_len"] = len(q_text or "")
+                        audio_diag["transcript_preview"] = (q_text or "")[:200]
                         if q_text:
-                            # Append the transcript after the original
-                            # reply text. The @mention stays in place,
-                            # so _has_explicit_bot_mention still finds it.
                             prefix = (body or "").strip()
                             body = f"{prefix} {q_text}".strip() if prefix else q_text
                             logger.info(
@@ -14300,7 +14313,19 @@ async def _process_whatsapp_message(payload: dict):
                                 f"len={len(q_text)}: {q_text[:120]!r}"
                             )
                 except Exception as e:
+                    audio_diag["error"] = f"{type(e).__name__}: {str(e)[:200]}"
                     logger.warning(f"quoted voicenote transcribe failed: {e}")
+            # Persist the diagnosis for a debug endpoint to query.
+            try:
+                await db.whatsapp_audio_diag.insert_one({
+                    **audio_diag,
+                    "group_id":    group_id,
+                    "sender":      sender,
+                    "message_id":  parsed.get("message_id"),
+                    "received_at": datetime.now(timezone.utc),
+                })
+            except Exception:
+                pass
 
             # Store message (always — history is not subject to bot_enabled)
             await db.whatsapp_messages.insert_one({
@@ -14613,6 +14638,27 @@ async def whatsapp_webhook(request: Request):
     if payload:
         asyncio.create_task(_process_whatsapp_message(payload))
     return {"status": "ok"}
+
+
+@api_router.get("/whatsapp/debug/audio-diag")
+async def whatsapp_debug_audio_diag(
+    current_user=Depends(get_current_user), limit: int = 10
+):
+    """Recent voicenote download/transcription outcomes."""
+    role = (current_user.get("role") or "").lower()
+    if role not in ("admin", "owner"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    try:
+        rows = await db.whatsapp_audio_diag.find().sort(
+            "received_at", -1
+        ).limit(min(limit, 50)).to_list(min(limit, 50))
+        for r in rows:
+            r.pop("_id", None)
+            if isinstance(r.get("received_at"), datetime):
+                r["received_at"] = r["received_at"].isoformat()
+        return {"count": len(rows), "recent": rows}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @api_router.get("/whatsapp/debug/bot-identifiers")
