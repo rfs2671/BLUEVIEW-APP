@@ -10977,6 +10977,84 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
     }
 
 
+def _decrypt_whatsapp_media(
+    encrypted: bytes,
+    media_key_b64: str,
+    media_type: str = "audio",
+) -> Optional[bytes]:
+    """Decrypt a WhatsApp .enc media blob using its mediaKey.
+
+    WhatsApp media is AES-256-CBC encrypted with HKDF-SHA256 derived
+    keys. Reference: WhatsApp / Signal protocol media spec, implemented
+    the same way Baileys / whatsmeow / wa-automate do.
+
+    Pipeline:
+      1. HKDF-SHA256(mediaKey, salt=zero32, info=<type-specific>) → 112 bytes
+      2. iv = keys[0:16], cipherKey = keys[16:48]
+      3. ciphertext = encrypted[:-10]  (strip 10-byte MAC tag)
+      4. AES-256-CBC decrypt, PKCS7 unpad → decoded media bytes
+    """
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        from cryptography.hazmat.primitives import hashes
+    except Exception as e:
+        logger.error(f"cryptography import failed: {e}")
+        return None
+
+    info_map = {
+        "image":    b"WhatsApp Image Keys",
+        "video":    b"WhatsApp Video Keys",
+        "audio":    b"WhatsApp Audio Keys",
+        "document": b"WhatsApp Document Keys",
+    }
+    info = info_map.get(media_type, b"WhatsApp Audio Keys")
+
+    try:
+        key = base64.b64decode(media_key_b64)
+    except Exception as e:
+        logger.warning(f"mediaKey b64 decode failed: {e}")
+        return None
+    if len(key) != 32:
+        logger.warning(
+            f"mediaKey unexpected length {len(key)} (expected 32 bytes)"
+        )
+        return None
+
+    try:
+        keys = HKDF(
+            algorithm=hashes.SHA256(),
+            length=112,
+            salt=b"\x00" * 32,
+            info=info,
+        ).derive(key)
+    except Exception as e:
+        logger.warning(f"HKDF derive failed: {e}")
+        return None
+
+    iv = keys[0:16]
+    cipher_key = keys[16:48]
+
+    if len(encrypted) < 11:
+        return None
+    ciphertext = encrypted[:-10]  # last 10 bytes are MAC; we don't verify here
+
+    try:
+        decryptor = Cipher(algorithms.AES(cipher_key), modes.CBC(iv)).decryptor()
+        padded = decryptor.update(ciphertext) + decryptor.finalize()
+    except Exception as e:
+        logger.warning(f"AES decrypt failed: {e}")
+        return None
+
+    # PKCS7 unpad
+    if not padded:
+        return None
+    pad_len = padded[-1]
+    if 1 <= pad_len <= 16 and padded[-pad_len:] == bytes([pad_len]) * pad_len:
+        return padded[:-pad_len]
+    return padded
+
+
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
     """Download audio bytes for a voicenote.
 
@@ -11086,18 +11164,59 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
 
                         audio_bytes_found = _find_audio(j)
                         if audio_bytes_found:
-                            # Record a probe entry for the success case too,
-                            # including first-bytes hex so we can see if we
-                            # grabbed real audio (OGG "OggS" / ID3 / etc.)
-                            # or encrypted noise we'd need to decrypt.
                             magic = audio_bytes_found[:16].hex()
+                            # If it's NOT OGG/Opus/mp3/wav — it's encrypted.
+                            # Walk the response for mediaKey and decrypt.
+                            known_magics = (
+                                b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3",
+                                b"\xff\xf2", b"RIFF",
+                            )
+                            is_decoded = any(
+                                audio_bytes_found.startswith(m) for m in known_magics
+                            )
+                            if not is_decoded:
+                                def _find_mediakey(node: Any, depth: int = 0) -> Optional[str]:
+                                    if depth > 10 or node is None:
+                                        return None
+                                    if isinstance(node, dict):
+                                        # Explicit key first.
+                                        v = node.get("mediaKey")
+                                        if isinstance(v, str) and len(v) >= 40:
+                                            return v
+                                        for key, val in node.items():
+                                            if key == "mediaKey" and isinstance(val, str):
+                                                return val
+                                            r = _find_mediakey(val, depth + 1)
+                                            if r:
+                                                return r
+                                    elif isinstance(node, list):
+                                        for item in node:
+                                            r = _find_mediakey(item, depth + 1)
+                                            if r:
+                                                return r
+                                    return None
+
+                                media_key_b64 = _find_mediakey(j)
+                                if media_key_b64:
+                                    decrypted = _decrypt_whatsapp_media(
+                                        audio_bytes_found, media_key_b64, "audio"
+                                    )
+                                    if decrypted:
+                                        logger.info(
+                                            f"audio download: decrypted "
+                                            f"{len(audio_bytes_found)}→{len(decrypted)}B, "
+                                            f"magic_after={decrypted[:8].hex()}"
+                                        )
+                                        audio_bytes_found = decrypted
+                                        magic = audio_bytes_found[:16].hex()
                             probe_trace.append({
-                                "path":      path + " [SUCCESS]",
-                                "size":      len(audio_bytes_found),
-                                "first16":   magic,
-                                "ascii8":    audio_bytes_found[:8].decode(
+                                "path":          path + " [SUCCESS]",
+                                "size":          len(audio_bytes_found),
+                                "first16":       magic,
+                                "ascii8":        audio_bytes_found[:8].decode(
                                     "ascii", errors="replace"
                                 ),
+                                "decrypted":     is_decoded or magic != magic,
                             })
                             try:
                                 await db.whatsapp_audio_probe.insert_one({
