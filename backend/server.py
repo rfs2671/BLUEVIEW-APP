@@ -14262,17 +14262,42 @@ async def _process_whatsapp_message(payload: dict):
             bot_enabled = bot_config.get("bot_enabled", True)
 
             # Transcribe own-audio if present (direct voicenote by sender).
-            # Preserve the ORIGINAL body text for addressing detection —
-            # mention tokens like '@153906327875707' live there and must
-            # survive any transcript splicing below.
             body = parsed["body"]
-            original_body = body
             if parsed["has_audio"]:
-                audio_bytes = await download_audio(parsed)
-                if audio_bytes:
-                    transcript = await transcribe_audio(audio_bytes)
-                    if transcript:
-                        body = transcript
+                direct_audio_diag = {
+                    "path":               "direct_voicenote",
+                    "quoted_is_audio":    False,
+                    "quoted_message_id":  "",
+                    "quoted_type":        "",
+                    "has_audio":          True,
+                    "audio_url_present":  bool(parsed.get("audio_url")),
+                    "audio_url_sample":   (parsed.get("audio_url") or "")[:200],
+                    "download_size":      0,
+                    "transcript_len":     0,
+                    "transcript_preview": "",
+                    "error":              "",
+                }
+                try:
+                    audio_bytes = await download_audio(parsed)
+                    direct_audio_diag["download_size"] = len(audio_bytes) if audio_bytes else 0
+                    if audio_bytes:
+                        transcript = await transcribe_audio(audio_bytes)
+                        direct_audio_diag["transcript_len"] = len(transcript or "")
+                        direct_audio_diag["transcript_preview"] = (transcript or "")[:200]
+                        if transcript:
+                            body = transcript
+                except Exception as e:
+                    direct_audio_diag["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+                try:
+                    await db.whatsapp_audio_diag.insert_one({
+                        **direct_audio_diag,
+                        "group_id":    group_id,
+                        "sender":      sender,
+                        "message_id":  parsed.get("message_id"),
+                        "received_at": datetime.now(timezone.utc),
+                    })
+                except Exception:
+                    pass
 
             # Quoted-voicenote path: when a user replies to a voicenote
             # with an @Levelog text, the text carries the addressing but
