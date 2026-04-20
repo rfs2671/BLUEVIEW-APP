@@ -11055,6 +11055,13 @@ def _decrypt_whatsapp_media(
     return padded
 
 
+# Shared dict caller can set on parsed_msg — download_audio fills it with
+# decrypt-attempt diagnostics so the processor can persist it into the
+# audio_diag row. Keys: mediakey_found(bool), mediakey_len(int),
+# decrypt_attempted(bool), decrypt_produced_ogg(bool), decrypt_error(str).
+_AUDIO_DIAG_KEY = "__audio_diag__"
+
+
 async def download_audio(parsed_msg: dict) -> Optional[bytes]:
     """Download audio bytes for a voicenote.
 
@@ -11163,10 +11170,14 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                             return None
 
                         audio_bytes_found = _find_audio(j)
+                        # Populate caller-visible diag.
+                        diag_slot = parsed_msg.setdefault(_AUDIO_DIAG_KEY, {})
+                        diag_slot["raw_bytes_size"] = (
+                            len(audio_bytes_found) if audio_bytes_found else 0
+                        )
                         if audio_bytes_found:
+                            diag_slot["raw_first16"] = audio_bytes_found[:16].hex()
                             magic = audio_bytes_found[:16].hex()
-                            # If it's NOT OGG/Opus/mp3/wav — it's encrypted.
-                            # Walk the response for mediaKey and decrypt.
                             known_magics = (
                                 b"OggS", b"ID3", b"\xff\xfb", b"\xff\xf3",
                                 b"\xff\xf2", b"RIFF",
@@ -11174,6 +11185,7 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                             is_decoded = any(
                                 audio_bytes_found.startswith(m) for m in known_magics
                             )
+                            diag_slot["already_decoded"] = is_decoded
                             if not is_decoded:
                                 def _find_mediakey(node: Any, depth: int = 0) -> Optional[str]:
                                     if depth > 10 or node is None:
@@ -11197,15 +11209,28 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
                                     return None
 
                                 media_key_b64 = _find_mediakey(j)
+                                diag_slot["mediakey_found"] = bool(media_key_b64)
+                                diag_slot["mediakey_len"] = (
+                                    len(media_key_b64) if media_key_b64 else 0
+                                )
                                 if media_key_b64:
-                                    decrypted = _decrypt_whatsapp_media(
-                                        audio_bytes_found, media_key_b64, "audio"
-                                    )
+                                    diag_slot["decrypt_attempted"] = True
+                                    try:
+                                        decrypted = _decrypt_whatsapp_media(
+                                            audio_bytes_found, media_key_b64, "audio"
+                                        )
+                                    except Exception as _de:
+                                        decrypted = None
+                                        diag_slot["decrypt_error"] = (
+                                            f"{type(_de).__name__}: {str(_de)[:160]}"
+                                        )
+                                    diag_slot["decrypt_returned_bytes"] = bool(decrypted)
                                     if decrypted:
-                                        logger.info(
-                                            f"audio download: decrypted "
-                                            f"{len(audio_bytes_found)}→{len(decrypted)}B, "
-                                            f"magic_after={decrypted[:8].hex()}"
+                                        diag_slot["decrypt_first16"] = (
+                                            decrypted[:16].hex()
+                                        )
+                                        diag_slot["decrypt_produced_ogg"] = (
+                                            decrypted.startswith(b"OggS")
                                         )
                                         audio_bytes_found = decrypted
                                         magic = audio_bytes_found[:16].hex()
@@ -14536,6 +14561,10 @@ async def _process_whatsapp_message(payload: dict):
                 }
                 try:
                     audio_bytes = await download_audio(parsed)
+                    # Pull any decrypt diag that download_audio recorded.
+                    dl_diag = parsed.pop(_AUDIO_DIAG_KEY, {}) if isinstance(parsed, dict) else {}
+                    for k, v in dl_diag.items():
+                        direct_audio_diag[f"dl_{k}"] = v
                     direct_audio_diag["download_size"] = len(audio_bytes) if audio_bytes else 0
                     if audio_bytes:
                         direct_audio_diag["first16_hex"] = audio_bytes[:16].hex()
