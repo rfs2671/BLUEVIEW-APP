@@ -10813,6 +10813,17 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
             else:
                 msg_id = str(inner_id or "")
 
+        # Serialized id — WaAPI's download-media action rejects the short
+        # hash and requires the full 'false_<chatId>_<hash>_<sender>@lid'
+        # form. Live in id._serialized on both outer msg and inner._data.
+        msg_id_serialized = ""
+        for src in (msg.get("id"), inner.get("id")):
+            if isinstance(src, dict):
+                v = src.get("_serialized")
+                if isinstance(v, str) and v:
+                    msg_id_serialized = v
+                    break
+
         # Timestamp — WaAPI uses 't' (epoch seconds) inside _data, 'timestamp' elsewhere
         ts = msg.get("timestamp") or inner.get("t") or inner.get("timestamp") or 0
         try:
@@ -10929,6 +10940,7 @@ def parse_inbound_message(payload: dict, vendor: str = "waapi") -> dict:
 
         return {
             "message_id": msg_id,
+            "message_id_serialized": msg_id_serialized,
             "from": from_field,
             "sender": author,
             "to": to_field,
@@ -10981,26 +10993,26 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
       3. Last resort, try the raw URL with no auth in case WaAPI
          already re-hosted it on an open CDN.
     """
-    message_id = parsed_msg.get("message_id")
+    # WaAPI's download-media action wants the SERIALIZED messageId
+    # (bool_chatId_hash_sender@lid), not the short hash. The serialized
+    # form is what the webhook delivers under id._serialized. Caller
+    # may pass either — prefer serialized, fall back to short.
+    message_id_ser = parsed_msg.get("message_id_serialized") or ""
+    message_id = message_id_ser or parsed_msg.get("message_id") or ""
     audio_url = parsed_msg.get("audio_url")
     probe_trace: List[Dict[str, Any]] = []
 
-    # Attempt 2 first when we have a usable WaAPI instance — it's the
-    # canonical path and doesn't depend on the (unreliable) direct URL.
     if WAAPI_INSTANCE_ID and WAAPI_TOKEN and message_id:
         # WaAPI v1 exposes multiple equivalent endpoints for media download;
         # try the most common names in order. We stop on the first 2xx.
         # Each failure writes a trace entry so the debug endpoint can show
         # which names actually exist on this account.
+        # Only client/action/download-media exists on WaAPI v1 — the
+        # others are 404s. Kept in the list but first in priority so
+        # the common path is fast; we fall through on error for
+        # diagnostic coverage only.
         paths = [
             "client/action/download-media",
-            "client/action/get-media",
-            "client/action/get-media-by-message-id",
-            "client/action/media-download",
-            "client/action/getMediaUrl",
-            "client/action/download",
-            "message/download-media",
-            "messages/download-media",
         ]
         for path in paths:
             try:
