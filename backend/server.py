@@ -11086,6 +11086,28 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
 
                         audio_bytes_found = _find_audio(j)
                         if audio_bytes_found:
+                            # Record a probe entry for the success case too,
+                            # including first-bytes hex so we can see if we
+                            # grabbed real audio (OGG "OggS" / ID3 / etc.)
+                            # or encrypted noise we'd need to decrypt.
+                            magic = audio_bytes_found[:16].hex()
+                            probe_trace.append({
+                                "path":      path + " [SUCCESS]",
+                                "size":      len(audio_bytes_found),
+                                "first16":   magic,
+                                "ascii8":    audio_bytes_found[:8].decode(
+                                    "ascii", errors="replace"
+                                ),
+                            })
+                            try:
+                                await db.whatsapp_audio_probe.insert_one({
+                                    "message_id":  message_id,
+                                    "trace":       probe_trace,
+                                    "received_at": datetime.now(timezone.utc),
+                                    "outcome":     "success",
+                                })
+                            except Exception:
+                                pass
                             return audio_bytes_found
 
                         # Fall back to URL discovery.
