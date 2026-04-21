@@ -92,17 +92,19 @@ export default function PublicCheckInScreen() {
       toast.warning('Required', 'Please enter your company name');
       return;
     }
-    if (!workerTrade.trim()) {
-      toast.warning('Required', 'Please select your trade');
+    if (!workerTrade.trim() || !workerCompany.trim()) {
+      toast.warning('Required', 'Please select your trade & company');
       return;
     }
-    // Defense-in-depth: also enforced server-side.
-    const allowed = projectInfo?.allowed_trades || [];
-    if (
-      allowed.length > 0 &&
-      !allowed.some((t) => t.toLowerCase() === workerTrade.trim().toLowerCase())
-    ) {
-      toast.warning('Invalid Trade', 'Please pick a trade from the dropdown');
+    // Defense-in-depth: server re-validates against the project roster.
+    const assignments = projectInfo?.trade_assignments || [];
+    const match = assignments.some(
+      (a) =>
+        (a.trade || '').toLowerCase() === workerTrade.trim().toLowerCase() &&
+        (a.company || '').toLowerCase() === workerCompany.trim().toLowerCase()
+    );
+    if (!match) {
+      toast.warning('Invalid Selection', 'Please pick from the dropdown');
       return;
     }
 
@@ -257,47 +259,39 @@ export default function PublicCheckInScreen() {
                   />
                 </View>
 
-                {/* Company Input */}
-                <View style={s.inputGroup}>
-                  <View style={s.inputHeader}>
-                    <Briefcase size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={s.inputLabel}>COMPANY *</Text>
-                  </View>
-                  <TextInput
-                    style={s.input}
-                    value={workerCompany}
-                    onChangeText={setWorkerCompany}
-                    placeholder="ABC Construction"
-                    placeholderTextColor={colors.text.subtle}
-                    autoCapitalize="words"
-                  />
-                </View>
-
-                {/* Trade Dropdown (strict list set by project admin) */}
+                {/* Combined Trade + Company dropdown — strict roster
+                    set by the project admin. Both fields get filled
+                    from the one pick. */}
                 <View style={s.inputGroup}>
                   <View style={s.inputHeader}>
                     <HardHat size={16} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={s.inputLabel}>TRADE *</Text>
+                    <Text style={s.inputLabel}>TRADE &amp; COMPANY *</Text>
                   </View>
                   <Pressable
                     style={s.input}
                     onPress={() => setShowTradePicker(true)}
                   >
                     <View style={s.dropdownRow}>
-                      <Text
-                        style={[
-                          s.dropdownText,
-                          !workerTrade && { color: colors.text.subtle },
-                        ]}
-                      >
-                        {workerTrade || 'Select your trade'}
-                      </Text>
+                      <View style={{ flex: 1 }}>
+                        {workerTrade && workerCompany ? (
+                          <>
+                            <Text style={s.dropdownText}>{workerTrade}</Text>
+                            <Text style={s.dropdownSub}>{workerCompany}</Text>
+                          </>
+                        ) : (
+                          <Text
+                            style={[s.dropdownText, { color: colors.text.subtle }]}
+                          >
+                            Select your trade & company
+                          </Text>
+                        )}
+                      </View>
                       <ChevronDown size={18} strokeWidth={1.5} color={colors.text.muted} />
                     </View>
                   </Pressable>
                 </View>
 
-                {/* Trade picker modal */}
+                {/* Trade + Company picker modal */}
                 <Modal
                   visible={showTradePicker}
                   transparent
@@ -309,41 +303,58 @@ export default function PublicCheckInScreen() {
                     onPress={() => setShowTradePicker(false)}
                   >
                     <Pressable style={s.modalCard} onPress={() => {}}>
-                      <Text style={s.modalTitle}>Select Your Trade</Text>
+                      <Text style={s.modalTitle}>Select Your Trade & Company</Text>
                       <ScrollView
                         style={s.modalScroll}
                         showsVerticalScrollIndicator={false}
                       >
-                        {(projectInfo?.allowed_trades || []).map((t) => {
-                          const selected =
-                            workerTrade.toLowerCase() === t.toLowerCase();
-                          return (
-                            <Pressable
-                              key={t}
-                              style={({ pressed }) => [
-                                s.tradeOption,
-                                selected && s.tradeOptionSelected,
-                                pressed && { opacity: 0.7 },
-                              ]}
-                              onPress={() => {
-                                setWorkerTrade(t);
-                                setShowTradePicker(false);
-                              }}
-                            >
-                              <Text
-                                style={[
-                                  s.tradeOptionText,
-                                  selected && s.tradeOptionTextSelected,
+                        {(projectInfo?.trade_assignments || []).length === 0 ? (
+                          <View style={s.emptyAssignments}>
+                            <Text style={s.emptyAssignmentsText}>
+                              This project has no subcontractors configured yet.
+                              Please ask your project admin to set up the
+                              check-in list.
+                            </Text>
+                          </View>
+                        ) : (
+                          (projectInfo?.trade_assignments || []).map((a, idx) => {
+                            const selected =
+                              workerTrade.toLowerCase() === (a.trade || '').toLowerCase() &&
+                              workerCompany.toLowerCase() === (a.company || '').toLowerCase();
+                            return (
+                              <Pressable
+                                key={`${a.trade}|${a.company}|${idx}`}
+                                style={({ pressed }) => [
+                                  s.tradeOption,
+                                  selected && s.tradeOptionSelected,
+                                  pressed && { opacity: 0.7 },
                                 ]}
+                                onPress={() => {
+                                  setWorkerTrade(a.trade);
+                                  setWorkerCompany(a.company);
+                                  setShowTradePicker(false);
+                                }}
                               >
-                                {t}
-                              </Text>
-                              {selected && (
-                                <Check size={18} strokeWidth={2} color="#4ade80" />
-                              )}
-                            </Pressable>
-                          );
-                        })}
+                                <View style={{ flex: 1 }}>
+                                  <Text
+                                    style={[
+                                      s.tradeOptionText,
+                                      selected && s.tradeOptionTextSelected,
+                                    ]}
+                                  >
+                                    {a.trade}
+                                  </Text>
+                                  <Text style={s.tradeOptionSub}>
+                                    {a.company}
+                                  </Text>
+                                </View>
+                                {selected && (
+                                  <Check size={18} strokeWidth={2} color="#4ade80" />
+                                )}
+                              </Pressable>
+                            );
+                          })
+                        )}
                       </ScrollView>
                     </Pressable>
                   </Pressable>
@@ -500,6 +511,26 @@ function buildStyles(colors, isDark) {
     fontSize: 16,
     color: colors.text.primary,
     flex: 1,
+  },
+  dropdownSub: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: 2,
+  },
+  emptyAssignments: {
+    padding: spacing.lg,
+    alignItems: 'center',
+  },
+  emptyAssignmentsText: {
+    fontSize: 14,
+    color: colors.text.muted,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  tradeOptionSub: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: 2,
   },
   modalOverlay: {
     flex: 1,

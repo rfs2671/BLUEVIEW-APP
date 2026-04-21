@@ -18,6 +18,7 @@ import {
   Save,
   RotateCw,
   ShieldAlert,
+  Briefcase,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -30,14 +31,15 @@ import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 
 /**
- * Per-project trade dropdown editor.
+ * Per-project subcontractor roster editor.
  *
- * Workers checking in via NFC pick a trade from this list — no custom
- * input allowed. If the list is empty on the backend, the check-in page
- * falls back to a default set of common construction trades.
+ * Each entry pairs a trade (HVAC, Electrical, etc.) with the specific
+ * company doing that trade on this project. Workers pick one combined
+ * entry from the NFC check-in dropdown — both their `trade` and
+ * `company` fields get populated from it. No free-text.
  */
 
-const SUGGESTED_TRADES = [
+const TRADE_SUGGESTIONS = [
   'General Labor',
   'Carpenter',
   'Electrician',
@@ -71,8 +73,10 @@ export default function ProjectTradesScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [project, setProject] = useState(null);
-  const [trades, setTrades] = useState([]);
+  const [assignments, setAssignments] = useState([]); // [{trade, company}]
   const [newTrade, setNewTrade] = useState('');
+  const [newCompany, setNewCompany] = useState('');
+  const [showSuggest, setShowSuggest] = useState(false);
   const [dirty, setDirty] = useState(false);
 
   const isAdmin = user?.role === 'admin';
@@ -94,7 +98,19 @@ export default function ProjectTradesScreen() {
     try {
       const data = await projectsAPI.getById(projectId);
       setProject(data);
-      setTrades(Array.isArray(data.allowed_trades) ? data.allowed_trades : []);
+      const rows = Array.isArray(data.trade_assignments)
+        ? data.trade_assignments
+        : [];
+      setAssignments(
+        rows
+          .filter(
+            (r) => r && typeof r === 'object' && r.trade && r.company
+          )
+          .map((r) => ({
+            trade: String(r.trade).trim(),
+            company: String(r.company).trim(),
+          }))
+      );
       setDirty(false);
     } catch (err) {
       console.error('Failed to fetch project:', err);
@@ -104,49 +120,52 @@ export default function ProjectTradesScreen() {
     }
   };
 
-  const addTrade = (label) => {
-    const trimmed = String(label || '').trim();
-    if (!trimmed) return;
-    if (trades.some((t) => t.toLowerCase() === trimmed.toLowerCase())) {
-      toast.info('Already added', `${trimmed} is already in the list`);
+  const addAssignment = () => {
+    const t = newTrade.trim();
+    const c = newCompany.trim();
+    if (!t || !c) {
+      toast.warning('Required', 'Enter both trade and company');
       return;
     }
-    setTrades([...trades, trimmed]);
+    const dup = assignments.some(
+      (a) =>
+        a.trade.toLowerCase() === t.toLowerCase() &&
+        a.company.toLowerCase() === c.toLowerCase()
+    );
+    if (dup) {
+      toast.info('Already added', `${t} — ${c} is already in the list`);
+      return;
+    }
+    setAssignments([...assignments, { trade: t, company: c }]);
     setDirty(true);
     setNewTrade('');
+    setNewCompany('');
   };
 
-  const removeTrade = (label) => {
-    setTrades(trades.filter((t) => t !== label));
+  const removeAssignment = (idx) => {
+    setAssignments(assignments.filter((_, i) => i !== idx));
     setDirty(true);
   };
 
-  const loadSuggestions = () => {
-    // Replace the current list with the default set. Admin can still
-    // tweak after.
-    const existing = new Set(trades.map((t) => t.toLowerCase()));
-    const additions = SUGGESTED_TRADES.filter(
-      (t) => !existing.has(t.toLowerCase())
-    );
-    if (additions.length === 0) {
-      toast.info('Already added', 'All suggested trades are already in the list');
-      return;
-    }
-    setTrades([...trades, ...additions]);
-    setDirty(true);
+  const pickSuggestion = (trade) => {
+    setNewTrade(trade);
+    setShowSuggest(false);
   };
 
   const save = async () => {
     setSaving(true);
     try {
-      const cleaned = trades
-        .map((t) => String(t).trim())
-        .filter(Boolean);
-      await projectsAPI.update(projectId, { allowed_trades: cleaned });
-      toast.success('Saved', 'Trade list updated');
+      const cleaned = assignments
+        .map((a) => ({
+          trade: String(a.trade || '').trim(),
+          company: String(a.company || '').trim(),
+        }))
+        .filter((a) => a.trade && a.company);
+      await projectsAPI.update(projectId, { trade_assignments: cleaned });
+      toast.success('Saved', 'Subcontractor roster updated');
       setDirty(false);
     } catch (err) {
-      console.error('Failed to save trades:', err);
+      console.error('Failed to save:', err);
       toast.error('Error', err.response?.data?.detail || 'Could not save');
     } finally {
       setSaving(false);
@@ -181,7 +200,7 @@ export default function ProjectTradesScreen() {
             <ShieldAlert size={56} strokeWidth={1} color={colors.status.error} />
             <Text style={s.accessDeniedTitle}>Admin Access Required</Text>
             <Text style={s.accessDeniedDesc}>
-              Only administrators can edit a project's trade dropdown.
+              Only administrators can edit a project's subcontractor roster.
             </Text>
           </GlassCard>
         </SafeAreaView>
@@ -220,71 +239,119 @@ export default function ProjectTradesScreen() {
           <GlassCard style={s.infoCard}>
             <HardHat size={24} strokeWidth={1.5} color={colors.text.primary} />
             <View style={s.infoTextWrap}>
-              <Text style={s.infoTitle}>What is this?</Text>
+              <Text style={s.infoTitle}>Subcontractor roster</Text>
               <Text style={s.infoDesc}>
-                Workers who tap the NFC check-in tag for this project must
-                pick their trade from this dropdown. Custom trades are not
-                allowed. Leave the list empty to fall back to a default set
-                of common construction trades.
+                Pair each trade with the specific company doing that trade on
+                this project (e.g. HVAC → Air Star, Framing → ODD). Workers
+                tapping the NFC tag will pick one entry from the dropdown;
+                both their trade and company auto-fill. Custom entries are
+                rejected.
               </Text>
             </View>
           </GlassCard>
 
           <GlassCard style={s.card}>
-            <Text style={s.sectionLabel}>ADD A TRADE</Text>
-            <View style={s.addRow}>
-              <TextInput
-                style={s.input}
-                value={newTrade}
-                onChangeText={setNewTrade}
-                placeholder="e.g. Crane Operator"
-                placeholderTextColor={colors.text.subtle}
-                onSubmitEditing={() => addTrade(newTrade)}
-                returnKeyType="done"
-                autoCapitalize="words"
-              />
-              <Pressable
-                style={({ pressed }) => [
-                  s.addBtn,
-                  pressed && { opacity: 0.8 },
-                ]}
-                onPress={() => addTrade(newTrade)}
-              >
-                <Plus size={18} strokeWidth={2} color="#fff" />
-                <Text style={s.addBtnText}>Add</Text>
-              </Pressable>
+            <Text style={s.sectionLabel}>ADD AN ASSIGNMENT</Text>
+
+            <View style={s.addGroup}>
+              <View style={s.addField}>
+                <View style={s.addLabelRow}>
+                  <HardHat size={14} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={s.addLabel}>TRADE</Text>
+                </View>
+                <TextInput
+                  style={s.input}
+                  value={newTrade}
+                  onChangeText={setNewTrade}
+                  placeholder="e.g. HVAC / Mechanical"
+                  placeholderTextColor={colors.text.subtle}
+                  onFocus={() => setShowSuggest(true)}
+                  autoCapitalize="words"
+                />
+                {showSuggest && (
+                  <View style={s.suggestBox}>
+                    <ScrollView
+                      style={{ maxHeight: 180 }}
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      {TRADE_SUGGESTIONS.filter(
+                        (t) =>
+                          !newTrade ||
+                          t.toLowerCase().includes(newTrade.toLowerCase())
+                      ).map((t) => (
+                        <Pressable
+                          key={t}
+                          style={({ pressed }) => [
+                            s.suggestItem,
+                            pressed && { opacity: 0.7 },
+                          ]}
+                          onPress={() => pickSuggestion(t)}
+                        >
+                          <Text style={s.suggestItemText}>{t}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
+
+              <View style={s.addField}>
+                <View style={s.addLabelRow}>
+                  <Briefcase size={14} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={s.addLabel}>COMPANY</Text>
+                </View>
+                <TextInput
+                  style={s.input}
+                  value={newCompany}
+                  onChangeText={setNewCompany}
+                  placeholder="e.g. Air Star"
+                  placeholderTextColor={colors.text.subtle}
+                  onSubmitEditing={addAssignment}
+                  returnKeyType="done"
+                  autoCapitalize="words"
+                />
+              </View>
             </View>
 
-            <Pressable onPress={loadSuggestions} style={s.suggestLink}>
-              <RotateCw size={14} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.suggestLinkText}>Load suggested trades</Text>
+            <Pressable
+              style={({ pressed }) => [
+                s.addBtn,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={addAssignment}
+            >
+              <Plus size={18} strokeWidth={2} color="#fff" />
+              <Text style={s.addBtnText}>Add Assignment</Text>
             </Pressable>
           </GlassCard>
 
           <GlassCard style={s.card}>
             <Text style={s.sectionLabel}>
-              CURRENT LIST ({trades.length})
+              ROSTER ({assignments.length})
             </Text>
 
-            {trades.length === 0 ? (
+            {assignments.length === 0 ? (
               <View style={s.emptyState}>
-                <Text style={s.emptyText}>No trades configured yet.</Text>
+                <Text style={s.emptyText}>No subcontractors added yet.</Text>
                 <Text style={s.emptySubtext}>
-                  The check-in page will show a default list of common
-                  construction trades until you add one here.
+                  Workers will not be able to check in until at least one
+                  trade/company pair is configured.
                 </Text>
               </View>
             ) : (
-              <View style={s.chipList}>
-                {trades.map((t) => (
-                  <View key={t} style={s.chip}>
-                    <Text style={s.chipText}>{t}</Text>
+              <View style={s.rosterList}>
+                {assignments.map((a, idx) => (
+                  <View key={`${a.trade}|${a.company}|${idx}`} style={s.rosterRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.rosterTrade}>{a.trade}</Text>
+                      <Text style={s.rosterCompany}>{a.company}</Text>
+                    </View>
                     <Pressable
-                      onPress={() => removeTrade(t)}
-                      style={s.chipRemove}
-                      hitSlop={8}
+                      onPress={() => removeAssignment(idx)}
+                      style={s.rosterRemove}
+                      hitSlop={10}
                     >
-                      <X size={14} strokeWidth={2} color={colors.text.muted} />
+                      <X size={18} strokeWidth={2} color={colors.text.muted} />
                     </Pressable>
                   </View>
                 ))}
@@ -382,13 +449,24 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       marginBottom: spacing.md,
     },
-    addRow: {
+    addGroup: {
+      gap: spacing.md,
+      marginBottom: spacing.md,
+    },
+    addField: {
+      gap: spacing.xs,
+    },
+    addLabelRow: {
       flexDirection: 'row',
-      gap: spacing.sm,
       alignItems: 'center',
+      gap: spacing.xs,
+    },
+    addLabel: {
+      ...typography.label,
+      fontSize: 11,
+      color: colors.text.muted,
     },
     input: {
-      flex: 1,
       backgroundColor: 'rgba(255, 255, 255, 0.05)',
       borderRadius: borderRadius.lg,
       borderWidth: 1,
@@ -398,9 +476,28 @@ function buildStyles(colors, isDark) {
       color: colors.text.primary,
       fontSize: 15,
     },
+    suggestBox: {
+      marginTop: spacing.xs,
+      backgroundColor: isDark ? '#1a1f2e' : '#ffffff',
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      overflow: 'hidden',
+    },
+    suggestItem: {
+      paddingVertical: spacing.sm + 2,
+      paddingHorizontal: spacing.md,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border?.subtle || 'rgba(255,255,255,0.05)',
+    },
+    suggestItemText: {
+      fontSize: 14,
+      color: colors.text.primary,
+    },
     addBtn: {
       flexDirection: 'row',
       alignItems: 'center',
+      justifyContent: 'center',
       gap: spacing.xs,
       backgroundColor: '#3b82f6',
       paddingHorizontal: spacing.lg,
@@ -411,18 +508,6 @@ function buildStyles(colors, isDark) {
       color: '#fff',
       fontSize: 14,
       fontWeight: '600',
-    },
-    suggestLink: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.xs,
-      marginTop: spacing.md,
-      alignSelf: 'flex-start',
-    },
-    suggestLinkText: {
-      fontSize: 13,
-      color: colors.text.muted,
-      textDecorationLine: 'underline',
     },
     emptyState: {
       paddingVertical: spacing.lg,
@@ -439,29 +524,31 @@ function buildStyles(colors, isDark) {
       textAlign: 'center',
       maxWidth: 320,
     },
-    chipList: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
+    rosterList: {
       gap: spacing.sm,
     },
-    chip: {
+    rosterRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: spacing.xs,
-      backgroundColor: 'rgba(255, 255, 255, 0.06)',
+      gap: spacing.md,
+      backgroundColor: 'rgba(255,255,255,0.04)',
+      borderRadius: borderRadius.lg,
       borderWidth: 1,
       borderColor: colors.glass.border,
-      paddingLeft: spacing.md,
-      paddingRight: spacing.sm,
-      paddingVertical: spacing.xs + 2,
-      borderRadius: borderRadius.full,
+      padding: spacing.md,
     },
-    chipText: {
-      fontSize: 13,
+    rosterTrade: {
+      fontSize: 15,
+      fontWeight: '500',
       color: colors.text.primary,
     },
-    chipRemove: {
-      padding: 2,
+    rosterCompany: {
+      fontSize: 13,
+      color: colors.text.muted,
+      marginTop: 2,
+    },
+    rosterRemove: {
+      padding: spacing.xs,
     },
     saveBtn: {
       marginTop: spacing.md,

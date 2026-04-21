@@ -588,9 +588,13 @@ class UpdatePasswordRequest(BaseModel):
 
 # Project Models
 # Default construction trade list used by the NFC check-in dropdown
-# when a project hasn't customized its own allowed_trades. Admins can
-# override this per project via PUT /api/projects/{id} with
-# `allowed_trades: [...]`.
+# as a template when an admin opens the trade-assignments editor on a
+# brand-new project (the frontend 'Load suggested trades' shortcut
+# seeds pairs with this list + empty company field). Not used as a
+# runtime fallback — the check-in page shows only the admin-configured
+# {trade, company} pairs. Admins assign each trade to the specific
+# subcontractor working on that trade for that project, so workers
+# check in by picking their combined trade+company entry.
 DEFAULT_TRADES: List[str] = [
     "General Labor",
     "Carpenter",
@@ -613,6 +617,15 @@ DEFAULT_TRADES: List[str] = [
     "Surveyor",
     "Safety",
 ]
+
+
+class TradeAssignment(BaseModel):
+    """One subcontractor assignment on a project.
+    trade: the construction trade (e.g. 'HVAC / Mechanical')
+    company: the sub doing that trade on this project (e.g. 'Air Star')
+    """
+    trade: str
+    company: str
 
 
 class ProjectCreate(BaseModel):
@@ -647,11 +660,13 @@ class ProjectUpdate(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
-    # Allowed trade options for the NFC worker check-in dropdown.
-    # If unset/empty on the project doc, the check-in endpoint falls
-    # back to DEFAULT_TRADES. Admin-edited list is strict: workers
-    # cannot submit a trade that's not in this array.
-    allowed_trades: Optional[List[str]] = None
+    # Per-project subcontractor roster. Each entry pairs a trade with
+    # the specific company doing that trade on this project. Workers
+    # pick one combined entry from the dropdown at check-in time and
+    # both their `trade` and `company` fields get populated from it.
+    # Strict: the check-in endpoint rejects submissions whose
+    # (trade, company) pair isn't in this list.
+    trade_assignments: Optional[List[TradeAssignment]] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -686,9 +701,9 @@ class ProjectResponse(BaseModel):
     # are allowed to see. Empty list = site devices see nothing.
     # Admins/CPs always see the full folder regardless.
     site_device_subfolders: List[str] = []
-    # Allowed trade dropdown options for the NFC check-in page.
-    # If empty, the public /checkin/info endpoint returns DEFAULT_TRADES.
-    allowed_trades: List[str] = []
+    # Per-project subcontractor roster for the NFC check-in dropdown.
+    # Each item is {trade, company}. Workers pick one combined entry.
+    trade_assignments: List[Dict[str, str]] = []
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -3500,13 +3515,18 @@ async def get_checkin_info(project_id: str, tag_id: str):
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Worker check-in trade dropdown options. Admin edits this per
-        # project via PUT /api/projects/{id}. If empty, fall back to a
-        # sensible default so new projects work out of the box.
-        trades = project.get("allowed_trades") or []
-        trades = [str(t).strip() for t in trades if str(t).strip()]
-        if not trades:
-            trades = list(DEFAULT_TRADES)
+        # Per-project trade/company assignments. Admins set these via
+        # PUT /api/projects/{id} with trade_assignments: [{trade, company}].
+        # Sanitize + drop any rows missing either field.
+        raw_assignments = project.get("trade_assignments") or []
+        assignments: List[Dict[str, str]] = []
+        for row in raw_assignments:
+            if not isinstance(row, dict):
+                continue
+            t = str(row.get("trade") or "").strip()
+            c = str(row.get("company") or "").strip()
+            if t and c:
+                assignments.append({"trade": t, "company": c})
 
         return {
             "project_id": project_id,
@@ -3514,7 +3534,7 @@ async def get_checkin_info(project_id: str, tag_id: str):
             "location": tag.get("location_description", "Check-In Point"),
             "tag_id": tag_id,
             "company_name": project.get("company_name"),
-            "allowed_trades": trades,
+            "trade_assignments": assignments,
         }
     except HTTPException:
         raise
@@ -3940,26 +3960,52 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        # Strict trade validation — the check-in page presents a dropdown
-        # of project-specific (or default) trades. Workers can't submit a
-        # custom trade. Matching is case-insensitive + whitespace-tolerant
-        # so the UI text matches the DB value regardless of normalization.
-        allowed_trades = project.get("allowed_trades") or []
-        allowed_trades = [str(t).strip() for t in allowed_trades if str(t).strip()]
-        if not allowed_trades:
-            allowed_trades = list(DEFAULT_TRADES)
-        submitted_trade = str(checkin_data.trade or "").strip()
-        normalized_allowed = {t.strip().lower(): t for t in allowed_trades}
-        if submitted_trade.lower() not in normalized_allowed:
+        # Strict (trade, company) validation — the check-in page presents
+        # a dropdown of combined Trade — Company entries from the admin's
+        # per-project subcontractor roster. Workers can only submit a
+        # pair that the admin pre-configured. Matching is case/whitespace
+        # tolerant so the DB values get canonicalized to the admin's
+        # exact casing for consistent reporting.
+        raw_assignments = project.get("trade_assignments") or []
+        assignments = []
+        for row in raw_assignments:
+            if not isinstance(row, dict):
+                continue
+            t = str(row.get("trade") or "").strip()
+            c = str(row.get("company") or "").strip()
+            if t and c:
+                assignments.append({"trade": t, "company": c})
+
+        if not assignments:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Trade must be one of the project's configured trades. "
-                    "Please pick one from the dropdown."
+                    "This project has no subcontractors configured yet. "
+                    "Ask the project admin to set up the check-in trade list."
                 ),
             )
-        # Canonicalize to the exact casing the admin configured.
-        checkin_data.trade = normalized_allowed[submitted_trade.lower()]
+
+        submitted_trade = str(checkin_data.trade or "").strip()
+        submitted_company = str(checkin_data.company or "").strip()
+        match = next(
+            (
+                a for a in assignments
+                if a["trade"].lower() == submitted_trade.lower()
+                and a["company"].lower() == submitted_company.lower()
+            ),
+            None,
+        )
+        if not match:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Please pick your trade and company from the dropdown. "
+                    "Custom entries are not allowed."
+                ),
+            )
+        # Canonicalize to the admin's exact casing.
+        checkin_data.trade = match["trade"]
+        checkin_data.company = match["company"]
 
         admin_id = project.get("admin_id")
         company_id = project.get("company_id")
