@@ -10001,16 +10001,85 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
 
 
 async def run_dob_sync_for_project(project: dict) -> list:
-    """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual."""
+    """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
+
+    BIN auto-heal: if the project has no stored BIN (or a placeholder
+    like 2000000) and the first address-based pass returns ANY record
+    with a real BIN in its `bin` field, we backfill that BIN to the
+    project AND re-run the queries with the real BIN. This is the
+    auto-reverse-lookup path — lets us find complete records across
+    all four DOB datasets (some of which are BIN-only, no address
+    variant) when GeoSearch alone couldn't resolve the BIN.
+    """
     project_id = str(project["_id"])
     company_id = project.get("company_id", "")
-    nyc_bin = project.get("nyc_bin", "")
+    nyc_bin = (project.get("nyc_bin") or "").strip()
     project_address = project.get("address", "")
- 
+
     if not nyc_bin and not project_address:
         return []
- 
+
     raw_records = await _query_dob_apis(nyc_bin, project_address)
+
+    # --- BIN auto-heal ---
+    # Scan returned records for a real BIN. DOB's datasets expose the
+    # BIN on every record. If the project has no real BIN stored, pull
+    # the most-common real BIN from returned records and re-query with
+    # that so BIN-only endpoints (inspections, BIS legacy permits) also
+    # surface records.
+    should_heal = (not nyc_bin) or _is_placeholder_bin(nyc_bin)
+    if should_heal and raw_records:
+        bin_votes: Dict[str, int] = {}
+        for rec in raw_records:
+            # DOB datasets use various field names for BIN: bin, bin__
+            candidate = str(
+                rec.get("bin") or rec.get("bin__") or ""
+            ).strip()
+            if candidate and not _is_placeholder_bin(candidate):
+                bin_votes[candidate] = bin_votes.get(candidate, 0) + 1
+
+        if bin_votes:
+            healed_bin = max(bin_votes, key=bin_votes.get)
+            logger.info(
+                f"DOB BIN auto-heal for project {project_id}: "
+                f"stored={nyc_bin!r} → healed={healed_bin} "
+                f"(votes={bin_votes})"
+            )
+            # Backfill on the project document so future syncs skip
+            # the address fallback entirely and hit BIN-only endpoints.
+            try:
+                await db.projects.update_one(
+                    {"_id": to_query_id(project_id)},
+                    {"$set": {
+                        "nyc_bin": healed_bin,
+                        "track_dob_status": True,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+            except Exception as e:
+                logger.warning(f"BIN backfill write failed: {e}")
+            # Re-query with the real BIN and merge (dedup by record id).
+            nyc_bin = healed_bin
+            heal_records = await _query_dob_apis(healed_bin, project_address)
+            if heal_records:
+                seen_keys = set()
+                merged = []
+                for rec in raw_records + heal_records:
+                    key = (
+                        rec.get("_record_type", ""),
+                        rec.get("_id_field", ""),
+                        str(rec.get(rec.get("_id_field", "unique_key"), "")),
+                    )
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    merged.append(rec)
+                raw_records = merged
+                logger.info(
+                    f"DOB BIN auto-heal merged {len(heal_records)} "
+                    f"BIN-query records (total after dedup: {len(raw_records)})"
+                )
+
     if not raw_records:
         return []
  
