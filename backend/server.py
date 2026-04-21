@@ -6377,10 +6377,12 @@ async def list_dropbox_subfolders(
         return {"subfolders": [], "selected": [], "folder_path": ""}
 
     try:
+        # Dropbox wants "" for root, not "/" — translate our stored sentinel.
+        api_path = _dropbox_api_path(folder_path)
         resp = await dropbox_api_call(
             company_id, "post",
             "https://api.dropboxapi.com/2/files/list_folder",
-            json={"path": folder_path, "recursive": False},
+            json={"path": api_path, "recursive": False},
         )
         subfolders: List[str] = []
         if resp.status_code == 200:
@@ -6441,25 +6443,60 @@ async def set_site_device_subfolders(
     }
 
 
+def _dropbox_api_path(stored: str) -> str:
+    """Translate an internally-stored folder path to the exact shape
+    Dropbox's API expects. We store '/' as a sentinel for 'the root of
+    this app's scope' (so `if not folder_path` can still distinguish
+    linked-to-root from not-linked). Dropbox requires root as '' not '/'.
+    """
+    s = (stored or "").strip()
+    if s in ("", "/"):
+        return ""
+    if not s.startswith("/"):
+        s = "/" + s
+    return s.rstrip("/")
+
+
 @api_router.post("/projects/{project_id}/link-dropbox")
 async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
-    """Link a Dropbox folder to a project"""
-    folder_path = data.get("folder_path")
-    if folder_path is None or (isinstance(folder_path, str) and not folder_path.strip()):
-        raise HTTPException(status_code=400, detail="folder_path required")
+    """Link or unlink a Dropbox folder for a project.
 
-    # Normalize to Dropbox's expected shape so downstream list_folder
-    # calls don't reject with malformed_path. Root is stored as "",
-    # non-root paths get a leading "/" and no trailing "/".
-    norm = str(folder_path).strip()
-    if norm == "/":
-        norm = ""
-    elif norm and not norm.startswith("/"):
-        norm = "/" + norm
-    if norm != "" and norm.endswith("/"):
-        norm = norm.rstrip("/")
-
+    - folder_path: None  → unlink (clear dropbox_folder_path)
+    - folder_path: "" or "/" → link to root of the app's Dropbox scope
+    - folder_path: "/Foo/Bar" → link to that folder (normalized)
+    """
     now = datetime.now(timezone.utc)
+    folder_path = data.get("folder_path")
+
+    # Explicit null means unlink. Clear the field and return.
+    if folder_path is None:
+        await db.projects.update_one(
+            {"_id": to_query_id(project_id)},
+            {
+                "$unset": {
+                    "dropbox_folder_path": "",
+                    "dropbox_linked_at": "",
+                    "dropbox_linked_by": "",
+                },
+                "$set": {"updated_at": now},
+            },
+        )
+        return {"message": "Dropbox folder unlinked", "folder_path": None}
+
+    if not isinstance(folder_path, str):
+        raise HTTPException(status_code=400, detail="folder_path must be a string or null")
+
+    raw = folder_path.strip()
+    # "" and "/" both mean "link to root". Store as "/" so downstream
+    # truthiness checks ('if not folder_path') treat root-linked
+    # projects as linked.
+    if raw in ("", "/"):
+        norm = "/"
+    else:
+        norm = raw if raw.startswith("/") else "/" + raw
+        if norm != "/" and norm.endswith("/"):
+            norm = norm.rstrip("/")
+
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
         {"$set": {
@@ -6544,16 +6581,8 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if not folder_path:
         return []
 
-    # Dropbox quirk: root is "" NOT "/". Passing "/" returns 400
-    # malformed_path. Non-root paths must start with "/" and not end
-    # with one. Normalize before calling.
-    norm_folder = (folder_path or "").strip()
-    if norm_folder in ("/", ""):
-        norm_folder = ""
-    elif not norm_folder.startswith("/"):
-        norm_folder = "/" + norm_folder
-    if norm_folder != "" and norm_folder.endswith("/"):
-        norm_folder = norm_folder.rstrip("/")
+    # Dropbox wants "" for root, not "/" — translate our stored sentinel.
+    norm_folder = _dropbox_api_path(folder_path)
 
     # Site devices need a RECURSIVE listing so we can see files inside
     # the allowed subfolders, not just top-level entries.
@@ -6635,10 +6664,12 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
 async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str):
     """Background task: sync Dropbox files to R2 and update project_files collection."""
     try:
+        # Dropbox wants "" for root, not "/" — translate our stored sentinel.
+        api_path = _dropbox_api_path(folder_path)
         response = await dropbox_api_call(
             company_id, "post",
             "https://api.dropboxapi.com/2/files/list_folder",
-            json={"path": folder_path, "recursive": True}
+            json={"path": api_path, "recursive": True}
         )
         if response.status_code != 200:
             logger.error(f"Sync failed for project {project_id}: Dropbox list_folder returned {response.status_code}")
@@ -6774,11 +6805,14 @@ async def sync_project_dropbox(project_id: str, current_user = Depends(get_curre
 
     company_id = company_id or project.get("company_id")
 
+    # Dropbox wants "" for root, not "/" — translate our stored sentinel.
+    api_path = _dropbox_api_path(folder_path)
+
     # Quick count from Dropbox for immediate response
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": folder_path, "recursive": True}
+        json={"path": api_path, "recursive": True}
     )
 
     file_count = 0
