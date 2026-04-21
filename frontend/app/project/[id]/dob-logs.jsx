@@ -728,29 +728,29 @@ export default function DOBLogsScreen() {
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? '#4ade80' : colors.text.muted} />
-                <Text style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
-                <Text style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
+                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
                 <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? '#ef4444' : colors.text.muted)} />
-                <Text style={[s.navCount, violationCount > 0 && { color: '#ef4444' }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
-                <Text style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: '#ef4444' }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
+                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
                 <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? '#4ade80' : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
-                <Text style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
-                <Text style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
+                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'inspection' && s.navCardActive]}>
                 <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? '#4ade80' : colors.text.muted} />
-                <Text style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
-                <Text style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
+                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
               </GlassCard>
             </Pressable>
           </ScrollView>
@@ -974,7 +974,10 @@ function buildStyles(colors, isDark) {
 
     // Nav cards (replaces pill tabs + stat row)
     navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg, paddingRight: spacing.sm },
-    navCardWrap: { minWidth: 92 },
+    // Needs to fit the longest label ("Inspections") + two-digit count
+    // inside GlassCard's built-in cardContent padding (spacing.xl each
+    // side). 118px leaves ~70px usable which comfortably fits both.
+    navCardWrap: { minWidth: 118 },
     navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: 4 },
     navCardActive: { borderColor: 'rgba(74,222,128,0.4)', backgroundColor: 'rgba(74,222,128,0.06)' },
     navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
