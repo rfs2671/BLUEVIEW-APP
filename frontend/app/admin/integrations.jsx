@@ -100,22 +100,77 @@ export default function AdminIntegrationsScreen() {
     setConnecting(true);
     try {
       const { auth_url } = await dropboxAPI.getAuthUrl();
-      
-      // Open Dropbox OAuth in browser
+
+      // Open Dropbox OAuth in browser. The backend callback
+      // (/api/dropbox/callback) completes the token exchange server-
+      // side and stores in Mongo — there is NO manual code to paste.
+      // We poll /api/dropbox/status for ~90s so the UI flips to
+      // "connected" automatically once the backend saves the token.
       const supported = await Linking.canOpenURL(auth_url);
-      if (supported) {
-        await Linking.openURL(auth_url);
-        // Show code input after opening auth URL
-        setShowCodeInput(true);
-        toast.info('Dropbox Login', 'Complete authorization in browser, then paste the code below');
-      } else {
+      if (!supported) {
         toast.error('Error', 'Cannot open Dropbox authorization URL');
+        return;
+      }
+      await Linking.openURL(auth_url);
+      toast.info(
+        'Complete in browser',
+        'Approve Dropbox access — this page will update automatically.'
+      );
+
+      // Poll for connection. 30 tries x 3s = 90s ceiling.
+      let connected = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const status = await dropboxAPI.getStatus();
+          if (status?.connected) {
+            setDropboxStatus(status);
+            toast.success(
+              'Connected!',
+              status.account_email
+                ? `Connected as ${status.account_email}`
+                : 'Dropbox connected successfully'
+            );
+            connected = true;
+            break;
+          }
+        } catch (_e) {
+          // Ignore transient errors; keep polling.
+        }
+      }
+      if (!connected) {
+        toast.warning(
+          'Still waiting',
+          "Didn't detect the Dropbox connection — use the Check Status button or try again."
+        );
       }
     } catch (error) {
       console.error('Failed to get auth URL:', error);
       toast.error('Connection Error', error.response?.data?.detail || 'Could not start Dropbox connection');
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleCheckStatus = async () => {
+    try {
+      const status = await dropboxAPI.getStatus();
+      setDropboxStatus(status);
+      if (status?.connected) {
+        toast.success(
+          'Connected',
+          status.account_email
+            ? `Connected as ${status.account_email}`
+            : 'Dropbox connection is active'
+        );
+      } else {
+        toast.info(
+          'Not Connected',
+          'Dropbox is not linked yet. Click Connect to start the flow.'
+        );
+      }
+    } catch (e) {
+      toast.error('Error', 'Could not check Dropbox status');
     }
   };
 
@@ -318,76 +373,46 @@ export default function AdminIntegrationsScreen() {
                 ) : (
                   <View style={s.connectSection}>
                     <Text style={s.connectDesc}>
-                      Connect your Dropbox account to sync construction plans, blueprints, and
-                      documents directly to your projects.
+                      Connect your Dropbox account to sync construction plans,
+                      blueprints, and documents directly to your projects.
                     </Text>
 
-                    {!showCodeInput ? (
-                      <Pressable
-                        onPress={handleConnectDropbox}
-                        disabled={connecting}
-                        style={({ pressed }) => [
-                          s.dropboxButton,
-                          pressed && s.dropboxButtonPressed,
-                          connecting && s.dropboxButtonDisabled,
-                        ]}
-                      >
-                        {connecting ? (
+                    <Pressable
+                      onPress={handleConnectDropbox}
+                      disabled={connecting}
+                      style={({ pressed }) => [
+                        s.dropboxButton,
+                        pressed && s.dropboxButtonPressed,
+                        connecting && s.dropboxButtonDisabled,
+                      ]}
+                    >
+                      {connecting ? (
+                        <>
                           <ActivityIndicator size="small" color="#fff" />
-                        ) : (
-                          <>
-                            <Cloud size={22} strokeWidth={2} color="#fff" />
-                            <Text style={s.dropboxButtonText}>Connect to Dropbox</Text>
-                            <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
-                          </>
-                        )}
-                      </Pressable>
-                    ) : (
-                      <View style={s.codeInputSection}>
-                        <Text style={s.codeInputLabel}>
-                          After authorizing in Dropbox, paste the code below:
-                        </Text>
-                        <View style={s.codeInputRow}>
-                          <TextInput
-                            style={s.codeInput}
-                            value={authCode}
-                            onChangeText={setAuthCode}
-                            placeholder="Paste authorization code"
-                            placeholderTextColor={colors.text.subtle}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                          />
-                        </View>
-                        <View style={s.codeButtonRow}>
-                          <GlassButton
-                            title="Cancel"
-                            onPress={() => {
-                              setShowCodeInput(false);
-                              setAuthCode('');
-                            }}
-                            style={s.cancelCodeBtn}
-                          />
-                          <Pressable
-                            onPress={handleCompleteAuth}
-                            disabled={completingAuth || !authCode.trim()}
-                            style={({ pressed }) => [
-                              s.completeAuthButton,
-                              pressed && s.dropboxButtonPressed,
-                              (completingAuth || !authCode.trim()) && s.dropboxButtonDisabled,
-                            ]}
-                          >
-                            {completingAuth ? (
-                              <ActivityIndicator size="small" color="#fff" />
-                            ) : (
-                              <>
-                                <Key size={18} strokeWidth={2} color="#fff" />
-                                <Text style={s.dropboxButtonText}>Complete Connection</Text>
-                              </>
-                            )}
-                          </Pressable>
-                        </View>
-                      </View>
-                    )}
+                          <Text style={s.dropboxButtonText}>
+                            Waiting for Dropbox...
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Cloud size={22} strokeWidth={2} color="#fff" />
+                          <Text style={s.dropboxButtonText}>Connect to Dropbox</Text>
+                          <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
+                        </>
+                      )}
+                    </Pressable>
+
+                    {/* Manual recheck fallback if the poll timed out
+                        (external browser, slow auth, user lingered on
+                        the approval screen, etc.). */}
+                    <Pressable
+                      onPress={handleCheckStatus}
+                      style={s.checkStatusBtn}
+                    >
+                      <Text style={s.checkStatusText}>
+                        Already connected? Check status
+                      </Text>
+                    </Pressable>
                   </View>
                 )}
               </GlassCard>
@@ -777,6 +802,16 @@ function buildStyles(colors, isDark) {
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  checkStatusBtn: {
+    paddingVertical: spacing.sm,
+    alignItems: 'center',
+    marginTop: spacing.xs,
+  },
+  checkStatusText: {
+    fontSize: 13,
+    color: colors.text.muted,
+    textDecorationLine: 'underline',
   },
   codeInputSection: {
     gap: spacing.md,
