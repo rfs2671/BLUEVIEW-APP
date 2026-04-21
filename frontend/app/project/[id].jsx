@@ -507,6 +507,7 @@ export default function ProjectDetailScreen() {
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
+    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#10b981' },
   ];
 
   if (authLoading || loading) {

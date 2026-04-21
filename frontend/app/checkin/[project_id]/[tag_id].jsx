@@ -5,9 +5,11 @@ import {
   StyleSheet,
   ScrollView,
   TextInput,
+  Pressable,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Modal,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,6 +21,8 @@ import {
   Briefcase,
   HardHat,
   CheckCircle,
+  ChevronDown,
+  Check,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
@@ -52,6 +56,9 @@ export default function PublicCheckInScreen() {
   const [workerPhone, setWorkerPhone] = useState('');
   const [workerCompany, setWorkerCompany] = useState('');
   const [workerTrade, setWorkerTrade] = useState('');
+  // Dropdown state — the check-in page enforces a strict list of trades
+  // set by the project admin. No free-text input.
+  const [showTradePicker, setShowTradePicker] = useState(false);
 
   useEffect(() => {
     fetchProjectInfo();
@@ -86,7 +93,16 @@ export default function PublicCheckInScreen() {
       return;
     }
     if (!workerTrade.trim()) {
-      toast.warning('Required', 'Please enter your trade');
+      toast.warning('Required', 'Please select your trade');
+      return;
+    }
+    // Defense-in-depth: also enforced server-side.
+    const allowed = projectInfo?.allowed_trades || [];
+    if (
+      allowed.length > 0 &&
+      !allowed.some((t) => t.toLowerCase() === workerTrade.trim().toLowerCase())
+    ) {
+      toast.warning('Invalid Trade', 'Please pick a trade from the dropdown');
       return;
     }
 
@@ -257,21 +273,81 @@ export default function PublicCheckInScreen() {
                   />
                 </View>
 
-                {/* Trade Input */}
+                {/* Trade Dropdown (strict list set by project admin) */}
                 <View style={s.inputGroup}>
                   <View style={s.inputHeader}>
                     <HardHat size={16} strokeWidth={1.5} color={colors.text.muted} />
                     <Text style={s.inputLabel}>TRADE *</Text>
                   </View>
-                  <TextInput
+                  <Pressable
                     style={s.input}
-                    value={workerTrade}
-                    onChangeText={setWorkerTrade}
-                    placeholder="Electrician, Plumber, Carpenter, etc."
-                    placeholderTextColor={colors.text.subtle}
-                    autoCapitalize="words"
-                  />
+                    onPress={() => setShowTradePicker(true)}
+                  >
+                    <View style={s.dropdownRow}>
+                      <Text
+                        style={[
+                          s.dropdownText,
+                          !workerTrade && { color: colors.text.subtle },
+                        ]}
+                      >
+                        {workerTrade || 'Select your trade'}
+                      </Text>
+                      <ChevronDown size={18} strokeWidth={1.5} color={colors.text.muted} />
+                    </View>
+                  </Pressable>
                 </View>
+
+                {/* Trade picker modal */}
+                <Modal
+                  visible={showTradePicker}
+                  transparent
+                  animationType="fade"
+                  onRequestClose={() => setShowTradePicker(false)}
+                >
+                  <Pressable
+                    style={s.modalOverlay}
+                    onPress={() => setShowTradePicker(false)}
+                  >
+                    <Pressable style={s.modalCard} onPress={() => {}}>
+                      <Text style={s.modalTitle}>Select Your Trade</Text>
+                      <ScrollView
+                        style={s.modalScroll}
+                        showsVerticalScrollIndicator={false}
+                      >
+                        {(projectInfo?.allowed_trades || []).map((t) => {
+                          const selected =
+                            workerTrade.toLowerCase() === t.toLowerCase();
+                          return (
+                            <Pressable
+                              key={t}
+                              style={({ pressed }) => [
+                                s.tradeOption,
+                                selected && s.tradeOptionSelected,
+                                pressed && { opacity: 0.7 },
+                              ]}
+                              onPress={() => {
+                                setWorkerTrade(t);
+                                setShowTradePicker(false);
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  s.tradeOptionText,
+                                  selected && s.tradeOptionTextSelected,
+                                ]}
+                              >
+                                {t}
+                              </Text>
+                              {selected && (
+                                <Check size={18} strokeWidth={2} color="#4ade80" />
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </ScrollView>
+                    </Pressable>
+                  </Pressable>
+                </Modal>
 
                 {/* Submit Button */}
                 <GlassButton
@@ -413,6 +489,66 @@ function buildStyles(colors, isDark) {
     padding: spacing.md,
     color: colors.text.primary,
     fontSize: 16,
+  },
+  dropdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  dropdownText: {
+    fontSize: 16,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  modalCard: {
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '80%',
+    backgroundColor: isDark ? '#1a1f2e' : '#ffffff',
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    padding: spacing.lg,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: spacing.md,
+    textAlign: 'center',
+  },
+  modalScroll: {
+    maxHeight: 400,
+  },
+  tradeOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.glass.border,
+  },
+  tradeOptionSelected: {
+    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+  },
+  tradeOptionText: {
+    fontSize: 15,
+    color: colors.text.primary,
+    flex: 1,
+  },
+  tradeOptionTextSelected: {
+    color: '#4ade80',
+    fontWeight: '500',
   },
   submitButton: {
     marginTop: spacing.md,

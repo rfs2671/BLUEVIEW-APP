@@ -587,6 +587,34 @@ class UpdatePasswordRequest(BaseModel):
     new_password: str
 
 # Project Models
+# Default construction trade list used by the NFC check-in dropdown
+# when a project hasn't customized its own allowed_trades. Admins can
+# override this per project via PUT /api/projects/{id} with
+# `allowed_trades: [...]`.
+DEFAULT_TRADES: List[str] = [
+    "General Labor",
+    "Carpenter",
+    "Electrician",
+    "Plumber",
+    "HVAC / Mechanical",
+    "Ironworker",
+    "Mason",
+    "Concrete / Cement",
+    "Roofer",
+    "Painter",
+    "Sheet Metal",
+    "Operating Engineer",
+    "Demolition",
+    "Fire Protection / Sprinkler",
+    "Drywall / Plasterer",
+    "Glazier",
+    "Insulator",
+    "Foreman / Supervisor",
+    "Surveyor",
+    "Safety",
+]
+
+
 class ProjectCreate(BaseModel):
     name: str
     location: Optional[str] = None
@@ -619,6 +647,11 @@ class ProjectUpdate(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
+    # Allowed trade options for the NFC worker check-in dropdown.
+    # If unset/empty on the project doc, the check-in endpoint falls
+    # back to DEFAULT_TRADES. Admin-edited list is strict: workers
+    # cannot submit a trade that's not in this array.
+    allowed_trades: Optional[List[str]] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -653,6 +686,9 @@ class ProjectResponse(BaseModel):
     # are allowed to see. Empty list = site devices see nothing.
     # Admins/CPs always see the full folder regardless.
     site_device_subfolders: List[str] = []
+    # Allowed trade dropdown options for the NFC check-in page.
+    # If empty, the public /checkin/info endpoint returns DEFAULT_TRADES.
+    allowed_trades: List[str] = []
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -3455,21 +3491,30 @@ async def get_checkin_info(project_id: str, tag_id: str):
             "status": "active",
             "is_deleted": {"$ne": True}
         })
-        
+
         if not tag:
             raise HTTPException(status_code=404, detail="Invalid check-in link")
-        
+
         project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
-        
+
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
+        # Worker check-in trade dropdown options. Admin edits this per
+        # project via PUT /api/projects/{id}. If empty, fall back to a
+        # sensible default so new projects work out of the box.
+        trades = project.get("allowed_trades") or []
+        trades = [str(t).strip() for t in trades if str(t).strip()]
+        if not trades:
+            trades = list(DEFAULT_TRADES)
+
         return {
             "project_id": project_id,
             "project_name": project.get("name", "Unknown Project"),
             "location": tag.get("location_description", "Check-In Point"),
             "tag_id": tag_id,
-            "company_name": project.get("company_name")
+            "company_name": project.get("company_name"),
+            "allowed_trades": trades,
         }
     except HTTPException:
         raise
@@ -3894,11 +3939,32 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
-        
+
+        # Strict trade validation — the check-in page presents a dropdown
+        # of project-specific (or default) trades. Workers can't submit a
+        # custom trade. Matching is case-insensitive + whitespace-tolerant
+        # so the UI text matches the DB value regardless of normalization.
+        allowed_trades = project.get("allowed_trades") or []
+        allowed_trades = [str(t).strip() for t in allowed_trades if str(t).strip()]
+        if not allowed_trades:
+            allowed_trades = list(DEFAULT_TRADES)
+        submitted_trade = str(checkin_data.trade or "").strip()
+        normalized_allowed = {t.strip().lower(): t for t in allowed_trades}
+        if submitted_trade.lower() not in normalized_allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Trade must be one of the project's configured trades. "
+                    "Please pick one from the dropdown."
+                ),
+            )
+        # Canonicalize to the exact casing the admin configured.
+        checkin_data.trade = normalized_allowed[submitted_trade.lower()]
+
         admin_id = project.get("admin_id")
         company_id = project.get("company_id")
         now = datetime.now(timezone.utc)
-        
+
         # Find or create worker
         raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
         formatted_phone = format_phone(raw_digits)
