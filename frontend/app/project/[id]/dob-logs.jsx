@@ -816,20 +816,102 @@ export default function DOBLogsScreen() {
           </Pressable>
           <Text style={s.totalText}>{total} total records</Text>
 
-          {/* Log cards */}
-          {filteredLogs.length === 0 ? (
-            <GlassCard style={s.emptyCard}>
-              <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={s.emptyTitle}>
-                {activeTab === 'all' ? 'No Records Found' : `No ${activeTab === 'permit' ? 'Permits' : activeTab === 'violation' ? 'Violations' : activeTab === 'inspection' ? 'Inspections' : 'Complaints'}`}
-              </Text>
-              <Text style={s.emptySubtitle}>
-                {!trackDobStatus ? 'Enable DOB tracking to start monitoring.' : 'Hit Sync Now to check for new records.'}
-              </Text>
-            </GlassCard>
-          ) : (
-            <View style={s.logsList}>{filteredLogs.map(renderLogCard)}</View>
-          )}
+          {/* Log cards — three distinct empty states so the screen
+                is never ambiguous between "still loading", "BIN not
+                configured", "BIN set but no DOB records", and "filter
+                happens to exclude everything". */}
+          {(() => {
+            if (loading) return null; // RefreshControl / spinner covers this
+            if (filteredLogs.length > 0) {
+              return <View style={s.logsList}>{filteredLogs.map(renderLogCard)}</View>;
+            }
+
+            // --- Empty states, most specific first ---
+
+            // (1) No BIN on file — auto-lookup didn't resolve. Admin
+            // needs to pick a borough-specific address or enter a BIN.
+            if (!nycBin) {
+              return (
+                <GlassCard style={s.emptyCard}>
+                  <AlertTriangle size={40} strokeWidth={1} color="#f59e0b" />
+                  <Text style={s.emptyTitle}>No BIN on File</Text>
+                  <Text style={s.emptySubtitle}>
+                    We couldn't auto-resolve this project's NYC Building Identification
+                    Number (BIN). Addresses like "852 E 176" need a borough to match —
+                    add the borough to the project address or enter the BIN manually
+                    in DOB Config.
+                  </Text>
+                  {isAdmin ? (
+                    <GlassButton
+                      title="Open DOB Config"
+                      icon={<Settings size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                      onPress={openConfigModal}
+                      style={{ marginTop: spacing.sm }}
+                    />
+                  ) : null}
+                </GlassCard>
+              );
+            }
+
+            // (2) BIN set + sync has run + all four record types empty
+            // across the whole feed (activeTab='all' shows nothing).
+            // Could be a wrong BIN or a genuinely pre-filing project.
+            if (activeTab === 'all' && allLogs.length === 0) {
+              return (
+                <GlassCard style={s.emptyCard}>
+                  <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={s.emptyTitle}>BIN Has No DOB Records</Text>
+                  <Text style={s.emptySubtitle}>
+                    Sync completed but NYC DOB returned zero permits, violations,
+                    complaints, or inspections for BIN {nycBin}. Verify this BIN
+                    at a810-bisweb.nyc.gov — if the BIN is wrong, open DOB Config
+                    to correct it. If the BIN is right, the project is likely
+                    pre-filing and records will appear once a job is filed.
+                  </Text>
+                  <Pressable
+                    onPress={() =>
+                      Linking.openURL(
+                        `https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?bin=${nycBin}`
+                      )
+                    }
+                    style={{ marginTop: spacing.sm }}
+                  >
+                    <Text style={{ color: '#3b82f6', fontSize: 13 }}>
+                      Open BIN {nycBin} on NYC BIS ↗
+                    </Text>
+                  </Pressable>
+                </GlassCard>
+              );
+            }
+
+            // (3) BIN set + records exist overall, but the active tab
+            // filter hides them. Not a problem — just filtered.
+            return (
+              <GlassCard style={s.emptyCard}>
+                <Shield size={40} strokeWidth={1} color={colors.text.subtle} />
+                <Text style={s.emptyTitle}>
+                  {activeTab === 'all'
+                    ? 'No Records Found'
+                    : `No ${
+                        activeTab === 'permit'
+                          ? 'Permits'
+                          : activeTab === 'violation'
+                          ? 'Violations'
+                          : activeTab === 'inspection'
+                          ? 'Inspections'
+                          : 'Complaints'
+                      }`}
+                </Text>
+                <Text style={s.emptySubtitle}>
+                  {!trackDobStatus
+                    ? 'Enable DOB tracking to start monitoring.'
+                    : allLogs.length > 0
+                    ? 'No records of this type. Tap another tab to see the rest.'
+                    : 'Hit Sync Now to check for new records.'}
+                </Text>
+              </GlassCard>
+            );
+          })()}
         </ScrollView>
 
         {/* Config Modal */}
