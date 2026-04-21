@@ -28,6 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import hashlib
+from urllib.parse import quote_plus
 import json
 from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
 import mimetypes
@@ -10299,110 +10300,185 @@ def _generate_next_action(rec: dict, record_type: str, severity: str) -> str:
     return "Review record details on DOB BIS/NOW portal."
  
  
-def _build_dob_link(rec: dict, record_type: str) -> str:
-    """Build a direct public link to DOB BIS or DOB NOW for this record.
-
-    DOB NOW jobs (B-prefix, 2018+) do not exist in BIS — they must link to
-    DOB NOW Public Portal. Legacy numeric job numbers link to BIS.
-    All URLs below are publicly accessible without login.
+def _is_dob_now_job(job_num: str) -> bool:
+    """True iff the job number's leading non-digit is a letter — DOB NOW
+    job numbers start with a borough letter (B, M, Q, X, R, etc.).
+    Purely numeric ids are BIS legacy. Empty → False.
     """
-    bin_val  = str(rec.get("bin") or rec.get("bin__") or "").strip()
-    job_num  = str(rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or "").strip()
-    isn_val  = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
-    ecb_num  = str(rec.get("ecb_violation_number") or "").strip()
+    s = str(job_num or "").strip()
+    if not s:
+        return False
+    return s[0].isalpha()
 
-    # Strip dashes for DOB NOW deep-links (B01234567 not B0123-4567)
-    job_clean = job_num.replace("-", "").strip()
-    is_dob_now_job = job_clean.upper().startswith("B") if job_clean else False
 
+def _bis_bin_overview_url(bin_val: str) -> str:
+    """BIS Overview By BIN — the safe BIN-scoped fallback."""
+    if not bin_val:
+        return ""
+    return (
+        "https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
+        f"?requestid=2&allbin={quote_plus(str(bin_val))}"
+        "&allinquirytype=BXS3OCV4"
+    )
+
+
+def _open_data_filtered_url(dataset_id: str, column: str, value: str) -> str:
+    """Build an Open Data filtered-view URL. This is the only public
+    URL-param-respecting surface for DOB NOW specific records — the
+    DOB NOW Public Portal is a client-side SPA whose deep-links the
+    server doesn't honor, and the BIS `JobsQueryByNumberServlet`
+    returns 'not found' for B-prefix jobs because DOB NOW jobs don't
+    exist in BIS.
+    """
+    if not (dataset_id and column and value):
+        return ""
+    return (
+        f"https://data.cityofnewyork.us/resource/{dataset_id}.html"
+        f"?{quote_plus(column)}={quote_plus(str(value))}"
+    )
+
+
+def _build_dob_link(rec: dict, record_type: str) -> str:
+    """Build a public URL that actually resolves to the record.
+
+    Routing, by record type:
+      - permit / job_status
+          DOB NOW job (borough-letter prefix) → Open Data w9ak-ipjd
+            filtered by job_filing_number
+          BIS legacy (numeric) → JobsQueryByNumberServlet with the
+            record's real doc number, zero-padded to 2 digits
+          No job → BIS OverviewByBin
+      - inspection
+          DOB NOW job → Open Data p937-wjvj filtered by job_id
+          Legacy numeric → JobsQueryByNumberServlet, doc 01
+          No job → BIS OverviewByBin
+      - violation / swo
+          ecb_violation_number → ECBQueryByNumberServlet
+          isn + bin + number → ActionViolationDisplayServlet
+          Else → BIS OverviewByBin
+      - complaint
+          BIS has no complaint-number deep-link — fall back to the
+          complaints-by-BIN list view (unchanged).
+      - Fallback → PropertyProfileOverviewServlet by BIN
+
+    DOB NOW jobs must NOT be routed to BIS `JobsQueryByNumberServlet` —
+    per nyc.gov, "Jobs filed in DOB NOW: Build will not appear in BIS,"
+    which is the regression we're fixing.
+    """
+    bin_val = str(rec.get("bin") or rec.get("bin__") or "").strip()
+    job_num = str(
+        rec.get("job__")
+        or rec.get("job_filing_number")
+        or rec.get("job_number")
+        or ""
+    ).strip()
+    isn_val = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
+    ecb_num = str(rec.get("ecb_violation_number") or "").strip()
+
+    dob_now = _is_dob_now_job(job_num)
+
+    # ── SWO: straight to the complaints-by-BIN list view ──────────────
     if record_type == "swo":
         if bin_val:
             return (
-                f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
-                f"?requestid=2&allbin={bin_val}&fillerdata=A"
+                "https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
+                f"?requestid=2&allbin={quote_plus(bin_val)}&fillerdata=A"
             )
+        return ""
 
-    if record_type in ("violation", "swo"):
+    # ── Violations ───────────────────────────────────────────────────
+    if record_type == "violation":
         if ecb_num:
+            # ECB/OATH — this one has always worked.
             return (
-                f"https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet"
-                f"?requestid=2&ecbin={ecb_num}"
+                "https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet"
+                f"?requestid=2&ecbin={quote_plus(ecb_num)}"
             )
-        if isn_val:
+        # 3h2n-5cm9 rows carry both `isn_dob_bis_viol` and `number`.
+        # Together with the BIN those are the keys BIS's
+        # ActionViolationDisplayServlet actually wants. Old code fed
+        # the ISN into `vlcompdetlkey` (a different identifier from a
+        # different servlet) and got "ALL KEYS CANNOT BE BLANK".
+        viol_num = str(rec.get("number") or rec.get("violation_number") or "").strip()
+        if isn_val and bin_val and viol_num:
             return (
-                f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet"
-                f"?requestid=2&vlcompdetlkey={isn_val}"
+                "https://a810-bisweb.nyc.gov/bisweb/ActionViolationDisplayServlet"
+                f"?requestid=2&allbin={quote_plus(bin_val)}"
+                "&allinquirytype=BXS3OCV4"
+                f"&allisn={quote_plus(isn_val)}"
+                f"&ppremise60={quote_plus(viol_num)}"
             )
-        if bin_val:
-            return (
-                f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
-                f"?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
-            )
-        return ""
+        # Fallback: BIN-scoped overview.
+        return _bis_bin_overview_url(bin_val)
 
+    # ── Complaints: no public deep-link exists; BIN list view. ────────
     if record_type == "complaint":
-        # BIS has no public deep-link that takes a complaint number straight
-        # to a detail page — OverviewForComplaintServlet requires an
-        # internal `vlcompdetlkey` that isn't surfaced in Open Data. The
-        # old link used a bogus `vlession` parameter and BIS replied with
-        # "ALL KEYS CANNOT BE BLANK FOR COMPLAINT DETAILS". Best we can do
-        # is drop the user on the complaints-by-BIN list view — the
-        # specific complaint will be one row down.
         if bin_val:
             return (
-                f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
-                f"?requestid=1&allbin={bin_val}"
+                "https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
+                f"?requestid=1&allbin={quote_plus(bin_val)}"
             )
         return ""
 
+    # ── Permits / job status ─────────────────────────────────────────
     if record_type in ("permit", "job_status"):
-        # Use the real doc number from the record — BIS returns
-        # "{JOB} 01 NOT FOUND" when the job exists but that specific doc
-        # sub-filing (01, 02, 03, ...) doesn't. Default to 01 only if the
-        # record doesn't tell us otherwise.
-        doc_num = str(
-            rec.get("doc__")
-            or rec.get("doc_number")
-            or rec.get("docnum")
-            or "01"
-        ).strip().zfill(2)
-
-        if is_dob_now_job and job_clean:
-            # DOB NOW Public Portal now requires NYC.ID login (since June 2024)
-            # Fall through to BIS lookup by job number or BIN instead
-            base_job_match = re.match(r'(B\d{8})', job_clean.upper())
-            base_job_now = base_job_match.group(1) if base_job_match else job_clean
-            if bin_val:
-                return (
-                    f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
-                    f"?passjobnumber={base_job_now}&passdocnumber={doc_num}&requestid=1"
-                )
-        # BIS legacy: direct job query, no login required
-        base_job = job_num.split("-")[0].strip() if job_num else ""
-        if base_job:
-            return (
-                f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
-                f"?passjobnumber={base_job}&passdocnumber={doc_num}&requestid=1"
+        if dob_now and job_num:
+            # DOB NOW jobs are not in BIS. Route to Open Data's
+            # filtered view on the Approved Permits dataset so the
+            # user lands on the exact row. Strip the filing suffix:
+            # w9ak-ipjd holds one row per filing, but the filter
+            # param is job_filing_number (full id including -I<n>),
+            # so we pass the full id through after trimming.
+            return _open_data_filtered_url(
+                "w9ak-ipjd", "job_filing_number", job_num
             )
-        if bin_val:
+        if job_num:
+            # BIS legacy numeric — JobsQueryByNumberServlet with the
+            # record's doc number. BIS returns "{JOB} 01 NOT FOUND"
+            # when doc 02/03/... was filed but we asked for 01, so
+            # pull the real doc from the record and only default to
+            # 01 when absent.
+            doc_num = str(
+                rec.get("doc__")
+                or rec.get("doc_number")
+                or rec.get("docnum")
+                or "01"
+            ).strip().zfill(2)
+            base_job = _base_job_number(job_num)
             return (
-                f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
-                f"?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
+                "https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
+                f"?passjobnumber={quote_plus(base_job)}"
+                f"&passdocnumber={quote_plus(doc_num)}&requestid=1"
             )
-        return ""
+        return _bis_bin_overview_url(bin_val)
 
+    # ── Inspections ──────────────────────────────────────────────────
     if record_type == "inspection":
-        job = str(rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or "").replace("-","").strip()
-        if job and job.upper().startswith("B"):
-            return f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet?passjobnumber={job}&passdocnumber=01&requestid=1"
-        if bin_val:
-            return f"https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet?requestid=2&allbin={bin_val}&allinquirytype=BXS3OCV4"
-        return ""
+        insp_job = str(
+            rec.get("job_id")
+            or rec.get("job_filing_number")
+            or rec.get("job_number")
+            or rec.get("job__")
+            or ""
+        ).strip()
+        if _is_dob_now_job(insp_job):
+            return _open_data_filtered_url(
+                "p937-wjvj", "job_id", insp_job
+            )
+        if insp_job:
+            base_job = _base_job_number(insp_job)
+            return (
+                "https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
+                f"?passjobnumber={quote_plus(base_job)}"
+                "&passdocnumber=01&requestid=1"
+            )
+        return _bis_bin_overview_url(bin_val)
 
+    # ── Final fallback: property profile by BIN. ─────────────────────
     if bin_val:
         return (
-            f"https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
-            f"?bin={bin_val}"
+            "https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
+            f"?bin={quote_plus(bin_val)}"
         )
     return ""
 
@@ -10987,13 +11063,15 @@ async def get_dob_logs(
             raw = log.get("raw_record") or {}
             rtype = log.get("record_type")
 
-            # Broken DOB links written before the fix — rebuild on read
-            # from the raw record so existing rows get working URLs
-            # without a migration. The old complaint URL used a bogus
-            # `vlession` parameter that BIS rejects with "ALL KEYS
-            # CANNOT BE BLANK"; the old permit URL hardcoded
-            # passdocnumber=01 which fails for filings on doc 02+.
-            if raw and rtype in ("complaint", "permit", "job_status"):
+            # Broken DOB links written before the routing fix get
+            # rebuilt on read from the raw record so existing rows pick
+            # up working URLs without a migration. Previous regressions:
+            # complaint URL used a bogus `vlession` param; permit URL
+            # hardcoded passdocnumber=01; violation URL fed the ISN
+            # into vlcompdetlkey; DOB NOW jobs (B-prefix) were routed
+            # to BIS which doesn't have them. Now covers every type
+            # whose builder was wrong.
+            if raw and rtype in ("complaint", "permit", "job_status", "violation", "swo", "inspection"):
                 try:
                     fresh_link = _build_dob_link(raw, rtype)
                     if fresh_link:
