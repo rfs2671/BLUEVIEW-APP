@@ -629,6 +629,16 @@ class TradeAssignment(BaseModel):
     company: str
 
 
+class ProjectGate(BaseModel):
+    """Per-project NFC gate. One row per mounted tag; workers tap the
+    tag to open /checkin/{project_id}/{gate_id}. See card_audit module.
+    """
+    gate_id: str
+    label: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+
 class ProjectCreate(BaseModel):
     name: str
     location: Optional[str] = None
@@ -644,6 +654,11 @@ class ProjectCreate(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
+    # Card audit / NFC gate check-in config. See backend/card_audit.py.
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    geofence_radius_m: Optional[int] = 150
+    gates: Optional[List[ProjectGate]] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
@@ -668,6 +683,11 @@ class ProjectUpdate(BaseModel):
     # Strict: the check-in endpoint rejects submissions whose
     # (trade, company) pair isn't in this list.
     trade_assignments: Optional[List[TradeAssignment]] = None
+    # Card audit / NFC gate check-in config. See backend/card_audit.py.
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    geofence_radius_m: Optional[int] = None
+    gates: Optional[List[ProjectGate]] = None
 
 class ProjectResponse(BaseModel):
     id: str
@@ -705,6 +725,11 @@ class ProjectResponse(BaseModel):
     # Per-project subcontractor roster for the NFC check-in dropdown.
     # Each item is {trade, company}. Workers pick one combined entry.
     trade_assignments: List[Dict[str, str]] = []
+    # Card audit / NFC gate check-in config. See backend/card_audit.py.
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    geofence_radius_m: int = 150
+    gates: List[Dict[str, Any]] = []
 
 # ==================== CERTIFICATION MODELS ====================
 
@@ -17788,6 +17813,71 @@ async def _run_whatsapp_checklist_extractions():
         logger.error(f"WhatsApp checklist scheduler error: {e}", exc_info=True)
 
 
+# Card audit VLM adapter. Feeds a raw (jpeg_bytes, prompt) pair into
+# the Qwen2.5-VL chat/completions API and returns the assistant's text.
+# Kept here rather than in card_audit.py so the module stays free of
+# direct httpx + QWEN_API_KEY coupling.
+async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
+    """Used by card_audit.enrollment_parse_card to extract card fields."""
+    if not QWEN_API_KEY or not jpeg_bytes:
+        return ""
+    b64 = base64.b64encode(jpeg_bytes).decode("ascii")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client_http:
+            resp = await client_http.post(
+                f"{QWEN_API_BASE}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {QWEN_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": QWEN_MODEL,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url",
+                             "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        ],
+                    }],
+                    "temperature": 0.0,
+                    "max_tokens": 400,
+                },
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                f"card_audit VLM {resp.status_code}: {resp.text[:300]!r}"
+            )
+            return ""
+        data = resp.json()
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    except Exception as e:
+        logger.error(f"card_audit VLM adapter failed: {e!r}")
+        return ""
+
+
+# Card audit routers — gate_router serves public HTML at /checkin/...
+# and /enrollment/... (no auth, workers are anonymous), admin_router
+# serves JSON at /api/admin/... (admin-gated). The admin gate is a
+# small dep wrapper that resolves the admin user AND stashes it on
+# request.state so card_audit endpoints can read it without taking
+# it as a parameter (mount-time include_router deps don't expose
+# their resolved values to downstream endpoint signatures).
+async def _card_audit_admin_gate(request: Request, admin_user = Depends(get_admin_user)):
+    request.state.current_user = admin_user
+    return admin_user
+
+try:
+    import card_audit as _card_audit_module  # noqa: E402
+    app.include_router(_card_audit_module.gate_router)
+    app.include_router(
+        _card_audit_module.admin_router,
+        dependencies=[Depends(_card_audit_admin_gate)],
+    )
+except Exception as _card_router_err:
+    logger.error(f"card_audit router mount failed: {_card_router_err!r}")
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
@@ -18195,6 +18285,25 @@ async def startup_event():
         replace_existing=True,
     )
 
+    # Card audit nightly jobs. See backend/card_audit.py for rationale;
+    # the removed Training Connect live-validation job is deliberate.
+    try:
+        import card_audit as _card_audit  # noqa: E402
+        scheduler.add_job(
+            _card_audit.check_card_expirations,
+            CronTrigger(hour=2, minute=15, timezone="America/New_York"),
+            id='card_audit_expiration_check',
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            _card_audit.run_fraud_detection,
+            CronTrigger(hour=2, minute=30, timezone="America/New_York"),
+            id='card_audit_fraud_detection',
+            replace_existing=True,
+        )
+    except Exception as _card_job_err:
+        logger.error(f"card_audit scheduler wire failed: {_card_job_err!r}")
+
     scheduler.start()
     logger.info("📧 Report email scheduler started")
     logger.info("🏗️ DOB compliance scanner scheduled (every 30 minutes)")
@@ -18209,5 +18318,35 @@ async def startup_event():
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
     await db.dob_logs.create_index([("company_id", 1)])
     await db.dob_logs.create_index("raw_dob_id", unique=True, sparse=True)
-    
+
+    # Card audit module init — injects db + R2 + VLM adapter. Must run
+    # AFTER _r2_client is initialized (which happens at module import
+    # time via the _get_r2_client() call wired into startup below, if
+    # present) but BEFORE the first request. Doing it here at end of
+    # startup means both are guaranteed ready.
+    try:
+        import card_audit as _card_audit  # noqa: E402
+        _card_audit.init(
+            db_ref=db,
+            r2_client=_r2_client,
+            qwen_vlm=_card_audit_vlm_adapter,
+        )
+        await _card_audit.ensure_indexes()
+        logger.info(
+            f"🪪 card_audit wired. legal_entity={_card_audit.LEGAL_ENTITY!r} "
+            f"bucket={_card_audit.CARD_AUDIT_BUCKET_NAME!r}"
+        )
+        if _card_audit.LEGAL_ENTITY == "{LEGAL_ENTITY}":
+            logger.warning(
+                "⚠️  CARD_AUDIT_LEGAL_ENTITY env var is unset — PDF footer "
+                "will render the placeholder string. Set this before any GC sees a report."
+            )
+        if not _card_audit.CARD_AUDIT_BUCKET_NAME:
+            logger.warning(
+                "⚠️  CARD_AUDIT_BUCKET_NAME env var is unset — card photos "
+                "will not persist. Enrollment will still complete."
+            )
+    except Exception as _init_err:
+        logger.error(f"card_audit init failed: {_init_err!r}")
+
     logger.info("Levelog API started successfully with Sync v2.0")
