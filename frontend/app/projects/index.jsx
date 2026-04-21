@@ -496,7 +496,9 @@ function buildStyles(colors, isDark) {
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    // Darker scrim so background content reads as clearly "behind" the
+    // modal rather than bleeding through it.
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
   },
   modalContent: {
     flex: 1,
@@ -505,6 +507,10 @@ function buildStyles(colors, isDark) {
   },
   modalCard: {
     padding: spacing.xl,
+    // GlassCard variant="modal" has no gradient layer — just blur — so
+    // on mobile you can still read the page behind it. Add a solid
+    // theme-aware fill so the card is fully opaque.
+    backgroundColor: isDark ? '#121826' : '#ffffff',
   },
   modalHeader: {
     flexDirection: 'row',
