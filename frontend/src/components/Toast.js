@@ -1,34 +1,37 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Animated, Pressable, Dimensions } from 'react-native';
+import { View, Text, StyleSheet, Animated, Pressable, Dimensions, Modal, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { X, AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 
 const { width } = Dimensions.get('window');
 
+// Near-opaque fills so toasts are fully readable even when rendered
+// on top of a dimmed modal scrim. The previous ~10% alpha fills
+// were see-through against dark backdrops.
 const toastConfig = {
   error: {
     icon: AlertCircle,
-    borderColor: 'rgba(248, 113, 113, 0.3)',
-    bgColor: 'rgba(248, 113, 113, 0.1)',
+    borderColor: 'rgba(248, 113, 113, 0.5)',
+    bgColor: '#2a1313',
     iconColor: '#f87171',
   },
   success: {
     icon: CheckCircle,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
-    bgColor: 'rgba(74, 222, 128, 0.1)',
+    borderColor: 'rgba(74, 222, 128, 0.5)',
+    bgColor: '#11261a',
     iconColor: '#4ade80',
   },
   warning: {
     icon: AlertTriangle,
-    borderColor: 'rgba(251, 191, 36, 0.3)',
-    bgColor: 'rgba(251, 191, 36, 0.1)',
+    borderColor: 'rgba(251, 191, 36, 0.5)',
+    bgColor: '#271e0c',
     iconColor: '#fbbf24',
   },
   info: {
     icon: Info,
-    borderColor: colors.glass.border,
-    bgColor: colors.glass.background,
+    borderColor: 'rgba(148, 163, 184, 0.5)',
+    bgColor: '#171e2c',
     iconColor: colors.text.secondary,
   },
 };
@@ -115,14 +118,35 @@ export const ToastProvider = ({ children }) => {
     info: (title, message) => addToast({ type: 'info', title, message }),
   };
 
+  // Toasts need to sit ABOVE any in-app Modal (e.g. NFC pairing,
+  // project-create, dropbox picker). A plain absolutely-positioned
+  // View can't escape a native Modal overlay — its z-index is
+  // scoped to its container. Render the toast stack inside a
+  // transparent Modal so it joins the OS window layer and paints
+  // over every app Modal. pointerEvents=box-none lets touches pass
+  // through to whatever is underneath (the original modal), while
+  // still catching taps on the toast card itself for dismissal.
+  const hasToasts = toasts.length > 0;
+
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <View style={styles.toastContainer}>
-        {toasts.map((t) => (
-          <Toast key={t.id} {...t} onClose={removeToast} />
-        ))}
-      </View>
+      <Modal
+        visible={hasToasts}
+        transparent
+        animationType="none"
+        statusBarTranslucent
+        onRequestClose={() => {}}
+      >
+        <View
+          pointerEvents="box-none"
+          style={styles.toastContainer}
+        >
+          {toasts.map((t) => (
+            <Toast key={t.id} {...t} onClose={removeToast} />
+          ))}
+        </View>
+      </Modal>
     </ToastContext.Provider>
   );
 };
@@ -140,9 +164,13 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 60,
     right: 16,
+    left: 16,
+    alignItems: 'flex-end',
     zIndex: 99999,
     elevation: 99999,
     gap: spacing.sm,
+    // Modal content fills the OS window; box-none on the wrapper
+    // lets underlying touches pass through while this stays tappable.
   },
   toast: {
     flexDirection: 'row',
