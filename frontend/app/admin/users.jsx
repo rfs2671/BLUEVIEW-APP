@@ -29,6 +29,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
@@ -569,6 +570,7 @@ export default function AdminUsersScreen() {
             </GlassCard>
           )}
         </ScrollView>
+        <FloatingNav />
       </SafeAreaView>
     </AnimatedBackground>
   );
