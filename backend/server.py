@@ -13683,15 +13683,24 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         return None
 
 
-def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 2400,
-                                  max_size_bytes: int = 4 * 1024 * 1024,
+def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 4800,
+                                  max_size_bytes: int = 15 * 1024 * 1024,
                                   min_quality: int = 55) -> bytes:
-    """Resize + re-encode a JPEG so it fits WhatsApp's image delivery limits.
+    """Resize + re-encode a JPEG so it fits WaAPI's media delivery limits.
 
-    WhatsApp caps inline images around 5 MB and downscales anything very
-    large. Our indexed JPEGs are 250-300 DPI architectural sheets often
-    reaching 5-7 MB — WaAPI's send-image can reject these silently with
-    a 404. Compress to fit under `max_size_bytes` while staying readable.
+    Resolution doubled vs. the previous pass — max_dim 2400 → 4800,
+    ceiling 4 MB → 15 MB (WaAPI's stated limit is ~16 MB; we leave
+    a ~1 MB safety margin for multipart overhead). Quality ladder
+    starts at 90 so the first-try encoding is noticeably sharper on
+    construction drawings where dimension text was borderline
+    legible at q=85.
+
+    The iterative step-down preserves the original "best-effort,
+    never block the send" behavior: we try q=90 → 85 → 80 → 75 → 70
+    → 65 → min_quality and return the first encoding under the
+    ceiling. If even the lowest quality is oversized, we still ship
+    it (WaAPI may downscale further but at least the crew gets
+    SOMETHING).
     """
     try:
         from PIL import Image
@@ -13706,7 +13715,7 @@ def _compress_jpeg_for_whatsapp(src_bytes: bytes, max_dim: int = 2400,
             scale = max_dim / longest
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         # Iteratively lower quality until we fit.
-        for q in (85, 80, 75, 70, 65, min_quality):
+        for q in (90, 85, 80, 75, 70, 65, min_quality):
             buf = _io.BytesIO()
             img.save(buf, format="JPEG", quality=q, optimize=True)
             data = buf.getvalue()
