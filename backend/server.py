@@ -439,17 +439,48 @@ def format_phone(phone: str) -> str:
  
 # ==================== NYC BIN RESOLUTION ====================
  
+def _is_placeholder_bin(bin_str: str) -> bool:
+    """NYC DOB uses BINs of the form X000000 (e.g. 2000000 for the Bronx)
+    as placeholders when a building has no real BIN yet. Every DOB API
+    returns zero records against these. Treat them as "no BIN" rather
+    than a real lookup hit."""
+    if not bin_str or not str(bin_str).isdigit() or len(str(bin_str)) != 7:
+        return True
+    # First digit is borough code (1–5); remaining six must not all be 0
+    return str(bin_str)[1:] == "000000"
+
+
 async def fetch_nyc_bin_from_address(address: str) -> dict:
     """
-    Query NYC GeoSearch to resolve an address into a BIN + BBL.
-    Returns {"nyc_bin": str|None, "nyc_bbl": str|None, "track_dob_status": bool}
-    Tries multiple endpoints as fallbacks.
+    Query NYC GeoSearch to resolve an address into a BIN + BBL and a
+    canonical normalized address string. Returns:
+        {
+          "nyc_bin": str|None,          # None if placeholder or missing
+          "nyc_bbl": str|None,
+          "track_dob_status": bool,     # True only if we got a REAL BIN
+          "normalized_address": str|None,
+        }
+
+    Placeholder BINs (X000000) are REJECTED — stored as None — so the
+    caller falls back to address-based DOB queries and the diagnostic
+    UI correctly reports "No BIN on file" instead of "BIN 2000000 with
+    zero records".
+
+    The normalized_address (GeoSearch's canonical `label`, e.g.
+    "852 EAST 176 STREET, Bronx, NY, USA") gives the caller a clean
+    address string to store, so downstream Socrata LIKE queries match
+    DOB's canonical street forms like "EAST 176 STREET" instead of
+    failing on user shorthand like "E 176".
     """
-    result = {"nyc_bin": None, "nyc_bbl": None, "track_dob_status": False}
+    result = {
+        "nyc_bin": None,
+        "nyc_bbl": None,
+        "track_dob_status": False,
+        "normalized_address": None,
+    }
     if not address or len(address.strip()) < 5:
         return result
 
-    # Try multiple GeoSearch endpoints (primary + fallback)
     endpoints = [
         "https://geosearch.planninglabs.nyc/v2/search",
         "https://geosearch.planning.nyc.gov/v2/search",
@@ -463,7 +494,9 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
                     params={"text": address.strip(), "size": "1"},
                 )
                 if resp.status_code != 200:
-                    logger.warning(f"GeoSearch {endpoint} returned {resp.status_code} for '{address}'")
+                    logger.warning(
+                        f"GeoSearch {endpoint} returned {resp.status_code} for '{address}'"
+                    )
                     continue
 
                 data = resp.json()
@@ -473,18 +506,40 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
                     continue
 
                 props = features[0].get("properties", {})
-                pad_bin = props.get("pad_bin", "") or props.get("addendum", {}).get("pad", {}).get("bin", "")
-                pad_bbl = props.get("pad_bbl", "") or props.get("addendum", {}).get("pad", {}).get("bbl", "")
+                pad_bin = (
+                    props.get("pad_bin", "")
+                    or props.get("addendum", {}).get("pad", {}).get("bin", "")
+                )
+                pad_bbl = (
+                    props.get("pad_bbl", "")
+                    or props.get("addendum", {}).get("pad", {}).get("bbl", "")
+                )
+                label = (props.get("label") or "").strip() or None
 
-                # Validate BIN is 7 digits
-                if pad_bin and len(str(pad_bin)) == 7 and str(pad_bin).isdigit():
+                # Canonical address — always capture it. A clean street
+                # name unlocks the address-based DOB query fallback even
+                # when the BIN is a placeholder or missing.
+                if label:
+                    result["normalized_address"] = label
+
+                # Validate BIN: 7 digits, numeric, AND not a placeholder.
+                if pad_bin and not _is_placeholder_bin(str(pad_bin)):
                     result["nyc_bin"] = str(pad_bin)
                     result["track_dob_status"] = True
+                elif pad_bin:
+                    logger.info(
+                        f"GeoSearch returned placeholder BIN {pad_bin} for "
+                        f"'{address}' — treating as no BIN so address-based "
+                        f"DOB lookups are used instead."
+                    )
 
                 if pad_bbl:
                     result["nyc_bbl"] = str(pad_bbl)
 
-                logger.info(f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']}, BBL={result['nyc_bbl']} via {endpoint}")
+                logger.info(
+                    f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']} "
+                    f"BBL={result['nyc_bbl']} label={label!r} via {endpoint}"
+                )
                 return result
 
         except Exception as e:
@@ -3097,19 +3152,44 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["company_name"] = admin.get("company_name")
     project_dict["admin_id"] = admin.get("id")
     
-    # ── DOB: Auto-resolve NYC BIN from address ──
+    # ── DOB: Auto-resolve NYC BIN + canonical address from address ──
     project_dict["nyc_bin"] = None
     project_dict["nyc_bbl"] = None
     project_dict["track_dob_status"] = False
- 
+
     address_for_bin = project_dict.get("address") or project_dict.get("location") or ""
     if address_for_bin:
         bin_result = await fetch_nyc_bin_from_address(address_for_bin)
         project_dict["nyc_bin"] = bin_result["nyc_bin"]
         project_dict["nyc_bbl"] = bin_result["nyc_bbl"]
         project_dict["track_dob_status"] = bin_result["track_dob_status"]
+
+        # Upgrade the project's address to GeoSearch's canonical form
+        # (e.g. "852 E 176" → "852 EAST 176 STREET, Bronx, NY, USA").
+        # This is critical: downstream address-based DOB Socrata
+        # queries LIKE-match DOB's canonical street names, which use
+        # "EAST" not "E" and include "STREET". Without this upgrade,
+        # "852 E 176" finds nothing even though the building has
+        # permits filed under "852 EAST 176 STREET".
+        normalized = bin_result.get("normalized_address")
+        if normalized and normalized != project_dict.get("address"):
+            logger.info(
+                f"Normalized address '{project_dict.get('address')}' → "
+                f"'{normalized}'"
+            )
+            project_dict["address"] = normalized
+
         if bin_result["nyc_bin"]:
-            logger.info(f"Auto-resolved BIN {bin_result['nyc_bin']} for project '{project_dict.get('name')}'")
+            logger.info(
+                f"Auto-resolved BIN {bin_result['nyc_bin']} for project "
+                f"'{project_dict.get('name')}'"
+            )
+        else:
+            logger.info(
+                f"No real BIN resolved for project "
+                f"'{project_dict.get('name')}' — address-based DOB "
+                f"lookups will be used."
+            )
     # ── END DOB ──
 
     # ── Project classification ──
