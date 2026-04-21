@@ -10092,12 +10092,13 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return ""
 
     if record_type == "complaint":
-        comp_num = str(rec.get("complaint_number") or "").strip()
-        if comp_num:
-            return (
-                f"https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet"
-                f"?requestid=2&vlession=L&vlession={comp_num}"
-            )
+        # BIS has no public deep-link that takes a complaint number straight
+        # to a detail page — OverviewForComplaintServlet requires an
+        # internal `vlcompdetlkey` that isn't surfaced in Open Data. The
+        # old link used a bogus `vlession` parameter and BIS replied with
+        # "ALL KEYS CANNOT BE BLANK FOR COMPLAINT DETAILS". Best we can do
+        # is drop the user on the complaints-by-BIN list view — the
+        # specific complaint will be one row down.
         if bin_val:
             return (
                 f"https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
@@ -10106,6 +10107,17 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return ""
 
     if record_type in ("permit", "job_status"):
+        # Use the real doc number from the record — BIS returns
+        # "{JOB} 01 NOT FOUND" when the job exists but that specific doc
+        # sub-filing (01, 02, 03, ...) doesn't. Default to 01 only if the
+        # record doesn't tell us otherwise.
+        doc_num = str(
+            rec.get("doc__")
+            or rec.get("doc_number")
+            or rec.get("docnum")
+            or "01"
+        ).strip().zfill(2)
+
         if is_dob_now_job and job_clean:
             # DOB NOW Public Portal now requires NYC.ID login (since June 2024)
             # Fall through to BIS lookup by job number or BIN instead
@@ -10114,14 +10126,14 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
             if bin_val:
                 return (
                     f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
-                    f"?passjobnumber={base_job_now}&passdocnumber=01&requestid=1"
+                    f"?passjobnumber={base_job_now}&passdocnumber={doc_num}&requestid=1"
                 )
         # BIS legacy: direct job query, no login required
         base_job = job_num.split("-")[0].strip() if job_num else ""
         if base_job:
             return (
                 f"https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
-                f"?passjobnumber={base_job}&passdocnumber=01&requestid=1"
+                f"?passjobnumber={base_job}&passdocnumber={doc_num}&requestid=1"
             )
         if bin_val:
             return (
@@ -10688,12 +10700,28 @@ async def get_dob_logs(
     serialized_logs = []
     for log in logs:
         try:
+            raw = log.get("raw_record") or {}
+            rtype = log.get("record_type")
+
+            # Broken DOB links written before the fix — rebuild on read
+            # from the raw record so existing rows get working URLs
+            # without a migration. The old complaint URL used a bogus
+            # `vlession` parameter that BIS rejects with "ALL KEYS
+            # CANNOT BE BLANK"; the old permit URL hardcoded
+            # passdocnumber=01 which fails for filings on doc 02+.
+            if raw and rtype in ("complaint", "permit", "job_status"):
+                try:
+                    fresh_link = _build_dob_link(raw, rtype)
+                    if fresh_link:
+                        log["dob_link"] = fresh_link
+                except Exception:
+                    pass
+
             # Inspection records written before the job-prefix decoder landed
             # stored inspection_type as phase-only ("Initial"). Re-enrich on
             # read from the raw DOB record so existing rows show the work
             # category ("Plumbing — Initial") without a migration.
-            if log.get("record_type") == "inspection":
-                raw = log.get("raw_record") or {}
+            if rtype == "inspection":
                 phase = log.get("inspection_type") or ""
                 if raw and ("—" not in phase):
                     job_id = (
