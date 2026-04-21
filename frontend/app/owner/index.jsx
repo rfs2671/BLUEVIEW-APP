@@ -552,7 +552,13 @@ export default function OwnerPortalScreen() {
                   </Pressable>
                 </View>
 
-                <View style={styles.modalForm}>
+                <ScrollView
+                  style={styles.modalScroll}
+                  contentContainerStyle={styles.modalFormScroll}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                  nestedScrollEnabled
+                >
                   <View style={[styles.inputGroup, { zIndex: 100 }]}>
                     <Text style={styles.inputLabel}>COMPANY NAME (GC LICENSE LOOKUP)</Text>
                     <GCAutocomplete
@@ -589,7 +595,7 @@ export default function OwnerPortalScreen() {
                     onPress={handleCreateCompany}
                     style={styles.submitButton}
                   />
-                </View>
+                </ScrollView>
               </GlassCard>
             </View>
           </KeyboardAvoidingView>
@@ -630,7 +636,13 @@ export default function OwnerPortalScreen() {
                   </Pressable>
                 </View>
 
-                <View style={styles.modalForm}>
+                <ScrollView
+                  style={styles.modalScroll}
+                  contentContainerStyle={styles.modalFormScroll}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                  nestedScrollEnabled
+                >
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>COMPANY</Text>
                     <Pressable
@@ -705,7 +717,7 @@ export default function OwnerPortalScreen() {
                     onPress={handleCreateAdmin}
                     style={styles.submitButton}
                   />
-                </View>
+                </ScrollView>
               </GlassCard>
             </View>
           </KeyboardAvoidingView>
@@ -1145,6 +1157,11 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     padding: spacing.xl,
+    // Cap modal card height so the internal ScrollView can actually
+    // scroll instead of pushing content off the viewport on narrow /
+    // keyboard-up devices.
+    maxHeight: '90%',
+    overflow: 'hidden',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -1159,6 +1176,14 @@ const styles = StyleSheet.create({
   },
   modalForm: {
     gap: spacing.md,
+  },
+  modalScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  modalFormScroll: {
+    gap: spacing.md,
+    paddingBottom: spacing.xxl + spacing.lg,
   },
   inputGroup: {
     gap: spacing.xs,
