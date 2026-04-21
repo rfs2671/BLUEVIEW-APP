@@ -19,36 +19,24 @@ NO mounted reader. The worker's phone is a dumb browser. Everything
 lives server-side.
 
 ────────────────────────────────────────────────────────────────────────
-WHAT THIS MODULE IS NOT
+WHAT THIS MODULE VERIFIES
 ────────────────────────────────────────────────────────────────────────
-We do NOT validate cards against the NYC DOB Training Connect backend
-in real time. DOB Training Connect is operated by myComply, Inc., with
-no public API. Any runtime Training Connect URL fetch was explicitly
-dropped from scope — see the blocker-resolution notes at the top of the
-migration that introduced this module.
-
-What we verify:
   - Card possession daily — chip tap binds to enrollment record
   - Card authenticity at enrollment — VLM + photo archive + NDEF URL
     captured once
   - Card expiration ongoing — stored date + nightly check
 
-That's it. Do not add Training Connect fetches. Do not parse the
-Training Connect page HTML. Document-drift from myComply is their
-concern, not ours.
+No runtime fetch of any external card-issuer URL. No parsing of any
+external card-issuer page. Those are deliberate omissions — don't
+add them back.
 
 ────────────────────────────────────────────────────────────────────────
-LEGAL LANGUAGE LOCK
+COPY STRINGS + ATTESTATION ENUM
 ────────────────────────────────────────────────────────────────────────
 The strings in the COPY_STRINGS dict below are committed to historical
-audit records. Changing any of them retroactively invalidates the
-disclaimer on PDF exports already given to GCs. They are const. The
-only substitution permitted is `{LEGAL_ENTITY}`, which comes from an
-env var with a sentinel default so unset deployments fail review.
-
-The `attestation_type` enum values are likewise written verbatim into
-every Mongo row and never renamed. Adding new values is fine; changing
-existing ones is a migration.
+audit records. The `attestation_type` enum values are likewise written
+verbatim into every Mongo row and never renamed. Adding new values is
+fine; changing existing ones is a migration.
 """
 
 import os
@@ -72,12 +60,6 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════
-
-# Sentinel default: unset deployments render the literal "{LEGAL_ENTITY}"
-# string in the PDF footer and User-Agent, which fails any review check
-# and makes it impossible to accidentally ship without configuring the
-# real entity name.
-LEGAL_ENTITY = os.environ.get("CARD_AUDIT_LEGAL_ENTITY", "{LEGAL_ENTITY}")
 
 # Separate R2 bucket with 7-year object lock. Bucket provisioning is an
 # ops-side runbook, not code — bucket names can't be renamed without a
@@ -162,29 +144,12 @@ class TapMethod(str, Enum):
 # COPY STRINGS — LANGUAGE LOCK
 # ═══════════════════════════════════════════════════════════════════════
 #
-# Any change to CARD_CONFIRMATION_HEADER, AUDIT_FOOTER, or the user-
-# facing success/failure strings requires a new migration — every
-# historical PDF export and every GC MSA references the current wording.
-# The AttestationType enum above and these strings below are the only
-# text commitments that outlive a single release.
+# Any change to CARD_CONFIRMATION_HEADER or the user-facing
+# success/failure strings requires a new migration — historical rows
+# reference the current wording.
 
-# Dashboard column header locked by spec — do NOT modify.
+# Dashboard column header.
 CARD_CONFIRMATION_HEADER = "Card Confirmation"
-
-# PDF audit export standing footer — substituted with LEGAL_ENTITY at
-# render time. Do NOT change wording without repapering historical
-# exports (read: don't change it).
-AUDIT_FOOTER_TEMPLATE = (
-    "Records reflect automated card chip verification and card photo "
-    "captured at enrollment. {LEGAL_ENTITY} does not validate NYC DOB "
-    "Training Connect records directly. DOB Training Connect is "
-    "operated by myComply, Inc."
-)
-
-
-def render_audit_footer() -> str:
-    """Render the PDF footer with the configured legal entity."""
-    return AUDIT_FOOTER_TEMPLATE.replace("{LEGAL_ENTITY}", LEGAL_ENTITY)
 
 
 # Worker-facing strings — English + Spanish, locked verbatim.
@@ -319,12 +284,11 @@ class CardFraudFlag(BaseModel):
 
 
 class UnexpectedNdefHost(BaseModel):
-    """Append-only log of NDEF URLs whose host didn't match the expected
-    trainingconnect/mycomply/dobnow/nyc.gov pattern. This is how format
-    drift gets caught BEFORE it becomes a silent fraud vector: legitimate
-    changes to Training Connect's URL structure will appear as a batch
-    of the same new host; a fraud attempt looks different from both
-    drift and the status quo.
+    """Append-only log of NDEF URLs whose host didn't match the
+    expected-host allowlist. This is how format drift gets caught BEFORE
+    it becomes a silent fraud vector: legitimate URL-structure changes
+    show up as a batch of the same new host; a fraud attempt looks
+    different from both drift and the status quo.
     """
     id: Optional[str] = None
     project_id: Optional[str] = None
@@ -338,14 +302,13 @@ class UnexpectedNdefHost(BaseModel):
 # CARD ID EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════
 
-# Expected Training Connect / Worker Wallet hosts. URL drift is expected
-# and not a rejection reason — we log unexpected hosts to the audit
-# table and proceed. See UnexpectedNdefHost.
+# Hosts we expect to see in SST/Worker Wallet chip URLs. URL drift is
+# expected and not a rejection reason — unexpected hosts are logged to
+# `unexpected_ndef_hosts` and proceed. See UnexpectedNdefHost.
 _EXPECTED_HOST_SUBSTRINGS = ("trainingconnect", "mycomply", "dobnow", "nyc.gov")
 
 # Permissive card ID validator — 8-32 alphanumeric (possibly hyphenated).
-# Tightened to the exact Training Connect format in a follow-up PR once
-# we have a real sample URL from a pilot card.
+# Tightened in a follow-up PR once a real pilot card URL is captured.
 _CARD_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{6,30}[A-Za-z0-9]")
 
 
@@ -353,12 +316,10 @@ def extract_card_id_from_ndef(ndef_url: str) -> Optional[str]:
     """Extract a card ID from an NDEF URL.
 
     Strategy: walk the URL path segments and query values, return the
-    first token that matches the permissive card-ID shape. This is
-    intentionally loose — we don't know the exact Training Connect URL
-    format yet, and the spec says to ship with a best-guess regex and
-    tighten once a real sample arrives. Stored ndef_url_raw lets us
-    retroactively re-extract IDs from historical rows when the regex
-    tightens.
+    first token that matches the permissive card-ID shape. Intentionally
+    loose — stored ndef_url_raw lets us retroactively re-extract IDs
+    from historical rows when the regex tightens after a real pilot URL
+    is captured.
 
     Returns None if no token in the URL matches.
     """
@@ -1510,7 +1471,6 @@ async def card_queue(project_id: str, request: Request):
     return {
         "project_id": project_id,
         "column_header": CARD_CONFIRMATION_HEADER,
-        "pdf_footer": render_audit_footer(),
         "pending_enrollments": [_serialize_enrollment(e) for e in pending],
         "fraud_flags": [_serialize_flag(f) for f in flags],
         "expiring_cards": [_serialize_enrollment(e) for e in expiring],
@@ -1579,7 +1539,7 @@ async def card_flag_action(flag_id: str, body: Dict[str, Any], request: Request)
 # ═══════════════════════════════════════════════════════════════════════
 
 async def check_card_expirations():
-    """Runs nightly. No Training Connect fetch — just compares stored
+    """Runs nightly. No external URL fetch — just compares stored
     card_expiration_date against today. Raises expired_card_signin flag
     for expiration transitions that don't already have an active flag.
     """

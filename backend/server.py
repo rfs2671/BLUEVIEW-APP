@@ -18285,8 +18285,7 @@ async def startup_event():
         replace_existing=True,
     )
 
-    # Card audit nightly jobs. See backend/card_audit.py for rationale;
-    # the removed Training Connect live-validation job is deliberate.
+    # Card audit nightly jobs. See backend/card_audit.py.
     try:
         import card_audit as _card_audit  # noqa: E402
         scheduler.add_job(
@@ -18333,14 +18332,8 @@ async def startup_event():
         )
         await _card_audit.ensure_indexes()
         logger.info(
-            f"🪪 card_audit wired. legal_entity={_card_audit.LEGAL_ENTITY!r} "
-            f"bucket={_card_audit.CARD_AUDIT_BUCKET_NAME!r}"
+            f"🪪 card_audit wired. bucket={_card_audit.CARD_AUDIT_BUCKET_NAME!r}"
         )
-        if _card_audit.LEGAL_ENTITY == "{LEGAL_ENTITY}":
-            logger.warning(
-                "⚠️  CARD_AUDIT_LEGAL_ENTITY env var is unset — PDF footer "
-                "will render the placeholder string. Set this before any GC sees a report."
-            )
         if not _card_audit.CARD_AUDIT_BUCKET_NAME:
             logger.warning(
                 "⚠️  CARD_AUDIT_BUCKET_NAME env var is unset — card photos "
