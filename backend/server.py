@@ -10688,6 +10688,42 @@ async def get_dob_logs(
     serialized_logs = []
     for log in logs:
         try:
+            # Inspection records written before the job-prefix decoder landed
+            # stored inspection_type as phase-only ("Initial"). Re-enrich on
+            # read from the raw DOB record so existing rows show the work
+            # category ("Plumbing — Initial") without a migration.
+            if log.get("record_type") == "inspection":
+                raw = log.get("raw_record") or {}
+                phase = log.get("inspection_type") or ""
+                if raw and ("—" not in phase):
+                    job_id = (
+                        log.get("linked_job_number")
+                        or raw.get("job_id")
+                        or raw.get("job_filing_number")
+                        or raw.get("job_number")
+                        or ""
+                    )
+                    category = _decode_job_prefix(str(job_id))
+                    raw_phase = (
+                        raw.get("inspection_type")
+                        or raw.get("job_progress")
+                        or phase
+                    )
+                    if category and raw_phase:
+                        log["inspection_type"] = f"{category} — {raw_phase}"
+                    elif category:
+                        log["inspection_type"] = f"{category} Inspection"
+                    # Regenerate summary so the card text reflects the category
+                    result = raw.get("result") or log.get("inspection_result") or "Pending"
+                    label_phase = raw_phase or "General"
+                    if category and raw_phase:
+                        label = f"{category} — {raw_phase} Inspection"
+                    elif category:
+                        label = f"{category} Inspection"
+                    else:
+                        label = f"{label_phase} Inspection"
+                    job_str = f" (Job {job_id})" if job_id else ""
+                    log["ai_summary"] = f"{label}{job_str} — Result: {result}"
             serialized_logs.append(DOBLogResponse(**serialize_id(dict(log))))
         except Exception as e:
             logger.error(f"Failed to serialize dob_log {log.get('_id')}: {e}")
