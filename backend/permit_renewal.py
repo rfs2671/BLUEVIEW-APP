@@ -175,6 +175,49 @@ def _to_oid(s: str):
 # DOB BIS LICENSE SCRAPER
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _normalize_gc_name(raw: str) -> str:
+    """Normalize a company name for NYC Open Data GC license LIKE queries.
+
+    The dataset stores names without trailing punctuation and without
+    the leading/trailing suffix markers (INC, LLC, CORP, etc). Callers
+    often pass names with a trailing period ("Blueview Construction Inc.")
+    or extra whitespace — those should match. We:
+      1. Upper-case + strip whitespace.
+      2. Strip trailing non-alphanumeric chars (periods, commas, etc).
+      3. Collapse internal whitespace.
+    Do NOT strip INC/LLC/CORP — customers often DO have that in the
+    dataset name; the caller pipeline tries progressively shorter
+    fallbacks on miss.
+    """
+    n = (raw or "").upper().strip()
+    if not n:
+        return ""
+    # Trim trailing non-alphanumeric (., ,, ;, etc.)
+    while n and not n[-1].isalnum():
+        n = n[:-1]
+    # Collapse internal whitespace
+    n = " ".join(n.split())
+    return n
+
+
+def _gc_name_fallbacks(canonical: str) -> List[str]:
+    """Build a short list of progressively looser LIKE candidates so
+    "Blueview Construction Inc" also matches a dataset row of just
+    "Blueview Construction" — but we don't spam the API with every
+    possible prefix. First hit wins."""
+    if not canonical:
+        return []
+    out = [canonical]
+    # Strip common corporate-form suffixes
+    for suf in (" INC", " LLC", " CORP", " CO", " LLP", " LP", " LTD"):
+        if canonical.endswith(suf):
+            trimmed = canonical[: -len(suf)].rstrip()
+            if trimmed and trimmed not in out:
+                out.append(trimmed)
+            break
+    return out
+
+
 async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
     """
     Look up a General Contractor license by business name using NYC Open Data.
@@ -183,22 +226,33 @@ async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
     The Open Data endpoint is free, unauthenticated, and returns JSON.
 
     Signature is preserved so all existing callers continue to work. Insurance
-    records are always empty from this function now — insurance is managed via
-    manual entry in Settings (see PUT /api/admin/company/insurance/manual).
+    records are always empty from this function now — insurance is managed
+    out-of-band by the bis_scraper worker, or via manual entry in Settings
+    (see PUT /api/admin/company/insurance/manual).
+
+    Name matching: the dataset's business_name field is uppercase, with no
+    trailing period. We normalize the caller's input before the LIKE and
+    retry with a corporate-suffix-stripped fallback if the first pass
+    returns zero records.
     """
     import httpx
 
-    name = (company_name or "").upper().strip()
-    if not name:
+    canonical = _normalize_gc_name(company_name)
+    if not canonical:
         return None
 
-    logger.info(f"NYC Open Data: looking up GC license for '{name}'")
+    candidates = _gc_name_fallbacks(canonical)
+    logger.info(
+        f"NYC Open Data GC lookup — raw={company_name!r} "
+        f"normalized={canonical!r} candidates={candidates}"
+    )
 
-    # Escape single quotes for SoQL LIKE
-    safe_name = name.replace("'", "''")
-    where = f"license_type='GENERAL CONTRACTOR' AND upper(business_name) LIKE '%{safe_name}%'"
-
-    try:
+    async def _query(name: str):
+        safe = name.replace("'", "''")
+        where = (
+            f"license_type='GENERAL CONTRACTOR' "
+            f"AND upper(business_name) LIKE '%{safe}%'"
+        )
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 NYC_OPEN_DATA_GC_LICENSES_URL,
@@ -206,64 +260,82 @@ async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
             )
             if resp.status_code != 200:
                 logger.warning(
-                    f"NYC Open Data GC lookup returned {resp.status_code} for '{name}'"
+                    f"NYC Open Data GC lookup returned {resp.status_code} "
+                    f"for {name!r}"
                 )
                 return None
+            return resp.json() or []
 
-            records = resp.json()
-            if not records:
-                return None
+    try:
+        records = None
+        matched_name = None
+        for name in candidates:
+            found = await _query(name)
+            if found:
+                records = found
+                matched_name = name
+                break
 
-            # Prefer an ACTIVE license if any are present; otherwise first result
-            def _status(r):
-                return (r.get("license_status") or "").upper()
-
-            active = [r for r in records if _status(r) == "ACTIVE"]
-            chosen = active[0] if active else records[0]
-
-            licensee = f"{chosen.get('first_name', '')} {chosen.get('last_name', '')}".strip()
-
-            info = GCLicenseInfo(
-                license_number=(chosen.get("license_number") or "").strip() or None,
-                license_type="General Contractor",
-                licensee_name=licensee or None,
-                business_name=(chosen.get("business_name") or "").strip() or None,
-                license_status=(chosen.get("license_status") or "").strip() or None,
-                # NYC Open Data's GC dataset does not expose expiration — leave None.
-                license_expiration=None,
-                # Insurance data is no longer auto-fetched; use manual entry.
-                insurance_records=[],
+        if not records:
+            logger.info(
+                f"NYC Open Data GC lookup — no records for any candidate "
+                f"of {company_name!r}"
             )
+            return None
+        logger.info(
+            f"NYC Open Data GC lookup — matched on {matched_name!r} "
+            f"({len(records)} rows)"
+        )
 
-            # Cache into gc_licenses so autocomplete still works.
-            try:
-                now = datetime.now(timezone.utc)
-                # Database handle is on the permit_renewal module at import time via server,
-                # but we may not have it here. Instead, the autocomplete endpoint already
-                # handles its own caching path, so we skip silently if the db isn't available.
-                from server import db as _db  # type: ignore
-                await _db.gc_licenses.update_one(
-                    {"license_number": info.license_number},
-                    {"$set": {
-                        "license_number": info.license_number,
-                        "business_name": info.business_name or "",
-                        "licensee_name": info.licensee_name or "",
-                        "license_type": "GC",
-                        "license_status": info.license_status or "",
-                        "license_expiration": info.license_expiration,
-                        "source": "nyc_open_data",
-                        "last_synced": now,
-                    }, "$setOnInsert": {"created_at": now, "insurance_records": []}},
-                    upsert=True,
-                )
-            except Exception:
-                # Non-fatal — caching is best-effort
-                pass
+        # Prefer an ACTIVE license if any are present; otherwise first result
+        def _status(r):
+            return (r.get("license_status") or "").upper()
 
-            return info
+        active = [r for r in records if _status(r) == "ACTIVE"]
+        chosen = active[0] if active else records[0]
+
+        licensee = f"{chosen.get('first_name', '')} {chosen.get('last_name', '')}".strip()
+
+        info = GCLicenseInfo(
+            license_number=(chosen.get("license_number") or "").strip() or None,
+            license_type="General Contractor",
+            licensee_name=licensee or None,
+            business_name=(chosen.get("business_name") or "").strip() or None,
+            license_status=(chosen.get("license_status") or "").strip() or None,
+            # NYC Open Data's GC dataset does not expose expiration — leave None.
+            license_expiration=None,
+            # Insurance data is no longer auto-fetched; use manual entry.
+            insurance_records=[],
+        )
+
+        # Cache into gc_licenses so autocomplete still works.
+        try:
+            now = datetime.now(timezone.utc)
+            from server import db as _db  # type: ignore
+            await _db.gc_licenses.update_one(
+                {"license_number": info.license_number},
+                {"$set": {
+                    "license_number": info.license_number,
+                    "business_name": info.business_name or "",
+                    "licensee_name": info.licensee_name or "",
+                    "license_type": "GC",
+                    "license_status": info.license_status or "",
+                    "license_expiration": info.license_expiration,
+                    "source": "nyc_open_data",
+                    "last_synced": now,
+                }, "$setOnInsert": {"created_at": now, "insurance_records": []}},
+                upsert=True,
+            )
+        except Exception:
+            # Non-fatal — caching is best-effort
+            pass
+
+        return info
 
     except Exception as e:
-        logger.error(f"NYC Open Data GC lookup error for '{name}': {e}")
+        logger.error(
+            f"NYC Open Data GC lookup error for {company_name!r}: {e}"
+        )
         return None
 
 

@@ -2679,9 +2679,12 @@ async def refresh_admin_company_insurance(current_user=Depends(get_admin_user)):
     # implementation (which was rewritten in Commit 1 to hit Open Data).
     try:
         from permit_renewal import scrape_gc_license_info
-        gc_info = await scrape_gc_license_info(
-            company.get("gc_business_name") or company.get("name", "")
+        lookup_name = company.get("gc_business_name") or company.get("name", "")
+        logger.info(
+            f"Insurance refresh — company_id={company_id} license={lic_num} "
+            f"lookup_name={lookup_name!r}"
         )
+        gc_info = await scrape_gc_license_info(lookup_name)
         update_fields = {
             "gc_last_verified": now,
             "updated_at": now,
