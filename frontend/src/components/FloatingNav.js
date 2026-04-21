@@ -84,10 +84,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
       onToast && onToast('error', 'New passwords do not match');
       return;
     }
-    if (newPassword.length < 6) {
-      onToast && onToast('error', 'Password must be at least 6 characters');
-      return;
-    }
+    // Password min-length check removed (temporary regression — see backend).
     setSavingPassword(true);
     try {
       await authAPI.updatePassword({ current_password: currentPassword, new_password: newPassword });

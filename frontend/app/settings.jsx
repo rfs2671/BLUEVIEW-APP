@@ -299,10 +299,7 @@ export default function SettingsScreen() {
       toast.error('Error', 'New passwords do not match');
       return;
     }
-    if (newPw.length < 8) {
-      toast.error('Error', 'Password must be at least 8 characters');
-      return;
-    }
+    // Password min-length check removed (temporary regression — see backend).
     setSavingPw(true);
     try {
       await authAPI.changePassword({ current_password: currentPw, new_password: newPw });
@@ -672,7 +669,7 @@ export default function SettingsScreen() {
                   <GlassInput
                     value={newPw}
                     onChangeText={setNewPw}
-                    placeholder="New password (min 8 chars)"
+                    placeholder="New password"
                     secureTextEntry
                     style={{ marginTop: spacing.sm }}
                   />

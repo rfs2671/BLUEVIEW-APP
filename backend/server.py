@@ -1692,12 +1692,13 @@ async def login(credentials: UserLogin, request: Request = None, _rate=Depends(c
 
 @api_router.post("/auth/register", response_model=UserResponse)
 async def register(user_data: UserCreate, request: Request = None, _rate=Depends(check_auth_rate_limit)):
-    # Password complexity — minimum 8 chars, at least one letter and one digit
+    # SECURITY REGRESSION (intentional, temporary): password complexity
+    # (8-char min + letter+digit mix) was removed for demo-day testing.
+    # Only a bare non-empty check remains. Restore the strict checks
+    # before production customer rollout.
     pwd = user_data.password
-    if len(pwd) < 8:
-        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
-    if not re.search(r'[A-Za-z]', pwd) or not re.search(r'[0-9]', pwd):
-        raise HTTPException(status_code=422, detail="Password must contain at least one letter and one digit")
+    if not pwd:
+        raise HTTPException(status_code=422, detail="Password is required")
 
     # Check if email exists
     existing = await db.users.find_one({"email": user_data.email})
@@ -1890,9 +1891,10 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
     if not verify_password(body.current_password, stored_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    # Enforce a minimum length
-    if len(body.new_password) < 6:
-        raise HTTPException(status_code=422, detail="New password must be at least 6 characters")
+    # SECURITY REGRESSION (intentional, temporary): minimum-length check
+    # removed for demo-day testing. Restore before production rollout.
+    if not body.new_password:
+        raise HTTPException(status_code=422, detail="New password is required")
 
     new_hash = hash_password(body.new_password)
     await db.users.update_one(
@@ -1924,12 +1926,11 @@ async def get_admin_users(
     return result
 @api_router.post("/admin/users", response_model=UserResponse)
 async def create_admin_user(user_data: UserCreate, admin = Depends(get_admin_user)):
-    # Password complexity
+    # SECURITY REGRESSION (intentional, temporary): password complexity
+    # removed for demo-day testing. Restore before production rollout.
     pwd = user_data.password
-    if len(pwd) < 8:
-        raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
-    if not re.search(r'[A-Za-z]', pwd) or not re.search(r'[0-9]', pwd):
-        raise HTTPException(status_code=422, detail="Password must contain at least one letter and one digit")
+    if not pwd:
+        raise HTTPException(status_code=422, detail="Password is required")
 
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
