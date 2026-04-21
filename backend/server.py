@@ -6445,21 +6445,32 @@ async def set_site_device_subfolders(
 async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
     """Link a Dropbox folder to a project"""
     folder_path = data.get("folder_path")
-    if not folder_path:
+    if folder_path is None or (isinstance(folder_path, str) and not folder_path.strip()):
         raise HTTPException(status_code=400, detail="folder_path required")
-    
+
+    # Normalize to Dropbox's expected shape so downstream list_folder
+    # calls don't reject with malformed_path. Root is stored as "",
+    # non-root paths get a leading "/" and no trailing "/".
+    norm = str(folder_path).strip()
+    if norm == "/":
+        norm = ""
+    elif norm and not norm.startswith("/"):
+        norm = "/" + norm
+    if norm != "" and norm.endswith("/"):
+        norm = norm.rstrip("/")
+
     now = datetime.now(timezone.utc)
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
         {"$set": {
-            "dropbox_folder_path": folder_path,
+            "dropbox_folder_path": norm,
             "dropbox_linked_at": now,
             "dropbox_linked_by": current_user.get("id"),
             "updated_at": now,
         }}
     )
-    
-    return {"message": "Dropbox folder linked", "folder_path": folder_path}
+
+    return {"message": "Dropbox folder linked", "folder_path": norm}
 
 @api_router.get("/projects/{project_id}/dropbox-files")
 async def get_project_dropbox_files(project_id: str, current_user = Depends(get_current_user)):
@@ -6533,16 +6544,47 @@ async def get_project_dropbox_files(project_id: str, current_user = Depends(get_
     if not folder_path:
         return []
 
+    # Dropbox quirk: root is "" NOT "/". Passing "/" returns 400
+    # malformed_path. Non-root paths must start with "/" and not end
+    # with one. Normalize before calling.
+    norm_folder = (folder_path or "").strip()
+    if norm_folder in ("/", ""):
+        norm_folder = ""
+    elif not norm_folder.startswith("/"):
+        norm_folder = "/" + norm_folder
+    if norm_folder != "" and norm_folder.endswith("/"):
+        norm_folder = norm_folder.rstrip("/")
+
     # Site devices need a RECURSIVE listing so we can see files inside
     # the allowed subfolders, not just top-level entries.
     response = await dropbox_api_call(
         company_id, "post",
         "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": folder_path, "recursive": bool(is_site_device)}
+        json={"path": norm_folder, "recursive": bool(is_site_device)}
     )
 
     if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to list files")
+        body_text = ""
+        try:
+            body_text = response.text[:500]
+        except Exception:
+            pass
+        logger.error(
+            f"Dropbox dropbox-files list_folder failed — company={company_id} "
+            f"project={project_id} path={norm_folder!r} status={response.status_code} "
+            f"body={body_text!r}"
+        )
+        detail = "Failed to list files"
+        try:
+            err = response.json()
+            summary = err.get("error_summary") or ""
+            if "not_found" in summary:
+                detail = f"Dropbox folder {norm_folder!r} not found. Re-link the project to a valid folder."
+            elif summary:
+                detail = f"Dropbox error: {summary}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail=detail)
 
     data = response.json()
     files = []
