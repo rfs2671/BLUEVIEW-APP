@@ -7,6 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   StyleSheet,
+  Platform,
 } from 'react-native';
 import { Building2 } from 'lucide-react-native';
 import apiClient from '../utils/api';
@@ -125,7 +126,13 @@ export default function GCAutocomplete({
               return (
                 <Pressable
                   style={s.suggestionRow}
-                  onPress={() => handleSelect(item)}
+                  // Web: TextInput onBlur fires on mousedown before
+                  // onPress, closing the dropdown — the user has to
+                  // click twice. Select on pressIn to beat the blur.
+                  // Mobile onPress is unchanged (touch-start would
+                  // fire too eagerly).
+                  onPress={Platform.OS !== 'web' ? () => handleSelect(item) : undefined}
+                  onPressIn={Platform.OS === 'web' ? () => handleSelect(item) : undefined}
                 >
                   <Building2 size={14} strokeWidth={1.5} color={colors.text.muted} />
                   <View style={s.suggestionTextWrap}>

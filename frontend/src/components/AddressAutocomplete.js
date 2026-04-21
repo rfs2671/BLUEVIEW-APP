@@ -7,6 +7,7 @@ import {
   FlatList,
   ActivityIndicator,
   StyleSheet,
+  Platform,
 } from 'react-native';
 import { MapPin } from 'lucide-react-native';
 import apiClient from '../utils/api';
@@ -102,7 +103,14 @@ export default function AddressAutocomplete({
             renderItem={({ item }) => (
               <Pressable
                 style={s.suggestionRow}
-                onPress={() => handleSelect(item)}
+                // Web: the TextInput's onBlur fires on mousedown before
+                // onPress registers, closing the dropdown out from under
+                // the click — user has to click twice. Handle selection
+                // on pressIn (= onMouseDown) to beat the blur race.
+                // Mobile: onPress stays correct (onPressIn would fire
+                // on touch-start before the user has committed).
+                onPress={Platform.OS !== 'web' ? () => handleSelect(item) : undefined}
+                onPressIn={Platform.OS === 'web' ? () => handleSelect(item) : undefined}
               >
                 <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                 <View style={s.suggestionTextWrap}>
