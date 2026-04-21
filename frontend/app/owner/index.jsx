@@ -436,7 +436,13 @@ export default function OwnerPortalScreen() {
                           <Building2 size={18} strokeWidth={1.5} color={colors.text.secondary} />
                         </IconPod>
                         <View style={styles.companyInfo}>
-                          <Text style={styles.companyName}>{company.name}</Text>
+                          <Text
+                            style={styles.companyName}
+                            numberOfLines={1}
+                            ellipsizeMode="tail"
+                          >
+                            {company.name}
+                          </Text>
                           <Text style={styles.companyMeta}>
                             {companyAdminCount} admin{companyAdminCount !== 1 ? 's' : ''}
                           </Text>
@@ -1014,6 +1020,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '500',
     color: colors.text.primary,
+    // Allow ~25 chars before truncation at current font size.
+    // flex:1 keeps the text responsive; maxWidth caps the cell
+    // before it pushes the row actions off-screen.
+    flex: 1,
+    maxWidth: 200,
   },
   companyMeta: {
     fontSize: 13,
