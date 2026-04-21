@@ -6223,29 +6223,90 @@ async def dropbox_api_call(company_id: str, method: str, url: str, **kwargs):
 
 @api_router.get("/dropbox/folders")
 async def get_dropbox_folders(path: str = "", current_user = Depends(get_current_user)):
-    """Get Dropbox folders for selection"""
+    """Get Dropbox folders for selection.
+
+    Dropbox quirk: the root path MUST be the empty string, NOT '/'. If the
+    client passes '/', Dropbox returns 400 malformed_path. We also include
+    shared and mounted folders so users of Dropbox Business accounts see
+    team-shared folders in the picker.
+    """
     company_id = get_user_company_id(current_user)
-    
-    response = await dropbox_api_call(
-        company_id, "post",
-        "https://api.dropboxapi.com/2/files/list_folder",
-        json={"path": path or "", "recursive": False, "include_mounted_folders": True}
-    )
-    
+
+    # Normalize the path — Dropbox is strict here.
+    norm_path = (path or "").strip()
+    if norm_path in ("/", ""):
+        norm_path = ""  # root
+    elif not norm_path.startswith("/"):
+        norm_path = "/" + norm_path
+    # Strip trailing slash for non-root paths
+    if norm_path != "" and norm_path.endswith("/"):
+        norm_path = norm_path.rstrip("/")
+
+    try:
+        response = await dropbox_api_call(
+            company_id, "post",
+            "https://api.dropboxapi.com/2/files/list_folder",
+            json={
+                "path": norm_path,
+                "recursive": False,
+                "include_mounted_folders": True,
+                "include_non_downloadable_files": False,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Dropbox folders request blew up — company={company_id} path={norm_path!r} err={e}"
+        )
+        raise HTTPException(status_code=500, detail=f"Dropbox request failed: {e}")
+
     if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to list folders")
-    
+        # Surface the actual Dropbox error so the UI / logs tell us what broke
+        # (bad_path, expired_token, insufficient_scope, etc.) instead of a
+        # generic 400 that forces us to guess.
+        body_text = ""
+        try:
+            body_text = response.text[:500]
+        except Exception:
+            pass
+        logger.error(
+            f"Dropbox list_folder failed — company={company_id} path={norm_path!r} "
+            f"status={response.status_code} body={body_text!r}"
+        )
+        # Parse Dropbox's JSON error to produce a user-facing message.
+        detail = "Failed to list folders"
+        try:
+            err = response.json()
+            summary = err.get("error_summary") or ""
+            tag = (err.get("error", {}) or {}).get(".tag") or ""
+            if "insufficient_scope" in summary or "missing_scope" in summary:
+                detail = (
+                    "Dropbox app is missing the files.metadata.read permission. "
+                    "Disconnect and reconnect, or check the Dropbox app permissions."
+                )
+            elif "expired_access_token" in summary or "invalid_access_token" in summary:
+                detail = "Dropbox token expired — please reconnect Dropbox."
+            elif tag == "path" or "path/" in summary:
+                detail = f"Dropbox rejected path {norm_path!r}: {summary or 'not_found'}"
+            elif summary:
+                detail = f"Dropbox error: {summary}"
+        except Exception:
+            if body_text:
+                detail = f"Dropbox error: {body_text[:200]}"
+        raise HTTPException(status_code=400, detail=detail)
+
     data = response.json()
     folders = [
         {
             "name": entry["name"],
-            "path": entry["path_lower"],
+            "path": entry.get("path_lower") or entry.get("path_display") or "",
             "id": entry.get("id", ""),
         }
         for entry in data.get("entries", [])
-        if entry[".tag"] == "folder"
+        if entry.get(".tag") == "folder"
     ]
-    
+
     return folders
 
 def _normalize_subfolder_names(names: List[str]) -> List[str]:
@@ -9750,14 +9811,85 @@ def _extract_complaint_fields(rec: dict) -> dict:
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
+# DOB inspection job_id prefix → human-readable work category.
+# The p937-wjvj dataset's `inspection_type` is phase-only (Initial / Re-inspection),
+# the actual work category is encoded in the job_id letter prefix.
+DOB_JOB_PREFIX_CATEGORY = {
+    "PC": "Plumbing",
+    "PL": "Plumbing",
+    "EL": "Electrical",
+    "ME": "Mechanical",
+    "SP": "Sprinkler",
+    "SD": "Standpipe",
+    "EA": "Elevator",
+    "EW": "Earthwork",
+    "FS": "Fuel Storage",
+    "FB": "Fuel Burning",
+    "BL": "Boiler",
+    "OT": "Other / General Construction",
+    "CC": "Curb Cut",
+    "SG": "Sign",
+    "FA": "Fire Alarm",
+    "FP": "Fire Suppression",
+    "AN": "Antenna",
+    "SF": "Scaffold",
+    "SH": "Sidewalk Shed",
+    "FN": "Fence",
+    "DM": "Demolition",
+    "EQ": "Construction Equipment",
+    "CH": "Chute",
+    "NB": "New Building",
+    "A1": "Alteration Type 1",
+    "A2": "Alteration Type 2",
+    "A3": "Alteration Type 3",
+}
+
+
+def _decode_job_prefix(job_id: str) -> str:
+    """Return a human-readable work category for a DOB job_id prefix, or ''."""
+    if not job_id:
+        return ""
+    s = str(job_id).strip().upper()
+    # DOB-NOW jobs often look like B00714447-I1 or M01234567-PC1 — category may
+    # follow the dash. Try both positions.
+    import re as _re
+    m = _re.search(r'-([A-Z]{2})\d*$', s)
+    if m and m.group(1) in DOB_JOB_PREFIX_CATEGORY:
+        return DOB_JOB_PREFIX_CATEGORY[m.group(1)]
+    # Leading two letters (legacy BIS jobs like PC6530234)
+    if len(s) >= 2 and s[:2] in DOB_JOB_PREFIX_CATEGORY:
+        return DOB_JOB_PREFIX_CATEGORY[s[:2]]
+    return ""
+
+
 def _extract_inspection_fields(rec: dict) -> dict:
-    """Extract structured inspection fields from DOB Inspections dataset (p937-wjvj)."""
+    """Extract structured inspection fields from DOB Inspections dataset (p937-wjvj).
+
+    The dataset's `inspection_type` is phase-only ("Initial" / "Re-inspection").
+    We enrich it with the work category decoded from the job_id prefix so the
+    UI shows "Plumbing — Initial" instead of just "Initial".
+    """
     fields = {}
     fields["inspection_date"] = rec.get("inspection_date") or rec.get("approved_date") or None
-    fields["inspection_type"] = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or None
+
+    raw_phase = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or None
+    job_id = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
+    category = _decode_job_prefix(str(job_id or ""))
+
+    # Compose a richer inspection_type string when we can.
+    if raw_phase and category:
+        composed = f"{category} — {str(raw_phase).strip()}"
+    elif category:
+        composed = f"{category} Inspection"
+    else:
+        composed = raw_phase
+    fields["inspection_type"] = composed
+    fields["inspection_category"] = category or None
+    fields["inspection_phase"] = str(raw_phase).strip() if raw_phase else None
+
     fields["inspection_result"] = rec.get("result") or rec.get("inspection_result") or None
     fields["inspection_result_description"] = rec.get("result_description") or rec.get("comments") or None
-    fields["linked_job_number"] = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
+    fields["linked_job_number"] = job_id
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
@@ -9853,11 +9985,20 @@ def _generate_summary(rec: dict, record_type: str) -> str:
         return summary
  
     if record_type == "inspection":
-        insp_type = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or "General"
+        phase = rec.get("inspection_type") or rec.get("job_progress") or ""
         job = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or ""
+        category = _decode_job_prefix(str(job))
         result = rec.get("result") or rec.get("inspection_result") or "Pending"
-        job_str = f" for Job {job}" if job else ""
-        return f"Inspection ({insp_type}){job_str} — Result: {result}"
+        if category and phase:
+            label = f"{category} — {phase} Inspection"
+        elif category:
+            label = f"{category} Inspection"
+        elif phase:
+            label = f"{phase} Inspection"
+        else:
+            label = "Inspection"
+        job_str = f" (Job {job})" if job else ""
+        return f"{label}{job_str} — Result: {result}"
 
     if record_type == "job_status":
         job = rec.get("job__") or "Unknown"

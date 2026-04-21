@@ -1563,6 +1563,35 @@ async def scan_all() -> None:
 
         await asyncio.gather(*[_one(p) for p in projects])
 
+        # Seed license_to_companies with licenses that were set manually
+        # on a company (via admin onboarding / GC autocomplete) but never
+        # surfaced on a BIS permit scrape — e.g. the GC has an active
+        # license in NYC Open Data but no current permits, or their
+        # current projects haven't been added to LeveLog yet. Without
+        # this, a freshly-created company's insurance would never get
+        # auto-fetched. The `_insurance_fetch_due` gate prevents this
+        # from being expensive (it short-circuits once records exist and
+        # aren't near expiry).
+        try:
+            db = _get_db()
+            cursor = db.companies.find(
+                {
+                    "gc_license_number": {"$exists": True, "$ne": ""},
+                    "is_deleted": {"$ne": True},
+                },
+                {"_id": 1, "gc_license_number": 1},
+            )
+            async for company in cursor:
+                lic = str(company.get("gc_license_number") or "").strip()
+                if not lic:
+                    continue
+                cid = str(company.get("_id"))
+                license_to_companies.setdefault(lic, [])
+                if cid and cid not in license_to_companies[lic]:
+                    license_to_companies[lic].append(cid)
+        except Exception as e:
+            logger.warning(f"company-license seed failed: {e}")
+
         # Step 2 + 3 — once all BINs are processed, fan out to the
         # Licensing portal per unique license number. This stays under
         # the outer async_playwright context so the Chromium runtime is
