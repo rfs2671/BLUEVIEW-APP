@@ -6158,9 +6158,14 @@ async def get_valid_dropbox_token(company_id: str) -> str:
     if not connection:
         raise HTTPException(status_code=400, detail="Dropbox not connected")
 
-    # Check if token is still valid (with 30-min buffer)
+    # Check if token is still valid (with 30-min buffer).
+    # PyMongo returns datetimes as offset-naive by default, even though we
+    # store them as aware UTC — coerce before comparing, otherwise Python
+    # raises "can't compare offset-naive and offset-aware datetimes".
     expires_at = connection.get("access_token_expires_at")
     if expires_at and isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at > datetime.now(timezone.utc) + timedelta(minutes=30):
             return connection["access_token"]
 
