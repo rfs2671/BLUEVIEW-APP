@@ -9202,34 +9202,54 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "ecb_violation_number",
         })
     
-    # ── PERMITS: DOB NOW Build (rbx6-tga4) - NEWEST, check first ──
+    # ── PERMITS: DOB NOW Build (rbx6-tga4) - NEWEST, check first.
+    #    Order DESC by filing_date so when two filings collapse to the
+    #    same dedup key the newer renewal wins.
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"bin": nyc_bin, "$limit": "50"},
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
-    
-    # ── PERMITS: BIS legacy (ipu4-2q9a) - older permits ──
+
+    # ── PERMITS: DOB NOW Electrical (dm9a-ab7w) - separate dataset for
+    #    electrical permits (not returned by rbx6-tga4 or ipu4-2q9a).
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/dm9a-ab7w.json",
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "record_type": "permit",
+            "id_field": "job_filing_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/dm9a-ab7w.json",
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
+            "record_type": "permit",
+            "id_field": "job_filing_number",
+        })
+
+    # ── PERMITS: BIS legacy (ipu4-2q9a) - pre-2018 permits across
+    #    all trades (PL, EL, EQ, etc.). Order by filing_date DESC.
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"bin__": nyc_bin, "$limit": "50"},
+            "params": {"bin__": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job__",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "50"},
+            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job__",
         })
@@ -9272,14 +9292,30 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         raw_id = str(rec.get(id_field, ""))
                         if not raw_id:
                             continue
-                        
-                        # For permits, append work_type to dedup key (one job = multiple permits)
+
+                        # Permits need special handling: DOB issues a new
+                        # filing per renewal (B00834550-I1, -I2, -I3...)
+                        # with distinct job_filing_numbers. The old filings
+                        # stay in the dataset forever. If we dedup on the
+                        # raw filing number, users see every historical
+                        # filing including long-expired ones that have
+                        # already been renewed. Collapse by BASE job
+                        # number + work_type and, because endpoints are
+                        # ordered by filing_date DESC, the first record
+                        # we see is the newest — keep it, drop older
+                        # renewals for the same (base_job, work_type).
                         if ep["record_type"] == "permit":
+                            base_job = _base_job_number(raw_id)
                             work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
-                            dedup_key = f"permit:{raw_id}:{work_suffix}"
+                            dedup_key = f"permit:{base_job}:{work_suffix}"
+                            # Also stamp the record with the collapsed id
+                            # so downstream storage uses the stable
+                            # (base_job, work_type) key instead of the
+                            # per-filing id that churns on every renewal.
+                            rec["_collapsed_permit_id"] = f"{base_job}:{work_suffix}" if work_suffix else base_job
                         else:
                             dedup_key = f"{ep['record_type']}:{raw_id}"
-                        
+
                         # Skip if we already have this record from another endpoint
                         if dedup_key in seen_ids:
                             continue
@@ -10038,6 +10074,31 @@ DOB_JOB_PREFIX_CATEGORY = {
 }
 
 
+def _base_job_number(job_id: str) -> str:
+    """Strip DOB filing sequence suffix so renewals collapse to one
+    permit. 'B00834550-I1' → 'B00834550'. 'B00834550-I2' → 'B00834550'.
+    Legacy numeric BIS jobs (e.g. '101220923') pass through unchanged.
+
+    DOB NOW issues a fresh `job_filing_number` for every renewal of the
+    same underlying permit. Without this collapse, the UI shows every
+    historical filing — including long-expired ones that have already
+    been renewed — as if they were separate live permits.
+    """
+    if not job_id:
+        return ""
+    import re as _re
+    s = str(job_id).strip().upper()
+    # DOB NOW: letter + digits, optional -I<digits> suffix
+    m = _re.match(r'^([A-Z]\d+)(?:-[A-Z]\d+)?$', s)
+    if m:
+        return m.group(1)
+    # BIS legacy: leading run of digits (strip any trailing letters)
+    m = _re.match(r'^(\d+)', s)
+    if m:
+        return m.group(1)
+    return s
+
+
 def _decode_job_prefix(job_id: str) -> str:
     """Return a human-readable work category for a DOB job_id prefix, or ''."""
     if not job_id:
@@ -10429,6 +10490,30 @@ async def run_dob_sync_for_project(project: dict) -> list:
     if not raw_records:
         return []
  
+    # One-time cleanup of legacy-format permit rows. Before the
+    # renewal-collapse fix, permits were keyed by per-filing
+    # job_filing_number (e.g. "B00834550-I1:FE"), so a renewed permit
+    # left behind its expired predecessor as a phantom row. New code
+    # keys permits as "permit:BASE_JOB:WORK_TYPE" — any permit row in
+    # this project that doesn't match that prefix is a stale legacy
+    # entry. Only run the purge when we successfully fetched fresh
+    # permit data, so an upstream DOB API outage doesn't wipe good
+    # cached state.
+    if any(r.get("_record_type") == "permit" for r in raw_records):
+        try:
+            purged = await db.dob_logs.delete_many({
+                "project_id": project_id,
+                "record_type": "permit",
+                "raw_dob_id": {"$not": {"$regex": "^permit:"}},
+            })
+            if purged.deleted_count:
+                logger.info(
+                    f"DOB sync for project {project_id}: purged "
+                    f"{purged.deleted_count} legacy-format permit rows"
+                )
+        except Exception as e:
+            logger.warning(f"Legacy permit purge failed for project {project_id}: {e}")
+
     existing_ids = set()
     existing_cursor = db.dob_logs.find({"project_id": project_id}, {"raw_dob_id": 1})
     async for doc in existing_cursor:
@@ -10440,12 +10525,23 @@ async def run_dob_sync_for_project(project: dict) -> list:
         raw_id = str(rec.get(id_field, ""))
         if not raw_id:
             continue
-        # Apply permit work-type suffix BEFORE dedup check so the key matches
-        # what gets stored — prevents re-insertion on every sync run
+        # Permits: use the collapsed (base_job, work_type) key stamped
+        # during the fetch phase so renewals update the existing row
+        # rather than creating a new one. Without this, every renewal
+        # gets a fresh job_filing_number and leaks an expired
+        # "ghost" permit into the logs.
         if rec.get("_record_type") == "permit":
-            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
-            raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
-        if raw_id in existing_ids:
+            collapsed = rec.get("_collapsed_permit_id")
+            if collapsed:
+                raw_id = f"permit:{collapsed}"
+            else:
+                work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
+                raw_id = f"{raw_id}:{work_suffix}" if work_suffix else raw_id
+        # NOTE: we don't skip on existing_ids for permits here — the
+        # update path below refreshes status/expiration from the newest
+        # filing. Only skip for non-permit types where the record is
+        # immutable.
+        if rec.get("_record_type") != "permit" and raw_id in existing_ids:
             continue
         new_records.append((raw_id, rec))
  
