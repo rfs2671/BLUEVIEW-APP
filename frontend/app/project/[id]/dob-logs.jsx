@@ -290,7 +290,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {(isExpired || isExpiring) && (
             <View style={[s.expirationBanner, isExpired ? s.expiredBanner : s.expiringBanner]}>
               <AlertTriangle size={14} color={isExpired ? '#ef4444' : '#f59e0b'} />
@@ -387,7 +387,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {log.penalty_amount && subtype === 'ECB' && (
             <View style={{ backgroundColor: 'rgba(249,115,22,0.1)', borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
@@ -484,7 +484,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
 
           {/* Disposition badges */}
           {isResolved && (
@@ -596,7 +596,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {isExpanded && (
             <View style={s.expandedSection}>
               <View style={s.divider} />
@@ -640,7 +640,7 @@ export default function DOBLogsScreen() {
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>
-          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2}>{log.ai_summary}</Text>
+          <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
 
           {isExpanded && (
             <View style={s.expandedSection}>
@@ -717,37 +717,43 @@ export default function DOBLogsScreen() {
             )}
           </View>
 
-          {/* ── 3 Glass Nav Cards (Permits, Violations, Complaints) ── */}
-          <View style={s.navRow}>
-            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
+          {/* ── 4 Glass Nav Cards — horizontal scroll on narrow viewports.
+                At 375px mobile width, 4 pills with gap don't fit; let them
+                scroll instead of cramming. ── */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={s.navRow}
+          >
+            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? '#4ade80' : colors.text.muted} />
                 <Text style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
                 <Text style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
               </GlassCard>
             </Pressable>
-            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
+            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
                 <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? '#ef4444' : colors.text.muted)} />
                 <Text style={[s.navCount, violationCount > 0 && { color: '#ef4444' }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
                 <Text style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
               </GlassCard>
             </Pressable>
-            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
+            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
                 <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? '#4ade80' : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
                 <Text style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
                 <Text style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
               </GlassCard>
             </Pressable>
-            <Pressable style={{ flex: 1 }} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
+            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'inspection' && s.navCardActive]}>
                 <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? '#4ade80' : colors.text.muted} />
                 <Text style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
                 <Text style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
               </GlassCard>
             </Pressable>
-          </View>
+          </ScrollView>
 
           {/* Active filter indicator */}
           {activeTab !== 'all' && (
@@ -885,8 +891,9 @@ function buildStyles(colors, isDark) {
     noBinText: { fontSize: 13, color: '#f59e0b' },
 
     // Nav cards (replaces pill tabs + stat row)
-    navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
-    navCard: { alignItems: 'center', paddingVertical: spacing.md, gap: 4 },
+    navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg, paddingRight: spacing.sm },
+    navCardWrap: { minWidth: 92 },
+    navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: 4 },
     navCardActive: { borderColor: 'rgba(74,222,128,0.4)', backgroundColor: 'rgba(74,222,128,0.06)' },
     navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
     navCountActive: { color: '#4ade80' },
@@ -929,14 +936,42 @@ function buildStyles(colors, isDark) {
     logsList: { gap: spacing.md },
     logCard: { gap: spacing.sm },
     swoCard: { borderColor: 'rgba(220, 38, 38, 0.3)', borderWidth: 1 },
-    logHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    logHeaderLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-    logHeaderRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    // Header wraps on narrow viewports so date chips drop below
+    // badges instead of pushing them off-screen.
+    logHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: spacing.xs,
+    },
+    logHeaderLeft: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      flexWrap: 'wrap',
+      flex: 1,
+      minWidth: 0,
+    },
+    logHeaderRight: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      flexWrap: 'wrap',
+    },
     severityDot: { width: 10, height: 10, borderRadius: 5 },
     typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.full, borderWidth: 1 },
     typeText: { fontSize: 11, fontWeight: '500' },
     dateText: { fontSize: 11, color: colors.text.subtle },
-    logSummary: { fontSize: 14, color: colors.text.primary, lineHeight: 20 },
+    // Text containers must flex and clip at line limit — no maxWidth
+    // so they can fill the available column on all viewports.
+    logSummary: {
+      fontSize: 14,
+      color: colors.text.primary,
+      lineHeight: 20,
+      flex: 1,
+      flexShrink: 1,
+    },
     expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
     expiredBanner: { backgroundColor: 'rgba(239,68,68,0.1)' },
     expiringBanner: { backgroundColor: 'rgba(245,158,11,0.1)' },
