@@ -67,6 +67,19 @@ logger = logging.getLogger(__name__)
 # band with the retention + lifecycle rules applied manually.
 CARD_AUDIT_BUCKET_NAME = os.environ.get("CARD_AUDIT_BUCKET_NAME", "")
 
+# Cookie JWT signing key. Reuses the main app's JWT_SECRET by default —
+# card_audit doesn't own its own secret, and these cookies authenticate
+# the same "this worker on this phone on this project" identity the
+# rest of the stack uses. 90-day lifetime: a full construction season
+# covers ~6 months; splitting at 90 days means a returning worker does
+# the card-tap fallback at the midpoint of a long project, which is the
+# only cheap anti-phone-sharing check we get without re-requiring the
+# chip read daily.
+CHECKIN_COOKIE_NAME = "lvg_checkin"
+CHECKIN_COOKIE_TTL_DAYS = 90
+CHECKIN_JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-card-audit-secret")
+CHECKIN_JWT_ALG = "HS256"
+
 # Geofence defaults. Per-project override on the project doc.
 DEFAULT_GEOFENCE_RADIUS_M = 150
 GEOFENCE_MIN_M = 50
@@ -101,6 +114,8 @@ class AttestationType(str, Enum):
     ADMIN_REVOKED_ENROLLMENT = "admin_revoked_enrollment"
     VLM_CARD_ENROLLMENT_PARSED = "vlm_card_enrollment_parsed"
     VLM_CARD_ENROLLMENT_MANUAL_CORRECTION = "vlm_card_enrollment_manual_correction"
+    COOKIE_RECOGNIZED_RETURNING_WORKER = "cookie_recognized_returning_worker"
+    DAILY_SIGNATURE_CAPTURED = "daily_signature_captured"
 
 
 class FraudFlagType(str, Enum):
@@ -174,6 +189,9 @@ COPY_STRINGS: Dict[str, Dict[str, str]] = {
         "nfc_timeout": "Didn't read. Try again.",
         "nfc_unsupported": "This phone can't read the chip. Enter the last 6 digits of your card.",
         "expired_but_checked_in": "Your card is expired. You are checked in. See your foreman.",
+        "sign_here": "Sign for today",
+        "clear": "Clear",
+        "new_phone_prompt": "New phone? Tap your card once to link it.",
     },
     "es": {
         "success": "Registrado. Buen turno.",
@@ -195,6 +213,9 @@ COPY_STRINGS: Dict[str, Dict[str, str]] = {
         "nfc_timeout": "No se leyó. Intente de nuevo.",
         "nfc_unsupported": "Este teléfono no puede leer el chip. Escriba los últimos 6 dígitos.",
         "expired_but_checked_in": "Su tarjeta está vencida. Está registrado. Vea a su supervisor.",
+        "sign_here": "Firme para hoy",
+        "clear": "Borrar",
+        "new_phone_prompt": "¿Teléfono nuevo? Acerque su tarjeta una vez para vincularlo.",
     },
 }
 
@@ -266,6 +287,24 @@ class SignIn(BaseModel):
     within_geofence: Optional[bool] = None   # None = unknown (no project coords)
     attestation_type: str
     timestamp: datetime
+
+
+class DailySignature(BaseModel):
+    """One signature per (worker, project, calendar_date). Captured at
+    the first sign-in of the day; reused as the signature block on
+    every logbook generated for that worker-day so a worker signs once
+    and the system autofills the daily jobsite log, OSHA log,
+    subcontractor orientation, etc. Idempotent: multiple sign-ins on
+    the same day all reference the one stored signature.
+    """
+    id: Optional[str] = None
+    project_id: str
+    worker_enrollment_id: str
+    calendar_date: str            # YYYY-MM-DD in America/New_York
+    signature_r2_key: Optional[str] = None   # PNG in card-audit bucket
+    signature_sha256: Optional[str] = None
+    signed_at: datetime
+    user_agent: Optional[str] = None
 
 
 class CardFraudFlag(BaseModel):
@@ -409,6 +448,59 @@ def sha256_hex(data: bytes) -> str:
     """Hex SHA-256 of bytes, stored alongside every uploaded card asset
     so tampering is detectable later."""
     return hashlib.sha256(data).hexdigest()
+
+
+# ─── Cookie-based worker recognition ────────────────────────────────────
+#
+# The NFC sticker at the gate only identifies the project+gate, not the
+# worker. To avoid making every worker re-tap their card every day, we
+# set a long-lived signed cookie on their phone at enrollment / card
+# match. Future taps resolve the worker from the cookie and skip the
+# card step entirely.
+#
+# Trade-off: a worker who lets a friend use their phone gets checked
+# in as the friend. We accept that — the chip-tap-every-day approach
+# the user explicitly rejected as "waste of time" was the only
+# stronger check, and the daily signature provides a second layer of
+# worker-attested attendance that a stolen phone can't silently fake.
+
+def issue_checkin_cookie_value(worker_enrollment_id: str, project_id: str) -> str:
+    """Create a signed JWT the gate page can use to recognize a
+    returning worker without a card tap."""
+    import jwt as _jwt
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": worker_enrollment_id,
+        "pid": project_id,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(days=CHECKIN_COOKIE_TTL_DAYS)).timestamp()),
+    }
+    return _jwt.encode(payload, CHECKIN_JWT_SECRET, algorithm=CHECKIN_JWT_ALG)
+
+
+def verify_checkin_cookie(cookie_value: Optional[str], project_id: str) -> Optional[str]:
+    """Returns worker_enrollment_id if the cookie is valid for this
+    project, else None. Invalid, expired, or cross-project cookies
+    fall through to the card-tap path."""
+    if not cookie_value:
+        return None
+    try:
+        import jwt as _jwt
+        payload = _jwt.decode(cookie_value, CHECKIN_JWT_SECRET, algorithms=[CHECKIN_JWT_ALG])
+        if payload.get("pid") != project_id:
+            return None
+        return payload.get("sub") or None
+    except Exception:
+        return None
+
+
+def today_ymd_et() -> str:
+    """YYYY-MM-DD in America/New_York. A 'workday' for a NYC jobsite
+    starts and ends in ET regardless of server timezone — don't key
+    daily signatures by UTC or the midnight-shift crew gets split
+    across two attendance rows."""
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
 
 def build_card_audit_key(
@@ -741,6 +833,111 @@ document.querySelector('select[name="sub_name"]').addEventListener('change', (e)
     return _html_shell("Confirm enrollment", body, lang)
 
 
+def render_signature_pad_page(
+    project_id: str,
+    gate_id: str,
+    worker_first_name: str,
+    project_name: str,
+    lang: str,
+) -> str:
+    """One-time-per-day signature capture. Touch canvas + Submit. The
+    captured PNG is reused as the signature block on every logbook the
+    worker appears in for the day — they sign once, the rest autofills.
+    """
+    t = COPY_STRINGS[lang]
+    body = f"""
+<div class="w-full max-w-md mx-auto pt-4">
+  <div class="text-center med-text text-slate-500 mb-1">{_esc(project_name)}</div>
+  <div class="big-text font-semibold text-center mb-2">{_esc(worker_first_name)}</div>
+  <div class="med-text text-center text-slate-600 mb-4">{_esc(t['sign_here'])}</div>
+  <div class="bg-white rounded-2xl border-2 border-slate-300 p-2 mb-3">
+    <canvas id="pad" width="600" height="280" class="w-full touch-none bg-white rounded-xl" style="height:220px"></canvas>
+  </div>
+  <div class="flex gap-3">
+    <button id="clearBtn" class="flex-1 action-btn bg-slate-200 text-slate-900 rounded-2xl font-bold">
+      {_esc(t['clear'])}
+    </button>
+    <button id="submitBtn" class="flex-[2] action-btn bg-green-600 text-white rounded-2xl font-bold">
+      {_esc(t['submit'])}
+    </button>
+  </div>
+  <form id="signForm" method="POST" action="/checkin/sign" style="display:none;">
+    <input type="hidden" name="project_id" value="{_esc(project_id)}"/>
+    <input type="hidden" name="gate_id" value="{_esc(gate_id)}"/>
+    <input type="hidden" name="signature_png" id="sigField"/>
+    <input type="hidden" name="lat" id="latField"/>
+    <input type="hidden" name="lng" id="lngField"/>
+  </form>
+</div>
+<script>
+(function(){{
+  const cv = document.getElementById('pad');
+  const ctx = cv.getContext('2d');
+  // Scale canvas to device pixel ratio for a crisp line
+  const dpr = window.devicePixelRatio || 1;
+  const rect = cv.getBoundingClientRect();
+  cv.width = rect.width * dpr;
+  cv.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#1e293b';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, rect.width, rect.height);
+
+  let drawing = false, last = null, hasInk = false;
+  function pt(e) {{
+    const r = cv.getBoundingClientRect();
+    const t = (e.touches && e.touches[0]) || e;
+    return {{ x: t.clientX - r.left, y: t.clientY - r.top }};
+  }}
+  function start(e) {{ e.preventDefault(); drawing = true; last = pt(e); }}
+  function move(e) {{
+    if (!drawing) return;
+    e.preventDefault();
+    const p = pt(e);
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    last = p;
+    hasInk = true;
+  }}
+  function end() {{ drawing = false; last = null; }}
+  cv.addEventListener('mousedown', start);
+  cv.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', end);
+  cv.addEventListener('touchstart', start, {{passive:false}});
+  cv.addEventListener('touchmove', move, {{passive:false}});
+  cv.addEventListener('touchend', end);
+
+  document.getElementById('clearBtn').onclick = () => {{
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    hasInk = false;
+  }};
+
+  if (navigator.geolocation) {{
+    navigator.geolocation.getCurrentPosition(
+      (p) => {{
+        document.getElementById('latField').value = p.coords.latitude;
+        document.getElementById('lngField').value = p.coords.longitude;
+      }}, () => {{}},
+      {{ enableHighAccuracy: true, timeout: 5000, maximumAge: 30000 }}
+    );
+  }}
+
+  document.getElementById('submitBtn').onclick = () => {{
+    if (!hasInk) return;
+    document.getElementById('sigField').value = cv.toDataURL('image/png');
+    document.getElementById('signForm').submit();
+  }};
+}})();
+</script>
+"""
+    return _html_shell("Sign for today", body, lang)
+
+
 def render_success_page(
     worker_first_name: str,
     project_name: str,
@@ -957,22 +1154,70 @@ def _is_android_chrome(ua: str) -> bool:
 
 @gate_router.get("/checkin/{project_id}/{gate_id}", response_class=HTMLResponse)
 async def gate_landing(project_id: str, gate_id: str, request: Request, mode: Optional[str] = None):
-    """The page the gate NFC tag opens. No auth — public."""
-    from bson import ObjectId
+    """The page the gate NFC tag opens. No auth — public.
+
+    Three paths, branched server-side:
+      1. Valid cookie + signature already captured today → write sign_in,
+         full-screen success immediately. Worker taps and keeps walking.
+      2. Valid cookie, no signature today → signature pad.
+      3. No cookie (new phone / cleared cookies / enrollment day) →
+         card picker (Android chip tap or iOS manual last-6).
+    """
     db = _require_db()
+    lang = _pick_lang(request)
+    ua = request.headers.get("user-agent", "")
 
     project = await db.projects.find_one({"_id": _to_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
-        return HTMLResponse(render_failure_page(_pick_lang(request), "Unknown project"), status_code=404)
+        return HTMLResponse(render_failure_page(lang, "Unknown project"), status_code=404)
 
     gates = project.get("gates") or []
     if not any(g.get("gate_id") == gate_id for g in gates):
-        return HTMLResponse(render_failure_page(_pick_lang(request), "Unknown gate"), status_code=404)
+        return HTMLResponse(render_failure_page(lang, "Unknown gate"), status_code=404)
 
-    lang = _pick_lang(request)
-    ua = request.headers.get("user-agent", "")
-    # `mode=manual` overrides UA detection so an Android user stuck on
-    # a dead chip can force the manual-entry fallback.
+    # Path 1 + 2: cookie recognition. `mode=manual` forces the card path
+    # for a user whose cookie is stale / phone is shared.
+    if mode != "manual":
+        cookie_val = request.cookies.get(CHECKIN_COOKIE_NAME)
+        worker_id = verify_checkin_cookie(cookie_val, project_id)
+        if worker_id:
+            enrollment = await db.worker_enrollments.find_one({
+                "_id": _to_id(worker_id),
+                "status": EnrollmentStatus.ACTIVE.value,
+                "is_deleted": {"$ne": True},
+            })
+            if enrollment:
+                today = today_ymd_et()
+                sig = await db.daily_signatures.find_one({
+                    "project_id": project_id,
+                    "worker_enrollment_id": worker_id,
+                    "calendar_date": today,
+                })
+                if sig:
+                    # Fast path — signed already today, just write the
+                    # sign_in row and show the green check.
+                    sign_in_id = await _write_cookie_signin(
+                        enrollment=enrollment,
+                        project=project,
+                        gate_id=gate_id,
+                        request=request,
+                    )
+                    return RedirectResponse(
+                        url=f"/checkin/success/{sign_in_id}?expired=0",
+                        status_code=303,
+                    )
+                # Recognized but unsigned today — show the signature pad
+                first_name = (enrollment.get("worker_name") or "").split(" ")[0]
+                html = render_signature_pad_page(
+                    project_id=project_id,
+                    gate_id=gate_id,
+                    worker_first_name=first_name,
+                    project_name=project.get("name") or "",
+                    lang=lang,
+                )
+                return HTMLResponse(html)
+
+    # Path 3: no cookie — show card picker
     show_android = (mode != "manual") and _is_android_chrome(ua)
     html = render_gate_landing_page(
         project_id=project_id,
@@ -982,6 +1227,54 @@ async def gate_landing(project_id: str, gate_id: str, request: Request, mode: Op
         is_android_chrome=show_android,
     )
     return HTMLResponse(html)
+
+
+async def _write_cookie_signin(
+    *,
+    enrollment: Dict[str, Any],
+    project: Dict[str, Any],
+    gate_id: str,
+    request: Request,
+) -> str:
+    """Write a sign_in row for a cookie-recognized returning worker.
+    No card_id_read because no tap happened — the field is set to the
+    enrollment's stored card_id for audit/query continuity."""
+    db = _require_db()
+    ua = request.headers.get("user-agent", "")
+    lat = _parse_float(request.query_params.get("lat"))
+    lng = _parse_float(request.query_params.get("lng"))
+    radius = int(project.get("geofence_radius_m") or DEFAULT_GEOFENCE_RADIUS_M)
+    within = compute_geofence(project.get("lat"), project.get("lng"), lat, lng, radius)
+    now = datetime.now(timezone.utc)
+    project_id = str(project["_id"])
+    row = {
+        "worker_enrollment_id": str(enrollment["_id"]),
+        "project_id": project_id,
+        "gate_id": gate_id,
+        "card_id_read": enrollment.get("card_id"),
+        "ndef_url_raw": None,
+        "card_id_match": True,
+        "tap_method": "cookie_recognized",
+        "user_agent": ua,
+        "geolocation_lat": lat,
+        "geolocation_lng": lng,
+        "within_geofence": within,
+        "attestation_type": AttestationType.COOKIE_RECOGNIZED_RETURNING_WORKER.value,
+        "timestamp": now,
+    }
+    res = await db.sign_ins.insert_one(row)
+    sign_in_id = str(res.inserted_id)
+    await write_audit_log(
+        attestation_type=AttestationType.COOKIE_RECOGNIZED_RETURNING_WORKER.value,
+        project_id=project_id,
+        worker_enrollment_id=str(enrollment["_id"]),
+        sign_in_id=sign_in_id,
+        device_ua=ua,
+        lat=lat,
+        lng=lng,
+        details={"gate_id": gate_id},
+    )
+    return sign_in_id
 
 
 # ─── POST /checkin/submit ───────────────────────────────────────────────
@@ -1125,10 +1418,220 @@ async def checkin_submit(request: Request):
         details={"gate_id": gate_id, "tap_method": tap_method, "card_id": card_id_read},
     )
 
+    # Set the 90-day recognition cookie so this phone skips the card
+    # step on subsequent taps.
+    cookie_val = issue_checkin_cookie_value(str(enrollment["_id"]), project_id)
+
+    # Branch: already signed today → success. Else signature pad.
+    today = today_ymd_et()
+    sig = await db.daily_signatures.find_one({
+        "project_id": project_id,
+        "worker_enrollment_id": str(enrollment["_id"]),
+        "calendar_date": today,
+    })
+    if sig:
+        resp = RedirectResponse(
+            url=f"/checkin/success/{sign_in_id}?expired={'1' if expired else '0'}",
+            status_code=303,
+        )
+    else:
+        resp = RedirectResponse(
+            url=f"/checkin/{project_id}/{gate_id}",
+            status_code=303,
+        )
+    resp.set_cookie(
+        key=CHECKIN_COOKIE_NAME,
+        value=cookie_val,
+        max_age=CHECKIN_COOKIE_TTL_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+# ─── POST /checkin/sign ─────────────────────────────────────────────────
+
+@gate_router.post("/checkin/sign", response_class=HTMLResponse)
+async def checkin_sign(request: Request):
+    """Accept the day's signature PNG (data URL), upload to R2, write
+    the daily_signatures row, write the sign_in row, redirect to the
+    success page. Idempotent — a second submit on the same
+    (project, worker, date) replaces the prior row."""
+    db = _require_db()
+    form = await request.form()
+    project_id = str(form.get("project_id") or "").strip()
+    gate_id = str(form.get("gate_id") or "").strip()
+    sig_data_url = str(form.get("signature_png") or "").strip()
+    lang = _pick_lang(request)
+    ua = request.headers.get("user-agent", "")
+
+    cookie_val = request.cookies.get(CHECKIN_COOKIE_NAME)
+    worker_id = verify_checkin_cookie(cookie_val, project_id)
+    if not worker_id:
+        return HTMLResponse(render_failure_page(lang, "Please tap your card"), status_code=401)
+
+    enrollment = await db.worker_enrollments.find_one({
+        "_id": _to_id(worker_id),
+        "status": EnrollmentStatus.ACTIVE.value,
+        "is_deleted": {"$ne": True},
+    })
+    if not enrollment:
+        return HTMLResponse(render_failure_page(lang, "Enrollment not found"), status_code=404)
+
+    project = await db.projects.find_one({"_id": _to_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        return HTMLResponse(render_failure_page(lang, "Unknown project"), status_code=404)
+
+    if not sig_data_url.startswith("data:image/"):
+        return HTMLResponse(render_failure_page(lang, "Signature missing"), status_code=400)
+
+    try:
+        import base64 as _b64
+        header, b64 = sig_data_url.split(",", 1)
+        sig_bytes = _b64.b64decode(b64)
+    except Exception:
+        return HTMLResponse(render_failure_page(lang, "Signature invalid"), status_code=400)
+
+    # Upload signature to the card-audit bucket under a per-date key so
+    # it's idempotent and auditable.
+    today = today_ymd_et()
+    sig_key = None
+    sig_hash = None
+    if _r2_client and CARD_AUDIT_BUCKET_NAME:
+        sig_key = (
+            f"{project_id}/{worker_id}/signatures/"
+            f"{today[:4]}/{today[5:7]}/{today}.png"
+        )
+        sig_hash = sha256_hex(sig_bytes)
+        try:
+            _r2_client.put_object(
+                Bucket=CARD_AUDIT_BUCKET_NAME,
+                Key=sig_key,
+                Body=sig_bytes,
+                ContentType="image/png",
+                Metadata={"sha256": sig_hash},
+            )
+        except Exception as e:
+            logger.error(f"daily signature R2 upload failed for {worker_id} on {today}: {e!r}")
+
+    now = datetime.now(timezone.utc)
+    await db.daily_signatures.update_one(
+        {"project_id": project_id, "worker_enrollment_id": worker_id, "calendar_date": today},
+        {"$set": {
+            "project_id": project_id,
+            "worker_enrollment_id": worker_id,
+            "calendar_date": today,
+            "signature_r2_key": sig_key,
+            "signature_sha256": sig_hash,
+            "signed_at": now,
+            "user_agent": ua,
+        }},
+        upsert=True,
+    )
+
+    # Write the sign_in row for this gate tap (the one that triggered
+    # the signature prompt).
+    lat = _parse_float(form.get("lat"))
+    lng = _parse_float(form.get("lng"))
+    radius = int(project.get("geofence_radius_m") or DEFAULT_GEOFENCE_RADIUS_M)
+    within = compute_geofence(project.get("lat"), project.get("lng"), lat, lng, radius)
+
+    sign_in_doc = {
+        "worker_enrollment_id": worker_id,
+        "project_id": project_id,
+        "gate_id": gate_id,
+        "card_id_read": enrollment.get("card_id"),
+        "ndef_url_raw": None,
+        "card_id_match": True,
+        "tap_method": "cookie_recognized",
+        "user_agent": ua,
+        "geolocation_lat": lat,
+        "geolocation_lng": lng,
+        "within_geofence": within,
+        "attestation_type": AttestationType.COOKIE_RECOGNIZED_RETURNING_WORKER.value,
+        "timestamp": now,
+    }
+    si_res = await db.sign_ins.insert_one(sign_in_doc)
+    sign_in_id = str(si_res.inserted_id)
+
+    await write_audit_log(
+        attestation_type=AttestationType.DAILY_SIGNATURE_CAPTURED.value,
+        project_id=project_id,
+        worker_enrollment_id=worker_id,
+        sign_in_id=sign_in_id,
+        device_ua=ua,
+        lat=lat,
+        lng=lng,
+        details={"calendar_date": today, "signature_r2_key": sig_key},
+    )
+
+    # Check expiration so the success banner reflects it
+    expired = False
+    exp = enrollment.get("card_expiration_date")
+    if exp and isinstance(exp, datetime):
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp < datetime.now(timezone.utc):
+            expired = True
+
     return RedirectResponse(
         url=f"/checkin/success/{sign_in_id}?expired={'1' if expired else '0'}",
         status_code=303,
     )
+
+
+async def get_daily_signature(
+    *,
+    worker_enrollment_id: str,
+    project_id: str,
+    calendar_date: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Public helper for logbook autofill. Returns the day's signature
+    row or None. `calendar_date` defaults to today (America/New_York).
+
+    Other modules (OSHA log generator, daily jobsite log, etc.) import
+    this to stamp the worker's signature block on rendered forms
+    without asking the worker to re-sign.
+
+    Returned dict shape:
+      { 'signature_r2_key': str | None,
+        'signature_sha256': str | None,
+        'signed_at': datetime,
+        'calendar_date': 'YYYY-MM-DD' }
+    """
+    db = _require_db()
+    date_key = calendar_date or today_ymd_et()
+    doc = await db.daily_signatures.find_one({
+        "worker_enrollment_id": worker_enrollment_id,
+        "project_id": project_id,
+        "calendar_date": date_key,
+    })
+    if not doc:
+        return None
+    return {
+        "signature_r2_key": doc.get("signature_r2_key"),
+        "signature_sha256": doc.get("signature_sha256"),
+        "signed_at": doc.get("signed_at"),
+        "calendar_date": doc.get("calendar_date"),
+    }
+
+
+def get_signature_presigned_url(r2_key: str, expires_in: int = 3600) -> Optional[str]:
+    """Presigned GET URL for a stored signature PNG. Used by logbook
+    templates that render the signature image inline."""
+    if not _r2_client or not CARD_AUDIT_BUCKET_NAME or not r2_key:
+        return None
+    try:
+        return _r2_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": CARD_AUDIT_BUCKET_NAME, "Key": r2_key},
+            ExpiresIn=expires_in,
+        )
+    except Exception as e:
+        logger.error(f"signature presign failed for {r2_key}: {e!r}")
+        return None
 
 
 # ─── GET /checkin/success/{sign_in_id} ──────────────────────────────────
@@ -1429,7 +1932,20 @@ async def enrollment_complete(request: Request):
         },
     )
 
-    return RedirectResponse(url=f"/checkin/success/{sign_in_id}?expired=0", status_code=303)
+    # Issue the recognition cookie + redirect into the signature pad.
+    # Enrollment day = first signature day.
+    cookie_val = issue_checkin_cookie_value(enrollment_id, project_id)
+    resp = RedirectResponse(url=f"/checkin/{project_id}/{gate_id}", status_code=303)
+    resp.set_cookie(
+        key=CHECKIN_COOKIE_NAME,
+        value=cookie_val,
+        max_age=CHECKIN_COOKIE_TTL_DAYS * 86400,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1766,6 +2282,17 @@ async def ensure_indexes():
         await db.card_audit_log.create_index([("attestation_type", 1), ("observed_at", -1)])
 
         await db.unexpected_ndef_hosts.create_index([("observed_at", -1)])
+
+        # One daily signature per (worker, project, date). The unique
+        # index prevents two signatures colliding if the worker taps
+        # twice before the first upload settles.
+        await db.daily_signatures.create_index(
+            [("project_id", 1), ("worker_enrollment_id", 1), ("calendar_date", 1)],
+            unique=True,
+        )
+        await db.daily_signatures.create_index(
+            [("project_id", 1), ("calendar_date", 1)]
+        )
 
         # Pending enrollment rows carry the raw image bytes between
         # /enrollment/parse_card and /enrollment/complete. If a worker
