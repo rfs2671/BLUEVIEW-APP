@@ -129,9 +129,13 @@ export default function DailyJobsiteLog() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, checkins, existingLogs] = await Promise.all([
+      // Daily Jobsite Log is a per-company HEADCOUNT log, not a
+      // per-worker signature roster. We hit /daily-headcount which
+      // returns pre-aggregated {sub_name, trade, worker_count_today}
+      // rows — NOT the per-worker getCheckinsForDate() endpoint.
+      const [projectData, headcount, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
-        logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
+        logbooksAPI.getDailyHeadcount(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, 'daily_jobsite', date).catch(() => []),
       ]);
 
@@ -159,21 +163,18 @@ export default function DailyJobsiteLog() {
         if (existing.cp_signature) setCpSignature(existing.cp_signature);
         if (existing.cp_name) setCpName(existing.cp_name);
       } else {
-        // Auto-build activities from check-ins grouped by company
-        const checkinList = Array.isArray(checkins) ? checkins : [];
-        const companyMap = {};
-        for (const c of checkinList) {
-          const co = c.company || 'Unknown';
-          if (!companyMap[co]) companyMap[co] = { company: co, workers: [], trades: [] };
-          companyMap[co].workers.push(c.worker_name);
-          if (c.trade && !companyMap[co].trades.includes(c.trade)) companyMap[co].trades.push(c.trade);
-        }
-        const autoActivities = Object.values(companyMap).map((co, i) => ({
+        // Auto-build activities from pre-aggregated per-sub headcount.
+        // One activity row per (sub, trade) pair with the count pulled
+        // straight from the backend aggregation. No per-worker rows,
+        // no per-worker signatures.
+        const rows = Array.isArray(headcount) ? headcount : [];
+        const autoActivities = rows.map((r, i) => ({
           crew_id: `C${i + 1}`,
-          company: co.company,
-          num_workers: String(co.workers.length),
-          work_description: co.trades.join(', '),
+          company: r.sub_name || 'Unknown',
+          num_workers: String(r.worker_count_today ?? 0),
+          work_description: r.trade || '',
           work_locations: '',
+          photos: [],
         }));
         if (autoActivities.length > 0) setActivities(autoActivities);
 

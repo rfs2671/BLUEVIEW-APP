@@ -651,6 +651,45 @@ export const logbooksAPI = {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/checkins-today`, { params });
     return response.data;
   },
+
+  /**
+   * Per-company headcount for a project on a given date. Used by
+   * Daily Jobsite Log — a headcount log, not a signature roster.
+   * Returns [{sub_name, trade, worker_count_today}, ...].
+   */
+  getDailyHeadcount: async (projectId, date = null) => {
+    const params = date ? { date } : {};
+    const response = await apiClient.get(`/api/projects/${projectId}/daily-headcount`, { params });
+    return response.data;
+  },
+};
+
+/**
+ * Signature image helpers. Images come from an authenticated backend
+ * proxy — /api/signatures/{signin_id} — which reads from R2 with
+ * server-side credentials. The session token travels on the request
+ * via apiClient's Authorization header. Never use presigned URLs for
+ * signatures anywhere in the app.
+ */
+export const signaturesAPI = {
+  /** Return the URL an <Image> / <img> component can point src/uri at. */
+  getImageUrl: (signInId) => {
+    if (!signInId) return null;
+    return `${API_BASE_URL}/api/signatures/${encodeURIComponent(signInId)}`;
+  },
+
+  /**
+   * Fetch the signature bytes directly (useful for PDF export pipelines
+   * that embed the image rather than referencing it by URL). Returns
+   * a Blob on web, a base64 string on native.
+   */
+  fetchImage: async (signInId) => {
+    if (!signInId) return null;
+    const response = await apiClient.get(`/api/signatures/${encodeURIComponent(signInId)}`, {
+      responseType: 'blob',
+    });
+    return response.data;
+  },
 };
 
 export const cpProfileAPI = {

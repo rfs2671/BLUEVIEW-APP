@@ -8349,8 +8349,17 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             company = (e.get("sub_name") or "").strip()
             name_key = (name.lower(), company.lower())
             seen_name_keys.add(name_key)
-            sig_url = _ca.get_signature_presigned_url(sig_map.get(eid)) if sig_map.get(eid) else None
             first_ts = first_checkin_at.get(eid)
+            # Use the first sign_in of the day as the stable reference —
+            # the frontend builds /api/signatures/{signin_id} from this.
+            # No presigned URL is returned; access goes through the
+            # authenticated proxy so the image is fetchable for the full
+            # session, not just an hour.
+            first_signin_id = None
+            for si in sign_ins:
+                if si.get("worker_enrollment_id") == eid:
+                    first_signin_id = str(si["_id"])
+                    break
             result.append({
                 "worker_id": eid,   # enrollment id serves the same role
                 "worker_name": name or "Unknown",
@@ -8359,7 +8368,8 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 "check_in_time": first_ts.isoformat() if isinstance(first_ts, datetime) else "",
                 "osha_number": e.get("card_id") or "",   # SST card id doubles as the worker's ID number
                 "certifications": [],
-                "worker_signature": sig_url,            # None if worker hasn't signed yet today
+                "worker_signature": None,               # new system: frontend uses signin_id
+                "signin_id": first_signin_id,           # → /api/signatures/{signin_id}
                 "source": "gate_checkin",
             })
     except Exception as _e:
@@ -8396,11 +8406,215 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
             "osha_number": worker.get("osha_number") if worker else "",
             "certifications": worker.get("certifications", []) if worker else [],
+            # Legacy rows carry the inline base64 signature from the old
+            # per-worker profile field. These aren't in R2 so the proxy
+            # endpoint doesn't apply — frontend renders directly from
+            # this string (data URL or base64).
             "worker_signature": worker.get("signature") if worker else None,
+            "signin_id": None,
             "source": "legacy_checkin",
         })
 
     return result
+
+
+@api_router.get("/projects/{project_id}/daily-headcount")
+async def get_project_daily_headcount(
+    project_id: str,
+    date: Optional[str] = None,
+    current_user=Depends(get_current_user),
+):
+    """Per-sub headcount for a project on a given calendar date.
+
+    Used by Daily Jobsite Log — a per-company headcount report, NOT a
+    per-worker signature roster. The response is flat:
+
+        [{"sub_name": "...", "trade": "...", "worker_count_today": N}, ...]
+
+    Workers are counted, not listed. No signatures. The three logbooks
+    that DO need per-worker signature autofill (preshift_signin,
+    osha_log, toolbox_talk) continue to hit /checkins-today, which
+    returns the roster + signin_id for signature proxy.
+    """
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    now_eastern = datetime.now(eastern)
+    target_date = date or now_eastern.strftime("%Y-%m-%d")
+    try:
+        day_eastern = datetime.strptime(target_date, "%Y-%m-%d").replace(tzinfo=eastern)
+        day_start = day_eastern.astimezone(timezone.utc)
+        day_end = (day_eastern + timedelta(hours=24)).astimezone(timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    # Project access check — same pattern as other project-scoped reads.
+    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+
+    # Aggregate in two passes — new gate sign_ins + legacy checkins —
+    # keyed by (sub, trade). Dedup workers across passes by normalized
+    # (name, company) so a worker who appears in both systems during
+    # transition isn't counted twice.
+    buckets: Dict[tuple, Dict[str, Any]] = {}   # (sub_lower, trade_lower) -> row
+    seen_workers: set = set()                   # (name_lower, company_lower)
+
+    # ── Pass 1: new gate sign_ins ──────────────────────────────────────
+    sign_ins = await db.sign_ins.find({
+        "project_id": project_id,
+        "timestamp": {"$gte": day_start, "$lt": day_end},
+    }).to_list(2000)
+    eids: List[str] = []
+    seen_eids: set = set()
+    for si in sign_ins:
+        eid = si.get("worker_enrollment_id")
+        if eid and eid not in seen_eids:
+            seen_eids.add(eid)
+            eids.append(eid)
+
+    if eids:
+        oids = []
+        for eid in eids:
+            try:
+                oids.append(ObjectId(eid))
+            except Exception:
+                pass
+        async for e in db.worker_enrollments.find({"_id": {"$in": oids}}):
+            sub = (e.get("sub_name") or "").strip()
+            trade = (e.get("trade") or "").strip()
+            name = (e.get("worker_name") or "").strip()
+            worker_key = (name.lower(), sub.lower())
+            if worker_key in seen_workers:
+                continue
+            seen_workers.add(worker_key)
+            key = (sub.lower(), trade.lower())
+            row = buckets.get(key)
+            if row is None:
+                row = {"sub_name": sub, "trade": trade, "worker_count_today": 0}
+                buckets[key] = row
+            row["worker_count_today"] += 1
+
+    # ── Pass 2: legacy checkins (pre-gate-migration workers) ───────────
+    try:
+        legacy = await db.checkins.find({
+            "project_id": project_id,
+            "check_in_time": {"$gte": day_start, "$lt": day_end},
+            "is_deleted": {"$ne": True},
+        }).to_list(2000)
+    except Exception:
+        legacy = []
+
+    for c in legacy:
+        wid = c.get("worker_id")
+        worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
+        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
+        trade = (c.get("worker_trade") or (worker.get("trade") if worker else "") or "").strip()
+        worker_key = (name.lower(), company.lower())
+        if worker_key in seen_workers or not name:
+            continue
+        seen_workers.add(worker_key)
+        key = (company.lower(), trade.lower())
+        row = buckets.get(key)
+        if row is None:
+            row = {"sub_name": company, "trade": trade, "worker_count_today": 0}
+            buckets[key] = row
+        row["worker_count_today"] += 1
+
+    # Stable order: by sub_name, then trade
+    rows = sorted(buckets.values(), key=lambda r: ((r["sub_name"] or "").lower(), (r["trade"] or "").lower()))
+    return rows
+
+
+@api_router.get("/signatures/{signin_id}")
+async def get_signature_image(signin_id: str, current_user=Depends(get_current_user)):
+    """Authenticated proxy for a worker's daily signature image.
+
+    Permanent mechanism (replaces presigned R2 URLs, which were
+    unreliable for logbook forms left open through a full shift).
+
+    Auth: session-authenticated user must have project-level read
+          access to the project containing the sign-in.
+    Source: the R2 key stored on the sign_in's matching daily_signature
+            row. No app-layer cache — R2 reads are cheap and browser
+            caching via Cache-Control: private, max-age=3600 covers
+            repeat loads within a session.
+
+    Error shapes — frontend distinguishes these to render four
+    distinct states (missing signature, forbidden, storage down,
+    unknown id):
+      404 {"error":"signature_not_found"}   — sign-in has no stored signature
+      403 {"error":"forbidden"}             — cross-project access attempt
+      500 {"error":"storage_unavailable"}   — R2 read failure
+      404 {"error":"signature_not_found"}   — sign-in id does not exist
+    """
+    try:
+        oid = ObjectId(signin_id)
+    except Exception:
+        return JSONResponse(status_code=404, content={"error": "signature_not_found"})
+
+    sign_in = await db.sign_ins.find_one({"_id": oid})
+    if not sign_in:
+        return JSONResponse(status_code=404, content={"error": "signature_not_found"})
+
+    # Access check — resolve the project, compare company to the user's.
+    project = await db.projects.find_one({
+        "_id": to_query_id(sign_in.get("project_id")),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        return JSONResponse(status_code=404, content={"error": "signature_not_found"})
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+
+    # Resolve the R2 key via daily_signatures (spec: "No schema changes"
+    # — the key lives on daily_signatures, keyed by
+    # project_id + worker_enrollment_id + calendar_date, derivable from
+    # the sign_in's own fields).
+    from zoneinfo import ZoneInfo
+    ts = sign_in.get("timestamp") or datetime.now(timezone.utc)
+    if isinstance(ts, datetime) and ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    date_ymd = (
+        ts.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        if isinstance(ts, datetime) else ""
+    )
+    sig_row = await db.daily_signatures.find_one({
+        "project_id": sign_in.get("project_id"),
+        "worker_enrollment_id": sign_in.get("worker_enrollment_id"),
+        "calendar_date": date_ymd,
+    })
+    r2_key = (sig_row or {}).get("signature_r2_key")
+    if not r2_key:
+        return JSONResponse(status_code=404, content={"error": "signature_not_found"})
+
+    # Separate card-audit bucket (object-locked, 7-year retention).
+    # Not the general R2_BUCKET_NAME — don't fall through to that.
+    import card_audit as _ca
+    if not _r2_client or not _ca.CARD_AUDIT_BUCKET_NAME:
+        return JSONResponse(status_code=500, content={"error": "storage_unavailable"})
+    try:
+        obj = await asyncio.to_thread(
+            _r2_client.get_object,
+            Bucket=_ca.CARD_AUDIT_BUCKET_NAME,
+            Key=r2_key,
+        )
+        content_type = obj.get("ContentType") or "image/png"
+        body = obj["Body"].read()
+    except Exception as e:
+        logger.error(f"signature proxy R2 read failed key={r2_key}: {e!r}")
+        return JSONResponse(status_code=500, content={"error": "storage_unavailable"})
+
+    return Response(
+        content=body,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
 
 # ==================== ROOT ENDPOINT ====================
 

@@ -11,6 +11,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
@@ -111,6 +112,9 @@ export default function PreShiftSignIn() {
       name: c.worker_name || '',
       company: c.company || '',
       osha_number: c.osha_number || '',
+      // New-system rows carry signin_id → authed proxy endpoint.
+      // Legacy rows carry inline base64 in worker_signature.
+      signin_id: c.signin_id || null,
       worker_signature: c.worker_signature || c.signature || null,
       had_injury: null,
       inspected_ppe: null,
@@ -342,20 +346,18 @@ export default function PreShiftSignIn() {
                   )}
                 </View>
 
-                {/* Worker Signature */}
+                {/* Worker Signature — auto-filled from gate sign-in
+                    via authenticated proxy endpoint, or inline base64
+                    for legacy checkins. */}
                 <View style={styles.workerField}>
                   <Text style={styles.workerFieldLabel}>WORKER SIGNATURE</Text>
-                  {worker.worker_signature ? (
+                  {(worker.signin_id || worker.worker_signature) ? (
                     <View style={styles.sigContainer}>
-                      <Image
-                        source={{ uri: worker.worker_signature }}
+                      <SignatureImage
+                        signInId={worker.signin_id}
+                        fallbackBase64={worker.worker_signature}
                         style={styles.sigImage}
-                        resizeMode="contain"
                       />
-                      <View style={styles.sigSignedBadge}>
-                        <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
-                        <Text style={styles.sigSignedText}>Signed</Text>
-                      </View>
                     </View>
                   ) : (
                     <View style={styles.sigMissing}>

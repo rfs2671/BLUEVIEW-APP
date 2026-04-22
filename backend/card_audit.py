@@ -1618,20 +1618,12 @@ async def get_daily_signature(
     }
 
 
-def get_signature_presigned_url(r2_key: str, expires_in: int = 3600) -> Optional[str]:
-    """Presigned GET URL for a stored signature PNG. Used by logbook
-    templates that render the signature image inline."""
-    if not _r2_client or not CARD_AUDIT_BUCKET_NAME or not r2_key:
-        return None
-    try:
-        return _r2_client.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": CARD_AUDIT_BUCKET_NAME, "Key": r2_key},
-            ExpiresIn=expires_in,
-        )
-    except Exception as e:
-        logger.error(f"signature presign failed for {r2_key}: {e!r}")
-        return None
+# Signature access is via the authenticated backend proxy endpoint
+# `GET /api/signatures/{signin_id}` in server.py. No presigned URL
+# generation for signature objects anywhere in the codebase — logbook
+# forms stay open for a full shift and a 1-hour presigned URL is
+# unreliable for that. Presigned URLs remain valid for other asset
+# types (card photos, enrollment artifacts) but not for signatures.
 
 
 # ─── GET /checkin/success/{sign_in_id} ──────────────────────────────────
