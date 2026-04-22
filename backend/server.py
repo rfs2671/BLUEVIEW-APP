@@ -18653,14 +18653,7 @@ async def startup_event():
         if not _card_audit.CARD_AUDIT_BUCKET_NAME:
             logger.warning(
                 "⚠️  No R2 bucket configured for card audit — card photos "
-                "will not persist. Set CARD_AUDIT_BUCKET_NAME (dedicated) "
-                "or R2_BUCKET_NAME (fallback with 'card-audit/' prefix)."
-            )
-        elif _card_audit.CARD_AUDIT_KEY_PREFIX:
-            logger.info(
-                "🪪 using shared bucket with 'card-audit/' prefix — "
-                "switch CARD_AUDIT_BUCKET_NAME to a dedicated bucket "
-                "before production hardening."
+                "will not persist. Set R2_BUCKET_NAME."
             )
     except Exception as _init_err:
         logger.error(f"card_audit init failed: {_init_err!r}")

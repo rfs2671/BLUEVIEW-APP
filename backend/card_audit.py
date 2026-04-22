@@ -63,18 +63,20 @@ logger = logging.getLogger(__name__)
 
 # R2 bucket for card-audit evidence (signatures, card photos).
 # Resolution order:
-#   1. CARD_AUDIT_BUCKET_NAME  — dedicated bucket, preferred for
-#      production (7-year object lock + lifecycle rules applied
-#      out-of-band as an ops runbook).
-#   2. R2_BUCKET_NAME          — fallback to the general app bucket
-#      with all card-audit keys nested under the "card-audit/" prefix
-#      so they're isolated at the path level even when the bucket is
-#      shared. This keeps pilot deployments one env-var away from
-#      working without a dedicated bucket provisioning step.
+#   1. CARD_AUDIT_BUCKET_NAME  — explicit override if you ever want a
+#      dedicated bucket (different retention, different IAM, different
+#      region). Not required.
+#   2. R2_BUCKET_NAME          — the shared app bucket, with all
+#      card-audit keys nested under the "card-audit/" prefix. This is
+#      the default and production-viable: the existing bucket already
+#      holds worker profile photos and jobsite log photos, all of
+#      which are compliance evidence in the same legal sense as
+#      signatures and card photos. Splitting by bucket would add
+#      operational overhead without audit-discovery benefit.
 #
-# The shared-bucket path is production-viable; migrating to a dedicated
-# bucket later is a clean prefix-preserving S3 copy, no rewrite of
-# historical references.
+# Prefix is the isolation mechanism — all card-audit objects live
+# under "card-audit/" inside the shared bucket, queryable via a single
+# S3 list-objects prefix filter for compliance exports.
 _DEDICATED_BUCKET = os.environ.get("CARD_AUDIT_BUCKET_NAME", "").strip()
 _FALLBACK_BUCKET = os.environ.get("R2_BUCKET_NAME", "").strip()
 CARD_AUDIT_BUCKET_NAME = _DEDICATED_BUCKET or _FALLBACK_BUCKET
