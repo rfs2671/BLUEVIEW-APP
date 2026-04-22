@@ -61,11 +61,26 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ═══════════════════════════════════════════════════════════════════════
 
-# Separate R2 bucket with 7-year object lock. Bucket provisioning is an
-# ops-side runbook, not code — bucket names can't be renamed without a
-# 630 GB copy. This module only reads/writes; provisioning lives out of
-# band with the retention + lifecycle rules applied manually.
-CARD_AUDIT_BUCKET_NAME = os.environ.get("CARD_AUDIT_BUCKET_NAME", "")
+# R2 bucket for card-audit evidence (signatures, card photos).
+# Resolution order:
+#   1. CARD_AUDIT_BUCKET_NAME  — dedicated bucket, preferred for
+#      production (7-year object lock + lifecycle rules applied
+#      out-of-band as an ops runbook).
+#   2. R2_BUCKET_NAME          — fallback to the general app bucket
+#      with all card-audit keys nested under the "card-audit/" prefix
+#      so they're isolated at the path level even when the bucket is
+#      shared. This keeps pilot deployments one env-var away from
+#      working without a dedicated bucket provisioning step.
+#
+# The shared-bucket path is production-viable; migrating to a dedicated
+# bucket later is a clean prefix-preserving S3 copy, no rewrite of
+# historical references.
+_DEDICATED_BUCKET = os.environ.get("CARD_AUDIT_BUCKET_NAME", "").strip()
+_FALLBACK_BUCKET = os.environ.get("R2_BUCKET_NAME", "").strip()
+CARD_AUDIT_BUCKET_NAME = _DEDICATED_BUCKET or _FALLBACK_BUCKET
+# Key prefix: empty when we have a dedicated bucket, "card-audit/" when
+# we're sharing the general bucket.
+CARD_AUDIT_KEY_PREFIX = "" if _DEDICATED_BUCKET else ("card-audit/" if _FALLBACK_BUCKET else "")
 
 # Cookie JWT signing key. Reuses the main app's JWT_SECRET by default —
 # card_audit doesn't own its own secret, and these cookies authenticate
@@ -517,6 +532,7 @@ def build_card_audit_key(
     """
     now = datetime.now(timezone.utc)
     return (
+        f"{CARD_AUDIT_KEY_PREFIX}"
         f"{project_id}/{worker_enrollment_id}/"
         f"{now.year:04d}/{now.month:02d}/"
         f"{event_type}-{uuid.uuid4()}.png"
@@ -1501,6 +1517,7 @@ async def checkin_sign(request: Request):
     sig_hash = None
     if _r2_client and CARD_AUDIT_BUCKET_NAME:
         sig_key = (
+            f"{CARD_AUDIT_KEY_PREFIX}"
             f"{project_id}/{worker_id}/signatures/"
             f"{today[:4]}/{today[5:7]}/{today}.png"
         )

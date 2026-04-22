@@ -18647,12 +18647,20 @@ async def startup_event():
         )
         await _card_audit.ensure_indexes()
         logger.info(
-            f"🪪 card_audit wired. bucket={_card_audit.CARD_AUDIT_BUCKET_NAME!r}"
+            f"🪪 card_audit wired. bucket={_card_audit.CARD_AUDIT_BUCKET_NAME!r} "
+            f"key_prefix={_card_audit.CARD_AUDIT_KEY_PREFIX!r}"
         )
         if not _card_audit.CARD_AUDIT_BUCKET_NAME:
             logger.warning(
-                "⚠️  CARD_AUDIT_BUCKET_NAME env var is unset — card photos "
-                "will not persist. Enrollment will still complete."
+                "⚠️  No R2 bucket configured for card audit — card photos "
+                "will not persist. Set CARD_AUDIT_BUCKET_NAME (dedicated) "
+                "or R2_BUCKET_NAME (fallback with 'card-audit/' prefix)."
+            )
+        elif _card_audit.CARD_AUDIT_KEY_PREFIX:
+            logger.info(
+                "🪪 using shared bucket with 'card-audit/' prefix — "
+                "switch CARD_AUDIT_BUCKET_NAME to a dedicated bucket "
+                "before production hardening."
             )
     except Exception as _init_err:
         logger.error(f"card_audit init failed: {_init_err!r}")
