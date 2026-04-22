@@ -8259,7 +8259,25 @@ async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, 
 
 @api_router.get("/logbooks/project/{project_id}/checkins-today")
 async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user)):
-    """Get all workers checked in to a project on a given date (for auto-populating log books)"""
+    """Get all workers checked in to a project on a given date (for
+    auto-populating log books).
+
+    Merges two sources so the rollout from the legacy `checkins`
+    collection to the new gate-based `sign_ins` + `worker_enrollments`
+    can happen without breaking existing logbooks:
+
+      1. NEW: sign_ins + worker_enrollments + daily_signatures for the
+         given calendar date. Workers who signed at the gate today
+         appear here with their daily signature auto-filled — no
+         physical sign-on-admin's-tablet needed.
+      2. LEGACY: the pre-existing `checkins` collection for workers
+         who haven't migrated. Their signature comes from the per-
+         worker `workers.signature` field as before.
+
+    Dedup key: lower(name)+lower(company). New-system rows win on
+    collision because their signature is the day's attestation, not
+    a static profile image.
+    """
     from zoneinfo import ZoneInfo
     eastern = ZoneInfo("America/New_York")
     now_eastern = datetime.now(eastern)
@@ -8273,30 +8291,113 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid date format")
 
-    checkins = await db.checkins.find({
-        "project_id": project_id,
-        "check_in_time": {"$gte": day_start, "$lt": day_end},
-        "is_deleted": {"$ne": True}
-    }).to_list(500)
+    result: List[Dict[str, Any]] = []
+    seen_name_keys: set = set()
 
-    # Enrich with worker data
-    result = []
-    seen_workers = set()
-    for c in checkins:
+    # ── PASS 1: New-system gate sign_ins ────────────────────────────────
+    try:
+        import card_audit as _ca
+        sign_ins = await db.sign_ins.find({
+            "project_id": project_id,
+            "timestamp": {"$gte": day_start, "$lt": day_end},
+        }).to_list(1000)
+
+        # Unique worker_enrollment_ids from today's sign_ins
+        enrollment_ids = []
+        seen_eids: set = set()
+        first_checkin_at: Dict[str, datetime] = {}
+        for si in sign_ins:
+            eid = si.get("worker_enrollment_id")
+            if not eid:
+                continue
+            ts = si.get("timestamp")
+            if eid not in seen_eids:
+                seen_eids.add(eid)
+                enrollment_ids.append(eid)
+            if isinstance(ts, datetime):
+                cur = first_checkin_at.get(eid)
+                if cur is None or ts < cur:
+                    first_checkin_at[eid] = ts
+
+        # Pull enrollments and today's daily signatures in bulk
+        enrollment_map: Dict[str, Dict[str, Any]] = {}
+        if enrollment_ids:
+            enrollment_object_ids = []
+            for eid in enrollment_ids:
+                try:
+                    enrollment_object_ids.append(ObjectId(eid))
+                except Exception:
+                    pass
+            async for e in db.worker_enrollments.find({"_id": {"$in": enrollment_object_ids}}):
+                enrollment_map[str(e["_id"])] = e
+
+        sig_map: Dict[str, str] = {}
+        async for sig in db.daily_signatures.find({
+            "project_id": project_id,
+            "calendar_date": target_date,
+            "worker_enrollment_id": {"$in": enrollment_ids},
+        }):
+            key = sig.get("signature_r2_key")
+            if key:
+                sig_map[sig["worker_enrollment_id"]] = key
+
+        for eid in enrollment_ids:
+            e = enrollment_map.get(eid)
+            if not e:
+                continue
+            name = (e.get("worker_name") or "").strip()
+            company = (e.get("sub_name") or "").strip()
+            name_key = (name.lower(), company.lower())
+            seen_name_keys.add(name_key)
+            sig_url = _ca.get_signature_presigned_url(sig_map.get(eid)) if sig_map.get(eid) else None
+            first_ts = first_checkin_at.get(eid)
+            result.append({
+                "worker_id": eid,   # enrollment id serves the same role
+                "worker_name": name or "Unknown",
+                "company": company,
+                "trade": e.get("trade") or "",
+                "check_in_time": first_ts.isoformat() if isinstance(first_ts, datetime) else "",
+                "osha_number": e.get("card_id") or "",   # SST card id doubles as the worker's ID number
+                "certifications": [],
+                "worker_signature": sig_url,            # None if worker hasn't signed yet today
+                "source": "gate_checkin",
+            })
+    except Exception as _e:
+        logger.warning(f"checkins-today new-system merge failed: {_e!r}")
+
+    # ── PASS 2: Legacy checkins for workers not on the new system ──────
+    try:
+        legacy = await db.checkins.find({
+            "project_id": project_id,
+            "check_in_time": {"$gte": day_start, "$lt": day_end},
+            "is_deleted": {"$ne": True},
+        }).to_list(500)
+    except Exception:
+        legacy = []
+
+    seen_legacy_wids: set = set()
+    for c in legacy:
         wid = c.get("worker_id")
-        if wid in seen_workers:
+        if wid in seen_legacy_wids:
             continue
-        seen_workers.add(wid)
+        seen_legacy_wids.add(wid)
         worker = await db.workers.find_one({"_id": to_query_id(wid)}) if wid else None
+        name = (c.get("worker_name") or (worker.get("name") if worker else "") or "").strip()
+        company = (c.get("worker_company") or (worker.get("company") if worker else "") or "").strip()
+        name_key = (name.lower(), company.lower())
+        if name_key in seen_name_keys:
+            continue   # already represented by a gate sign-in
+        seen_name_keys.add(name_key)
         result.append({
             "worker_id": wid,
-            "worker_name": c.get("worker_name") or (worker.get("name") if worker else "Unknown"),
-            "company": c.get("worker_company") or (worker.get("company") if worker else ""),
+            "worker_name": name or "Unknown",
+            "company": company,
             "trade": c.get("worker_trade") or (worker.get("trade") if worker else ""),
             "check_in_time": c.get("check_in_time").isoformat() if isinstance(c.get("check_in_time"), datetime) else str(c.get("check_in_time", "")),
             "osha_number": worker.get("osha_number") if worker else "",
             "certifications": worker.get("certifications", []) if worker else [],
             "worker_signature": worker.get("signature") if worker else None,
+            "source": "legacy_checkin",
         })
 
     return result
