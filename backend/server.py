@@ -9638,12 +9638,22 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
         })
 
     
+    # Per-endpoint counters so permit-count regressions ("previously 7,
+    # now 2") can be diagnosed from a single sync log line without
+    # live-tailing. Reported after the loop completes.
+    per_endpoint_stats: List[Dict[str, Any]] = []
+
     async with httpx.AsyncClient(timeout=20.0) as http_client:
         for ep in endpoints:
+            raw_returned = 0
+            kept_after_dedup = 0
             try:
                 resp = await http_client.get(ep["url"], params=ep["params"])
                 if resp.status_code == 200:
                     records = resp.json()
+                    if not isinstance(records, list):
+                        records = []
+                    raw_returned = len(records)
                     for rec in records:
                         # Build a dedup key from the record's unique ID
                         id_field = ep["id_field"]
@@ -9698,7 +9708,8 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         if dedup_key in seen_ids:
                             continue
                         seen_ids.add(dedup_key)
-                        
+                        kept_after_dedup += 1
+
                         rec["_record_type"] = ep["record_type"]
                         rec["_id_field"] = id_field
                         if ep["record_type"] == "violation":
@@ -9724,8 +9735,34 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                     logger.warning(f"DOB API {ep['url']} returned {resp.status_code}")
             except Exception as e:
                 logger.error(f"DOB API error {ep['url']}: {e}")
-    
-    logger.info(f"DOB query complete: {len(all_records)} unique records from {len(endpoints)} endpoints")
+            per_endpoint_stats.append({
+                "url": ep["url"].rsplit("/", 1)[-1].replace(".json", ""),
+                "record_type": ep["record_type"],
+                "query_shape": "bin" if "bin" in ep["params"] or "bin__" in ep["params"] else "addr",
+                "raw_returned": raw_returned,
+                "kept_after_dedup": kept_after_dedup,
+            })
+
+    # Per-record-type breakdown. Permits get special treatment: log
+    # raw vs collapsed counts AND the unique base_jobs observed so we
+    # can diagnose "shows N permits, should be M" without guessing.
+    def _pt_summary(record_type: str) -> str:
+        rows = [s for s in per_endpoint_stats if s["record_type"] == record_type]
+        raw = sum(r["raw_returned"] for r in rows)
+        kept = sum(r["kept_after_dedup"] for r in rows)
+        shapes = ",".join(f"{r['url']}({r['query_shape']})={r['raw_returned']}→{r['kept_after_dedup']}" for r in rows)
+        return f"{record_type}: raw={raw} kept={kept} [{shapes}]"
+
+    permit_base_jobs = sorted({
+        r.get("_collapsed_permit_id", "").split(":")[0]
+        for r in all_records if r.get("_record_type") == "permit" and r.get("_collapsed_permit_id")
+    })
+    logger.info(
+        f"DOB query complete: {len(all_records)} unique records from "
+        f"{len(endpoints)} endpoints — "
+        + "; ".join(_pt_summary(rt) for rt in ("permit", "inspection", "complaint", "violation"))
+        + (f" — permit_base_jobs={permit_base_jobs}" if permit_base_jobs else "")
+    )
     return all_records
  
 def _humanize_record_type(rt: str) -> str:
