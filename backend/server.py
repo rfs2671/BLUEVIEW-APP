@@ -9549,14 +9549,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
@@ -9566,14 +9566,14 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/dm9a-ab7w.json",
-            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/dm9a-ab7w.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
@@ -9583,23 +9583,40 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"bin__": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"bin__": nyc_bin, "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job__",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/ipu4-2q9a.json",
-            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "100", "$order": "filing_date DESC"},
+            "params": {"house__": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job__",
         })
     
     # ── DOB INSPECTIONS (p937-wjvj) ──
+    # Active projects easily have 100+ inspections over a year — the
+    # old $limit=50 was truncating older records off the end of the
+    # DESC sort, which is how April inspections disappear when there
+    # have been 50 more-recent inspections since. Bump to 500 and
+    # add an address-based fallback so BIN churn doesn't hide data.
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/p937-wjvj.json",
-            "params": {"bin": nyc_bin, "$limit": "50", "$order": "inspection_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "500", "$order": "inspection_date DESC"},
+            "record_type": "inspection",
+            "id_field": "job_ticket_or_work_order_id",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/p937-wjvj.json",
+            "params": {
+                "house_number": house_num,
+                "$where": f"upper(street_name) like '%{street_name}%'",
+                "$limit": "500",
+                "$order": "inspection_date DESC",
+            },
             "record_type": "inspection",
             "id_field": "job_ticket_or_work_order_id",
         })
@@ -9630,7 +9647,27 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                     for rec in records:
                         # Build a dedup key from the record's unique ID
                         id_field = ep["id_field"]
-                        raw_id = str(rec.get(id_field, ""))
+                        raw_id = str(rec.get(id_field, "")).strip()
+
+                        # Inspections with empty job_ticket_or_work_order_id
+                        # are dropped by a pure raw_id gate — and there are
+                        # real ones with blank tickets in p937-wjvj,
+                        # especially older quick-close records. Build a
+                        # composite fallback (job + date + result) so we
+                        # don't silently lose attestations that actually
+                        # happened.
+                        if not raw_id and ep["record_type"] == "inspection":
+                            composite = "|".join([
+                                str(rec.get("job_id") or rec.get("job_filing_number") or rec.get("job__") or ""),
+                                str(rec.get("inspection_date") or rec.get("approved_date") or ""),
+                                str(rec.get("inspection_type") or rec.get("job_progress") or ""),
+                                str(rec.get("result") or ""),
+                                str(rec.get("bin") or rec.get("bin__") or ""),
+                            ])
+                            if composite.strip("|"):
+                                raw_id = f"composite:{composite}"
+                                rec["_id_field"] = "_composite_inspection_key"
+
                         if not raw_id:
                             continue
 
