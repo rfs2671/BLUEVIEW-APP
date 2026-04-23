@@ -259,10 +259,6 @@ select option{background:#1e293b;color:#f1f5f9}
             <input type="text" id="regName" data-i18n-placeholder="namePlaceholder" placeholder="John Smith" autocomplete="name">
           </div>
           <div class="input-group">
-            <div class="input-label" data-i18n="tradeLabel">Trade</div>
-            <input type="text" id="regTrade" data-i18n-placeholder="tradePlaceholder" placeholder="Carpenter, Electrician, etc.">
-          </div>
-          <div class="input-group">
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
           </div>
@@ -271,20 +267,19 @@ select option{background:#1e293b;color:#f1f5f9}
       </div>
     </div>
 
-    <!-- Step 2: Company Selection -->
+    <!-- Step 2: Trade & Company Selection -->
     <div id="step2" class="hidden">
       <div class="card">
-        <div class="card-title" data-i18n="companyTitle">🏗️ Select Your Company</div>
-        <div class="card-desc" data-i18n="companyDesc">Choose the company you work for on this project.</div>
+        <div class="card-title" data-i18n="companyTitle">🏗️ Select Your Trade &amp; Company</div>
+        <div class="card-desc" data-i18n="companyDesc">Choose your trade and the company you work for on this project. Only trades your site admin has assigned to this project appear below.</div>
         <div class="input-group">
-          <div class="input-label" data-i18n="companyLabel">Company</div>
-          <select id="companySelect">
-            <option value="" data-i18n="companyLoading">Loading companies...</option>
+          <div class="input-label" data-i18n="tradeCompanyLabel">Trade — Company</div>
+          <select id="tradeAssignmentSelect">
+            <option value="" data-i18n="tradeCompanyLoading">Loading trades...</option>
           </select>
         </div>
-        <div class="input-group" id="otherCompanyGroup" class="hidden">
-          <div class="input-label" data-i18n="companyNameLabel">Company Name</div>
-          <input type="text" id="otherCompanyInput" data-i18n-placeholder="companyNamePlaceholder" placeholder="Enter company name">
+        <div id="noAssignmentsMsg" class="hidden" style="padding:10px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;color:#fbbf24;font-size:14px;margin-top:4px">
+          <span data-i18n="noAssignments">This project has no trades configured yet. Ask your site admin to add trades and companies in the project settings.</span>
         </div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn btn-outline" onclick="goStep(1)" style="flex:1" data-i18n="back">Back</button>
@@ -386,13 +381,13 @@ const TRANSLATIONS = {
     oshaDesc: "Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.",
     camText: 'Tap to take photo',
     camHint: 'or choose from gallery',
-    nextCompany: 'Next: Select Company',
-    companyTitle: '🏗️ Select Your Company',
-    companyDesc: 'Choose the company you work for on this project.',
-    companyLabel: 'Company',
-    companyLoading: 'Loading companies...',
-    companyNameLabel: 'Company Name',
-    companyNamePlaceholder: 'Enter company name',
+    nextCompany: 'Next: Select Trade & Company',
+    companyTitle: '🏗️ Select Your Trade & Company',
+    companyDesc: 'Choose your trade and the company you work for on this project. Only trades your site admin has assigned to this project appear below.',
+    tradeCompanyLabel: 'Trade — Company',
+    tradeCompanyLoading: 'Loading trades...',
+    selectTradeCompany: 'Select your trade and company',
+    noAssignments: 'This project has no trades configured yet. Ask your site admin to add trades and companies in the project settings.',
     back: 'Back',
     nextOrientation: 'Next: Safety Orientation',
     safetyTitle: '🛡️ Site Safety Orientation',
@@ -403,12 +398,8 @@ const TRANSLATIONS = {
     invalidDesc: 'This link is not valid. Please contact your supervisor.',
     completed: 'completed',
     ocrSuccess: '✓ Card scanned successfully',
-    selectCompany: 'Select your company',
-    otherType: 'Other (type in)',
     nameLabel: 'Full Name',
     namePlaceholder: 'John Smith',
-    tradeLabel: 'Trade',
-    tradePlaceholder: 'Carpenter, Electrician, etc.',
     nextSignature: 'Next: Sign',
     sigTitle: '✍️ Signature',
     sigDesc: 'By signing below, I confirm that I have reviewed and understand all safety orientation items above.',
@@ -428,13 +419,13 @@ const TRANSLATIONS = {
     oshaDesc: 'Tome una foto de su tarjeta OSHA-10/30 o SST. La leeremos automáticamente.',
     camText: 'Toque para tomar foto',
     camHint: 'o elija de la galería',
-    nextCompany: 'Siguiente: Seleccionar Empresa',
-    companyTitle: '🏗️ Seleccione Su Empresa',
-    companyDesc: 'Elija la empresa para la que trabaja en este proyecto.',
-    companyLabel: 'Empresa',
-    companyLoading: 'Cargando empresas...',
-    companyNameLabel: 'Nombre de la Empresa',
-    companyNamePlaceholder: 'Ingrese nombre de la empresa',
+    nextCompany: 'Siguiente: Oficio y Empresa',
+    companyTitle: '🏗️ Seleccione Su Oficio y Empresa',
+    companyDesc: 'Elija su oficio y la empresa para la que trabaja en este proyecto. Solo aparecen los oficios que su administrador ha asignado a este proyecto.',
+    tradeCompanyLabel: 'Oficio — Empresa',
+    tradeCompanyLoading: 'Cargando oficios...',
+    selectTradeCompany: 'Seleccione su oficio y empresa',
+    noAssignments: 'Este proyecto aún no tiene oficios configurados. Pida a su administrador que agregue oficios y empresas en la configuración del proyecto.',
     back: 'Atrás',
     nextOrientation: 'Siguiente: Orientación de Seguridad',
     safetyTitle: '🛡️ Orientación de Seguridad del Sitio',
@@ -445,12 +436,8 @@ const TRANSLATIONS = {
     invalidDesc: 'Este enlace no es válido. Contacte a su supervisor.',
     completed: 'completado',
     ocrSuccess: '✓ Tarjeta escaneada exitosamente',
-    selectCompany: 'Seleccione su empresa',
-    otherType: 'Otra (escribir)',
     nameLabel: 'Nombre Completo',
     namePlaceholder: 'Juan Pérez',
-    tradeLabel: 'Oficio',
-    tradePlaceholder: 'Carpintero, Electricista, etc.',
     nextSignature: 'Siguiente: Firmar',
     sigTitle: '✍️ Firma',
     sigDesc: 'Al firmar abajo, confirmo que he revisado y entiendo todos los elementos de orientación de seguridad mencionados.',
@@ -643,7 +630,7 @@ function cropImage(dataUrl, box) {
     return;
   }
 
-  loadCompanies();
+  loadTradeAssignments();
   buildSafetyChecklist();
 
   const savedPhone = localStorage.getItem(LS_WORKER_PHONE);
@@ -828,7 +815,13 @@ async function handleOshaPhoto(input) {
       document.getElementById('btnStep1Next').disabled = false;
     } catch (e) {
       hideLoading();
-      showError('Could not read card. Please fill in your details manually.');
+      // Surface the real reason so operators can diagnose — previously
+      // every failure (401, 413, 502, 503, network) collapsed into a
+      // single generic message that made this look like the OCR model
+      // failed when in reality the request often never reached it.
+      console.error('OSHA OCR upload failed:', e);
+      const reason = (e && e.message) ? e.message : 'Unknown error';
+      showError('Could not read card: ' + reason + '. You can fill in your details manually.');
       oshaData = {};
       document.getElementById('btnStep1Next').disabled = false;
       document.getElementById('regName').style.borderColor = '#f59e0b';
@@ -863,34 +856,53 @@ function showOcrResults(data) {
   if (data.name) document.getElementById('regName').value = data.name;
 }
 
-// ==================== COMPANIES ====================
-async function loadCompanies() {
-  try {
-    companies = await api('/checkin/' + projectId + '/companies');
-    const sel = document.getElementById('companySelect');
-    sel.innerHTML = '<option value="">Select your company</option>';
-    companies.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c.name;
-      opt.textContent = c.trade ? c.name + ' (' + c.trade + ')' : c.name;
-      sel.appendChild(opt);
-    });
-    const other = document.createElement('option');
-    other.value = '__other__';
-    other.textContent = 'Other (type in)';
-    sel.appendChild(other);
+// ==================== TRADE & COMPANY (STRICT ROSTER) ====================
+// Source of truth is the project's admin-configured trade_assignments:
+// [{trade, company}]. Workers MUST pick a pair — no free-text, no "Other"
+// — so the roster on the site actually matches who's been assigned to do
+// what work. This also eliminates the free-text trade field that used to
+// let workers type anything.
+let tradeAssignments = [];
+function loadTradeAssignments() {
+  tradeAssignments = (siteInfo && siteInfo.trade_assignments) || [];
+  const sel = document.getElementById('tradeAssignmentSelect');
+  const msg = document.getElementById('noAssignmentsMsg');
+  const nextBtn = document.getElementById('btnStep2Next');
+  const t = TRANSLATIONS[currentLang];
 
-    sel.addEventListener('change', function() {
-      const grp = document.getElementById('otherCompanyGroup');
-      if (this.value === '__other__') {
-        grp.classList.remove('hidden');
-      } else {
-        grp.classList.add('hidden');
-      }
-    });
-  } catch (e) {
-    console.error('Failed to load companies', e);
+  sel.innerHTML = '';
+
+  if (!tradeAssignments.length) {
+    // Admin hasn't set up trades yet. Hide the dropdown, show the warning,
+    // and disable Next so the worker can't submit a blank pair.
+    sel.classList.add('hidden');
+    msg.classList.remove('hidden');
+    nextBtn.disabled = true;
+    return;
   }
+
+  sel.classList.remove('hidden');
+  msg.classList.add('hidden');
+  nextBtn.disabled = false;
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = t.selectTradeCompany || 'Select your trade and company';
+  sel.appendChild(placeholder);
+
+  tradeAssignments.forEach((a, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = a.trade + ' — ' + a.company;
+    sel.appendChild(opt);
+  });
+}
+
+function getSelectedAssignment() {
+  const sel = document.getElementById('tradeAssignmentSelect');
+  const idx = parseInt(sel.value, 10);
+  if (Number.isNaN(idx) || idx < 0 || idx >= tradeAssignments.length) return null;
+  return tradeAssignments[idx];
 }
 
 // ==================== SAFETY CHECKLIST ====================
@@ -944,9 +956,9 @@ function goStep(step) {
     }
   }
   if (step === 3) {
-    const company = getSelectedCompany();
-    if (!company) {
-      showError('Please select your company');
+    const assignment = getSelectedAssignment();
+    if (!assignment) {
+      showError(currentLang === 'es' ? 'Seleccione su oficio y empresa' : 'Please select your trade and company');
       return;
     }
   }
@@ -964,24 +976,17 @@ function goStep(step) {
   if (step === 4) initSignaturePad();
 }
 
-function getSelectedCompany() {
-  const sel = document.getElementById('companySelect');
-  if (sel.value === '__other__') {
-    return document.getElementById('otherCompanyInput').value.trim();
-  }
-  return sel.value;
-}
-
 // ==================== SUBMIT REGISTRATION ====================
 async function submitRegistration() {
-  const company = getSelectedCompany();
+  const assignment = getSelectedAssignment();
   const phone = cleanPhone(document.getElementById('regPhone').value);
   const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
-  const trade = document.getElementById('regTrade').value.trim() || '';
+  const trade = assignment ? assignment.trade : '';
+  const company = assignment ? assignment.company : '';
   const oshaNumber = oshaData?.sst_number || '';
 
   if (!name) { showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name'); return; }
-  if (!company) { showError(currentLang === 'es' ? 'Seleccione una empresa' : 'Please select a company'); return; }
+  if (!assignment) { showError(currentLang === 'es' ? 'Seleccione su oficio y empresa' : 'Please select your trade and company'); return; }
   if (checkedItems.size < getSafetyItems().length) { showError(currentLang === 'es' ? 'Complete todos los elementos de orientación' : 'Please complete all safety orientation items'); return; }
   if (!signatureData) { showError(currentLang === 'es' ? 'Se requiere firma' : 'Signature required'); return; }
 

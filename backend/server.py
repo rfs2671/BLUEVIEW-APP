@@ -3568,13 +3568,25 @@ async def get_checkin_info(project_id: str, tag_id: str):
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @api_router.post("/checkin/upload-osha")
-async def upload_osha_card(file_data: dict, current_user = Depends(get_current_user)):
+async def upload_osha_card(file_data: dict, request: Request):
     """OCR an OSHA/SST card photo using the Qwen2.5-VL vision model.
+
+    PUBLIC endpoint — the NFC check-in flow is unauthenticated (workers
+    tap a sticker, land on a public HTML page, no login). Previously
+    this was gated behind `Depends(get_current_user)`, which made every
+    photo upload 401 and surface as "Could not read card" in the UI.
+
+    Rate-limited via the shared check-in limiter to prevent abuse of
+    the paid vision API.
 
     Mirrors the httpx+Together shape used by _qwen_visual_qa(). Input is
     a base64 image + content_type; output is the same {name, sst_number,
     issued, expiration, box_2d} JSON the frontend already consumes.
     """
+    client_ip = request.client.host if request.client else "unknown"
+    if not checkin_rate_limiter.is_allowed(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
+
     import httpx
     import json as json_mod
 
@@ -3713,11 +3725,11 @@ async def register_and_checkin(data: dict):
 	
     if not all([project_id, tag_id, name, company]):
         raise HTTPException(status_code=400, detail="Missing required fields")
-    
+
     # Format phone number
     if phone:
         phone = format_phone(phone)
-    
+
     # Verify tag + project
     tag = await db.nfc_tags.find_one({
         "tag_id": tag_id,
@@ -3727,10 +3739,36 @@ async def register_and_checkin(data: dict):
     })
     if not tag:
         raise HTTPException(status_code=404, detail="Invalid check-in point")
-    
+
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Strict-roster enforcement: the submitted {trade, company} MUST match
+    # one of the admin-configured trade_assignments for this project. The
+    # frontend already forces a dropdown pick, but a modified client could
+    # still POST arbitrary values — reject them here so the workforce list
+    # matches who's actually been assigned to the project.
+    raw_assignments = project.get("trade_assignments") or []
+    allowed_pairs = set()
+    for row in raw_assignments:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if t and c:
+            allowed_pairs.add((t, c))
+    submitted_pair = ((trade or "").strip(), (company or "").strip())
+    if not allowed_pairs:
+        raise HTTPException(
+            status_code=409,
+            detail="This project has no trades configured. Ask your site admin to add trades before workers can check in.",
+        )
+    if submitted_pair not in allowed_pairs:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected trade and company are not assigned to this project.",
+        )
     
     now = datetime.now(timezone.utc)
     admin_id = project.get("admin_id")
@@ -9449,7 +9487,31 @@ async def get_submitted_logs(
     }
 
 # ==================== DOB COMPLIANCE ENGINE ====================
- 
+
+def _parse_address_components(project_address: str) -> tuple:
+    """Split "123 Main St, Brooklyn, NY" into (house_num, street_name).
+
+    Sanitizes for Socrata $where — only uppercase alphanumerics + space
+    survive, so attacker-supplied project names can't break out of the
+    LIKE clause.
+    """
+    clean_address = ""
+    if project_address:
+        clean_address = project_address.split(",")[0].strip()[:40]
+    house_num = ""
+    street_name = ""
+    if clean_address:
+        parts = clean_address.split(" ", 1)
+        if len(parts) == 2 and parts[0].isdigit():
+            house_num = parts[0]
+            street_name = parts[1].upper()
+        else:
+            street_name = clean_address.upper()
+    street_name = re.sub(r"[^A-Z0-9 ]", "", street_name)
+    house_num = re.sub(r"[^0-9]", "", house_num)
+    return house_num, street_name
+
+
 async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     """Query NYC Open Data Socrata endpoints by BIN and/or address."""
     all_records = []
@@ -9464,18 +9526,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     bin_usable = nyc_bin and not nyc_bin.endswith("000000")
     
     # Parse house number and street name separately
-    house_num = ""
-    street_name = ""
-    if clean_address:
-        parts = clean_address.split(" ", 1)
-        if len(parts) == 2 and parts[0].isdigit():
-            house_num = parts[0]
-            street_name = parts[1].upper()
-        else:
-            street_name = clean_address.upper()
-    # Sanitize for Socrata $where clause — strip characters that could manipulate the query
-    street_name = re.sub(r"[^A-Z0-9 ]", "", street_name)
-    house_num = re.sub(r"[^0-9]", "", house_num)
+    house_num, street_name = _parse_address_components(project_address)
     
     endpoints = []
     
@@ -9535,28 +9586,29 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "record_type": "violation",
             "id_field": "ecb_violation_number",
         })
-    if house_num and street_name:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/6bgk-3dad.json",
-            "params": {"$where": f"upper(violation_address) like '%{house_num}%{street_name}%'", "$limit": "100", "$order": "issue_date DESC"},
-            "record_type": "violation",
-            "id_field": "ecb_violation_number",
-        })
+    # ECB/OATH (6bgk-3dad) has no `violation_address` — the only address
+    # fields are `respondent_*` (mailing address of the respondent, not
+    # the violation site). BIN is the only reliable key for this dataset,
+    # so no address-shape fallback is added here.
     
     # ── PERMITS: DOB NOW Build (rbx6-tga4) - NEWEST, check first.
-    #    Order DESC by filing_date so when two filings collapse to the
-    #    same dedup key the newer renewal wins.
+    #    This dataset has NO `filing_date` column — available date fields
+    #    are `approved_date`, `issued_date`, `expired_date`. Ordering by
+    #    a non-existent column made Socrata 400 every query, which is
+    #    why DOB NOW Build permits were silently missing from projects.
+    #    Order by `issued_date DESC` so renewal collapse keeps the
+    #    most-recently-issued filing.
     if bin_usable:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"bin": nyc_bin, "$limit": "250", "$order": "filing_date DESC"},
+            "params": {"bin": nyc_bin, "$limit": "250", "$order": "issued_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
+            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "issued_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
@@ -9571,9 +9623,11 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job_filing_number",
         })
     if house_num and street_name:
+        # DOB NOW Electrical address column is `house_number` (not `house_no`
+        # like the Build dataset — different teams, different schemas).
         endpoints.append({
             "url": "https://data.cityofnewyork.us/resource/dm9a-ab7w.json",
-            "params": {"house_no": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
+            "params": {"house_number": house_num, "$where": f"upper(street_name) like '%{street_name}%'", "$limit": "250", "$order": "filing_date DESC"},
             "record_type": "permit",
             "id_field": "job_filing_number",
         })
@@ -10084,25 +10138,50 @@ def _next_action_for_311(rec: dict) -> str:
     )
 
 
-async def _fetch_311_for_bin(client: "httpx.AsyncClient", bin_number: str) -> List[dict]:
-    """Fetch recent 311 service requests for a BIN. Sorted newest-first, limit 100."""
+async def _fetch_311_for_project(
+    client: "httpx.AsyncClient",
+    nyc_bbl: str,
+    house_num: str,
+    street_name: str,
+) -> List[dict]:
+    """Fetch recent 311 service requests for a project.
+
+    The 311 dataset (erm2-nwe9) has NO `bin` column — only `bbl`. Prior
+    BIN queries were 400-ing every run. Prefer BBL when the project has
+    one, otherwise fall back to an address match. Sorted newest-first,
+    limit 100.
+    """
+    params: Optional[dict] = None
+    if nyc_bbl:
+        params = {
+            "bbl":     nyc_bbl,
+            "$limit":  "100",
+            "$order":  "created_date DESC",
+        }
+    elif house_num and street_name:
+        # incident_address is the raw street string ("123 Main St"); match
+        # on house number + street name. Uppercased to tolerate casing.
+        safe_house = house_num.replace("'", "").strip()
+        safe_street = street_name.replace("'", "").strip().upper()
+        params = {
+            "$where": f"upper(incident_address) like '%{safe_house}%{safe_street}%'",
+            "$limit":  "100",
+            "$order":  "created_date DESC",
+        }
+    else:
+        return []
+
     try:
-        resp = await client.get(
-            _NYC_311_ENDPOINT,
-            params={
-                "bin":     bin_number,
-                "$limit":  "100",
-                "$order":  "created_date DESC",
-            },
-            timeout=20.0,
-        )
+        resp = await client.get(_NYC_311_ENDPOINT, params=params, timeout=20.0)
         if resp.status_code != 200:
-            logger.warning(f"311 fetch {bin_number} returned {resp.status_code}")
+            key = nyc_bbl or f"{house_num} {street_name}"
+            logger.warning(f"311 fetch {key} returned {resp.status_code}")
             return []
         data = resp.json()
         return data if isinstance(data, list) else []
     except Exception as e:
-        logger.warning(f"311 fetch {bin_number} failed: {e}")
+        key = nyc_bbl or f"{house_num} {street_name}"
+        logger.warning(f"311 fetch {key} failed: {e}")
         return []
 
 
@@ -10111,10 +10190,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
     project_id = str(project.get("_id"))
     company_id = project.get("company_id", "")
     nyc_bin = (project.get("nyc_bin") or "").strip()
-    if not nyc_bin:
+    nyc_bbl = (project.get("nyc_bbl") or "").strip()
+    # 311 needs BBL (dataset has no `bin` column) OR an address match.
+    # Use the same address parsing the main DOB fetcher uses.
+    house_num, street_name = _parse_address_components(project.get("address") or "")
+    if not nyc_bbl and not (house_num and street_name):
         return {"new": 0, "actions": 0, "skipped": True}
 
-    records = await _fetch_311_for_bin(client, nyc_bin)
+    records = await _fetch_311_for_project(client, nyc_bbl, house_num, street_name)
     new_count = 0
     action_count = 0
     now = datetime.now(timezone.utc)
