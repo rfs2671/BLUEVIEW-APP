@@ -118,26 +118,20 @@ export const ToastProvider = ({ children }) => {
     info: (title, message) => addToast({ type: 'info', title, message }),
   };
 
-  // Toasts need to sit ABOVE any in-app Modal (e.g. NFC pairing,
-  // project-create, dropbox picker). A plain absolutely-positioned
-  // View can't escape a native Modal overlay — its z-index is
-  // scoped to its container. Render the toast stack inside a
-  // transparent Modal so it joins the OS window layer and paints
-  // over every app Modal. pointerEvents=box-none lets touches pass
-  // through to whatever is underneath (the original modal), while
-  // still catching taps on the toast card itself for dismissal.
+  // Previously wrapped in a transparent native Modal so toasts would
+  // paint above app Modals. Problem: RN's Modal intercepts ALL touches
+  // on its root view regardless of pointerEvents on children — so while
+  // a toast was visible the user couldn't tap any button underneath.
+  // Using a plain absolutely-positioned View instead. Trade-off: if a
+  // toast fires while an app Modal is open, the toast sits below the
+  // Modal — acceptable, because toasts are transient feedback, not
+  // blocking alerts.
   const hasToasts = toasts.length > 0;
 
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <Modal
-        visible={hasToasts}
-        transparent
-        animationType="none"
-        statusBarTranslucent
-        onRequestClose={() => {}}
-      >
+      {hasToasts && (
         <View
           pointerEvents="box-none"
           style={styles.toastContainer}
@@ -146,7 +140,7 @@ export const ToastProvider = ({ children }) => {
             <Toast key={t.id} {...t} onClose={removeToast} />
           ))}
         </View>
-      </Modal>
+      )}
     </ToastContext.Provider>
   );
 };

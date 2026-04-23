@@ -779,8 +779,16 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
             cert_types[ctype] = []
         cert_types[ctype].append(c)
 
-    # Check 1: OSHA baseline
-    has_osha = bool(cert_types.get("OSHA_10") or cert_types.get("OSHA_30"))
+    # Check 1: OSHA baseline. NYC SST training requires OSHA-10 as a
+    # prerequisite, so any SST cert on file satisfies the OSHA baseline
+    # too — we don't force workers to upload two separate photos at
+    # NFC check-in just to prove both.
+    sst_type_names = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
+    has_osha = bool(
+        cert_types.get("OSHA_10")
+        or cert_types.get("OSHA_30")
+        or any(cert_types.get(t) for t in sst_type_names)
+    )
     if not has_osha:
         blocks.append({
             "type": "MISSING_OSHA",
@@ -823,16 +831,22 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
 
     if not has_valid_sst:
         if expired_sst:
+            # Expired is still a hard block — it's a documented event, not
+            # an OCR gap. Keep LL196 enforcement strict here.
             blocks.append({
                 "type": "EXPIRED_SST",
                 "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Cannot enter site per NYC LL196.",
                 "remediation": "Worker must complete SST renewal training and present updated card."
             })
         elif not sst_certs:
-            blocks.append({
+            # Downgrade to warning: first-time NFC workers upload a single
+            # card photo. If OCR read it as OSHA (no expiration) we don't
+            # have SST evidence yet, but we also don't want to reject the
+            # worker at the gate. CP/admin will follow up in cert review.
+            warnings.append({
                 "type": "MISSING_SST",
-                "detail": "No NYC SST card on file. Required per LL196.",
-                "remediation": "Worker must complete SST training (10-hr or 62-hr) and present card."
+                "detail": "No NYC SST card on file yet. Worker can check in, but CP should verify SST card in next review.",
+                "cert_type": "SST"
             })
 
     # Check 3: 30-day expiration warnings
@@ -3899,23 +3913,52 @@ async def register_and_checkin(data: dict):
         }
     
     # ── CERTIFICATION GATE ──
+    # Create an OSHA cert from the uploaded card. Previously this code
+    # would OVERWRITE type to "SST_LIMITED" when an expiration date was
+    # detected — which is wrong: an OSHA card with expiration is still
+    # an OSHA card, and flipping the type made validate_worker_certifications
+    # fail "MISSING_OSHA" immediately for any worker who uploaded one.
+    #
+    # Strategy now: if the photo carries an expiration, create BOTH an
+    # OSHA_10 entry (lifetime, no expiration carried over) AND an
+    # SST_LIMITED entry (the expiration lives there). If no expiration
+    # found, just create the OSHA_10. Also: accept any uploaded card
+    # image as a best-effort OSHA signal even if OCR couldn't pull the
+    # number — better than silently blocking the worker for an OCR fail.
     worker_certs = worker.get("certifications", [])
-    if osha_number and not any(c.get("type", "").startswith("OSHA") for c in worker_certs):
-        new_cert = {
-            "type": "OSHA_30" if "30" in str(osha_data.get("course", "") if osha_data else "") else "OSHA_10",
-            "card_number": osha_number,
+    has_existing_osha = any(c.get("type", "").startswith("OSHA") for c in worker_certs)
+    has_existing_sst = any(c.get("type", "").startswith("SST") for c in worker_certs)
+
+    if not has_existing_osha and (osha_number or osha_card_image):
+        course_str = str(osha_data.get("course", "") if osha_data else "")
+        osha_cert = {
+            "type": "OSHA_30" if "30" in course_str else "OSHA_10",
+            "card_number": osha_number or None,
             "issue_date": None,
-            "expiration_date": None,
+            "expiration_date": None,  # OSHA cards are lifetime post-2020
             "verified": False,
+            "needs_review": not bool(osha_number),  # flag for admin if OCR missed number
             "ocr_confidence": osha_data.get("confidence") if osha_data else None,
         }
-        if osha_data and osha_data.get("expiration"):
-            try:
-                new_cert["expiration_date"] = datetime.strptime(osha_data["expiration"], "%m/%d/%Y").replace(tzinfo=timezone.utc)
-                new_cert["type"] = "SST_LIMITED"
-            except (ValueError, TypeError):
-                pass
-        worker_certs.append(new_cert)
+        worker_certs.append(osha_cert)
+
+    # If the card appears to be SST (has expiration), also add an SST entry.
+    if not has_existing_sst and osha_data and osha_data.get("expiration"):
+        try:
+            exp_dt = datetime.strptime(osha_data["expiration"], "%m/%d/%Y").replace(tzinfo=timezone.utc)
+            worker_certs.append({
+                "type": "SST_LIMITED",
+                "card_number": osha_number or None,
+                "issue_date": None,
+                "expiration_date": exp_dt,
+                "verified": False,
+                "needs_review": not bool(osha_number),
+                "ocr_confidence": osha_data.get("confidence") if osha_data else None,
+            })
+        except (ValueError, TypeError):
+            pass
+
+    if len(worker_certs) != len(worker.get("certifications", [])):
         await db.workers.update_one(
             {"_id": worker["_id"]},
             {"$set": {"certifications": worker_certs, "updated_at": now}}

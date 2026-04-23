@@ -733,12 +733,26 @@ function showReturningScreen(worker, needsOrientation = false) {
     document.querySelector('#screenReturning .returning-badge').style.background = 'rgba(245,158,11,0.1)';
     document.querySelector('#screenReturning .returning-badge').style.borderColor = 'rgba(245,158,11,0.2)';
     document.querySelector('#screenReturning .returning-badge').style.color = '#f59e0b';
-    
+
     const btn = document.querySelector('#screenReturning .btn-success');
     btn.textContent = 'Complete Safety Orientation';
     btn.onclick = function() {
       showScreen('screenRegister');
-      goStep(3);
+      // If the worker's prior (trade, company) is already in this
+      // project's roster, preselect the dropdown and skip straight
+      // to orientation. Otherwise send them to step 2 to pick a new
+      // roster entry — different project can have different subs.
+      const matchIdx = tradeAssignments.findIndex(
+        (a) =>
+          (a.trade || '').toLowerCase() === (worker.trade || '').toLowerCase() &&
+          (a.company || '').toLowerCase() === (worker.company || '').toLowerCase()
+      );
+      if (matchIdx >= 0) {
+        document.getElementById('tradeAssignmentSelect').value = String(matchIdx);
+        goStep(3);
+      } else {
+        goStep(2);
+      }
     };
   }
   
