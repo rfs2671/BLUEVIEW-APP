@@ -22,6 +22,7 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
+from lib.server_http import ServerHttpClient
 import asyncio
 import io
 import sys
@@ -504,7 +505,7 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
 
     for endpoint in endpoints:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as http_client:
+            async with ServerHttpClient(timeout=10.0) as http_client:
                 resp = await http_client.get(
                     endpoint,
                     params={"text": address.strip(), "size": "1"},
@@ -2391,7 +2392,7 @@ async def create_company(company_data: CompanyCreate, current_user = Depends(get
         try:
             from permit_renewal import _fetch_insurance_details
             import httpx
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with ServerHttpClient(timeout=20.0) as client:
                 insurance = await _fetch_insurance_details(client, company_data.gc_license_number)
                 company_dict["gc_insurance_records"] = [rec.dict() for rec in insurance]
                 company_dict["gc_last_verified"] = now
@@ -2423,7 +2424,7 @@ async def debug_bis_license(license_number: str, current_user=Depends(get_curren
     status_code = 0
     err = None
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with ServerHttpClient(timeout=30.0, follow_redirects=True) as client:
             r = await client.get(
                 DOB_BIS_LICENSE_URL,
                 params={"requestid": "2", "licno": license_number},
@@ -2441,7 +2442,7 @@ async def debug_bis_license(license_number: str, current_user=Depends(get_curren
     # Try the current regex extraction
     extracted = []
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with ServerHttpClient(timeout=20.0) as client:
             extracted = [rec.dict() for rec in await _fetch_insurance_details(client, license_number)]
     except Exception as e:
         extracted = [{"error": str(e)}]
@@ -2498,7 +2499,7 @@ async def link_gc_license_to_company(
         try:
             import httpx
             DATASET_URL = "https://data.cityofnewyork.us/resource/w5r2-853r.json"
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with ServerHttpClient(timeout=20.0) as client:
                 resp = await client.get(DATASET_URL, params={
                     "license_number": lic_num,
                     "license_type": "GENERAL CONTRACTOR",
@@ -2535,7 +2536,7 @@ async def link_gc_license_to_company(
     try:
         from permit_renewal import _fetch_insurance_details
         import httpx
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with ServerHttpClient(timeout=20.0) as client:
             insurance = await _fetch_insurance_details(client, lic_num)
             insurance_dicts = [rec.dict() for rec in insurance]
     except Exception as e:
@@ -2609,7 +2610,7 @@ async def seed_gc_licenses(current_user=Depends(get_current_user)):
     now = datetime.now(timezone.utc)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with ServerHttpClient(timeout=30.0) as client:
             while True:
                 resp = await client.get(DATASET_URL, params={
                     "$where": "license_type='GENERAL CONTRACTOR'",
@@ -2680,7 +2681,7 @@ async def run_gc_sync(current_user=Depends(get_current_user)):
     now = datetime.now(timezone.utc)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with ServerHttpClient(timeout=30.0) as client:
             while True:
                 resp = await client.get(DATASET_URL, params={
                     "$where": "license_type='GENERAL CONTRACTOR'",
@@ -3658,7 +3659,7 @@ async def upload_osha_card(file_data: dict, request: Request):
 
     text = ""
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client_http:
+        async with ServerHttpClient(timeout=60.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -6226,7 +6227,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
         raise HTTPException(status_code=400, detail="Invalid state")
     
     # Exchange code for token
-    async with httpx.AsyncClient() as client_http:
+    async with ServerHttpClient() as client_http:
         token_response = await client_http.post(
             "https://api.dropboxapi.com/oauth2/token",
             data={
@@ -6263,7 +6264,7 @@ async def dropbox_callback(code: str = None, state: str = None, error: str = Non
     token_data = token_response.json()
     
     # Get account info
-    async with httpx.AsyncClient() as client_http:
+    async with ServerHttpClient() as client_http:
         account_response = await client_http.post(
             "https://api.dropboxapi.com/2/users/get_current_account",
             headers={"Authorization": f"Bearer {token_data['access_token']}"}
@@ -6310,7 +6311,7 @@ async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_u
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code required")
     
-    async with httpx.AsyncClient() as client_http:
+    async with ServerHttpClient() as client_http:
         token_response = await client_http.post(
             "https://api.dropboxapi.com/oauth2/token",
             data={
@@ -6335,7 +6336,7 @@ async def complete_dropbox_auth(data: dict, current_user = Depends(get_current_u
     now = datetime.now(timezone.utc)
     
     # Get account info
-    async with httpx.AsyncClient() as client_http:
+    async with ServerHttpClient() as client_http:
         account_response = await client_http.post(
             "https://api.dropboxapi.com/2/users/get_current_account",
             headers={"Authorization": f"Bearer {token_data['access_token']}"}
@@ -6375,7 +6376,7 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
     connection = await db.dropbox_connections.find_one({"company_id": company_id})
     if connection and connection.get("access_token"):
         try:
-            async with httpx.AsyncClient() as client_http:
+            async with ServerHttpClient() as client_http:
                 await client_http.post(
                     "https://api.dropboxapi.com/2/auth/token/revoke",
                     headers={"Authorization": f"Bearer {connection['access_token']}"}
@@ -6415,7 +6416,7 @@ async def get_valid_dropbox_token(company_id: str) -> str:
         raise HTTPException(status_code=401, detail="No refresh token. Please reconnect Dropbox.")
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as c:
+        async with ServerHttpClient(timeout=15.0) as c:
             resp = await c.post("https://api.dropboxapi.com/oauth2/token", data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
@@ -6454,14 +6455,14 @@ async def dropbox_api_call(company_id: str, method: str, url: str, **kwargs):
     headers = kwargs.pop("headers", {})
     headers["Authorization"] = f"Bearer {token}"
 
-    async with httpx.AsyncClient() as client_http:
+    async with ServerHttpClient() as client_http:
         response = await getattr(client_http, method)(url, headers=headers, **kwargs)
 
     # Safety net: if 401 despite proactive refresh, force-refresh once more
     if response.status_code == 401:
         token = await get_valid_dropbox_token(company_id)
         headers["Authorization"] = f"Bearer {token}"
-        async with httpx.AsyncClient() as client_http:
+        async with ServerHttpClient() as client_http:
             response = await getattr(client_http, method)(url, headers=headers, **kwargs)
 
     return response
@@ -7618,7 +7619,7 @@ async def register_dropbox_webhook(data: dict = {}, current_user = Depends(get_a
     company_id = get_user_company_id(current_user)
     token = await get_valid_dropbox_token(company_id)
 
-    async with httpx.AsyncClient(timeout=15.0) as c:
+    async with ServerHttpClient(timeout=15.0) as c:
         resp = await c.post(
             "https://api.dropboxapi.com/2/files/list_folder/longpoll",
             headers={"Authorization": f"Bearer {token}"},
@@ -8256,7 +8257,7 @@ async def places_autocomplete(input: str, types: str = "address", current_user =
         return {"predictions": []}
     
     try:
-        async with httpx.AsyncClient() as client:
+        async with ServerHttpClient() as client:
             response = await client.get(
                 "https://maps.googleapis.com/maps/api/place/autocomplete/json",
                 params={
@@ -8291,7 +8292,7 @@ async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, 
     longitude = lng or -74.0060
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with ServerHttpClient(timeout=10.0) as client:
             # If address provided but no lat/lng, geocode via OpenWeather
             if address and not lat:
                 geo_url = (
@@ -9761,7 +9762,7 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
     # live-tailing. Reported after the loop completes.
     per_endpoint_stats: List[Dict[str, Any]] = []
 
-    async with httpx.AsyncClient(timeout=20.0) as http_client:
+    async with ServerHttpClient(timeout=20.0) as http_client:
         for ep in endpoints:
             raw_returned = 0
             kept_after_dedup = 0
@@ -10371,7 +10372,7 @@ async def _poll_311_fast_complaints() -> None:
     total_new = 0
     total_action = 0
     total_processed = 0
-    async with httpx.AsyncClient(
+    async with ServerHttpClient(
         headers={"User-Agent": "Levelog/1.0 (311 poller)"},
     ) as client:
         # Cap concurrency so we don't hammer the NYC Open Data endpoint.
@@ -11919,7 +11920,7 @@ async def _generate_annotation_screenshot(
         except Exception:
             return
 
-        async with httpx.AsyncClient(timeout=30) as hc:
+        async with ServerHttpClient(timeout=30) as hc:
             resp = await hc.post(
                 "https://content.dropboxapi.com/2/files/download",
                 headers={
@@ -12328,7 +12329,7 @@ async def send_whatsapp_message(chat_id: str, message: str):
     headers = {"Authorization": f"Bearer {WAAPI_TOKEN}", "Content-Type": "application/json"}
     payload = {"chatId": chat_id, "message": message}
     try:
-        async with httpx.AsyncClient(timeout=15) as client_http:
+        async with ServerHttpClient(timeout=15) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             # Log outbound bot turn into whatsapp_messages so the agent's
@@ -12718,7 +12719,7 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
         ]
         for path in paths:
             try:
-                async with httpx.AsyncClient(timeout=45) as client_http:
+                async with ServerHttpClient(timeout=45) as client_http:
                     resp = await client_http.post(
                         f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/{path}",
                         headers={
@@ -12934,7 +12935,7 @@ async def download_audio(parsed_msg: dict) -> Optional[bytes]:
             headers = {}
             if WAAPI_TOKEN and "waapi" in audio_url:
                 headers["Authorization"] = f"Bearer {WAAPI_TOKEN}"
-            async with httpx.AsyncClient(timeout=30) as client_http:
+            async with ServerHttpClient(timeout=30) as client_http:
                 resp = await client_http.get(audio_url, headers=headers)
                 if 200 <= resp.status_code < 300 and resp.content:
                     return resp.content
@@ -12999,7 +13000,7 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
                 "sheet A-101, ME-401, P-1, hoist, scaffold, riser.",
             ),
         }
-        async with httpx.AsyncClient(timeout=60) as client_http:
+        async with ServerHttpClient(timeout=60) as client_http:
             resp = await client_http.post(url, headers=headers, files=files_payload)
             if resp.status_code != 200:
                 logger.error(
@@ -13059,7 +13060,7 @@ async def classify_intent(message: str) -> Optional[str]:
                 {"role": "user", "content": message},
             ],
         }
-        async with httpx.AsyncClient(timeout=10) as client_http:
+        async with ServerHttpClient(timeout=10) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             label = resp.json()["choices"][0]["message"]["content"].strip().lower()
@@ -13252,7 +13253,7 @@ async def _detect_material_request(message_body: str, project_id: str, company_i
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with ServerHttpClient(timeout=15) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
@@ -13390,7 +13391,7 @@ async def _handle_material_receipt(project_id: str, message_body: str, sender_ph
         return "All material requests are fulfilled. No outstanding items."
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with ServerHttpClient(timeout=15) as client:
             resp = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
@@ -14161,7 +14162,7 @@ async def _generate_embedding(text: str) -> Optional[list]:
     # OpenAI caps at 8192 tokens per input; truncate aggressively at char level.
     text = text.strip()[:20000]
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client_http:
+        async with ServerHttpClient(timeout=30.0) as client_http:
             resp = await client_http.post(
                 "https://api.openai.com/v1/embeddings",
                 headers={
@@ -14302,7 +14303,7 @@ async def _index_single_page(
     summary_text = ""
     b64 = base64.b64encode(page_image_bytes).decode("ascii")
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client_http:
+        async with ServerHttpClient(timeout=90.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -14666,7 +14667,7 @@ async def _parse_plan_query(query: str) -> dict:
     if not OPENAI_API_KEY or not query:
         return {}
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client_http:
+        async with ServerHttpClient(timeout=20.0) as client_http:
             resp = await client_http.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -14996,7 +14997,7 @@ async def _qwen_visual_qa(jpeg_bytes: bytes, question: str,
         user_question=question.strip(),
     )
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client_http:
+        async with ServerHttpClient(timeout=90.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={
@@ -15104,7 +15105,7 @@ async def _send_plan_image(
     # WaAPI endpoint is `send-media` with a `mediaUrl` field (NOT send-image
     # with `image`, which returns 404). Discovered via probe-waapi-endpoints.
     try:
-        async with httpx.AsyncClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(
                 f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
                 headers={
@@ -16218,7 +16219,7 @@ async def _run_group_agent(
         enabled_tools.append(t)
 
     try:
-        async with httpx.AsyncClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=40.0) as client_http:
             last_content = ""  # track so we can fall back gracefully on overrun
             for _turn in range(4):  # max 4 tool rounds
                 resp = await client_http.post(
@@ -16944,7 +16945,7 @@ async def whatsapp_debug_waapi_config(current_user=Depends(get_current_user)):
     status_data = None
     status_err = None
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client_http:
+        async with ServerHttpClient(timeout=10.0) as client_http:
             resp = await client_http.get(
                 f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}",
                 headers={"Authorization": f"Bearer {WAAPI_TOKEN}"},
@@ -17627,7 +17628,7 @@ async def debug_probe_waapi_endpoints(
         ("client/action/send-message",     {"chatId": group_id, "mediaUrl": image_url, "message": "probe"}),
     ]
     results = {}
-    async with httpx.AsyncClient(timeout=25.0) as client_http:
+    async with ServerHttpClient(timeout=25.0) as client_http:
         for path, payload in paths_to_try:
             try:
                 resp = await client_http.post(
@@ -17713,7 +17714,7 @@ async def debug_test_plan_image_send(
 
     # Step 3 — WaAPI send-media
     try:
-        async with httpx.AsyncClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(
                 f"{WAAPI_BASE_URL}/instances/{WAAPI_INSTANCE_ID}/client/action/send-media",
                 headers={
@@ -18108,7 +18109,7 @@ async def _summarize_and_send_for_group(group_doc: dict) -> None:
                 {"role": "user", "content": f"Project: {project_name}\n\nMessages:\n{conversation_text}"},
             ],
         }
-        async with httpx.AsyncClient(timeout=30) as client_http:
+        async with ServerHttpClient(timeout=30) as client_http:
             resp = await client_http.post(url, json=gpt_payload, headers=headers)
             resp.raise_for_status()
             summary = resp.json()["choices"][0]["message"]["content"].strip()
@@ -18255,7 +18256,7 @@ async def _extract_whatsapp_checklist(project_id: str, group_id: str, conversati
                 {"role": "user",   "content": conversation_text[:12000]},
             ],
         }
-        async with httpx.AsyncClient(timeout=40.0) as client_http:
+        async with ServerHttpClient(timeout=40.0) as client_http:
             resp = await client_http.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
@@ -18417,7 +18418,7 @@ async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
         return ""
     b64 = base64.b64encode(jpeg_bytes).decode("ascii")
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client_http:
+        async with ServerHttpClient(timeout=60.0) as client_http:
             resp = await client_http.post(
                 f"{QWEN_API_BASE}/chat/completions",
                 headers={

@@ -1,4 +1,5 @@
 import os
+from lib.server_http import ServerHttpClient
 import re
 import logging
 from datetime import datetime, timezone, timedelta
@@ -282,7 +283,7 @@ async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
             f"license_type='GENERAL CONTRACTOR' "
             f"AND upper(business_name) LIKE '%{safe}%'"
         )
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.get(
                 NYC_OPEN_DATA_GC_LICENSES_URL,
                 params={"$where": where, "$limit": "5"},
@@ -712,7 +713,7 @@ async def check_renewal_completion(db, renewal: dict) -> bool:
         return False
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with ServerHttpClient(timeout=15.0) as client:
             resp = await client.get(
                 "https://data.cityofnewyork.us/resource/rbx6-tga4.json",
                 params={
@@ -803,7 +804,7 @@ async def run_dob_now_health_check(db):
     try:
         import httpx
 
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with ServerHttpClient(timeout=20.0) as client:
             resp = await client.get(DOB_NOW_BUILD_URL)
             if resp.status_code != 200:
                 issues.append(
