@@ -22,11 +22,18 @@ import jwt
 import bcrypt
 from bson import ObjectId
 import httpx
-from lib.server_http import ServerHttpClient
 import asyncio
 import io
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# IMPORTANT: every import below this line that targets a sibling
+# module (e.g. `from lib.foo import X` or `from dob_complaint_codes
+# import Y`) RELIES on the sys.path.insert above. Putting them
+# above this line crashes deployment because Railway's WORKDIR isn't
+# backend/ — the script's directory must be added to sys.path before
+# any sibling/subpackage import can resolve. (Step 4 regression,
+# fixed: f5cb4eb. CI smoke test enforces this going forward.)
+from lib.server_http import ServerHttpClient
 import re
 import hashlib
 from urllib.parse import quote_plus

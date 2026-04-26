@@ -1,0 +1,75 @@
+# Backend import smoke test.
+#
+# Catches the class of bug that broke step 4 in production: a new
+# import that resolves locally (because the developer's working
+# directory is `backend/`) but crashes Railway's deploy (because the
+# Dockerfile WORKDIR is `/app/` and `cd backend` isn't in the CMD).
+#
+# server.py runs `sys.path.insert(0, dirname(__file__))` early to make
+# sibling imports (`from lib.foo import X`, `from dob_complaint_codes
+# import Y`, etc.) resolvable. Any new import placed BEFORE that line
+# will crash at boot. This job exercises BOTH supported deploy paths
+# end-to-end:
+#
+#   - Dockerfile mode: WORKDIR=/app, `uvicorn backend.server:app`
+#   - Procfile mode:   `cd backend && uvicorn server:app`
+#
+# A successful import in both confirms the backend can boot; a failure
+# fails the PR before the bad import lands on main.
+#
+# This is intentionally a smoke test, not a full integration test.
+# We don't bind a port, don't run the lifecycle, just verify the
+# import graph resolves under Railway's exact path conventions.
+
+name: backend-import-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  import-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import backend.server (Dockerfile mode — WORKDIR=/app)
+        env:
+          # Required env vars stubbed so module-level os.environ[...]
+          # reads don't crash the import. Real values aren't needed
+          # because we never call any handler.
+          MONGO_URL: "mongodb://localhost:27017"
+          DB_NAME: "smoke_test"
+          JWT_SECRET: "smoke_test"
+          QWEN_API_KEY: ""
+          ELIGIBILITY_REWRITE_MODE: "off"
+        run: |
+          set -e
+          # Mirror Railway's Dockerfile: cwd = repo root, import
+          # the package as `backend.server`. If a sibling import
+          # is placed before sys.path.insert in server.py, this
+          # ModuleNotFoundError-crashes here instead of in prod.
+          python -c "from backend import server; print('Dockerfile mode OK')"
+
+      - name: Import server (Procfile mode — cwd=backend/)
+        env:
+          MONGO_URL: "mongodb://localhost:27017"
+          DB_NAME: "smoke_test"
+          JWT_SECRET: "smoke_test"
+          QWEN_API_KEY: ""
+          ELIGIBILITY_REWRITE_MODE: "off"
+        run: |
+          set -e
+          # Mirror Railway's Procfile: `cd backend && uvicorn ...`.
+          # Equivalent to running with cwd=backend/.
+          cd backend && python -c "import server; print('Procfile mode OK')"
