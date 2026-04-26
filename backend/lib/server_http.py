@@ -90,10 +90,56 @@ class EgressViolation(RuntimeError):
 # logs every request, but the first one per process should be visible
 # enough to notice during local dev.
 _socrata_token_warning_emitted = False
+_socrata_token_shape_logged = False
+_socrata_malformed_token_warned = False
+
+# Socrata App Tokens are 25 chars of [A-Za-z0-9]. Allow a tolerant
+# range so future format changes don't break us, but reject obvious
+# garbage (empty, surrounded by quotes, contains newlines, way wrong
+# length). Sending a malformed token to Socrata returns 403 on every
+# request — far worse than falling back to the anonymous quota.
+_SOCRATA_TOKEN_MIN_LEN = 20
+_SOCRATA_TOKEN_MAX_LEN = 50
 
 
 def _socrata_app_token() -> Optional[str]:
-    return os.environ.get("SOCRATA_APP_TOKEN") or None
+    """Read SOCRATA_APP_TOKEN. Strips whitespace + surrounding quotes
+    that Railway env-var copy-paste sometimes leaves in. Returns None
+    if the token is empty after cleanup OR shaped wrong — the latter
+    case logs a loud one-time warning so the operator sees it.
+    """
+    global _socrata_malformed_token_warned
+
+    raw = os.environ.get("SOCRATA_APP_TOKEN", "")
+    # Strip whitespace + matched surrounding quotes. Order matters:
+    # strip whitespace first (might reveal stray quotes), then quotes.
+    cleaned = raw.strip()
+    if (cleaned.startswith('"') and cleaned.endswith('"')) or \
+       (cleaned.startswith("'") and cleaned.endswith("'")):
+        cleaned = cleaned[1:-1].strip()
+
+    if not cleaned:
+        return None
+
+    # Sanity-check shape. If garbage made it into the env, refuse to
+    # send it — anonymous-quota fallback is strictly better than
+    # 403'ing every Socrata request in production.
+    n = len(cleaned)
+    if n < _SOCRATA_TOKEN_MIN_LEN or n > _SOCRATA_TOKEN_MAX_LEN \
+       or not cleaned.isalnum():
+        if not _socrata_malformed_token_warned:
+            logger.error(
+                "SOCRATA_APP_TOKEN appears malformed (length=%d, "
+                "alphanumeric=%s). Falling back to anonymous quota. "
+                "Expected 25 chars of [A-Za-z0-9]. Check the env var "
+                "for whitespace, quotes, or wrong token type "
+                "(App Token, NOT Secret Token).",
+                n, cleaned.isalnum(),
+            )
+            _socrata_malformed_token_warned = True
+        return None
+
+    return cleaned
 
 
 def _check_host_or_raise(url: str) -> str:
@@ -116,21 +162,37 @@ def _maybe_inject_socrata_token(host: str, kwargs: dict) -> None:
     """If `host` is a known Socrata host, attach X-App-Token. Logs a
     one-time warning if the token is unset so dev environments notice
     they're unauthenticated against the anonymous quota."""
-    global _socrata_token_warning_emitted
+    global _socrata_token_warning_emitted, _socrata_token_shape_logged
     if host not in SOCRATA_HOSTS:
         return
     token = _socrata_app_token()
     if not token:
         if not _socrata_token_warning_emitted:
             logger.warning(
-                "SOCRATA_APP_TOKEN env var is not set. Server-side "
-                "Socrata calls will use the anonymous quota (~1000 "
-                "req/hr per IP) and may produce intermittent 429s "
-                "under load. Set the token in Railway env to lift the "
-                "limit. Suppressing further warnings for this process."
+                "SOCRATA_APP_TOKEN env var is not set or malformed. "
+                "Server-side Socrata calls will use the anonymous "
+                "quota (~1000 req/hr per IP) and may produce "
+                "intermittent 429s under load. Suppressing further "
+                "warnings for this process."
             )
             _socrata_token_warning_emitted = True
         return
+
+    # One-time shape diagnostic — masked, never logs the full token.
+    # Lets the operator confirm in Railway logs that the right value
+    # is in env (length matches, no whitespace prefix/suffix snuck in).
+    if not _socrata_token_shape_logged:
+        masked = (
+            f"{token[:4]}…{token[-4:]}"
+            if len(token) >= 8 else "????"
+        )
+        logger.info(
+            "Socrata token attached to outbound request: shape=%s "
+            "length=%d alphanumeric=%s",
+            masked, len(token), token.isalnum(),
+        )
+        _socrata_token_shape_logged = True
+
     headers = kwargs.setdefault("headers", {})
     # Don't clobber an explicit caller-supplied token.
     if isinstance(headers, dict) and "X-App-Token" not in headers:

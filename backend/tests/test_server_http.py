@@ -195,12 +195,65 @@ class TestSocrataTokenInjection(unittest.TestCase):
                 captured["headers"] = dict(kwargs.get("headers") or {})
                 return httpx.Response(200)
 
-            with patch.dict(os.environ, {"SOCRATA_APP_TOKEN": "abc123"}):
+            # 25-char alphanumeric — matches Socrata's actual format
+            valid_token = "AbCdEfGh1jKlMnOpQrStUvWxY"
+            self.assertEqual(len(valid_token), 25)
+            with patch.dict(os.environ, {"SOCRATA_APP_TOKEN": valid_token}):
                 with patch.object(httpx.AsyncClient, "request", new=fake_request):
                     async with ServerHttpClient() as c:
                         await c.get("https://data.cityofnewyork.us/resource/x.json")
-            self.assertEqual(captured["headers"].get("X-App-Token"), "abc123")
+            self.assertEqual(captured["headers"].get("X-App-Token"), valid_token)
         _run(go())
+
+    def test_malformed_token_rejected_falls_back_to_anonymous(self):
+        """Malformed tokens (whitespace, quotes, wrong length, non-alnum)
+        must NOT be sent to Socrata. Sending a bad token returns 403 on
+        every request — strictly worse than falling back to anonymous
+        quota. Reflects the prod incident (2026-04-26) where a
+        malformed env value bricked all DOB syncs."""
+        bad_values = [
+            '"AbCdEfGh1jKlMnOpQrStUvWxY"',  # surrounded by quotes
+            "  AbCdEfGh1jKlMnOpQrStUvWxY  ",  # whitespace padding
+            "AbCdEfGh1jKlMnOpQrStUvWxY\n",  # trailing newline
+            "short",  # too short
+            "x" * 200,  # too long
+            "has-a-dash-AbCdEfGh1jKlMn",  # non-alnum
+        ]
+
+        for bad in bad_values:
+            captured = {}
+
+            async def fake_request(_self, method, url, **kwargs):
+                captured["headers"] = dict(kwargs.get("headers") or {})
+                return httpx.Response(200)
+
+            async def go():
+                async with ServerHttpClient() as c:
+                    await c.get("https://data.cityofnewyork.us/resource/x.json")
+
+            with patch.dict(os.environ, {"SOCRATA_APP_TOKEN": bad}):
+                with patch.object(httpx.AsyncClient, "request", new=fake_request):
+                    _run(go())
+
+            # Whitespace-padded / quoted tokens get cleaned and pass.
+            # Genuinely malformed tokens (wrong length, non-alnum) get
+            # dropped entirely — header should not be present.
+            cleaned_len = len(bad.strip().strip("\"'").strip())
+            is_recoverable = (
+                cleaned_len == 25
+                and bad.strip().strip("\"'").strip().isalnum()
+            )
+            if is_recoverable:
+                self.assertEqual(
+                    captured["headers"].get("X-App-Token"),
+                    bad.strip().strip("\"'").strip(),
+                    f"recoverable token {bad!r} should be cleaned + sent",
+                )
+            else:
+                self.assertNotIn(
+                    "X-App-Token", captured["headers"],
+                    f"malformed token {bad!r} should NOT be sent",
+                )
 
     def test_token_not_attached_when_env_unset_warns_once(self):
         captured = []
