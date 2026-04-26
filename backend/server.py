@@ -11525,6 +11525,92 @@ async def nightly_dob_scan():
     await check_permit_expirations()
     await nightly_renewal_scan(db)
 
+async def _eligibility_shadow_sweep():
+    """30-min sweep that runs both legacy and v2 eligibility against
+    every active permit, writes diff to `eligibility_shadow`. Only
+    registered when ELIGIBILITY_REWRITE_MODE == 'shadow' (see startup).
+
+    Cron lock: APScheduler `max_instances=1` ensures overlapping runs
+    skip rather than double up. Mongo `processing_until` field on a
+    sentinel doc would be more explicit but the in-process lock is
+    sufficient for single-instance deploys.
+    """
+    from lib import eligibility_dispatcher, eligibility_shadow, eligibility_v2
+    from permit_renewal import _check_renewal_eligibility_legacy_inner
+
+    started = datetime.now(timezone.utc)
+    permits_evaluated = 0
+    permits_failed = 0
+
+    # All permit rows on tracked projects with track_dob_status=True.
+    # Fetch project + company once per permit; the dispatcher pattern
+    # demands the snapshot-of-input determinism across legacy and v2.
+    tracked_projects = await db.projects.find(
+        {"track_dob_status": True, "is_deleted": {"$ne": True}},
+        {"_id": 1, "name": 1, "company_id": 1},
+    ).to_list(500)
+
+    project_by_id = {str(p["_id"]): p for p in tracked_projects}
+    company_cache: Dict[str, Optional[dict]] = {}
+
+    for project in tracked_projects:
+        project_id = str(project["_id"])
+        company_id = project.get("company_id")
+        if company_id and company_id not in company_cache:
+            company_cache[company_id] = await db.companies.find_one(
+                {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+            )
+        company = company_cache.get(company_id) or {}
+
+        permits = await db.dob_logs.find({
+            "project_id": project_id,
+            "record_type": "permit",
+            "is_deleted": {"$ne": True},
+        }).to_list(500)
+
+        for permit in permits:
+            try:
+                async def _legacy(p, pj, c, t, _name=None):
+                    name = (
+                        _name
+                        or (c.get("gc_business_name") if c else None)
+                        or (c.get("name") if c else "")
+                        or ""
+                    )
+                    return await _check_renewal_eligibility_legacy_inner(
+                        db, p, pj, name, c, today=t,
+                    )
+
+                async def _v2(d, p, pj, c, t):
+                    return await eligibility_v2.evaluate(d, p, pj, c or {}, today=t)
+
+                shadow_doc = await eligibility_shadow.run_one(
+                    db,
+                    legacy_callable=_legacy,
+                    v2_callable=_v2,
+                    permit=permit,
+                    project=project,
+                    company=company,
+                )
+                shadow_doc["sweep_started_at"] = started
+                shadow_doc["project_id"] = project_id
+                await db.eligibility_shadow.insert_one(shadow_doc)
+                permits_evaluated += 1
+            except Exception as e:
+                permits_failed += 1
+                logger.warning(
+                    f"[eligibility_shadow_sweep] permit "
+                    f"{permit.get('_id')} failed: {e!r}"
+                )
+
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    logger.info(
+        f"🪞 eligibility shadow sweep complete: "
+        f"evaluated={permits_evaluated} failed={permits_failed} "
+        f"elapsed={elapsed:.1f}s"
+    )
+
+
 async def check_permit_expirations():
     """Check all tracked projects for permits expiring within 14 days. Called by nightly scan."""
     try:
@@ -18897,6 +18983,45 @@ async def startup_event():
         )
     except Exception as _card_job_err:
         logger.error(f"card_audit scheduler wire failed: {_card_job_err!r}")
+
+    # ── Eligibility rewrite: shadow-mode cron + startup mode validation ──
+    # Validate ELIGIBILITY_REWRITE_MODE early. A typo (e.g. 'shadwo')
+    # crashes the process now — the alternative (silent default to
+    # 'off') is the worst case: you think shadow is running, it isn't,
+    # you cut over after 48h of zero data.
+    try:
+        from lib.eligibility_dispatcher import (
+            assert_valid_mode_at_startup as _validate_eligibility_mode,
+            get_mode as _get_eligibility_mode,
+        )
+        _eligibility_mode = _validate_eligibility_mode()
+    except Exception as _e:
+        logger.error(f"Eligibility mode validation FAILED at startup: {_e!r}")
+        raise
+
+    if _eligibility_mode == "shadow":
+        try:
+            scheduler.add_job(
+                _eligibility_shadow_sweep,
+                IntervalTrigger(minutes=30),
+                id='eligibility_shadow_sweep',
+                replace_existing=True,
+                max_instances=1,  # cron lock — skip if previous run still going
+                coalesce=True,
+            )
+            logger.info("🪞 Eligibility shadow sweep scheduled (every 30 min)")
+        except Exception as _e:
+            logger.error(f"eligibility_shadow_sweep scheduler wire failed: {_e!r}")
+
+    # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.
+    try:
+        await db.eligibility_shadow.create_index(
+            [("ran_at", 1)],
+            name="eligibility_shadow_ttl",
+            expireAfterSeconds=30 * 24 * 60 * 60,
+        )
+    except Exception as _e:
+        logger.warning(f"eligibility_shadow TTL index create failed: {_e!r}")
 
     scheduler.start()
     logger.info("📧 Report email scheduler started")
