@@ -489,20 +489,46 @@ async def check_renewal_eligibility(
     company_name: str,
     company_id: Optional[str] = None,
 ) -> RenewalEligibility:
-    """
-    Full eligibility check:
-    1. Verify permit exists and is expiring within 30 days
-    2. Look up GC license status from NYC Open Data
-    3. Read manually-entered insurance records from the company doc and
-       validate each covers 1 year from renewal date.
+    """Public entry point — delegates to the dispatcher.
 
-    company_id is optional — falls back to project.company_id if not provided.
+    The dispatcher reads ELIGIBILITY_REWRITE_MODE and routes to either
+    the legacy logic (this function's `_inner` below), v2 logic
+    (lib/eligibility_v2.py), or both (shadow mode). Existing callsites
+    of `check_renewal_eligibility` need no changes.
     """
-    permit = await db.dob_logs.find_one({"_id": _to_oid(permit_dob_log_id)})
+    from lib.eligibility_dispatcher import (
+        check_renewal_eligibility as _dispatch,
+    )
+    return await _dispatch(db, permit_dob_log_id, project_id, company_name, company_id)
+
+
+async def _check_renewal_eligibility_legacy_inner(
+    db,
+    permit: dict,
+    project: dict,
+    company_name: str,
+    company_doc: Optional[dict],
+    *,
+    today: Optional[datetime] = None,
+) -> RenewalEligibility:
+    """Legacy eligibility logic, refactored to accept pre-fetched docs.
+
+    The dispatcher fetches (permit, project, company) once and passes
+    the SAME tuple to both this function and the v2 evaluator, so
+    shadow-mode diffs aren't polluted by between-fetch drift.
+
+    Body is unchanged from the pre-step-5 version of
+    `check_renewal_eligibility`, except for the early-fetch lines
+    being replaced with parameter unpacking.
+    """
     if not permit:
         raise HTTPException(status_code=404, detail="Permit record not found")
     if permit.get("record_type") != "permit":
         raise HTTPException(status_code=400, detail="Record is not a permit")
+
+    permit_dob_log_id = str(permit.get("_id"))
+    project_id = str(project.get("_id")) if project else ""
+    today = today or datetime.now(timezone.utc)
 
     # ── Determine renewal path (DOB NOW vs BIS legacy) ──
     job_number = permit.get("job_number", "")
@@ -536,7 +562,7 @@ async def check_renewal_eligibility(
             exp_date = dateparser.parse(str(exp_str))
             if exp_date.tzinfo is None:
                 exp_date = exp_date.replace(tzinfo=timezone.utc)
-            days_left = (exp_date - datetime.now(timezone.utc)).days
+            days_left = (exp_date - today).days
             eligibility.days_until_expiry = days_left
 
             if days_left > 30:
@@ -560,18 +586,7 @@ async def check_renewal_eligibility(
     else:
         eligibility.blocking_reasons.append("No expiration date on permit record.")
 
-    # ── Get GC license (Open Data via scrape_gc_license_info; no longer BIS) ──
-    # ── Insurance now read from company doc's manually-entered records. ──
-    project = await db.projects.find_one({"_id": _to_oid(project_id)})
-    resolved_company_id = company_id or (project.get("company_id") if project else None)
-
-    company_doc = None
-    if resolved_company_id:
-        company_doc = await db.companies.find_one(
-            {"_id": _to_oid(resolved_company_id), "is_deleted": {"$ne": True}}
-        )
-
-    # Build GCLicenseInfo — prefer cached company license fields.
+    # ── Build GCLicenseInfo — prefer cached company license fields. ──
     gc_info: Optional[GCLicenseInfo] = None
     if company_doc and company_doc.get("gc_license_number"):
         gc_info = GCLicenseInfo(
@@ -610,7 +625,8 @@ async def check_renewal_eligibility(
             parsed_records = [InsuranceRecord(**rec) for rec in manual_records_raw]
         except Exception as e:
             logger.warning(
-                f"Could not parse gc_insurance_records for company {resolved_company_id}: {e}"
+                f"Could not parse gc_insurance_records for company "
+                f"{(company_doc or {}).get('_id')}: {e}"
             )
             parsed_records = []
 
@@ -620,7 +636,9 @@ async def check_renewal_eligibility(
         else:
             gc_info.insurance_records = parsed_records
 
-        renewal_target = datetime.now(timezone.utc) + timedelta(days=365)
+        # Use the dispatcher-supplied `today` so shadow-mode comparisons
+        # against v2 are deterministic against the same wall clock.
+        renewal_target = today + timedelta(days=365)
         required_types = {"general_liability", "workers_comp", "disability"}
         found_types = set()
 
