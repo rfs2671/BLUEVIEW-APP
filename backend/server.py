@@ -1087,6 +1087,12 @@ class DOBLogResponse(BaseModel):
     job_number: Optional[str] = None
     job_type: Optional[str] = None
     work_type: Optional[str] = None
+    # Permit-renewal classification (populated for record_type=="permit"):
+    # filing_system in {"DOB_NOW","BIS"} — drives auto-extension rules.
+    # permit_class in {"standard","sidewalk_shed","fence","bldrs_pavement"} —
+    # drives strategy (e.g. LL48 sheds use a parallel 90-day manual track).
+    filing_system: Optional[str] = None
+    permit_class: Optional[str] = None
     violation_type: Optional[str] = None
     violation_number: Optional[str] = None
     violation_category: Optional[str] = None
@@ -10379,8 +10385,61 @@ async def _poll_311_fast_complaints() -> None:
     )
 
  
+def _classify_filing_system(job_number: Optional[str]) -> str:
+    """Classify a permit as DOB_NOW vs BIS based on job number shape.
+
+    Per NYC DOB: DOB NOW Build job filings use a letter prefix
+    (B/M/Q/X/R + digits, optional -I<n> suffix), while legacy BIS
+    jobs are purely numeric. Drives different auto-extension rules
+    in the renewal eligibility engine (BIS = 31-day look-ahead,
+    DOB NOW = end-of-day after carrier files COI update).
+    """
+    if not job_number:
+        return "DOB_NOW"  # safe default — most new filings are DOB NOW
+    s = str(job_number).strip().upper()
+    if s and s[0] in ("B", "M", "Q", "X", "R"):
+        return "DOB_NOW"
+    if s.replace("-", "").isdigit():
+        return "BIS"
+    return "DOB_NOW"
+
+
+# Permit classification → drives renewal strategy (LL48 sheds get a
+# parallel 90-day manual track per the Jan 26 2026 service notice).
+_SHED_WORK_TYPES = {"SH"}
+_FENCE_WORK_TYPES = {"FN"}
+_BLDRS_PAVEMENT_WORK_TYPES = {"BL"}
+
+
+def _classify_permit_class(work_type: Optional[str]) -> str:
+    """Map a DOB work_type code to the renewal-strategy permit_class.
+
+    'SH' → sidewalk_shed (90-day cap, PE/RA progress report required)
+    'FN' → fence
+    'BL' → bldrs_pavement (a BL without an SH on the same job is its
+           own permit class — different rules from sheds)
+    everything else → standard
+    """
+    if not work_type:
+        return "standard"
+    wt = str(work_type).strip().upper()
+    if wt in _SHED_WORK_TYPES:
+        return "sidewalk_shed"
+    if wt in _FENCE_WORK_TYPES:
+        return "fence"
+    if wt in _BLDRS_PAVEMENT_WORK_TYPES:
+        return "bldrs_pavement"
+    return "standard"
+
+
 def _extract_permit_fields(rec: dict) -> dict:
-    """Extract structured permit fields from raw DOB record."""
+    """Extract structured permit fields from raw DOB record.
+
+    Also derives `filing_system` and `permit_class` so the renewal
+    engine can branch without re-parsing the job number on every
+    eligibility check. Both are deterministic functions of job# and
+    work_type; storing them lets us index on them later.
+    """
     fields = {}
     # DOB NOW permits (rbx6-tga4)
     fields["permit_type"] = rec.get("permit_type") or rec.get("permittee_s_license_type") or None
@@ -10392,7 +10451,12 @@ def _extract_permit_fields(rec: dict) -> dict:
     fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
     fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
     fields["work_type"] = rec.get("work_type") or rec.get("permit_type") or None
-    return {k: str(v).strip() if v else None for k, v in fields.items()}
+    cleaned = {k: str(v).strip() if v else None for k, v in fields.items()}
+    # Derived classification — must come AFTER cleanup so we read
+    # the same trimmed values the rest of the pipeline persists.
+    cleaned["filing_system"] = _classify_filing_system(cleaned.get("job_number"))
+    cleaned["permit_class"] = _classify_permit_class(cleaned.get("work_type"))
+    return cleaned
  
  
 def _classify_violation_subtype(rec: dict) -> str:
