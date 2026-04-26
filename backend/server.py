@@ -275,6 +275,21 @@ class Company(BaseModel):
     gc_resolved: bool = False
     gc_last_verified: Optional[datetime] = None
 
+    # Permit-renewal license-class taxonomy (added 2026-04-26, step 2).
+    # NONE: company doesn't hold any tracked license. HIC: NYC DCWP
+    # Home Improvement Contractor (informational only — DCWP handles
+    # their renewals, this app does not). GC_LICENSED: NYC DOB General
+    # Contractor — the only class we run renewal logic for.
+    license_class: Optional[str] = None              # "NONE" | "HIC" | "GC_LICENSED"
+    license_class_source: Optional[str] = None       # "auto" | "manual_override"
+    license_authority: Optional[str] = None          # "DOB" | "DCWP"
+    gc_license_last_synced: Optional[datetime] = None
+    hic_license_number: Optional[str] = None         # placeholder for future HIC track
+    # Parallel field written by the local Docker worker (deferred to
+    # step 14+) — DOB NOW Public Portal's authoritative view of this
+    # GC's insurance, used for cross-check vs gc_insurance_records.
+    dob_now_portal_insurance_snapshot: Optional[list] = None
+
 class CompanyCreate(BaseModel):
     name: str
     gc_license_number: Optional[str] = None

@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from enum import Enum
 
 from pydantic import BaseModel
@@ -84,16 +84,45 @@ class RenewalStatus(str, Enum):
 
 
 class InsuranceRecord(BaseModel):
-    """Insurance information. Historically scraped from DOB BIS; now manually
-    entered by admins (see PUT /api/admin/company/insurance/manual)."""
+    """Insurance information for a GC's certificate-of-insurance record.
+
+    Historically scraped from DOB BIS (auto-fetch is now disabled — the
+    BIS Licensing portal no longer exposes insurance for licenses
+    migrated to DOB NOW). Today's sources, in order of authority:
+
+      1. coi_ocr          — admin uploaded a COI PDF, Qwen extracted dates
+      2. dob_now_portal   — local Docker worker scraped DOB NOW Public Portal
+      3. manual_entry     — admin typed dates directly in Settings (fallback)
+
+    Backfill rule (see migrations/20260426_companies_*.py): pre-this-deploy
+    records with source missing/null are stamped 'manual_entry' because
+    BIS auto-fetch was disabled before this code shipped, so the only way
+    a record could have been written was through the Settings manual-entry
+    flow.
+    """
     insurance_type: str
     carrier_name: Optional[str] = None
     policy_number: Optional[str] = None
     effective_date: Optional[str] = None
     expiration_date: Optional[str] = None
     is_current: bool = False
-    # "manual_entry" for records added via Settings; None/other for legacy scraped rows.
-    source: Optional[str] = None
+
+    # Provenance — Literal-typed for forward writes; Optional so absent keys
+    # on legacy reads don't ValidationError.
+    source: Optional[Literal[
+        "manual_entry",
+        "coi_ocr",
+        "dob_now_portal",
+    ]] = None
+
+    # ── COI OCR + portal verification fields (added 2026-04-26, step 2) ──
+    # All Optional with explicit None defaults so absence on existing
+    # subdocs reads cleanly. dob_now_discrepancy is bool-with-default
+    # (matches the existing is_current pattern) so absent keys read False.
+    coi_pdf_url: Optional[str] = None                  # R2 URL of original PDF, kept 7yr
+    ocr_confidence: Optional[float] = None             # 0.0-1.0, present iff source == "coi_ocr"
+    dob_now_verified_at: Optional[datetime] = None     # last cross-check vs Public Portal
+    dob_now_discrepancy: bool = False                  # True iff our record diverged from Public Portal snapshot
 
 
 class GCLicenseInfo(BaseModel):
