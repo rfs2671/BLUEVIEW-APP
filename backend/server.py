@@ -3011,6 +3011,322 @@ async def set_admin_company_insurance_manual(
     }
 
 
+# ==================== COI UPLOAD + OCR (Step 7) ====================
+# Admin uploads a Certificate of Insurance PDF; backend OCRs via Qwen,
+# stores the original in R2 with 7-year retention, returns the parsed
+# fields for admin to review before commit.
+#
+# Two-phase: upload returns a draft, confirm commits to gc_insurance_records.
+# Drafts auto-expire after 24h (TTL index in startup).
+#
+# GC-licensed companies only; HIC and unlicensed companies don't see
+# the upload UI (per plan §5.1) and are rejected here as defense in depth.
+
+class CoiConfirmRequest(BaseModel):
+    draft_id: str
+    insurance_type: str           # general_liability | workers_comp | disability
+    carrier_name: Optional[str] = None
+    policy_number: Optional[str] = None
+    effective_date: Optional[str] = None    # MM/DD/YYYY
+    expiration_date: Optional[str] = None   # MM/DD/YYYY
+
+
+@api_router.post("/admin/company/insurance/upload-coi")
+async def admin_upload_coi(
+    insurance_type: str = Form(...),
+    file: UploadFile = File(...),
+    current_user=Depends(get_admin_user),
+):
+    """Phase 1 of COI upload — validate, store, OCR, return draft.
+
+    Idempotent on file bytes via SHA-256: re-uploading the same PDF
+    yields the same R2 key (R2 dedupes naturally) and re-uses the
+    cached OCR result if one exists for this (company, sha) pair —
+    no duplicate Qwen API charge.
+    """
+    from lib.coi_storage import (
+        validate_pdf_bytes,
+        coi_pdf_key,
+        coi_preview_key,
+        render_first_page_jpeg,
+        upload_coi_objects,
+        ALLOWED_INSURANCE_TYPES,
+        CoiValidationError,
+    )
+    from lib.coi_ocr import extract_coi_fields, OcrConfigError
+
+    if insurance_type not in ALLOWED_INSURANCE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"insurance_type must be one of {sorted(ALLOWED_INSURANCE_TYPES)}",
+        )
+
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=404, detail="No company associated with your account")
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Defense in depth: HIC / unlicensed companies don't get COI UI in
+    # the frontend, but reject here too in case the endpoint is hit
+    # directly. GC license is the only one DOB tracks insurance for.
+    if (company.get("license_class") or "GC_LICENSED") != "GC_LICENSED":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "COI upload is for GC-licensed companies only. "
+                "HIC license insurance is managed through DCWP, not LeveLog."
+            ),
+        )
+
+    # Read + validate. Synchronous bytes work runs in executor so the
+    # event loop doesn't block on a 300KB upload.
+    pdf_bytes = await file.read()
+    try:
+        validated = await asyncio.to_thread(
+            validate_pdf_bytes,
+            pdf_bytes,
+            expected_content_type=file.content_type or "",
+        )
+    except CoiValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Idempotency: if we already have a draft / confirmed record for
+    # this exact file, return the existing OCR result. Same sha →
+    # same parsed fields, no Qwen charge.
+    sha = validated.sha256_hex
+    pdf_key = coi_pdf_key(str(company_id), insurance_type, sha)
+    preview_key = coi_preview_key(str(company_id), insurance_type, sha)
+
+    existing_draft = await db.coi_ocr_drafts.find_one({
+        "company_id": str(company_id),
+        "sha256": sha,
+        "insurance_type": insurance_type,
+    })
+    if existing_draft:
+        return {
+            "draft_id": str(existing_draft["_id"]),
+            "pdf_url": existing_draft.get("pdf_url"),
+            "preview_url": existing_draft.get("preview_url"),
+            "parsed": existing_draft.get("ocr_result", {}),
+            "cached": True,
+        }
+
+    # Render first page → JPEG. Run in executor (poppler is blocking).
+    try:
+        preview_bytes = await asyncio.to_thread(render_first_page_jpeg, pdf_bytes)
+    except CoiValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Upload PDF + preview to R2. Same path runs in executor.
+    try:
+        urls = await asyncio.to_thread(
+            upload_coi_objects,
+            pdf_bytes, preview_bytes,
+            pdf_key, preview_key,
+            sha256_hex=sha,
+            insurance_type=insurance_type,
+            company_id=str(company_id),
+        )
+    except RuntimeError as e:
+        # R2 not configured — surface as 503, not a 500.
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # OCR — async-native, no executor needed.
+    try:
+        ocr_result = await extract_coi_fields(
+            preview_bytes,
+            insurance_type=insurance_type,
+        )
+    except OcrConfigError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        # OCR failed but we have the PDF stored. Return a draft with
+        # empty parsed values so admin can manually fill in.
+        logger.error(f"COI OCR failed for company={company_id} sha={sha[:16]}: {type(e).__name__}")
+        from lib.coi_ocr import CoiOcrResult
+        ocr_result = CoiOcrResult(min_confidence=0.0)
+
+    parsed_payload = ocr_result.as_admin_payload()
+
+    # Persist as draft. Confirmed-in-place via the confirm endpoint.
+    now = datetime.now(timezone.utc)
+    draft_doc = {
+        "company_id": str(company_id),
+        "user_id": str(current_user.get("id", "")),
+        "sha256": sha,
+        "insurance_type": insurance_type,
+        "size_bytes": validated.size_bytes,
+        "page_count": validated.page_count,
+        "pdf_key": pdf_key,
+        "preview_key": preview_key,
+        "pdf_url": urls["pdf_url"],
+        "preview_url": urls["preview_url"],
+        "ocr_result": parsed_payload,
+        "created_at": now,
+    }
+    insert_result = await db.coi_ocr_drafts.insert_one(draft_doc)
+
+    # Audit log: never echoes parsed values, only metadata. PII stays
+    # in coi_ocr_drafts and only flows to the confirm response.
+    try:
+        await audit_log(
+            "coi_uploaded",
+            str(current_user.get("id", "")),
+            "company",
+            str(company_id),
+            {
+                "insurance_type": insurance_type,
+                "sha256": sha,
+                "size_bytes": validated.size_bytes,
+                "page_count": validated.page_count,
+                "min_confidence": parsed_payload.get("min_confidence"),
+                "auto_accept": parsed_payload.get("auto_accept"),
+                "draft_id": str(insert_result.inserted_id),
+            },
+        )
+    except Exception as e:
+        logger.warning(f"audit_log(coi_uploaded) failed: {e}")
+
+    return {
+        "draft_id": str(insert_result.inserted_id),
+        "pdf_url": urls["pdf_url"],
+        "preview_url": urls["preview_url"],
+        "parsed": parsed_payload,
+        "cached": False,
+    }
+
+
+@api_router.put("/admin/company/insurance/upload-coi/confirm")
+async def admin_confirm_coi(
+    body: CoiConfirmRequest,
+    current_user=Depends(get_admin_user),
+):
+    """Phase 2 — admin commits the (possibly edited) parsed fields to
+    gc_insurance_records. Replaces any existing record of the same
+    insurance_type on this company; the prior record's PDF stays in
+    R2 (7-year retention metadata) and is referenced from the audit
+    log entry so we don't lose the audit trail."""
+    from lib.coi_storage import ALLOWED_INSURANCE_TYPES
+
+    if body.insurance_type not in ALLOWED_INSURANCE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"insurance_type must be one of {sorted(ALLOWED_INSURANCE_TYPES)}",
+        )
+
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        raise HTTPException(status_code=404, detail="No company associated with your account")
+
+    draft = await db.coi_ocr_drafts.find_one({"_id": to_query_id(body.draft_id)})
+    if not draft:
+        raise HTTPException(status_code=404, detail="COI draft not found or expired")
+    if draft.get("company_id") != str(company_id):
+        # Don't reveal cross-tenant existence — generic 404.
+        raise HTTPException(status_code=404, detail="COI draft not found or expired")
+    if draft.get("insurance_type") != body.insurance_type:
+        raise HTTPException(
+            status_code=400,
+            detail="Draft insurance_type does not match confirm body. Re-upload.",
+        )
+
+    # Build the new InsuranceRecord. Pulled values from the confirm
+    # request (admin may have edited the OCR output); R2 URL + OCR
+    # confidence carry over from the draft so audit trail is preserved.
+    now = datetime.now(timezone.utc)
+    parsed = draft.get("ocr_result") or {}
+    new_record = {
+        "insurance_type":      body.insurance_type,
+        "carrier_name":        body.carrier_name,
+        "policy_number":       body.policy_number,
+        "effective_date":      body.effective_date,
+        "expiration_date":     body.expiration_date,
+        "is_current":          True,
+        "source":              "coi_ocr",
+        "coi_pdf_url":         draft.get("pdf_url"),
+        "ocr_confidence":      parsed.get("min_confidence"),
+        "dob_now_verified_at": None,
+        "dob_now_discrepancy": False,
+    }
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Replace any existing record of this type. Keep all other types untouched.
+    existing_records = company.get("gc_insurance_records") or []
+    prior_of_type = next(
+        (r for r in existing_records
+         if isinstance(r, dict) and r.get("insurance_type") == body.insurance_type),
+        None,
+    )
+    new_records = [
+        r for r in existing_records
+        if not (isinstance(r, dict) and r.get("insurance_type") == body.insurance_type)
+    ]
+    new_records.append(new_record)
+
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {"gc_insurance_records": new_records, "updated_at": now}},
+    )
+
+    # Cleanup: drop the draft now that it's been committed.
+    await db.coi_ocr_drafts.delete_one({"_id": to_query_id(body.draft_id)})
+
+    try:
+        await audit_log(
+            "coi_confirmed",
+            str(current_user.get("id", "")),
+            "company",
+            str(company_id),
+            {
+                "insurance_type":   body.insurance_type,
+                "draft_id":         body.draft_id,
+                "ocr_confidence":   parsed.get("min_confidence"),
+                "auto_accept":      parsed.get("auto_accept"),
+                "edited_by_admin":  _coi_diff(parsed, body),
+                "prior_record_url": (prior_of_type or {}).get("coi_pdf_url"),
+                "new_record_url":   draft.get("pdf_url"),
+            },
+        )
+    except Exception as e:
+        logger.warning(f"audit_log(coi_confirmed) failed: {e}")
+
+    return {
+        "ok": True,
+        "insurance_type": body.insurance_type,
+        "carrier_name":   new_record["carrier_name"],
+        "expiration_date": new_record["expiration_date"],
+        "source":         new_record["source"],
+        "ocr_confidence": new_record["ocr_confidence"],
+        "coi_pdf_url":    new_record["coi_pdf_url"],
+    }
+
+
+def _coi_diff(parsed: dict, body: CoiConfirmRequest) -> list:
+    """Identify which fields the admin edited away from the OCR result.
+    Returned in the audit log so we can post-hoc audit OCR accuracy:
+    if admins are routinely overriding `policy_number`, the prompt
+    needs work. Field VALUES are intentionally NOT logged — only the
+    list of which fields were changed."""
+    edited = []
+    for f in ("carrier_name", "policy_number", "effective_date", "expiration_date"):
+        if (parsed.get(f) or "") != (getattr(body, f) or ""):
+            edited.append(f)
+    return edited
+
+
+# ==================== END COI UPLOAD + OCR ====================
+
+
 class CreateAdminRequest(BaseModel):
     name: str
     email: str
@@ -12393,7 +12709,16 @@ async def delete_annotation(annotation_id: str, current_user=Depends(get_current
 
 
 # ==================== PERMIT RENEWAL MODULE ====================
-from backend.permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
+# Tolerate both Railway deploy modes:
+#   - Dockerfile: WORKDIR=/app, package = `backend`, import path
+#                 `backend.permit_renewal`
+#   - Procfile:   `cd backend && uvicorn server:app`, cwd has
+#                 backend/ on sys.path, import path `permit_renewal`
+# Either succeeds; the other ModuleNotFoundError is swallowed.
+try:
+    from backend.permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
+except ModuleNotFoundError:
+    from permit_renewal import create_permit_renewal_routes, nightly_renewal_scan
 
 create_permit_renewal_routes(
     api_router=api_router,
@@ -19029,6 +19354,25 @@ async def startup_event():
         )
     except Exception as _e:
         logger.warning(f"eligibility_shadow TTL index create failed: {_e!r}")
+
+    # COI OCR drafts: 24h TTL. If admin uploads then walks away without
+    # confirming, the draft drops automatically — no orphan accumulation.
+    # The PDF + preview in R2 stay (7-year retention) but the in-flight
+    # draft state is per-session.
+    try:
+        await db.coi_ocr_drafts.create_index(
+            [("created_at", 1)],
+            name="coi_ocr_drafts_ttl",
+            expireAfterSeconds=24 * 60 * 60,
+        )
+        # Idempotency lookup index — same (company, sha, type) returns
+        # the cached draft instead of creating a duplicate.
+        await db.coi_ocr_drafts.create_index(
+            [("company_id", 1), ("sha256", 1), ("insurance_type", 1)],
+            name="coi_ocr_drafts_idem",
+        )
+    except Exception as _e:
+        logger.warning(f"coi_ocr_drafts index create failed: {_e!r}")
 
     scheduler.start()
     logger.info("📧 Report email scheduler started")
