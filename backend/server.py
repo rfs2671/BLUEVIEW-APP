@@ -256,6 +256,68 @@ async def audit_log(action: str, user_id: str, resource_type: str, resource_id: 
     except Exception as e:
         logger.error(f"Audit log write failed: {e}")
 
+
+# Mongo error codes for index conflicts:
+#   85 — IndexOptionsConflict     (same key, different options like TTL duration)
+#   86 — IndexKeySpecsConflict    (same name, different key spec)
+# These two raise OperationFailure on subsequent create_index calls
+# whenever a spec change ships. Without explicit handling, ANY future
+# tweak to a TTL duration or compound-key shape bricks the deploy.
+_INDEX_CONFLICT_CODES = {85, 86}
+
+
+async def _ensure_index_resilient(collection, *, keys, name: str, **opts):
+    """create_index that survives a spec change.
+
+    On normal deploy: creates the index if it doesn't exist; no-op if
+    an identical one already does (Mongo dedupes on (collection, keys,
+    name, options)).
+    On spec change: drops-and-recreates if the existing index has the
+    same name/keys but different options (e.g. TTL duration changed).
+    Any other failure is logged and swallowed — index creation should
+    never block app startup (DOB syncs and UI work fine without TTLs).
+    """
+    from pymongo.errors import OperationFailure
+
+    try:
+        await collection.create_index(keys, name=name, **opts)
+        return
+    except OperationFailure as e:
+        if getattr(e, "code", None) not in _INDEX_CONFLICT_CODES:
+            logger.warning(
+                f"create_index({collection.name}, {name}) failed (non-conflict): {e!r}"
+            )
+            return
+
+    # Spec change: same name, different shape. Drop and recreate.
+    logger.info(
+        f"Recreating index {collection.name}.{name} due to spec change "
+        f"(IndexOptions/KeySpecs conflict)."
+    )
+    try:
+        await collection.drop_index(name)
+    except OperationFailure as e:
+        # If the existing index has a DIFFERENT name but same keys,
+        # drop_index by name fails. List indexes, find the colliding
+        # one by key match, drop that.
+        logger.debug(f"drop_index({name}) failed; scanning by key match: {e!r}")
+        async for idx in collection.list_indexes():
+            if list(idx.get("key", {}).items()) == list(keys):
+                old_name = idx.get("name")
+                if old_name and old_name != "_id_":
+                    try:
+                        await collection.drop_index(old_name)
+                        break
+                    except Exception as _drop_err:
+                        logger.warning(f"drop_index({old_name}) failed: {_drop_err!r}")
+
+    try:
+        await collection.create_index(keys, name=name, **opts)
+    except Exception as e:
+        logger.warning(
+            f"create_index({collection.name}, {name}) post-recreate failed: {e!r}"
+        )
+
 # ==================== ID HELPER ====================
 
 def to_query_id(id_str: str):
@@ -11848,6 +11910,198 @@ async def nightly_dob_scan():
     await check_permit_expirations()
     await nightly_renewal_scan(db)
 
+async def renewal_digest_daily_cron():
+    """Daily 7am-ET digest run.
+
+    For each non-deleted company:
+      1. Pull permits + project denorm.
+      2. compute_company_alerts() → list of alerts that crossed today.
+      3. Idempotency check — alerts already sent today are skipped.
+      4. If any new alerts: build HTML, resolve recipients, send via
+         Resend, log success per-alert into renewal_alert_sent.
+
+    Recipients per spec §4.1:
+      - Company admins with notifications_enabled != False (default ON)
+      - Non-admin PMs with renewal_digest_opt_in == True (default OFF)
+      - Optional shared mailbox alias on companies.renewal_digest_alias_email
+    """
+    from lib.renewal_digest import (
+        compute_company_alerts,
+        digest_html,
+        digest_subject,
+        AlertKind,
+    )
+
+    started = datetime.now(timezone.utc)
+    today = started
+
+    companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(500)
+    sent_count = 0
+    skipped_company_count = 0
+
+    for company in companies:
+        company_id = str(company["_id"])
+
+        # Pull permits across all this company's tracked projects.
+        # Denormalize project name so the email can render the right
+        # project per permit.
+        projects = await db.projects.find(
+            {"company_id": company_id, "is_deleted": {"$ne": True}},
+            {"_id": 1, "name": 1, "track_dob_status": 1},
+        ).to_list(500)
+        project_id_to_name = {str(p["_id"]): p.get("name", "") for p in projects}
+        if not projects:
+            permits = []
+        else:
+            permits = await db.dob_logs.find({
+                "project_id": {"$in": list(project_id_to_name.keys())},
+                "record_type": "permit",
+                "is_deleted": {"$ne": True},
+            }, {
+                "_id": 1, "project_id": 1, "job_number": 1,
+                "issuance_date": 1, "permit_class": 1, "filing_system": 1,
+            }).to_list(2000)
+            for p in permits:
+                p["project_name"] = project_id_to_name.get(p.get("project_id"), "")
+
+        alerts = compute_company_alerts(
+            company=company, permits=permits, today=today,
+        )
+        if not alerts:
+            skipped_company_count += 1
+            continue
+
+        # Idempotency: filter alerts already sent today.
+        new_alerts = []
+        for a in alerts:
+            key = a.idempotency_key()
+            key["sent_date"] = today.date().isoformat()
+            existing = await db.renewal_alert_sent.find_one(key)
+            if existing:
+                continue
+            new_alerts.append((a, key))
+
+        if not new_alerts:
+            skipped_company_count += 1
+            continue
+
+        # Resolve recipients.
+        recipients = await _resolve_renewal_digest_recipients(company)
+        if not recipients:
+            logger.info(
+                f"[renewal_digest] company={company_id} has "
+                f"{len(new_alerts)} new alerts but zero opted-in recipients; "
+                f"skipping send (alerts will retry tomorrow)."
+            )
+            continue
+
+        subject = digest_subject([a for a, _ in new_alerts], company.get("name") or "")
+        html = digest_html([a for a, _ in new_alerts], company.get("name") or "")
+
+        # Send via Resend (or no-op if env unset).
+        try:
+            await _send_renewal_digest_email(recipients, subject, html)
+        except Exception as e:
+            logger.error(
+                f"[renewal_digest] send failed for company={company_id}: {e!r}"
+            )
+            continue  # don't mark idempotency on send failure
+
+        # Mark idempotency: insert a row per alert.
+        for _, key in new_alerts:
+            try:
+                await db.renewal_alert_sent.insert_one({
+                    **key,
+                    "sent_at": started,
+                    "recipients": recipients,
+                })
+                sent_count += 1
+            except Exception as e:
+                # Unique-index collision (concurrent cron) is benign.
+                logger.debug(f"[renewal_digest] idempotency insert: {e!r}")
+
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    logger.info(
+        f"📧 renewal digest cron complete: "
+        f"alerts_sent={sent_count} companies_skipped={skipped_company_count} "
+        f"elapsed={elapsed:.1f}s"
+    )
+
+
+async def _resolve_renewal_digest_recipients(company: dict) -> list:
+    """Per spec §4.1:
+      - admins of this company: opt-OUT (default ON, suppressed if
+        user.renewal_digest_opt_out == True)
+      - non-admin PMs: opt-IN (default OFF, included only if
+        user.renewal_digest_opt_in == True)
+      - optional shared alias on companies.renewal_digest_alias_email
+    Returns deduplicated list of email addresses.
+    """
+    company_id = str(company["_id"])
+    emails: list = []
+
+    # Admins: default ON, opt-out via user flag.
+    admin_cursor = db.users.find({
+        "company_id": company_id,
+        "role": "admin",
+        "is_deleted": {"$ne": True},
+        "renewal_digest_opt_out": {"$ne": True},
+    }, {"email": 1})
+    async for u in admin_cursor:
+        e = (u.get("email") or "").strip().lower()
+        if e:
+            emails.append(e)
+
+    # Non-admin PMs / CPs: default OFF, opt-in.
+    pm_cursor = db.users.find({
+        "company_id": company_id,
+        "role": {"$in": ["pm", "cp"]},
+        "is_deleted": {"$ne": True},
+        "renewal_digest_opt_in": True,
+    }, {"email": 1})
+    async for u in pm_cursor:
+        e = (u.get("email") or "").strip().lower()
+        if e:
+            emails.append(e)
+
+    # Optional shared mailbox alias.
+    alias = (company.get("renewal_digest_alias_email") or "").strip().lower()
+    if alias:
+        emails.append(alias)
+
+    # Dedupe, preserve order.
+    seen = set()
+    out = []
+    for e in emails:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
+async def _send_renewal_digest_email(recipients: list, subject: str, html: str) -> None:
+    """Resend send. No-op if RESEND_API_KEY env is unset (dev environments)."""
+    if not RESEND_API_KEY:
+        logger.debug(
+            f"[renewal_digest] RESEND_API_KEY unset; would have sent to "
+            f"{len(recipients)} recipient(s) with subject={subject!r}"
+        )
+        return
+    try:
+        resend.api_key = RESEND_API_KEY
+        # Resend Python SDK is sync — but the call is fast (<1s typical),
+        # acceptable to run in the cron event loop.
+        resend.Emails.send({
+            "from": "Levelog <notifications@levelog.com>",
+            "to": recipients,
+            "subject": subject,
+            "html": html,
+        })
+    except Exception as e:
+        # Re-raise so the caller skips marking idempotency.
+        raise
+
+
 async def _eligibility_shadow_sweep():
     """30-min sweep that runs both legacy and v2 eligibility against
     every active permit, writes diff to `eligibility_shadow`. Only
@@ -19345,34 +19599,71 @@ async def startup_event():
         except Exception as _e:
             logger.error(f"eligibility_shadow_sweep scheduler wire failed: {_e!r}")
 
-    # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.
+    # ── Renewal digest daily cron ──
+    # 7am America/New_York every day. One email per company per day,
+    # only on days that actually crossed a threshold (per spec §4).
+    # Suppression + idempotency live in renewal_alert_sent collection.
     try:
-        await db.eligibility_shadow.create_index(
-            [("ran_at", 1)],
-            name="eligibility_shadow_ttl",
-            expireAfterSeconds=30 * 24 * 60 * 60,
+        scheduler.add_job(
+            renewal_digest_daily_cron,
+            CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+            id='renewal_digest_daily',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
+        logger.info("📧 Renewal digest scheduled (daily 7am ET)")
     except Exception as _e:
-        logger.warning(f"eligibility_shadow TTL index create failed: {_e!r}")
+        logger.error(f"renewal_digest_daily scheduler wire failed: {_e!r}")
+
+    # Mongo TTL on eligibility_shadow records — 30 days. Idempotent.
+    await _ensure_index_resilient(
+        db.eligibility_shadow,
+        keys=[("ran_at", 1)],
+        name="eligibility_shadow_ttl",
+        expireAfterSeconds=30 * 24 * 60 * 60,
+    )
 
     # COI OCR drafts: 24h TTL. If admin uploads then walks away without
     # confirming, the draft drops automatically — no orphan accumulation.
     # The PDF + preview in R2 stay (7-year retention) but the in-flight
     # draft state is per-session.
-    try:
-        await db.coi_ocr_drafts.create_index(
-            [("created_at", 1)],
-            name="coi_ocr_drafts_ttl",
-            expireAfterSeconds=24 * 60 * 60,
-        )
-        # Idempotency lookup index — same (company, sha, type) returns
-        # the cached draft instead of creating a duplicate.
-        await db.coi_ocr_drafts.create_index(
-            [("company_id", 1), ("sha256", 1), ("insurance_type", 1)],
-            name="coi_ocr_drafts_idem",
-        )
-    except Exception as _e:
-        logger.warning(f"coi_ocr_drafts index create failed: {_e!r}")
+    await _ensure_index_resilient(
+        db.coi_ocr_drafts,
+        keys=[("created_at", 1)],
+        name="coi_ocr_drafts_ttl",
+        expireAfterSeconds=24 * 60 * 60,
+    )
+    # Idempotency lookup index — same (company, sha, type) returns
+    # the cached draft instead of creating a duplicate.
+    await _ensure_index_resilient(
+        db.coi_ocr_drafts,
+        keys=[("company_id", 1), ("sha256", 1), ("insurance_type", 1)],
+        name="coi_ocr_drafts_idem",
+    )
+
+    # Renewal-digest idempotency: one row per (company, kind, expiry,
+    # threshold, sent_date). Prevents the cron firing twice on the same
+    # day from sending two emails. 90-day TTL — long enough for late
+    # debugging, short enough to not accumulate forever.
+    await _ensure_index_resilient(
+        db.renewal_alert_sent,
+        keys=[
+            ("company_id", 1),
+            ("kind", 1),
+            ("expiry_date", 1),
+            ("threshold_days", 1),
+            ("permit_id", 1),
+            ("sent_date", 1),
+        ],
+        name="renewal_alert_sent_idem",
+    )
+    await _ensure_index_resilient(
+        db.renewal_alert_sent,
+        keys=[("sent_at", 1)],
+        name="renewal_alert_sent_ttl",
+        expireAfterSeconds=90 * 24 * 60 * 60,
+    )
 
     scheduler.start()
     logger.info("📧 Report email scheduler started")
