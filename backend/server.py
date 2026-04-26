@@ -242,6 +242,73 @@ async def check_auth_rate_limit(request: Request):
 
 # ==================== AUDIT LOGGING ====================
 
+async def _verify_resend_domain_at_startup() -> None:
+    """Probe Resend's /domains endpoint and assert levelog.com is verified.
+
+    Catches DNS expiration, accidental DKIM record deletion, Resend
+    account state changes, and copy-paste env errors BEFORE the next
+    7am ET digest cron tick goes silent. Logs at ERROR if not verified
+    so we see it in Railway log filters; never crashes startup
+    (an email-config issue should not 503 the API).
+
+    Runs once at startup. The domain status doesn't change minute-to-
+    minute and we don't want to hammer Resend's API.
+    """
+    if not RESEND_API_KEY:
+        logger.warning(
+            "RESEND_API_KEY unset; renewal digest emails will be no-op."
+        )
+        return
+    try:
+        from lib.server_http import ServerHttpClient
+        async with ServerHttpClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.resend.com/domains",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                f"Resend health check: GET /domains returned "
+                f"{resp.status_code} (expected 200). "
+                f"Email send may fail."
+            )
+            return
+        body = resp.json() or {}
+        domains = body.get("data") or body  # tolerate v1/v2 shapes
+        if not isinstance(domains, list):
+            domains = []
+        levelog = next(
+            (d for d in domains
+             if isinstance(d, dict) and d.get("name") == "levelog.com"),
+            None,
+        )
+        if not levelog:
+            logger.error(
+                "Resend health check: levelog.com NOT in domain list. "
+                "Renewal digest emails will fail. Add the domain at "
+                "resend.com/domains."
+            )
+            return
+        status = levelog.get("status")
+        if status != "verified":
+            logger.error(
+                f"Resend health check: levelog.com status={status!r}, "
+                f"expected 'verified'. Likely DNS / DKIM / SPF issue. "
+                f"Renewal digest emails will fail."
+            )
+            return
+        logger.info(
+            f"📧 Resend health check OK: levelog.com verified "
+            f"(region={levelog.get('region')!r})"
+        )
+    except Exception as e:
+        # Never crash startup over an email config issue.
+        logger.warning(
+            f"Resend health check failed (non-fatal): "
+            f"{type(e).__name__}: {e}"
+        )
+
+
 async def audit_log(action: str, user_id: str, resource_type: str, resource_id: str, details: dict = None):
     """Record an immutable audit entry for compliance-relevant mutations."""
     try:
@@ -19598,6 +19665,11 @@ async def startup_event():
             logger.info("🪞 Eligibility shadow sweep scheduled (every 30 min)")
         except Exception as _e:
             logger.error(f"eligibility_shadow_sweep scheduler wire failed: {_e!r}")
+
+    # ── Resend domain health check ──
+    # Probe before the digest cron is registered so a verification
+    # failure surfaces at deploy time, not at the next 7am ET tick.
+    await _verify_resend_domain_at_startup()
 
     # ── Renewal digest daily cron ──
     # 7am America/New_York every day. One email per company per day,
