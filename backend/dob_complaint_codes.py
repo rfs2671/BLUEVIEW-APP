@@ -190,6 +190,7 @@ DOB_DISPOSITION_CODES = {
     "Y4": {"label": "Vacate Order Partially Rescinded", "risk": "RESOLVED", "action": "Partial vacate lifted. Some areas may reoccupy."},
 
     # ── Miscellaneous ──
+    "AB": {"label": "ECB Violation Previously Issued", "risk": "RESOLVED", "action": "Duplicate of prior ECB violation; no new action required."},
     "H1": {"label": "Please See Complaint Number", "risk": "MEDIUM", "action": "Cross-referenced complaint. Check linked complaint number."},
     "H2": {"label": "Previously Inspected Complaint — Pre-BIS Complaint Number", "risk": "RESOLVED", "action": "Historical complaint. Already inspected."},
     "K3": {"label": "Cranes & Derricks — No Address — See Comments", "risk": "MEDIUM", "action": "Crane complaint without address. Check comments for details."},
