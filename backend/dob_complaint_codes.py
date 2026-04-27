@@ -233,6 +233,7 @@ DOB_CATEGORY_CODES = {
     "2K": {"desc": "Structurally Compromised Building (LL33/08)", "risk": "CRITICAL"},
     "5C": {"desc": "Structural Stability Impacted — New Building Under Construction", "risk": "CRITICAL"},
     "5E": {"desc": "Amusement Ride Accident/Incident", "risk": "CRITICAL"},
+    "86": {"desc": "Work Contrary to Stop Work Order", "risk": "CRITICAL"},
 
     # ── HIGH: Permit violations / Unsafe conditions / Active enforcement ──
     "03": {"desc": "Adjacent Buildings — Not Protected", "risk": "HIGH"},
@@ -260,7 +261,6 @@ DOB_CATEGORY_CODES = {
     "65": {"desc": "Gas Hook-Up/Piping — Illegal or Defective", "risk": "HIGH"},
     "83": {"desc": "Construction: Contrary/Beyond Approved Plans/Permits", "risk": "HIGH"},
     "84": {"desc": "Facade: Defective/Cracking", "risk": "HIGH"},
-    "86": {"desc": "Work Contrary to Stop Work Order", "risk": "HIGH"},
     "88": {"desc": "Safety Net/Guard Rail — Damaged/Inadequate/None (6-stories/75ft or Less)", "risk": "HIGH"},
     "1A": {"desc": "Illegal Conversion Commercial Building/Space to Dwelling Units", "risk": "HIGH"},
     "1F": {"desc": "Failure to Comply with Annual Crane Inspection", "risk": "HIGH"},
