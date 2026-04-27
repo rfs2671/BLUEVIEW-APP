@@ -608,11 +608,17 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
     Query NYC GeoSearch to resolve an address into a BIN + BBL and a
     canonical normalized address string. Returns:
         {
-          "nyc_bin": str|None,          # None if placeholder or missing
-          "nyc_bbl": str|None,
+          "nyc_bin": str|None,          # 7-digit BIN; None if placeholder or missing
+          "bbl": str|None,              # 10-digit BBL; renamed from nyc_bbl in step 9.1
           "track_dob_status": bool,     # True only if we got a REAL BIN
           "normalized_address": str|None,
         }
+
+    Field-name note: the BBL key was renamed from `nyc_bbl` to `bbl`
+    on 2026-04-27 (step 9.1). The `nyc_` prefix was redundant — BBL is
+    by definition NYC. The function name itself is misleading (it
+    fetches BOTH BIN and BBL); a follow-up cleanup will rename to
+    `fetch_nyc_dob_ids_from_address`. Tracked but not blocking step 9.1.
 
     Placeholder BINs (X000000) are REJECTED — stored as None — so the
     caller falls back to address-based DOB queries and the diagnostic
@@ -627,7 +633,7 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
     """
     result = {
         "nyc_bin": None,
-        "nyc_bbl": None,
+        "bbl": None,
         "track_dob_status": False,
         "normalized_address": None,
     }
@@ -687,11 +693,11 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
                     )
 
                 if pad_bbl:
-                    result["nyc_bbl"] = str(pad_bbl)
+                    result["bbl"] = str(pad_bbl)
 
                 logger.info(
                     f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']} "
-                    f"BBL={result['nyc_bbl']} label={label!r} via {endpoint}"
+                    f"BBL={result['bbl']} label={label!r} via {endpoint}"
                 )
                 return result
 
@@ -854,7 +860,22 @@ class ProjectResponse(BaseModel):
     dropbox_enabled: bool = False
     created_at: Optional[datetime] = None
     nyc_bin: Optional[str] = None
-    nyc_bbl: Optional[str] = None
+    # BBL field — 10-digit Borough-Block-Lot. Renamed from nyc_bbl
+    # 2026-04-27 (step 9.1) per the §12 BIN-matcher spec. The
+    # `nyc_` prefix was redundant (BBL is by definition NYC) and
+    # produced naming inconsistency with §12 architecture refs.
+    # During the transition window the legacy `nyc_bbl` field may
+    # still be present on older Mongo docs; reads go through
+    # _project_bbl() helper which prefers `bbl` and falls back to
+    # `nyc_bbl`. Cleanup commit drops the legacy field after deploy.
+    bbl: Optional[str] = None
+    # BBL provenance metadata. Drives the §12 BIN-matcher tier-1
+    # lookup. The legacy field was populated only at project creation
+    # via fetch_nyc_bin_from_address; the step 9.1 migration stamps
+    # that legacy path as 'address_lookup_at_creation' and lets future
+    # admin / PLUTO-lookup edits track their source.
+    bbl_source: Optional[str] = None  # "address_lookup_at_creation" | "pluto_lookup" | "manual_entry" | "geosupport" | "user_corrected"
+    bbl_last_synced: Optional[datetime] = None
     track_dob_status: bool = False
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
@@ -1288,9 +1309,14 @@ class DOBLogResponse(BaseModel):
 
 class DOBConfigUpdate(BaseModel):
     nyc_bin: Optional[str] = None
-    nyc_bbl: Optional[str] = None
+    # bbl renamed from nyc_bbl 2026-04-27 (step 9.1). The Pydantic
+    # field accepts either name during the transition window via
+    # populate_by_name + alias. Forward callers should use `bbl`.
+    bbl: Optional[str] = Field(default=None, alias="nyc_bbl")
     track_dob_status: Optional[bool] = None
     gc_legal_name: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
  
 # Site Device Models
 class SiteDeviceCreate(BaseModel):
@@ -3718,15 +3744,25 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["admin_id"] = admin.get("id")
     
     # ── DOB: Auto-resolve NYC BIN + canonical address from address ──
+    # Field rename note (2026-04-27 step 9.1): nyc_bbl → bbl. The
+    # legacy nyc_bbl key is no longer written by new project creation.
+    # Existing prod docs still carry nyc_bbl; the step 9.1 migration
+    # copies their values into the new `bbl` field. Cleanup commit
+    # drops the legacy nyc_bbl reads after deploy verification.
     project_dict["nyc_bin"] = None
-    project_dict["nyc_bbl"] = None
+    project_dict["bbl"] = None
+    project_dict["bbl_source"] = None
+    project_dict["bbl_last_synced"] = None
     project_dict["track_dob_status"] = False
 
     address_for_bin = project_dict.get("address") or project_dict.get("location") or ""
     if address_for_bin:
         bin_result = await fetch_nyc_bin_from_address(address_for_bin)
         project_dict["nyc_bin"] = bin_result["nyc_bin"]
-        project_dict["nyc_bbl"] = bin_result["nyc_bbl"]
+        if bin_result.get("bbl"):
+            project_dict["bbl"] = bin_result["bbl"]
+            project_dict["bbl_source"] = "address_lookup_at_creation"
+            project_dict["bbl_last_synced"] = now
         project_dict["track_dob_status"] = bin_result["track_dob_status"]
 
         # Upgrade the project's address to GeoSearch's canonical form
@@ -10657,7 +10693,7 @@ def _next_action_for_311(rec: dict) -> str:
 
 async def _fetch_311_for_project(
     client: "httpx.AsyncClient",
-    nyc_bbl: str,
+    bbl: str,
     house_num: str,
     street_name: str,
 ) -> List[dict]:
@@ -10667,11 +10703,14 @@ async def _fetch_311_for_project(
     BIN queries were 400-ing every run. Prefer BBL when the project has
     one, otherwise fall back to an address match. Sorted newest-first,
     limit 100.
+
+    Parameter renamed `nyc_bbl` → `bbl` 2026-04-27 (step 9.1) for
+    consistency with the renamed Mongo field.
     """
     params: Optional[dict] = None
-    if nyc_bbl:
+    if bbl:
         params = {
-            "bbl":     nyc_bbl,
+            "bbl":     bbl,
             "$limit":  "100",
             "$order":  "created_date DESC",
         }
@@ -10691,13 +10730,13 @@ async def _fetch_311_for_project(
     try:
         resp = await client.get(_NYC_311_ENDPOINT, params=params, timeout=20.0)
         if resp.status_code != 200:
-            key = nyc_bbl or f"{house_num} {street_name}"
+            key = bbl or f"{house_num} {street_name}"
             logger.warning(f"311 fetch {key} returned {resp.status_code}")
             return []
         data = resp.json()
         return data if isinstance(data, list) else []
     except Exception as e:
-        key = nyc_bbl or f"{house_num} {street_name}"
+        key = bbl or f"{house_num} {street_name}"
         logger.warning(f"311 fetch {key} failed: {e}")
         return []
 
@@ -10707,14 +10746,15 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
     project_id = str(project.get("_id"))
     company_id = project.get("company_id", "")
     nyc_bin = (project.get("nyc_bin") or "").strip()
-    nyc_bbl = (project.get("nyc_bbl") or "").strip()
+    # bbl-first read with nyc_bbl fallback during the step-9.1 transition window.
+    bbl = (project.get("bbl") or project.get("nyc_bbl") or "").strip()
     # 311 needs BBL (dataset has no `bin` column) OR an address match.
     # Use the same address parsing the main DOB fetcher uses.
     house_num, street_name = _parse_address_components(project.get("address") or "")
-    if not nyc_bbl and not (house_num and street_name):
+    if not bbl and not (house_num and street_name):
         return {"new": 0, "actions": 0, "skipped": True}
 
-    records = await _fetch_311_for_project(client, nyc_bbl, house_num, street_name)
+    records = await _fetch_311_for_project(client, bbl, house_num, street_name)
     new_count = 0
     action_count = 0
     now = datetime.now(timezone.utc)
@@ -12321,8 +12361,14 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
             raise HTTPException(status_code=422, detail="BIN must be exactly 7 digits")
         update_fields["nyc_bin"] = clean_bin if clean_bin else None
  
-    if config.nyc_bbl is not None:
-        update_fields["nyc_bbl"] = config.nyc_bbl.strip() or None
+    if config.bbl is not None:
+        # Accept either `bbl` (canonical) or `nyc_bbl` (legacy alias)
+        # via DOBConfigUpdate's populate_by_name. Always write to the
+        # canonical `bbl` field. The step 9.1 migration $rename'd
+        # legacy nyc_bbl values into bbl, so existing docs are clean.
+        update_fields["bbl"] = config.bbl.strip() or None
+        update_fields["bbl_source"] = "manual_entry"
+        update_fields["bbl_last_synced"] = datetime.now(timezone.utc)
  
     if config.track_dob_status is not None:
         update_fields["track_dob_status"] = config.track_dob_status
@@ -12349,7 +12395,8 @@ async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depe
     return {
         "message": "DOB config updated",
         "nyc_bin": updated.get("nyc_bin"),
-        "nyc_bbl": updated.get("nyc_bbl"),
+        # bbl-first read with nyc_bbl fallback during step 9.1 transition.
+        "bbl": updated.get("bbl") or updated.get("nyc_bbl"),
         "track_dob_status": updated.get("track_dob_status", False),
         "gc_legal_name": updated.get("gc_legal_name"),
     }
@@ -12371,7 +12418,8 @@ async def get_dob_config(project_id: str, current_user=Depends(get_current_user)
 
     return {
         "nyc_bin": project.get("nyc_bin"),
-        "nyc_bbl": project.get("nyc_bbl"),
+        # bbl-first read with nyc_bbl fallback during step 9.1 transition.
+        "bbl": project.get("bbl") or project.get("nyc_bbl"),
         "track_dob_status": project.get("track_dob_status", False),
         "gc_legal_name": project.get("gc_legal_name"),
     }
@@ -13941,7 +13989,7 @@ async def _handle_dob_status(project_id: str) -> str:
         or (project.get("dob_config") or {}).get("bin_number")
         or "N/A"
     )
-    bbl = project.get("nyc_bbl") or (project.get("dob_config") or {}).get("bbl") or ""
+    bbl = project.get("bbl") or project.get("nyc_bbl") or (project.get("dob_config") or {}).get("bbl") or ""
 
     lines = [f"*DOB Status for {project.get('name') or 'this project'}*"]
     lines.append(f"BIN: {bin_number}")
@@ -14212,7 +14260,7 @@ async def _handle_project_info(project_id: str) -> str:
     name = project.get("name") or "(unnamed project)"
     address = project.get("address") or project.get("formatted_address") or "—"
     bin_ = project.get("nyc_bin") or project.get("bin") or ""
-    bbl = project.get("nyc_bbl") or project.get("bbl") or ""
+    bbl = project.get("bbl") or project.get("nyc_bbl") or ""
     gc = project.get("gc_legal_name") or project.get("gc_name") or ""
     status = project.get("status") or "active"
 
@@ -19549,7 +19597,10 @@ async def startup_event():
                 "company_id": test_company_id,
                 "address": "350 5th Avenue, New York, NY 10118",
                 "nyc_bin": "1015862",
-                "nyc_bbl": "1008370032",
+                # bbl renamed from nyc_bbl 2026-04-27 (step 9.1).
+                "bbl": "1008370032",
+                "bbl_source": "manual_entry",
+                "bbl_last_synced": now,
                 "track_dob_status": True,
                 "gc_legal_name": "Test Construction Co",
                 "status": "active",
