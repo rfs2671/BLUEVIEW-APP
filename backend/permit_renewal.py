@@ -12,6 +12,22 @@ from bson import ObjectId
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Coerce a datetime to UTC-aware. Mongo BSON dates round-trip through
+    Motor as offset-naive even when written aware (PyMongo strips tzinfo
+    by default unless tz_aware=True on the client). Callers that subtract
+    `datetime.now(timezone.utc)` from a Mongo-read datetime will hit
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes``
+    if this coercion is skipped — that crashed the nightly_renewal_scan
+    cron until the fix landed. Returns None unchanged."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
@@ -883,7 +899,7 @@ async def _send_health_check_alert(issues: List[str]):
             {"key": "dob_health_check_last_alert"}
         )
         if last_alert and last_alert.get("sent_at"):
-            last_sent = last_alert["sent_at"]
+            last_sent = _ensure_utc(last_alert["sent_at"])
             if isinstance(last_sent, datetime):
                 hours_since = (
                     datetime.now(timezone.utc) - last_sent
@@ -1150,7 +1166,7 @@ async def nightly_renewal_scan(db):
         )
         should_run = True
         if last_check and last_check.get("last_run"):
-            last_run = last_check["last_run"]
+            last_run = _ensure_utc(last_check["last_run"])
             if isinstance(last_run, datetime):
                 hours_since = (
                     datetime.now(timezone.utc) - last_run
