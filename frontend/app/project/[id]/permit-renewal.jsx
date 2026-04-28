@@ -206,6 +206,34 @@ const STATUS_CONFIG = {
 const getStatusConfig = (status) =>
   STATUS_CONFIG[status] || STATUS_CONFIG.eligible;
 
+// Step 6.2.2: v2 enrichment field rendering.
+// `renewal_strategy` enum values come from
+// `backend/lib/eligibility_v2.py::RENEWAL_STRATEGIES`. The labels here
+// are user-facing copy. If the backend adds a new strategy and this
+// map doesn't have an entry, the raw enum value is shown as a fallback
+// (still informative, not a crash).
+const STRATEGY_LABELS = {
+  AUTO_EXTEND_DOB_NOW:  'Auto-extend (DOB NOW)',
+  AUTO_EXTEND_BIS_31D:  'Auto-extend (BIS 31-day)',
+  AWAITING_EXTENSION:   'Awaiting extension',
+  MANUAL_1YR_CEILING:   'Manual renewal — 1-yr ceiling',
+  MANUAL_FEE_PAID:      'Manual renewal — fee paid',
+  MANUAL_INSURANCE:     'Manual — insurance',
+};
+
+const formatStrategy = (s) => STRATEGY_LABELS[s] || (s ? String(s) : null);
+
+// Action.kind comes from `backend/lib/eligibility_v2.py::_build_action`
+// (snake_case enum-ish). Render as Title Case for the user-facing
+// "Next Steps" header.
+const formatActionKind = (k) => {
+  if (!k) return null;
+  return String(k)
+    .split('_')
+    .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+    .join(' ');
+};
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════════════════════
@@ -452,10 +480,46 @@ export default function PermitRenewalScreen() {
             <Text style={s.jobNumber}>
               Job {renewal.job_number || '—'}
             </Text>
-            <Text style={s.permitType}>
-              {renewal.permit_type || 'Work Permit'} · Expires{' '}
-              {formatDate(renewal.current_expiration)}
-            </Text>
+            {/* v2 enrichment: when limiting_factor.label is present,
+                the "why this date" reason becomes the primary expiry
+                line. effective_expiry (post §1.1 ceilings) replaces
+                the calendar expiration; the calendar date is demoted
+                to a small caption when the two differ. Falls back to
+                the legacy "Expires {current_expiration}" line when v2
+                fields are absent — that's the deploy-window state
+                between 6.2.1 ship and the dispatcher flip. */}
+            {renewal.limiting_factor?.label ? (
+              <>
+                <Text style={s.permitType}>
+                  {renewal.permit_type || 'Work Permit'} · Expires{' '}
+                  {formatDate(renewal.effective_expiry || renewal.current_expiration)}
+                  {' — '}
+                  {renewal.limiting_factor.label}
+                </Text>
+                {renewal.effective_expiry &&
+                 renewal.current_expiration &&
+                 renewal.effective_expiry !== renewal.current_expiration && (
+                  <Text style={s.expiryCalendarCaption}>
+                    Calendar: {formatDate(renewal.current_expiration)}
+                  </Text>
+                )}
+              </>
+            ) : (
+              <Text style={s.permitType}>
+                {renewal.permit_type || 'Work Permit'} · Expires{' '}
+                {formatDate(renewal.current_expiration)}
+              </Text>
+            )}
+            {/* Strategy badge — only when the v2 dispatcher populated
+                renewal_strategy. Absent means legacy/shadow mode and
+                we render nothing here. */}
+            {renewal.renewal_strategy && (
+              <View style={s.strategyBadge}>
+                <Text style={s.strategyText}>
+                  {formatStrategy(renewal.renewal_strategy)}
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Expanded Details */}
@@ -549,6 +613,30 @@ export default function PermitRenewalScreen() {
                     </View>
                   </View>
                 </GlassCard>
+              )}
+
+              {/* v2 Next Steps — populated by `_build_action` in
+                  eligibility_v2.py when the dispatcher is in live
+                  mode. Absent in shadow / legacy / off mode, in which
+                  case this block doesn't render. action.instructions
+                  is a string list; we number them for clarity. */}
+              {renewal.action && (renewal.action.kind || (renewal.action.instructions || []).length > 0) && (
+                <View style={s.actionBlock}>
+                  {renewal.action.kind && (
+                    <Text style={s.actionTitle}>
+                      Next Steps · {formatActionKind(renewal.action.kind)}
+                      {typeof renewal.action.deadline_days === 'number'
+                        ? ` (${renewal.action.deadline_days}d)`
+                        : ''}
+                    </Text>
+                  )}
+                  {(renewal.action.instructions || []).map((step, i) => (
+                    <View key={i} style={s.actionStepRow}>
+                      <Text style={s.actionStepNum}>{i + 1}.</Text>
+                      <Text style={s.actionStepText}>{step}</Text>
+                    </View>
+                  ))}
+                </View>
               )}
 
               {/* Blocking Reasons — hidden for needs_insurance (CTA card above covers it) */}
@@ -966,6 +1054,28 @@ function buildStyles(colors, isDark) {
       fontSize: 13,
       color: colors.text.secondary,
     },
+    expiryCalendarCaption: {
+      fontFamily: typography.regular,
+      fontSize: 11,
+      color: colors.text.muted,
+      marginTop: 2,
+    },
+    strategyBadge: {
+      alignSelf: 'flex-start',
+      marginTop: 6,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 3,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.glass.background,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    strategyText: {
+      fontFamily: typography.medium,
+      fontSize: 11,
+      letterSpacing: 0.3,
+      color: colors.text.secondary,
+    },
     expandedSection: {
       marginTop: spacing.md,
       paddingTop: spacing.md,
@@ -1029,6 +1139,39 @@ function buildStyles(colors, isDark) {
       gap: spacing.xs,
       borderWidth: 1,
       borderColor: '#f59e0b30',
+    },
+    actionBlock: {
+      backgroundColor: '#3b82f610',
+      borderRadius: borderRadius.lg,
+      padding: spacing.md,
+      marginBottom: spacing.md,
+      borderWidth: 1,
+      borderColor: '#3b82f630',
+    },
+    actionTitle: {
+      fontFamily: typography.semibold,
+      fontSize: 13,
+      color: '#3b82f6',
+      marginBottom: spacing.sm,
+      letterSpacing: 0.3,
+    },
+    actionStepRow: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+      marginBottom: 4,
+    },
+    actionStepNum: {
+      fontFamily: typography.semibold,
+      fontSize: 13,
+      color: '#3b82f6',
+      minWidth: 18,
+    },
+    actionStepText: {
+      fontFamily: typography.regular,
+      fontSize: 13,
+      color: colors.text.secondary,
+      lineHeight: 18,
+      flex: 1,
     },
     blockingText: {
       fontFamily: typography.regular,
