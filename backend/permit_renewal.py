@@ -171,6 +171,27 @@ class RenewalEligibility(BaseModel):
     # from ineligible_insurance (entered but expired). Drives a soft CTA in the
     # UI rather than a hard block.
     insurance_not_entered: bool = False
+    # ── v2 enrichment fields (step 6, commit 2.1) ──────────────────
+    # Populated only when the dispatcher is in mode='live' (or in shadow
+    # mode's legacy-crash fallback path). Legacy / mode='off' / shadow's
+    # normal path leave all four as None. Frontend MUST render these
+    # conditionally on field presence — during the deploy window between
+    # 2.1 ship and the dispatcher flip the UI sees None for all four
+    # and falls back to the legacy display.
+    #
+    # `effective_expiry`: ISO date the renewal action is actually due
+    #   by, after applying §1.1 ceilings (1-year-since-issuance, 31-day
+    #   BIS lookahead, etc.) on top of the calendar expiration.
+    # `renewal_strategy`: enum-string from RENEWAL_STRATEGIES in
+    #   eligibility_v2.py (e.g. "AUTO_EXTEND_DOB_NOW", "MANUAL_1YR_CEILING").
+    # `limiting_factor`: {label, kind, expires_in_days} — drives the
+    #   subtitle / "why this date" display.
+    # `action`: {kind, deadline_days, instructions[]} — next-step
+    #   user-facing copy block.
+    effective_expiry: Optional[str] = None
+    renewal_strategy: Optional[str] = None
+    limiting_factor: Optional[Dict[str, Any]] = None
+    action: Optional[Dict[str, Any]] = None
 
 
 class PermitRenewalCreate(BaseModel):

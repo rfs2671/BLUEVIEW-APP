@@ -154,8 +154,12 @@ async def check_renewal_eligibility(
 def _v2_to_renewal_eligibility(v2_result: dict, *, project_id: str, permit_id: str):
     """Adapt the v2 dict to the RenewalEligibility Pydantic shape so
     `live` mode is a drop-in replacement on the existing UI contract.
-    Frontend will be updated in step 6 to consume the richer v2
-    response directly."""
+
+    As of step 6 commit 2.1, also passes the v2-enriched fields
+    (effective_expiry, renewal_strategy, limiting_factor, action)
+    through to the response so the frontend can render them. Legacy
+    mode and shadow mode's normal path leave these as None — the
+    frontend MUST handle absence gracefully."""
     from permit_renewal import RenewalEligibility, GCLicenseInfo
 
     eligible = (
@@ -182,4 +186,9 @@ def _v2_to_renewal_eligibility(v2_result: dict, *, project_id: str, permit_id: s
         blocking_reasons=v2_result.get("blocking_reasons") or [],
         insurance_flags=[],
         insurance_not_entered=bool(v2_result.get("insurance_not_entered")),
+        # ── v2 enrichment passthrough ──
+        effective_expiry=v2_result.get("effective_expiry"),
+        renewal_strategy=v2_result.get("renewal_strategy"),
+        limiting_factor=v2_result.get("limiting_factor"),
+        action=v2_result.get("action"),
     )
