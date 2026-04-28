@@ -1120,6 +1120,16 @@ async def nightly_renewal_scan(db):
                     "insurance_flags": eligibility.insurance_flags,
                     "dob_now_url": None,
                     "dob_filing_url": None,
+                    # v2 enrichment (step 6.2.3). Sourced verbatim from
+                    # the dispatcher response (RenewalEligibility) — no
+                    # recomputation. All four are None in shadow/off
+                    # mode and populate after the cutover. The frontend
+                    # rendering in 6.2.2 falls back gracefully when
+                    # absent, so older records continue to load.
+                    "renewal_strategy": eligibility.renewal_strategy,
+                    "effective_expiry": eligibility.effective_expiry,
+                    "limiting_factor": eligibility.limiting_factor,
+                    "action": eligibility.action,
                     "created_at": now,
                     "updated_at": now,
                     "is_deleted": False,
@@ -1408,6 +1418,13 @@ def create_permit_renewal_routes(
             "copyable_fields": renewal_data_result.get("copyable_fields"),
             "checklist": renewal_data_result.get("checklist"),
             "paa_required": renewal_data_result.get("paa_required", False),
+            # v2 enrichment (step 6.2.3) — same passthrough as the
+            # nightly scan writer. Sourced from the dispatcher's
+            # RenewalEligibility response.
+            "renewal_strategy": eligibility.renewal_strategy,
+            "effective_expiry": eligibility.effective_expiry,
+            "limiting_factor": eligibility.limiting_factor,
+            "action": eligibility.action,
             "updated_at": now,
             "prepared_by": current_user.get("id"),
         }
