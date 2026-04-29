@@ -243,7 +243,12 @@ export default function PermitRenewalScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
-  const { id: projectId } = useLocalSearchParams();
+  // permitId is the optional dob_log id passed by deep-links from the
+  // DOB compliance tab's Prepare Renewal handler. When present, the
+  // list page auto-expands the matching renewal card on landing so
+  // the operator drops directly onto the right permit (vs. hunting
+  // through a list of all the project's renewals). MR.1 polish.
+  const { id: projectId, permitId: deepLinkPermitId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
 
@@ -267,6 +272,20 @@ export default function PermitRenewalScreen() {
   useEffect(() => {
     if (isAuthenticated && projectId) fetchRenewals();
   }, [isAuthenticated, projectId]);
+
+  // MR.1 deep-link: when the page lands with ?permitId=<dob_log_id>,
+  // auto-expand the matching renewal card after renewals load. The
+  // match is on renewal.permit_dob_log_id (which is the dob_log id
+  // the deep-link carries), not renewal.id (which is the renewal
+  // record's own _id). One-shot: fires once renewals are populated;
+  // subsequent expand/collapse interactions are user-driven.
+  useEffect(() => {
+    if (!deepLinkPermitId || renewals.length === 0) return;
+    const target = renewals.find(
+      (r) => r.permit_dob_log_id === deepLinkPermitId
+    );
+    if (target) setExpandedId(target.id);
+  }, [deepLinkPermitId, renewals]);
 
   const fetchRenewals = async () => {
     if (!loading) setRefreshing(true);
@@ -478,8 +497,33 @@ export default function PermitRenewalScreen() {
 
           {/* Summary */}
           <View style={s.cardBody}>
+            {/* MR.1 polish — Issue 2: a single S1 filing can split
+                into multiple work permits (general construction +
+                plumbing + sprinklers), all sharing the same
+                job_number. Append the work-type/permit-type in
+                parentheses so each card is unambiguous in a list of
+                related permits.
+                The persisted renewal record carries `permit_type`
+                (writer source: eligibility.permit_type, derived
+                from dob_log.permit_type). `work_type` may also be
+                present on records built via the dob_logs fallback
+                path (renewalAPI.list lines ~85-95). Prefer
+                work_type when set since it's more specific
+                ("Plumbing" vs. permit_type's "NB"/"A1"/etc.).
+                Schema gap: the canonical full work-permit number
+                with a -PL/-SP suffix (e.g. B00736930-S1-PL) is not
+                on the renewal record. Backend follow-up needed if
+                you want to display that form verbatim; for now
+                "Job {job_number} ({work_type})" carries the same
+                disambiguation. */}
             <Text style={s.jobNumber}>
-              Job {renewal.job_number || '—'}
+              Job {(() => {
+                const job = renewal.job_number;
+                const wt = renewal.work_type || renewal.permit_type;
+                if (!job) return '—';
+                if (!wt) return job;
+                return `${job} (${wt})`;
+              })()}
             </Text>
             {/* v2 enrichment: when limiting_factor.label is present,
                 the "why this date" reason becomes the primary expiry

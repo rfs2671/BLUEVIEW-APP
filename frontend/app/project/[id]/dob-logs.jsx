@@ -248,7 +248,19 @@ export default function DOBLogsScreen() {
         // are intentionally NOT routed here per MR.1 scope; they
         // continue to fall through to /prepare and produce the
         // existing error toast until their own panels ship.
-        router.push(`/project/${projectId}/permit-renewal`);
+        //
+        // Pass the dob_log id as a query param so the list page can
+        // auto-expand the specific permit's card on landing. Without
+        // this the operator lands on a list of all renewals for the
+        // project and has to find their specific permit by hand —
+        // worse when one S1 filing has multiple work-permit children
+        // (e.g. B00736930-S1-PL plumbing + B00736930-S1-SP sprinkler
+        // + B00736930-S1 general). The list page reads permitId from
+        // useLocalSearchParams and matches against
+        // renewal.permit_dob_log_id.
+        router.push(
+          `/project/${projectId}/permit-renewal?permitId=${encodeURIComponent(log.id)}`
+        );
         return;
       }
 
