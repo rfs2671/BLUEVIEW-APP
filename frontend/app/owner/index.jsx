@@ -1178,7 +1178,20 @@ export default function OwnerPortalScreen() {
                   </Pressable>
                 </View>
 
-                <ScrollView style={{ maxHeight: 480 }} keyboardShouldPersistTaps="handled">
+                {/* MR.2 fix: match the Create Company modal pattern.
+                    Use the existing modalScroll/modalFormScroll
+                    styles (flexGrow:0/flexShrink:1 + bottom padding)
+                    so the ScrollView shrinks within modalCard's
+                    overflow:hidden region, and put the action row
+                    INSIDE the ScrollView so the buttons are part of
+                    the scrollable area rather than being clipped by
+                    the parent's maxHeight. */}
+                <ScrollView
+                  style={styles.modalScroll}
+                  contentContainerStyle={styles.modalFormScroll}
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator={false}
+                >
                   <Text style={styles.inputLabel}>License Class</Text>
                   <View style={styles.filingRepClassPicker}>
                     {FILING_REP_LICENSE_CLASSES.map((cls) => (
@@ -1244,20 +1257,20 @@ export default function OwnerPortalScreen() {
                         : 'Set as primary filing representative'}
                     </Text>
                   </Pressable>
-                </ScrollView>
 
-                <View style={[styles.confirmActions, { marginTop: spacing.md }]}>
-                  <GlassButton
-                    title="Cancel"
-                    onPress={() => setShowFilingRepModal(false)}
-                    variant="secondary"
-                  />
-                  <GlassButton
-                    title={savingFilingRep ? 'Saving…' : (editingFilingRep ? 'Save' : 'Add')}
-                    onPress={saveFilingRep}
-                    disabled={savingFilingRep}
-                  />
-                </View>
+                  <View style={[styles.confirmActions, { marginTop: spacing.md }]}>
+                    <GlassButton
+                      title="Cancel"
+                      onPress={() => setShowFilingRepModal(false)}
+                      variant="secondary"
+                    />
+                    <GlassButton
+                      title={savingFilingRep ? 'Saving…' : (editingFilingRep ? 'Save' : 'Add')}
+                      onPress={saveFilingRep}
+                      disabled={savingFilingRep}
+                    />
+                  </View>
+                </ScrollView>
               </GlassCard>
             </View>
           </KeyboardAvoidingView>
