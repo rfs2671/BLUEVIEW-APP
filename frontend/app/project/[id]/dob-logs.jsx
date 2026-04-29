@@ -220,6 +220,38 @@ export default function DOBLogsScreen() {
   const handlePrepareRenewal = async (log) => {
     setPreparingId(log.id);
     try {
+      // MR.1 fix: pre-flight eligibility before /prepare so manual-
+      // renewal cases route to the detail page (where the MR.1 panel
+      // lives) instead of issuing a guaranteed-400 /prepare call. The
+      // 400 path was producing inline error toasts that operators
+      // perceived as a dead end.
+      //
+      // Trade-off: this adds one round-trip per click for eligible
+      // permits (check-eligibility + prepare = 2 calls instead of 1).
+      // /check-eligibility is the dispatcher's pure eligibility
+      // computation; /prepare also runs eligibility internally as
+      // its first step (permit_renewal.py:~1366), so we're running
+      // the dispatcher twice for the same permit on the eligible
+      // path. Acceptable cost for the UX correctness gain. When
+      // MR.6 wires the detail-page filing flow, this button can be
+      // simplified to always route to the detail page.
+      const eligibilityResp = await apiClient.post(
+        '/api/permit-renewals/check-eligibility',
+        { permit_dob_log_id: log.id, project_id: projectId }
+      );
+      const actionKind = eligibilityResp.data?.action?.kind;
+      if (actionKind === 'manual_renewal_dob_now') {
+        // Manual 1-year-ceiling case: route to the renewal detail
+        // page where MR.1's Manual Renewal Required panel renders.
+        // No /prepare call — that endpoint will 400 for this case.
+        // Other manual kinds (manual_renewal_lapsed, shed_renewal)
+        // are intentionally NOT routed here per MR.1 scope; they
+        // continue to fall through to /prepare and produce the
+        // existing error toast until their own panels ship.
+        router.push(`/project/${projectId}/permit-renewal`);
+        return;
+      }
+
       const resp = await apiClient.post('/api/permit-renewals/prepare', {
         permit_dob_log_id: log.id,
         project_id: projectId,
