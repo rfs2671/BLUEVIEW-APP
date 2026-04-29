@@ -14,9 +14,14 @@
  * frontend/src/components/permit-renewal/.
  *
  * Visual output is byte-identical to MR.1's inline version. Styles
- * and copy moved verbatim. The TODO(data plumbing) note in MR.1
- * about renewal.issuance_date being absent from the persisted record
- * is now tracked as MR.1.6 in §14 of permit-renewal-v3.md.
+ * moved verbatim.
+ *
+ * MR.1.6: explanation copy now uses renewal.issuance_date when
+ * present ("This permit was issued on Jan 26, 2026..."), falling
+ * back to generic phrasing for older persisted records that haven't
+ * been backfilled. The panel is forward-compatible — both copy
+ * variants render correctly; the date variant just adds specificity
+ * the operator can sanity-check against.
  */
 
 import React from 'react';
@@ -54,11 +59,9 @@ const ManualRenewalPanel = ({ renewal }) => {
         Manual Renewal Required
       </Text>
       <Text style={s.manualRenewalExplanation}>
-        This permit has reached the one-year mark from
-        original issuance. NYC DOB requires work permits
-        older than one year to be renewed manually,
-        regardless of insurance status. Filing happens at
-        DOB NOW with the licensee's NYC.ID.
+        {renewal.issuance_date
+          ? `This permit was issued on ${formatDate(renewal.issuance_date)}. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. Filing happens at DOB NOW with the licensee's NYC.ID.`
+          : `This permit has reached the one-year mark from original issuance. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. Filing happens at DOB NOW with the licensee's NYC.ID.`}
       </Text>
 
       <View style={s.manualRenewalFeeBlock}>

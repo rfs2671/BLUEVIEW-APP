@@ -358,5 +358,71 @@ class TestEvaluateEndToEnd(unittest.TestCase):
         self.assertEqual(result["action"]["fee_cents"], 0)
 
 
+class TestIssuanceDateInV2Dict(unittest.TestCase):
+    """MR.1.6: confirm issuance_date is in the v2 dict output. Source
+    of truth for the field that gets plumbed through the dispatcher,
+    persisted by the writer, and rendered by the MR.1 panel for
+    date-specific copy."""
+
+    def _evaluate_with(self, permit, today=None):
+        project = {"_id": "p1"}
+        company = _company(
+            gc_license_expiration=datetime(2028, 1, 1, tzinfo=timezone.utc),
+            gc_insurance_records=[
+                _ins("general_liability", datetime(2027, 9, 1, tzinfo=timezone.utc)),
+                _ins("workers_comp",      datetime(2027, 10, 1, tzinfo=timezone.utc)),
+                _ins("disability",        datetime(2027, 11, 1, tzinfo=timezone.utc)),
+            ],
+        )
+
+        class _StubDb:
+            class fee_schedule:
+                @staticmethod
+                def find(_q):
+                    class _Cursor:
+                        async def to_list(self, _n):
+                            return [{
+                                "effective_from": datetime(2025, 12, 21, tzinfo=timezone.utc),
+                                "effective_until": None,
+                                "applies_to": ["ALL"],
+                                "min_renewal_fee_cents": 13_000,
+                                "split_rules": {"all": {"at_filing_pct": 100}},
+                            }]
+                    return _Cursor()
+
+        from lib.fee_schedule import bust_fee_cache
+        bust_fee_cache()
+
+        return _run(eligibility_v2.evaluate(
+            _StubDb(), permit, project, company,
+            today=today or datetime(2026, 4, 26, tzinfo=timezone.utc),
+        ))
+
+    def test_issuance_date_populated_when_present_on_permit(self):
+        permit = _permit(
+            issuance_date=datetime(2026, 1, 26, tzinfo=timezone.utc),
+        )
+        result = self._evaluate_with(permit)
+        # ISO-string form, UTC-aware (matches the v2 dict source at
+        # eligibility_v2.py:366-369).
+        self.assertEqual(result["issuance_date"], "2026-01-26T00:00:00+00:00")
+
+    def test_issuance_date_none_when_absent_on_permit(self):
+        permit = _permit(issuance_date=None)
+        result = self._evaluate_with(permit)
+        self.assertIsNone(result["issuance_date"])
+
+    def test_issuance_date_iso_string_for_naive_datetime(self):
+        """The v2 dict's helper coerces naive datetimes to UTC-aware
+        before isoformat. Pin that here so a future refactor doesn't
+        accidentally drop the tz coercion."""
+        # Note: stripping tzinfo simulates a Mongo-read naive datetime
+        # (Motor returns naive by default).
+        naive_issuance = datetime(2026, 1, 26)  # no tzinfo
+        permit = _permit(issuance_date=naive_issuance)
+        result = self._evaluate_with(permit)
+        self.assertEqual(result["issuance_date"], "2026-01-26T00:00:00+00:00")
+
+
 if __name__ == "__main__":
     unittest.main()

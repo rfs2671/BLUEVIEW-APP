@@ -192,6 +192,17 @@ class RenewalEligibility(BaseModel):
     renewal_strategy: Optional[str] = None
     limiting_factor: Optional[Dict[str, Any]] = None
     action: Optional[Dict[str, Any]] = None
+    # ── MR.1.6: issuance_date plumbing ─────────────────────────────
+    # ISO-string form of the permit's original DOB issuance date.
+    # Source: v2 dict at backend/lib/eligibility_v2.py:366-369. Same
+    # shape semantics as the four v2 enrichment fields above —
+    # populated in mode='live' (and shadow's legacy-crash fallback),
+    # None otherwise. MR.1's panel uses it to show date-specific
+    # copy ("This permit was issued on Jan 26, 2026...") instead of
+    # the generic phrasing; MR.4's PW2 field mapper will read it
+    # off the persisted renewal record rather than re-fetching from
+    # dob_logs at form-generation time.
+    issuance_date: Optional[str] = None
 
 
 class PermitRenewalCreate(BaseModel):
@@ -1143,6 +1154,12 @@ async def nightly_renewal_scan(db):
                     "effective_expiry": eligibility.effective_expiry,
                     "limiting_factor": eligibility.limiting_factor,
                     "action": eligibility.action,
+                    # MR.1.6: issuance_date persistence. Same passthrough
+                    # semantics as the four fields above — None on
+                    # legacy/shadow paths, populated on live. Older
+                    # records keep None until the backfill script
+                    # touches them.
+                    "issuance_date": eligibility.issuance_date,
                     "created_at": now,
                     "updated_at": now,
                     "is_deleted": False,
@@ -1438,6 +1455,8 @@ def create_permit_renewal_routes(
             "effective_expiry": eligibility.effective_expiry,
             "limiting_factor": eligibility.limiting_factor,
             "action": eligibility.action,
+            # MR.1.6: issuance_date passthrough — see nightly writer.
+            "issuance_date": eligibility.issuance_date,
             "updated_at": now,
             "prepared_by": current_user.get("id"),
         }

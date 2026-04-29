@@ -76,6 +76,8 @@ def _eligibility_v2_enriched():
                 "Pay the $130 LL128 fee.",
             ],
         },
+        # MR.1.6
+        issuance_date="2025-12-15T00:00:00+00:00",
     )
 
 
@@ -189,6 +191,8 @@ class TestNightlyScanWritesV2Fields(unittest.TestCase):
         self.assertEqual(doc["limiting_factor"]["expires_in_days"], 14)
         self.assertEqual(doc["action"]["kind"], "manual_renewal")
         self.assertEqual(len(doc["action"]["instructions"]), 2)
+        # MR.1.6: issuance_date persisted from the dispatcher response.
+        self.assertEqual(doc["issuance_date"], "2025-12-15T00:00:00+00:00")
 
         # Sanity: legacy fields still populated (we didn't accidentally
         # break the v1 shape).
@@ -216,8 +220,9 @@ class TestNightlyScanWritesV2Fields(unittest.TestCase):
 
         # Each v2 field must be present in the doc shape (key exists
         # so future reads don't KeyError) but None as the value.
+        # MR.1.6: issuance_date follows the same shape contract.
         for k in ("renewal_strategy", "effective_expiry",
-                  "limiting_factor", "action"):
+                  "limiting_factor", "action", "issuance_date"):
             self.assertIn(k, doc, f"writer dropped key {k!r}")
             self.assertIsNone(doc[k], f"v1 shape leaked non-None for {k!r}")
 

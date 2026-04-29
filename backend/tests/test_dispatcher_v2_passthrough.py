@@ -170,6 +170,8 @@ class TestV2Adapter(unittest.TestCase):
         self.assertEqual(out.limiting_factor["label"], "1-year issuance ceiling")
         self.assertEqual(out.action["kind"], "manual_renewal")
         self.assertEqual(out.blocking_reasons, ["1-year issuance ceiling", "manual $130"])
+        # MR.1.6: issuance_date passthrough.
+        self.assertEqual(out.issuance_date, "2025-12-15T00:00:00+00:00")
         # Sanity: the legacy-shape fields are still populated.
         self.assertFalse(out.eligible)  # blocking_reasons set
         self.assertEqual(out.expiration_date, "2027-01-01T00:00:00+00:00")
@@ -193,6 +195,8 @@ class TestV2Adapter(unittest.TestCase):
         self.assertIsNone(out.effective_expiry)
         self.assertIsNone(out.limiting_factor)
         self.assertIsNone(out.action)
+        # MR.1.6: missing issuance_date defaults to None.
+        self.assertIsNone(out.issuance_date)
         self.assertTrue(out.eligible)
 
 

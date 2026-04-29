@@ -191,4 +191,6 @@ def _v2_to_renewal_eligibility(v2_result: dict, *, project_id: str, permit_id: s
         renewal_strategy=v2_result.get("renewal_strategy"),
         limiting_factor=v2_result.get("limiting_factor"),
         action=v2_result.get("action"),
+        # ── MR.1.6: issuance_date passthrough ──
+        issuance_date=v2_result.get("issuance_date"),
     )
