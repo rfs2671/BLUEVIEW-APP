@@ -5,8 +5,9 @@ Why this exists
 ───────────────
 Pre-cutover (and pre-6.2.3 writer extension `4f028d4`) `permit_renewals`
 docs were written with the legacy schema — no `renewal_strategy`,
-`effective_expiry`, `limiting_factor`, or `action` keys. The
-dispatcher cutover to mode='live' (2026-04-29) changed the live
+`effective_expiry`, `limiting_factor`, `action`, or (post-MR.1.6
+`50bf481`) `issuance_date` keys. The dispatcher cutover to
+mode='live' (2026-04-29) changed the live
 `/api/permit-renewals/check-eligibility` response to include these
 fields, but `nightly_renewal_scan`'s idempotency guard at
 `permit_renewal.py:1061-1069` skips any permit with an active
@@ -167,11 +168,16 @@ async def main(*, dry_run: bool) -> int:
     db = client[db_name]
 
     # Target query: docs missing the renewal_strategy key entirely OR
-    # carrying it with a None value. Both cases mean v2 enrichment was
-    # never written (either pre-6.2.3 schema or post-6.2.3 written
-    # under shadow/off mode before the cutover). Soft-deleted records
-    # are excluded — same convention as nightly_renewal_scan and the
+    # carrying it with a None value, OR missing issuance_date (added
+    # in MR.1.6 post-initial-backfill). Both axes catch docs that
+    # need v2 enrichment plumbed in. Soft-deleted records are
+    # excluded — same convention as nightly_renewal_scan and the
     # other permit_renewals queries.
+    #
+    # Idempotency: rows already carrying both renewal_strategy AND
+    # issuance_date with non-null values won't match — re-running
+    # the script after a fresh deploy is safe and only touches rows
+    # where at least one of the keys is still missing or null.
     #
     # Terminal-status docs (RenewalStatus.COMPLETED / FAILED — values
     # "completed" / "failed" in lowercase per the enum at
@@ -193,6 +199,8 @@ async def main(*, dry_run: bool) -> int:
         "$or": [
             {"renewal_strategy": {"$exists": False}},
             {"renewal_strategy": None},
+            {"issuance_date": {"$exists": False}},
+            {"issuance_date": None},
         ],
     }
     docs = await db.permit_renewals.find(query).to_list(length=None)
@@ -257,12 +265,14 @@ async def main(*, dry_run: bool) -> int:
                 "effective_expiry": doc.get("effective_expiry"),
                 "limiting_factor": doc.get("limiting_factor"),
                 "action": doc.get("action"),
+                "issuance_date": doc.get("issuance_date"),
             }
             after = {
                 "renewal_strategy": eligibility.renewal_strategy,
                 "effective_expiry": eligibility.effective_expiry,
                 "limiting_factor": eligibility.limiting_factor,
                 "action": eligibility.action,
+                "issuance_date": eligibility.issuance_date,
             }
 
             entry = {
@@ -283,14 +293,19 @@ async def main(*, dry_run: bool) -> int:
                     f"strategy={strategy_label} action.kind={action_kind}"
                 )
             else:
-                # Live $set — only the four v2 keys + updated_at. Other
+                # Live $set — only the v2 keys + updated_at. Other
                 # fields (status, blocking_reasons, etc.) are deliberately
                 # untouched per the script's contract.
+                # MR.1.6: issuance_date added to the payload. Re-runs
+                # after the MR.1.6 deploy pick up issuance_date on the
+                # already-backfilled rows that got the four original
+                # keys but not issuance_date.
                 update_set = {
                     "renewal_strategy": after["renewal_strategy"],
                     "effective_expiry": after["effective_expiry"],
                     "limiting_factor": after["limiting_factor"],
                     "action": after["action"],
+                    "issuance_date": after["issuance_date"],
                     "updated_at": now,
                 }
                 await db.permit_renewals.update_one(
