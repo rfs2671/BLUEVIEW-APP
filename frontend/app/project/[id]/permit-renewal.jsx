@@ -207,6 +207,50 @@ const STATUS_CONFIG = {
 const getStatusConfig = (status) =>
   STATUS_CONFIG[status] || STATUS_CONFIG.eligible;
 
+// MR.1 polish: card-header badge override keyed on action.kind.
+// Reason this exists — the writer at permit_renewal.py:1099-1104
+// resolves a permit hitting MANUAL_1YR_CEILING (or any other manual
+// track) into status=NEEDS_INSURANCE / INELIGIBLE_INSURANCE because
+// those are the closest legacy buckets. The persisted status is
+// "right" for the legacy framing but misleading for the v2-aware UI:
+// the panel says "Manual Renewal Required" while the card-header
+// badge says "Insurance Required." This map lets the v2 action.kind
+// override the badge's label / color / bg / icon when it's in the
+// manual-renewal family. The base STATUS_CONFIG entry is preserved
+// for everything else (description, fallback semantics) — the
+// override is additive on the four badge-specific fields only.
+//
+// Permits whose action.kind isn't here fall through to STATUS_CONFIG
+// untouched (status=needs_insurance with no v2 action keys, or
+// action.kind=enter_insurance, etc., still render the existing
+// "Insurance Required" badge — that framing is correct for those).
+const ACTION_BADGE_OVERRIDES = {
+  manual_renewal_dob_now: {
+    label: 'Manual Renewal',
+    color: '#f59e0b',
+    bg: '#f59e0b15',
+    icon: AlertTriangle,
+  },
+  manual_renewal_lapsed: {
+    label: 'Permit Lapsed',
+    color: '#f59e0b',
+    bg: '#f59e0b15',
+    icon: AlertTriangle,
+  },
+  shed_renewal: {
+    label: 'Shed Renewal',
+    color: '#f59e0b',
+    bg: '#f59e0b15',
+    icon: AlertTriangle,
+  },
+};
+
+const getBadgeConfig = (renewal) => {
+  const base = getStatusConfig(renewal?.status);
+  const override = ACTION_BADGE_OVERRIDES[renewal?.action?.kind];
+  return override ? { ...base, ...override } : base;
+};
+
 // Step 6.2.2: v2 enrichment field rendering.
 // `renewal_strategy` enum values come from
 // `backend/lib/eligibility_v2.py::RENEWAL_STRATEGIES`. The labels here
@@ -422,7 +466,12 @@ export default function PermitRenewalScreen() {
   // ── Renewal Card ──────────────────────────────────────────────────
   const renderRenewalCard = (renewal) => {
     const isExpanded = expandedId === renewal.id;
-    const statusCfg = getStatusConfig(renewal.status);
+    // MR.1 polish: getBadgeConfig overrides the card-header badge
+    // when renewal.action.kind is in the manual-renewal family
+    // (manual_renewal_dob_now, manual_renewal_lapsed, shed_renewal).
+    // Otherwise falls through to STATUS_CONFIG[renewal.status] —
+    // identical behavior to the prior getStatusConfig call site.
+    const statusCfg = getBadgeConfig(renewal);
     const StatusIcon = statusCfg.icon;
     const daysLeft = renewal.days_until_expiry;
     const isUrgent = daysLeft !== null && daysLeft <= 7;
