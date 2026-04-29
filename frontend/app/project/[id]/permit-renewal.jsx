@@ -38,6 +38,7 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '../../../src/context/ThemeContext';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import apiClient from '../../../src/utils/api';
+import { MANUAL_RENEWAL_RULE_CITATION } from '../../../src/constants/dobRules';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // INLINE API (mirrors permitRenewalAPI.js)
@@ -525,9 +526,100 @@ export default function PermitRenewalScreen() {
           {/* Expanded Details */}
           {isExpanded && (
             <View style={s.expandedSection}>
-              <Text style={s.statusDesc}>
-                {statusCfg.description}
-              </Text>
+              {/* MR.1 — manual renewal information panel.
+                  Renders when the v2 dispatcher emits action.kind ===
+                  "manual_renewal_dob_now" (the MANUAL_1YR_CEILING
+                  branch in eligibility_v2.py:_build_action). For that
+                  case the legacy ineligibility framing is misleading
+                  ("Insurance Update Required" badge stays because
+                  status === ineligible_insurance, which is the closest
+                  bucket the writer can pick — see permit_renewal.py
+                  ~line 1099-1104), so the panel below provides the
+                  real reason and the next step.
+                  TODO(MR.1.5+): replace this one-off conditional with
+                  the actionRenderers map per the §14 plan.
+                  TODO(data plumbing): renewal.issuance_date isn't on
+                  the persisted record — RenewalEligibility doesn't
+                  carry it, so the explanation copy is generic rather
+                  than calling out the specific issuance date. Fix in
+                  a small follow-up before MR.4.
+              */}
+              {renewal.action?.kind === 'manual_renewal_dob_now' ? (
+                <View style={s.manualRenewalPanel}>
+                  <Text style={s.manualRenewalHeader}>
+                    Manual Renewal Required
+                  </Text>
+                  <Text style={s.manualRenewalExplanation}>
+                    This permit has reached the one-year mark from
+                    original issuance. NYC DOB requires work permits
+                    older than one year to be renewed manually,
+                    regardless of insurance status. Filing happens at
+                    DOB NOW with the licensee's NYC.ID.
+                  </Text>
+
+                  <View style={s.manualRenewalFeeBlock}>
+                    <Text style={s.manualRenewalFee}>$130</Text>
+                    <Text style={s.manualRenewalFeeCaption}>
+                      paid directly to NYC DOB
+                    </Text>
+                  </View>
+
+                  <View style={s.manualRenewalDetails}>
+                    <View style={s.manualRenewalDetailRow}>
+                      <Text style={s.manualRenewalDetailLabel}>
+                        Job Filing Number
+                      </Text>
+                      <Text style={s.manualRenewalDetailValue}>
+                        {renewal.job_number || '—'}
+                      </Text>
+                    </View>
+                    <View style={s.manualRenewalDetailRow}>
+                      <Text style={s.manualRenewalDetailLabel}>
+                        Work Type
+                      </Text>
+                      <Text style={s.manualRenewalDetailValue}>
+                        {renewal.permit_type || '—'}
+                      </Text>
+                    </View>
+                    <View style={s.manualRenewalDetailRow}>
+                      <Text style={s.manualRenewalDetailLabel}>
+                        Current Expiration
+                      </Text>
+                      <Text style={s.manualRenewalDetailValue}>
+                        {formatDate(renewal.current_expiration)}
+                      </Text>
+                    </View>
+                    <View style={s.manualRenewalDetailRow}>
+                      <Text style={s.manualRenewalDetailLabel}>
+                        Days Until Expiration
+                      </Text>
+                      <Text style={s.manualRenewalDetailValue}>
+                        {typeof renewal.days_until_expiry === 'number'
+                          ? `${renewal.days_until_expiry}d`
+                          : '—'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Pressable
+                    disabled
+                    style={[s.manualRenewalCta, s.manualRenewalCtaDisabled]}
+                  >
+                    <Text style={s.manualRenewalCtaText}>Prepare Filing</Text>
+                  </Pressable>
+                  <Text style={s.manualRenewalCtaCaption}>
+                    Filing workflow coming soon — MR.2 through MR.6
+                  </Text>
+
+                  <Text style={s.manualRenewalCitation}>
+                    Reference: {MANUAL_RENEWAL_RULE_CITATION}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={s.statusDesc}>
+                  {statusCfg.description}
+                </Text>
+              )}
 
               {/* GC License */}
               {renewal.gc_license_number && (
@@ -619,8 +711,12 @@ export default function PermitRenewalScreen() {
                   eligibility_v2.py when the dispatcher is in live
                   mode. Absent in shadow / legacy / off mode, in which
                   case this block doesn't render. action.instructions
-                  is a string list; we number them for clarity. */}
-              {renewal.action && (renewal.action.kind || (renewal.action.instructions || []).length > 0) && (
+                  is a string list; we number them for clarity.
+                  Suppressed for manual_renewal_dob_now because the
+                  MR.1 panel above already conveys the next step in a
+                  more operator-friendly form. */}
+              {renewal.action?.kind !== 'manual_renewal_dob_now' &&
+               renewal.action && (renewal.action.kind || (renewal.action.instructions || []).length > 0) && (
                 <View style={s.actionBlock}>
                   {renewal.action.kind && (
                     <Text style={s.actionTitle}>
@@ -639,8 +735,12 @@ export default function PermitRenewalScreen() {
                 </View>
               )}
 
-              {/* Blocking Reasons — hidden for needs_insurance (CTA card above covers it) */}
-              {renewal.status !== 'needs_insurance' && renewal.blocking_reasons?.length > 0 && (
+              {/* Blocking Reasons — hidden for needs_insurance (CTA
+                  card above covers it) and for manual_renewal_dob_now
+                  (MR.1 panel above already explains the reason). */}
+              {renewal.status !== 'needs_insurance' &&
+               renewal.action?.kind !== 'manual_renewal_dob_now' &&
+               renewal.blocking_reasons?.length > 0 && (
                 <View style={s.blockingBlock}>
                   <AlertTriangle size={14} color="#f59e0b" />
                   {renewal.blocking_reasons.map((reason, i) => (
@@ -1172,6 +1272,106 @@ function buildStyles(colors, isDark) {
       color: colors.text.secondary,
       lineHeight: 18,
       flex: 1,
+    },
+    // ── MR.1 manual renewal panel ────────────────────────────────
+    manualRenewalPanel: {
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.lg,
+      padding: spacing.lg,
+      marginBottom: spacing.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    manualRenewalHeader: {
+      fontFamily: typography.semibold,
+      fontSize: 16,
+      color: colors.text.primary,
+      marginBottom: spacing.sm,
+    },
+    manualRenewalExplanation: {
+      fontFamily: typography.regular,
+      fontSize: 13,
+      color: colors.text.secondary,
+      lineHeight: 19,
+      marginBottom: spacing.md,
+    },
+    manualRenewalFeeBlock: {
+      flexDirection: 'row',
+      alignItems: 'baseline',
+      gap: spacing.sm,
+      marginBottom: spacing.md,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.md,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    manualRenewalFee: {
+      fontFamily: typography.semibold,
+      fontSize: 22,
+      color: colors.text.primary,
+    },
+    manualRenewalFeeCaption: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+    manualRenewalDetails: {
+      marginBottom: spacing.md,
+      gap: 4,
+    },
+    manualRenewalDetailRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingVertical: 4,
+    },
+    manualRenewalDetailLabel: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+    manualRenewalDetailValue: {
+      fontFamily: typography.medium,
+      fontSize: 13,
+      color: colors.text.primary,
+    },
+    manualRenewalCta: {
+      paddingVertical: spacing.sm + 2,
+      paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.md,
+      alignItems: 'center',
+      marginTop: spacing.xs,
+    },
+    manualRenewalCtaDisabled: {
+      backgroundColor: colors.glass.background,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      opacity: 0.6,
+    },
+    manualRenewalCtaText: {
+      fontFamily: typography.semibold,
+      fontSize: 14,
+      color: colors.text.muted,
+      letterSpacing: 0.3,
+    },
+    manualRenewalCtaCaption: {
+      fontFamily: typography.regular,
+      fontSize: 11,
+      color: colors.text.muted,
+      textAlign: 'center',
+      marginTop: 6,
+      marginBottom: spacing.sm,
+    },
+    manualRenewalCitation: {
+      fontFamily: typography.regular,
+      fontSize: 11,
+      fontStyle: 'italic',
+      color: colors.text.muted,
+      marginTop: spacing.sm,
+      paddingTop: spacing.sm,
+      borderTopWidth: 1,
+      borderTopColor: colors.glass.border,
     },
     blockingText: {
       fontFamily: typography.regular,
