@@ -825,24 +825,32 @@ export default function PermitRenewalScreen() {
                 )}
 
                 {canOpenDob && !(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
+                  // TODO(local-agent): both URL paths in the previous
+                  // implementation produced dead links — the hardcoded
+                  // fallback (#!/service-worker-dashboard) ignored the
+                  // permit context, AND the backend-supplied
+                  // renewalData?.dob_now_url
+                  // (#!/service/DobDashboard/1/{job}) doesn't work
+                  // either: DOB NOW does not support URL-based
+                  // deep-linking, the renew screen routes to home in
+                  // a fresh session. Disabled until the local
+                  // Playwright agent (cloud queues, laptop pulls and
+                  // executes via stored DOB NOW credentials per GC)
+                  // ships. Visual parity with MR.1's
+                  // "Prepare Filing — coming soon" placeholder CTA.
                   <GlassButton
-                    title="Renew on DOB NOW"
+                    title="Automated filing — coming soon"
                     icon={
                       <ExternalLink
                         size={16}
-                        color="#8b5cf6"
+                        color={colors.text.muted}
                       />
                     }
-                    onPress={() => {
-                      const jobNum = renewal.job_number || '';
-                      const url = renewalData?.dob_now_url || (jobNum
-                        ? `https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard`
-                        : 'https://a810-dobnow.nyc.gov/publish/');
-                      Linking.openURL(url);
-                    }}
+                    onPress={() => {}}
+                    disabled
                     style={[
                       s.actionBtn,
-                      { borderColor: '#8b5cf640' },
+                      { borderColor: colors.glass.border, opacity: 0.6 },
                     ]}
                   />
                 )}

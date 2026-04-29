@@ -362,11 +362,21 @@ export default function DOBLogsScreen() {
                 />
               )}
               {needsRenewal && (
+                // TODO(local-agent): the previous implementation
+                // opened DOB NOW via Linking.openURL with a URL that
+                // ignored the permit context — DOB NOW does not
+                // support URL-based deep-linking, the renew screen
+                // routes to home in a fresh session. Disabled until
+                // the local Playwright agent (cloud queues, laptop
+                // pulls and executes via stored DOB NOW credentials
+                // per GC) ships. Visual parity with MR.1's
+                // "Prepare Filing — coming soon" placeholder CTA.
                 <GlassButton
-                  title="Renew on DOB NOW"
-                  icon={<ExternalLink size={16} strokeWidth={1.5} color="#8b5cf6" />}
-                  onPress={() => Linking.openURL(jobNum ? 'https://a810-dobnow.nyc.gov/publish/#!/service-worker-dashboard' : 'https://a810-dobnow.nyc.gov/publish/')}
-                  style={[s.dobLinkBtn, { borderColor: '#8b5cf640' }]}
+                  title="Automated filing — coming soon"
+                  icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />}
+                  onPress={() => {}}
+                  disabled
+                  style={[s.dobLinkBtn, { borderColor: colors.glass.border, opacity: 0.6 }]}
                 />
               )}
               {log.dob_link && log.dob_link.trim().length > 0 && (
