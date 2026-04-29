@@ -38,7 +38,7 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '../../../src/context/ThemeContext';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import apiClient from '../../../src/utils/api';
-import { MANUAL_RENEWAL_RULE_CITATION } from '../../../src/constants/dobRules';
+import ManualRenewalPanel from '../../../src/components/permit-renewal/ManualRenewalPanel';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // INLINE API (mirrors permitRenewalAPI.js)
@@ -233,6 +233,23 @@ const formatActionKind = (k) => {
     .split('_')
     .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
     .join(' ');
+};
+
+// MR.1.5: action.kind → component dispatch map. Mirrors STATUS_CONFIG's
+// shape — keyed on the dispatcher's action.kind enum value, each entry
+// is a component that fully replaces the expanded-section render for
+// matching renewals. Permits whose action.kind doesn't appear here
+// fall through to status-driven rendering (the original expanded
+// section: statusDesc, GC license, insurance, Next Steps,
+// blocking_reasons, BIS legacy banner, action buttons).
+//
+// Adding a new action panel = one new entry here + one new component
+// file in frontend/src/components/permit-renewal/. No surgery on the
+// page's switch logic. Foundation for MR.7+ panel proliferation
+// (manual_renewal_lapsed, shed_renewal, awaiting_extension,
+// submit_coi_update each get their own component when wired up).
+const actionRenderers = {
+  manual_renewal_dob_now: ManualRenewalPanel,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -567,103 +584,31 @@ export default function PermitRenewalScreen() {
             )}
           </View>
 
-          {/* Expanded Details */}
-          {isExpanded && (
-            <View style={s.expandedSection}>
-              {/* MR.1 — manual renewal information panel.
-                  Renders when the v2 dispatcher emits action.kind ===
-                  "manual_renewal_dob_now" (the MANUAL_1YR_CEILING
-                  branch in eligibility_v2.py:_build_action). For that
-                  case the legacy ineligibility framing is misleading
-                  ("Insurance Update Required" badge stays because
-                  status === ineligible_insurance, which is the closest
-                  bucket the writer can pick — see permit_renewal.py
-                  ~line 1099-1104), so the panel below provides the
-                  real reason and the next step.
-                  TODO(MR.1.5+): replace this one-off conditional with
-                  the actionRenderers map per the §14 plan.
-                  TODO(data plumbing): renewal.issuance_date isn't on
-                  the persisted record — RenewalEligibility doesn't
-                  carry it, so the explanation copy is generic rather
-                  than calling out the specific issuance date. Fix in
-                  a small follow-up before MR.4.
-              */}
-              {renewal.action?.kind === 'manual_renewal_dob_now' ? (
-                <View style={s.manualRenewalPanel}>
-                  <Text style={s.manualRenewalHeader}>
-                    Manual Renewal Required
-                  </Text>
-                  <Text style={s.manualRenewalExplanation}>
-                    This permit has reached the one-year mark from
-                    original issuance. NYC DOB requires work permits
-                    older than one year to be renewed manually,
-                    regardless of insurance status. Filing happens at
-                    DOB NOW with the licensee's NYC.ID.
-                  </Text>
-
-                  <View style={s.manualRenewalFeeBlock}>
-                    <Text style={s.manualRenewalFee}>$130</Text>
-                    <Text style={s.manualRenewalFeeCaption}>
-                      paid directly to NYC DOB
-                    </Text>
-                  </View>
-
-                  <View style={s.manualRenewalDetails}>
-                    <View style={s.manualRenewalDetailRow}>
-                      <Text style={s.manualRenewalDetailLabel}>
-                        Job Filing Number
-                      </Text>
-                      <Text style={s.manualRenewalDetailValue}>
-                        {renewal.job_number || '—'}
-                      </Text>
-                    </View>
-                    <View style={s.manualRenewalDetailRow}>
-                      <Text style={s.manualRenewalDetailLabel}>
-                        Work Type
-                      </Text>
-                      <Text style={s.manualRenewalDetailValue}>
-                        {renewal.permit_type || '—'}
-                      </Text>
-                    </View>
-                    <View style={s.manualRenewalDetailRow}>
-                      <Text style={s.manualRenewalDetailLabel}>
-                        Current Expiration
-                      </Text>
-                      <Text style={s.manualRenewalDetailValue}>
-                        {formatDate(renewal.current_expiration)}
-                      </Text>
-                    </View>
-                    <View style={s.manualRenewalDetailRow}>
-                      <Text style={s.manualRenewalDetailLabel}>
-                        Days Until Expiration
-                      </Text>
-                      <Text style={s.manualRenewalDetailValue}>
-                        {typeof renewal.days_until_expiry === 'number'
-                          ? `${renewal.days_until_expiry}d`
-                          : '—'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <Pressable
-                    disabled
-                    style={[s.manualRenewalCta, s.manualRenewalCtaDisabled]}
-                  >
-                    <Text style={s.manualRenewalCtaText}>Prepare Filing</Text>
-                  </Pressable>
-                  <Text style={s.manualRenewalCtaCaption}>
-                    Filing workflow coming soon — MR.2 through MR.6
-                  </Text>
-
-                  <Text style={s.manualRenewalCitation}>
-                    Reference: {MANUAL_RENEWAL_RULE_CITATION}
-                  </Text>
+          {/* Expanded Details. MR.1.5: actionRenderers map dispatch.
+              When renewal.action.kind matches a registered renderer,
+              that component fully replaces the expanded-section
+              content. Permits whose action.kind doesn't match fall
+              through to the original status-driven default render
+              (statusDesc + GC license + insurance + needs_insurance
+              CTA + Next Steps + blocking_reasons + BIS legacy banner
+              + action buttons). MR.1's three suppression conditionals
+              on the Next Steps and Blocking Reasons blocks are
+              removed because matching kinds never reach those blocks
+              now — the takeover is complete. */}
+          {isExpanded && (() => {
+            const ActionRenderer = actionRenderers[renewal.action?.kind];
+            if (ActionRenderer) {
+              return (
+                <View style={s.expandedSection}>
+                  <ActionRenderer renewal={renewal} />
                 </View>
-              ) : (
+              );
+            }
+            return (
+              <View style={s.expandedSection}>
                 <Text style={s.statusDesc}>
                   {statusCfg.description}
                 </Text>
-              )}
 
               {/* GC License */}
               {renewal.gc_license_number && (
@@ -756,11 +701,11 @@ export default function PermitRenewalScreen() {
                   mode. Absent in shadow / legacy / off mode, in which
                   case this block doesn't render. action.instructions
                   is a string list; we number them for clarity.
-                  Suppressed for manual_renewal_dob_now because the
-                  MR.1 panel above already conveys the next step in a
-                  more operator-friendly form. */}
-              {renewal.action?.kind !== 'manual_renewal_dob_now' &&
-               renewal.action && (renewal.action.kind || (renewal.action.instructions || []).length > 0) && (
+                  MR.1.5: suppression conditional for
+                  manual_renewal_dob_now removed — that branch is now
+                  handled by the actionRenderers map dispatch above
+                  and never reaches this fall-through code path. */}
+              {renewal.action && (renewal.action.kind || (renewal.action.instructions || []).length > 0) && (
                 <View style={s.actionBlock}>
                   {renewal.action.kind && (
                     <Text style={s.actionTitle}>
@@ -780,10 +725,12 @@ export default function PermitRenewalScreen() {
               )}
 
               {/* Blocking Reasons — hidden for needs_insurance (CTA
-                  card above covers it) and for manual_renewal_dob_now
-                  (MR.1 panel above already explains the reason). */}
+                  card above covers it). MR.1.5: suppression
+                  conditional for manual_renewal_dob_now removed —
+                  that branch is handled by the actionRenderers map
+                  dispatch above and never reaches this fall-through
+                  code path. */}
               {renewal.status !== 'needs_insurance' &&
-               renewal.action?.kind !== 'manual_renewal_dob_now' &&
                renewal.blocking_reasons?.length > 0 && (
                 <View style={s.blockingBlock}>
                   <AlertTriangle size={14} color="#f59e0b" />
@@ -925,8 +872,9 @@ export default function PermitRenewalScreen() {
                   </View>
                 )}
               </View>
-            </View>
-          )}
+              </View>
+            );
+          })()}
         </GlassCard>
       </Pressable>
     );
@@ -1325,106 +1273,8 @@ function buildStyles(colors, isDark) {
       lineHeight: 18,
       flex: 1,
     },
-    // ── MR.1 manual renewal panel ────────────────────────────────
-    manualRenewalPanel: {
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.lg,
-      padding: spacing.lg,
-      marginBottom: spacing.md,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-    },
-    manualRenewalHeader: {
-      fontFamily: typography.semibold,
-      fontSize: 16,
-      color: colors.text.primary,
-      marginBottom: spacing.sm,
-    },
-    manualRenewalExplanation: {
-      fontFamily: typography.regular,
-      fontSize: 13,
-      color: colors.text.secondary,
-      lineHeight: 19,
-      marginBottom: spacing.md,
-    },
-    manualRenewalFeeBlock: {
-      flexDirection: 'row',
-      alignItems: 'baseline',
-      gap: spacing.sm,
-      marginBottom: spacing.md,
-      paddingVertical: spacing.sm,
-      paddingHorizontal: spacing.md,
-      backgroundColor: colors.glass.background,
-      borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-    },
-    manualRenewalFee: {
-      fontFamily: typography.semibold,
-      fontSize: 22,
-      color: colors.text.primary,
-    },
-    manualRenewalFeeCaption: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.muted,
-    },
-    manualRenewalDetails: {
-      marginBottom: spacing.md,
-      gap: 4,
-    },
-    manualRenewalDetailRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      paddingVertical: 4,
-    },
-    manualRenewalDetailLabel: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.muted,
-    },
-    manualRenewalDetailValue: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
-    manualRenewalCta: {
-      paddingVertical: spacing.sm + 2,
-      paddingHorizontal: spacing.md,
-      borderRadius: borderRadius.md,
-      alignItems: 'center',
-      marginTop: spacing.xs,
-    },
-    manualRenewalCtaDisabled: {
-      backgroundColor: colors.glass.background,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      opacity: 0.6,
-    },
-    manualRenewalCtaText: {
-      fontFamily: typography.semibold,
-      fontSize: 14,
-      color: colors.text.muted,
-      letterSpacing: 0.3,
-    },
-    manualRenewalCtaCaption: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      textAlign: 'center',
-      marginTop: 6,
-      marginBottom: spacing.sm,
-    },
-    manualRenewalCitation: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      fontStyle: 'italic',
-      color: colors.text.muted,
-      marginTop: spacing.sm,
-      paddingTop: spacing.sm,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-    },
+    // MR.1.5: manualRenewal* styles moved to
+    // frontend/src/components/permit-renewal/ManualRenewalPanel.jsx
     blockingText: {
       fontFamily: typography.regular,
       fontSize: 13,
