@@ -877,13 +877,20 @@ async def run_dob_now_health_check(db):
         logger.warning(
             f"DOB NOW health check: {len(issues)} issue(s) detected"
         )
-        await _send_health_check_alert(issues)
+        await _send_health_check_alert(db, issues)
     else:
         logger.info(
             "✅ DOB NOW health check passed — all selectors valid"
         )
 
-    # Store result
+    # Store result. js_hash is reserved for a future feature that
+    # would hash the DOB NOW JS bundle to detect UI changes capable
+    # of breaking the RPA selectors. The compute step was never
+    # implemented, so we persist None — preserves the doc shape
+    # consumed by GET /permit-renewals/health-status (which already
+    # tolerates absence via .get("js_hash")) without referencing an
+    # undefined variable. Restore to a real hash when/if the compute
+    # step lands.
     await db.system_config.update_one(
         {"key": "dob_now_health_check"},
         {"$set": {
@@ -891,7 +898,7 @@ async def run_dob_now_health_check(db):
             "last_run": datetime.now(timezone.utc),
             "status": "failed" if issues else "passed",
             "issues": issues,
-            "js_hash": js_hash_current,
+            "js_hash": None,
         }},
         upsert=True,
     )
@@ -899,8 +906,14 @@ async def run_dob_now_health_check(db):
     return {"status": "failed" if issues else "passed", "issues": issues}
 
 
-async def _send_health_check_alert(issues: List[str]):
-    """Send DOB NOW UI change alert email via Resend."""
+async def _send_health_check_alert(db, issues: List[str]):
+    """Send DOB NOW UI change alert email via Resend.
+
+    Takes `db` as the first positional parameter — the function reads
+    and writes `db.system_config` for the 24-hour cooldown record. The
+    parameter was previously implicit (the function relied on a
+    module-level `db` that doesn't exist), causing NameError every
+    time the Job 3 health-check fired with detected issues."""
     if not RESEND_API_KEY:
         logger.warning(
             "Cannot send health check alert — RESEND_API_KEY not set"
