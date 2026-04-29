@@ -69,13 +69,28 @@ const RenewalAlertCard = ({ projectId }) => {
 
   if (loading || alerts.length === 0) return null;
 
+  // Step 6.2.4: prefer the v2 `limiting_factor.expires_in_days` over
+  // the legacy `days_until_expiry` when present. The v2 value reflects
+  // the post-§1.1-ceiling effective expiry (e.g. 1-year-since-issuance
+  // ceiling overriding the calendar date), which is what the user
+  // actually needs to act on. Falls back to the legacy field when v2
+  // enrichment is absent — that's the deploy-window state between the
+  // 6.2.3 writer ship and the dispatcher flip, plus older persisted
+  // records.
+  const getDays = (r) => {
+    const v2 = r?.limiting_factor?.expires_in_days;
+    if (typeof v2 === 'number') return v2;
+    return r?.days_until_expiry ?? null;
+  };
+
   const totalAlerts = alerts.length;
   const mostUrgent = alerts.reduce((min, a) => {
-    const d = a.days_until_expiry ?? 999;
-    return d < (min?.days_until_expiry ?? 999) ? a : min;
+    const d = getDays(a) ?? 999;
+    return d < (getDays(min) ?? 999) ? a : min;
   }, alerts[0]);
 
-  const isUrgent = (mostUrgent.days_until_expiry ?? 999) <= 7;
+  const mostUrgentDays = getDays(mostUrgent);
+  const isUrgent = (mostUrgentDays ?? 999) <= 7;
   const hasAwaitingGC = alerts.some((a) =>
     ['draft_ready', 'awaiting_gc'].includes(a.status)
   );
@@ -89,7 +104,13 @@ const RenewalAlertCard = ({ projectId }) => {
     accentColor = '#ef4444';
     AlertIcon = AlertTriangle;
     title = 'Urgent Renewal';
-    subtitle = `${mostUrgent.days_until_expiry} day${mostUrgent.days_until_expiry !== 1 ? 's' : ''} until permit expires`;
+    // When v2 supplies the limiting_factor label, surface the "why"
+    // ("…until permit expires — 1-year issuance ceiling") so the user
+    // sees the real reason rather than the generic calendar phrasing.
+    // Absent → legacy phrasing unchanged.
+    const reason = mostUrgent?.limiting_factor?.label;
+    const base = `${mostUrgentDays} day${mostUrgentDays !== 1 ? 's' : ''} until permit expires`;
+    subtitle = reason ? `${base} — ${reason}` : base;
   } else if (hasAwaitingGC) {
     accentColor = '#8b5cf6';
     AlertIcon = ExternalLink;
@@ -137,7 +158,10 @@ const RenewalAlertCard = ({ projectId }) => {
         {totalAlerts > 0 && (
           <View style={s.progressRow}>
             {alerts.slice(0, 3).map((a) => {
-              const days = a.days_until_expiry ?? 0;
+              // Same v2-prefer-then-fallback pattern as the urgency
+              // calc above — keeps the mini-progress bars in sync
+              // with the headline subtitle.
+              const days = getDays(a) ?? 0;
               const pct = Math.max(
                 0,
                 Math.min(100, ((30 - days) / 30) * 100)
