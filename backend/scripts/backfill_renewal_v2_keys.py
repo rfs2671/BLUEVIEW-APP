@@ -82,7 +82,11 @@ from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
 # Path conventions: imports below this line rely on sys.path.insert
 # above. Keep them ordered after that line per the post-step-4 CI lint.
 from lib.eligibility_dispatcher import get_mode  # noqa: E402
-from permit_renewal import check_renewal_eligibility, _to_oid  # noqa: E402
+from permit_renewal import (  # noqa: E402
+    RenewalStatus,
+    _to_oid,
+    check_renewal_eligibility,
+)
 
 
 SkipReason = str  # alias for the reason-string keys in the tally.
@@ -168,8 +172,24 @@ async def main(*, dry_run: bool) -> int:
     # under shadow/off mode before the cutover). Soft-deleted records
     # are excluded — same convention as nightly_renewal_scan and the
     # other permit_renewals queries.
+    #
+    # Terminal-status docs (RenewalStatus.COMPLETED / FAILED — values
+    # "completed" / "failed" in lowercase per the enum at
+    # permit_renewal.py:92-100) are also excluded. Backfilling them
+    # would write today's dispatcher strategy onto a historical
+    # record, which is semantically wrong for the audit trail — the
+    # strategy at completion/failure time is the relevant one for
+    # those rows, not "what it would be today." The renewal-detail
+    # page surfaces dedicated badges for these statuses
+    # ("Permit renewed successfully" / "Manual renewal required on
+    # DOB NOW") rather than the actionRenderers panel, so they
+    # don't need v2 keys to render correctly.
     query = {
         "is_deleted": {"$ne": True},
+        "status": {"$nin": [
+            RenewalStatus.COMPLETED,
+            RenewalStatus.FAILED,
+        ]},
         "$or": [
             {"renewal_strategy": {"$exists": False}},
             {"renewal_strategy": None},
