@@ -397,6 +397,60 @@ def to_query_id(id_str: str):
 
 # ==================== COMPANY MODEL ====================
 
+# MR.2: filing_reps data model. Each entry is a licensed individual
+# at the GC who can sign DOB filings under their own license. The
+# array supports the per-GC routing model in §14 of the permit-renewal
+# v3 plan — the legal filer at MR.4+ is the licensed individual, NOT
+# LeveLog. Distinct from the company's own gc_license_* top-level
+# fields, which capture the company's GC license attribute (one per
+# company); filing_reps captures the roster of authorized filers,
+# potentially many, distinct trade scopes.
+#
+# Credential ciphertext storage (DOB NOW password) is intentionally
+# OUT of scope for MR.2 — that arrives in MR.6 alongside the
+# hybrid-encryption infrastructure. MR.2 is metadata only.
+class FilingRep(BaseModel):
+    id: str                                   # uuid4 hex, generated server-side on POST
+    name: str                                 # licensed individual's full legal name
+    license_class: str                        # see FILING_REP_LICENSE_CLASSES below
+    license_number: str                       # DOB-issued license number
+    license_type: Optional[str] = None        # free-text refinement when license_class == "Other Licensed Trade"
+    email: EmailStr                           # routing address for MR.9 filing notifications
+    is_primary: bool = False                  # exactly one per company; default routing for filings
+    created_at: datetime
+    updated_at: datetime
+
+
+FILING_REP_LICENSE_CLASSES = {
+    "Class 1 Filing Rep",
+    "Class 2 Filing Rep",
+    "GC",
+    "Plumber",
+    "Electrician",
+    "Master Fire Suppression Contractor",
+    "Other Licensed Trade",
+}
+
+
+class FilingRepCreate(BaseModel):
+    name: str
+    license_class: str
+    license_number: str
+    license_type: Optional[str] = None
+    email: EmailStr
+    is_primary: bool = False
+
+
+class FilingRepUpdate(BaseModel):
+    """All fields optional — PATCH semantics."""
+    name: Optional[str] = None
+    license_class: Optional[str] = None
+    license_number: Optional[str] = None
+    license_type: Optional[str] = None
+    email: Optional[EmailStr] = None
+    is_primary: Optional[bool] = None
+
+
 class Company(BaseModel):
     id: str
     name: str
@@ -411,6 +465,8 @@ class Company(BaseModel):
     gc_insurance_records: Optional[list] = []
     gc_resolved: bool = False
     gc_last_verified: Optional[datetime] = None
+    # MR.2: filing_reps roster (see FilingRep model above).
+    filing_reps: List[FilingRep] = []
 
     # Permit-renewal license-class taxonomy (added 2026-04-26, step 2).
     # NONE: company doesn't hold any tracked license. HIC: NYC DCWP
@@ -2753,6 +2809,183 @@ async def hard_delete_company(company_id: str, current_user=Depends(get_current_
     await audit_log("company_hard_delete", str(current_user.get("_id", "")), "company", company_id)
 
     return {"message": "Company and all users permanently deleted"}
+
+
+# ==================== MR.2: FILING REPS CRUD (owner-tier) =================
+# Owner-tier endpoints for managing the filing_reps roster on a
+# company. See FilingRep / FilingRepCreate / FilingRepUpdate Pydantic
+# models near line ~400. is_primary uniqueness is enforced atomically:
+# whenever a rep is added or updated with is_primary=True, every other
+# rep on the same company is demoted to is_primary=False in the same
+# Mongo update. No two reps on a company can be is_primary=True
+# simultaneously.
+
+async def _demote_other_primaries(company_id: str, except_rep_id: str):
+    """Demote every is_primary=True filing_rep on this company OTHER
+    than the given rep_id to is_primary=False. Atomic. Used by both
+    the create and update endpoints when the incoming/edited rep
+    carries is_primary=True."""
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {
+            "filing_reps.$[other].is_primary": False,
+            "filing_reps.$[other].updated_at": datetime.now(timezone.utc),
+        }},
+        array_filters=[{"other.id": {"$ne": except_rep_id}, "other.is_primary": True}],
+    )
+
+
+@api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"])
+async def list_filing_reps(company_id: str, current_user=Depends(get_current_user)):
+    """List filing_reps for a company (owner only)."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    return company.get("filing_reps") or []
+
+
+@api_router.post("/owner/companies/{company_id}/filing-reps", tags=["Owner"])
+async def add_filing_rep(
+    company_id: str,
+    body: FilingRepCreate,
+    current_user=Depends(get_current_user),
+):
+    """Add a new filing_rep to a company. Generates a stable rep_id
+    (uuid4 hex). If is_primary=True is sent, any other primary on
+    this company is demoted in the same transaction so exactly one
+    primary holds across the array."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    if body.license_class not in FILING_REP_LICENSE_CLASSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"license_class must be one of {sorted(FILING_REP_LICENSE_CLASSES)}",
+        )
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    now = datetime.now(timezone.utc)
+    rep_id = uuid.uuid4().hex
+    rep_doc = {
+        "id": rep_id,
+        "name": body.name,
+        "license_class": body.license_class,
+        "license_number": body.license_number,
+        "license_type": body.license_type,
+        "email": body.email,
+        "is_primary": bool(body.is_primary),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    # Push the new rep onto the array.
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$push": {"filing_reps": rep_doc}},
+    )
+
+    # If the new rep is primary, demote any prior primaries.
+    if rep_doc["is_primary"]:
+        await _demote_other_primaries(company_id, rep_id)
+
+    return rep_doc
+
+
+@api_router.patch("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"])
+async def update_filing_rep(
+    company_id: str,
+    rep_id: str,
+    body: FilingRepUpdate,
+    current_user=Depends(get_current_user),
+):
+    """Patch fields on an existing filing_rep. Same is_primary
+    uniqueness rule as the create endpoint — flipping a rep TO
+    primary demotes any other primary on the same company."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    if body.license_class is not None and body.license_class not in FILING_REP_LICENSE_CLASSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"license_class must be one of {sorted(FILING_REP_LICENSE_CLASSES)}",
+        )
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    existing_rep = next(
+        (r for r in (company.get("filing_reps") or []) if r.get("id") == rep_id),
+        None,
+    )
+    if not existing_rep:
+        raise HTTPException(status_code=404, detail="Filing representative not found")
+
+    now = datetime.now(timezone.utc)
+    set_fields = {"filing_reps.$[rep].updated_at": now}
+    for field in ("name", "license_class", "license_number", "license_type", "email"):
+        value = getattr(body, field, None)
+        if value is not None:
+            set_fields[f"filing_reps.$[rep].{field}"] = value
+    if body.is_primary is not None:
+        set_fields["filing_reps.$[rep].is_primary"] = bool(body.is_primary)
+
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": set_fields},
+        array_filters=[{"rep.id": rep_id}],
+    )
+
+    # Promotion path — demote any other primary if this rep just
+    # flipped to primary.
+    if body.is_primary is True:
+        await _demote_other_primaries(company_id, rep_id)
+
+    # Return the updated rep.
+    refreshed = await db.companies.find_one(
+        {"_id": to_query_id(company_id)},
+        {"filing_reps": 1},
+    )
+    updated_rep = next(
+        (r for r in (refreshed.get("filing_reps") or []) if r.get("id") == rep_id),
+        None,
+    )
+    return updated_rep or {}
+
+
+@api_router.delete("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"])
+async def delete_filing_rep(
+    company_id: str,
+    rep_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Remove a filing_rep from a company by rep_id."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    result = await db.companies.update_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}},
+        {"$pull": {"filing_reps": {"id": rep_id}}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Filing representative not found")
+
+    return {"message": "Filing representative removed", "id": rep_id}
 
 
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================

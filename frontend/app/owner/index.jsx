@@ -24,6 +24,10 @@ import {
   Eye,
   ShieldAlert,
   CheckCircle,
+  Star,
+  ChevronDown,
+  ChevronUp,
+  UserCheck,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -68,7 +72,38 @@ const ownerAPI = {
     });
     return response.data;
   },
+
+  // MR.2 — filing_reps CRUD on a company.
+  listFilingReps: async (companyId) => {
+    const r = await apiClient.get(`/api/owner/companies/${companyId}/filing-reps`);
+    return r.data;
+  },
+  addFilingRep: async (companyId, payload) => {
+    const r = await apiClient.post(`/api/owner/companies/${companyId}/filing-reps`, payload);
+    return r.data;
+  },
+  updateFilingRep: async (companyId, repId, payload) => {
+    const r = await apiClient.patch(`/api/owner/companies/${companyId}/filing-reps/${repId}`, payload);
+    return r.data;
+  },
+  deleteFilingRep: async (companyId, repId) => {
+    const r = await apiClient.delete(`/api/owner/companies/${companyId}/filing-reps/${repId}`);
+    return r.data;
+  },
 };
+
+// MR.2 — license class enum, mirrors backend FILING_REP_LICENSE_CLASSES.
+// Order chosen for the picker: GC and the two Filing Rep classes first
+// (most common), trades next, "Other" last.
+const FILING_REP_LICENSE_CLASSES = [
+  'GC',
+  'Class 1 Filing Rep',
+  'Class 2 Filing Rep',
+  'Plumber',
+  'Electrician',
+  'Master Fire Suppression Contractor',
+  'Other Licensed Trade',
+];
 
 export default function OwnerPortalScreen() {
   const router = useRouter();
@@ -92,6 +127,19 @@ export default function OwnerPortalScreen() {
   const [showMigrationModal, setShowMigrationModal] = useState(false);
   const [showDeleteCompanyModal, setShowDeleteCompanyModal] = useState(false);
   const [showDeleteAdminModal, setShowDeleteAdminModal] = useState(false);
+
+  // MR.2 — filing_reps state.
+  const [expandedFilingRepsCompanyId, setExpandedFilingRepsCompanyId] = useState(null);
+  const [filingRepsByCompany, setFilingRepsByCompany] = useState({});
+  const [filingRepsLoadingId, setFilingRepsLoadingId] = useState(null);
+  const [showFilingRepModal, setShowFilingRepModal] = useState(false);
+  const [filingRepModalCompanyId, setFilingRepModalCompanyId] = useState(null);
+  const [editingFilingRep, setEditingFilingRep] = useState(null); // null = add, object = edit
+  const [filingRepForm, setFilingRepForm] = useState({
+    name: '', license_class: 'GC', license_number: '',
+    license_type: '', email: '', is_primary: false,
+  });
+  const [savingFilingRep, setSavingFilingRep] = useState(false);
 
   // Selected data
   const [selectedCompany, setSelectedCompany] = useState(null);
@@ -217,6 +265,124 @@ export default function OwnerPortalScreen() {
     setSelectedCompany(company);
     setCompanyAdmins(companyAdminsList);
     setShowCompanyAdminsModal(true);
+  };
+
+  // ── MR.2: filing_reps handlers ────────────────────────────────
+  const toggleFilingReps = async (company) => {
+    if (expandedFilingRepsCompanyId === company.id) {
+      setExpandedFilingRepsCompanyId(null);
+      return;
+    }
+    setExpandedFilingRepsCompanyId(company.id);
+    if (filingRepsByCompany[company.id] === undefined) {
+      setFilingRepsLoadingId(company.id);
+      try {
+        const reps = await ownerAPI.listFilingReps(company.id);
+        setFilingRepsByCompany((prev) => ({ ...prev, [company.id]: reps || [] }));
+      } catch (e) {
+        console.error('Failed to load filing reps:', e);
+        toast.error('Error', 'Could not load filing representatives');
+        setFilingRepsByCompany((prev) => ({ ...prev, [company.id]: [] }));
+      } finally {
+        setFilingRepsLoadingId(null);
+      }
+    }
+  };
+
+  const openAddFilingRepModal = (companyId) => {
+    setFilingRepModalCompanyId(companyId);
+    setEditingFilingRep(null);
+    setFilingRepForm({
+      name: '', license_class: 'GC', license_number: '',
+      license_type: '', email: '', is_primary: false,
+    });
+    setShowFilingRepModal(true);
+  };
+
+  const openEditFilingRepModal = (companyId, rep) => {
+    setFilingRepModalCompanyId(companyId);
+    setEditingFilingRep(rep);
+    setFilingRepForm({
+      name: rep.name || '',
+      license_class: rep.license_class || 'GC',
+      license_number: rep.license_number || '',
+      license_type: rep.license_type || '',
+      email: rep.email || '',
+      is_primary: !!rep.is_primary,
+    });
+    setShowFilingRepModal(true);
+  };
+
+  const saveFilingRep = async () => {
+    if (!filingRepModalCompanyId) return;
+    if (!filingRepForm.name.trim() || !filingRepForm.license_number.trim()
+        || !filingRepForm.email.trim()) {
+      toast.error('Missing Fields', 'Name, license number, and email are required.');
+      return;
+    }
+    setSavingFilingRep(true);
+    try {
+      const payload = {
+        name: filingRepForm.name.trim(),
+        license_class: filingRepForm.license_class,
+        license_number: filingRepForm.license_number.trim(),
+        license_type: filingRepForm.license_type.trim() || null,
+        email: filingRepForm.email.trim(),
+        is_primary: !!filingRepForm.is_primary,
+      };
+      if (editingFilingRep) {
+        await ownerAPI.updateFilingRep(filingRepModalCompanyId, editingFilingRep.id, payload);
+      } else {
+        await ownerAPI.addFilingRep(filingRepModalCompanyId, payload);
+      }
+      // Refresh the company's filing_reps list to pick up
+      // is_primary demotion side effects on other reps.
+      const refreshed = await ownerAPI.listFilingReps(filingRepModalCompanyId);
+      setFilingRepsByCompany((prev) => ({ ...prev, [filingRepModalCompanyId]: refreshed || [] }));
+      toast.success(editingFilingRep ? 'Updated' : 'Added', 'Filing representative saved.');
+      setShowFilingRepModal(false);
+    } catch (e) {
+      console.error('Failed to save filing rep:', e);
+      const detail = e.response?.data?.detail;
+      toast.error('Error', typeof detail === 'string' ? detail : 'Could not save filing representative.');
+    } finally {
+      setSavingFilingRep(false);
+    }
+  };
+
+  const removeFilingRep = async (companyId, rep) => {
+    Alert.alert(
+      'Remove Filing Representative',
+      `Remove ${rep.name} from this company's filing representatives?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: async () => {
+          try {
+            await ownerAPI.deleteFilingRep(companyId, rep.id);
+            setFilingRepsByCompany((prev) => ({
+              ...prev,
+              [companyId]: (prev[companyId] || []).filter(r => r.id !== rep.id),
+            }));
+            toast.success('Removed', `${rep.name} removed from filing representatives.`);
+          } catch (e) {
+            console.error('Failed to remove filing rep:', e);
+            toast.error('Error', 'Could not remove filing representative.');
+          }
+        }},
+      ],
+    );
+  };
+
+  const setPrimaryFilingRep = async (companyId, rep) => {
+    try {
+      await ownerAPI.updateFilingRep(companyId, rep.id, { is_primary: true });
+      const refreshed = await ownerAPI.listFilingReps(companyId);
+      setFilingRepsByCompany((prev) => ({ ...prev, [companyId]: refreshed || [] }));
+      toast.success('Primary Set', `${rep.name} is now the primary filing representative.`);
+    } catch (e) {
+      console.error('Failed to set primary:', e);
+      toast.error('Error', 'Could not set primary filing representative.');
+    }
   };
 
   const handleDeleteCompany = (company) => {
@@ -495,6 +661,83 @@ export default function OwnerPortalScreen() {
                           <Text style={styles.gcUnverifiedText}>Unverified — not matched to DOB</Text>
                         </View>
                       ) : null}
+
+                      {/* MR.2 — Filing Representatives section.
+                          Expandable per-company. Loads lazily on first
+                          expansion, caches per company id. Add/edit
+                          modal at the page level (single shared modal,
+                          state-keyed by filingRepModalCompanyId). */}
+                      <Pressable
+                        onPress={() => toggleFilingReps(company)}
+                        style={styles.filingRepsToggle}
+                      >
+                        <UserCheck size={14} color={colors.text.muted} strokeWidth={1.5} />
+                        <Text style={styles.filingRepsToggleText}>
+                          Filing Representatives
+                          {filingRepsByCompany[company.id]
+                            ? ` (${filingRepsByCompany[company.id].length})`
+                            : ''}
+                        </Text>
+                        {expandedFilingRepsCompanyId === company.id
+                          ? <ChevronUp size={14} color={colors.text.muted} />
+                          : <ChevronDown size={14} color={colors.text.muted} />}
+                      </Pressable>
+
+                      {expandedFilingRepsCompanyId === company.id && (
+                        <View style={styles.filingRepsBlock}>
+                          {filingRepsLoadingId === company.id ? (
+                            <Text style={styles.filingRepsLoading}>Loading…</Text>
+                          ) : (filingRepsByCompany[company.id] || []).length === 0 ? (
+                            <Text style={styles.filingRepsEmpty}>
+                              No filing representatives configured. Add one to enable manual renewal filings.
+                            </Text>
+                          ) : (
+                            (filingRepsByCompany[company.id] || []).map((rep) => (
+                              <View key={rep.id} style={styles.filingRepRow}>
+                                <View style={styles.filingRepRowHeader}>
+                                  {rep.is_primary ? (
+                                    <Star size={12} color="#f59e0b" fill="#f59e0b" strokeWidth={1.5} />
+                                  ) : (
+                                    <Pressable onPress={() => setPrimaryFilingRep(company.id, rep)}>
+                                      <Star size={12} color={colors.text.muted} strokeWidth={1.5} />
+                                    </Pressable>
+                                  )}
+                                  <Text style={styles.filingRepName} numberOfLines={1}>{rep.name}</Text>
+                                  <View style={styles.filingRepActions}>
+                                    <Pressable
+                                      onPress={() => openEditFilingRepModal(company.id, rep)}
+                                      style={styles.filingRepActionBtn}
+                                    >
+                                      <Edit3 size={14} color={colors.text.muted} strokeWidth={1.5} />
+                                    </Pressable>
+                                    <Pressable
+                                      onPress={() => removeFilingRep(company.id, rep)}
+                                      style={styles.filingRepActionBtn}
+                                    >
+                                      <Trash2 size={14} color="#ef4444" strokeWidth={1.5} />
+                                    </Pressable>
+                                  </View>
+                                </View>
+                                <Text style={styles.filingRepMeta} numberOfLines={1}>
+                                  {rep.license_class}
+                                  {rep.license_class === 'Other Licensed Trade' && rep.license_type
+                                    ? ` (${rep.license_type})`
+                                    : ''}
+                                  {' · '}#{rep.license_number}
+                                </Text>
+                                <Text style={styles.filingRepMeta} numberOfLines={1}>{rep.email}</Text>
+                              </View>
+                            ))
+                          )}
+                          <Pressable
+                            onPress={() => openAddFilingRepModal(company.id)}
+                            style={styles.filingRepsAddBtn}
+                          >
+                            <Plus size={14} color={colors.text.primary} strokeWidth={1.5} />
+                            <Text style={styles.filingRepsAddBtnText}>Add filing representative</Text>
+                          </Pressable>
+                        </View>
+                      )}
                     </GlassCard>
                   );
                 })}
@@ -909,6 +1152,116 @@ export default function OwnerPortalScreen() {
             </View>
           </View>
         </Modal>
+
+        {/* MR.2 — Filing Representative add/edit modal. Single shared
+            modal for both add and edit; editingFilingRep === null means
+            add. filingRepModalCompanyId scopes the operation. */}
+        <Modal
+          visible={showFilingRepModal}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setShowFilingRepModal(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={styles.modalOverlay}
+          >
+            <Pressable style={styles.modalBackdrop} onPress={() => setShowFilingRepModal(false)} />
+            <View style={styles.modalContent}>
+              <GlassCard variant="modal" style={styles.modalCard}>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>
+                    {editingFilingRep ? 'Edit Filing Representative' : 'Add Filing Representative'}
+                  </Text>
+                  <Pressable onPress={() => setShowFilingRepModal(false)}>
+                    <X size={20} strokeWidth={1.5} color={colors.text.primary} />
+                  </Pressable>
+                </View>
+
+                <ScrollView style={{ maxHeight: 480 }} keyboardShouldPersistTaps="handled">
+                  <Text style={styles.inputLabel}>License Class</Text>
+                  <View style={styles.filingRepClassPicker}>
+                    {FILING_REP_LICENSE_CLASSES.map((cls) => (
+                      <Pressable
+                        key={cls}
+                        onPress={() => setFilingRepForm((f) => ({ ...f, license_class: cls }))}
+                        style={[
+                          styles.filingRepClassChip,
+                          filingRepForm.license_class === cls && styles.filingRepClassChipActive,
+                        ]}
+                      >
+                        <Text style={[
+                          styles.filingRepClassChipText,
+                          filingRepForm.license_class === cls && styles.filingRepClassChipTextActive,
+                        ]}>
+                          {cls}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+
+                  <GlassInput
+                    label="Name"
+                    placeholder="Full legal name"
+                    value={filingRepForm.name}
+                    onChangeText={(v) => setFilingRepForm((f) => ({ ...f, name: v }))}
+                  />
+                  <GlassInput
+                    label="License Number"
+                    placeholder="DOB-issued license number"
+                    value={filingRepForm.license_number}
+                    onChangeText={(v) => setFilingRepForm((f) => ({ ...f, license_number: v }))}
+                  />
+                  {filingRepForm.license_class === 'Other Licensed Trade' && (
+                    <GlassInput
+                      label="License Type"
+                      placeholder="Trade or license description"
+                      value={filingRepForm.license_type}
+                      onChangeText={(v) => setFilingRepForm((f) => ({ ...f, license_type: v }))}
+                    />
+                  )}
+                  <GlassInput
+                    label="Email"
+                    placeholder="filer@example.com"
+                    value={filingRepForm.email}
+                    onChangeText={(v) => setFilingRepForm((f) => ({ ...f, email: v }))}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                  />
+
+                  <Pressable
+                    onPress={() => setFilingRepForm((f) => ({ ...f, is_primary: !f.is_primary }))}
+                    style={styles.filingRepPrimaryToggle}
+                  >
+                    {filingRepForm.is_primary ? (
+                      <Star size={16} color="#f59e0b" fill="#f59e0b" strokeWidth={1.5} />
+                    ) : (
+                      <Star size={16} color={colors.text.muted} strokeWidth={1.5} />
+                    )}
+                    <Text style={styles.filingRepPrimaryToggleText}>
+                      {filingRepForm.is_primary
+                        ? 'Primary filing representative (default routing)'
+                        : 'Set as primary filing representative'}
+                    </Text>
+                  </Pressable>
+                </ScrollView>
+
+                <View style={[styles.confirmActions, { marginTop: spacing.md }]}>
+                  <GlassButton
+                    title="Cancel"
+                    onPress={() => setShowFilingRepModal(false)}
+                    variant="secondary"
+                  />
+                  <GlassButton
+                    title={savingFilingRep ? 'Saving…' : (editingFilingRep ? 'Save' : 'Add')}
+                    onPress={saveFilingRep}
+                    disabled={savingFilingRep}
+                  />
+                </View>
+              </GlassCard>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -1094,6 +1447,122 @@ const styles = StyleSheet.create({
   gcUnverifiedText: {
     fontSize: 11,
     color: '#f59e0b',
+  },
+  // ── MR.2: filing_reps section ────────────────────────────────
+  filingRepsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  filingRepsToggleText: {
+    flex: 1,
+    fontSize: 12,
+    color: colors.text.muted,
+    fontFamily: typography.medium,
+  },
+  filingRepsBlock: {
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  filingRepsLoading: {
+    fontSize: 12,
+    color: colors.text.muted,
+    fontStyle: 'italic',
+  },
+  filingRepsEmpty: {
+    fontSize: 12,
+    color: colors.text.muted,
+    lineHeight: 16,
+    fontStyle: 'italic',
+  },
+  filingRepRow: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: borderRadius.md,
+    padding: spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    gap: 4,
+  },
+  filingRepRowHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  filingRepName: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.text.primary,
+    fontFamily: typography.medium,
+  },
+  filingRepActions: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  filingRepActionBtn: {
+    padding: 4,
+  },
+  filingRepMeta: {
+    fontSize: 11,
+    color: colors.text.muted,
+    paddingLeft: 20,  // align under filingRepName, past the star icon
+  },
+  filingRepsAddBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: borderRadius.sm,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  filingRepsAddBtnText: {
+    fontSize: 12,
+    color: colors.text.primary,
+    fontFamily: typography.medium,
+  },
+  filingRepClassPicker: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: spacing.sm,
+  },
+  filingRepClassChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: borderRadius.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.10)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  filingRepClassChipActive: {
+    borderColor: '#3b82f680',
+    backgroundColor: '#3b82f615',
+  },
+  filingRepClassChipText: {
+    fontSize: 11,
+    color: colors.text.muted,
+  },
+  filingRepClassChipTextActive: {
+    color: '#3b82f6',
+    fontFamily: typography.medium,
+  },
+  filingRepPrimaryToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: spacing.sm,
+    paddingVertical: 8,
+  },
+  filingRepPrimaryToggleText: {
+    fontSize: 13,
+    color: colors.text.primary,
   },
   // GC in create company modal
   gcLinkedBadge: {
