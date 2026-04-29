@@ -381,7 +381,27 @@ async def _build_action(
     insurance_not_entered: bool,
 ) -> Dict[str, Any]:
     """Action payload for the UI. Strategy drives the kind; fee table
-    drives the dollar amounts."""
+    drives the dollar amounts.
+
+    Conditional order is significant: insurance-independent strategies
+    (AWAITING_EXTENSION + the three MANUAL_* tracks) MUST dispatch
+    before the `insurance_not_entered` gate, otherwise a permit hitting
+    the 1-year ceiling (or sidewalk-shed 90-day cap, or lapsed track)
+    incorrectly emits `kind="enter_insurance"` instead of its real
+    next-step. Bug case observed in prod 2026-04-29 on permit
+    B00736930-S1 (MANUAL_1YR_CEILING + insurance_not_entered=true)
+    where the ceiling case is regulatory ("manual renewal required
+    regardless of insurance state" per blocking_reasons text), and
+    the dispatcher misrouted to the insurance CTA.
+
+    Insurance state is only the gating signal for AUTO_EXTEND_* —
+    those tracks rely on a GC having submitted an updated COI/license
+    to DOB Licensing, which we can't verify without insurance dates
+    on file. The MANUAL_* tracks were resolved upstream by
+    `resolve_renewal_strategy` already factoring insurance, so by
+    the time we get here the strategy is authoritative.
+    """
+    # 1. AWAITING_EXTENSION — insurance-independent, no fee, no days.
     if strategy == "AWAITING_EXTENSION":
         return {
             "kind": "awaiting_extension",
@@ -397,6 +417,77 @@ async def _build_action(
             "fee_split": None,
         }
 
+    days_until = (effective_expiry - today).days if effective_expiry else None
+
+    # 2. Manual tracks — insurance-independent. Strategy is authoritative;
+    #    if upstream resolved a manual track, we honor it even when
+    #    insurance dates haven't been entered in LeveLog. Fee lookup
+    #    happens once, shared across all three branches.
+    if strategy in ("MANUAL_90D_SHED", "MANUAL_1YR_CEILING", "MANUAL_LAPSED"):
+        fee_cents = None
+        fee_split = None
+        try:
+            fee_info = await get_fee(
+                db,
+                work_type=(permit.get("work_type") or ""),
+                today=today,
+            )
+            fee_cents = fee_info.get("fee_cents")
+            fee_split = fee_info.get("split")
+        except Exception:
+            # Fee lookup failures shouldn't kill eligibility — they just
+            # mean the UI shows "fee TBD" and the user falls back to
+            # checking DOB NOW directly. Logged at the dispatcher
+            # boundary.
+            pass
+
+        if strategy == "MANUAL_90D_SHED":
+            return {
+                "kind": "shed_renewal",
+                "deadline_days": days_until,
+                "instructions": [
+                    "Generate PE/RA progress report.",
+                    "Upload progress report PDF.",
+                    "Submit PW2 (or DOB NOW equivalent) with renewed dates.",
+                    f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
+                    "Verify PW2 Stakeholder responses are present.",
+                ],
+                "fee_cents": fee_cents,
+                "fee_split": fee_split,
+            }
+
+        if strategy == "MANUAL_1YR_CEILING":
+            return {
+                "kind": "manual_renewal_dob_now",
+                "deadline_days": days_until,
+                "instructions": [
+                    "Permit hits 1-year ceiling — manual renewal required.",
+                    "Log into DOB NOW with the licensee's NYC.ID.",
+                    "Locate the permit and select 'Renew Work Permit'.",
+                    f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
+                ],
+                "fee_cents": fee_cents,
+                "fee_split": fee_split,
+            }
+
+        if strategy == "MANUAL_LAPSED":
+            return {
+                "kind": "manual_renewal_lapsed",
+                "deadline_days": days_until,
+                "instructions": [
+                    "Insurance/license lapsed. Update with carrier first.",
+                    "Once updated at DOB Licensing Unit, file manual renewal at DOB NOW.",
+                    f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
+                ],
+                "fee_cents": fee_cents,
+                "fee_split": fee_split,
+            }
+
+    # 3. Insurance gate — catches AUTO_EXTEND_* (and any unknown
+    #    strategy that reaches this point) when LeveLog has no
+    #    insurance dates on file. Without those dates we can't verify
+    #    whether the GC submitted an updated COI to DOB Licensing,
+    #    which is the trigger for the auto-extend tracks.
     if insurance_not_entered:
         return {
             "kind": "enter_insurance",
@@ -410,8 +501,7 @@ async def _build_action(
             "fee_split": None,
         }
 
-    days_until = (effective_expiry - today).days if effective_expiry else None
-
+    # 4. AUTO_EXTEND_* — insurance-dependent (gated above).
     if strategy in ("AUTO_EXTEND_DOB_NOW", "AUTO_EXTEND_BIS_31D"):
         return {
             "kind": "submit_coi_update" if days_until is not None and days_until <= 30 else "monitor",
@@ -425,65 +515,6 @@ async def _build_action(
             ],
             "fee_cents": 0,
             "fee_split": None,
-        }
-
-    # Manual tracks: fetch fee from the fee table
-    fee_cents = None
-    fee_split = None
-    try:
-        fee_info = await get_fee(
-            db,
-            work_type=(permit.get("work_type") or ""),
-            today=today,
-        )
-        fee_cents = fee_info.get("fee_cents")
-        fee_split = fee_info.get("split")
-    except Exception:
-        # Fee lookup failures shouldn't kill eligibility — they just mean
-        # the UI shows "fee TBD" and the user falls back to checking DOB
-        # NOW directly. Logged at the dispatcher boundary.
-        pass
-
-    if strategy == "MANUAL_90D_SHED":
-        return {
-            "kind": "shed_renewal",
-            "deadline_days": days_until,
-            "instructions": [
-                "Generate PE/RA progress report.",
-                "Upload progress report PDF.",
-                "Submit PW2 (or DOB NOW equivalent) with renewed dates.",
-                f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
-                "Verify PW2 Stakeholder responses are present.",
-            ],
-            "fee_cents": fee_cents,
-            "fee_split": fee_split,
-        }
-
-    if strategy == "MANUAL_1YR_CEILING":
-        return {
-            "kind": "manual_renewal_dob_now",
-            "deadline_days": days_until,
-            "instructions": [
-                "Permit hits 1-year ceiling — manual renewal required.",
-                "Log into DOB NOW with the licensee's NYC.ID.",
-                "Locate the permit and select 'Renew Work Permit'.",
-                f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
-            ],
-            "fee_cents": fee_cents,
-            "fee_split": fee_split,
-        }
-
-    if strategy == "MANUAL_LAPSED":
-        return {
-            "kind": "manual_renewal_lapsed",
-            "deadline_days": days_until,
-            "instructions": [
-                "Insurance/license lapsed. Update with carrier first.",
-                "Once updated at DOB Licensing Unit, file manual renewal at DOB NOW.",
-                f"Pay ${(fee_cents or 0) / 100:.0f} fee.",
-            ],
-            "fee_cents": fee_cents,
-            "fee_split": fee_split,
         }
 
     return {"kind": "unknown", "fee_cents": None, "fee_split": None}
