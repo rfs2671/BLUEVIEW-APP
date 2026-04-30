@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -1662,6 +1663,30 @@ const styles = StyleSheet.create({
   modalScroll: {
     flexGrow: 0,
     flexShrink: 1,
+    // ── Web scroll-capture fix (MR.2 verification, 2026-04-29) ──
+    // RN-Web ScrollView relies on its rendered div having a CSS
+    // max-height for `overflow-y: auto` to engage and capture wheel
+    // events. The chain above is GlassCard.cardContainer
+    // (maxHeight:'90%' + overflow:'hidden') → GlassCard.cardContent
+    // (just padding, no flex:1) → ScrollView (flexGrow:0,
+    // flexShrink:1). cardContent doesn't propagate the parent's
+    // bounded height to the ScrollView via flex, so on web the
+    // ScrollView ends up with no max-height — wheel events fall
+    // through to the page underneath instead of scrolling the
+    // modal content.
+    //
+    // Fix: explicit max-height on web only, computed from the
+    // window height. Cap at 640px so we don't get an absurdly tall
+    // scroll region on huge desktop monitors. Native (iOS/Android)
+    // is unaffected — RN's ScrollView already scrolls correctly
+    // within its parent's bounded region.
+    //
+    // Applied to the shared style so every modal using
+    // modalScroll/modalFormScroll (Create Company, Create Admin,
+    // Filing Rep) inherits the fix.
+    ...(Platform.OS === 'web' && {
+      maxHeight: Math.min(640, Dimensions.get('window').height * 0.7),
+    }),
   },
   modalFormScroll: {
     gap: spacing.md,
