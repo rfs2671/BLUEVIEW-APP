@@ -1318,6 +1318,44 @@ def create_permit_renewal_routes(
             )
         return serialize_id(renewal)
 
+    # MR.3: GET /api/permit-renewals/{renewal_id}/filing-readiness
+    @api_router.get("/permit-renewals/{renewal_id}/filing-readiness")
+    async def get_filing_readiness(
+        renewal_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Pre-flight readiness check for a permit renewal. Returns a
+        structured FilingReadinessReport with per-check pass/fail/warn
+        outcomes and aggregated blockers/warnings. MR.3 — pure
+        deterministic service; MR.6 will use this to gate
+        enqueue-filing requests so the local Docker worker isn't
+        dispatched on guaranteed-failure jobs.
+
+        Same tenant guard as GET /{renewal_id}: a non-owner caller
+        with a company_id can only read renewals on their own company.
+        """
+        from lib.filing_readiness import check_filing_readiness
+
+        # Tenant guard: load the renewal up-front to check
+        # company_id ownership. The readiness service itself doesn't
+        # enforce auth — it's a pure function — so we gate at the
+        # endpoint layer.
+        renewal = await db.permit_renewals.find_one(
+            {"_id": to_query_id(renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(
+                status_code=404, detail="Renewal not found"
+            )
+        company_id = get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(
+                status_code=403, detail="Access denied"
+            )
+
+        report = await check_filing_readiness(db, renewal_id)
+        return report.model_dump()
+
     # POST /api/permit-renewals/check-eligibility
     @api_router.post("/permit-renewals/check-eligibility")
     async def api_check_eligibility(
