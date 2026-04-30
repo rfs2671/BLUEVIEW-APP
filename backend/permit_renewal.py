@@ -1653,6 +1653,30 @@ def create_permit_renewal_routes(
                 },
             )
 
+        # MR.10 — authorization gate. The company must have accepted
+        # the current authorization text before any filing job can be
+        # enqueued. We check version match (not just presence) so a
+        # future text version bump invalidates stale acceptances and
+        # forces re-confirmation.
+        auth = company.get("authorization") or None
+        if (
+            auth is None
+            or auth.get("version") != _server.AUTHORIZATION_TEXT_VERSION
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": (
+                        "Company has not accepted the current filing "
+                        "authorization. Operator must accept in "
+                        "Settings → Filing Reps before filing."
+                    ),
+                    "code": "authorization_required",
+                    "current_version": _server.AUTHORIZATION_TEXT_VERSION,
+                    "stored_version": (auth or {}).get("version"),
+                },
+            )
+
         # 6. Dedup gate — refuse if a non-terminal FilingJob already
         #    exists for this renewal.
         existing_inflight = await _server.db.filing_jobs.find_one({

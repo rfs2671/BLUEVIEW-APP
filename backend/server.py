@@ -3695,6 +3695,308 @@ async def admin_resend_notification(
     return serialize_id(dict(new_log))
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MR.10 — Agent public-key registry + authorization document.
+# ──────────────────────────────────────────────────────────────────────
+#
+# The local Docker agent generates an RSA-4096 keypair on first run
+# (dob_worker/scripts/generate_keypair.py, MR.5). The operator pastes
+# the public key into the Owner Portal; this server stores it in
+# `agent_public_keys`. The frontend's credential-entry form fetches
+# the active key (GET /agent-public-key, no auth — public keys are
+# public by definition), encrypts the operator-typed credentials in
+# the browser using the SubtleCrypto Web Crypto API, and POSTs the
+# resulting ciphertext to the existing MR.6 /credentials endpoint.
+#
+# Byte format MUST match dob_worker/lib/crypto.py:
+#   [4-byte big-endian RSA-wrapped-key length]
+#   [RSA-OAEP-SHA256-wrapped 32-byte AES key]
+#   [12-byte AES-GCM nonce]
+#   [AES-GCM ciphertext + 16-byte tag concatenated]
+# Final blob is base64-encoded for JSON transport.
+#
+# Authorization document: one-time-per-company gate. Operator must
+# accept text + type the licensee name before any credentials can
+# be added. MR.6's enqueue endpoint refuses jobs for companies
+# without a non-null `authorization` field.
+
+def _compute_public_key_fingerprint(pem: str) -> str:
+    """SHA-256 hex digest of the DER-encoded SubjectPublicKeyInfo.
+
+    Matches the fingerprint convention the frontend SubtleCrypto path
+    can reproduce: hash the DER bytes (i.e. the binary content between
+    the PEM markers), output as lowercase hex. Frontend can verify
+    by re-deriving from the same PEM."""
+    from cryptography.hazmat.primitives import serialization
+    import hashlib
+    pub = serialization.load_pem_public_key(pem.encode("utf-8"))
+    der = pub.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(der).hexdigest()
+
+
+class AgentPublicKeyCreate(BaseModel):
+    """POST body for /api/admin/agent-keys."""
+    worker_id: str
+    public_key_pem: str
+
+
+@api_router.post("/admin/agent-keys", tags=["Admin"])
+async def admin_register_agent_key(
+    body: AgentPublicKeyCreate,
+    current_user=Depends(get_current_user),
+):
+    """Register an agent's public key. Owner-tier. The operator runs
+    `docker compose run --rm dob_worker python scripts/generate_keypair.py`
+    on the local agent (per MR.5's operator pre-deploy checklist),
+    copies the printed public-key PEM, and pastes it here."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    pem = (body.public_key_pem or "").strip()
+    if not pem.startswith("-----BEGIN PUBLIC KEY-----") or "-----END PUBLIC KEY-----" not in pem:
+        raise HTTPException(
+            status_code=400,
+            detail="public_key_pem must be a valid SubjectPublicKeyInfo PEM",
+        )
+
+    try:
+        fingerprint = _compute_public_key_fingerprint(pem)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not parse public key: {e}",
+        )
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "worker_id": body.worker_id,
+        "public_key_pem": pem,
+        "fingerprint_sha256": fingerprint,
+        "created_at": now,
+        "revoked_at": None,
+    }
+    result = await db.agent_public_keys.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return serialize_id(dict(doc))
+
+
+@api_router.get("/admin/agent-keys", tags=["Admin"])
+async def admin_list_agent_keys(
+    current_user=Depends(get_current_user),
+):
+    """List all registered agent public keys (active + revoked).
+    Used by the operator portal to audit which keypairs are
+    authorized to decrypt credentials."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    cursor = db.agent_public_keys.find({}).sort("created_at", -1)
+    keys: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        keys.append(serialize_id(dict(doc)))
+    return {"keys": keys, "total": len(keys)}
+
+
+@api_router.delete("/admin/agent-keys/{key_id}", tags=["Admin"])
+async def admin_revoke_agent_key(
+    key_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Mark an agent key revoked. Subsequent credential encryptions
+    must use a non-revoked active key. Existing credentials encrypted
+    against a now-revoked key remain valid until the agent stops
+    decrypting them — revocation is forward-only."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    now = datetime.now(timezone.utc)
+    result = await db.agent_public_keys.update_one(
+        {"_id": to_query_id(key_id)},
+        {"$set": {"revoked_at": now}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Agent key not found")
+    return {"revoked": True, "key_id": key_id, "revoked_at": now}
+
+
+@api_router.get("/agent-public-key")
+async def public_get_active_agent_key():
+    """No-auth read of the active agent public key. Public keys are
+    public by definition; the frontend uses this to encrypt operator-
+    typed credentials before POST /credentials.
+
+    Returns the most recently created key with revoked_at=null. 503
+    when no active key exists — operator must register one via
+    POST /api/admin/agent-keys before credentials can be added."""
+    active = await db.agent_public_keys.find_one(
+        {"revoked_at": None},
+        sort=[("created_at", -1)],
+    )
+    if not active:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No active agent key registered. Run "
+                "scripts/generate_keypair.py on the local agent and "
+                "POST the public key to /api/admin/agent-keys."
+            ),
+        )
+    # Return only the public-facing fields. We never expose the
+    # full Mongo doc (created_at and worker_id are fine to expose
+    # but stripping them keeps the API surface minimal — frontend
+    # only needs the PEM + fingerprint to encrypt).
+    return {
+        "public_key_pem": active.get("public_key_pem"),
+        "fingerprint_sha256": active.get("fingerprint_sha256"),
+        "worker_id": active.get("worker_id"),
+    }
+
+
+# ── Authorization document ─────────────────────────────────────────
+# One-time-per-company gate. Operator accepts the text + types the
+# licensee name to confirm. Credentials cannot be added (frontend
+# blocks the modal) and renewals cannot be filed (MR.6 gate refuses
+# enqueue) until authorization is on file.
+
+class AuthorizationAccept(BaseModel):
+    """POST body for /api/owner/companies/{id}/authorization."""
+    licensee_name_typed: str
+
+# Bumping AUTHORIZATION_TEXT_VERSION re-arms the gate: companies whose
+# stored authorization.version does not match the current version are
+# treated as un-authorized. This is the documented mechanism for
+# requiring re-acceptance after material changes to the auth text.
+# Keep in sync with the Version: line in backend/templates/authorization_text.md.
+AUTHORIZATION_TEXT_VERSION = "1.0"
+
+
+def _load_authorization_text() -> str:
+    """Read the canonical authorization text from the bundled
+    template file. Cached at module import time would be marginally
+    faster but file reads on a cold cache are still microsecond-scale
+    and this endpoint is operator-rare."""
+    import os.path
+    here = os.path.dirname(os.path.abspath(__file__))
+    template_path = os.path.join(here, "templates", "authorization_text.md")
+    try:
+        with open(template_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        logger.error(f"Authorization text not found at {template_path}")
+        return ""
+
+
+@api_router.get("/owner/companies/{company_id}/authorization", tags=["Owner"])
+async def get_company_authorization(
+    company_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Return the current authorization status + the canonical text
+    the operator must accept. Always returns 200 — `accepted` field
+    indicates whether a non-null record exists matching the current
+    version."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    auth = company.get("authorization") or None
+    accepted = (
+        auth is not None
+        and auth.get("version") == AUTHORIZATION_TEXT_VERSION
+    )
+    return {
+        "company_id": company_id,
+        "accepted": accepted,
+        "authorization": serialize_id(dict(auth)) if auth else None,
+        "current_version": AUTHORIZATION_TEXT_VERSION,
+        "authorization_text": _load_authorization_text(),
+        "expected_licensee_name": (
+            company.get("gc_licensee_name")
+            or company.get("gc_business_name")
+            or company.get("name")
+        ),
+    }
+
+
+@api_router.post("/owner/companies/{company_id}/authorization", tags=["Owner"])
+async def post_company_authorization(
+    company_id: str,
+    body: AuthorizationAccept,
+    current_user=Depends(get_current_user),
+):
+    """Persist authorization acceptance for a company. The operator's
+    typed licensee_name must match (case-insensitive, whitespace-
+    normalized) one of the canonical name forms on the company doc:
+    gc_licensee_name, gc_business_name, or name. Mismatch → 400.
+
+    Re-posting overwrites the existing record — operators can re-
+    accept after a text version bump or after revoking + re-granting.
+    The new record gets a fresh accepted_at and version stamp."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    typed = (body.licensee_name_typed or "").strip()
+    if not typed:
+        raise HTTPException(
+            status_code=400,
+            detail="licensee_name_typed is required",
+        )
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    expected_names = {
+        (company.get("gc_licensee_name") or "").strip().lower(),
+        (company.get("gc_business_name") or "").strip().lower(),
+        (company.get("name") or "").strip().lower(),
+    }
+    expected_names.discard("")
+    if typed.lower() not in expected_names:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "Typed name does not match any registered name "
+                    "for this company"
+                ),
+                "code": "licensee_name_mismatch",
+                "expected_one_of": sorted(n for n in expected_names if n),
+            },
+        )
+
+    now = datetime.now(timezone.utc)
+    auth_doc = {
+        "version": AUTHORIZATION_TEXT_VERSION,
+        "accepted_at": now,
+        "accepted_by_user_id": (
+            current_user.get("user_id")
+            or current_user.get("id")
+            or current_user.get("email")
+            or "unknown"
+        ),
+        "licensee_name_typed": typed,
+    }
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {"authorization": auth_doc, "updated_at": now}},
+    )
+    return {
+        "company_id": company_id,
+        "authorization": auth_doc,
+    }
+
+
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
 
 @api_router.post("/owner/seed-gc-licenses")

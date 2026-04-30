@@ -57,10 +57,23 @@ def _stub_renewal(company_id: str = "co_a"):
 
 
 def _stub_company_with_credentialed_rep():
+    # Import locally to avoid module-load order issues — server.py
+    # imports happen lazily in some test paths.
+    import server as _server
     now = datetime.now(timezone.utc)
     return {
         "_id": "co_a",
         "name": "Acme GC",
+        # MR.10 — authorization gate requires acceptance on file with
+        # the current version. Test fixtures default to accepted; the
+        # dedicated authorization tests in test_authorization.py
+        # exercise the un-authorized branch explicitly.
+        "authorization": {
+            "version": _server.AUTHORIZATION_TEXT_VERSION,
+            "accepted_at": now,
+            "accepted_by_user_id": "u1",
+            "licensee_name_typed": "Acme GC",
+        },
         "filing_reps": [{
             "id": "rep_primary",
             "name": "Jane",

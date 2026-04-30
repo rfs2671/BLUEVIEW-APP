@@ -162,9 +162,19 @@ def _setup_client(*, role="admin", company_id="co_a"):
 
 
 def _stub_company():
+    import server as _server
     now = datetime.now(timezone.utc)
     return {
         "_id": "co_a",
+        # MR.10 — pre-authorized so the partition gate (mapper) is the
+        # one being exercised. Authorization gate is tested in
+        # test_authorization.py.
+        "authorization": {
+            "version": _server.AUTHORIZATION_TEXT_VERSION,
+            "accepted_at": now,
+            "accepted_by_user_id": "u1",
+            "licensee_name_typed": "Acme GC",
+        },
         "filing_reps": [{
             "id": "rep_primary", "name": "Jane", "license_class": "GC",
             "license_number": "626198", "email": "jane@example.com",
