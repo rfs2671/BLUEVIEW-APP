@@ -101,6 +101,13 @@ class RenewalStatus(str, Enum):
     AWAITING_DOB_APPROVAL = "awaiting_dob_approval"  # Worker filed; DOB has not yet stamped the new expiration.
     COMPLETED = "completed"
     FAILED = "failed"
+    # MR.6 addition — set by the cloud-side enqueue endpoint between
+    # FilingJob insert and worker claim. Distinct from IN_PROGRESS
+    # (which the worker stamps when it acquires the claim) and from
+    # ELIGIBLE (which means no job is queued). Lets the UI distinguish
+    # "we're waiting for the agent to pick this up" from "we're waiting
+    # for DOB to stamp the new expiry" (AWAITING_DOB_APPROVAL).
+    AWAITING_DOB_FILING = "awaiting_dob_filing"
 
 
 class InsuranceRecord(BaseModel):
@@ -1406,6 +1413,470 @@ def create_permit_renewal_routes(
 
         report = await check_filing_readiness(db, renewal_id)
         return report.model_dump()
+
+    # ──────────────────────────────────────────────────────────────
+    # MR.6 — Filing job lifecycle: enqueue, list, cancel.
+    # ──────────────────────────────────────────────────────────────
+    # The FilingJob doc is the cloud-side state machine; the worker
+    # operates on the snapshot it BRPOPs out of Redis. Source of
+    # truth for status: filing_jobs collection, audit_log array.
+    # See server.py for FilingJobStatus / FilingJob / helpers.
+    #
+    # Implementation note on closure scope:
+    # `db` and `to_query_id` are closure-captured arguments to this
+    # factory. Test fixtures patch `server.db` / `server.to_query_id`
+    # at the module level; closures don't see those patches, so MR.6's
+    # endpoints route Mongo + ObjectId helpers through `_server.X`
+    # lookups (lazy `import server` inside each endpoint). Existing
+    # MR.1–MR.5 endpoints in this file use closure access because they
+    # don't have HTTP-level tests; mixing the two patterns is OK.
+
+    def _serialize_filing_job(job: dict, *, redact_ciphertext: bool = True) -> dict:
+        """Project a filing_job doc for API consumers. Strips any
+        ciphertext that might have been captured on the doc (defense-
+        in-depth — schema doesn't store ciphertext on filing_jobs but
+        belt-and-suspenders) AND inlines _id-to-id conversion +
+        tz-marking so this helper has no dependency on closure-scoped
+        helpers (see scope note above)."""
+        out = dict(job)
+        if "_id" in out:
+            out["id"] = str(out["_id"])
+            del out["_id"]
+        # Mark naive datetimes as UTC so JS Date.parse handles them.
+        for key, value in list(out.items()):
+            if isinstance(value, datetime) and value.tzinfo is None:
+                out[key] = value.replace(tzinfo=timezone.utc)
+        if redact_ciphertext:
+            out.pop("encrypted_ciphertext", None)
+        return out
+
+    # POST /api/permit-renewals/{permit_renewal_id}/file
+    @api_router.post("/permit-renewals/{permit_renewal_id}/file")
+    async def enqueue_filing_job(
+        permit_renewal_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Operator/admin trigger: validate, snapshot, enqueue.
+
+        Gate chain (all must pass; first failure short-circuits):
+          1. Tenant guard (company_id matches caller).
+          2. ELIGIBILITY_REWRITE_MODE == 'live' — refuses in shadow/off
+             so we never enqueue jobs the legacy path is still owning.
+          3. Filing readiness (MR.3) — must be ready=true.
+          4. PW2 field map (MR.4) — must produce zero unmappable fields
+             that would cause guaranteed-failure at the agent (warnings
+             are tolerated; only `unmappable_fields` blocks).
+          5. Filing rep with active credential exists.
+          6. No non-terminal FilingJob already exists for this
+             permit_renewal_id (dedup; concurrent operator clicks).
+
+        On success, atomically:
+          - Insert filing_jobs doc (status=queued, audit_log=[queued]).
+          - LPUSH the agent payload onto Redis.
+          - $set permit_renewals.status = AWAITING_DOB_FILING.
+
+        Failure modes:
+          - 400 if mode/readiness/mapper gates fail → caller fixes data.
+          - 404 if the renewal or filing_rep is missing.
+          - 409 on dedup (a non-terminal job already exists).
+          - 503 if Redis is unreachable — the FilingJob doc is rolled
+            back so the dedup gate doesn't permanently lock the
+            renewal.
+        """
+        import os as _os
+        import uuid as _uuid
+        from lib.filing_readiness import check_filing_readiness
+        from lib.pw2_field_mapper import map_pw2_fields
+        # Lazy import — server.py imports this module so we can't import
+        # back at module-load. Function-level is fine. Routing all
+        # `db` / `to_query_id` access through `_server.X` lets test
+        # fixtures patch `server.db` / `server.to_query_id` and have
+        # those patches reach this code (closure-captured `db` would
+        # bypass the patch — see scope note above).
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+
+        # 1. Tenant guard.
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        renewal_company_id = renewal.get("company_id")
+        caller_company_id = _server.get_user_company_id(current_user)
+        if caller_company_id and renewal_company_id != caller_company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # 2. ELIGIBILITY_REWRITE_MODE gate. Stripped + lowered to match
+        #    the existing dispatcher behavior.
+        mode = (_os.environ.get("ELIGIBILITY_REWRITE_MODE") or "").strip().lower()
+        if mode != "live":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": (
+                        "ELIGIBILITY_REWRITE_MODE must be 'live' to enqueue "
+                        "filing jobs (current: %r)" % mode
+                    ),
+                    "code": "mode_not_live",
+                },
+            )
+
+        # 3. Filing readiness (MR.3).
+        readiness = await check_filing_readiness(_server.db, permit_renewal_id)
+        if not readiness.ready:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Filing readiness check failed",
+                    "code": "readiness_blocked",
+                    "blockers": readiness.blockers,
+                },
+            )
+
+        # 4. PW2 field map (MR.4) — refuse if any field is unmappable.
+        #    `unmappable_fields` is a flat list of "name: reason" strings;
+        #    a non-empty list means at least one field couldn't be filled
+        #    deterministically and the agent would either skip it (silent
+        #    DOB rejection) or throw (handler crash). Block at the gate.
+        field_map = await map_pw2_fields(_server.db, permit_renewal_id)
+        if field_map.unmappable_fields:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "PW2 field mapper produced unmappable fields",
+                    "code": "mapper_unmappable_fields",
+                    "unmappable_fields": field_map.unmappable_fields,
+                },
+            )
+
+        # 5. Filing rep with active credential.
+        company = await _server.db.companies.find_one(
+            {"_id": _server.to_query_id(renewal_company_id), "is_deleted": {"$ne": True}}
+        )
+        if not company:
+            raise HTTPException(
+                status_code=404,
+                detail="Company not found for renewal",
+            )
+
+        # Pick the primary filing_rep — same dispatch convention as
+        # the rest of MR.4. Operator can override later via MR.7's UI;
+        # MR.6 honors the existing primary.
+        filing_reps = company.get("filing_reps") or []
+        primary_rep = next(
+            (r for r in filing_reps if r.get("is_primary")),
+            filing_reps[0] if filing_reps else None,
+        )
+        if primary_rep is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "No filing_rep on company",
+                    "code": "no_filing_rep",
+                },
+            )
+
+        active_cred = _server.filing_rep_active_credential(primary_rep)
+        if active_cred is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Filing rep has no active credential",
+                    "code": "no_active_credential",
+                    "filing_rep_id": primary_rep.get("id"),
+                },
+            )
+
+        # 6. Dedup gate — refuse if a non-terminal FilingJob already
+        #    exists for this renewal.
+        existing_inflight = await _server.db.filing_jobs.find_one({
+            "permit_renewal_id": permit_renewal_id,
+            "status": {"$nin": list(_server.FILING_JOB_TERMINAL_STATUSES)},
+            "is_deleted": {"$ne": True},
+        })
+        if existing_inflight:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "A non-terminal filing job already exists for this renewal",
+                    "code": "filing_job_already_active",
+                    "existing_job_id": str(existing_inflight.get("_id")),
+                    "existing_status": existing_inflight.get("status"),
+                },
+            )
+
+        # All gates passed — build the FilingJob doc and the queue
+        # payload. Atomic-ish: if the LPUSH fails, we delete the
+        # filing_jobs doc so the dedup gate doesn't lock the renewal
+        # forever.
+        now = datetime.now(timezone.utc)
+        filing_job_id = _uuid.uuid4().hex
+        actor = (
+            current_user.get("user_id")
+            or current_user.get("email")
+            or "operator"
+        )
+        initial_event = _server._filing_job_audit_event(
+            event_type="queued",
+            actor=actor,
+            detail="Enqueue triggered by operator",
+            metadata={
+                "filing_rep_id": primary_rep.get("id"),
+                "credential_version": active_cred.get("version"),
+            },
+        )
+
+        pw2_field_map_snapshot = field_map.model_dump()
+
+        filing_job_doc = {
+            "_id": filing_job_id,
+            "permit_renewal_id": permit_renewal_id,
+            "company_id": renewal_company_id,
+            "filing_rep_id": primary_rep.get("id"),
+            "credential_version": active_cred.get("version"),
+            "pw2_field_map": pw2_field_map_snapshot,
+            "status": _server.FilingJobStatus.QUEUED.value,
+            "claimed_by_worker_id": None,
+            "claimed_at": None,
+            "started_at": None,
+            "completed_at": None,
+            "failure_reason": None,
+            "dob_confirmation_number": None,
+            "retry_count": 0,
+            "cancellation_requested": False,
+            "audit_log": [initial_event],
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }
+
+        await _server.db.filing_jobs.insert_one(filing_job_doc)
+
+        # Queue payload — ciphertext travels here, NOT in filing_jobs.
+        # `idempotency_key` lets the worker dedupe re-deliveries
+        # (BRPOP is at-most-once when the worker doesn't crash, but
+        # the watchdog re-enqueues stale claims, so the same logical
+        # job can land twice on bad days).
+        day_bucket = now.strftime("%Y%m%d")
+        queue_payload = {
+            "id": _uuid.uuid4().hex,
+            "type": "dob_now_filing",
+            "data": {
+                "filing_job_id": filing_job_id,
+                "permit_renewal_id": permit_renewal_id,
+                "encrypted_credentials_b64": active_cred.get("encrypted_ciphertext"),
+                "filing_rep_id": primary_rep.get("id"),
+                "pw2_field_map": pw2_field_map_snapshot,
+            },
+            "idempotency_key": f"dob_now_filing:{permit_renewal_id}:{day_bucket}",
+            "enqueued_at": now.isoformat(),
+        }
+
+        try:
+            await _server._lpush_filing_queue(queue_payload)
+        except Exception as enqueue_err:
+            # Roll back the filing_jobs insert so the dedup gate doesn't
+            # lock this renewal. We don't append a "failed" audit event
+            # because the doc is being deleted; the operator's next
+            # enqueue attempt will surface the underlying error again.
+            await _server.db.filing_jobs.delete_one({"_id": filing_job_id})
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Failed to enqueue job onto Redis",
+                    "code": "redis_enqueue_failed",
+                    "error": str(enqueue_err),
+                },
+            )
+
+        # Transition the renewal to AWAITING_DOB_FILING. The worker
+        # later flips it to IN_PROGRESS via /internal/permit-renewal-claim.
+        await _server.db.permit_renewals.update_one(
+            {"_id": _server.to_query_id(permit_renewal_id)},
+            {"$set": {
+                "status": RenewalStatus.AWAITING_DOB_FILING,
+                "updated_at": now,
+            }},
+        )
+
+        # Return the filing_job WITHOUT exposing the ciphertext.
+        # filing_jobs schema doesn't carry ciphertext, but the
+        # _serialize_filing_job redact is belt-and-suspenders.
+        return _serialize_filing_job(filing_job_doc)
+
+    # GET /api/permit-renewals/{permit_renewal_id}/filing-jobs
+    @api_router.get("/permit-renewals/{permit_renewal_id}/filing-jobs")
+    async def list_filing_jobs_for_renewal(
+        permit_renewal_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """List all filing jobs for this permit renewal, newest first.
+        Used by MR.7's UI to render filing history per permit. Same
+        tenant guard as the other /{renewal_id}/* endpoints."""
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        company_id = _server.get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        cursor = (
+            _server.db.filing_jobs.find({
+                "permit_renewal_id": permit_renewal_id,
+                "is_deleted": {"$ne": True},
+            })
+            .sort("created_at", -1)
+        )
+        jobs = []
+        async for job in cursor:
+            jobs.append(_serialize_filing_job(job))
+        return {"filing_jobs": jobs, "total": len(jobs)}
+
+    # DELETE /api/permit-renewals/{permit_renewal_id}/filing-jobs/{filing_job_id}
+    @api_router.delete(
+        "/permit-renewals/{permit_renewal_id}/filing-jobs/{filing_job_id}"
+    )
+    async def cancel_filing_job(
+        permit_renewal_id: str,
+        filing_job_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Cancel a filing job. Behavior depends on current status:
+
+          queued         → status=cancelled, best-effort LREM from
+                           Redis (BRPOP may already have grabbed it).
+          claimed/inflight → cancellation_requested=True; the worker
+                           is required to check this flag before
+                           posting results and short-circuit.
+          terminal       → 409, can't cancel a finished job.
+        """
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+
+        # Tenant guard via the renewal.
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        company_id = _server.get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        job = await _server.db.filing_jobs.find_one({
+            "_id": filing_job_id,
+            "permit_renewal_id": permit_renewal_id,
+            "is_deleted": {"$ne": True},
+        })
+        if not job:
+            raise HTTPException(status_code=404, detail="Filing job not found")
+
+        current_status = job.get("status")
+        if current_status in _server.FILING_JOB_TERMINAL_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Cannot cancel terminal-status job",
+                    "code": "cannot_cancel_terminal",
+                    "current_status": current_status,
+                },
+            )
+
+        actor = (
+            current_user.get("user_id")
+            or current_user.get("email")
+            or "operator"
+        )
+        now = datetime.now(timezone.utc)
+
+        if current_status == _server.FilingJobStatus.QUEUED.value:
+            # Hard cancel — flip status, audit, attempt Redis LREM.
+            cancel_event = _server._filing_job_audit_event(
+                event_type="cancelled",
+                actor=actor,
+                detail="Operator cancelled queued job",
+            )
+            await _server.db.filing_jobs.update_one(
+                {"_id": filing_job_id},
+                {
+                    "$set": {
+                        "status": _server.FilingJobStatus.CANCELLED.value,
+                        "completed_at": now,
+                        "updated_at": now,
+                    },
+                    "$push": {"audit_log": cancel_event},
+                },
+            )
+            # Best-effort Redis cleanup — if BRPOP already grabbed the
+            # job, LREM is a no-op (count=0) and the worker will hit
+            # the cancellation_requested check after claim. We don't
+            # error on Redis failure; the cloud-side status is the
+            # source of truth.
+            try:
+                # Note: we don't have the original payload to LREM
+                # by exact-match. The worker has to short-circuit on
+                # claim if status is already cancelled. Future hardening
+                # could add a queue-side index of (filing_job_id → raw)
+                # to allow precise removal. For MR.6, we rely on the
+                # claim-time check.
+                pass
+            except Exception:
+                pass
+            return {
+                "cancelled": True,
+                "filing_job_id": filing_job_id,
+                "previous_status": current_status,
+                "new_status": _server.FilingJobStatus.CANCELLED.value,
+            }
+
+        if current_status in _server.FILING_JOB_INFLIGHT_STATUSES:
+            # Soft cancel — flag the doc; the worker checks before
+            # posting result. We do NOT immediately set status=cancelled
+            # because the worker might already be partway through DOB
+            # NOW; we want it to abort gracefully and report cancelled
+            # via /internal/job-result.
+            cancel_event = _server._filing_job_audit_event(
+                event_type="cancellation_requested",
+                actor=actor,
+                detail="Operator requested cancellation of in-flight job",
+                metadata={"current_status": current_status},
+            )
+            await _server.db.filing_jobs.update_one(
+                {"_id": filing_job_id},
+                {
+                    "$set": {
+                        "cancellation_requested": True,
+                        "updated_at": now,
+                    },
+                    "$push": {"audit_log": cancel_event},
+                },
+            )
+            return {
+                "cancellation_requested": True,
+                "filing_job_id": filing_job_id,
+                "current_status": current_status,
+                "note": "Worker will abort and report cancelled via /internal/job-result",
+            }
+
+        # Defensive — should not reach here given the terminal-status
+        # check above plus QUEUED + INFLIGHT exhausting non-terminal.
+        # If a future status is added without updating this branch
+        # the user gets a clear 500 instead of silent success.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unhandled status during cancel: {current_status!r}",
+        )
 
     # POST /api/permit-renewals/check-eligibility
     @api_router.post("/permit-renewals/check-eligibility")

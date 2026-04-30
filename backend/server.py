@@ -406,9 +406,32 @@ def to_query_id(id_str: str):
 # company); filing_reps captures the roster of authorized filers,
 # potentially many, distinct trade scopes.
 #
-# Credential ciphertext storage (DOB NOW password) is intentionally
-# OUT of scope for MR.2 — that arrives in MR.6 alongside the
-# hybrid-encryption infrastructure. MR.2 is metadata only.
+# Credential ciphertext storage (DOB NOW password) lands HERE in MR.6.
+# The cloud only ever sees opaque base64 ciphertext + metadata; the
+# encrypt path runs client-side in MR.10's onboarding UI using the
+# operator's RSA-4096 public key, and only the worker's private key
+# (~/.levelog/agent-keys/agent.key, 0400) can decrypt. Versioning is
+# append-only: every new credential gets the next integer; the prior
+# active credential gets `superseded_at` stamped at push time. The
+# active credential is the entry with `superseded_at is None` and the
+# highest version. Revoke == set superseded_at without a replacement.
+class FilingRepCredential(BaseModel):
+    """MR.6 — encrypted DOB NOW credential for a filing_rep.
+
+    Cloud is intentionally blind to the cleartext: ciphertext is the
+    output of MR.5's hybrid scheme (AES-256-GCM data key wrapped by
+    RSA-OAEP-4096 against the operator's public key, base64-encoded).
+    `public_key_fingerprint` lets the worker assert it's about to
+    decrypt with a key whose public-half matches the one used to
+    encrypt — a hard error otherwise (prevents silently passing
+    ciphertext to the wrong worker laptop)."""
+    version: int                                 # auto-incremented per filing_rep, 1-indexed
+    encrypted_ciphertext: str                    # base64(RSA-OAEP-wrapped AES-GCM blob), opaque
+    public_key_fingerprint: str                  # SHA-256 hex of the encrypting public key
+    created_at: datetime
+    superseded_at: Optional[datetime] = None     # set when newer version pushes OR explicit revoke
+
+
 class FilingRep(BaseModel):
     id: str                                   # uuid4 hex, generated server-side on POST
     name: str                                 # licensed individual's full legal name
@@ -419,6 +442,9 @@ class FilingRep(BaseModel):
     is_primary: bool = False                  # exactly one per company; default routing for filings
     created_at: datetime
     updated_at: datetime
+    # MR.6 — encrypted credential history (append-only). Default empty
+    # so existing reads of pre-MR.6 documents don't ValidationError.
+    credentials: List[FilingRepCredential] = []
 
 
 FILING_REP_LICENSE_CLASSES = {
@@ -449,6 +475,161 @@ class FilingRepUpdate(BaseModel):
     license_type: Optional[str] = None
     email: Optional[EmailStr] = None
     is_primary: Optional[bool] = None
+
+
+class FilingRepCredentialCreate(BaseModel):
+    """MR.6 — payload for POST /filing-reps/{rep_id}/credentials.
+
+    `version`, `created_at`, `superseded_at` are managed server-side.
+    The client only ships the ciphertext + fingerprint of the public
+    key it used to encrypt."""
+    encrypted_ciphertext: str
+    public_key_fingerprint: str
+
+
+# ── MR.6: filing_jobs collection ─────────────────────────────────────
+# Cloud-side state machine for queued/in-flight DOB NOW filings.
+# Lives in its own collection (not embedded on permit_renewals)
+# because audit_log grows unboundedly per job and per-renewal there
+# can be multiple jobs over time (retries, manual re-runs, future MR
+# scope where multiple sub-jobs land per renewal). Indexes keyed off
+# permit_renewal_id give fast tenant scoping.
+
+class FilingJobStatus(str, Enum):
+    """State machine — append-only audit_log records every transition.
+
+        queued ──► claimed ──► in_progress ──► filed ──► completed
+                                          ──► failed
+                  (any non-terminal) ──► cancelled
+
+    Terminal: filed (DOB accepted but new expiry not yet stamped),
+    completed (DOB stamped new expiry), failed (handler reported
+    failure or retry cap hit), cancelled (operator killed it).
+    Stale-claim watchdog reverts claimed/in_progress→queued and
+    increments retry_count; >3 retries → failed."""
+    QUEUED = "queued"
+    CLAIMED = "claimed"
+    IN_PROGRESS = "in_progress"
+    FILED = "filed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+# Statuses from which the job CANNOT return to the queue and CANNOT
+# be cancelled. The DELETE cancellation endpoint refuses with 409 if
+# the job is in any of these.
+FILING_JOB_TERMINAL_STATUSES = {
+    FilingJobStatus.FILED.value,
+    FilingJobStatus.COMPLETED.value,
+    FilingJobStatus.FAILED.value,
+    FilingJobStatus.CANCELLED.value,
+}
+
+# Statuses where the worker may still be operating on the job —
+# stale-claim recovery looks at these, and cancellation must use the
+# soft `cancellation_requested` flag instead of an immediate status
+# flip (worker checks the flag before posting results).
+FILING_JOB_INFLIGHT_STATUSES = {
+    FilingJobStatus.CLAIMED.value,
+    FilingJobStatus.IN_PROGRESS.value,
+}
+
+# Retry cap for stale-claim recovery before the watchdog gives up
+# and marks the job failed. 3 matches the user-visible retry count.
+FILING_JOB_RETRY_LIMIT = 3
+
+
+class FilingJobEvent(BaseModel):
+    """Single audit-log entry. Append-only — never modified after
+    insert. The list on FilingJob.audit_log is the source of truth
+    for the job's history; status / claimed_at / etc. are derived."""
+    event_type: str                              # "queued" | "claimed" | "started" | "filed" | "completed" | "failed" | "cancelled" | "stale_claim_recovered" | "cancellation_requested" | "retry_limit_exceeded"
+    timestamp: datetime
+    actor: str                                   # worker_id, "system" (watchdog), or admin user_id
+    detail: str                                  # human-readable
+    metadata: Dict[str, Any] = {}                # structured extras (retry_count, dob_confirmation_number, ...)
+
+
+class FilingJob(BaseModel):
+    id: str
+    permit_renewal_id: str
+    company_id: str
+    filing_rep_id: str                           # FilingRep.id from companies.filing_reps[]
+    credential_version: int                      # snapshot of which credential was attached at enqueue
+    pw2_field_map: Dict[str, Any]                # snapshot of MR.4 mapper output at enqueue
+    status: str                                  # FilingJobStatus value (str-stored for query simplicity)
+    claimed_by_worker_id: Optional[str] = None
+    claimed_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failure_reason: Optional[str] = None
+    dob_confirmation_number: Optional[str] = None
+    retry_count: int = 0
+    cancellation_requested: bool = False         # set by DELETE when job is in-flight
+    audit_log: List[FilingJobEvent] = []
+    created_at: datetime
+    updated_at: datetime
+    is_deleted: bool = False
+
+
+# ── MR.6 helpers — pure functions, used by the endpoints below ──────
+
+def filing_rep_active_credential(rep: dict) -> Optional[dict]:
+    """Return the active credential entry on a filing_rep dict, or
+    None if no credential is currently active. Active = highest
+    `version` among entries where `superseded_at is None`."""
+    if not isinstance(rep, dict):
+        return None
+    creds = rep.get("credentials") or []
+    active = [c for c in creds if c.get("superseded_at") is None]
+    if not active:
+        return None
+    return max(active, key=lambda c: c.get("version") or 0)
+
+
+def _filing_job_audit_event(
+    *,
+    event_type: str,
+    actor: str,
+    detail: str,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Construct an append-only audit-log entry. Never mutated after
+    being $push-ed onto FilingJob.audit_log."""
+    return {
+        "event_type": event_type,
+        "timestamp": datetime.now(timezone.utc),
+        "actor": actor,
+        "detail": detail,
+        "metadata": dict(metadata or {}),
+    }
+
+
+# Redis enqueue — soft import. `redis.asyncio` is optional at module-
+# load (tests don't need it; the production deploy installs it via
+# requirements.txt). Cloud-side LPUSH paired with the worker's BRPOP
+# (dob_worker/lib/queue_client.py).
+FILING_QUEUE_KEY = os.environ.get("FILING_QUEUE_KEY", "levelog:filing-queue")
+REDIS_URL = os.environ.get("REDIS_URL", "")
+
+
+async def _lpush_filing_queue(payload: dict):
+    """LPUSH the job payload onto Redis. Fails-loud (raises) if
+    REDIS_URL is unset OR redis package isn't installed — the enqueue
+    endpoint catches and surfaces 503 to the caller. Tests patch this
+    function directly so they don't need a live Redis."""
+    if not REDIS_URL:
+        raise RuntimeError("REDIS_URL not configured — cannot enqueue filing job")
+    try:
+        import redis.asyncio as redis_asyncio
+    except ImportError as e:
+        raise RuntimeError(f"redis package not installed: {e}") from e
+    client = redis_asyncio.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    try:
+        await client.lpush(FILING_QUEUE_KEY, json.dumps(payload))
+    finally:
+        await client.close()
 
 
 class Company(BaseModel):
@@ -2986,6 +3167,326 @@ async def delete_filing_rep(
         raise HTTPException(status_code=404, detail="Filing representative not found")
 
     return {"message": "Filing representative removed", "id": rep_id}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MR.6 — Filing-rep credentials (encrypted DOB NOW passwords).
+# ──────────────────────────────────────────────────────────────────────
+# Three endpoints under /owner/companies/{company_id}/filing-reps/{rep_id}/credentials:
+#   POST   — push a new credential, supersede the prior active, $push w/ next version
+#   DELETE — revoke the current active credential without replacement
+#   GET    — list metadata (version, created_at, superseded_at, fingerprint).
+#            CIPHERTEXT IS NEVER RETURNED to the UI; the worker reads it
+#            from the queue payload, not from this endpoint.
+#
+# Concurrency note: two simultaneous POST writers can race between the
+# supersede step and the push step, producing same-version duplicates.
+# This is documented in MR.6's architectural surprises; in practice
+# operators rotate credentials rarely and the race window is on the
+# order of milliseconds. A future hardening pass can use a Mongo
+# aggregation-pipeline update to make the supersede + push truly atomic.
+
+def _find_filing_rep(company: dict, rep_id: str) -> Optional[dict]:
+    """Locate a filing_rep entry inside a company doc by rep_id.
+    Returns the dict (mutable reference into the company doc) or
+    None if not found."""
+    for rep in (company.get("filing_reps") or []):
+        if rep.get("id") == rep_id:
+            return rep
+    return None
+
+
+def _strip_credential_ciphertext(cred: dict) -> dict:
+    """Project a credential entry to its metadata-only form for GET
+    responses. Ciphertext is opaque-but-still-secret material; never
+    surface it through the read API."""
+    return {
+        "version": cred.get("version"),
+        "public_key_fingerprint": cred.get("public_key_fingerprint"),
+        "created_at": cred.get("created_at"),
+        "superseded_at": cred.get("superseded_at"),
+    }
+
+
+@api_router.get(
+    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials",
+    tags=["Owner"],
+)
+async def list_filing_rep_credentials(
+    company_id: str,
+    rep_id: str,
+    current_user=Depends(get_current_user),
+):
+    """List credential metadata for a filing_rep. Ordered version desc.
+    Ciphertext is intentionally NOT included — the UI never has any
+    reason to see it, only the worker decrypts."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    rep = _find_filing_rep(company, rep_id)
+    if rep is None:
+        raise HTTPException(status_code=404, detail="Filing representative not found")
+
+    creds = rep.get("credentials") or []
+    return sorted(
+        [_strip_credential_ciphertext(c) for c in creds],
+        key=lambda c: (c.get("version") or 0),
+        reverse=True,
+    )
+
+
+@api_router.post(
+    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials",
+    tags=["Owner"],
+)
+async def add_filing_rep_credential(
+    company_id: str,
+    rep_id: str,
+    body: FilingRepCredentialCreate,
+    current_user=Depends(get_current_user),
+):
+    """Push a new credential. Side effects:
+      1. Stamp `superseded_at` on the prior active credential (if any).
+      2. Compute next version = max(existing.version) + 1 (1-indexed).
+      3. $push the new credential entry on filing_reps[rep].credentials.
+
+    Two MongoDB ops because $set + $push on the same array element
+    in one update is awkward with array_filters; we eat the
+    millisecond-scale race window between them. The new credential
+    entry is the only one with superseded_at=None when this returns,
+    barring a concurrent writer."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    if not body.encrypted_ciphertext or not body.public_key_fingerprint:
+        raise HTTPException(
+            status_code=400,
+            detail="encrypted_ciphertext and public_key_fingerprint are required",
+        )
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    rep = _find_filing_rep(company, rep_id)
+    if rep is None:
+        raise HTTPException(status_code=404, detail="Filing representative not found")
+
+    now = datetime.now(timezone.utc)
+
+    # 1. Supersede the prior active credential, if any. array_filters
+    #    matches every credential entry on this rep where superseded_at
+    #    is None (exactly one in the steady state — an empty match
+    #    when no prior credential exists is a no-op).
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {
+            "filing_reps.$[rep].credentials.$[cred].superseded_at": now,
+            "filing_reps.$[rep].updated_at": now,
+        }},
+        array_filters=[
+            {"rep.id": rep_id},
+            {"cred.superseded_at": None},
+        ],
+    )
+
+    # 2. Compute next version from the (potentially-now-superseded)
+    #    credentials list.
+    existing_versions = [
+        (c.get("version") or 0) for c in (rep.get("credentials") or [])
+    ]
+    next_version = (max(existing_versions) if existing_versions else 0) + 1
+
+    new_credential = {
+        "version": next_version,
+        "encrypted_ciphertext": body.encrypted_ciphertext,
+        "public_key_fingerprint": body.public_key_fingerprint,
+        "created_at": now,
+        "superseded_at": None,
+    }
+
+    # 3. $push the new entry.
+    await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$push": {"filing_reps.$[rep].credentials": new_credential}},
+        array_filters=[{"rep.id": rep_id}],
+    )
+
+    # Return the new credential — metadata-only. Caller never needs
+    # to read back what they wrote.
+    return _strip_credential_ciphertext(new_credential)
+
+
+@api_router.delete(
+    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials/active",
+    tags=["Owner"],
+)
+async def revoke_filing_rep_active_credential(
+    company_id: str,
+    rep_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Revoke the current active credential WITHOUT replacement. Sets
+    superseded_at on the active entry. Subsequent enqueue requests
+    will fail the credential-gate check (active_credential() returns
+    None). 404 if no active credential exists.
+
+    Distinct from DELETE on the filing_rep itself, which removes the
+    rep entirely. This endpoint preserves the rep + its credential
+    history; only the active credential is killed."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    company = await db.companies.find_one(
+        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
+    )
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    rep = _find_filing_rep(company, rep_id)
+    if rep is None:
+        raise HTTPException(status_code=404, detail="Filing representative not found")
+
+    active = filing_rep_active_credential(rep)
+    if active is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No active credential to revoke",
+        )
+
+    now = datetime.now(timezone.utc)
+    result = await db.companies.update_one(
+        {"_id": to_query_id(company_id)},
+        {"$set": {
+            "filing_reps.$[rep].credentials.$[cred].superseded_at": now,
+            "filing_reps.$[rep].updated_at": now,
+        }},
+        array_filters=[
+            {"rep.id": rep_id},
+            {"cred.version": active.get("version"), "cred.superseded_at": None},
+        ],
+    )
+    if result.modified_count == 0:
+        # Race: another writer just superseded it. Surface as 404 so
+        # the caller can re-read state.
+        raise HTTPException(
+            status_code=404,
+            detail="Active credential changed between read and revoke",
+        )
+
+    return {
+        "revoked": True,
+        "version": active.get("version"),
+        "superseded_at": now,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# MR.6 — Admin filing-jobs observability surface (owner-tier).
+# ──────────────────────────────────────────────────────────────────────
+# GET /api/admin/filing-jobs lists every job across every company
+# for the audit/observability UI MR.7 ships. Filters and pagination
+# match the conventions of the other admin list endpoints.
+
+VALID_FILING_JOB_SORT_FIELDS = {"created_at", "updated_at", "status"}
+
+
+@api_router.get("/admin/filing-jobs", tags=["Admin"])
+async def admin_list_filing_jobs(
+    current_user=Depends(get_current_user),
+    status: Optional[str] = Query(None, description="Filter by FilingJobStatus value"),
+    company_id: Optional[str] = Query(None, description="Filter to a single tenant"),
+    created_after: Optional[str] = Query(None, description="ISO-8601 lower bound on created_at"),
+    created_before: Optional[str] = Query(None, description="ISO-8601 upper bound on created_at"),
+    sort_by: str = Query("created_at"),
+    sort_dir: int = Query(-1, ge=-1, le=1),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
+    """List filing_jobs across all tenants for the owner-tier audit
+    surface. Owner-only. Filters: status, company_id, date range
+    (ISO-8601 strings; parsed via fromisoformat). Pagination uses the
+    same skip/limit/total/has_more shape as paginated_query()."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    # Validate sort_by — refuse arbitrary fields so a typo doesn't
+    # silently sort by a field that doesn't exist (Mongo returns
+    # everything in insertion order in that case, which looks like
+    # success).
+    if sort_by not in VALID_FILING_JOB_SORT_FIELDS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"sort_by must be one of {sorted(VALID_FILING_JOB_SORT_FIELDS)}; "
+                f"got {sort_by!r}"
+            ),
+        )
+    if sort_dir not in (-1, 1):
+        raise HTTPException(status_code=400, detail="sort_dir must be -1 or 1")
+
+    query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if status:
+        # Validate against the enum so a typo (e.g. 'inprogress' vs
+        # 'in_progress') 400s instead of returning an empty list.
+        valid_statuses = {s.value for s in FilingJobStatus}
+        if status not in valid_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status must be one of {sorted(valid_statuses)}; got {status!r}",
+            )
+        query["status"] = status
+    if company_id:
+        query["company_id"] = company_id
+
+    # Date range — accept ISO-8601 strings (with or without Z suffix).
+    if created_after or created_before:
+        date_query: Dict[str, datetime] = {}
+        try:
+            if created_after:
+                date_query["$gte"] = datetime.fromisoformat(
+                    created_after.replace("Z", "+00:00")
+                )
+            if created_before:
+                date_query["$lte"] = datetime.fromisoformat(
+                    created_before.replace("Z", "+00:00")
+                )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"created_after/created_before must be ISO-8601: {e}",
+            )
+        query["created_at"] = date_query
+
+    cursor = (
+        db.filing_jobs.find(query)
+        .sort(sort_by, sort_dir)
+        .skip(skip)
+        .limit(limit)
+    )
+    items: List[Dict[str, Any]] = []
+    async for job in cursor:
+        # Belt-and-suspenders strip — schema doesn't carry ciphertext
+        # but defense-in-depth for any future drift.
+        job_dict = serialize_id(dict(job))
+        job_dict.pop("encrypted_ciphertext", None)
+        items.append(job_dict)
+    total = await db.filing_jobs.count_documents(query)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "has_more": (skip + limit) < total,
+    }
 
 
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
@@ -19546,29 +20047,128 @@ async def internal_permit_renewal_claim(
 @api_router.post("/internal/job-result")
 async def internal_job_result(request: Request, body: dict):
     """Worker calls this after every handler completes. Cloud
-    transitions permit_renewals state based on result.status."""
+    transitions BOTH the filing_jobs doc (when filing_job_id is on
+    the result, MR.6+) AND the permit_renewals doc (existing MR.5
+    behavior) based on result.status.
+
+    Worker contract for filing_job_id propagation: handlers carry the
+    filing_job_id from the queue payload through to the result. If
+    the field is absent on the result body (legacy bis_scrape jobs,
+    or in-flight MR.5-vintage runs that pre-date MR.6), the
+    filing_jobs branch is skipped.
+
+    Cancellation handling: if cancellation_requested=True on the
+    filing_job, we record the result as 'cancelled' regardless of
+    what the worker reported — operator intent wins. The worker
+    contract is to short-circuit before posting result when it sees
+    cancellation_requested, but we double-check here so a
+    well-behaved worker that reports 'completed' on a cancelled job
+    doesn't undo the operator's cancel.
+    """
     _validate_worker_secret(request)
     from permit_renewal import RenewalStatus
 
     job_id = body.get("job_id") or "unknown"
     job_type = body.get("job_type") or "unknown"
     permit_renewal_id = body.get("permit_renewal_id")
+    filing_job_id = body.get("filing_job_id")  # MR.6 — set by dob_now_filing handler
     result = body.get("result") or {}
     status_value = (result.get("status") or "").lower()
+    worker_id = body.get("worker_id") or "unknown_worker"
+    now = datetime.now(timezone.utc)
 
     # Audit log every result regardless of state-transition.
     await db.agent_job_results.insert_one({
         "job_id": job_id,
         "job_type": job_type,
         "permit_renewal_id": permit_renewal_id,
+        "filing_job_id": filing_job_id,
         "worker_id": body.get("worker_id"),
         "result": result,
-        "received_at": datetime.now(timezone.utc),
+        "received_at": now,
     })
+
+    # ── MR.6: filing_jobs state machine ──────────────────────────────
+    # When filing_job_id is set, transition the FilingJob doc and
+    # append an audit-log entry. Do this BEFORE the permit_renewals
+    # transition so the FilingJob is the canonical source for the job
+    # result; if the renewal update fails we still have the audit.
+    filing_job_transitioned = False
+    if filing_job_id:
+        existing_job = await db.filing_jobs.find_one({"_id": filing_job_id})
+        if existing_job:
+            current_status = existing_job.get("status")
+            cancellation_requested = bool(
+                existing_job.get("cancellation_requested")
+            )
+
+            # Cancellation override: if the operator requested cancel
+            # while this job was in-flight, force the resolution to
+            # CANCELLED regardless of what the worker reports. The
+            # well-behaved worker should already have detected the
+            # flag and reported status=cancelled itself; this branch
+            # handles the misbehaving / racing worker.
+            if cancellation_requested and current_status not in FILING_JOB_TERMINAL_STATUSES:
+                effective_status = FilingJobStatus.CANCELLED.value
+                effective_event_type = "cancelled"
+                effective_detail = (
+                    f"Worker reported {status_value!r} but cancellation was "
+                    f"requested by operator; resolving as cancelled."
+                )
+            else:
+                # Map worker-reported status → FilingJobStatus value.
+                worker_to_filing_status = {
+                    "filed":     FilingJobStatus.FILED.value,
+                    "completed": FilingJobStatus.COMPLETED.value,
+                    "failed":    FilingJobStatus.FAILED.value,
+                    "cancelled": FilingJobStatus.CANCELLED.value,
+                }
+                effective_status = worker_to_filing_status.get(status_value)
+                effective_event_type = status_value or "unknown"
+                effective_detail = (
+                    result.get("detail") or f"Worker reported {status_value!r}"
+                )
+
+            if effective_status is not None:
+                set_fields: Dict[str, Any] = {
+                    "status": effective_status,
+                    "updated_at": now,
+                }
+                # Status-specific bookkeeping.
+                if effective_status in FILING_JOB_TERMINAL_STATUSES:
+                    set_fields["completed_at"] = now
+                if effective_status == FilingJobStatus.FAILED.value:
+                    set_fields["failure_reason"] = result.get("detail")
+                # DOB confirmation number, if present, is preserved
+                # regardless of status — useful even on FAILED jobs
+                # where DOB returned a confirmation before rejecting.
+                confirmation = result.get("dob_confirmation_number")
+                if confirmation:
+                    set_fields["dob_confirmation_number"] = confirmation
+
+                audit_event = _filing_job_audit_event(
+                    event_type=effective_event_type,
+                    actor=worker_id,
+                    detail=effective_detail,
+                    metadata={
+                        k: v for k, v in {
+                            "dob_confirmation_number": confirmation,
+                            "worker_reported_status": status_value,
+                        }.items() if v is not None
+                    },
+                )
+                await db.filing_jobs.update_one(
+                    {"_id": filing_job_id},
+                    {
+                        "$set": set_fields,
+                        "$push": {"audit_log": audit_event},
+                    },
+                )
+                filing_job_transitioned = True
 
     # bis_scrape jobs don't touch renewals — log and return.
     if not permit_renewal_id:
-        return {"recorded": True}
+        return {"recorded": True, "filing_job_transitioned": filing_job_transitioned}
 
     transitions = {
         "filed":     RenewalStatus.AWAITING_DOB_APPROVAL,
@@ -19577,25 +20177,39 @@ async def internal_job_result(request: Request, body: dict):
     }
     new_status = transitions.get(status_value)
     if new_status is None:
-        # not_implemented or unknown — no state change.
-        return {"recorded": True, "transitioned": False}
+        # not_implemented / cancelled / unknown — no permit_renewals state change.
+        return {
+            "recorded": True,
+            "transitioned": False,
+            "filing_job_transitioned": filing_job_transitioned,
+        }
 
     update_set = {
         "status": new_status,
-        "updated_at": datetime.now(timezone.utc),
+        "updated_at": now,
     }
     if status_value == "filed":
-        update_set["filed_at"] = datetime.now(timezone.utc)
+        update_set["filed_at"] = now
     elif status_value == "completed":
-        update_set["completed_at"] = datetime.now(timezone.utc)
+        update_set["completed_at"] = now
     elif status_value == "failed":
         update_set["failure_reason"] = result.get("detail")
+    # MR.6 — propagate confirmation number to the renewal doc too,
+    # so the existing UI surfaces it without joining filing_jobs.
+    confirmation = result.get("dob_confirmation_number")
+    if confirmation:
+        update_set["dob_confirmation_number"] = confirmation
 
     await db.permit_renewals.update_one(
         {"_id": to_query_id(permit_renewal_id)},
         {"$set": update_set},
     )
-    return {"recorded": True, "transitioned": True, "new_status": new_status.value}
+    return {
+        "recorded": True,
+        "transitioned": True,
+        "new_status": new_status.value,
+        "filing_job_transitioned": filing_job_transitioned,
+    }
 
 
 @api_router.post("/internal/agent-heartbeat")
@@ -19620,14 +20234,28 @@ async def internal_agent_heartbeat(request: Request, body: dict):
 # ── Watchdog jobs (scheduled at startup, see startup_event) ───────
 
 async def _stale_claim_watchdog():
-    """Every 5 min: find permit_renewals stuck in IN_PROGRESS for
-    >30 min and clear the claim — they re-enter the queue when the
-    next enqueue trigger fires (MR.6+ owns the re-enqueue logic;
-    MR.5's job is just to unblock the renewal record so manual
-    intervention or auto-retry can pick it up)."""
+    """Every 5 min: clean up stuck claims in two collections.
+
+    permit_renewals (MR.5): IN_PROGRESS rows with claim_at >30 min
+    ago revert to ELIGIBLE; the bookkeeping fields are unset.
+
+    filing_jobs (MR.6): jobs in {claimed, in_progress} with
+    claimed_at OR started_at >30 min ago either:
+      - retry_count < FILING_JOB_RETRY_LIMIT: revert to QUEUED,
+        retry_count++, audit-log "stale_claim_recovered" — operator's
+        next enqueue or the cron re-fires the job;
+      - retry_count >= FILING_JOB_RETRY_LIMIT: mark FAILED with
+        failure_reason="exceeded_retry_limit", audit-log
+        "retry_limit_exceeded".
+    Recovery is per-doc, not bulk update_many, because the audit_log
+    $push needs the per-doc retry_count to compute the next state.
+    """
     try:
         from permit_renewal import RenewalStatus
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        now = datetime.now(timezone.utc)
+
+        # ── permit_renewals (MR.5 behavior, unchanged) ──────────────
         result = await db.permit_renewals.update_many(
             {
                 "status": RenewalStatus.IN_PROGRESS,
@@ -19639,14 +20267,105 @@ async def _stale_claim_watchdog():
                 # operator trigger can re-prepare. Drop the claim
                 # bookkeeping fields.
                 "status": RenewalStatus.ELIGIBLE,
-                "stale_claim_cleared_at": datetime.now(timezone.utc),
-                "updated_at": datetime.now(timezone.utc),
+                "stale_claim_cleared_at": now,
+                "updated_at": now,
             }, "$unset": {"claim_at": "", "claimed_by_worker_id": ""}},
         )
         if result.modified_count > 0:
             logger.warning(
-                "[stale_claim_watchdog] cleared %d stale claims",
+                "[stale_claim_watchdog] cleared %d stale renewal claims",
                 result.modified_count,
+            )
+
+        # ── filing_jobs (MR.6 behavior) ──────────────────────────────
+        # Find candidates: in-flight statuses with stale claim/start.
+        stale_jobs_cursor = db.filing_jobs.find({
+            "status": {"$in": list(FILING_JOB_INFLIGHT_STATUSES)},
+            "is_deleted": {"$ne": True},
+            "$or": [
+                {"claimed_at": {"$lt": cutoff}},
+                {"started_at": {"$lt": cutoff}},
+            ],
+        })
+        recovered = 0
+        gave_up = 0
+        async for job in stale_jobs_cursor:
+            job_id = job.get("_id")
+            current_retry = int(job.get("retry_count") or 0)
+
+            if current_retry < FILING_JOB_RETRY_LIMIT:
+                # Revert to queued for re-enqueue. Retry counter ticks
+                # up; bookkeeping fields are cleared so the next claim
+                # starts clean.
+                event = _filing_job_audit_event(
+                    event_type="stale_claim_recovered",
+                    actor="system",
+                    detail=(
+                        f"Watchdog reverted stale {job.get('status')!r} claim "
+                        f"to queued (retry {current_retry + 1}/{FILING_JOB_RETRY_LIMIT})"
+                    ),
+                    metadata={
+                        "previous_status": job.get("status"),
+                        "previous_worker_id": job.get("claimed_by_worker_id"),
+                        "previous_retry_count": current_retry,
+                    },
+                )
+                await db.filing_jobs.update_one(
+                    {"_id": job_id},
+                    {
+                        "$set": {
+                            "status": FilingJobStatus.QUEUED.value,
+                            "retry_count": current_retry + 1,
+                            "claimed_by_worker_id": None,
+                            "claimed_at": None,
+                            "started_at": None,
+                            "updated_at": now,
+                        },
+                        "$push": {"audit_log": event},
+                    },
+                )
+                recovered += 1
+                # Note: re-LPUSH onto Redis is the responsibility of
+                # the next operator enqueue OR a future periodic
+                # re-enqueue cron. The watchdog only owns the cloud-
+                # side state revert. This is intentional — we don't
+                # want the watchdog to silently re-LPUSH a job whose
+                # snapshot might have been invalidated by intervening
+                # data changes (credential rotated, readiness gate
+                # would now fail, etc.). MR.7's UI surfaces these
+                # back-to-queued jobs so the operator can decide.
+            else:
+                # Retry cap hit → terminal failure.
+                event = _filing_job_audit_event(
+                    event_type="retry_limit_exceeded",
+                    actor="system",
+                    detail=(
+                        f"Watchdog gave up after {current_retry} retries; "
+                        f"marking job failed."
+                    ),
+                    metadata={
+                        "retry_count": current_retry,
+                        "limit": FILING_JOB_RETRY_LIMIT,
+                    },
+                )
+                await db.filing_jobs.update_one(
+                    {"_id": job_id},
+                    {
+                        "$set": {
+                            "status": FilingJobStatus.FAILED.value,
+                            "failure_reason": "exceeded_retry_limit",
+                            "completed_at": now,
+                            "updated_at": now,
+                        },
+                        "$push": {"audit_log": event},
+                    },
+                )
+                gave_up += 1
+
+        if recovered or gave_up:
+            logger.warning(
+                "[stale_claim_watchdog] filing_jobs: recovered=%d gave_up=%d",
+                recovered, gave_up,
             )
     except Exception as e:
         logger.error(f"[stale_claim_watchdog] error: {e!r}")
