@@ -1878,6 +1878,139 @@ def create_permit_renewal_routes(
             detail=f"Unhandled status during cancel: {current_status!r}",
         )
 
+    # MR.7 — POST /api/permit-renewals/{id}/filing-jobs/{job_id}/operator-input
+    # Operator → worker channel for CAPTCHA / 2FA challenges encountered
+    # during a live filing. Worker appends `captcha_required` /
+    # `2fa_required` events with metadata (image b64, channel, etc.);
+    # operator submits a response which we append as `operator_response`.
+    # The agent polls audit_log between page transitions on DOB NOW and
+    # consumes the matching response. End-to-end loop is async via the
+    # audit log — no synchronous round-trip; the worker dictates cadence.
+    ALLOWED_OPERATOR_INPUT_EVENT_TYPES = {
+        "captcha_response",
+        "2fa_response",
+    }
+
+    @api_router.post(
+        "/permit-renewals/{permit_renewal_id}/filing-jobs/{filing_job_id}/operator-input"
+    )
+    async def submit_operator_input(
+        permit_renewal_id: str,
+        filing_job_id: str,
+        body: dict,
+        current_user=Depends(get_current_user),
+    ):
+        """Operator-side response to a worker-raised challenge.
+        Appends an `operator_response` audit event the worker will
+        consume on its next audit_log poll. Gates:
+          - Tenant guard (403 cross-tenant)
+          - filing_job must exist (404)
+          - filing_job must be in_progress (409 otherwise — operator
+            input only meaningful while the worker is mid-handler)
+          - event_type validated against ALLOWED_OPERATOR_INPUT_EVENT_TYPES
+            (422)
+          - value must be a non-empty string (422)
+        """
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+
+        # Validate body shape — explicit so an empty / wrong-type body
+        # 422s instead of falling through to a confusing 500.
+        event_type = body.get("event_type") if isinstance(body, dict) else None
+        value = body.get("value") if isinstance(body, dict) else None
+        if event_type not in ALLOWED_OPERATOR_INPUT_EVENT_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        "event_type must be one of "
+                        f"{sorted(ALLOWED_OPERATOR_INPUT_EVENT_TYPES)}"
+                    ),
+                    "code": "invalid_event_type",
+                    "received": event_type,
+                },
+            )
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "value must be a non-empty string",
+                    "code": "invalid_value",
+                },
+            )
+
+        # Tenant guard via the renewal.
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        caller_company_id = _server.get_user_company_id(current_user)
+        if caller_company_id and renewal.get("company_id") != caller_company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        job = await _server.db.filing_jobs.find_one({
+            "_id": filing_job_id,
+            "permit_renewal_id": permit_renewal_id,
+            "is_deleted": {"$ne": True},
+        })
+        if not job:
+            raise HTTPException(status_code=404, detail="Filing job not found")
+
+        # Operator input is only meaningful when the worker is mid-handler.
+        # Anything outside in_progress (queued, claimed, terminal) means
+        # the worker either hasn't started or already finished — surface
+        # 409 so the UI can re-fetch and re-render.
+        if job.get("status") != _server.FilingJobStatus.IN_PROGRESS.value:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "Operator input only accepted when filing_job "
+                        "status is in_progress"
+                    ),
+                    "code": "not_in_progress",
+                    "current_status": job.get("status"),
+                },
+            )
+
+        actor = (
+            current_user.get("user_id")
+            or current_user.get("id")
+            or current_user.get("email")
+            or "operator"
+        )
+        # The audit event itself uses event_type='operator_response' so
+        # the worker's consumer can do a single-key lookup; the SPECIFIC
+        # response kind (captcha vs 2fa) lives in metadata.response_kind.
+        # This keeps the event-type taxonomy small while preserving the
+        # information the worker needs to route the response.
+        now = datetime.now(timezone.utc)
+        audit_event = _server._filing_job_audit_event(
+            event_type="operator_response",
+            actor=actor,
+            detail=f"Operator submitted {event_type}",
+            metadata={
+                "response_kind": event_type,
+                "response_value": value,
+            },
+        )
+
+        await _server.db.filing_jobs.update_one(
+            {"_id": filing_job_id},
+            {
+                "$set": {"updated_at": now},
+                "$push": {"audit_log": audit_event},
+            },
+        )
+
+        # Return the updated FilingJob so the UI can re-render without
+        # an extra GET round-trip. Re-fetch to include the new event.
+        updated = await _server.db.filing_jobs.find_one({"_id": filing_job_id})
+        return _serialize_filing_job(updated or job)
+
     # POST /api/permit-renewals/check-eligibility
     @api_router.post("/permit-renewals/check-eligibility")
     async def api_check_eligibility(

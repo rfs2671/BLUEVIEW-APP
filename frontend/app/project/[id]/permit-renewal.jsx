@@ -39,6 +39,7 @@ import { useTheme } from '../../../src/context/ThemeContext';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import apiClient from '../../../src/utils/api';
 import ManualRenewalPanel from '../../../src/components/permit-renewal/ManualRenewalPanel';
+import FilingHistorySection from '../../../src/components/permit-renewal/FilingHistorySection';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // INLINE API (mirrors permitRenewalAPI.js)
@@ -321,6 +322,35 @@ export default function PermitRenewalScreen() {
   const [projectName, setProjectName] = useState('');
   const [renewalData, setRenewalData] = useState(null);
 
+  // MR.7: filing_jobs cache, keyed by permit_renewal_id. Populated
+  // lazily on expand (we don't pre-fetch jobs for every renewal in
+  // the list — that would be N round-trips on page load just for the
+  // collapsed cards). The active job (if any) drives ManualRenewalPanel
+  // to render FilingStatusCard instead of the File button; the full
+  // list drives FilingHistorySection underneath.
+  const [filingJobsByRenewalId, setFilingJobsByRenewalId] = useState({});
+
+  const fetchFilingJobsFor = async (renewalId) => {
+    if (!renewalId) return;
+    try {
+      const resp = await apiClient.get(
+        `/api/permit-renewals/${renewalId}/filing-jobs`
+      );
+      setFilingJobsByRenewalId((prev) => ({
+        ...prev,
+        [renewalId]: resp.data?.filing_jobs || [],
+      }));
+    } catch (e) {
+      // Soft fail — the panel renders the idle File button when no
+      // jobs are loaded, which is the correct fall-back state.
+      console.warn(
+        '[permit-renewal] filing_jobs fetch failed for',
+        renewalId,
+        e?.message || e
+      );
+    }
+  };
+
   // Auth guard
   useEffect(() => {
     if (authLoading) return;
@@ -347,6 +377,19 @@ export default function PermitRenewalScreen() {
     );
     if (target) setExpandedId(target.id);
   }, [deepLinkPermitId, renewals]);
+
+  // MR.7: lazy-fetch filing_jobs when a renewal is expanded. This is
+  // the only place we fire the /filing-jobs round-trip on initial
+  // load — the collapsed list of renewal cards doesn't need them.
+  // Re-fetches if the expanded renewal hasn't been fetched yet OR
+  // when something downstream (enqueue, cancel, terminal transition)
+  // calls the onJobsChange callback we pass to ManualRenewalPanel.
+  useEffect(() => {
+    if (!expandedId) return;
+    if (filingJobsByRenewalId[expandedId] !== undefined) return; // already cached
+    fetchFilingJobsFor(expandedId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId]);
 
   const fetchRenewals = async () => {
     if (!loading) setRefreshing(true);
@@ -646,10 +689,25 @@ export default function PermitRenewalScreen() {
               now — the takeover is complete. */}
           {isExpanded && (() => {
             const ActionRenderer = actionRenderers[renewal.action?.kind];
+            // MR.7: pass the filing_jobs cache + a refetch callback so
+            // ManualRenewalPanel can render FilingStatusCard for active
+            // jobs and FilingHistorySection can render the historical
+            // list without each component making its own round-trip.
+            const filingJobsForThisRenewal =
+              filingJobsByRenewalId[renewal.id] || [];
+            const refetchJobs = () => fetchFilingJobsFor(renewal.id);
             if (ActionRenderer) {
               return (
                 <View style={s.expandedSection}>
-                  <ActionRenderer renewal={renewal} />
+                  <ActionRenderer
+                    renewal={renewal}
+                    filingJobs={filingJobsForThisRenewal}
+                    onJobsChange={refetchJobs}
+                  />
+                  {/* MR.7: read-only history of every filing_job
+                      (terminal + non-terminal) for this permit.
+                      Auto-hides when the list is empty. */}
+                  <FilingHistorySection filingJobs={filingJobsForThisRenewal} />
                 </View>
               );
             }
