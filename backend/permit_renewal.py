@@ -306,6 +306,49 @@ def _gc_name_fallbacks(canonical: str) -> List[str]:
     return out
 
 
+def _resolve_gc_legal_name(
+    project: Optional[dict],
+    company: Optional[dict],
+) -> str:
+    """Pick the best GC name to feed into the BIS license lookup,
+    preferring DOB-canonical sources before customer-typed ones.
+
+    Priority chain (first non-empty wins):
+      1. project.gc_legal_name   — manual override set in
+         Settings → DOB Permit Renewal. Operator opinion wins because
+         a per-project filer override is the only legitimate reason
+         to set this field at all.
+      2. company.gc_business_name — populated by scrape_gc_license_info
+         and the gc_licenses lookup; this is the form DOB Licensing
+         actually has on file. The right default for the BIS scrape
+         to round-trip against (matches what DOB will return).
+      3. company.gc_licensee_name — same source as (2), alternate
+         shape DOB sometimes uses (e.g. individual licensee vs.
+         business name). Falls through if (2) is missing.
+      4. company.name             — whatever was typed at company
+         creation. Last resort because customer formatting (case,
+         spacing, abbreviations) drifts from DOB-canonical and
+         degrades the BIS scrape's hit rate.
+
+    Returns "" when all four are empty/None. Callers raise the
+    user-facing 400 in that case.
+
+    Pure: no IO, no Mongo. Easy to test in isolation against
+    fixture dicts (see test_eligibility_gc_name_fallback.py)."""
+    candidates = [
+        (project or {}).get("gc_legal_name"),
+        (company or {}).get("gc_business_name"),
+        (company or {}).get("gc_licensee_name"),
+        (company or {}).get("name"),
+    ]
+    for value in candidates:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return ""
+
+
 async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
     """
     Look up a General Contractor license by business name using NYC Open Data.
@@ -2024,15 +2067,17 @@ def create_permit_renewal_routes(
             company = await db.companies.find_one(
                 {"_id": to_query_id(company_id)}
             )
-        # Prefer the project-level GC legal name (set in Settings → DOB Permit Renewal)
-        # Fall back to the company name if not set
+        # MR.7-followup: resolve the GC name via the canonical fallback
+        # chain. Order is project.gc_legal_name → company.gc_business_name
+        # → company.gc_licensee_name → company.name. The first three
+        # use DOB-canonical forms (manual override, then BIS-scraped
+        # business/licensee names); company.name is the last resort
+        # because customer-typed formatting drifts from DOB's
+        # canonical names. See _resolve_gc_legal_name for the full
+        # rationale. Only the all-four-empty case raises the 400.
         permit_log = await db.dob_logs.find_one({"_id": to_query_id(body.permit_dob_log_id)})
         project_for_gc = await db.projects.find_one({"_id": to_query_id(body.project_id)}) if body.project_id else None
-        company_name = (
-            (project_for_gc.get("gc_legal_name") or "").strip()
-            if project_for_gc
-            else ""
-        ) or (company.get("name", "") if company else "")
+        company_name = _resolve_gc_legal_name(project_for_gc, company)
         if not company_name:
             raise HTTPException(
                 status_code=400,

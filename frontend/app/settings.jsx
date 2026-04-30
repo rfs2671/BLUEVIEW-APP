@@ -122,7 +122,15 @@ export default function SettingsScreen() {
     if (!isAuthenticated || authLoading || !isAdmin) return;
     apiClient.get('/api/projects')
       .then(resp => {
-        const p = Array.isArray(resp.data) ? resp.data : [];
+        // Backend `GET /api/projects` returns the paginated_query
+        // shape `{items, total, limit, skip, has_more}`. Older callers
+        // received a bare array; this loader was on the array path
+        // and silently fell through to [] when the response shape
+        // changed, producing the "No projects found" warning even
+        // when projects existed. Mirror the defensive read in
+        // src/utils/api.js (`projectsAPI.getAll`) so both shapes work.
+        const data = resp.data;
+        const p = Array.isArray(data) ? data : (data?.items || []);
         setProjects(p);
         const firstId = p[0]?.id || p[0]?._id || '';
         if (firstId) {

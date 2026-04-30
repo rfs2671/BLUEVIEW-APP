@@ -14995,7 +14995,31 @@ async def _handle_project_info(project_id: str) -> str:
     address = project.get("address") or project.get("formatted_address") or "—"
     bin_ = project.get("nyc_bin") or project.get("bin") or ""
     bbl = project.get("bbl") or project.get("nyc_bbl") or ""
-    gc = project.get("gc_legal_name") or project.get("gc_name") or ""
+    # GC name: same canonical fallback chain as api_check_eligibility,
+    # via _resolve_gc_legal_name in permit_renewal.py. Adds one
+    # companies.find_one round-trip but matches semantics across
+    # display (here) and eligibility-check input. Falls back to the
+    # legacy project.gc_name field if the chain produces nothing,
+    # preserving the prior display behavior on old project docs that
+    # only carry that field.
+    gc = ""
+    try:
+        from permit_renewal import _resolve_gc_legal_name
+        company_for_gc = None
+        company_id = project.get("company_id")
+        if company_id:
+            try:
+                company_for_gc = await db.companies.find_one(
+                    {"_id": to_query_id(company_id)}
+                )
+            except Exception:
+                company_for_gc = None
+        gc = _resolve_gc_legal_name(project, company_for_gc)
+    except Exception:
+        # Defensive — chat handler should never crash on a name lookup.
+        gc = ""
+    if not gc:
+        gc = project.get("gc_name") or ""  # legacy field
     status = project.get("status") or "active"
 
     lines = [f"📍 *{name}*", address]
