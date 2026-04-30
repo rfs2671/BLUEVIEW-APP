@@ -60,6 +60,36 @@ def _load_private_key():
         return serialization.load_pem_private_key(f.read(), password=None)
 
 
+def agent_key_fingerprint() -> str:
+    """MR.11 — return SHA-256 hex digest of the DER-encoded public-key
+    half of the agent's local private key, matching the fingerprint
+    convention the backend stores on FilingRepCredential.public_key_
+    fingerprint at encrypt time.
+
+    Used by dob_now_filing handler to verify a credential ciphertext
+    in a queue payload was encrypted against THIS agent's keypair
+    BEFORE attempting decrypt. Mismatch = silent fail at decrypt
+    time (or worse, decrypt with garbage); the explicit check up
+    front gives the operator a clean `credential_key_mismatch`
+    error instead.
+
+    Same convention used in:
+      - backend/server.py:_compute_public_key_fingerprint (MR.10
+        registers via this when the operator POSTs the public key)
+      - frontend/src/lib/agent_crypto.js:publicKeyFingerprint
+        (encryption-side reference fingerprint for verification UI)
+    """
+    import hashlib
+    from cryptography.hazmat.primitives import serialization
+
+    private_key = _load_private_key()
+    public_der = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(public_der).hexdigest()
+
+
 def decrypt_credentials(ciphertext_b64: str) -> Dict[str, str]:
     """Decrypt a hybrid-encrypted credentials blob and return the
     {username, password} dict. Raises on tampering, wrong key, or

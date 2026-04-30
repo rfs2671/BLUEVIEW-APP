@@ -20815,6 +20815,66 @@ async def internal_agent_heartbeat(request: Request, body: dict):
     return {"received": True}
 
 
+@api_router.post("/internal/filing-job-event")
+async def internal_filing_job_event(request: Request, body: dict):
+    """MR.11 — worker-side audit-log append for mid-flight events.
+
+    Lets the worker raise events the UI needs to show (claimed,
+    started, captcha_required, 2fa_required, etc.) WITHOUT going
+    through the terminal /job-result path. The matching operator
+    response flows back through MR.7's /operator-input endpoint;
+    the worker polls audit_log via the existing
+    GET /api/permit-renewals/{id}/filing-jobs to consume it.
+
+    Body: {filing_job_id, event_type, actor?, detail?, metadata?}.
+    Auth: X-Worker-Secret (same as the other /internal/* endpoints).
+
+    Why this endpoint: MR.7 documented the worker-side challenge
+    contract but no append mechanism shipped. The /job-result
+    endpoint only $push-es audit events for terminal status
+    transitions (filed/completed/failed/cancelled); intermediate
+    events were unreachable by the worker. MR.11 needs them for
+    the 2FA/CAPTCHA prompt round-trip.
+    """
+    _validate_worker_secret(request)
+    filing_job_id = body.get("filing_job_id")
+    event_type = body.get("event_type")
+    if not filing_job_id or not event_type:
+        raise HTTPException(
+            status_code=400,
+            detail="filing_job_id and event_type are required",
+        )
+    actor = body.get("actor") or "worker"
+    detail = body.get("detail") or ""
+    metadata = body.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="metadata must be an object if provided",
+        )
+
+    event = _filing_job_audit_event(
+        event_type=event_type,
+        actor=actor,
+        detail=detail,
+        metadata=metadata,
+    )
+    result = await db.filing_jobs.update_one(
+        {"_id": filing_job_id, "is_deleted": {"$ne": True}},
+        {
+            "$set": {"updated_at": event["timestamp"]},
+            "$push": {"audit_log": event},
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="filing_job not found")
+    return {
+        "appended": True,
+        "filing_job_id": filing_job_id,
+        "event_type": event_type,
+    }
+
+
 # ── Watchdog jobs (scheduled at startup, see startup_event) ───────
 
 async def _stale_claim_watchdog():

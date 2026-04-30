@@ -32,14 +32,32 @@ class TestHandlerRoutingTable(unittest.TestCase):
         from handlers import get_handler
         self.assertIsNone(get_handler("mystery"))
 
-    def test_dob_now_filing_stub_returns_not_implemented(self):
-        # Direct import bypasses the bis_scrape heavy-deps chain.
+    def test_dob_now_filing_handler_imports_cleanly(self):
+        """Post-MR.11: the handler is no longer a stub — it's the
+        real Playwright-driven implementation. Smoke test confirms
+        the module imports without error and exposes the contract-
+        required `handle` async function. Detailed handler behavior
+        is covered in test_dob_now_filing_handler.py via mocked
+        Playwright fixtures; this test just pins the module-level
+        contract so the dispatcher can route to it."""
+        from handlers.dob_now_filing import handle
+        self.assertTrue(callable(handle))
+        # Sanity: the handler signature accepts payload + context.
+        # We don't invoke it here — that needs a real keypair and
+        # Playwright mock setup which lives in the dedicated test
+        # file. This is the routing-table contract check only.
+
+    def test_dob_now_filing_returns_failed_on_missing_credentials(self):
+        """Quick smoke that the handler returns a controlled
+        HandlerResult (not a raise) when called with an empty
+        payload — confirms the entry-point error path is wired,
+        without dragging in Playwright mocks."""
         from handlers.dob_now_filing import handle
         from lib.handler_types import HandlerContext
         ctx = HandlerContext(worker_id="w1", http_client=MagicMock())
         result = _run(handle({"permit_renewal_id": "r1"}, ctx))
-        self.assertEqual(result.status, "not_implemented")
-        self.assertEqual(result.metadata.get("permit_renewal_id"), "r1")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.detail, "missing_credentials_field")
 
 
 class TestDispatchOne(unittest.TestCase):
@@ -75,7 +93,14 @@ class TestDispatchOne(unittest.TestCase):
         self.assertEqual(payload["result"]["status"], "failed")
         self.assertIn("Unknown job_type", payload["result"]["detail"])
 
-    def test_dob_now_filing_routes_to_stub_handler(self):
+    def test_dob_now_filing_routes_to_real_handler(self):
+        """Post-MR.11: dispatcher routes dob_now_filing jobs to the
+        real handler. Without a decryptable ciphertext + Playwright
+        mocks, the handler bails early with detail=
+        missing_credentials_field — but the important assertion
+        here is that the dispatch + post-result flow fires once
+        with the right job_type, NOT that the handler succeeds.
+        Full handler behavior is in test_dob_now_filing_handler.py."""
         import dob_worker as dw
         from lib.circuit_breaker import BreakerRegistry
         from lib.heartbeat import HeartbeatState
@@ -89,14 +114,19 @@ class TestDispatchOne(unittest.TestCase):
              patch("dob_worker.claim_renewal", new=AsyncMock(return_value=True)):
             _run(dw._dispatch_one(
                 {"id": "j2", "type": "dob_now_filing",
-                 "data": {"permit_renewal_id": "r1"}},
+                 "data": {"permit_renewal_id": "r1"}},  # no ciphertext
                 context=ctx, breakers=breakers, state=state,
             ))
 
         self.assertEqual(http.post.await_count, 1)
         payload = http.post.await_args.kwargs["json"]
         self.assertEqual(payload["job_type"], "dob_now_filing")
-        self.assertEqual(payload["result"]["status"], "not_implemented")
+        # Real handler returns 'failed' with a specific reason now,
+        # not 'not_implemented'.
+        self.assertEqual(payload["result"]["status"], "failed")
+        self.assertEqual(
+            payload["result"]["detail"], "missing_credentials_field",
+        )
 
     def test_dob_now_filing_refused_when_not_live(self):
         import dob_worker as dw

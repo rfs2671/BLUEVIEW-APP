@@ -132,9 +132,12 @@ async def post_result(
     permit_renewal_id: Optional[str],
     result_dict: Dict[str, Any],
     worker_id: str,
+    filing_job_id: Optional[str] = None,
 ):
     """Post the handler's result to the cloud. Cloud transitions
-    permit_renewals state based on result_dict['status']."""
+    permit_renewals state based on result_dict['status']. When
+    filing_job_id is provided (MR.6+), the cloud ALSO transitions
+    the FilingJob doc and appends a terminal audit event."""
     payload = {
         "job_id": job_id,
         "job_type": job_type,
@@ -142,6 +145,8 @@ async def post_result(
         "worker_id": worker_id,
         "result": result_dict,
     }
+    if filing_job_id:
+        payload["filing_job_id"] = filing_job_id
     resp = await http_client.post(
         f"{backend_url}/api/internal/job-result",
         json=payload,
@@ -150,3 +155,77 @@ async def post_result(
         logger.warning(
             "[queue] /job-result returned %s: %s", resp.status_code, resp.text,
         )
+
+
+async def post_filing_job_event(
+    http_client,
+    *,
+    backend_url: str,
+    filing_job_id: str,
+    event_type: str,
+    detail: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    actor: str = "worker",
+) -> bool:
+    """MR.11 — append a mid-flight audit event to a FilingJob's
+    audit_log. Used for challenge events (captcha_required,
+    2fa_required, started, etc.) that the operator UI needs to see
+    before the terminal /job-result post.
+
+    Returns True on 200 success. False on any non-200 (including
+    404 for unknown filing_job_id and 401 for bad worker secret).
+    The handler treats False as a soft signal — log + continue,
+    don't crash the filing run because the audit append failed.
+    The terminal /job-result post will still record the outcome."""
+    resp = await http_client.post(
+        f"{backend_url}/api/internal/filing-job-event",
+        json={
+            "filing_job_id": filing_job_id,
+            "event_type": event_type,
+            "actor": actor,
+            "detail": detail,
+            "metadata": metadata or {},
+        },
+    )
+    if resp.status_code != 200:
+        logger.warning(
+            "[queue] /filing-job-event returned %s for filing_job_id=%s "
+            "event_type=%s: %s",
+            resp.status_code, filing_job_id, event_type, resp.text,
+        )
+        return False
+    return True
+
+
+async def fetch_filing_job(
+    http_client,
+    *,
+    backend_url: str,
+    permit_renewal_id: str,
+    filing_job_id: str,
+) -> Optional[Dict[str, Any]]:
+    """MR.11 — fetch the latest FilingJob doc to read audit_log
+    (for operator_response polling) and the cancellation_requested
+    flag. Returns the matched job dict or None on any non-200.
+
+    Uses the existing operator-tier list endpoint
+    /api/permit-renewals/{id}/filing-jobs (auth: bearer/cookie),
+    NOT a worker-tier endpoint. The worker reuses the
+    X-Worker-Secret header that's already on http_client; backend
+    accepts both for this read path because the data isn't
+    sensitive — fingerprints + audit_log + status are all
+    operator-visible already."""
+    resp = await http_client.get(
+        f"{backend_url}/api/permit-renewals/{permit_renewal_id}/filing-jobs",
+    )
+    if resp.status_code != 200:
+        logger.warning(
+            "[queue] fetch_filing_job got %s for renewal=%s",
+            resp.status_code, permit_renewal_id,
+        )
+        return None
+    jobs = (resp.json() or {}).get("filing_jobs") or []
+    for job in jobs:
+        if str(job.get("id")) == str(filing_job_id) or str(job.get("_id")) == str(filing_job_id):
+            return job
+    return None
