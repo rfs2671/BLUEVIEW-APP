@@ -20426,6 +20426,280 @@ async def _heartbeat_watchdog():
         logger.error(f"[heartbeat_watchdog] error: {e!r}")
 
 
+# ── MR.8: DOB approval watcher ─────────────────────────────────────
+# Closes the post-filing tracking loop. Once MR.6's worker reports
+# status=filed, the renewal sits in AWAITING_DOB_APPROVAL until DOB
+# stamps the new expiration on the underlying permit. This watcher
+# polls dob_logs (refreshed independently by nightly_dob_scan) and
+# transitions the renewal to COMPLETED when dob_log.expiration_date
+# advances past renewal.current_expiration.
+#
+# Cadence: every 30 min. Same interval as nightly_dob_scan but a
+# different concern: nightly_dob_scan REFRESHES dob_logs from NYC
+# Open Data; this watcher CONSUMES the refreshed data to drive
+# renewal state. They're complementary — running both at 30 min
+# means worst-case latency from DOB stamping to operator-visible
+# completion is ~60 min (one cycle to refresh dob_logs + one cycle
+# for the watcher to read it). Acceptable for a renewal that's
+# already 5–10 business days into DOB processing.
+#
+# Idempotency:
+#   • Completion transition: only fires when status is currently
+#     AWAITING_DOB_APPROVAL. Once flipped to COMPLETED, the renewal
+#     is filtered out of subsequent watcher runs by the status query.
+#   • Stuck-at-DOB event: the audit_log is scanned for an existing
+#     `stuck_at_dob` event before append — re-running the watcher
+#     does not duplicate. The event is appended exactly once per
+#     stuck renewal.
+
+DOB_APPROVAL_STUCK_THRESHOLD_DAYS = 14
+
+
+def _safe_parse_date(value) -> Optional[datetime]:
+    """Robust date parser used by the watcher. Accepts strings (ISO,
+    M/D/YYYY, M-D-YYYY, etc.) and datetime objects. Returns None on
+    parse failure rather than raising — the watcher logs and skips."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        from dateutil import parser as dateparser
+        return dateparser.parse(str(value))
+    except Exception:
+        return None
+
+
+async def _append_filing_job_audit_event(
+    permit_renewal_id: str,
+    event: dict,
+    *,
+    update_status: Optional[str] = None,
+    extra_set_fields: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Find the most recent FilingJob for a renewal and $push the event.
+    Optionally also set FilingJob.status and other fields atomically.
+    Returns the filing_job_id touched, or None if no FilingJob exists
+    (e.g. renewal was filed via the legacy MR.1 path before MR.6)."""
+    job = await db.filing_jobs.find_one(
+        {
+            "permit_renewal_id": permit_renewal_id,
+            "is_deleted": {"$ne": True},
+        },
+        sort=[("created_at", -1)],
+    )
+    if not job:
+        return None
+    set_fields: Dict[str, Any] = {"updated_at": event["timestamp"]}
+    if update_status:
+        set_fields["status"] = update_status
+    if extra_set_fields:
+        set_fields.update(extra_set_fields)
+    await db.filing_jobs.update_one(
+        {"_id": job["_id"]},
+        {
+            "$set": set_fields,
+            "$push": {"audit_log": event},
+        },
+    )
+    return str(job["_id"])
+
+
+async def dob_approval_watcher():
+    """Every 30 min: detect renewal completion in DOB data and
+    transition AWAITING_DOB_APPROVAL → COMPLETED. Also surfaces a
+    stuck-at-DOB signal for renewals waiting >14 days.
+
+    Per-renewal exceptions are caught and logged so one bad row
+    doesn't kill the cycle. The cycle itself is wrapped in a
+    blanket try/except for the same reason — apscheduler should
+    never see a raise from this job."""
+    try:
+        from permit_renewal import RenewalStatus
+    except ModuleNotFoundError:
+        from backend.permit_renewal import RenewalStatus
+
+    try:
+        now = datetime.now(timezone.utc)
+        stuck_threshold = now - timedelta(days=DOB_APPROVAL_STUCK_THRESHOLD_DAYS)
+
+        cursor = db.permit_renewals.find({
+            "status": RenewalStatus.AWAITING_DOB_APPROVAL.value,
+            "is_deleted": {"$ne": True},
+        })
+
+        confirmed = 0
+        stuck_appended = 0
+        skipped = 0
+
+        async for renewal in cursor:
+            try:
+                renewal_id = renewal.get("_id")
+                permit_dob_log_id = renewal.get("permit_dob_log_id")
+                if not permit_dob_log_id:
+                    logger.warning(
+                        "[dob_approval_watcher] renewal %s has no "
+                        "permit_dob_log_id; skipping",
+                        renewal_id,
+                    )
+                    skipped += 1
+                    continue
+
+                dob_log = await db.dob_logs.find_one(
+                    {"_id": to_query_id(permit_dob_log_id)}
+                )
+                if not dob_log:
+                    logger.warning(
+                        "[dob_approval_watcher] dob_log %s not found for "
+                        "renewal %s; skipping",
+                        permit_dob_log_id, renewal_id,
+                    )
+                    skipped += 1
+                    continue
+
+                old_exp_str = renewal.get("current_expiration")
+                new_exp_str = dob_log.get("expiration_date")
+                old_exp = _safe_parse_date(old_exp_str)
+                new_exp = _safe_parse_date(new_exp_str)
+
+                if old_exp is None or new_exp is None:
+                    # Can't compare. Don't promote, don't add stuck
+                    # (we don't have data for that judgment either).
+                    skipped += 1
+                    continue
+
+                # Compare as dates only — permit expirations are
+                # calendar dates; ignoring time-of-day sidesteps
+                # tz-aware-vs-naive comparison errors.
+                if new_exp.date() > old_exp.date():
+                    # Renewal complete.
+                    transition_event = {
+                        "event_type": "renewal_confirmed_in_dob",
+                        "timestamp": now,
+                        "actor": "dob_approval_watcher",
+                        "detail": (
+                            f"DOB stamped new expiration {new_exp_str} "
+                            f"(was {old_exp_str})"
+                        ),
+                        "metadata": {
+                            "old_expiration": old_exp_str,
+                            "new_expiration": new_exp_str,
+                        },
+                    }
+                    # Update the renewal first; FilingJob update
+                    # follows. If the FilingJob update fails, the
+                    # renewal is still correctly transitioned —
+                    # operator-visible state is the priority.
+                    await db.permit_renewals.update_one(
+                        {"_id": renewal_id},
+                        {"$set": {
+                            "status": RenewalStatus.COMPLETED.value,
+                            "completed_at": now,
+                            "new_expiration_date": new_exp_str,
+                            "updated_at": now,
+                        }},
+                    )
+                    try:
+                        from permit_renewal import RenewalStatus as _RS  # local re-bind for closure clarity
+                        await _append_filing_job_audit_event(
+                            permit_renewal_id=str(renewal_id),
+                            event=transition_event,
+                            update_status="completed",
+                            extra_set_fields={"completed_at": now},
+                        )
+                    except Exception as fj_err:
+                        logger.warning(
+                            "[dob_approval_watcher] renewal %s transitioned "
+                            "to completed but FilingJob audit append failed: %r",
+                            renewal_id, fj_err,
+                        )
+                    confirmed += 1
+                    logger.info(
+                        "[dob_approval_watcher] renewal %s completed: "
+                        "%s -> %s",
+                        renewal_id, old_exp_str, new_exp_str,
+                    )
+                    continue
+
+                # Still waiting. Check stuck-at-DOB threshold.
+                created_at = renewal.get("created_at")
+                if isinstance(created_at, str):
+                    created_at = _safe_parse_date(created_at)
+                if isinstance(created_at, datetime) and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+
+                if created_at and created_at < stuck_threshold:
+                    # Idempotency: only append the stuck event if
+                    # the most recent FilingJob's audit_log doesn't
+                    # already carry one. Walk back-to-front; first
+                    # match short-circuits.
+                    fj = await db.filing_jobs.find_one(
+                        {
+                            "permit_renewal_id": str(renewal_id),
+                            "is_deleted": {"$ne": True},
+                        },
+                        sort=[("created_at", -1)],
+                    )
+                    if fj is None:
+                        # No FilingJob to attach to (legacy renewal).
+                        # Skip silently — the renewal-level state on
+                        # the `created_at` age is enough for the
+                        # operator to see it's stuck.
+                        continue
+                    already = any(
+                        ev.get("event_type") == "stuck_at_dob"
+                        for ev in (fj.get("audit_log") or [])
+                    )
+                    if already:
+                        continue
+                    days_stuck = int(
+                        (now - created_at).total_seconds() // 86400
+                    )
+                    stuck_event = {
+                        "event_type": "stuck_at_dob",
+                        "timestamp": now,
+                        "actor": "dob_approval_watcher",
+                        "detail": (
+                            f"Renewal still awaiting DOB approval after "
+                            f"{days_stuck} days. Operator should check "
+                            f"DOB NOW manually."
+                        ),
+                        "metadata": {
+                            "days_stuck": days_stuck,
+                            "old_expiration": old_exp_str,
+                            "current_dob_expiration": new_exp_str,
+                        },
+                    }
+                    await db.filing_jobs.update_one(
+                        {"_id": fj["_id"]},
+                        {
+                            "$set": {"updated_at": now},
+                            "$push": {"audit_log": stuck_event},
+                        },
+                    )
+                    stuck_appended += 1
+                    logger.info(
+                        "[dob_approval_watcher] stuck_at_dob appended for "
+                        "renewal %s (days_stuck=%d)",
+                        renewal_id, days_stuck,
+                    )
+            except Exception as per_err:
+                logger.error(
+                    "[dob_approval_watcher] error on renewal %s: %r",
+                    renewal.get("_id"), per_err,
+                )
+                continue
+
+        if confirmed or stuck_appended or skipped:
+            logger.info(
+                "[dob_approval_watcher] cycle: confirmed=%d "
+                "stuck_appended=%d skipped=%d",
+                confirmed, stuck_appended, skipped,
+            )
+    except Exception as e:
+        logger.error(f"[dob_approval_watcher] cycle error: {e!r}")
+
+
 # Card audit routers — gate_router serves public HTML at /checkin/...
 # and /enrollment/... (no auth, workers are anonymous), admin_router
 # serves JSON at /api/admin/... (admin-gated). The admin gate is a
@@ -20838,6 +21112,20 @@ async def startup_event():
         IntervalTrigger(minutes=5),
         id='heartbeat_watchdog',
         replace_existing=True,
+    )
+
+    # MR.8: DOB approval watcher — every 30 min, checks dob_logs for
+    # renewed permit expirations and transitions matching renewals
+    # from AWAITING_DOB_APPROVAL → COMPLETED. Staggered 10 min off the
+    # nightly_dob_scan tick so dob_logs is freshly refreshed before
+    # the watcher reads it (worst case is one missed read window;
+    # the next 30-min cycle catches it).
+    scheduler.add_job(
+        dob_approval_watcher,
+        IntervalTrigger(minutes=30),
+        id='dob_approval_watcher',
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=10),
     )
 
     # 311 fast poll — every 30 minutes, staggered 15 min off the DOB scan so

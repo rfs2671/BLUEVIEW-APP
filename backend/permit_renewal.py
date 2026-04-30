@@ -1828,6 +1828,112 @@ def create_permit_renewal_routes(
             jobs.append(_serialize_filing_job(job))
         return {"filing_jobs": jobs, "total": len(jobs)}
 
+    # MR.8: GET /api/permit-renewals/{permit_renewal_id}/dob-confirmation
+    @api_router.get(
+        "/permit-renewals/{permit_renewal_id}/dob-confirmation"
+    )
+    async def get_dob_confirmation(
+        permit_renewal_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Tight view of the DOB-side confirmation state for a
+        renewal. Distinct from GET /filing-jobs (which returns the
+        full audit_log per-job) — this endpoint surfaces only the
+        fields a UI needs to render the post-filed status panel:
+        confirmation number, expiration dates, and time-in-DOB-queue.
+
+        Shape:
+          {
+            status: <RenewalStatus value>,
+            confirmation_number: <FilingJob.dob_confirmation_number or None>,
+            old_expiration: <renewal.current_expiration>,
+            new_expiration_date: <renewal.new_expiration_date or None>,
+            watch_started_at: <ISO datetime — when the renewal entered
+                              awaiting_dob_approval; falls back to
+                              latest FilingJob.completed_at then to
+                              renewal.filed_at>,
+            days_in_dob_queue: <int days, computed from watch_started_at>,
+            stuck_at_dob: <bool — true if a stuck_at_dob audit event
+                          exists on the latest FilingJob>,
+          }
+        Tenant guard matches the other /{permit_renewal_id}/*
+        endpoints. 404 when the renewal is missing."""
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        company_id = _server.get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Latest FilingJob — supplies confirmation_number + watch_start
+        # signal + stuck flag from audit_log.
+        latest_job = await _server.db.filing_jobs.find_one(
+            {
+                "permit_renewal_id": permit_renewal_id,
+                "is_deleted": {"$ne": True},
+            },
+            sort=[("created_at", -1)],
+        )
+
+        watch_started_at = None
+        confirmation_number = None
+        stuck_at_dob = False
+        if latest_job:
+            confirmation_number = latest_job.get("dob_confirmation_number")
+            # Prefer the audit_log's "filed" event timestamp — that's
+            # the moment DOB processing started counting. Fall back
+            # to the FilingJob's completed_at, then to renewal.filed_at.
+            for ev in (latest_job.get("audit_log") or []):
+                if ev.get("event_type") == "filed":
+                    watch_started_at = ev.get("timestamp")
+                if ev.get("event_type") == "stuck_at_dob":
+                    stuck_at_dob = True
+            if watch_started_at is None:
+                watch_started_at = latest_job.get("completed_at")
+
+        if watch_started_at is None:
+            watch_started_at = renewal.get("filed_at")
+
+        # Compute days_in_dob_queue defensively. Strings get parsed;
+        # naive datetimes get treated as UTC.
+        days_in_dob_queue = None
+        if watch_started_at is not None:
+            ws_dt = watch_started_at
+            if isinstance(ws_dt, str):
+                try:
+                    from dateutil import parser as dateparser
+                    ws_dt = dateparser.parse(ws_dt)
+                except Exception:
+                    ws_dt = None
+            if isinstance(ws_dt, datetime):
+                if ws_dt.tzinfo is None:
+                    ws_dt = ws_dt.replace(tzinfo=timezone.utc)
+                delta = datetime.now(timezone.utc) - ws_dt
+                days_in_dob_queue = max(0, int(delta.total_seconds() // 86400))
+
+        # Coerce datetime to ISO for JSON.
+        if isinstance(watch_started_at, datetime):
+            if watch_started_at.tzinfo is None:
+                watch_started_at = watch_started_at.replace(tzinfo=timezone.utc)
+            watch_started_at = watch_started_at.isoformat()
+
+        return {
+            "status": renewal.get("status"),
+            "confirmation_number": confirmation_number,
+            "old_expiration": renewal.get("current_expiration"),
+            "new_expiration_date": renewal.get("new_expiration_date"),
+            "watch_started_at": watch_started_at,
+            "days_in_dob_queue": days_in_dob_queue,
+            "stuck_at_dob": stuck_at_dob,
+        }
+
     # DELETE /api/permit-renewals/{permit_renewal_id}/filing-jobs/{filing_job_id}
     @api_router.delete(
         "/permit-renewals/{permit_renewal_id}/filing-jobs/{filing_job_id}"

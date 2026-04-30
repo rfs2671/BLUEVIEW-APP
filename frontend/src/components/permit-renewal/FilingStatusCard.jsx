@@ -70,11 +70,28 @@ const POLL_INTERVAL_MS = 5_000;
 // backend adds a new terminal status, update this set or the polling
 // will loop forever on it.
 const TERMINAL_STATUSES = new Set([
-  'filed',      // DOB accepted, awaiting expiry stamp
+  'filed',      // DOB accepted, awaiting expiry stamp (MR.8 watcher transitions to completed)
   'completed',  // DOB stamped expiry, fully done
   'failed',
   'cancelled',
 ]);
+
+// MR.8: when the dob_approval_watcher transitions a renewal to
+// completed, it also flips the FilingJob to status=completed AND
+// appends a renewal_confirmed_in_dob audit event with metadata
+// {old_expiration, new_expiration}. The card uses the audit event
+// to surface the new expiration without an extra round-trip.
+const RENEWAL_CONFIRMED_EVENT_TYPE = 'renewal_confirmed_in_dob';
+const STUCK_AT_DOB_EVENT_TYPE = 'stuck_at_dob';
+const FILED_EVENT_TYPE = 'filed';
+
+const findLatestEventByType = (job, eventType) => {
+  if (!job?.audit_log) return null;
+  for (let i = job.audit_log.length - 1; i >= 0; i--) {
+    if (job.audit_log[i].event_type === eventType) return job.audit_log[i];
+  }
+  return null;
+};
 
 // DOB NOW landing page — operator navigates manually because the
 // deep-link flow doesn't carry session context (research 2026-04-29).
@@ -98,19 +115,22 @@ const STATUS_BADGE = {
 // 2fa_required, operator_response, stale_claim_recovered, etc.) without
 // inventing new status entries.
 const EVENT_TYPE_LABEL = {
-  queued:                   'Job queued',
-  claimed:                  'Agent picked up',
-  started:                  'Filing started',
-  filed:                    'Filed at DOB NOW',
-  completed:                'Completed',
-  failed:                   'Filing failed',
-  cancelled:                'Cancelled',
-  cancellation_requested:   'Cancellation requested',
-  stale_claim_recovered:    'Stale claim recovered',
-  retry_limit_exceeded:     'Retry limit exceeded',
-  captcha_required:         'CAPTCHA required',
-  '2fa_required':           '2FA required',
-  operator_response:        'Operator submitted response',
+  queued:                          'Job queued',
+  claimed:                         'Agent picked up',
+  started:                         'Filing started',
+  filed:                           'Filed at DOB NOW',
+  completed:                       'Completed',
+  failed:                          'Filing failed',
+  cancelled:                       'Cancelled',
+  cancellation_requested:          'Cancellation requested',
+  stale_claim_recovered:           'Stale claim recovered',
+  retry_limit_exceeded:            'Retry limit exceeded',
+  captcha_required:                'CAPTCHA required',
+  '2fa_required':                  '2FA required',
+  operator_response:               'Operator submitted response',
+  non_critical_unmappable_fields:  'Non-critical fields skipped',
+  renewal_confirmed_in_dob:        'Renewal confirmed by DOB',
+  stuck_at_dob:                    'Stuck at DOB (>14 days)',
 };
 
 const formatEventType = (et) => EVENT_TYPE_LABEL[et] || (et ? String(et) : 'Event');
@@ -331,6 +351,34 @@ const FilingStatusCard = ({
   const captchaEvent = captchaOpen ? findLatestChallengeEvent(job, 'captcha_required') : null;
   const tfaEvent = tfaOpen ? findLatestChallengeEvent(job, '2fa_required') : null;
 
+  // MR.8 — derived state for the post-filed tracking surface.
+  // Even when the FilingJob.status hasn't been flipped yet (the
+  // dob_approval_watcher might run after the worker reports filed),
+  // a renewal_confirmed_in_dob audit event is the authoritative
+  // signal that DOB has stamped the new expiration. Surface it.
+  const renewalConfirmedEvent = findLatestEventByType(job, RENEWAL_CONFIRMED_EVENT_TYPE);
+  const stuckAtDob = !!findLatestEventByType(job, STUCK_AT_DOB_EVENT_TYPE);
+  const filedEvent = findLatestEventByType(job, FILED_EVENT_TYPE);
+  const newExpiration = renewalConfirmedEvent?.metadata?.new_expiration
+    || job.new_expiration_date
+    || null;
+
+  // Days the filing has been sitting in DOB's queue. Computed from
+  // the `filed` audit event timestamp — that's the moment DOB
+  // processing started counting. Falls back to filed_at on the doc
+  // if the event taxonomy ever shifts.
+  const daysInDobQueue = (() => {
+    const startIso = filedEvent?.timestamp || job.filed_at || null;
+    if (!startIso) return null;
+    const startMs = new Date(startIso).getTime();
+    if (Number.isNaN(startMs)) return null;
+    const days = Math.max(
+      0,
+      Math.floor((Date.now() - startMs) / (24 * 60 * 60 * 1000))
+    );
+    return days;
+  })();
+
   return (
     <View style={s.card}>
       {/* Header: status badge + filing-job ID */}
@@ -384,9 +432,25 @@ const FilingStatusCard = ({
         />
       )}
 
-      {/* Completed: confirmation number + DOB NOW deep-link */}
-      {status === 'completed' && (
+      {/* MR.8 — Completed renewal summary. Renders for both
+          status==='completed' AND for the case where the watcher
+          flipped a stale filed → completed before the next polling
+          tick caught up: renewalConfirmedEvent is the authoritative
+          signal even if status string is lagging. */}
+      {(status === 'completed' || renewalConfirmedEvent) && (
         <View style={s.completedBlock}>
+          <View style={[s.bannerInfo, { borderColor: '#10b98180', backgroundColor: '#10b98125' }]}>
+            <ShieldCheck size={16} color="#10b981" />
+            <Text style={[s.bannerText, { color: '#065f46', fontFamily: typography.semibold }]}>
+              Permit renewed!
+            </Text>
+          </View>
+          {newExpiration && (
+            <View style={s.confirmationRow}>
+              <Text style={s.confirmationLabel}>New Expiration</Text>
+              <Text style={s.confirmationValue}>{newExpiration}</Text>
+            </View>
+          )}
           {job.dob_confirmation_number && (
             <View style={s.confirmationRow}>
               <Text style={s.confirmationLabel}>DOB Confirmation</Text>
@@ -402,15 +466,47 @@ const FilingStatusCard = ({
         </View>
       )}
 
-      {/* Filed (awaiting DOB approval): bridge to MR.8 messaging */}
-      {status === 'filed' && (
-        <View style={s.bannerInfo}>
-          <Clock size={14} color="#10b981" />
-          <Text style={s.bannerText}>
-            Filing submitted. DOB processing typically takes 5–10 business days.
-            We'll watch for the renewed expiration date and update this record
-            automatically.
-          </Text>
+      {/* Filed (awaiting DOB approval): bridge to MR.8 messaging.
+          Only render when there's NO renewal_confirmed_in_dob event
+          yet — once the watcher confirms, the completed block above
+          takes over even before the FilingJob.status flips. */}
+      {status === 'filed' && !renewalConfirmedEvent && (
+        <View style={s.filedBlock}>
+          <View style={s.bannerInfo}>
+            <Clock size={14} color="#10b981" />
+            <Text style={s.bannerText}>
+              Filing submitted. DOB processing typically takes 5–10 business days.
+              We'll watch for the renewed expiration date and update this record
+              automatically.
+            </Text>
+          </View>
+          {/* MR.8: surface the days-in-queue counter so the operator
+              can see at a glance whether the filing is on the normal
+              5–10 day track or starting to look stuck. */}
+          {typeof daysInDobQueue === 'number' && (
+            <View style={s.queueRow}>
+              <Text style={s.queueLabel}>Days in DOB Queue</Text>
+              <Text style={[
+                s.queueValue,
+                stuckAtDob && { color: '#f59e0b' },
+              ]}>
+                {daysInDobQueue}
+              </Text>
+            </View>
+          )}
+          {/* Stuck-at-DOB warning surfaced when the watcher has
+              already flagged the renewal (>14 days) and we haven't
+              received a confirmation yet. */}
+          {stuckAtDob && (
+            <View style={s.bannerWarn}>
+              <AlertTriangle size={14} color="#f59e0b" />
+              <Text style={s.bannerText}>
+                This filing has been sitting at DOB longer than usual.
+                Consider checking DOB NOW directly — the agent can't
+                un-stick a filing that DOB hasn't processed.
+              </Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -683,6 +779,31 @@ function buildStyles(colors) {
     // ── completed block ───────────────────────────────────────────
     completedBlock: {
       gap: spacing.sm,
+    },
+    // ── filed block (MR.8) ────────────────────────────────────────
+    filedBlock: {
+      gap: spacing.sm,
+    },
+    queueRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingVertical: spacing.xs,
+      paddingHorizontal: spacing.md,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    queueLabel: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+    queueValue: {
+      fontFamily: typography.semibold,
+      fontSize: 14,
+      color: colors.text.primary,
     },
     confirmationRow: {
       paddingVertical: spacing.sm,
