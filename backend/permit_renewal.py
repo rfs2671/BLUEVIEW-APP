@@ -1318,6 +1318,54 @@ def create_permit_renewal_routes(
             )
         return serialize_id(renewal)
 
+    # MR.4: GET /api/permit-renewals/{renewal_id}/pw2-field-map
+    @api_router.get("/permit-renewals/{renewal_id}/pw2-field-map")
+    async def get_pw2_field_map(
+        renewal_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """PW2 form-fill field map for the local Playwright agent.
+        Pure deterministic transform — no Mongo writes, no external
+        IO. Returns a JSON map of field-name → typed value pairs the
+        agent will type into DOB NOW's PW2 form, plus required
+        attachments and operator notes.
+
+        Caller should run filing-readiness first; this endpoint
+        returns 409 when the readiness report's `ready` is false so
+        consumers can't accidentally bypass the pre-flight gate.
+        Same tenant guard as the other /{renewal_id}/* endpoints.
+        """
+        from lib.pw2_field_mapper import map_pw2_fields
+        from lib.filing_readiness import check_filing_readiness
+
+        renewal = await db.permit_renewals.find_one(
+            {"_id": to_query_id(renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        company_id = get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Readiness gate — refuse the field map when readiness fails.
+        # Lets MR.6 (the enqueue endpoint) call this directly without
+        # re-running readiness.
+        readiness = await check_filing_readiness(db, renewal_id)
+        if not readiness.ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Filing readiness check failed; resolve blockers before requesting field map.",
+                    "blockers": readiness.blockers,
+                    "readiness_endpoint": (
+                        f"/api/permit-renewals/{renewal_id}/filing-readiness"
+                    ),
+                },
+            )
+
+        field_map = await map_pw2_fields(db, renewal_id)
+        return field_map.model_dump()
+
     # MR.3: GET /api/permit-renewals/{renewal_id}/filing-readiness
     @api_router.get("/permit-renewals/{renewal_id}/filing-readiness")
     async def get_filing_readiness(
