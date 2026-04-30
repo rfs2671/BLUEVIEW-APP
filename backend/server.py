@@ -3489,6 +3489,212 @@ async def admin_list_filing_jobs(
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+# MR.9 — Notification observability + manual resend (owner-tier).
+# ──────────────────────────────────────────────────────────────────────
+
+VALID_NOTIFICATION_TRIGGERS_FOR_FILTER = {
+    "renewal_t_minus_30",
+    "renewal_t_minus_14",
+    "renewal_t_minus_7",
+    "filing_stuck",
+    "renewal_completed",
+}
+
+
+@api_router.get("/admin/notifications", tags=["Admin"])
+async def admin_list_notifications(
+    current_user=Depends(get_current_user),
+    trigger_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    permit_renewal_id: Optional[str] = Query(None),
+    sent_after: Optional[str] = Query(None, description="ISO-8601"),
+    sent_before: Optional[str] = Query(None, description="ISO-8601"),
+    sort_dir: int = Query(-1, ge=-1, le=1),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
+    """List notification_log entries — owner-tier audit surface. Used
+    to answer "did the operator actually get the email?" — filters by
+    trigger_type, status, permit_renewal_id, and ISO-8601 date range.
+    Returns the paginated_query envelope shape."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    if sort_dir not in (-1, 1):
+        raise HTTPException(status_code=400, detail="sort_dir must be -1 or 1")
+
+    query: Dict[str, Any] = {"is_deleted": {"$ne": True}}
+    if trigger_type:
+        if trigger_type not in VALID_NOTIFICATION_TRIGGERS_FOR_FILTER:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"trigger_type must be one of "
+                    f"{sorted(VALID_NOTIFICATION_TRIGGERS_FOR_FILTER)}"
+                ),
+            )
+        query["trigger_type"] = trigger_type
+    if status:
+        from lib.notifications import VALID_NOTIFICATION_STATUSES
+        if status not in VALID_NOTIFICATION_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"status must be one of "
+                    f"{sorted(VALID_NOTIFICATION_STATUSES)}"
+                ),
+            )
+        query["status"] = status
+    if permit_renewal_id:
+        query["permit_renewal_id"] = permit_renewal_id
+
+    if sent_after or sent_before:
+        date_query: Dict[str, datetime] = {}
+        try:
+            if sent_after:
+                date_query["$gte"] = datetime.fromisoformat(
+                    sent_after.replace("Z", "+00:00")
+                )
+            if sent_before:
+                date_query["$lte"] = datetime.fromisoformat(
+                    sent_before.replace("Z", "+00:00")
+                )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"sent_after/sent_before must be ISO-8601: {e}",
+            )
+        query["sent_at"] = date_query
+
+    cursor = (
+        db.notification_log.find(query)
+        .sort("sent_at", sort_dir)
+        .skip(skip)
+        .limit(limit)
+    )
+    items: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        items.append(serialize_id(dict(doc)))
+    total = await db.notification_log.count_documents(query)
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "skip": skip,
+        "has_more": (skip + limit) < total,
+    }
+
+
+@api_router.post(
+    "/admin/notifications/{notification_id}/resend",
+    tags=["Admin"],
+)
+async def admin_resend_notification(
+    notification_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Re-send a previously-failed notification by re-rendering the
+    trigger template against the original renewal + recipient and
+    routing through send_notification (which writes a NEW log entry).
+    The original notification_log entry is unchanged — failures are
+    preserved as audit evidence.
+
+    Idempotency: the resend uses the same (renewal, trigger, recipient)
+    keys as the original, so if a successful send happened in the
+    last 23h, send_notification will short-circuit with
+    `suppressed_idempotent`. To force a real send, the operator can
+    call this endpoint again after the dedup window passes."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+
+    from lib.notifications import send_notification
+    from lib.email_templates import render_for_trigger
+
+    original = await db.notification_log.find_one(
+        {"_id": to_query_id(notification_id)}
+    )
+    if not original:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    permit_renewal_id = original.get("permit_renewal_id")
+    trigger_type = original.get("trigger_type")
+    recipient = original.get("recipient")
+    if not (permit_renewal_id and trigger_type and recipient):
+        raise HTTPException(
+            status_code=422,
+            detail="Original notification record incomplete — cannot resend",
+        )
+
+    # Re-render with current renewal + project state (NOT the original
+    # context, which we don't store). This is intentional — if the
+    # data has changed (e.g. expiration was extended), the resend
+    # reflects the current truth.
+    renewal = await db.permit_renewals.find_one(
+        {"_id": to_query_id(permit_renewal_id)}
+    )
+    if not renewal:
+        raise HTTPException(
+            status_code=404,
+            detail="Underlying renewal not found (may have been deleted)",
+        )
+
+    # Reconstruct days_until_expiry from current_expiration. For
+    # stuck/completed triggers this is unused by the template but
+    # required for context shape consistency.
+    days_until = 0
+    try:
+        from dateutil import parser as dateparser
+        exp = renewal.get("current_expiration")
+        if exp:
+            exp_dt = dateparser.parse(str(exp)).date()
+            days_until = (exp_dt - datetime.now(timezone.utc).date()).days
+    except Exception:
+        pass
+
+    base_context = await _renewal_reminder_context(renewal, days_until)
+    base_context["recipient_name"] = recipient.split("@", 1)[0]
+    # Best-effort name override from filing_reps roster.
+    try:
+        company = await db.companies.find_one(
+            {"_id": to_query_id(renewal.get("company_id"))}
+        )
+        if company:
+            for rep in (company.get("filing_reps") or []):
+                if (rep.get("email") or "").lower() == recipient.lower():
+                    base_context["recipient_name"] = rep.get("name") or base_context["recipient_name"]
+                    break
+    except Exception:
+        pass
+
+    # Layer in any trigger-specific context preserved from the
+    # original metadata (e.g. days_stuck, new_expiration).
+    base_context.update(original.get("metadata") or {})
+
+    try:
+        subject, html, text = render_for_trigger(trigger_type, base_context)
+    except Exception as render_err:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Template render failed: {render_err}",
+        )
+
+    new_log = await send_notification(
+        db,
+        permit_renewal_id=permit_renewal_id,
+        trigger_type=trigger_type,
+        recipient=recipient,
+        subject=subject,
+        html=html,
+        text=text,
+        metadata={
+            **(original.get("metadata") or {}),
+            "resent_from_notification_id": str(original.get("_id")),
+        },
+    )
+    return serialize_id(dict(new_log))
+
+
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
 
 @api_router.post("/owner/seed-gc-licenses")
@@ -20619,6 +20825,24 @@ async def dob_approval_watcher():
                         "%s -> %s",
                         renewal_id, old_exp_str, new_exp_str,
                     )
+                    # MR.9: fire the completion notification. The hook
+                    # is best-effort — a Resend failure or feature-flag
+                    # suppression must not crash the watcher cycle.
+                    try:
+                        await _send_renewal_notification_hook(
+                            renewal,
+                            trigger_type="renewal_completed",
+                            extra_context={
+                                "new_expiration": new_exp_str,
+                                "old_expiration": old_exp_str,
+                            },
+                        )
+                    except Exception as hook_err:
+                        logger.warning(
+                            "[dob_approval_watcher] completion hook failed "
+                            "for renewal %s: %r",
+                            renewal_id, hook_err,
+                        )
                     continue
 
                 # Still waiting. Check stuck-at-DOB threshold.
@@ -20683,6 +20907,24 @@ async def dob_approval_watcher():
                         "renewal %s (days_stuck=%d)",
                         renewal_id, days_stuck,
                     )
+                    # MR.9: fire the stuck notification. Idempotency
+                    # in send_notification + the audit-log dedup above
+                    # together ensure exactly-one-email per stuck
+                    # renewal per recipient (per 23h window).
+                    try:
+                        await _send_renewal_notification_hook(
+                            renewal,
+                            trigger_type="filing_stuck",
+                            extra_context={
+                                "days_stuck": days_stuck,
+                            },
+                        )
+                    except Exception as hook_err:
+                        logger.warning(
+                            "[dob_approval_watcher] stuck hook failed "
+                            "for renewal %s: %r",
+                            renewal_id, hook_err,
+                        )
             except Exception as per_err:
                 logger.error(
                     "[dob_approval_watcher] error on renewal %s: %r",
@@ -20698,6 +20940,305 @@ async def dob_approval_watcher():
             )
     except Exception as e:
         logger.error(f"[dob_approval_watcher] cycle error: {e!r}")
+
+
+# ── MR.9: Notification cron + watcher hooks ────────────────────────
+# Daily 7am ET reminder cron walks active renewals and sends T-30,
+# T-14, and T-7 reminder emails. The MR.8 watcher hooks (stuck +
+# completed) live in the watcher itself; see _maybe_send_notification
+# below for the shared adapter.
+
+# Reminder-eligible renewal statuses: those where the OPERATOR still
+# needs to act. We exclude statuses where the system has already
+# taken over (awaiting_dob_filing, awaiting_dob_approval, in_progress)
+# because the stuck-at-DOB notification covers escalation in those
+# cases. Also excludes terminal (completed/failed). Sending T-30 to a
+# renewal that's already filed just confuses the operator.
+REMINDER_ELIGIBLE_STATUSES = {
+    "eligible",
+    "needs_insurance",
+    "ineligible_insurance",
+    "ineligible_license",
+    "draft_ready",
+    "awaiting_gc",
+}
+
+
+# Time windows for the three reminders. Each is (lower_days_inclusive,
+# upper_days_exclusive) such that a renewal expiring exactly N days
+# from today falls into the window centered on N. The 2-day windows
+# are deliberately wider than the 1-day cron cadence so a missed run
+# (e.g. backend redeploy) doesn't drop a reminder; idempotency
+# (notification_log) prevents duplicate sends across consecutive runs.
+REMINDER_WINDOWS = [
+    ("renewal_t_minus_30", 29, 31, 30),  # name, low, high, label_days
+    ("renewal_t_minus_14", 13, 15, 14),
+    ("renewal_t_minus_7",   6,  8,  7),
+]
+
+
+async def _renewal_reminder_context(renewal: dict, days_until: int) -> dict:
+    """Build the email context dict for a renewal. Loads the project
+    + dob_log so the email shows job_number, work_type, address.
+    Best-effort — missing references render as "—" rather than raise."""
+    project = None
+    dob_log = None
+    try:
+        if renewal.get("project_id"):
+            project = await db.projects.find_one(
+                {"_id": to_query_id(renewal.get("project_id"))}
+            )
+    except Exception:
+        project = None
+    try:
+        if renewal.get("permit_dob_log_id"):
+            dob_log = await db.dob_logs.find_one(
+                {"_id": to_query_id(renewal.get("permit_dob_log_id"))}
+            )
+    except Exception:
+        dob_log = None
+
+    from lib.notifications import build_action_link
+
+    return {
+        "project_name": (project or {}).get("name") or (project or {}).get("address") or "—",
+        "project_address": (project or {}).get("address") or "—",
+        "permit_job_number": (
+            (dob_log or {}).get("job_number")
+            or renewal.get("job_number")
+            or "—"
+        ),
+        "permit_work_type": (dob_log or {}).get("work_type") or renewal.get("permit_type") or "—",
+        "current_expiration": renewal.get("current_expiration") or "—",
+        "days_until_expiry": days_until,
+        "action_link": build_action_link(
+            project_id=str(renewal.get("project_id") or ""),
+            permit_dob_log_id=str(renewal.get("permit_dob_log_id") or "") or None,
+        ),
+    }
+
+
+async def _send_reminder_for_renewal(
+    renewal: dict,
+    *,
+    trigger_type: str,
+    days_until: int,
+):
+    """Fire one notification per recipient for a single renewal at a
+    single trigger type. Recipients come from filing_reps + admin
+    user; see lib.notifications.collect_notification_recipients.
+
+    All sends go through send_notification — feature flag, idempotency,
+    and notification_log writes are handled there."""
+    from lib.notifications import (
+        send_notification,
+        collect_notification_recipients,
+    )
+    from lib.email_templates import render_for_trigger
+
+    company_id = renewal.get("company_id")
+    if not company_id:
+        logger.warning(
+            "[renewal_reminder_cron] renewal %s has no company_id; skipping",
+            renewal.get("_id"),
+        )
+        return
+
+    recipients = await collect_notification_recipients(db, str(company_id))
+    if not recipients:
+        logger.info(
+            "[renewal_reminder_cron] no recipients for renewal %s "
+            "(company %s); skipping",
+            renewal.get("_id"), company_id,
+        )
+        return
+
+    permit_renewal_id = str(renewal.get("_id"))
+
+    base_context = await _renewal_reminder_context(renewal, days_until)
+    for recipient in recipients:
+        ctx = dict(base_context)
+        # Recipient-specific name lookup: try to find the matching
+        # filing_rep by email. Falls back to the email handle
+        # (text before @) so the email feels addressed even when
+        # we can't match a name.
+        ctx["recipient_name"] = recipient.split("@", 1)[0]
+        try:
+            company_doc = await db.companies.find_one(
+                {"_id": to_query_id(company_id)}
+            )
+            if company_doc:
+                for rep in (company_doc.get("filing_reps") or []):
+                    if (rep.get("email") or "").lower() == recipient:
+                        ctx["recipient_name"] = rep.get("name") or ctx["recipient_name"]
+                        break
+        except Exception:
+            pass
+
+        try:
+            subject, html, text = render_for_trigger(trigger_type, ctx)
+        except Exception as render_err:
+            logger.error(
+                "[renewal_reminder_cron] template render failed "
+                "trigger=%s renewal=%s: %r",
+                trigger_type, permit_renewal_id, render_err,
+            )
+            continue
+
+        try:
+            await send_notification(
+                db,
+                permit_renewal_id=permit_renewal_id,
+                trigger_type=trigger_type,
+                recipient=recipient,
+                subject=subject,
+                html=html,
+                text=text,
+                metadata={"days_until_expiry": days_until},
+            )
+        except Exception as send_err:
+            # send_notification handles its own logging + status;
+            # this is defensive against unexpected raises.
+            logger.error(
+                "[renewal_reminder_cron] send_notification raised "
+                "trigger=%s renewal=%s recipient=%s: %r",
+                trigger_type, permit_renewal_id, recipient, send_err,
+            )
+
+
+async def renewal_reminder_cron():
+    """Daily 7am ET. For each non-terminal, operator-actionable
+    renewal whose current_expiration falls into one of the three
+    reminder windows (T-30, T-14, T-7), fire the matching
+    notification to filing_reps + the company admin.
+
+    Date strategy: current_expiration is stored as an Optional[str]
+    on permit_renewals (mixed format: ISO and M/D/YYYY both seen in
+    production). We can't do a Mongo range query because string
+    comparison breaks on mixed formats, so we scan all eligible
+    renewals and partition in Python via dateparser. Volume is low
+    (single tenant: <100 active renewals) so the scan is cheap.
+
+    Idempotency: send_notification skips when a successful send for
+    the same (renewal, trigger, recipient) lands in the last 23h.
+    The 23h window leaves slack for cron drift (a 7am run today vs
+    7:05am tomorrow still dedups)."""
+    try:
+        from dateutil import parser as dateparser
+        today_utc = datetime.now(timezone.utc).date()
+
+        # Single Mongo scan — eligible-status renewals. We don't filter
+        # on current_expiration in Mongo because of the mixed-string
+        # format problem documented above.
+        cursor = db.permit_renewals.find({
+            "status": {"$in": list(REMINDER_ELIGIBLE_STATUSES)},
+            "is_deleted": {"$ne": True},
+        })
+
+        candidates = []
+        async for renewal in cursor:
+            exp_str = renewal.get("current_expiration")
+            if not exp_str:
+                continue
+            try:
+                exp_date = dateparser.parse(str(exp_str)).date()
+            except Exception:
+                continue
+            days_until = (exp_date - today_utc).days
+            candidates.append((renewal, days_until))
+
+        # For each window, dispatch matching candidates.
+        sent = 0
+        for trigger_type, low, high, label_days in REMINDER_WINDOWS:
+            for renewal, days_until in candidates:
+                if low <= days_until < high:
+                    await _send_reminder_for_renewal(
+                        renewal,
+                        trigger_type=trigger_type,
+                        days_until=days_until,
+                    )
+                    sent += 1
+
+        if sent:
+            logger.info(
+                "[renewal_reminder_cron] processed %d renewal/recipient "
+                "pairs (idempotency may have suppressed some sends)",
+                sent,
+            )
+    except Exception as e:
+        logger.error(f"[renewal_reminder_cron] cycle error: {e!r}")
+
+
+async def _send_renewal_notification_hook(
+    renewal: dict,
+    *,
+    trigger_type: str,
+    extra_context: Optional[dict] = None,
+):
+    """Watcher-hook adapter. Builds the context, resolves recipients,
+    and fires send_notification per recipient. Used by the MR.8
+    dob_approval_watcher when it appends a stuck_at_dob or
+    renewal_confirmed_in_dob audit event."""
+    from lib.notifications import (
+        send_notification,
+        collect_notification_recipients,
+    )
+    from lib.email_templates import render_for_trigger
+
+    company_id = renewal.get("company_id")
+    if not company_id:
+        return
+    recipients = await collect_notification_recipients(db, str(company_id))
+    if not recipients:
+        return
+
+    permit_renewal_id = str(renewal.get("_id"))
+    days_until = 0  # unused for stuck/completed; required by template ctx
+    base_context = await _renewal_reminder_context(renewal, days_until)
+    base_context.update(extra_context or {})
+
+    for recipient in recipients:
+        ctx = dict(base_context)
+        ctx["recipient_name"] = recipient.split("@", 1)[0]
+        try:
+            company_doc = await db.companies.find_one(
+                {"_id": to_query_id(company_id)}
+            )
+            if company_doc:
+                for rep in (company_doc.get("filing_reps") or []):
+                    if (rep.get("email") or "").lower() == recipient:
+                        ctx["recipient_name"] = rep.get("name") or ctx["recipient_name"]
+                        break
+        except Exception:
+            pass
+
+        try:
+            subject, html, text = render_for_trigger(trigger_type, ctx)
+        except Exception as render_err:
+            logger.error(
+                "[notification_hook] template render failed "
+                "trigger=%s renewal=%s: %r",
+                trigger_type, permit_renewal_id, render_err,
+            )
+            continue
+
+        try:
+            await send_notification(
+                db,
+                permit_renewal_id=permit_renewal_id,
+                trigger_type=trigger_type,
+                recipient=recipient,
+                subject=subject,
+                html=html,
+                text=text,
+                metadata=extra_context or {},
+            )
+        except Exception as send_err:
+            logger.error(
+                "[notification_hook] send_notification raised "
+                "trigger=%s renewal=%s recipient=%s: %r",
+                trigger_type, permit_renewal_id, recipient, send_err,
+            )
 
 
 # Card audit routers — gate_router serves public HTML at /checkin/...
@@ -21126,6 +21667,22 @@ async def startup_event():
         id='dob_approval_watcher',
         replace_existing=True,
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=10),
+    )
+
+    # MR.9: daily 7am ET reminder cron — sends T-30 / T-14 / T-7
+    # notifications to filing_reps + the company admin for each
+    # operator-actionable renewal whose current_expiration falls in
+    # one of the three windows. Gated by NOTIFICATIONS_ENABLED
+    # (default off) so a misconfigured Resend key doesn't blast emails
+    # on first deploy. CronTrigger handles DST automatically — when
+    # ET shifts between EST and EDT the absolute UTC time of "7am ET"
+    # changes, but the trigger fires correctly because the timezone
+    # is named, not numeric.
+    scheduler.add_job(
+        renewal_reminder_cron,
+        CronTrigger(hour=7, minute=0, timezone="America/New_York"),
+        id='renewal_reminder_cron',
+        replace_existing=True,
     )
 
     # 311 fast poll — every 30 minutes, staggered 15 min off the DOB scan so
