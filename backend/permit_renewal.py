@@ -1417,7 +1417,18 @@ def create_permit_renewal_routes(
             )
 
         field_map = await map_pw2_fields(db, renewal_id)
-        return field_map.model_dump()
+        # MR.7-followup: expose the critical / non-critical partition
+        # alongside the original `unmappable_fields` list so the UI
+        # can distinguish hard blockers from informational gaps. The
+        # original field stays for backward-compat with any caller
+        # that hasn't been updated. See pw2_field_mapper.CRITICAL_PW2_FIELDS
+        # for the membership rule.
+        from lib.pw2_field_mapper import partition_unmappable_fields
+        partitioned = partition_unmappable_fields(field_map.unmappable_fields)
+        out = field_map.model_dump()
+        out["critical_unmappable_fields"] = partitioned["critical"]
+        out["non_critical_unmappable_fields"] = partitioned["non_critical"]
+        return out
 
     # MR.3: GET /api/permit-renewals/{renewal_id}/filing-readiness
     @api_router.get("/permit-renewals/{renewal_id}/filing-readiness")
@@ -1506,9 +1517,12 @@ def create_permit_renewal_routes(
           2. ELIGIBILITY_REWRITE_MODE == 'live' — refuses in shadow/off
              so we never enqueue jobs the legacy path is still owning.
           3. Filing readiness (MR.3) — must be ready=true.
-          4. PW2 field map (MR.4) — must produce zero unmappable fields
-             that would cause guaranteed-failure at the agent (warnings
-             are tolerated; only `unmappable_fields` blocks).
+          4. PW2 field map (MR.4) — must produce zero unmappable
+             entries on CRITICAL_PW2_FIELDS. Non-critical entries
+             (work_permit_number, bbl, gc_license_number, etc.) are
+             allowed through and recorded in the FilingJob audit_log
+             via a `non_critical_unmappable_fields` event so the gap
+             is captured without blocking the filing.
           5. Filing rep with active credential exists.
           6. No non-terminal FilingJob already exists for this
              permit_renewal_id (dedup; concurrent operator clicks).
@@ -1579,19 +1593,25 @@ def create_permit_renewal_routes(
                 },
             )
 
-        # 4. PW2 field map (MR.4) — refuse if any field is unmappable.
-        #    `unmappable_fields` is a flat list of "name: reason" strings;
-        #    a non-empty list means at least one field couldn't be filled
-        #    deterministically and the agent would either skip it (silent
-        #    DOB rejection) or throw (handler crash). Block at the gate.
+        # 4. PW2 field map (MR.4) — partition unmappable entries into
+        #    critical vs. non-critical and only block on critical.
+        #    Non-critical unmappable fields (work_permit_number, bbl,
+        #    gc_license_number, issuance_date, effective_expiry) are
+        #    informational; the agent fills the form fine without them.
+        #    Critical entries (applicant_*, project_address, bin,
+        #    job_filing_number, current_expiration_date) are hard
+        #    blockers — DOB rejects or the agent can't run form-fill.
+        from lib.pw2_field_mapper import partition_unmappable_fields
         field_map = await map_pw2_fields(_server.db, permit_renewal_id)
-        if field_map.unmappable_fields:
+        partitioned = partition_unmappable_fields(field_map.unmappable_fields)
+        if partitioned["critical"]:
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "message": "PW2 field mapper produced unmappable fields",
+                    "message": "PW2 field mapper produced critical unmappable fields",
                     "code": "mapper_unmappable_fields",
-                    "unmappable_fields": field_map.unmappable_fields,
+                    "critical_unmappable_fields": partitioned["critical"],
+                    "full_unmappable_fields": field_map.unmappable_fields,
                 },
             )
 
@@ -1672,6 +1692,30 @@ def create_permit_renewal_routes(
             },
         )
 
+        # Build the audit log starting with the queued event. If the
+        # mapper produced any non-critical unmappable fields (e.g.
+        # work_permit_number per architectural note 3 in MR.4), record
+        # them as a SECOND event so the audit trail captures the data
+        # gap without blocking the filing. Critical fields would have
+        # already raised at the gate above.
+        audit_log_events = [initial_event]
+        if partitioned["non_critical"]:
+            audit_log_events.append(
+                _server._filing_job_audit_event(
+                    event_type="non_critical_unmappable_fields",
+                    actor="system",
+                    detail=(
+                        "Mapper reported "
+                        f"{len(partitioned['non_critical'])} "
+                        "non-critical unmappable field(s); enqueue "
+                        "proceeded. Operator may backfill at leisure."
+                    ),
+                    metadata={
+                        "unmappable_fields": partitioned["non_critical"],
+                    },
+                )
+            )
+
         pw2_field_map_snapshot = field_map.model_dump()
 
         filing_job_doc = {
@@ -1690,7 +1734,7 @@ def create_permit_renewal_routes(
             "dob_confirmation_number": None,
             "retry_count": 0,
             "cancellation_requested": False,
-            "audit_log": [initial_event],
+            "audit_log": audit_log_events,
             "created_at": now,
             "updated_at": now,
             "is_deleted": False,

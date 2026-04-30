@@ -80,6 +80,77 @@ ATTACHMENT_RULES: Dict[str, List[str]] = {
 RENEWAL_FEE_AMOUNT_USD = "130.00"
 
 
+# ── Critical-vs-non-critical field partition (MR.6 enqueue gate) ───
+#
+# MR.6's /file enqueue endpoint originally rejected if ANY field on
+# Pw2FieldMap.unmappable_fields was non-empty. That gate was too
+# strict: per architectural note 3 in this file, work_permit_number
+# is unmappable BY DESIGN (no authoritative DOB letter-code mapping
+# yet) and is INFORMATIONAL on the PW2 form anyway — the agent uses
+# job_number + work_type for routing. Other fields like bbl,
+# gc_license_number, issuance_date, effective_expiry are nice-to-have
+# (downstream backfill paths exist) but their absence does not break
+# DOB filing.
+#
+# CRITICAL_PW2_FIELDS lists ONLY the fields where missing/unmappable
+# status must hard-block the filing. The enqueue gate filters
+# Pw2FieldMap.unmappable_fields against this set; only entries
+# matching critical fields produce a 400. Non-critical entries are
+# allowed through and recorded in the FilingJob audit_log via a
+# `non_critical_unmappable_fields` event so the audit trail still
+# captures the data gap (operator can choose to backfill later
+# without re-running the filing).
+#
+# Membership rule: a field is CRITICAL when DOB will reject the
+# filing or the agent cannot run the form-fill at all without it.
+# A field is NON-critical when the agent can either skip the field
+# (DOB tolerates absence) or compute it from other available data.
+#
+# The synthetic "all_fields" entry (emitted only when the renewal
+# record itself is missing) is treated as critical because the
+# filing has nothing to operate on.
+CRITICAL_PW2_FIELDS = frozenset({
+    "applicant_name",
+    "applicant_license_number",
+    "applicant_email",
+    "applicant_business_name",   # company name — DOB requires the GC's business name
+    "project_address",
+    "bin",
+    "job_filing_number",
+    "current_expiration_date",
+    # Synthetic root-cause bucket — only emitted when the renewal
+    # record itself is missing. Hard-block.
+    "all_fields",
+})
+
+
+def partition_unmappable_fields(entries: List[str]) -> Dict[str, List[str]]:
+    """Split MR.4 unmappable_fields into {critical, non_critical}
+    buckets per CRITICAL_PW2_FIELDS membership.
+
+    Each entry follows the convention "<field_name>: <reason>"
+    produced by _add_or_unmappable above. We split on the first ":"
+    and check membership of the head token. Entries that don't follow
+    the convention (no ":" separator) fall into non_critical
+    defensively — better to let an unparseable entry through and let
+    the audit log capture it than to hard-block on shape ambiguity.
+
+    Pure: no IO. Used by MR.6's /file enqueue endpoint and surfaced
+    on MR.4's /pw2-field-map response so the operator UI can
+    distinguish blockers from informational gaps."""
+    critical: List[str] = []
+    non_critical: List[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, str):
+            continue
+        head = entry.split(":", 1)[0].strip() if ":" in entry else entry.strip()
+        if head in CRITICAL_PW2_FIELDS:
+            critical.append(entry)
+        else:
+            non_critical.append(entry)
+    return {"critical": critical, "non_critical": non_critical}
+
+
 # ── Models ─────────────────────────────────────────────────────────
 
 class FieldValue(BaseModel):

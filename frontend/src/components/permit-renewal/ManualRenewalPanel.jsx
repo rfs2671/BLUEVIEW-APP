@@ -134,12 +134,27 @@ const ManualRenewalPanel = ({ renewal, filingJobs = [], onJobsChange }) => {
       // no_filing_rep, no_active_credential, filing_job_already_active,
       // redis_enqueue_failed. We surface a friendly message + the
       // structured code so the operator (or support) can correlate.
+      // MR.7-followup: mapper_unmappable_fields now carries
+      // critical_unmappable_fields (the actual blockers) AND
+      // full_unmappable_fields (the full list, includes informational
+      // entries like work_permit_number). We render both distinctly.
       const detail = e?.response?.data?.detail;
       const code = typeof detail === 'object' ? detail.code : null;
       const message = typeof detail === 'object'
         ? (detail.message || 'Enqueue failed')
         : (typeof detail === 'string' ? detail : 'Enqueue failed');
-      setEnqueueError({ code, message });
+      const criticalUnmappable = typeof detail === 'object'
+        ? detail.critical_unmappable_fields
+        : null;
+      const fullUnmappable = typeof detail === 'object'
+        ? detail.full_unmappable_fields
+        : null;
+      setEnqueueError({
+        code,
+        message,
+        criticalUnmappable,
+        fullUnmappable,
+      });
       setEnqueueLoading(false);
     }
   };
@@ -314,9 +329,49 @@ const FilingButton = ({
       </Pressable>
       {enqueueError && (
         <View style={s.errorBlock}>
-          <Text style={s.errorMessage}>{enqueueError.message}</Text>
-          {enqueueError.code && (
-            <Text style={s.errorCode}>code: {enqueueError.code}</Text>
+          {/* MR.7-followup: mapper_unmappable_fields now distinguishes
+              critical (hard blockers) from full (includes informational
+              entries like work_permit_number that DO NOT block filing).
+              Render the critical list as the primary blocker text;
+              show the full list only when there's no critical list
+              (defensive — this case should not occur post-fix because
+              the gate now allows non-critical-only through). */}
+          {enqueueError.code === 'mapper_unmappable_fields' &&
+           Array.isArray(enqueueError.criticalUnmappable) &&
+           enqueueError.criticalUnmappable.length > 0 ? (
+            <>
+              <Text style={s.errorMessage}>
+                Cannot file: these required fields are missing from your data:
+              </Text>
+              {enqueueError.criticalUnmappable.map((entry, i) => (
+                <Text key={i} style={s.errorBlockerItem}>• {entry}</Text>
+              ))}
+              <Text style={s.errorCode}>code: {enqueueError.code}</Text>
+            </>
+          ) : enqueueError.code === 'mapper_unmappable_fields' &&
+              Array.isArray(enqueueError.fullUnmappable) &&
+              enqueueError.fullUnmappable.length > 0 ? (
+            // Defensive fall-through: backend reported the error code
+            // but no critical list. Should not happen post-fix; if it
+            // does, the operator can still see the data without a hard
+            // dead-end.
+            <>
+              <Text style={s.errorMessage}>
+                All required fields present. Filing was enqueued with
+                non-critical fields skipped.
+              </Text>
+              {enqueueError.fullUnmappable.map((entry, i) => (
+                <Text key={i} style={s.errorBlockerItem}>• {entry}</Text>
+              ))}
+              <Text style={s.errorCode}>code: {enqueueError.code}</Text>
+            </>
+          ) : (
+            <>
+              <Text style={s.errorMessage}>{enqueueError.message}</Text>
+              {enqueueError.code && (
+                <Text style={s.errorCode}>code: {enqueueError.code}</Text>
+              )}
+            </>
           )}
         </View>
       )}
@@ -479,11 +534,19 @@ function buildStyles(colors) {
       fontSize: 12,
       color: '#ef4444',
     },
+    errorBlockerItem: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: '#ef4444',
+      lineHeight: 18,
+      marginLeft: 4,
+    },
     errorCode: {
       fontFamily: typography.regular,
       fontSize: 11,
       color: '#ef4444',
       opacity: 0.8,
+      marginTop: 2,
     },
 
     // ── citation ──────────────────────────────────────────────────

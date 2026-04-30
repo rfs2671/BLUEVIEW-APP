@@ -207,13 +207,20 @@ class TestEnqueueGates(unittest.TestCase):
             _exit(patches)
             restore()
 
-    def test_400_when_unmappable_fields(self):
+    def test_400_when_critical_unmappable_fields(self):
+        # MR.7-followup: the gate now partitions unmappable_fields
+        # into critical (CRITICAL_PW2_FIELDS) vs. non-critical. Only
+        # critical entries 400. work_permit_number — used by the
+        # original test fixture — is now non-critical (it's
+        # informational on the PW2 form per MR.4 architectural note 3),
+        # so this fixture is updated to use applicant_email which IS
+        # critical.
         import server
         client, restore = _setup_client(company_id="co_a")
         mock_db = _full_db_stub()
         patches = _patch_lib_imports(
             ready=True,
-            unmappable=["work_permit_number: no authoritative mapping"],
+            unmappable=["applicant_email: primary filing rep has no email"],
         )
         try:
             _enter(patches)
@@ -222,7 +229,14 @@ class TestEnqueueGates(unittest.TestCase):
                  patch.dict(os.environ, {"ELIGIBILITY_REWRITE_MODE": "live"}):
                 resp = client.post("/api/permit-renewals/r1/file")
             self.assertEqual(resp.status_code, 400)
-            self.assertEqual(resp.json()["detail"]["code"], "mapper_unmappable_fields")
+            body = resp.json()
+            self.assertEqual(body["detail"]["code"], "mapper_unmappable_fields")
+            # Critical list surfaces the blocker; full list mirrors
+            # since this fixture only has the one entry.
+            self.assertEqual(
+                body["detail"]["critical_unmappable_fields"],
+                ["applicant_email: primary filing rep has no email"],
+            )
         finally:
             _exit(patches)
             restore()
