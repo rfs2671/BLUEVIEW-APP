@@ -22,7 +22,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 # is a no-op if they're present — safe to run.
 RUN python -m playwright install --with-deps chromium
 
-COPY bis_scraper.py entrypoint.sh ./
+# MR.5: copy the full restructured worker tree.
+# - dob_worker.py: orchestrator (queue + heartbeat + bis_scrape sched)
+# - handlers/: per-job-type modules (bis_scrape preserved verbatim,
+#              dob_now_filing stub for MR.6+)
+# - lib/: shared infrastructure (queue, crypto, browser_context,
+#         heartbeat, circuit_breaker)
+# - scripts/: operational utilities (generate_keypair.py)
+COPY dob_worker.py entrypoint.sh ./
+COPY handlers/ ./handlers/
+COPY lib/ ./lib/
+COPY scripts/ ./scripts/
 RUN chmod +x /app/entrypoint.sh
 
 # No HTTP port — this is a worker process.

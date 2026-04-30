@@ -1,6 +1,0 @@
-apscheduler>=3.10,<4
-beautifulsoup4>=4.12,<5
-motor>=3.3,<4
-playwright>=1.43,<2
-playwright-stealth>=1.0.6,<2
-resend>=0.7,<1

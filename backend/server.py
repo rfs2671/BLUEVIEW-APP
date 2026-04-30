@@ -19471,6 +19471,218 @@ async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
         return ""
 
 
+# ════════════════════════════════════════════════════════════════════
+# MR.5 — INTERNAL endpoints for the local dob_worker.
+# ════════════════════════════════════════════════════════════════════
+# Three endpoints, all gated by X-Worker-Secret header. Optional
+# cf-access-jwt validation is accepted but not yet enforced (v2 makes
+# it mandatory). All under /api/internal/* — never reachable by user
+# tokens; only the worker hits these.
+
+WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
+
+
+def _validate_worker_secret(request: Request):
+    """Reject if X-Worker-Secret header doesn't match. Constant-time
+    comparison via secrets.compare_digest to defeat timing attacks
+    on the secret length / prefix."""
+    import secrets as _secrets
+    if not WORKER_SECRET:
+        # Backend env not configured — refuse all worker traffic
+        # rather than silently accept (the worker would then succeed
+        # with an empty header).
+        raise HTTPException(
+            status_code=503,
+            detail="Worker integration not configured (WORKER_SECRET unset)",
+        )
+    presented = request.headers.get("X-Worker-Secret", "")
+    if not _secrets.compare_digest(presented, WORKER_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid worker secret")
+
+
+@api_router.post("/internal/permit-renewal-claim")
+async def internal_permit_renewal_claim(
+    request: Request,
+    body: dict,
+):
+    """Worker calls this BEFORE running a dob_now_filing handler.
+    Records a claim on the renewal so the stale-claim watchdog can
+    return it to the queue if the worker crashes. Returns 200 if
+    claimed, 409 if the renewal is already in a non-claimable state
+    ({IN_PROGRESS, AWAITING_DOB_APPROVAL, COMPLETED, FAILED})."""
+    _validate_worker_secret(request)
+    permit_renewal_id = body.get("permit_renewal_id")
+    worker_id = body.get("worker_id") or "unknown"
+    if not permit_renewal_id:
+        raise HTTPException(status_code=400, detail="permit_renewal_id required")
+    from permit_renewal import RenewalStatus
+    NON_CLAIMABLE = {
+        RenewalStatus.IN_PROGRESS,
+        RenewalStatus.AWAITING_DOB_APPROVAL,
+        RenewalStatus.COMPLETED,
+        RenewalStatus.FAILED,
+    }
+    renewal = await db.permit_renewals.find_one({"_id": to_query_id(permit_renewal_id)})
+    if not renewal:
+        raise HTTPException(status_code=404, detail="Renewal not found")
+    if renewal.get("status") in NON_CLAIMABLE:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Renewal in non-claimable status {renewal.get('status')!r}",
+        )
+    now = datetime.now(timezone.utc)
+    await db.permit_renewals.update_one(
+        {"_id": to_query_id(permit_renewal_id)},
+        {"$set": {
+            "status": RenewalStatus.IN_PROGRESS,
+            "claim_at": now,
+            "claimed_by_worker_id": worker_id,
+            "updated_at": now,
+        }},
+    )
+    return {"claimed": True, "permit_renewal_id": permit_renewal_id}
+
+
+@api_router.post("/internal/job-result")
+async def internal_job_result(request: Request, body: dict):
+    """Worker calls this after every handler completes. Cloud
+    transitions permit_renewals state based on result.status."""
+    _validate_worker_secret(request)
+    from permit_renewal import RenewalStatus
+
+    job_id = body.get("job_id") or "unknown"
+    job_type = body.get("job_type") or "unknown"
+    permit_renewal_id = body.get("permit_renewal_id")
+    result = body.get("result") or {}
+    status_value = (result.get("status") or "").lower()
+
+    # Audit log every result regardless of state-transition.
+    await db.agent_job_results.insert_one({
+        "job_id": job_id,
+        "job_type": job_type,
+        "permit_renewal_id": permit_renewal_id,
+        "worker_id": body.get("worker_id"),
+        "result": result,
+        "received_at": datetime.now(timezone.utc),
+    })
+
+    # bis_scrape jobs don't touch renewals — log and return.
+    if not permit_renewal_id:
+        return {"recorded": True}
+
+    transitions = {
+        "filed":     RenewalStatus.AWAITING_DOB_APPROVAL,
+        "completed": RenewalStatus.COMPLETED,
+        "failed":    RenewalStatus.FAILED,
+    }
+    new_status = transitions.get(status_value)
+    if new_status is None:
+        # not_implemented or unknown — no state change.
+        return {"recorded": True, "transitioned": False}
+
+    update_set = {
+        "status": new_status,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    if status_value == "filed":
+        update_set["filed_at"] = datetime.now(timezone.utc)
+    elif status_value == "completed":
+        update_set["completed_at"] = datetime.now(timezone.utc)
+    elif status_value == "failed":
+        update_set["failure_reason"] = result.get("detail")
+
+    await db.permit_renewals.update_one(
+        {"_id": to_query_id(permit_renewal_id)},
+        {"$set": update_set},
+    )
+    return {"recorded": True, "transitioned": True, "new_status": new_status.value}
+
+
+@api_router.post("/internal/agent-heartbeat")
+async def internal_agent_heartbeat(request: Request, body: dict):
+    """Worker posts state every 60s. Upsert one doc per worker_id
+    so heartbeat-watchdog can read the latest value cheaply."""
+    _validate_worker_secret(request)
+    worker_id = body.get("worker_id")
+    if not worker_id:
+        raise HTTPException(status_code=400, detail="worker_id required")
+    await db.agent_heartbeats.update_one(
+        {"_id": worker_id},
+        {"$set": {
+            **body,
+            "received_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    return {"received": True}
+
+
+# ── Watchdog jobs (scheduled at startup, see startup_event) ───────
+
+async def _stale_claim_watchdog():
+    """Every 5 min: find permit_renewals stuck in IN_PROGRESS for
+    >30 min and clear the claim — they re-enter the queue when the
+    next enqueue trigger fires (MR.6+ owns the re-enqueue logic;
+    MR.5's job is just to unblock the renewal record so manual
+    intervention or auto-retry can pick it up)."""
+    try:
+        from permit_renewal import RenewalStatus
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        result = await db.permit_renewals.update_many(
+            {
+                "status": RenewalStatus.IN_PROGRESS,
+                "claim_at": {"$lt": cutoff},
+                "is_deleted": {"$ne": True},
+            },
+            {"$set": {
+                # Revert to ELIGIBLE so the next eligibility scan or
+                # operator trigger can re-prepare. Drop the claim
+                # bookkeeping fields.
+                "status": RenewalStatus.ELIGIBLE,
+                "stale_claim_cleared_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+            }, "$unset": {"claim_at": "", "claimed_by_worker_id": ""}},
+        )
+        if result.modified_count > 0:
+            logger.warning(
+                "[stale_claim_watchdog] cleared %d stale claims",
+                result.modified_count,
+            )
+    except Exception as e:
+        logger.error(f"[stale_claim_watchdog] error: {e!r}")
+
+
+async def _heartbeat_watchdog():
+    """Every 5 min: flag workers as degraded when no heartbeat in
+    >30 min. Stores per-worker degraded flags in system_status.
+    Email escalation lands in MR.9; MR.5 surfaces the flag only."""
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+        recent = db.agent_heartbeats.find(
+            {}, {"_id": 1, "received_at": 1},
+        )
+        async for hb in recent:
+            received_at = hb.get("received_at")
+            worker_id = hb.get("_id")
+            if not isinstance(received_at, datetime):
+                continue
+            if received_at.tzinfo is None:
+                received_at = received_at.replace(tzinfo=timezone.utc)
+            degraded = received_at < cutoff
+            await db.system_status.update_one(
+                {"_id": f"agent_heartbeat:{worker_id}"},
+                {"$set": {
+                    "worker_id": worker_id,
+                    "degraded": degraded,
+                    "last_heartbeat_at": received_at,
+                    "checked_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+    except Exception as e:
+        logger.error(f"[heartbeat_watchdog] error: {e!r}")
+
+
 # Card audit routers — gate_router serves public HTML at /checkin/...
 # and /enrollment/... (no auth, workers are anonymous), admin_router
 # serves JSON at /api/admin/... (admin-gated). The admin gate is a
@@ -19865,6 +20077,23 @@ async def startup_event():
         'interval',
         minutes=30,
         id='dob_nightly_scan',
+        replace_existing=True,
+    )
+
+    # MR.5: stale-claim watchdog — clears IN_PROGRESS claims older
+    # than 30 min so the renewal re-enters the queue. Every 5 min.
+    scheduler.add_job(
+        _stale_claim_watchdog,
+        IntervalTrigger(minutes=5),
+        id='stale_claim_watchdog',
+        replace_existing=True,
+    )
+    # MR.5: heartbeat watchdog — flags workers as degraded after
+    # 30 min absence. Email escalation in MR.9.
+    scheduler.add_job(
+        _heartbeat_watchdog,
+        IntervalTrigger(minutes=5),
+        id='heartbeat_watchdog',
         replace_existing=True,
     )
 

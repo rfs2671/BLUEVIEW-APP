@@ -96,6 +96,9 @@ class RenewalStatus(str, Enum):
     INELIGIBLE_LICENSE = "ineligible_license"
     DRAFT_READY = "draft_ready"
     AWAITING_GC = "awaiting_gc"
+    # MR.5 additions — local-agent filing pipeline:
+    IN_PROGRESS = "in_progress"                  # Worker has claimed the renewal, handler running.
+    AWAITING_DOB_APPROVAL = "awaiting_dob_approval"  # Worker filed; DOB has not yet stamped the new expiration.
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -305,7 +308,7 @@ async def scrape_gc_license_info(company_name: str) -> Optional[GCLicenseInfo]:
 
     Signature is preserved so all existing callers continue to work. Insurance
     records are always empty from this function now — insurance is managed
-    out-of-band by the bis_scraper worker, or via manual entry in Settings
+    out-of-band by the dob_worker (handlers/bis_scrape.py), or via manual entry in Settings
     (see PUT /api/admin/company/insurance/manual).
 
     Name matching: the dataset's business_name field is uppercase, with no

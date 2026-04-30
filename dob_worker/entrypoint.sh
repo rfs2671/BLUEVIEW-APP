@@ -10,9 +10,15 @@ sleep 2
 
 export DISPLAY=:99
 
-# Run the scraper. When it exits, tear down Xvfb so the container dies
+# MR.5: dob_worker.py is the new orchestrator. It boots three
+# concurrent asyncio tasks:
+#   1. Heartbeat loop (60s POST to /api/internal/agent-heartbeat)
+#   2. Queue dispatch loop (Redis BRPOP → handlers/<type>.handle())
+#   3. The legacy bis_scrape periodic scheduler (preserved verbatim)
+#
+# When the orchestrator exits, tear down Xvfb so the container dies
 # cleanly and Docker's restart policy can bring us back up.
-python -u bis_scraper.py
+python -u dob_worker.py
 EXIT_CODE=$?
 
 kill "$XVFB_PID" 2>/dev/null

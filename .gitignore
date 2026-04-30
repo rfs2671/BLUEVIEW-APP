@@ -29,6 +29,16 @@ yarn-error.log*
 *.log
 backend/logs/
 
+# MR.5 — local agent operator-only files (NEVER commit)
+dob_worker/.env.local
+dob_worker/storage_state/
+dob_worker/keys/
+cloudflared/config.yml
+cloudflared/credentials.json
+
+# Local harness state (Claude Code scheduled tasks)
+.claude/scheduled_tasks.lock
+
 # System files
 .DS_Store
 Thumbs.db

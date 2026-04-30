@@ -1655,5 +1655,35 @@ def main():
         pass
 
 
+# ── MR.5 handler-dispatch adapter ──────────────────────────────────
+# dob_worker.py boots `_run_forever()` directly (async) so the legacy
+# periodic scan keeps running unchanged. The handle() entry below is
+# for QUEUE-dispatched bis_scrape jobs (e.g., manual triggers) — runs
+# a single scan iteration on demand without spinning up a new
+# scheduler. Returns a HandlerResult shaped like every other handler.
+
+async def handle(payload, context):
+    """Single-shot bis_scrape invocation via the queue dispatcher.
+    The standing periodic scan (every SCAN_MIN minutes) continues
+    independently in dob_worker.py's _bis_scrape_scheduler task."""
+    # Lazy import to avoid the circular handlers/__init__ import
+    # path during module load.
+    from lib.handler_types import HandlerResult
+    try:
+        await scan_all()
+        return HandlerResult(
+            status="completed",
+            detail="Manual bis_scrape iteration completed.",
+            metadata={},
+        )
+    except Exception as e:
+        logger.exception("[bis_scrape] manual iteration failed: %s", e)
+        return HandlerResult(
+            status="failed",
+            detail=f"bis_scrape iteration failed: {type(e).__name__}: {e}",
+            metadata={},
+        )
+
+
 if __name__ == "__main__":
     main()

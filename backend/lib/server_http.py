@@ -33,7 +33,7 @@ WHAT THIS WRAPPER DOES NOT DO:
     later, this module needs a sync sibling.
   - Wrap `requests` or `urllib.request`. Codebase audit: zero such
     imports in backend/. CI lint catches future regressions.
-  - Get imported in worker code. The worker (bis_scraper/) is the
+  - Get imported in worker code. The worker (dob_worker/) is the
     intentional Akamai-talking process and has its own raw httpx
     client. CI check forbids `from backend.lib.server_http` or
     `import server_http` inside the worker tree.
@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 # Akamai-protected NYC DOB hosts. Any GET/POST/etc. against these from
-# server-side code is forbidden. The worker (bis_scraper/) uses raw
+# server-side code is forbidden. The worker (dob_worker/) uses raw
 # httpx and is the intentional caller.
 AKAMAI_BLOCKED_HOSTS: Set[str] = {
     "a810-dobnow.nyc.gov",

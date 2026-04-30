@@ -6,7 +6,7 @@
 #   - Default follow_redirects=False; opt-in re-validates every hop
 #
 # These CI rules cover the bypass surface that the runtime guard can't:
-#   1. The worker (bis_scraper/) must NOT import the backend's
+#   1. The worker (dob_worker/) must NOT import the backend's
 #      ServerHttpClient — pulling in the blocklist would brick the
 #      one process that's supposed to talk to Akamai.
 #   2. Backend code must use ServerHttpClient — no raw httpx.AsyncClient,
@@ -36,9 +36,9 @@ jobs:
           # The worker is the intentional Akamai caller. Pulling in
           # the egress guard would refuse all its requests.
           if git grep -nE 'from\s+backend\.lib\.server_http|from\s+lib\.server_http|^\s*import\s+server_http' \
-               -- 'bis_scraper/'; then
+               -- 'dob_worker/'; then
             echo "ERROR: Worker imported the backend's egress guard."
-            echo "Worker uses raw httpx — see bis_scraper/README.md."
+            echo "Worker uses raw httpx — see dob_worker/README.md."
             exit 1
           fi
 
