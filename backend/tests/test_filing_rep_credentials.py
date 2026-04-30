@@ -248,8 +248,14 @@ class TestPostCredential(unittest.TestCase):
             body = resp.json()
             self.assertEqual(body["version"], 1)
             self.assertNotIn("encrypted_ciphertext", body)
-            # Two update_one calls: supersede (no-op when first) + push.
-            self.assertEqual(mock_db.companies.update_one.await_count, 2)
+            # Three update_one calls now: defensive credentials-key
+            # lift (no-op when key exists) + supersede (no-op when
+            # first) + $push. The lift was added in MR.10's followup
+            # fix so the endpoint works on legacy reps that lack the
+            # credentials field; see test_post_credential_works_when_
+            # rep_lacks_credentials_key for the regression-pinning
+            # exercise of the lift branch.
+            self.assertEqual(mock_db.companies.update_one.await_count, 3)
         finally:
             restore()
 
@@ -288,22 +294,120 @@ class TestPostCredential(unittest.TestCase):
             self.assertEqual(resp.status_code, 200, resp.text)
             body = resp.json()
             self.assertEqual(body["version"], 2)
-            # First call: supersede (filter on superseded_at: None).
-            first_call = mock_db.companies.update_one.await_args_list[0]
-            af0 = first_call.kwargs.get("array_filters") or first_call.args[2:3] or [None]
-            # Either positional or kwarg form is fine; assert filter shape.
-            af_present = first_call.kwargs.get("array_filters")
+            # Three calls now: [0] defensive credentials-key lift
+            # (no-op when key exists), [1] supersede prior active,
+            # [2] $push new entry.
+            calls = mock_db.companies.update_one.await_args_list
+            self.assertEqual(len(calls), 3)
+            # Call 1: supersede (filter on superseded_at: None).
+            supersede_call = calls[1]
+            af_present = supersede_call.kwargs.get("array_filters")
             self.assertIsNotNone(af_present)
             cred_filter = next(f for f in af_present if "cred.superseded_at" in f)
             self.assertIsNone(cred_filter["cred.superseded_at"])
-            # Second call: $push on credentials.
-            second_call = mock_db.companies.update_one.await_args_list[1]
-            update_doc = second_call.args[1]
+            # Call 2: $push on credentials.
+            push_call = calls[2]
+            update_doc = push_call.args[1]
             self.assertIn("$push", update_doc)
             new_cred = update_doc["$push"]["filing_reps.$[rep].credentials"]
             self.assertEqual(new_cred["version"], 2)
             self.assertEqual(new_cred["encrypted_ciphertext"], "ciphertext-v2")
             self.assertIsNone(new_cred["superseded_at"])
+        finally:
+            restore()
+
+    def test_post_credential_works_when_rep_lacks_credentials_key(self):
+        """MR.10 production regression: the operator hit a 500 when
+        saving credentials on BlueView's filing_reps because reps
+        inserted via MR.2's add_filing_rep before the MR.10 forward-
+        fix lacked the `credentials` field on disk entirely (not
+        empty array — the key was absent). MongoDB's array_filters
+        update on `filing_reps.$[rep].credentials.$[cred].superseded_at`
+        raises PathNotViable when traversing through a non-existent
+        array, escaping the route handler as a 500 (which Starlette
+        further presented as a CORS error because the response
+        bypassed CORSMiddleware).
+
+        Fix A added a defensive lift step that initializes
+        `credentials: []` for any rep missing the field. This test
+        pins the regression by exercising the exact production
+        shape: rep dict with `credentials` key DELETED (not just
+        defaulted to None or []). The endpoint must succeed without
+        raising.
+
+        Companion behavior: the lift step is also called when the
+        key is present (as `[]` or with entries) — it's idempotent.
+        See test_first_credential_gets_version_1 (key=[]) and
+        test_subsequent_credential_increments_version_and_supersedes
+        (key=non-empty list) for those cases. This test fills the
+        third state in the partition: key absent."""
+        import server
+        client, restore = _setup_client(role="owner")
+        # Build a rep without the credentials field. _make_rep
+        # defaults to credentials=[]; explicitly delete the key
+        # to mirror BlueView's production rep shape (companies
+        # _id=69e6a477aaade43f835aeeaa, two reps, both with
+        # has_credentials_key=False).
+        rep_no_creds = _make_rep()
+        del rep_no_creds["credentials"]
+        self.assertNotIn(
+            "credentials", rep_no_creds,
+            "Test fixture must mirror production shape (key absent).",
+        )
+        company = {"_id": "co_a", "filing_reps": [rep_no_creds]}
+        mock_db = MagicMock()
+        mock_db.companies.find_one = AsyncMock(return_value=company)
+        mock_db.companies.update_one = AsyncMock(return_value=MagicMock(
+            matched_count=1, modified_count=1,
+        ))
+        try:
+            with patch.object(server, "db", mock_db), \
+                 patch.object(server, "to_query_id", side_effect=lambda x: x):
+                resp = client.post(
+                    "/api/owner/companies/co_a/filing-reps/r1/credentials",
+                    json={
+                        "encrypted_ciphertext": "ciphertext-legacy-rep",
+                        "public_key_fingerprint": "fp",
+                    },
+                )
+            self.assertEqual(resp.status_code, 200, resp.text)
+            body = resp.json()
+            # Version is 1 because no prior credentials exist on this rep.
+            self.assertEqual(body["version"], 1)
+            self.assertNotIn("encrypted_ciphertext", body)
+
+            # Three calls expected: lift + supersede + push.
+            calls = mock_db.companies.update_one.await_args_list
+            self.assertEqual(
+                len(calls), 3,
+                f"Expected 3 update_one calls (lift+supersede+push); "
+                f"got {len(calls)}",
+            )
+
+            # Call 0: defensive lift. Predicate uses $elemMatch with
+            # $exists:False on credentials; update is $set on
+            # `filing_reps.$.credentials` to []. This is the
+            # load-bearing assertion for the regression — pre-fix
+            # this call didn't exist and the supersede $set raised
+            # PathNotViable.
+            lift_call = calls[0]
+            lift_filter = lift_call.args[0]
+            self.assertIn("filing_reps", lift_filter)
+            elem = lift_filter["filing_reps"].get("$elemMatch")
+            self.assertIsNotNone(elem)
+            self.assertEqual(elem.get("id"), "r1")
+            self.assertEqual(elem.get("credentials"), {"$exists": False})
+            lift_update = lift_call.args[1]
+            self.assertEqual(
+                lift_update,
+                {"$set": {"filing_reps.$.credentials": []}},
+            )
+
+            # Calls 1 + 2: supersede + push, same as the empty-array
+            # baseline test (the lift created an empty array; the
+            # rest of the flow is identical).
+            self.assertIn("$set", calls[1].args[1])
+            self.assertIn("$push", calls[2].args[1])
         finally:
             restore()
 

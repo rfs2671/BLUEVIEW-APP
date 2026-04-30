@@ -3068,6 +3068,14 @@ async def add_filing_rep(
         "is_primary": bool(body.is_primary),
         "created_at": now,
         "updated_at": now,
+        # MR.10 forward fix: initialize the credentials array on
+        # insert so MR.10's add_filing_rep_credential endpoint
+        # doesn't have to lift a missing field via its defensive
+        # guard. The MR.6 Pydantic model declares this field with
+        # a default of [], but Pydantic defaults don't write through
+        # to MongoDB on dict-shaped inserts — without this line,
+        # new reps would still ship without the field on disk.
+        "credentials": [],
     }
 
     # Push the new rep onto the array.
@@ -3281,6 +3289,36 @@ async def add_filing_rep_credential(
         raise HTTPException(status_code=404, detail="Filing representative not found")
 
     now = datetime.now(timezone.utc)
+
+    # 0. Defensive lift: pre-MR.10 reps were inserted by add_filing_rep
+    #    without a `credentials` field. The MR.6 Pydantic model declares
+    #    `credentials: List[FilingRepCredential] = []` as a read-side
+    #    default, but Pydantic defaults don't write through on insert,
+    #    so legacy docs in production lack the field entirely (verified
+    #    against BlueView's reps post-MR.10 deploy). The supersede $set
+    #    below traverses the path `filing_reps.$[rep].credentials.$[cred]`
+    #    which raises Mongo `PathNotViable` when the credentials array
+    #    is absent. Lift the field to [] for any rep missing it. The
+    #    matching backfill migration in
+    #    backend/scripts/migrate_filing_reps_credentials_init.py
+    #    sweeps prod once; this guard keeps the endpoint correct even
+    #    if the migration hasn't been run yet, OR if a future code
+    #    path inserts a rep without the field (regression-evident
+    #    via the test pinned in test_filing_rep_credentials.py).
+    #    Idempotent: $elemMatch with `$exists: False` matches nothing
+    #    on already-initialized reps, so the update is a no-op.
+    await db.companies.update_one(
+        {
+            "_id": to_query_id(company_id),
+            "filing_reps": {
+                "$elemMatch": {
+                    "id": rep_id,
+                    "credentials": {"$exists": False},
+                },
+            },
+        },
+        {"$set": {"filing_reps.$.credentials": []}},
+    )
 
     # 1. Supersede the prior active credential, if any. array_filters
     #    matches every credential entry on this rep where superseded_at
