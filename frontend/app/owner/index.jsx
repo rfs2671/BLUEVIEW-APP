@@ -9,7 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -110,6 +110,33 @@ export default function OwnerPortalScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
+  // ── MR.2: modal viewport sizing (web) ─────────────────────────
+  // useWindowDimensions is reactive — values update on browser
+  // resize, so the modal bounds stay correct without re-mounting.
+  // Static modalContent.maxHeight: '80%' was percentage-relative
+  // through several flex layers; the actual constraint resolved
+  // inconsistently across viewports. Switching to absolute pixels
+  // computed from the live window height removes the ambiguity.
+  //
+  // Caps:
+  //   modal outer (modalContent): 85% of viewport — leaves a
+  //     comfortable 15% margin for browser chrome / screen edges.
+  //   ScrollView inside: outer cap minus a fixed reservation for
+  //     header (~60), modalCard padding (32 top + 32 bottom),
+  //     cardContent padding (32 top + 32 bottom), action-row
+  //     visibility margin (~24). Total reservation ≈ 212px.
+  //
+  // On native, leaves the modal styles using their existing
+  // percentage-based caps (which work correctly on iOS/Android
+  // because RN's flex propagates against actual screen bounds).
+  const { height: winHeight } = useWindowDimensions();
+  const isWeb = Platform.OS === 'web';
+  const webModalContentMaxHeight = isWeb
+    ? Math.round(winHeight * 0.85)
+    : null;
+  const webScrollMaxHeight = isWeb
+    ? Math.max(240, Math.round(winHeight * 0.85) - 212)
+    : null;
 
   // Auth state
   const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
@@ -787,7 +814,7 @@ export default function OwnerPortalScreen() {
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowCreateCompanyModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Create Company</Text>
@@ -797,7 +824,7 @@ export default function OwnerPortalScreen() {
                 </View>
 
                 <ScrollView
-                  style={styles.modalScroll}
+                  style={[styles.modalScroll, isWeb && { maxHeight: webScrollMaxHeight }]}
                   contentContainerStyle={styles.modalFormScroll}
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}
@@ -866,7 +893,7 @@ export default function OwnerPortalScreen() {
                 resetAdminForm();
               }}
             />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Create Admin Account</Text>
@@ -881,7 +908,7 @@ export default function OwnerPortalScreen() {
                 </View>
 
                 <ScrollView
-                  style={styles.modalScroll}
+                  style={[styles.modalScroll, isWeb && { maxHeight: webScrollMaxHeight }]}
                   contentContainerStyle={styles.modalFormScroll}
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}
@@ -976,7 +1003,7 @@ export default function OwnerPortalScreen() {
         >
           <View style={styles.modalOverlay}>
             <Pressable style={styles.modalBackdrop} onPress={() => setShowCompanyAdminsModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>
@@ -1024,7 +1051,7 @@ export default function OwnerPortalScreen() {
         >
           <View style={styles.modalOverlay}>
             <Pressable style={styles.modalBackdrop} onPress={() => setShowMigrationModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>Migrate Admin Data</Text>
@@ -1090,7 +1117,7 @@ export default function OwnerPortalScreen() {
         >
           <View style={styles.modalOverlay}>
             <Pressable style={styles.modalBackdrop} onPress={() => setShowDeleteCompanyModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.confirmCard}>
                 <IconPod size={64}>
                   <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
@@ -1125,7 +1152,7 @@ export default function OwnerPortalScreen() {
         >
           <View style={styles.modalOverlay}>
             <Pressable style={styles.modalBackdrop} onPress={() => setShowDeleteAdminModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.confirmCard}>
                 <IconPod size={64}>
                   <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
@@ -1168,7 +1195,7 @@ export default function OwnerPortalScreen() {
             style={styles.modalOverlay}
           >
             <Pressable style={styles.modalBackdrop} onPress={() => setShowFilingRepModal(false)} />
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.modalCard}>
                 <View style={styles.modalHeader}>
                   <Text style={styles.modalTitle}>
@@ -1188,7 +1215,7 @@ export default function OwnerPortalScreen() {
                     the scrollable area rather than being clipped by
                     the parent's maxHeight. */}
                 <ScrollView
-                  style={styles.modalScroll}
+                  style={[styles.modalScroll, isWeb && { maxHeight: webScrollMaxHeight }]}
                   contentContainerStyle={styles.modalFormScroll}
                   keyboardShouldPersistTaps="handled"
                   showsVerticalScrollIndicator={false}
@@ -1663,30 +1690,11 @@ const styles = StyleSheet.create({
   modalScroll: {
     flexGrow: 0,
     flexShrink: 1,
-    // ── Web scroll-capture fix (MR.2 verification, 2026-04-29) ──
-    // RN-Web ScrollView relies on its rendered div having a CSS
-    // max-height for `overflow-y: auto` to engage and capture wheel
-    // events. The chain above is GlassCard.cardContainer
-    // (maxHeight:'90%' + overflow:'hidden') → GlassCard.cardContent
-    // (just padding, no flex:1) → ScrollView (flexGrow:0,
-    // flexShrink:1). cardContent doesn't propagate the parent's
-    // bounded height to the ScrollView via flex, so on web the
-    // ScrollView ends up with no max-height — wheel events fall
-    // through to the page underneath instead of scrolling the
-    // modal content.
-    //
-    // Fix: explicit max-height on web only, computed from the
-    // window height. Cap at 640px so we don't get an absurdly tall
-    // scroll region on huge desktop monitors. Native (iOS/Android)
-    // is unaffected — RN's ScrollView already scrolls correctly
-    // within its parent's bounded region.
-    //
-    // Applied to the shared style so every modal using
-    // modalScroll/modalFormScroll (Create Company, Create Admin,
-    // Filing Rep) inherits the fix.
-    ...(Platform.OS === 'web' && {
-      maxHeight: Math.min(640, Dimensions.get('window').height * 0.7),
-    }),
+    // Web maxHeight is applied inline at each ScrollView call site
+    // via `webScrollMaxHeight` (computed from useWindowDimensions
+    // inside the component). Per-render reactive sizing means the
+    // bound stays correct across browser resizes, and the value can
+    // be tuned against the actual outer modal cap.
   },
   modalFormScroll: {
     gap: spacing.md,
