@@ -406,5 +406,53 @@ class TestEnqueueRollback(unittest.TestCase):
             restore()
 
 
+# ── Regression: redis package presence (no-mock contract test) ─────
+
+class TestRedisPackagePresent(unittest.TestCase):
+    """Regression test for the MR.6 production 503.
+
+    Background. server.py's _lpush_filing_queue does a lazy
+    `import redis.asyncio as redis_asyncio` inside the function
+    body, then catches ImportError and re-raises as a controlled
+    RuntimeError ("redis package not installed: ..."). The enqueue
+    endpoint catches that and returns 503 with code=redis_enqueue_failed.
+
+    Bug that shipped: MR.5 added redis>=5.0,<6 to
+    dob_worker/requirements.txt (the worker is the BRPOP consumer)
+    but MR.6 — which made the BACKEND a producer via
+    _lpush_filing_queue — never updated the root requirements.txt.
+    Production deploys did `pip install -r requirements.txt` and
+    skipped redis entirely. Every File-Renewal click 503'd.
+
+    Why CI didn't catch it: every existing test in this file (and
+    in test_pw2_mapper_critical_fields.py + test_authorization.py's
+    Mr6EnqueueGate) patches _lpush_filing_queue via
+    `patch.object(server, "_lpush_filing_queue", ...)` so the redis
+    import is never reached during the test. The library's absence
+    is invisible to mocked-out paths.
+
+    This test pins the regression by NOT mocking redis. It just
+    imports redis.asyncio at the test level and asserts the import
+    succeeds. Runs in EVERY environment (including CI without
+    REDIS_URL — pure import check, no connectivity required), so a
+    future commit that drops redis from requirements.txt fails
+    this test before it can ship.
+    """
+
+    def test_lpush_redis_package_imports_in_clean_environment(self):
+        try:
+            import redis.asyncio  # noqa: F401  -- import-only check
+        except ImportError as e:
+            self.fail(
+                f"`import redis.asyncio` failed: {e}. "
+                f"This catches the MR.6 regression where the "
+                f"backend's _lpush_filing_queue (server.py) needs "
+                f"the `redis` package but the root requirements.txt "
+                f"didn't list it. Verify redis>=5.0,<6 is present "
+                f"in requirements.txt AND installed in the test "
+                f"environment."
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

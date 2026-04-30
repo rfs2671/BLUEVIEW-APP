@@ -93,6 +93,11 @@ python-multipart==0.0.21
 pytokens==0.3.0
 pytz==2025.2
 PyYAML==6.0.3
+# MR.6 — backend uses redis.asyncio in _lpush_filing_queue (server.py)
+# to LPUSH filing-job payloads onto the queue the dob_worker BRPOPs.
+# Pinned to the SAME range as dob_worker/requirements.txt so producer
+# (backend) and consumer (worker) can never drift wire-protocol versions.
+redis>=5.0,<6
 referencing==0.37.0
 regex==2026.1.15
 resend>=0.7.0

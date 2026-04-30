@@ -610,24 +610,38 @@ def _filing_job_audit_event(
 # load (tests don't need it; the production deploy installs it via
 # requirements.txt). Cloud-side LPUSH paired with the worker's BRPOP
 # (dob_worker/lib/queue_client.py).
-FILING_QUEUE_KEY = os.environ.get("FILING_QUEUE_KEY", "levelog:filing-queue")
-REDIS_URL = os.environ.get("REDIS_URL", "")
+#
+# Note on env-var freshness: REDIS_URL is read INSIDE _lpush_filing_queue
+# on every call rather than cached at module load. This protects against
+# a class of stale-config bugs where the backend process started before
+# the operator set REDIS_URL on the Railway service — module-level
+# os.environ.get(...) caching would persist the empty value forever
+# until a redeploy. Reading per-call costs ~1us and lets a fresh REDIS_URL
+# (e.g. after rotating Redis credentials during incident response) flow
+# in without restarting the process. FILING_QUEUE_KEY is read the same
+# way for the same reason; the value is unlikely to change at runtime
+# but the pattern is consistent and trivial.
+DEFAULT_FILING_QUEUE_KEY = "levelog:filing-queue"
 
 
 async def _lpush_filing_queue(payload: dict):
     """LPUSH the job payload onto Redis. Fails-loud (raises) if
     REDIS_URL is unset OR redis package isn't installed — the enqueue
     endpoint catches and surfaces 503 to the caller. Tests patch this
-    function directly so they don't need a live Redis."""
-    if not REDIS_URL:
+    function directly so they don't need a live Redis.
+
+    REDIS_URL is read fresh on every call (see module-level note)."""
+    redis_url = os.environ.get("REDIS_URL", "")
+    if not redis_url:
         raise RuntimeError("REDIS_URL not configured — cannot enqueue filing job")
     try:
         import redis.asyncio as redis_asyncio
     except ImportError as e:
         raise RuntimeError(f"redis package not installed: {e}") from e
-    client = redis_asyncio.from_url(REDIS_URL, encoding="utf-8", decode_responses=True)
+    queue_key = os.environ.get("FILING_QUEUE_KEY", DEFAULT_FILING_QUEUE_KEY)
+    client = redis_asyncio.from_url(redis_url, encoding="utf-8", decode_responses=True)
     try:
-        await client.lpush(FILING_QUEUE_KEY, json.dumps(payload))
+        await client.lpush(queue_key, json.dumps(payload))
     finally:
         await client.close()
 
