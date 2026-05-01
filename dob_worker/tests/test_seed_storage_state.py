@@ -95,39 +95,71 @@ class TestOutputPathFor(unittest.TestCase):
 
 
 class TestResolveStorageDir(unittest.TestCase):
+    """MR.11.2 — resolution prefers LEVELOG_AGENT_STORAGE_DIR (the
+    HOST-side env var the operator's setup configures), falling
+    back to ~/.levelog/agent-storage. STORAGE_STATE_DIR is
+    explicitly NOT consulted — it describes the worker's
+    in-container path and was the cause of the prior bug where
+    the seed script wrote to C:\\storage instead of the home dir."""
 
-    def test_env_var_wins(self):
-        with patch.dict(os.environ, {"STORAGE_STATE_DIR": "/explicit"}):
-            self.assertEqual(seed.resolve_storage_dir(), Path("/explicit"))
+    def test_levelog_agent_storage_dir_env_var_wins(self):
+        with patch.dict(
+            os.environ, {"LEVELOG_AGENT_STORAGE_DIR": "/explicit/host/path"},
+        ):
+            self.assertEqual(
+                seed.resolve_storage_dir(),
+                Path("/explicit/host/path"),
+            )
 
-    def test_host_default_when_no_container_storage(self):
-        """When /storage doesn't exist (host machine without
-        the worker bind-mount), fall back to the home-dir path."""
-        with patch.dict(os.environ, {}, clear=False), \
-             patch.object(seed, "DEFAULT_STORAGE_DIR_CONTAINER",
-                          Path("/nonexistent-storage-test-path")):
+    def test_falls_back_to_home_dir_when_no_env(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LEVELOG_AGENT_STORAGE_DIR", None)
             os.environ.pop("STORAGE_STATE_DIR", None)
             result = seed.resolve_storage_dir()
-            # Should land on the home-dir default.
             self.assertEqual(result, seed.DEFAULT_STORAGE_DIR_HOST)
 
-    def test_container_default_when_storage_exists(self):
-        """When /storage exists (running inside the worker
-        container with the bind-mount), prefer it over the
-        home-dir path. Patching a Path instance's .exists is
-        rejected by the runtime (Path attrs are read-only), so
-        we substitute a fake DEFAULT_STORAGE_DIR_CONTAINER whose
-        exists() returns True."""
-        class _FakeDir:
-            def exists(self):
-                return True
-
-        fake = _FakeDir()
-        with patch.dict(os.environ, {}, clear=False), \
-             patch.object(seed, "DEFAULT_STORAGE_DIR_CONTAINER", fake):
-            os.environ.pop("STORAGE_STATE_DIR", None)
+    def test_storage_state_dir_explicitly_ignored(self):
+        """Regression for the MR.11.2 bug: a leaked
+        STORAGE_STATE_DIR=/storage in the host shell (from sourcing
+        dob_worker/.env.local) MUST NOT influence the host-run
+        seed script's resolution. Ignore it entirely."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LEVELOG_AGENT_STORAGE_DIR", None)
+            os.environ["STORAGE_STATE_DIR"] = "/storage"
             result = seed.resolve_storage_dir()
-            self.assertIs(result, fake)
+            # Must be the home-dir default, NOT /storage.
+            self.assertEqual(result, seed.DEFAULT_STORAGE_DIR_HOST)
+            self.assertNotEqual(result, Path("/storage"))
+
+
+class TestDetectMisplacedLegacySeed(unittest.TestCase):
+    """The MR.11.2 fix surfaces a one-shot warning when an old
+    /storage path holds a real seeded session that the operator
+    needs to relocate manually."""
+
+    def test_returns_none_when_no_legacy_file(self):
+        """Use a license number that vanishingly is unlikely to exist
+        at the legacy location. The dev machine that hit the original
+        bug may still have C:\\storage\\626198\\current.json present;
+        a randomized path keeps this test machine-independent."""
+        import tempfile
+        import uuid
+        with tempfile.TemporaryDirectory() as tmp:
+            unique = f"never-{uuid.uuid4().hex}"
+            new_path = Path(tmp) / unique / "current.json"
+            result = seed.detect_misplaced_legacy_seed(unique, new_path)
+            self.assertIsNone(result)
+
+    def test_returns_none_when_new_path_already_exists(self):
+        """If the operator already moved the file OR successfully
+        re-seeded, the new path is non-empty and we don't warn."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            new_path = Path(tmp) / "626198" / "current.json"
+            new_path.parent.mkdir(parents=True)
+            new_path.write_text('{"cookies": []}')
+            result = seed.detect_misplaced_legacy_seed("626198", new_path)
+            self.assertIsNone(result)
 
 
 if __name__ == "__main__":

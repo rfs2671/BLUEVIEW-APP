@@ -343,6 +343,197 @@ class TestFillPw2Form(unittest.TestCase):
         _run(go())
 
 
+# ── MR.11.2 — DOB NOW navigation flow tests ────────────────────────
+#
+# These pin the empirically-correct navigation flow surfaced by the
+# operator's 2026-04-30 DOM survey: dashboard search → click Search
+# → find filing row by letter → row's Select Action → "View Work
+# Permits" → work-permit row by work_type → Select Action → "Renew
+# Permit" → PW2 form. Each test isolates one tier so a future
+# regression — e.g. someone re-introduces the old "click row directly"
+# shortcut — fails loudly with a recognizable error.
+
+class TestParentJobNumberExtraction(unittest.TestCase):
+    """Pure-function tests for the helper that splits the
+    job_filing_number into parent + suffix. The DOB NOW dashboard
+    search expects ONLY the parent ('B00736930'), not the full
+    filing identifier ('B00736930-S1') — feeding it the full
+    string returns zero results."""
+
+    def test_strips_filing_letter_suffix(self):
+        from handlers.dob_now_filing import _parent_job_number
+        self.assertEqual(_parent_job_number("B00736930-S1"), "B00736930")
+
+    def test_strips_multi_segment_suffix(self):
+        from handlers.dob_now_filing import _parent_job_number
+        # Defensive: if DOB ever ships filings with multi-letter
+        # suffixes, we still take just the first segment.
+        self.assertEqual(_parent_job_number("B00736930-S1-A"), "B00736930")
+
+    def test_returns_input_when_no_suffix(self):
+        from handlers.dob_now_filing import _parent_job_number
+        self.assertEqual(_parent_job_number("B00736930"), "B00736930")
+
+    def test_empty_input_returns_empty(self):
+        from handlers.dob_now_filing import _parent_job_number
+        self.assertEqual(_parent_job_number(""), "")
+
+
+class TestFilingLetterExtraction(unittest.TestCase):
+    """Pure-function tests for _filing_letter — the suffix used to
+    disambiguate the right row in a multi-filing job."""
+
+    def test_extracts_simple_suffix(self):
+        from handlers.dob_now_filing import _filing_letter
+        self.assertEqual(_filing_letter("B00736930-S1"), "S1")
+
+    def test_extracts_multi_segment_suffix(self):
+        from handlers.dob_now_filing import _filing_letter
+        # We keep everything after the first dash so multi-segment
+        # suffixes (if they exist) round-trip.
+        self.assertEqual(_filing_letter("B00736930-S1-A"), "S1-A")
+
+    def test_returns_empty_when_no_suffix(self):
+        from handlers.dob_now_filing import _filing_letter
+        self.assertEqual(_filing_letter("B00736930"), "")
+
+    def test_empty_input_returns_empty(self):
+        from handlers.dob_now_filing import _filing_letter
+        self.assertEqual(_filing_letter(""), "")
+
+
+class TestNavigateToPw2FormFlow(unittest.TestCase):
+    """Pin the navigation order with mocked Playwright. Each test
+    stubs a different stage's selector to return None and asserts
+    the corresponding failure_reason — guaranteeing the flow
+    enforces the empirical 11-step path, not a shortcut."""
+
+    def _make_visible_locator(self):
+        loc = MagicMock()
+        loc.is_visible = AsyncMock(return_value=True)
+        loc.fill = AsyncMock()
+        loc.click = AsyncMock()
+        # Scoped lookups on a row use locator(...)
+        loc.locator = MagicMock(return_value=MagicMock(first=loc))
+        return loc
+
+    def _make_page_with_selector_resolver(self, resolver):
+        """Build a page whose locator(sel) returns whatever
+        resolver(sel) decides — keys off the selector substring
+        so individual tests can blank out specific stages."""
+        page = MagicMock()
+        page.wait_for_load_state = AsyncMock()
+        page.locator = MagicMock(side_effect=lambda sel: MagicMock(first=resolver(sel)))
+        return page
+
+    def test_missing_job_filing_number_short_circuits(self):
+        from handlers.dob_now_filing import _navigate_to_pw2_form
+
+        async def go():
+            # Page should never be touched.
+            page = MagicMock()
+            err = await _navigate_to_pw2_form(
+                page, job_filing_number="", work_type="Plumbing",
+            )
+            self.assertEqual(err, "missing_job_filing_number")
+
+        _run(go())
+
+    def test_job_search_input_not_found_surfaces(self):
+        from handlers.dob_now_filing import _navigate_to_pw2_form
+
+        async def go():
+            invisible = MagicMock()
+            invisible.is_visible = AsyncMock(return_value=False)
+            page = self._make_page_with_selector_resolver(lambda sel: invisible)
+
+            err = await _navigate_to_pw2_form(
+                page,
+                job_filing_number="B00736930-S1",
+                work_type="Plumbing",
+            )
+            self.assertEqual(err, "job_search_input_not_found")
+
+        _run(go())
+
+    def test_filing_row_not_found_surfaces(self):
+        """Search input is found and Search clicks succeed, but no
+        row matches the filing letter — surface a specific reason."""
+        from handlers.dob_now_filing import _navigate_to_pw2_form
+
+        async def go():
+            visible = self._make_visible_locator()
+            invisible = MagicMock()
+            invisible.is_visible = AsyncMock(return_value=False)
+
+            def resolver(sel):
+                # Search input/button visible; row selectors invisible.
+                if "search" in sel.lower() or "Search" in sel or "input[type" in sel or "submit" in sel.lower():
+                    return visible
+                if "tr:" in sel or 'role="row"' in sel:
+                    return invisible
+                if 'a:has-text("' in sel and "Search" in sel:
+                    return visible
+                return invisible
+
+            page = self._make_page_with_selector_resolver(resolver)
+            err = await _navigate_to_pw2_form(
+                page,
+                job_filing_number="B00736930-S1",
+                work_type="Plumbing",
+            )
+            self.assertEqual(err, "filing_row_not_found")
+
+        _run(go())
+
+    def test_view_work_permits_action_not_found_is_new_failure_mode(self):
+        """The MR.11.2-introduced failure mode. Reaches Tier 1's
+        Select Action open but no 'View Work Permits' entry exists
+        (e.g. DOB renamed it, or the row's action menu is empty)."""
+        from handlers.dob_now_filing import _navigate_to_pw2_form
+
+        async def go():
+            visible = self._make_visible_locator()
+            invisible = MagicMock()
+            invisible.is_visible = AsyncMock(return_value=False)
+
+            def resolver(sel):
+                # Search + row + Select Action visible.
+                # 'View Work Permits' selectors invisible.
+                if "View Work Permits" in sel:
+                    return invisible
+                # Renew Permit / row selectors return visible (we
+                # never reach them in this test; defensive fallback).
+                return visible
+
+            page = self._make_page_with_selector_resolver(resolver)
+            err = await _navigate_to_pw2_form(
+                page,
+                job_filing_number="B00736930-S1",
+                work_type="Plumbing",
+            )
+            self.assertEqual(err, "view_work_permits_action_not_found")
+
+        _run(go())
+
+    def test_happy_path_returns_none(self):
+        """Every selector resolves; navigation completes."""
+        from handlers.dob_now_filing import _navigate_to_pw2_form
+
+        async def go():
+            visible = self._make_visible_locator()
+            page = self._make_page_with_selector_resolver(lambda sel: visible)
+
+            err = await _navigate_to_pw2_form(
+                page,
+                job_filing_number="B00736930-S1",
+                work_type="Plumbing",
+            )
+            self.assertIsNone(err)
+
+        _run(go())
+
+
 # ── End-to-end handler flow ────────────────────────────────────────
 #
 # Mocks the entire Playwright stack:

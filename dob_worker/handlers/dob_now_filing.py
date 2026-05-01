@@ -311,6 +311,43 @@ PERMIT_RENEW_BUTTON_SELECTORS = (
     'a:has-text("Renew")',
     'button:has-text("Renew Permit")',
 )
+
+# MR.11.2 — DOB NOW dashboard navigation selectors. Operator's
+# empirical DOM survey done 2026-04-30 against the live site.
+# The flow is: dashboard search → click Search → find filing
+# row → open row's Select Action → click "View Work Permits" →
+# new page → find work permit row by work_type → open that
+# row's Select Action → click "Renew Permit" → PW2 form loads.
+JOB_SEARCH_INPUT_SELECTORS = (
+    'input[placeholder*="job" i]',
+    'input[name*="search" i]',
+    'input[id*="search" i]',
+    'input[type="text"]:visible',
+)
+JOB_SEARCH_BUTTON_SELECTORS = (
+    'button:has-text("Search")',
+    'input[type="submit"][value*="Search" i]',
+    'a:has-text("Search")',
+)
+ROW_SELECT_ACTION_SELECTORS = (
+    'button:has-text("Select Action")',
+    'a:has-text("Select Action")',
+    '[role="button"]:has-text("Select Action")',
+    'select[name*="action" i]',
+)
+VIEW_WORK_PERMITS_ACTION_SELECTORS = (
+    'a:has-text("View Work Permits")',
+    'button:has-text("View Work Permits")',
+    'li:has-text("View Work Permits")',
+    '[role="menuitem"]:has-text("View Work Permits")',
+)
+RENEW_PERMIT_ACTION_SELECTORS = (
+    'a:has-text("Renew Permit")',
+    'button:has-text("Renew Permit")',
+    'li:has-text("Renew Permit")',
+    '[role="menuitem"]:has-text("Renew Permit")',
+)
+
 SUBMIT_BUTTON_SELECTORS = (
     'button:has-text("Submit")',
     'button[type="submit"]:not([disabled])',
@@ -566,64 +603,241 @@ async def _login(
 
 
 # ── Permit navigation ──────────────────────────────────────────────
+#
+# MR.11.2 — corrected after operator's empirical DOM survey
+# (2026-04-30) against the live DOB NOW dashboard.
+#
+# The previous implementation assumed a "find row → click row →
+# click Renew" three-step flow. The actual UX is two-tier:
+#
+#   (1) JOB-LEVEL: dashboard hosts a search by parent job number
+#       (e.g. "B00736930", NOT "B00736930-S1"). After Search,
+#       the result list shows one row per FILING under that job;
+#       each filing is identified by its letter suffix (e.g. "S1",
+#       "P1"). Each row has a "Select Action" dropdown whose
+#       relevant entry for renewals is "View Work Permits".
+#
+#   (2) WORK-PERMIT-LEVEL: clicking "View Work Permits" navigates
+#       to a per-filing page listing every WORK PERMIT issued
+#       under that filing — one row per work_type (Plumbing,
+#       Electrical, etc). Each row has its own "Select Action"
+#       dropdown; the relevant entry here is "Renew Permit",
+#       which loads the PW2 form.
+#
+# Old failure reasons (permit_not_renewable, permit_click_failed)
+# are replaced by mode-specific reasons that point the operator
+# at WHICH tier broke (job_search_input_not_found,
+# filing_row_not_found, view_work_permits_action_not_found,
+# work_permit_row_not_found, renew_permit_action_not_found).
 
+
+def _parent_job_number(job_filing_number: str) -> str:
+    """Extract the parent job number from a filing number.
+    DOB NOW's job search input expects the leading segment
+    (the 'B' job number), NOT the full filing identifier.
+
+    Examples:
+      "B00736930-S1" → "B00736930"
+      "B00736930"    → "B00736930"
+      ""             → ""
+    """
+    if not job_filing_number:
+        return ""
+    return job_filing_number.split("-", 1)[0]
+
+
+def _filing_letter(job_filing_number: str) -> str:
+    """Extract the filing-letter suffix used to disambiguate the
+    row in the parent-job's filing list. Returns "" if no suffix.
+
+    Examples:
+      "B00736930-S1" → "S1"
+      "B00736930"    → ""
+    """
+    if not job_filing_number or "-" not in job_filing_number:
+        return ""
+    return job_filing_number.split("-", 1)[1]
+
+
+async def _search_for_job(page, parent_job_number: str) -> Optional[str]:
+    """Tier 1a: type the parent job number into the dashboard's
+    search box and click Search. Returns failure_reason or None."""
+    search_input = await _try_first_match(page, JOB_SEARCH_INPUT_SELECTORS)
+    if search_input is None:
+        return "job_search_input_not_found"
+    try:
+        await search_input.fill(parent_job_number, timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+    except Exception as e:
+        logger.error("[dob_now_filing] job-search fill failed: %r", e)
+        return "job_search_fill_failed"
+
+    search_btn = await _try_first_match(page, JOB_SEARCH_BUTTON_SELECTORS)
+    if search_btn is None:
+        return "job_search_button_not_found"
+    try:
+        await search_btn.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
+        )
+    except Exception as e:
+        logger.error("[dob_now_filing] job-search click failed: %r", e)
+        return "job_search_click_failed"
+    return None
+
+
+async def _find_filing_row(page, job_filing_number: str):
+    """Tier 1b: locate the row in the search-results table that
+    corresponds to this specific filing. Disambiguation strategy:
+    match BOTH the parent job number AND the filing letter
+    suffix in the same row (so we don't accidentally pick S2
+    when the operator filed S1). Returns the row Locator or None."""
+    parent = _parent_job_number(job_filing_number)
+    suffix = _filing_letter(job_filing_number)
+    # If there's no suffix, just match the parent in any row.
+    if not suffix:
+        candidates = (
+            f'tr:has-text("{parent}")',
+            f'div[role="row"]:has-text("{parent}")',
+            f'a:has-text("{parent}")',
+        )
+    else:
+        # Both the parent number AND the suffix must appear in
+        # the same row. has-text composes — Playwright matches
+        # AND on chained :has-text() pseudo-classes.
+        candidates = (
+            f'tr:has-text("{parent}"):has-text("{suffix}")',
+            f'div[role="row"]:has-text("{parent}"):has-text("{suffix}")',
+            # Last-resort fallback: full filing number as a
+            # contiguous string.
+            f'tr:has-text("{job_filing_number}")',
+            f'div[role="row"]:has-text("{job_filing_number}")',
+        )
+    return await _try_first_match(page, candidates)
+
+
+async def _row_action(page, row_locator, action_selectors):
+    """Open the row's Select Action dropdown, then click the
+    requested entry. Returns True on success, False otherwise.
+
+    Uses row_locator.locator(...) to scope the dropdown lookup
+    INSIDE the row — DOB NOW's table renders one Select Action
+    button per row; a global lookup would pick the wrong one."""
+    if row_locator is None:
+        return False
+    # Try scoped (row-internal) first, fall back to page-global.
+    dropdown = None
+    for sel in ROW_SELECT_ACTION_SELECTORS:
+        try:
+            scoped = row_locator.locator(sel).first
+            if await scoped.is_visible(timeout=2000):
+                dropdown = scoped
+                break
+        except Exception:
+            continue
+    if dropdown is None:
+        dropdown = await _try_first_match(page, ROW_SELECT_ACTION_SELECTORS)
+    if dropdown is None:
+        return False
+    try:
+        await dropdown.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+    except Exception as e:
+        logger.warning("[dob_now_filing] Select Action click failed: %r", e)
+        return False
+
+    # The action menu opens at page level (popovers usually
+    # break out of the row container). Look up at page scope.
+    action = await _try_first_match(page, action_selectors)
+    if action is None:
+        return False
+    try:
+        await action.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
+        await page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
+        )
+    except Exception as e:
+        logger.error("[dob_now_filing] action-menu click failed: %r", e)
+        return False
+    return True
+
+
+async def _find_work_permit_row(page, work_type: str):
+    """Tier 2a: on the work-permits page, locate the row for
+    this filing's work_type (e.g. "Plumbing", "Electrical").
+    Returns the row Locator or None.
+
+    If work_type is empty, take the first row — DOB NOW filings
+    typically only have one work permit, but there's no guarantee.
+    The caller should fail loud rather than silently picking the
+    wrong row."""
+    if not work_type:
+        # Caller decides whether this is fatal. We return the first
+        # row as a best-effort.
+        candidates = (
+            'tr:visible',
+            'div[role="row"]:visible',
+        )
+        return await _try_first_match(page, candidates)
+    candidates = (
+        f'tr:has-text("{work_type}")',
+        f'div[role="row"]:has-text("{work_type}")',
+    )
+    return await _try_first_match(page, candidates)
+
+
+async def _navigate_to_pw2_form(
+    page,
+    *,
+    job_filing_number: str,
+    work_type: str,
+) -> Optional[str]:
+    """From the post-login dashboard, navigate to the PW2 renewal
+    form for the given filing+work_type. Returns failure_reason
+    string or None on success. See module-level comment for the
+    11-step flow this implements."""
+    parent = _parent_job_number(job_filing_number)
+    if not parent:
+        return "missing_job_filing_number"
+
+    # Tier 1: job-level search → filing row → View Work Permits.
+    search_err = await _search_for_job(page, parent)
+    if search_err:
+        return search_err
+
+    filing_row = await _find_filing_row(page, job_filing_number)
+    if filing_row is None:
+        return "filing_row_not_found"
+
+    ok = await _row_action(page, filing_row, VIEW_WORK_PERMITS_ACTION_SELECTORS)
+    if not ok:
+        return "view_work_permits_action_not_found"
+
+    # Tier 2: work-permit-level row → Select Action → Renew Permit.
+    work_row = await _find_work_permit_row(page, work_type)
+    if work_row is None:
+        return "work_permit_row_not_found"
+
+    ok = await _row_action(page, work_row, RENEW_PERMIT_ACTION_SELECTORS)
+    if not ok:
+        return "renew_permit_action_not_found"
+
+    return None
+
+
+# Backwards-compat alias for tests / external callers that import
+# the old name. New code should call _navigate_to_pw2_form directly.
 async def _navigate_to_permit(
     page,
     *,
     job_filing_number: str,
+    work_type: str = "",
 ) -> Optional[str]:
-    """From the dashboard, find the permit by job_filing_number
-    and click into its renewal flow. Returns failure_reason or None.
-
-    SELECTOR-EMPIRICAL throughout. The DOB NOW SPA's exact navigation
-    pattern is unknown without a logged-in session; this is best-
-    effort. Smoke run will refine."""
-    permits_link = await _try_first_match(page, PERMIT_LIST_LINK_SELECTORS)
-    if permits_link is not None:
-        try:
-            await permits_link.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
-            await page.wait_for_load_state(
-                "domcontentloaded",
-                timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
-            )
-        except Exception as e:
-            logger.warning("[dob_now_filing] permits-link click failed: %r", e)
-
-    # Find the row for our specific permit.
-    row_selectors = (
-        f'tr:has-text("{job_filing_number}")',
-        f'div[role="row"]:has-text("{job_filing_number}")',
-        f'a:has-text("{job_filing_number}")',
+    return await _navigate_to_pw2_form(
+        page,
+        job_filing_number=job_filing_number,
+        work_type=work_type,
     )
-    permit_row = await _try_first_match(page, row_selectors)
-    if permit_row is None:
-        return "permit_not_found"
-
-    try:
-        await permit_row.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
-        await page.wait_for_load_state(
-            "domcontentloaded",
-            timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
-        )
-    except Exception as e:
-        logger.error("[dob_now_filing] permit-row click failed: %r", e)
-        return "permit_click_failed"
-
-    renew_btn = await _try_first_match(page, PERMIT_RENEW_BUTTON_SELECTORS)
-    if renew_btn is None:
-        return "permit_not_renewable"
-
-    try:
-        await renew_btn.click(timeout=PLAYWRIGHT_DEFAULT_TIMEOUT_MS)
-        await page.wait_for_load_state(
-            "domcontentloaded",
-            timeout=PLAYWRIGHT_NAVIGATION_TIMEOUT_MS,
-        )
-    except Exception as e:
-        logger.error("[dob_now_filing] renew-button click failed: %r", e)
-        return "renew_click_failed"
-
-    return None
 
 
 # ── PW2 form fill ───────────────────────────────────────────────────
@@ -834,6 +1048,14 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
         or company_id
         or "default"
     )
+    # MR.11.2 — work_type disambiguates which row to pick on the
+    # work-permits page. Pulled from the same field_map the form
+    # filler will use; fallback to payload-level for flexibility.
+    work_type = (
+        ((pw2_field_map.get("fields") or {}).get("work_type") or {}).get("value")
+        or payload.get("work_type")
+        or ""
+    )
 
     # 1. Decrypt credentials.
     creds, err = _decrypt_payload_credentials(payload)
@@ -955,9 +1177,10 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
                         detail="missing_job_filing_number",
                         metadata={"step": "navigate"},
                     )
-                nav_err = await _navigate_to_permit(
+                nav_err = await _navigate_to_pw2_form(
                     page,
                     job_filing_number=job_filing_number,
+                    work_type=work_type,
                 )
                 if nav_err:
                     return HandlerResult(

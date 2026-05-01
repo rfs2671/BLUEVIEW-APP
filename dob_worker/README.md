@@ -105,6 +105,20 @@ to confirm it landed before moving on.
        (this is the bind-mount source the worker container reads
        at /storage/<gc_license>/current.json).
 
+       Path resolution: the script writes to LEVELOG_AGENT_STORAGE_DIR
+       (set in MR.5 step 6) when present, falling back to
+       ~/.levelog/agent-storage. The script EXPLICITLY ignores
+       STORAGE_STATE_DIR — that variable describes the worker's
+       in-container path (/storage). If the operator sourced
+       dob_worker/.env.local into their host shell, STORAGE_STATE_DIR
+       leaks in and would otherwise cause writes to the literal
+       C:\storage\<gc> tree, which the worker container never reads.
+
+       If a previous (pre-MR.11.2) seed run wrote to that broken
+       path, the script detects the stranded session and prints a
+       Move-Item / mv command so the operator can relocate it
+       without re-doing the manual login.
+
        Re-seed when:
          - A scheduled filing fails with akamai_challenge AND
            previous storage_state is also stale.

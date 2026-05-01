@@ -66,35 +66,78 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 
-# Default storage_state root on host. Matches the bind-mount source
+# Default storage_state root on host. Matches the bind-mount SOURCE
 # in docker-compose.yml: ${LEVELOG_AGENT_STORAGE_DIR:-./storage-host-fallback}
-# where the operator setup sets LEVELOG_AGENT_STORAGE_DIR to
-# ~/.levelog/agent-storage. The script picks the same default so
-# the saved file is exactly where the worker will load it from.
+# This is the HOST path the worker container's /storage volume
+# mounts FROM. The operator's setup (per dob_worker/README.md step 6)
+# sets LEVELOG_AGENT_STORAGE_DIR=~/.levelog/agent-storage in their
+# shell, and that's the directory we write to.
 DEFAULT_STORAGE_DIR_HOST = Path.home() / ".levelog" / "agent-storage"
-# When running INSIDE the worker container (not the recommended
-# path, but supported for ops who have an X11 forwarding setup),
-# the bind-mount lives at /storage.
-DEFAULT_STORAGE_DIR_CONTAINER = Path("/storage")
 
 LANDING_URL = "https://a810-dobnow.nyc.gov/Publish/Index.html"
 
 
+# MR.11.2 fix: the prior version of this script honored
+# STORAGE_STATE_DIR (the IN-CONTAINER worker env var, value=/storage)
+# before falling back to the host home-dir default. When the operator
+# ran the host script in a shell that had STORAGE_STATE_DIR=/storage
+# leaked from sourcing dob_worker/.env.local, the script wrote to
+# the literal Windows path C:\storage\<gc>\current.json — which the
+# worker container DOESN'T see because /storage inside the container
+# is the bind-mount target, with the SOURCE being whatever
+# LEVELOG_AGENT_STORAGE_DIR points at on the host. So the seeded
+# file landed in a directory the worker would never read from.
+#
+# The fix below resolves to LEVELOG_AGENT_STORAGE_DIR (the host
+# env var the operator already has set per MR.5 setup step 6),
+# falling back to ~/.levelog/agent-storage. STORAGE_STATE_DIR is
+# explicitly IGNORED here — that variable describes the worker's
+# in-container path and is irrelevant to where the host-run seed
+# script should write.
 def resolve_storage_dir() -> Path:
-    """Pick the right storage_state root for the current
-    environment. Honors STORAGE_STATE_DIR env var if set;
-    otherwise picks the host or container default based on
-    which directory exists and is writable."""
-    explicit = os.environ.get("STORAGE_STATE_DIR")
+    """Pick the storage_state root on the HOST filesystem (the
+    bind-mount source the worker container reads).
+
+    Resolution order:
+      1. LEVELOG_AGENT_STORAGE_DIR env var — the canonical host
+         path the operator's setup configured (MR.5 step 6).
+      2. ~/.levelog/agent-storage — the documented default.
+
+    NOT consulted (explicitly): STORAGE_STATE_DIR. That variable
+    describes the path INSIDE the worker container (/storage) and
+    is wrong for the host-run seed script. See the MR.11.2 commit
+    body for the bug history."""
+    explicit = os.environ.get("LEVELOG_AGENT_STORAGE_DIR")
     if explicit:
         return Path(explicit)
-    # Container default first — if /storage exists, we're probably
-    # inside the worker image.
-    if DEFAULT_STORAGE_DIR_CONTAINER.exists():
-        return DEFAULT_STORAGE_DIR_CONTAINER
     return DEFAULT_STORAGE_DIR_HOST
+
+
+def detect_misplaced_legacy_seed(gc_license_number: str, new_path: Path) -> Optional[Path]:
+    """MR.11.2 — if the operator's PRIOR seed run wrote to the
+    literal /storage host path (the bug), detect that file and tell
+    the operator to move it manually.
+
+    Returns the legacy path if a file exists there AND no file
+    exists at the new resolved path. None otherwise (no
+    relocation needed, or the operator already moved it).
+
+    We do NOT auto-mv because Windows path handling is brittle and
+    a botched move could lose the (real, hard-won, manually-logged-
+    in) cookies. Better to make the operator do it explicitly."""
+    # The literal Windows path the bug produced when STORAGE_STATE_DIR
+    # was leaked into the host shell as /storage.
+    if os.name == "nt":
+        legacy_root = Path("C:/storage")
+    else:
+        legacy_root = Path("/storage")
+    legacy_path = legacy_root / gc_license_number / "current.json"
+    if legacy_path.exists() and not new_path.exists():
+        return legacy_path
+    return None
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -184,9 +227,105 @@ async def _wait_for_operator_signal() -> None:
         pass
 
 
+def validate_storage_root(root: Path) -> Optional[str]:
+    """Reject if the storage root doesn't exist OR isn't writable.
+    Returns an error message string when invalid, None when OK.
+
+    Why we don't auto-create: per MR.5 setup step 3 the operator
+    is supposed to mkdir ~/.levelog/agent-storage explicitly. If
+    the script silently mkdir'd it on first run, a typo'd
+    LEVELOG_AGENT_STORAGE_DIR (e.g. pointing at a different drive
+    that's currently disconnected) would create the wrong
+    directory tree and the worker container's bind-mount would
+    point at the typo, not the real path. Loud failure is better."""
+    if not root.exists():
+        return (
+            f"storage root does not exist: {root}\n"
+            f"Run the MR.5 setup step 3:\n"
+            f"  PowerShell:\n"
+            f"    New-Item -ItemType Directory -Path "
+            f'"$env:USERPROFILE\\.levelog\\agent-storage" -Force\n'
+            f"  bash:\n"
+            f"    mkdir -p ~/.levelog/agent-storage\n"
+            f"and re-run this script."
+        )
+    if not root.is_dir():
+        return f"storage root is not a directory: {root}"
+    # Check writable by probing — Path.access is unreliable on
+    # Windows network drives, and os.access has known false-
+    # positive issues with NTFS permissions. The probe is
+    # authoritative.
+    probe = root / ".seed_storage_state_writable_probe"
+    try:
+        probe.touch()
+        probe.unlink()
+    except OSError as e:
+        return f"storage root is not writable: {root} ({e})"
+    return None
+
+
 async def main(argv=None) -> int:
     args = parse_args(argv)
-    output_path = output_path_for(args)
+    try:
+        output_path = output_path_for(args)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+    storage_root = output_path.parent.parent  # <root>/<gc>/current.json -> <root>
+    err = validate_storage_root(storage_root)
+    if err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        return 2
+
+    # MR.11.2 — detect the misplaced-legacy-seed case: prior
+    # version of this script wrote to a literal /storage path that
+    # the worker doesn't read from. If the operator's prior session
+    # is parked there, surface it BEFORE asking them to log in
+    # again — they can mv the existing 26-cookie session in place
+    # and skip the manual re-login.
+    legacy = detect_misplaced_legacy_seed(
+        args.gc_license_number, output_path,
+    )
+    if legacy is not None:
+        print(
+            f"\nWARNING: detected an existing storage_state at the "
+            f"OLD broken path:\n  {legacy}\n\n"
+            f"This file was written by a prior MR.11.1 seed run BEFORE "
+            f"the path-resolution bug was fixed in MR.11.2. The worker "
+            f"container does NOT read from there.\n\n"
+            f"To preserve the existing logged-in session WITHOUT a "
+            f"manual re-login, move the file:\n",
+            file=sys.stderr,
+        )
+        print(f"  PowerShell:", file=sys.stderr)
+        print(
+            f"    New-Item -ItemType Directory -Path "
+            f'"{output_path.parent}" -Force | Out-Null',
+            file=sys.stderr,
+        )
+        print(
+            f'    Move-Item -Path "{legacy}" -Destination '
+            f'"{output_path}"',
+            file=sys.stderr,
+        )
+        print(f"\n  bash:", file=sys.stderr)
+        print(f"    mkdir -p {output_path.parent}", file=sys.stderr)
+        print(f"    mv {legacy} {output_path}", file=sys.stderr)
+        print(
+            "\nThen re-run this script ONLY if you want to refresh "
+            "the cookies (otherwise the moved file is sufficient — "
+            "the worker will pick it up on next filing run).",
+            file=sys.stderr,
+        )
+        print(
+            "\nNot moving automatically — Windows path handling is "
+            "brittle and a botched move could destroy the cookies "
+            "you spent time logging in to obtain.",
+            file=sys.stderr,
+        )
+        return 3
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[seed] Storage state will be written to: {output_path}")
