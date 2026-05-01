@@ -68,7 +68,53 @@ to confirm it landed before moving on.
          [dob_worker] booting worker_id=...
          bis_scraper started, interval=60m, ...
 
-[ ] 9. (OPTIONAL v1) install + configure cloudflared
+[ ] 9. Seed warm session for each GC before first filing (MR.11.1)
+       DOB NOW is fronted by Akamai Bot Manager — a cold headless
+       Chromium connection from a residential IP gets challenged
+       with a 403 before reaching the login form. Mitigation:
+       seed the BrowserContext's storage_state with cookies from
+       a real human login. Subsequent worker runs reuse the
+       warmed session.
+
+       This is operator-execution-on-host, NOT inside the
+       container, because non-headless Chromium needs a real
+       display server (Windows + Docker doesn't ship one without
+       X11 forwarding setup, which is fragile).
+
+       One-time setup on the host:
+         pip install playwright
+         playwright install chromium
+
+       Seed each GC (run once per company, per re-seed when
+       cookies expire):
+         python dob_worker/scripts/seed_storage_state.py 626198
+       (Use the GC's license number from companies.gc_license_number.
+       Example value 626198 is a placeholder.)
+
+       What happens:
+         - A Chromium window opens, navigates to DOB NOW landing.
+         - Operator clicks NYC.ID login, types DOB NOW credentials.
+         - Operator completes any 2FA / CAPTCHA the human-facing
+           site presents.
+         - Operator waits for the post-login dashboard with the
+           permit list visible.
+         - Operator presses Enter (or Ctrl+C) in the terminal to
+           save the session and close the browser.
+
+       Output: ~/.levelog/agent-storage/<gc_license>/current.json
+       (this is the bind-mount source the worker container reads
+       at /storage/<gc_license>/current.json).
+
+       Re-seed when:
+         - A scheduled filing fails with akamai_challenge AND
+           previous storage_state is also stale.
+         - DOB NOW reports the session expired (typical
+           expiry: 30–60 minutes idle for NYC.ID).
+         - A storage_state rotation in lib/browser_context.py
+           promoted current → previous and the previous-fallback
+           also got challenged.
+
+[ ] 10. (OPTIONAL v1) install + configure cloudflared
        v1 is outbound-only; skipping cloudflared just means the
        worker posts from the operator's residential IP directly.
        Skip on first deploy; revisit if Akamai starts challenging.

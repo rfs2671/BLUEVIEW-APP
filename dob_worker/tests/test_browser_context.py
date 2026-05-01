@@ -93,5 +93,112 @@ class TestStorageStateLifecycle(unittest.TestCase):
         self.assertFalse(bc.fall_back_to_previous("never-seen"))
 
 
+# ── MR.11.1 — load-on-context-create + fallback path ──────────────
+
+class TestWithBrowserContextLoadPath(unittest.TestCase):
+    """Pins the contract that with_browser_context() loads
+    storage_state when current.json exists and falls back to a
+    fresh context (no storage_state kwarg) when it doesn't.
+    Regression-evident: a future commit that flips the default
+    direction (e.g. always loads, even when the file is missing
+    — Playwright would raise) breaks these tests immediately."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["STORAGE_STATE_DIR"] = str(self.tmp)
+        for k in list(sys.modules):
+            if k.startswith("lib.browser_context"):
+                del sys.modules[k]
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_loads_storage_state_when_file_exists(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from lib import browser_context as bc
+        bc.STORAGE_STATE_DIR = self.tmp
+
+        # Pre-seed the storage_state file the way seed_storage_state.py
+        # would (operator manual login).
+        gc = "626198"
+        gc_dir = self.tmp / gc
+        gc_dir.mkdir(parents=True, exist_ok=True)
+        seeded_file = gc_dir / "current.json"
+        seeded_file.write_text(json.dumps({"cookies": [], "origins": []}))
+
+        # Mock browser. new_context returns a mock context whose
+        # storage_state(...) just records the save path call.
+        ctx = MagicMock()
+        ctx.storage_state = AsyncMock()
+        ctx.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=ctx)
+
+        async def fn(c):
+            return "ok"
+
+        result = self._run(bc.with_browser_context(browser, gc, fn))
+        self.assertEqual(result, "ok")
+        # new_context was called WITH storage_state kwarg pointing at
+        # the seeded file — this is the load path the MR.11.1 seed
+        # script populates.
+        kwargs = browser.new_context.await_args.kwargs
+        self.assertEqual(kwargs.get("storage_state"), str(seeded_file))
+
+    def test_falls_back_to_fresh_when_file_missing(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from lib import browser_context as bc
+        bc.STORAGE_STATE_DIR = self.tmp
+
+        # No file pre-seeded. Cold-start path.
+        gc = "never-seeded"
+
+        ctx = MagicMock()
+        ctx.storage_state = AsyncMock()
+        ctx.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=ctx)
+
+        async def fn(c):
+            return "ok"
+
+        result = self._run(bc.with_browser_context(browser, gc, fn))
+        self.assertEqual(result, "ok")
+        # new_context was called WITHOUT storage_state kwarg (cold
+        # start). Critical — passing storage_state=None or an empty
+        # string to Playwright raises; the helper must just omit
+        # the kwarg entirely.
+        kwargs = browser.new_context.await_args.kwargs
+        self.assertNotIn("storage_state", kwargs)
+
+    def test_save_path_runs_after_fn_returns(self):
+        """The handler depends on the save side-effect to
+        propagate freshly-set login cookies forward to the next
+        run. Confirm context.storage_state(path=...) is invoked
+        with the expected target path after fn returns."""
+        from unittest.mock import AsyncMock, MagicMock
+        from lib import browser_context as bc
+        bc.STORAGE_STATE_DIR = self.tmp
+
+        gc = "save-target"
+        ctx = MagicMock()
+        ctx.storage_state = AsyncMock()
+        ctx.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=ctx)
+
+        async def fn(c):
+            return "ok"
+
+        self._run(bc.with_browser_context(browser, gc, fn))
+        # The save call. Target path must be the per-GC current.json.
+        ctx.storage_state.assert_awaited_once()
+        kwargs = ctx.storage_state.await_args.kwargs
+        self.assertEqual(
+            kwargs.get("path"), str(self.tmp / gc / "current.json"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
