@@ -20815,6 +20815,39 @@ async def internal_agent_heartbeat(request: Request, body: dict):
     return {"received": True}
 
 
+@api_router.get("/internal/filing-jobs/{filing_job_id}")
+async def internal_get_filing_job(filing_job_id: str, request: Request):
+    """MR.11 Bug 2 fix — worker-tier read of a single FilingJob doc.
+
+    Why this exists: the dob_now_filing handler's _check_cancellation
+    path needs to read the latest FilingJob (specifically the
+    `cancellation_requested` flag and the `audit_log` for
+    operator_response polling). The matching READ surface that
+    already exists for operators is
+    `GET /api/permit-renewals/{id}/filing-jobs`, but that endpoint
+    is gated by Depends(get_current_user) — bearer/cookie auth that
+    the worker doesn't carry. The worker has only X-Worker-Secret.
+
+    Worker calls were 401-ing silently; _check_cancellation soft-
+    failed to "not cancelled" and the handler proceeded with already-
+    cancelled jobs. This internal-tier endpoint pairs the same data
+    the operator-tier returns with worker-tier auth, closing the gap.
+
+    Defensive ciphertext strip on output (mirrors the operator-tier
+    serializer in permit_renewal.py:_serialize_filing_job) — schema
+    doesn't carry ciphertext on filing_jobs but the strip is belt-
+    and-suspenders against future drift."""
+    _validate_worker_secret(request)
+    job = await db.filing_jobs.find_one(
+        {"_id": filing_job_id, "is_deleted": {"$ne": True}}
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="FilingJob not found")
+    out = serialize_id(dict(job))
+    out.pop("encrypted_ciphertext", None)
+    return out
+
+
 @api_router.post("/internal/filing-job-event")
 async def internal_filing_job_event(request: Request, body: dict):
     """MR.11 — worker-side audit-log append for mid-flight events.

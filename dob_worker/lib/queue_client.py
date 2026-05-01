@@ -201,31 +201,31 @@ async def fetch_filing_job(
     http_client,
     *,
     backend_url: str,
-    permit_renewal_id: str,
+    permit_renewal_id: str,  # kept for backward-compat — unused on internal path
     filing_job_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """MR.11 — fetch the latest FilingJob doc to read audit_log
-    (for operator_response polling) and the cancellation_requested
-    flag. Returns the matched job dict or None on any non-200.
+    """MR.11 — fetch a single FilingJob doc to read audit_log (for
+    operator_response polling) and the cancellation_requested flag.
+    Returns the doc dict or None on any non-200.
 
-    Uses the existing operator-tier list endpoint
-    /api/permit-renewals/{id}/filing-jobs (auth: bearer/cookie),
-    NOT a worker-tier endpoint. The worker reuses the
-    X-Worker-Secret header that's already on http_client; backend
-    accepts both for this read path because the data isn't
-    sensitive — fingerprints + audit_log + status are all
-    operator-visible already."""
+    Updated for MR.11 Bug 2 fix: now hits the internal-tier endpoint
+    GET /api/internal/filing-jobs/{filing_job_id} which accepts the
+    worker's X-Worker-Secret. Previous version called the operator-
+    tier list endpoint /api/permit-renewals/{id}/filing-jobs which
+    returns 401 against worker auth — silently breaking the
+    cancellation check.
+
+    `permit_renewal_id` parameter retained for caller backward-compat
+    (handler call sites pass it positionally) but is unused on the
+    new endpoint path. Documented here so a future cleanup commit
+    can drop it without breaking the contract."""
     resp = await http_client.get(
-        f"{backend_url}/api/permit-renewals/{permit_renewal_id}/filing-jobs",
+        f"{backend_url}/api/internal/filing-jobs/{filing_job_id}",
     )
     if resp.status_code != 200:
         logger.warning(
-            "[queue] fetch_filing_job got %s for renewal=%s",
-            resp.status_code, permit_renewal_id,
+            "[queue] fetch_filing_job got %s for filing_job_id=%s",
+            resp.status_code, filing_job_id,
         )
         return None
-    jobs = (resp.json() or {}).get("filing_jobs") or []
-    for job in jobs:
-        if str(job.get("id")) == str(filing_job_id) or str(job.get("_id")) == str(filing_job_id):
-            return job
-    return None
+    return resp.json() or None

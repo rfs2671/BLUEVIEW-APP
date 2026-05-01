@@ -462,18 +462,18 @@ class TestHandlerEndToEnd(unittest.TestCase):
                 pass
 
     def _http_client_no_cancel(self):
-        """httpx.AsyncClient mock whose every GET to /filing-jobs
-        returns a job with cancellation_requested=False, and every
-        POST to /filing-job-event returns 200."""
+        """httpx.AsyncClient mock whose every GET to
+        /api/internal/filing-jobs/{id} returns a single job doc
+        (the new internal-tier endpoint shape from MR.11 Bug 2 fix)
+        with cancellation_requested=False, and every POST to
+        /filing-job-event returns 200."""
         client = MagicMock()
         get_resp = MagicMock()
         get_resp.status_code = 200
         get_resp.json = MagicMock(return_value={
-            "filing_jobs": [{
-                "id": "fj_1", "_id": "fj_1",
-                "cancellation_requested": False,
-                "audit_log": [],
-            }],
+            "id": "fj_1", "_id": "fj_1",
+            "cancellation_requested": False,
+            "audit_log": [],
         })
         post_resp = MagicMock()
         post_resp.status_code = 200
@@ -537,12 +537,13 @@ class TestHandlerEndToEnd(unittest.TestCase):
             client = MagicMock()
             cancel_resp = MagicMock()
             cancel_resp.status_code = 200
+            # MR.11 Bug 2 fix: fetch_filing_job now hits the
+            # internal-tier endpoint which returns the FilingJob
+            # doc directly (no `filing_jobs` envelope).
             cancel_resp.json = MagicMock(return_value={
-                "filing_jobs": [{
-                    "id": "fj_1", "_id": "fj_1",
-                    "cancellation_requested": True,
-                    "audit_log": [],
-                }],
+                "id": "fj_1", "_id": "fj_1",
+                "cancellation_requested": True,
+                "audit_log": [],
             })
             client.get = AsyncMock(return_value=cancel_resp)
             client.post = AsyncMock(return_value=MagicMock(status_code=200, text=""))

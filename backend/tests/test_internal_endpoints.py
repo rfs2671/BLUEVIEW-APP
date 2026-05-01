@@ -314,5 +314,110 @@ class TestHeartbeatWatchdog(unittest.TestCase):
         self.assertTrue(set_payload["degraded"])
 
 
+# ── MR.11 Bug 2 fix — GET /internal/filing-jobs/{id} (worker-tier) ─
+
+class TestInternalGetFilingJob(unittest.TestCase):
+    """Worker-tier read of a single FilingJob doc, used by the
+    handler's cancellation check. Pairs the same data the
+    operator-tier list endpoint returns with X-Worker-Secret auth."""
+
+    HEADERS_OK = {"X-Worker-Secret": "test-secret-32hex"}
+
+    def _stub_db(self, *, job=None):
+        mock_db = MagicMock()
+        mock_db.filing_jobs = MagicMock()
+        mock_db.filing_jobs.find_one = AsyncMock(return_value=job)
+        return mock_db
+
+    def test_missing_secret_rejected_401(self):
+        resp = _client().get("/api/internal/filing-jobs/fj_1")
+        self.assertEqual(resp.status_code, 401)
+
+    def test_wrong_secret_rejected_401(self):
+        resp = _client().get(
+            "/api/internal/filing-jobs/fj_1",
+            headers={"X-Worker-Secret": "bogus"},
+        )
+        self.assertEqual(resp.status_code, 401)
+
+    def test_404_when_job_missing(self):
+        import server
+        mock_db = self._stub_db(job=None)
+        with patch.object(server, "db", mock_db):
+            resp = _client().get(
+                "/api/internal/filing-jobs/fj_missing",
+                headers=self.HEADERS_OK,
+            )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_happy_path_returns_doc(self):
+        import server
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        job = {
+            "_id": "fj_1",
+            "permit_renewal_id": "r1",
+            "company_id": "co_a",
+            "filing_rep_id": "rep_1",
+            "credential_version": 1,
+            "pw2_field_map": {},
+            "status": "in_progress",
+            "claimed_by_worker_id": "w1",
+            "claimed_at": now,
+            "started_at": now,
+            "completed_at": None,
+            "failure_reason": None,
+            "dob_confirmation_number": None,
+            "retry_count": 0,
+            "cancellation_requested": True,  # ← the flag the worker checks
+            "audit_log": [
+                {"event_type": "queued",  "timestamp": now, "actor": "op",
+                 "detail": "x", "metadata": {}},
+                {"event_type": "claimed", "timestamp": now, "actor": "w1",
+                 "detail": "y", "metadata": {}},
+            ],
+            "created_at": now,
+            "updated_at": now,
+            "is_deleted": False,
+        }
+        mock_db = self._stub_db(job=job)
+        with patch.object(server, "db", mock_db):
+            resp = _client().get(
+                "/api/internal/filing-jobs/fj_1",
+                headers=self.HEADERS_OK,
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        # Cancellation flag round-trips — this is the load-bearing
+        # field for the handler's _check_cancellation path.
+        self.assertTrue(body["cancellation_requested"])
+        self.assertEqual(body["status"], "in_progress")
+        # audit_log preserved end-to-end (handler walks it for
+        # operator_response polling).
+        self.assertEqual(len(body["audit_log"]), 2)
+        # _id → id rename via serialize_id; ciphertext strip
+        # belt-and-suspenders.
+        self.assertEqual(body["id"], "fj_1")
+        self.assertNotIn("encrypted_ciphertext", body)
+
+    def test_soft_deleted_excluded(self):
+        """Defense in depth: if a future migration soft-deletes a
+        FilingJob, the worker shouldn't be able to read it via
+        this endpoint. find_one query already filters."""
+        import server
+        mock_db = MagicMock()
+        mock_db.filing_jobs = MagicMock()
+        mock_db.filing_jobs.find_one = AsyncMock(return_value=None)
+        with patch.object(server, "db", mock_db):
+            resp = _client().get(
+                "/api/internal/filing-jobs/fj_deleted",
+                headers=self.HEADERS_OK,
+            )
+        self.assertEqual(resp.status_code, 404)
+        # Confirm the query carried the is_deleted filter.
+        args = mock_db.filing_jobs.find_one.await_args.args[0]
+        self.assertIn("is_deleted", args)
+
+
 if __name__ == "__main__":
     unittest.main()

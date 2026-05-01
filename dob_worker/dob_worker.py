@@ -75,6 +75,18 @@ async def _dispatch_one(
     job_type = job.get("type") or "unknown"
     data = job.get("data") or {}
     permit_renewal_id = data.get("permit_renewal_id")
+    # MR.11 Bug 1 fix: extract filing_job_id from the queue payload's
+    # data block and thread it through every post_result call below.
+    # Without this, the cloud-side /api/internal/job-result handler
+    # can't enter its filing_jobs branch (it gates on filing_job_id
+    # being on the body), so FilingJob docs never transition out of
+    # `queued`/`claimed`/`in_progress` even when the worker reports
+    # filed/completed/failed/cancelled. permit_renewals transitions
+    # correctly via the parallel branch in the same endpoint, which
+    # masked the bug — until cleanup of an orphaned FilingJob revealed
+    # the misalignment between the doc's status and the worker's
+    # actual reported outcome.
+    filing_job_id = data.get("filing_job_id")
 
     # Hard refuse dob_now_filing jobs when the dispatcher is not in
     # live mode — defensive against accidental enqueues during
@@ -96,6 +108,7 @@ async def _dispatch_one(
                 metadata={},
             ).to_dict(),
             worker_id=state.worker_id,
+            filing_job_id=filing_job_id,
         )
         return
 
@@ -122,6 +135,7 @@ async def _dispatch_one(
                 metadata={},
             ).to_dict(),
             worker_id=state.worker_id,
+            filing_job_id=filing_job_id,
         )
         state.jobs_failed[job_type] = state.jobs_failed.get(job_type, 0) + 1
         return
@@ -164,6 +178,7 @@ async def _dispatch_one(
         permit_renewal_id=permit_renewal_id,
         result_dict=result.to_dict(),
         worker_id=state.worker_id,
+        filing_job_id=filing_job_id,
     )
 
 
