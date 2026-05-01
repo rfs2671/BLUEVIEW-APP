@@ -143,23 +143,120 @@ def fall_back_to_previous(license_number: str) -> bool:
     return True
 
 
+# MR.11.3 — statuses that MUST NOT trigger the post-fn storage_state
+# save. The earlier behavior saved unconditionally, which corrupted
+# the operator's hand-seeded cookies whenever a run failed (Akamai
+# 403, login error, cancellation): the BrowserContext at that point
+# holds whatever cookies Akamai's block-page set, NOT the trusted
+# session, and writing those over current.json progressively
+# degraded the seed.
+#
+# Default is opt-in-to-save: if the fn returns something we don't
+# recognize as success-shaped, fall through to the old save path
+# (preserves backward compat for non-handler callers like tests
+# that return a string). Explicit failure / cancellation skips.
+_SKIP_SAVE_STATUSES = frozenset({"failed", "cancelled"})
+
+
+def _result_status(result) -> Optional[str]:
+    """Extract `.status` from a HandlerResult-like object OR a dict.
+    Returns None if the result isn't shaped like one — caller treats
+    None as 'unknown, default to save' (back-compat for non-handler
+    fn callers like the test suite)."""
+    if result is None:
+        return None
+    # HandlerResult dataclass — has .status attribute.
+    status = getattr(result, "status", None)
+    if isinstance(status, str):
+        return status
+    # Plain dict — handler dispatcher converts via .to_dict() in some
+    # paths; tolerate that shape too.
+    if isinstance(result, dict):
+        s = result.get("status")
+        if isinstance(s, str):
+            return s
+    return None
+
+
 async def with_browser_context(browser, license_number: str, fn):
     """Run fn(context) inside a per-GC BrowserContext. Loads
-    storage_state from disk if present, saves it back on success.
+    storage_state from disk if present; saves it back ONLY when fn
+    returned a result whose status is not "failed" / "cancelled".
     Caller (handler) owns whatever fn does inside the context.
 
     `browser` is a Playwright Browser instance from the caller.
-    `fn` is an async callable that takes a BrowserContext."""
+    `fn` is an async callable that takes a BrowserContext.
+
+    Save-gate (MR.11.3): on failure / cancellation, the context's
+    cookie jar reflects whatever the failure left behind (Akamai
+    block-page cookies for akamai_challenge, partial-login state
+    for login_failed, etc.). Saving those would overwrite the
+    trusted seeded session. We skip the save and log a warning so
+    the operator can correlate "cookies not refreshed" with the
+    upstream failure.
+
+    Fingerprint (MR.11.3): every per-GC context inherits the same
+    user-agent / viewport / locale / timezone from
+    lib/browser_launch.get_context_args() so its identity matches
+    the browser the operator used to seed. Without this, Akamai
+    rejects worker runs even when the cookies are intact."""
+    # Lazy import — keeps unit tests that don't exercise the launch
+    # config from having to import every browser-launch detail.
+    from lib.browser_launch import get_context_args
+
     storage_path = get_storage_state_path(license_number)
-    context_kwargs = {}
+    context_kwargs: Dict[str, Any] = dict(get_context_args())
+    loaded_cookies = 0
     if storage_path is not None:
         context_kwargs["storage_state"] = str(storage_path)
+        # Best-effort cookie count for the load log line. Counting
+        # before Playwright loads it is cheap and lets the operator
+        # correlate "loaded N cookies, run failed" without docker
+        # exec'ing into the container to inspect the file.
+        try:
+            data = json.loads(storage_path.read_text(encoding="utf-8"))
+            loaded_cookies = len(data.get("cookies") or [])
+        except Exception:
+            loaded_cookies = 0
+        logger.info(
+            "[storage_state] loaded %d cookies for license=%s from %s",
+            loaded_cookies, license_number, storage_path,
+        )
+    else:
+        logger.info(
+            "[storage_state] no seeded session for license=%s — "
+            "starting fresh BrowserContext",
+            license_number,
+        )
 
     context = await browser.new_context(**context_kwargs)
     try:
         result = await fn(context)
-        # Persist updated state on success.
-        await context.storage_state(path=str(_current_path(license_number)))
+        status = _result_status(result)
+        if status in _SKIP_SAVE_STATUSES:
+            # Don't overwrite the trusted seed with post-failure
+            # cookies. Counter still increments (the attempt
+            # happened) so rotation pacing is accurate.
+            logger.warning(
+                "[storage_state] save SKIPPED for license=%s "
+                "(handler status=%r — preserving prior seed)",
+                license_number, status,
+            )
+        else:
+            await context.storage_state(path=str(_current_path(license_number)))
+            # Re-read the just-saved file for the success log line.
+            saved_cookies = 0
+            try:
+                cur = _current_path(license_number)
+                data = json.loads(cur.read_text(encoding="utf-8"))
+                saved_cookies = len(data.get("cookies") or [])
+            except Exception:
+                saved_cookies = 0
+            logger.info(
+                "[storage_state] saved %d cookies for license=%s "
+                "(handler status=%r)",
+                saved_cookies, license_number, status,
+            )
         increment_request_count(license_number)
         return result
     finally:

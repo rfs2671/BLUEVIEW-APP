@@ -75,6 +75,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from lib.crypto import agent_key_fingerprint, decrypt_credentials
 from lib.handler_types import HandlerContext, HandlerResult
 from lib.browser_context import with_browser_context
+from lib.browser_launch import get_launch_args
 from lib.queue_client import (
     fetch_filing_job,
     post_filing_job_event,
@@ -1126,13 +1127,12 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
 
     apw_factory = _get_async_playwright()
     async with apw_factory() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
+        # MR.11.3 — launch args come from the shared helper so the
+        # worker's Chromium fingerprint matches the seed script's.
+        # Without this, Akamai treats the worker as a different
+        # browser identity than the one that earned the seeded
+        # cookies and rejects with 403.
+        browser = await pw.chromium.launch(**get_launch_args(headless=True))
         try:
             async def _inside_context(ctx) -> HandlerResult:
                 page = await ctx.new_page()

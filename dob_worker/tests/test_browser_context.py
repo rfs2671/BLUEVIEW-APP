@@ -200,5 +200,191 @@ class TestWithBrowserContextLoadPath(unittest.TestCase):
         )
 
 
+# ── MR.11.3 — preserve-on-failure save-gate ────────────────────────
+#
+# Background: the unconditional save in with_browser_context was
+# overwriting the operator's hand-seeded session with whatever
+# cookies a failed run left behind (typically Akamai block-page
+# cookies on a 403). Today's MR.11.2 smoke run reduced a 26-cookie
+# trusted seed to 21 cookies of post-block residue. These tests
+# pin the new contract:
+#
+#   • status="failed" / "cancelled"  → DON'T call ctx.storage_state(path=...)
+#   • status="filed" / "completed"   → DO call ctx.storage_state(path=...)
+#   • non-HandlerResult return value → fall through to save (back-compat)
+
+
+class TestSaveGateOnHandlerResult(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["STORAGE_STATE_DIR"] = str(self.tmp)
+        for k in list(sys.modules):
+            if k.startswith("lib.browser_context"):
+                del sys.modules[k]
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def _make_ctx_browser(self):
+        from unittest.mock import AsyncMock, MagicMock
+        ctx = MagicMock()
+        ctx.storage_state = AsyncMock()
+        ctx.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=ctx)
+        return ctx, browser
+
+    def test_save_skipped_for_failed_handler_result(self):
+        """The smoking gun: HandlerResult(status='failed') must NOT
+        trigger the post-fn save. Otherwise the seed gets overwritten
+        every time DOB NOW returns a 403 / login fails / cancellation
+        fires."""
+        from lib import browser_context as bc
+        from lib.handler_types import HandlerResult
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return HandlerResult(status="failed", detail="akamai_challenge")
+
+        result = self._run(bc.with_browser_context(browser, "626198", fn))
+        self.assertEqual(result.status, "failed")
+        # The critical assertion: the save side-effect did NOT fire.
+        ctx.storage_state.assert_not_awaited()
+
+    def test_save_skipped_for_cancelled_handler_result(self):
+        from lib import browser_context as bc
+        from lib.handler_types import HandlerResult
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return HandlerResult(status="cancelled", detail="cancelled_by_operator")
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        ctx.storage_state.assert_not_awaited()
+
+    def test_save_runs_for_filed_handler_result(self):
+        """Successful runs DO save — that's how the next attempt
+        gets cookies refreshed (CSRF tokens rotate, session
+        timestamps advance, etc.)."""
+        from lib import browser_context as bc
+        from lib.handler_types import HandlerResult
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return HandlerResult(
+                status="filed",
+                detail="DOB-9876543",
+                metadata={"dob_confirmation_number": "DOB-9876543"},
+            )
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        ctx.storage_state.assert_awaited_once()
+        kwargs = ctx.storage_state.await_args.kwargs
+        self.assertEqual(
+            kwargs.get("path"), str(self.tmp / "626198" / "current.json"),
+        )
+
+    def test_save_runs_for_completed_handler_result(self):
+        from lib import browser_context as bc
+        from lib.handler_types import HandlerResult
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return HandlerResult(status="completed", detail="ok")
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        ctx.storage_state.assert_awaited_once()
+
+    def test_save_runs_for_non_handler_result_return(self):
+        """Back-compat: tests + non-handler callers that return a
+        plain string / dict-without-status don't get the save-gate.
+        Default behavior preserved."""
+        from lib import browser_context as bc
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return "ok"
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        ctx.storage_state.assert_awaited_once()
+
+    def test_save_skipped_for_dict_with_failed_status(self):
+        """Some legacy paths return a dict instead of HandlerResult.
+        The gate should respect that shape too."""
+        from lib import browser_context as bc
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return {"status": "failed", "detail": "anything"}
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        ctx.storage_state.assert_not_awaited()
+
+    def test_request_count_increments_even_when_save_skipped(self):
+        """Request count tracks ATTEMPTS, not successes — otherwise
+        rotation cadence drifts when a worker hits a streak of
+        failures."""
+        from lib import browser_context as bc
+        from lib.handler_types import HandlerResult
+        bc.STORAGE_STATE_DIR = self.tmp
+        ctx, browser = self._make_ctx_browser()
+
+        async def fn(c):
+            return HandlerResult(status="failed", detail="login_failed")
+
+        before = bc.load_meta("626198").get("request_count", 0)
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        after = bc.load_meta("626198").get("request_count", 0)
+        self.assertEqual(after, before + 1)
+
+
+class TestContextArgsApplied(unittest.TestCase):
+    """MR.11.3 — every per-GC context inherits the shared
+    fingerprint config so the seed script and the worker present
+    identical browser identity to Akamai."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        os.environ["STORAGE_STATE_DIR"] = str(self.tmp)
+        for k in list(sys.modules):
+            if k.startswith("lib.browser_context") or k.startswith("lib.browser_launch"):
+                del sys.modules[k]
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_new_context_called_with_shared_user_agent_and_viewport(self):
+        from unittest.mock import AsyncMock, MagicMock
+        from lib import browser_context as bc
+        from lib import browser_launch as bl
+        bc.STORAGE_STATE_DIR = self.tmp
+
+        ctx = MagicMock()
+        ctx.storage_state = AsyncMock()
+        ctx.close = AsyncMock()
+        browser = MagicMock()
+        browser.new_context = AsyncMock(return_value=ctx)
+
+        async def fn(c):
+            return "ok"
+
+        self._run(bc.with_browser_context(browser, "626198", fn))
+        kwargs = browser.new_context.await_args.kwargs
+        # The same UA + viewport the seed script will use.
+        self.assertEqual(kwargs.get("user_agent"), bl.USER_AGENT)
+        self.assertEqual(kwargs.get("viewport"), bl.VIEWPORT)
+        self.assertEqual(kwargs.get("locale"), bl.LOCALE)
+        self.assertEqual(kwargs.get("timezone_id"), bl.TIMEZONE_ID)
+
+
 if __name__ == "__main__":
     unittest.main()

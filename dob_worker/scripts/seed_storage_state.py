@@ -344,22 +344,25 @@ async def main(argv=None) -> int:
         )
         return 2
 
+    # MR.11.3 — share launch + context configuration with the worker
+    # handler via lib/browser_launch. Different fingerprints between
+    # the seed run and the worker run is the difference that made
+    # Akamai reject the worker even with the seeded cookies present.
+    # We override only `headless` (False — operator needs to see the
+    # window); everything else (args, UA, viewport, locale, timezone,
+    # extra_http_headers) matches the worker exactly.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from lib.browser_launch import get_launch_args, get_context_args
+
     async with async_playwright() as pw:
-        # Non-headless so the operator can interact with the
-        # window. Args mirror the production handler's stealth
-        # flags so the seeded fingerprint matches what the
-        # worker will replay.
-        browser = await pw.chromium.launch(
-            headless=False,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
+        browser = await pw.chromium.launch(**get_launch_args(headless=False))
         try:
             # FRESH context — explicitly do NOT pre-load any
             # existing storage_state. The whole point is to
-            # capture a brand-new session.
-            context = await browser.new_context()
+            # capture a brand-new session. UA/viewport/locale/etc
+            # come from the shared get_context_args() so the
+            # fingerprint matches the worker's per-GC context.
+            context = await browser.new_context(**get_context_args())
             page = await context.new_page()
             try:
                 await page.goto(args.landing_url, wait_until="domcontentloaded")
