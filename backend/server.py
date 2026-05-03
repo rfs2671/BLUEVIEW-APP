@@ -767,6 +767,68 @@ def get_today_range_est():
 
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
+
+# ── MR.5+ — third instance of "Pydantic default protects reads but
+# not writes" defensive lift ──────────────────────────────────────
+#
+# Pattern history:
+#   1. backend/requirements.txt missing redis package — production
+#      500 because the lazy import path fired only in production,
+#      tests mocked the helper.
+#   2. companies.filing_reps[].credentials field default {} did not
+#      survive Mongo writes on legacy filing-rep docs that predated
+#      the field. MR.10 fixed via _lift_credentials_field +
+#      backend/scripts/migrate_filing_reps_credentials_init.py.
+#   3. THIS — projects.gates (and 5 sibling list fields) default
+#      protected reads via Pydantic's `[]` default, but
+#      ProjectCreate.gates: Optional[List[...]] = None was carried
+#      through model_dump() into the Mongo insert as null, then
+#      ProjectResponse(**project_dict) rejected the null on response
+#      construction (its type is non-Optional List, default = []).
+#
+# Same shape, same fix shape:
+#   • forward-init in the write path
+#   • defensive lift on the read path
+#   • backfill migration for already-stranded legacy docs
+#
+# Future MR-N+ — CI check that scans Pydantic models for fields with
+# defaults and verifies each appears explicitly in the corresponding
+# insert dict. ~50 lines of AST walk; would have caught all three.
+
+_PROJECT_LIST_DEFAULT_FIELDS = (
+    "gates",
+    "report_email_list",
+    "site_device_subfolders",
+    "trade_assignments",
+    "required_logbooks",
+    "nfc_tags",
+)
+
+
+def _lift_project_list_defaults(project: dict) -> dict:
+    """Coerce list-typed fields from None → []. Idempotent.
+
+    Mutates the input dict in place AND returns it (for fluent
+    use at call sites). Two transformations, both safe:
+      1. If a list field is present with value None → coerce to [].
+         (This is the case Pydantic rejects on ProjectResponse
+         construction, the production-500 trigger.)
+      2. If a list field is missing entirely → set to [].
+         (Defensive — keeps inserts shape-stable, makes it cheaper
+         to reason about Mongo documents downstream.)
+
+    Real-list values (including non-empty lists) pass through
+    untouched. Idempotent: running twice on the same doc has no
+    effect after the first call.
+    """
+    if not project:
+        return project
+    for fld in _PROJECT_LIST_DEFAULT_FIELDS:
+        if project.get(fld) is None:  # matches both None-valued AND missing
+            project[fld] = []
+    return project
+
+
 def classify_project(stories, footprint_sqft, full_demo, demo_stories, building_height=None):
     """NYC Building Code §3310 classification.
     Major Building = 10+ stories OR 125+ ft OR 100,000+ sqft footprint.
@@ -5018,7 +5080,16 @@ async def get_projects(
 @api_router.post("/projects", response_model=ProjectResponse)
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
-	
+
+    # MR.5+ — third instance of Pydantic-default-not-protecting-writes.
+    # ProjectCreate.gates: Optional[List[ProjectGate]] = None carries
+    # through model_dump() as {"gates": None}. ProjectResponse below
+    # rejects None for its non-Optional List type. Forward-init now
+    # so the Mongo insert is shape-stable AND the response succeeds.
+    # Same fix shape as MR.10's _lift_credentials_field +
+    # migrate_filing_reps_credentials_init.py.
+    _lift_project_list_defaults(project_dict)
+
     if project_dict.get("address") and (not project_dict.get("name") or project_dict["name"] == project_dict["address"]):
         project_dict["name"] = project_dict["address"]
     if project_dict.get("name") and not project_dict.get("address"):
@@ -5123,6 +5194,12 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
         "project_class": project_dict.get("project_class"), "suggested_class": suggested,
     })
 
+    # Defense in depth — the lift above already covered model_dump's
+    # None values, but if any code path between then and now wrote
+    # None back into project_dict (e.g. a future migration helper),
+    # we'd still want the response to construct cleanly.
+    _lift_project_list_defaults(project_dict)
+
     return ProjectResponse(**project_dict)
 
 @api_router.get("/projects/{project_id}", response_model=ProjectResponse)
@@ -5130,12 +5207,18 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    
+
     # Check company access
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
-    
+
+    # MR.5+ — defensive lift for legacy docs that have list fields
+    # set to None. Three production docs in this state today (the
+    # operator's failed create attempts before this commit landed);
+    # without this lift, GET on any of them 500s.
+    _lift_project_list_defaults(project)
+
     return ProjectResponse(**serialize_id(project))
 
 @api_router.put("/projects/{project_id}", response_model=ProjectResponse)
@@ -5177,6 +5260,12 @@ async def update_project(project_id: str, project_data: ProjectUpdate, admin = D
         raise HTTPException(status_code=404, detail="Project not found")
 
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    # MR.5+ — same defensive lift as get_project. Update endpoints
+    # don't currently set list fields to None (the existing code
+    # filters None values out via dict-comprehension before $set),
+    # but the read-back can still pull a legacy doc whose pre-update
+    # state had None lists.
+    _lift_project_list_defaults(project)
     return ProjectResponse(**serialize_id(project))
 
 @api_router.get("/projects/{project_id}/required-logbooks")
