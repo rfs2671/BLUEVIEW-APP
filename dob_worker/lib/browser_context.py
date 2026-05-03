@@ -1,6 +1,31 @@
 """Per-GC BrowserContext dispatch with storage_state rotation.
 
-Per §2.5 of the permit-renewal v3 plan:
+MR.12 status (2026-05-03)
+─────────────────────────
+NOT called from the active dob_now_filing handler path. The MR.12
+pivot moved that handler to Bright Data Browser API via CDP, where:
+  - Session/cookie identity is managed by Bright Data per-connection.
+  - Identity is rotated per-session by design — persisting cookies
+    between runs would DEFEAT the rotation that bypasses Akamai.
+  - There's no concept of a "per-GC stable identity to Akamai"
+    because the IP, fingerprint, and cookies all rotate.
+
+This module is preserved for:
+  - scripts/seed_storage_state.py (vestigial after MR.12; usable for
+    any future warm-session need on a non-Akamai-protected site)
+  - any future local-Chromium handler that wants per-GC isolation
+  - the existing test suite (back-compat; tests still pass against
+    the unchanged contract)
+
+bis_scrape.py launches its own local Chromium inline and does NOT
+use this module (never has) — the BIS site is not Akamai-protected
+and doesn't need session warming.
+
+DO NOT delete this file. It's correct; it's just not the active
+dob_now_filing path post-MR.12.
+
+Per §2.5 of the permit-renewal v3 plan (PRE-MR.12 design)
+─────────────────────────────────────────────────────────
   - One Chromium browser per worker container, N contexts (one per GC).
   - Each context loads its GC's storage_state from disk if present;
     creates a fresh state for first-time GCs.

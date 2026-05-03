@@ -74,8 +74,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from lib.crypto import agent_key_fingerprint, decrypt_credentials
 from lib.handler_types import HandlerContext, HandlerResult
-from lib.browser_context import with_browser_context
-from lib.browser_launch import get_launch_args
+from lib.browser_launch import (
+    BrightDataConfigError,
+    get_cdp_endpoint_url,
+)
 from lib.queue_client import (
     fetch_filing_job,
     post_filing_job_event,
@@ -1111,9 +1113,28 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
             actor=context.worker_id,
         )
 
-    # 2. Launch Playwright + per-GC BrowserContext. _get_async_playwright
-    # is a module-level patchable helper so tests can swap it without
-    # touching playwright itself; production calls the real import.
+    # 2. Pre-flight: Bright Data Browser API CDP URL must be set.
+    # MR.12 pivot — local Chromium can't bypass Akamai Bot Manager v4
+    # regardless of fingerprint matching (proven empirically through
+    # MR.11.1 / 11.2 / 11.3). We dial Bright Data over CDP instead.
+    # Fail fast with a specific reason if the operator hasn't
+    # completed README step 11 (Bright Data zone setup).
+    try:
+        cdp_url = get_cdp_endpoint_url()
+    except BrightDataConfigError as e:
+        logger.error("[dob_now_filing] %s", str(e))
+        return HandlerResult(
+            status="failed",
+            detail="bright_data_cdp_url_missing",
+            metadata={
+                "hint": "Set BRIGHT_DATA_CDP_URL in dob_worker/.env.local "
+                        "and force-recreate the worker container.",
+            },
+        )
+
+    # _get_async_playwright is a module-level patchable helper so tests
+    # can swap it without touching playwright itself; production calls
+    # the real import.
     try:
         _get_async_playwright()
     except ImportError:
@@ -1127,12 +1148,16 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
 
     apw_factory = _get_async_playwright()
     async with apw_factory() as pw:
-        # MR.11.3 — launch args come from the shared helper so the
-        # worker's Chromium fingerprint matches the seed script's.
-        # Without this, Akamai treats the worker as a different
-        # browser identity than the one that earned the seeded
-        # cookies and rejects with 403.
-        browser = await pw.chromium.launch(**get_launch_args(headless=True))
+        # MR.12 — connect to Bright Data's remote managed Chromium
+        # over CDP. They handle TLS fingerprint, IP rotation, browser
+        # fingerprint spoofing, and CAPTCHA solving. Our handler
+        # logic is unchanged downstream of this line.
+        logger.info(
+            "[dob_now_filing] connecting to Bright Data Browser API "
+            "(CDP endpoint configured via %s env var)",
+            "BRIGHT_DATA_CDP_URL",
+        )
+        browser = await pw.chromium.connect_over_cdp(cdp_url)
         try:
             async def _inside_context(ctx) -> HandlerResult:
                 page = await ctx.new_page()
@@ -1251,9 +1276,24 @@ async def handle(payload: dict, context: HandlerContext) -> HandlerResult:
                     },
                 )
 
-            handler_outcome = await with_browser_context(
-                browser, license_number_for_storage, _inside_context,
-            )
+            # MR.12 — under CDP mode, storage_state load/save is a
+            # no-op: Bright Data manages session/cookie identity per-
+            # connection and rotates per-session by design. Persisting
+            # cookies between runs would defeat their identity
+            # rotation. The license_number_for_storage variable is
+            # kept above (computed) for parity with future code paths
+            # but not used here.
+            #
+            # We DO still create a BrowserContext (Bright Data's CDP
+            # endpoint exposes a default browser; new_context gives us
+            # an isolated cookie jar for THIS filing). No kwargs —
+            # Bright Data handles UA/viewport/locale/etc.
+            ctx = await browser.new_context()
+            try:
+                handler_outcome = await _inside_context(ctx)
+            finally:
+                await ctx.close()
+            _ = license_number_for_storage  # explicit "kept for future"
         finally:
             await browser.close()
 

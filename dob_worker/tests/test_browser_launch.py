@@ -143,5 +143,80 @@ class TestSeedAndWorkerShareIdenticalFingerprint(unittest.TestCase):
         self.assertEqual(worker_flags, seed_flags)
 
 
+# ── MR.12 — Bright Data Browser API CDP helper ─────────────────────
+
+
+class TestGetCdpEndpointUrl(unittest.TestCase):
+    """The active dob_now_filing handler relies on this helper to
+    surface a clear pre-flight error when the operator hasn't
+    completed the Bright Data zone setup. Tests pin both the
+    happy path and the loud-fail behavior."""
+
+    def test_returns_url_when_env_var_set(self):
+        import os
+        from lib.browser_launch import get_cdp_endpoint_url
+        url = "wss://brd-customer-hl_xxxxxxxx-zone-test:secret@brd.superproxy.io:9222"
+        os.environ["BRIGHT_DATA_CDP_URL"] = url
+        try:
+            self.assertEqual(get_cdp_endpoint_url(), url)
+        finally:
+            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+
+    def test_strips_whitespace(self):
+        """Operators copy/paste from the Bright Data dashboard;
+        trailing newlines / spaces are common. Strip them."""
+        import os
+        from lib.browser_launch import get_cdp_endpoint_url
+        os.environ["BRIGHT_DATA_CDP_URL"] = "  wss://brd.example  \n"
+        try:
+            self.assertEqual(get_cdp_endpoint_url(), "wss://brd.example")
+        finally:
+            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+
+    def test_raises_when_env_var_missing(self):
+        import os
+        from lib.browser_launch import (
+            get_cdp_endpoint_url,
+            BrightDataConfigError,
+        )
+        os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+        with self.assertRaises(BrightDataConfigError) as cm:
+            get_cdp_endpoint_url()
+        # The error message must point the operator at the env var
+        # AND the README setup step — actionable, not vague.
+        msg = str(cm.exception)
+        self.assertIn("BRIGHT_DATA_CDP_URL", msg)
+        self.assertIn("README", msg)
+
+    def test_raises_when_env_var_empty_string(self):
+        """Empty-string is the failure mode when an operator
+        adds the env var line to .env.local but forgets to paste
+        the value."""
+        import os
+        from lib.browser_launch import (
+            get_cdp_endpoint_url,
+            BrightDataConfigError,
+        )
+        os.environ["BRIGHT_DATA_CDP_URL"] = ""
+        try:
+            with self.assertRaises(BrightDataConfigError):
+                get_cdp_endpoint_url()
+        finally:
+            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+
+    def test_raises_when_env_var_whitespace_only(self):
+        import os
+        from lib.browser_launch import (
+            get_cdp_endpoint_url,
+            BrightDataConfigError,
+        )
+        os.environ["BRIGHT_DATA_CDP_URL"] = "   \n  "
+        try:
+            with self.assertRaises(BrightDataConfigError):
+                get_cdp_endpoint_url()
+        finally:
+            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -79,11 +79,19 @@ venv/
 .vercel
 *.tsbuildinfo
 dump.rdb
--e 
+-e
 # Environment files
 *.env
 *.env.*
--e 
+-e
 # Environment files
 *.env
 *.env.*
+
+# MR.12 — explicit exception for the operator-facing env template.
+# The example file is referenced by dob_worker/README.md ("cp
+# dob_worker/.env.local.example dob_worker/.env.local") and
+# documents the BRIGHT_DATA_CDP_URL contract — it MUST ship with
+# the repo. The actual .env.local with secrets stays ignored via
+# the patterns above.
+!dob_worker/.env.local.example

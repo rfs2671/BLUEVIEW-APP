@@ -1,7 +1,27 @@
 """Shared Chromium launch + context configuration.
 
-Why this exists
-───────────────
+MR.12 status (2026-05-03)
+─────────────────────────
+The dob_now_filing handler PIVOTED off local Chromium to Bright
+Data's Browser API for Akamai bypass — see
+docs/architecture/akamai-bypass-decision.md for why
+fingerprint-matching alone (which is what this module does) was
+necessary but not sufficient.
+
+The active dob_now_filing path now uses get_cdp_endpoint_url()
+to dial Bright Data over CDP. The legacy local-Chromium helpers
+get_launch_args() / get_context_args() are KEPT but used only by:
+  • scripts/seed_storage_state.py (vestigial after MR.12; kept for
+    any future warm-session use case on a non-Akamai site)
+  • lib/browser_context.with_browser_context (vestigial in the
+    active path; kept for any future per-GC local-Chromium handler)
+
+Do not delete these helpers — they're correct, just not the
+active path. Use get_cdp_endpoint_url() for new Akamai-protected
+work.
+
+Why the legacy helpers existed
+──────────────────────────────
 DOB NOW is fronted by Akamai Bot Manager. Akamai fingerprints
 sessions across MANY axes — not just cookies — and any drift
 between the browser used to seed a warm session (operator's
@@ -13,28 +33,69 @@ size drift, or a different user-agent string is enough to fail
 the Bot Manager's "is this the same browser identity that earned
 these cookies?" check.
 
-Today's MR.11.2 smoke run hit Akamai 403 despite the seeded
-session being on disk and loaded into the BrowserContext. Root
-cause: the seed script and the handler launched Chromium with
-DIFFERENT args, default user-agents (operator: real Chrome on
-Windows; worker: HeadlessChrome), and different viewport defaults.
+MR.11.3 made these match across seed+worker. It still 403'd —
+because Akamai also inspects TLS ClientHello (JA3) and IP
+reputation, neither of which a local Chromium can disguise.
+Hence the MR.12 pivot.
 
-This module is the single source of truth for both, so the two
-paths produce identical browser fingerprints. Add a flag here,
-both scripts pick it up.
-
-Two helpers:
-  • get_launch_args(headless=...) — kwargs for chromium.launch()
-  • get_context_args()             — kwargs for browser.new_context()
-
-The seed script overrides only `headless` (False — operator needs
-to see the window). The handler keeps the default (True — runs
-unattended in the worker container). Everything else matches.
+Helpers
+───────
+  • get_cdp_endpoint_url()         — Bright Data Browser API URL
+    (active dob_now_filing path).
+  • get_launch_args(headless=...)  — legacy local-Chromium kwargs.
+  • get_context_args()             — legacy new_context kwargs.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
+
+
+# ── Bright Data Browser API (MR.12 — active path) ──────────────────
+
+
+class BrightDataConfigError(RuntimeError):
+    """Raised when BRIGHT_DATA_CDP_URL is missing/empty.
+
+    Surfaced at handler entry as a fail-fast pre-flight check so
+    the operator gets a clear error in the FilingJob audit log
+    instead of a downstream Playwright connect timeout 30 seconds
+    later. Caller is expected to translate this into
+    HandlerResult(status='failed', detail='bright_data_cdp_url_missing').
+    """
+
+
+BRIGHT_DATA_ENV_VAR = "BRIGHT_DATA_CDP_URL"
+
+
+def get_cdp_endpoint_url() -> str:
+    """Return the Bright Data Browser API CDP endpoint URL.
+
+    The URL is expected to be a websocket of the form:
+        wss://brd-customer-hl_<id>-zone-<name>:<password>@brd.superproxy.io:9222
+
+    Read from the BRIGHT_DATA_CDP_URL env var. Fails loud
+    (BrightDataConfigError) when unset — the dob_now_filing
+    handler cannot proceed without it post-MR.12.
+
+    See docs/architecture/akamai-bypass-decision.md for context."""
+    cdp_url = os.environ.get(BRIGHT_DATA_ENV_VAR, "").strip()
+    if not cdp_url:
+        raise BrightDataConfigError(
+            f"{BRIGHT_DATA_ENV_VAR} is not set. The dob_now_filing handler "
+            "uses Bright Data Browser API for Akamai bypass — local Chromium "
+            "alone cannot pass DOB NOW's bot check. See "
+            "dob_worker/README.md operator setup step 11 (Bright Data "
+            "Browser API zone) and "
+            "docs/architecture/akamai-bypass-decision.md for context."
+        )
+    return cdp_url
+
+
+# ── Legacy: local Chromium fingerprint config (pre-MR.12) ──────────
+# Kept for the seed script + with_browser_context. Not reached by
+# the active dob_now_filing path.
 
 
 # Pin to a current Chrome stable major. Update when the

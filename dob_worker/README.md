@@ -68,65 +68,19 @@ to confirm it landed before moving on.
          [dob_worker] booting worker_id=...
          bis_scraper started, interval=60m, ...
 
-[ ] 9. Seed warm session for each GC before first filing (MR.11.1)
-       DOB NOW is fronted by Akamai Bot Manager — a cold headless
-       Chromium connection from a residential IP gets challenged
-       with a 403 before reaching the login form. Mitigation:
-       seed the BrowserContext's storage_state with cookies from
-       a real human login. Subsequent worker runs reuse the
-       warmed session.
+[ ] 9. (LEGACY / OPTIONAL after MR.12) Warm-session seeding
+       Pre-MR.12 design: seed each GC's storage_state via a manual
+       operator login. After MR.12 the dob_now_filing handler uses
+       Bright Data Browser API and ignores the seeded session
+       entirely (Bright Data manages cookies per-connection). Skip
+       this step unless you're standing up a non-Akamai-protected
+       site that uses lib/browser_context.with_browser_context.
 
-       This is operator-execution-on-host, NOT inside the
-       container, because non-headless Chromium needs a real
-       display server (Windows + Docker doesn't ship one without
-       X11 forwarding setup, which is fragile).
-
-       One-time setup on the host:
-         pip install playwright
-         playwright install chromium
-
-       Seed each GC (run once per company, per re-seed when
-       cookies expire):
-         python dob_worker/scripts/seed_storage_state.py 626198
-       (Use the GC's license number from companies.gc_license_number.
-       Example value 626198 is a placeholder.)
-
-       What happens:
-         - A Chromium window opens, navigates to DOB NOW landing.
-         - Operator clicks NYC.ID login, types DOB NOW credentials.
-         - Operator completes any 2FA / CAPTCHA the human-facing
-           site presents.
-         - Operator waits for the post-login dashboard with the
-           permit list visible.
-         - Operator presses Enter (or Ctrl+C) in the terminal to
-           save the session and close the browser.
-
-       Output: ~/.levelog/agent-storage/<gc_license>/current.json
-       (this is the bind-mount source the worker container reads
-       at /storage/<gc_license>/current.json).
-
-       Path resolution: the script writes to LEVELOG_AGENT_STORAGE_DIR
-       (set in MR.5 step 6) when present, falling back to
-       ~/.levelog/agent-storage. The script EXPLICITLY ignores
-       STORAGE_STATE_DIR — that variable describes the worker's
-       in-container path (/storage). If the operator sourced
-       dob_worker/.env.local into their host shell, STORAGE_STATE_DIR
-       leaks in and would otherwise cause writes to the literal
-       C:\storage\<gc> tree, which the worker container never reads.
-
-       If a previous (pre-MR.11.2) seed run wrote to that broken
-       path, the script detects the stranded session and prints a
-       Move-Item / mv command so the operator can relocate it
-       without re-doing the manual login.
-
-       Re-seed when:
-         - A scheduled filing fails with akamai_challenge AND
-           previous storage_state is also stale.
-         - DOB NOW reports the session expired (typical
-           expiry: 30–60 minutes idle for NYC.ID).
-         - A storage_state rotation in lib/browser_context.py
-           promoted current → previous and the previous-fallback
-           also got challenged.
+       Original instructions preserved for that future use case:
+         python dob_worker/scripts/seed_storage_state.py <gc_license>
+       Output lands at ~/.levelog/agent-storage/<gc>/current.json.
+       See docs/architecture/akamai-bypass-decision.md for context
+       on why warm-session cookies alone don't bypass Akamai.
 
 [ ] 10. (OPTIONAL v1) install + configure cloudflared
        v1 is outbound-only; skipping cloudflared just means the
@@ -138,6 +92,67 @@ to confirm it landed before moving on.
          cp cloudflared/config.yml.example cloudflared/config.yml
          # paste tunnel UUID from credentials.json into config.yml
        Then uncomment the cloudflared service in docker-compose.yml.
+
+[ ] 11. Bright Data Browser API zone (MR.12 — REQUIRED for DOB NOW)
+       The dob_now_filing handler uses Bright Data's managed remote
+       Chromium over CDP for Akamai bypass. Local Chromium —
+       headless or otherwise — cannot pass DOB NOW's Bot Manager v4
+       check (TLS/JA3 fingerprint + IP reputation are the binding
+       constraints; warm cookies + matching launch flags are not
+       enough). See docs/architecture/akamai-bypass-decision.md.
+
+       One-time zone setup at brightdata.com:
+         a. Sign up / log in. Add a payment method.
+         b. Navigate: Proxy & Scraping Infra → Browser API → Add.
+         c. Zone name: descriptive, e.g. "levelog_scraping_browser".
+         d. Pricing tier: "pay-as-you-go" ($8.40/GB, $20/mo
+            minimum).
+         e. Premium domains: OFF. DOB NOW is not on Bright Data's
+            premium list — the upcharge would be wasted.
+         f. CAPTCHA solver: ON (default; no surcharge on standard
+            plans). Useful in case DOB NOW ever triggers reCAPTCHA
+            on the post-login flow.
+         g. Allowed IPs (security): add the operator laptop's
+            current public IP. Limits CDP-URL exposure if the
+            URL ever leaks. Update if your ISP rotates the IP.
+         h. Save. From the zone overview's "Access parameters",
+            copy the CDP URL. Format:
+              wss://brd-customer-hl_<id>-zone-<name>:<password>@brd.superproxy.io:9222
+
+       Wire the URL into the worker:
+         - Edit dob_worker/.env.local
+         - Set BRIGHT_DATA_CDP_URL=<the URL from step h>
+         - Force-recreate the worker container so it re-reads .env.local:
+             docker compose up -d --force-recreate dob_worker
+
+       Verify:
+         docker compose logs --tail=20 dob_worker
+       On the next File Renewal click, look for:
+         [dob_now_filing] connecting to Bright Data Browser API ...
+       Followed by login / navigation / submit / confirmation —
+       NO "Akamai challenge detected (status=403)" warning.
+
+       If unset, the handler returns failed/bright_data_cdp_url_missing
+       at pre-flight (no wasted Bright Data spend on misconfig).
+
+       Cost notes:
+         - Empirical estimate: ~$0.04–$0.13 per filing (5–15 MB
+           per session at $8.40/GB).
+         - $20/mo minimum binds until ~200 filings/mo.
+         - Probe data cost via Bright Data dashboard "Playground":
+           navigate to https://a810-dobnow.nyc.gov/Publish/Index.html
+           once, read bytes-transferred, multiply by ~10 page loads.
+
+       What this REPLACES:
+         - Local Chromium launch in dob_now_filing handler (gone).
+         - Webshare residential proxy (never worked for DOB NOW;
+           operator can cancel the subscription if BIS scraping
+           via WEBSHARE_PROXY_URL isn't actively used).
+         - Storage_state cookie seeding for the dob_now_filing
+           path (Bright Data handles session identity).
+         - cloudflared egress experiments — Cloudflare Tunnel is
+           inbound-only; egress IP shaping requires Zero Trust
+           enterprise. Bright Data is the right tool for this job.
 ```
 
 ## Architecture

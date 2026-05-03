@@ -544,9 +544,11 @@ class TestNavigateToPw2FormFlow(unittest.TestCase):
 
 def _make_playwright_chain(*, page_mock):
     """Build a mock async_playwright() chain with the provided page.
-    Returns a context manager mock that yields an object with
-    .chromium.launch returning a browser whose new_context returns
-    a context with .new_page returning page_mock."""
+
+    MR.12 — the active dob_now_filing handler uses connect_over_cdp
+    (Bright Data) instead of chromium.launch. Both are mocked so the
+    chain works regardless of which API the handler calls (back-
+    compat for any tests that patch the launch path)."""
     pw = MagicMock()
     browser = MagicMock()
     ctx = MagicMock()
@@ -559,6 +561,10 @@ def _make_playwright_chain(*, page_mock):
     browser.close = AsyncMock()
     pw.chromium = MagicMock()
     pw.chromium.launch = AsyncMock(return_value=browser)
+    # MR.12 — Bright Data CDP. connect_over_cdp returns the same
+    # browser mock as launch (from the handler's perspective they're
+    # interchangeable Browser objects).
+    pw.chromium.connect_over_cdp = AsyncMock(return_value=browser)
 
     # async_playwright() returns an async context manager.
     apw = MagicMock()
@@ -853,6 +859,13 @@ class TestHandlerEndToEnd(unittest.TestCase):
         _run(go())
 
     def test_akamai_challenge_during_login_returns_specific_failure(self):
+        """Defensive: Bright Data SHOULD bypass Akamai, but if its
+        bypass fails or the operator misconfigures the zone, we
+        still want the same akamai_challenge failure_reason from
+        the handler so the audit log + circuit breaker work as
+        designed. _make_playwright_chain mocks both launch AND
+        connect_over_cdp — so this test runs through the MR.12
+        CDP path and still surfaces the Akamai detection branch."""
         from handlers.dob_now_filing import handle
         from lib.handler_types import HandlerContext
 
@@ -860,6 +873,9 @@ class TestHandlerEndToEnd(unittest.TestCase):
             ct, key_path = _build_real_ciphertext({"username": "u", "password": "p"})
             self._key_path = key_path
             os.environ["PRIVATE_KEY_PATH"] = key_path
+            os.environ["BRIGHT_DATA_CDP_URL"] = (
+                "wss://brd-customer-test-zone-test:test@brd.superproxy.io:9222"
+            )
 
             payload = _baseline_payload()
             payload["encrypted_credentials_b64"] = ct
@@ -886,6 +902,117 @@ class TestHandlerEndToEnd(unittest.TestCase):
             self.assertEqual(result.detail, "akamai_challenge")
 
         _run(go())
+
+    def test_missing_bright_data_cdp_url_fails_pre_flight(self):
+        """MR.12 — handler MUST fail loud at pre-flight when the
+        Bright Data CDP URL isn't configured. Failure surfaces a
+        specific reason so the operator's audit log makes the
+        misconfig obvious instead of bubbling up as a vague
+        connect timeout 30s later."""
+        from handlers.dob_now_filing import handle
+        from lib.handler_types import HandlerContext
+
+        async def go():
+            ct, key_path = _build_real_ciphertext({"username": "u", "password": "p"})
+            self._key_path = key_path
+            os.environ["PRIVATE_KEY_PATH"] = key_path
+            # CRITICAL: explicitly clear BRIGHT_DATA_CDP_URL.
+            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+
+            payload = _baseline_payload()
+            payload["encrypted_credentials_b64"] = ct
+
+            ctx = HandlerContext(
+                worker_id="w1",
+                http_client=self._http_client_no_cancel(),
+            )
+            result = await handle(payload, ctx)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.detail, "bright_data_cdp_url_missing")
+            # Operator-facing hint should point at the env var.
+            hint = (result.metadata or {}).get("hint") or ""
+            self.assertIn("BRIGHT_DATA_CDP_URL", hint)
+
+        _run(go())
+
+    def test_handler_uses_connect_over_cdp_not_launch(self):
+        """MR.12 — confirm the handler dials Bright Data via
+        connect_over_cdp, not pw.chromium.launch. This is the
+        load-bearing change of the pivot — if a future commit
+        accidentally re-introduces a launch path, this test
+        breaks loudly."""
+        from handlers.dob_now_filing import handle
+        from lib.handler_types import HandlerContext
+
+        async def go():
+            ct, key_path = _build_real_ciphertext({"username": "u", "password": "p"})
+            self._key_path = key_path
+            os.environ["PRIVATE_KEY_PATH"] = key_path
+            cdp_url = (
+                "wss://brd-customer-hl_test-zone-levelog:secret@brd.superproxy.io:9222"
+            )
+            os.environ["BRIGHT_DATA_CDP_URL"] = cdp_url
+
+            payload = _baseline_payload()
+            payload["encrypted_credentials_b64"] = ct
+
+            # Akamai challenge path so the handler short-circuits
+            # quickly without exercising the rest of the navigation
+            # chain (which isn't the focus of this test).
+            page = _build_warm_session_page()
+            page.goto = AsyncMock(return_value=MagicMock(status=403))
+            page.content = AsyncMock(return_value="403")
+
+            apw = _make_playwright_chain(page_mock=page)
+            pw = apw.__aenter__.return_value
+
+            with patch(
+                "handlers.dob_now_filing._get_async_playwright",
+                return_value=MagicMock(return_value=apw),
+            ):
+                ctx = HandlerContext(
+                    worker_id="w1",
+                    http_client=self._http_client_no_cancel(),
+                )
+                result = await handle(payload, ctx)
+
+            # Confirm the CDP path was used.
+            pw.chromium.connect_over_cdp.assert_awaited_once()
+            # Confirm the legacy launch path was NOT used.
+            pw.chromium.launch.assert_not_awaited()
+            # Confirm the URL passed to connect_over_cdp came from the env var.
+            args, _kwargs = pw.chromium.connect_over_cdp.await_args
+            self.assertEqual(args[0], cdp_url)
+            # Sanity: the akamai short-circuit fired so we know we
+            # really did proceed past pre-flight.
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.detail, "akamai_challenge")
+
+        _run(go())
+
+
+class TestBisScrapeStillUsesLocalChromium(unittest.TestCase):
+    """MR.12 — the Bright Data pivot is dob_now_filing-only. The
+    bis_scrape handler targets the legacy BIS site (no Akamai) and
+    MUST keep using local Chromium launch to avoid spending Bright
+    Data dollars on a path that doesn't need them. Pin the
+    invariant so a future refactor doesn't accidentally migrate
+    bis_scrape to CDP too."""
+
+    def test_bis_scrape_module_does_not_use_cdp_helpers(self):
+        # Static check: bis_scrape source must not import the
+        # CDP helper. If we ever wire it up there, this test
+        # catches the regression.
+        bis_path = (
+            Path(__file__).resolve().parent.parent
+            / "handlers" / "bis_scrape.py"
+        )
+        text = bis_path.read_text(encoding="utf-8", errors="ignore")
+        self.assertNotIn("get_cdp_endpoint_url", text)
+        self.assertNotIn("connect_over_cdp", text)
+        self.assertNotIn("BRIGHT_DATA_CDP_URL", text)
+        # And must still call chromium.launch — the legacy path.
+        self.assertIn("chromium.launch", text)
 
 
 if __name__ == "__main__":
