@@ -7,6 +7,75 @@
 DOB NOW automation path. **Does NOT affect** `dob_worker/handlers/bis_scrape.py`,
 which targets the legacy BIS site (no Akamai protection).
 
+## ⚠️ TEMPORARY OVERRIDE — `ELIGIBILITY_BYPASS_DAYS_REMAINING`
+
+**Status**: ACTIVE during MR.13 smoke-testing. **MUST BE REVERTED**
+before production filing volume resumes.
+
+### What it does
+
+Env var `ELIGIBILITY_BYPASS_DAYS_REMAINING` widens (or disables) the
+default 30-day renewal window so the operator can smoke-test the
+MR.13 architecture against permits that aren't naturally within
+the window today.
+
+| Value | Behavior |
+|---|---|
+| (unset) | Standard 30-day rule enforced (production default). |
+| `365` | Permits expiring within 365 days become eligible. |
+| `ANY` or `-1` | No upper bound — every permit becomes eligible regardless of expiration. |
+| Any malformed value | Treated as unset (fail-closed). |
+
+### Where it applies
+
+- `backend/lib/eligibility_v2.py:get_effective_renewal_window_days()`
+  — single source of truth.
+- `backend/permit_renewal.py:check_renewal_eligibility` (the legacy
+  30-day blocker that adds "Permit expires in N days" to
+  blocking_reasons).
+- `backend/permit_renewal.py:nightly_renewal_scan` (the sweep that
+  CREATES renewal records for permits in-window — bypass widens
+  the upper bound so renewals get created for permits further out,
+  giving the operator something to click File Renewal on).
+
+### Operator action checklist
+
+```
+Before smoke test:
+  1. Railway → backend service → Variables → add:
+       ELIGIBILITY_BYPASS_DAYS_REMAINING=365
+     (or ANY for no upper bound).
+  2. Railway redeploys automatically. Wait for boot.
+  3. Verify in Railway logs at startup:
+       [ELIGIBILITY BYPASS ACTIVE] ELIGIBILITY_BYPASS_DAYS_REMAINING=365 ...
+  4. Trigger the nightly sweep manually (or wait for 03:00 UTC) so
+     renewal records get created for permits beyond 30 days.
+  5. UI shows the new renewal records as Eligible. Click File
+     Renewal on a chosen smoke-test target.
+
+After smoke test:
+  6. Railway → backend service → Variables → DELETE
+     ELIGIBILITY_BYPASS_DAYS_REMAINING (do NOT leave it at "0" —
+     remove the variable entirely).
+  7. Verify boot log no longer carries the BYPASS ACTIVE warning.
+  8. Prune any "test" renewal records that were created at
+     widened scope but not actually filed (so the production
+     dashboard isn't polluted with stale renewals beyond the
+     30-day window).
+```
+
+### Why it's safe to ship
+
+- Default behavior unchanged (env var unset → 30-day rule still enforced).
+- Loud, repeated boot-time WARNING in both backend and worker so an
+  operator can't forget the override is active.
+- Process-local one-shot WARNING per request when bypass is read
+  (suppresses log spam while keeping the trail visible).
+- All read paths fail-closed on malformed values.
+- Tests pin the default-unchanged behavior + the override paths.
+
+---
+
 ## TL;DR (current state)
 
 - **MR.13 (active)**: dob_worker container runs **real Chrome**

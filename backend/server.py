@@ -21847,6 +21847,32 @@ async def shutdown_db_client():
 async def startup_event():
     logger.info("Starting Levelog API with Sync Support...")
 
+    # MR.13 — surface the eligibility-bypass override loudly at boot
+    # so it can't accidentally stay set in production. Triggers when
+    # the operator set ELIGIBILITY_BYPASS_DAYS_REMAINING for a smoke
+    # test. The repeated `WARNING` log is intentional — operators
+    # scanning Railway logs should see this first thing.
+    try:
+        from lib.eligibility_v2 import (
+            get_eligibility_bypass_setting,
+            ELIGIBILITY_BYPASS_ENV_VAR,
+        )
+        _bypass = get_eligibility_bypass_setting()
+        if _bypass is not None:
+            label = "ANY (no upper bound)" if _bypass == -1 else f"{_bypass} days"
+            logger.warning("=" * 72)
+            logger.warning(
+                "[ELIGIBILITY BYPASS ACTIVE] %s=%s (%s) — temporary "
+                "override for testing. This MUST be unset in production.",
+                ELIGIBILITY_BYPASS_ENV_VAR,
+                os.environ.get(ELIGIBILITY_BYPASS_ENV_VAR, ""),
+                label,
+            )
+            logger.warning("=" * 72)
+    except Exception as _bypass_err:
+        # Never let the bypass-warning block startup; log and move on.
+        logger.error("Failed to evaluate eligibility bypass at boot: %s", _bypass_err)
+
     # Initialize R2 storage client
     global _r2_client
     _r2_client = _get_r2_client()

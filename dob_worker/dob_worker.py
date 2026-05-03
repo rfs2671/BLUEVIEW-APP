@@ -250,6 +250,22 @@ async def main():
             "/api/internal/* posts. Set WORKER_SECRET to authenticate."
         )
 
+    # MR.13 — surface the eligibility-bypass override loudly at boot.
+    # Operator-facing reminder; the actual bypass logic lives on the
+    # backend (where the eligibility check fires). The worker doesn't
+    # consult the bypass directly — but if the operator set the env
+    # var on their laptop too (e.g. via .env.local), we still want
+    # them to see the warning so it's not forgotten in production.
+    _bypass_raw = os.environ.get("ELIGIBILITY_BYPASS_DAYS_REMAINING", "").strip()
+    if _bypass_raw:
+        logger.warning("=" * 72)
+        logger.warning(
+            "[ELIGIBILITY BYPASS ACTIVE] ELIGIBILITY_BYPASS_DAYS_REMAINING=%s — "
+            "temporary override for testing. This MUST be unset in production.",
+            _bypass_raw,
+        )
+        logger.warning("=" * 72)
+
     http_client = _build_http_client()
     state = HeartbeatState(worker_id=WORKER_ID)
     breakers = BreakerRegistry()

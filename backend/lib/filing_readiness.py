@@ -113,6 +113,17 @@ def _terminal_statuses() -> set:
     return {"completed", "failed"}
 
 
+# MR.13 — re-export the bypass helper from the shared lib so any
+# future days-based readiness check defined in this file inherits
+# the same env-var override (ELIGIBILITY_BYPASS_DAYS_REMAINING).
+# Currently filing_readiness has no days-window check; keeping this
+# import-of-record so a future check picks up the bypass without a
+# second source of truth.
+from lib.eligibility_v2 import (  # noqa: E402, F401
+    get_effective_renewal_window_days,
+)
+
+
 # ── Individual checks (pure functions) ─────────────────────────────
 # Each returns a single ReadinessCheck. None of these raise — they
 # encode failure modes as ReadinessCheck(status='fail') so the

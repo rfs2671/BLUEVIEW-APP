@@ -666,9 +666,15 @@ async def _check_renewal_eligibility_legacy_inner(
             days_left = (exp_date - today).days
             eligibility.days_until_expiry = days_left
 
-            if days_left > 30:
+            # MR.13 — ELIGIBILITY_BYPASS_DAYS_REMAINING env var widens
+            # or disables this window for smoke testing. Default 30d
+            # rule applies when unset. See lib/eligibility_v2 helper.
+            from lib.eligibility_v2 import get_effective_renewal_window_days
+            window_days = get_effective_renewal_window_days(default=30)
+
+            if window_days is not None and days_left > window_days:
                 eligibility.blocking_reasons.append(
-                    f"Permit expires in {days_left} days. Renewal available within 30 days of expiry."
+                    f"Permit expires in {days_left} days. Renewal available within {window_days} days of expiry."
                 )
             elif days_left < -60:
                 # Expired more than 60 days — PAA required
@@ -1117,7 +1123,20 @@ async def nightly_renewal_scan(db):
                 exp_date = exp_date.replace(tzinfo=timezone.utc)
             days_left = (exp_date - datetime.now(timezone.utc)).days
 
-            if 0 < days_left <= 30:
+            # MR.13 — bypass widens the upper bound here too so the
+            # nightly sweep creates renewal records for permits beyond
+            # 30 days when ELIGIBILITY_BYPASS_DAYS_REMAINING is set.
+            # Without this, the operator has nothing to click on for
+            # the smoke test (no renewal record exists for permits
+            # outside the default 30-day window).
+            from lib.eligibility_v2 import get_effective_renewal_window_days
+            window_days = get_effective_renewal_window_days(default=30)
+            in_window = (
+                0 < days_left
+                and (window_days is None or days_left <= window_days)
+            )
+
+            if in_window:
                 permit_id = str(permit["_id"])
                 project_id = permit.get("project_id")
 
