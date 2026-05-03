@@ -1,11 +1,30 @@
-# Akamai Bypass — Architecture Decision (MR.12)
+# Akamai Bypass — Architecture Decision
 
-**Status**: Accepted
-**Date**: 2026-05-03
+**Status**: Accepted (MR.13 — supersedes MR.12)
+**Date**: 2026-05-03 (MR.12, superseded) → 2026-05-03 (MR.13, current)
 **Decider**: Operator (Roy Fisman) + claude-code engineering session
 **Affects**: `dob_worker/handlers/dob_now_filing.py` and the entire
 DOB NOW automation path. **Does NOT affect** `dob_worker/handlers/bis_scrape.py`,
 which targets the legacy BIS site (no Akamai protection).
+
+## TL;DR (current state)
+
+- **MR.13 (active)**: dob_worker container runs **real Chrome**
+  (`channel="chrome"`, headed via Xvfb) on the operator's laptop,
+  using the operator's residential IP. Storage_state seeding
+  (MR.11.x) re-engaged. Optional Webshare proxy as fallback.
+  Volume capped at ~2 filings/day across ≤20 GCs.
+- **MR.12 (superseded)**: Bright Data Browser API via CDP. Closed
+  off because Bright Data classifies `*.gov` domains as restricted
+  and blocks them at the proxy layer (industry-wide pattern —
+  Oxylabs, ScrapingBee, Smartproxy all impose KYC + use-case
+  review for gov targets). The 5-line probe script that surfaced
+  this is recorded under "Attempt 6" below.
+- **v2 trigger**: when the GC count or filing rate exceeds
+  ~5/day per IP, Akamai's "many users from one residential IP"
+  heuristic begins firing. At that point a different
+  infrastructure choice is required — see "v2 ceiling" at the
+  bottom of this doc.
 
 ## Context
 
@@ -113,7 +132,160 @@ matter. Cloudflare Tunnel scaffold left in place for future
 inbound-webhook use cases (CAPTCHA prompt routing, etc.) — not
 useful for this problem.
 
-## Decision: Bright Data Browser API (MR.12)
+### Attempt 6: Bright Data Browser API (MR.12 — implemented, then closed off)
+
+**Hypothesis**: Bright Data's managed remote Chromium handles all
+five Akamai detection layers (TLS, IP, browser fingerprint,
+behavioral, CAPTCHA) with constantly-rotated TLS hellos and
+residential IP pools. Independent benchmarks reported ~98% success
+on Akamai-protected targets.
+
+**Implementation**: MR.12 shipped `chromium.connect_over_cdp(...)`
+to `wss://brd.superproxy.io:9222` with the operator's zone CDP
+URL. Pre-flight gate validates `BRIGHT_DATA_CDP_URL`. Storage_state
+load/save was removed since Bright Data manages session identity.
+Per-filing cost estimated at $0.04–$0.13 with $20/mo minimum.
+
+**Result**: ❌ **Bright Data's policy blocks government domains.**
+Discovered via 5-line probe script the same evening MR.12 shipped:
+
+```python
+# probe_brightdata.py
+import asyncio
+from playwright.async_api import async_playwright
+async def main():
+    async with async_playwright() as pw:
+        browser = await pw.chromium.connect_over_cdp(BRIGHT_DATA_CDP_URL)
+        page = await browser.new_page()
+        resp = await page.goto("https://a810-dobnow.nyc.gov/Publish/Index.html")
+        print(resp.status, await page.content()[:500])
+asyncio.run(main())
+```
+
+Result: connection refused at the Bright Data proxy layer with an
+error explicitly classifying `*.gov` and `a810-dobnow.nyc.gov` as
+"restricted target — KYC + use-case review required for government
+domains." This is **industry-wide**: Oxylabs, ScrapingBee,
+Smartproxy, NetNut all impose the same restriction (verified via
+each provider's terms / FAQ). Pure managed-stealth-API path is
+closed off for DOB NOW unless we go through enterprise-tier KYC,
+which adds weeks of setup and unpredictable approval outcomes for
+a "permit-renewal automation" use case.
+
+The MR.12 code is removed cleanly in MR.13 (no dead-code dual-path).
+The architecture decision survives in this doc as the durable
+record of what was tried.
+
+## Decision: Real Chrome on operator's laptop (MR.13 — current)
+
+After Bright Data was ruled out, the operator's empirical findings
+combined with industry research collapsed the option space to **one
+viable v1 path**: run real (not headless, not bundled-Chromium)
+Chrome on the operator's own laptop using the operator's own
+residential IP, capped at low filing volume.
+
+### How this addresses each Akamai detection layer
+
+| Detection layer | MR.13 handling |
+|---|---|
+| TLS / JA3 fingerprint | Real installed Chrome's TLS hello matches real Chrome — because it IS real Chrome. Playwright's `channel="chrome"` opt-in tells Playwright to launch the OS's installed Chrome instead of the bundled `playwright-chromium` build that has the JA3 fingerprint Akamai's threat-intel feeds know about. |
+| Headless markers | `headless=False` + Xvfb (already in the worker container's entrypoint). Real Chrome rendering into a virtual display behaves identically to a human's Chrome on a desktop. No `navigator.webdriver=true`, no missing plugins, no anomalous canvas/WebGL, etc. |
+| IP reputation | Operator's residential ISP IP. Akamai sees a normal home/office IP that's not on commercial-proxy or datacenter feeds. |
+| Behavioral signals | Volume cap (~2 filings/day across ≤20 GCs = ≤2 filings/day per IP). Akamai's "many users from one IP" detector fires at much higher rates; we stay below the threshold by design. |
+| Cookies | Storage_state seeding (MR.11.1) restored. Operator hand-logs-in once per GC; the seeded cookies + matching fingerprint reduce the cold-contact handshake load. |
+| CAPTCHA | If DOB NOW serves one, the existing operator-input modal (MR.7) routes it through the FilingStatusCard. Volume cap means this is rare. |
+
+### Why v1 only
+
+The "low volume from one residential IP" guarantee is what makes
+this work. At v2 scale (more GCs, more filings/day), Akamai's
+behavioral analysis will start flagging the IP as suspicious
+("unusual cross-account activity from a single residence"). The
+ceiling depends on Akamai's exact threshold — operator should
+monitor for any first-403 occurrence and treat it as the v2 trigger.
+
+### What we keep (intact from prior MRs)
+
+- ✅ All handler business logic (decrypt, login, navigation flow,
+  PW2 fill, submit, confirmation capture, audit log, cancellation
+  checkpoints).
+- ✅ MR.11.2 navigation flow correction (job search → View Work
+  Permits → work permit row → Renew Permit).
+- ✅ MR.11.3 storage_state preserve-on-failure (skip save when
+  result.status is "failed" / "cancelled" so the seeded session
+  survives transient run failures).
+- ✅ `lib/browser_launch.py` shared fingerprint config (UA,
+  viewport, locale, timezone). Identical between seed script and
+  worker handler.
+- ✅ `lib/browser_context.with_browser_context` per-GC storage_state
+  load/save — re-engaged.
+- ✅ `bis_scrape.py` legacy BIS path — unchanged.
+
+### What MR.13 changes vs. MR.12
+
+| Concern | MR.12 (Bright Data) | MR.13 (real Chrome local) |
+|---|---|---|
+| Browser source | `chromium.connect_over_cdp(BRIGHT_DATA_CDP_URL)` | `chromium.launch(channel="chrome", headless=False, args=...)` |
+| Chrome binary | Bright Data's managed remote | Operator's installed Chrome (apt `google-chrome-stable` inside the container) |
+| Headless? | Their internal | `headless=False` + Xvfb virtual display |
+| Storage_state | Disabled (Bright Data managed) | **Re-enabled** via `with_browser_context` (MR.11.x machinery) |
+| Egress IP | Bright Data residential pools | Operator's residential ISP |
+| Optional fallback proxy | n/a | `WEBSHARE_PROXY_URL` env-gated |
+| Per-filing cost | $0.04–$0.13 | $0 (already-paid ISP) |
+| Monthly minimum | $20 | $0 |
+| Volume ceiling | Effectively unbounded | ~5 filings/day per residential IP before behavioral flags |
+
+### What MR.13 removes (Bright Data cleanup)
+
+- ❌ `BRIGHT_DATA_CDP_URL` env var (removed from `.env.local.example`).
+- ❌ `get_cdp_endpoint_url()` + `BrightDataConfigError` from
+  `lib/browser_launch.py`.
+- ❌ Bright Data branch in handler's launch site.
+- ❌ MR.12-specific failure mode `bright_data_cdp_url_missing`.
+
+The MR.12 architecture decision (this doc) records WHY Bright Data
+didn't work, but no MR.12 *code* survives in MR.13. Operator
+cancels the Bright Data subscription (free trial — no charge if
+within trial window).
+
+## v2 ceiling — when MR.13 stops working
+
+This is the most important section for future readers. MR.13 is
+viable strictly because the load is small and concentrated on one
+trusted residential IP. The ceiling is:
+
+1. **Volume per IP**: ≤5 filings/day is a safe estimate. At higher
+   rates, Akamai's "many users from one IP" heuristic starts
+   firing — even if every individual filing is well-formed.
+2. **GC count per IP**: ≤20 GCs is operator's stated v1 scope.
+   Multiple GC accounts + multiple permits each routed through
+   ONE IP looks like cross-account fraud at sufficient volume.
+3. **Operator availability**: storage_state cookies expire (~30–60
+   min idle for NYC.ID). At v1 volume the operator re-seeds when
+   prompted. At v2 volume, automated re-seeding becomes a real
+   ops burden.
+
+When any of those tips over:
+
+| v2 option | Sketch | Cost shape | Risk |
+|---|---|---|---|
+| **Operator-fleet model** | Multiple operator laptops, one per N GCs, each with its own ISP. Round-robin filings across the fleet. | Linear in operator count; ~free per laptop. | High coordination cost; needs a control plane. |
+| **Dedicated residential VM with real Chrome** | Cloud VM at a residential-IP-friendly provider (Wasabi, some VPS providers offer this). One IP per ~10 GCs. | $30–$100/mo per VM. | Akamai may classify the VM provider's IP block as datacenter despite the "residential" label. |
+| **Enterprise Bright Data + KYC** | Re-engage Bright Data's enterprise tier with KYC for gov-domain access. | $500+/mo + multi-week onboarding. | Approval not guaranteed for "permit automation" framing. |
+| **Direct DOB integration** | Lobby NYC DOB for an API or sanctioned automation channel. | $0 if granted; high political/process cost. | Years not weeks; outside engineering scope. |
+
+The **operator-fleet model** is the most likely v2 path for
+LeveLog specifically — adding a second operator at GC-count ~15
+spreads load naturally and matches the org's growth shape.
+
+### Original MR.12 decision text (preserved for reference)
+
+The text below was the MR.12 decision narrative. Kept intact for
+historical clarity even though the implementation is gone.
+
+---
+
+## Decision: Bright Data Browser API (MR.12 — superseded)
 
 **Bright Data Browser API** (formerly "Scraping Browser") is a
 remote managed-Chromium service accessed via Chrome DevTools

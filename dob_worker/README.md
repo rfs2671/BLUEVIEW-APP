@@ -93,66 +93,60 @@ to confirm it landed before moving on.
          # paste tunnel UUID from credentials.json into config.yml
        Then uncomment the cloudflared service in docker-compose.yml.
 
-[ ] 11. Bright Data Browser API zone (MR.12 — REQUIRED for DOB NOW)
-       The dob_now_filing handler uses Bright Data's managed remote
-       Chromium over CDP for Akamai bypass. Local Chromium —
-       headless or otherwise — cannot pass DOB NOW's Bot Manager v4
-       check (TLS/JA3 fingerprint + IP reputation are the binding
-       constraints; warm cookies + matching launch flags are not
-       enough). See docs/architecture/akamai-bypass-decision.md.
+[ ] 11. Real Chrome via Xvfb (MR.13 — REQUIRED for DOB NOW)
+       The dob_now_filing handler launches the operator's installed
+       Google Chrome (NOT bundled Chromium) headed inside the worker
+       container's Xvfb virtual display. This is the v1 Akamai
+       bypass strategy after Bright Data was ruled out (gov-domain
+       blocked at the proxy layer — industry-wide for managed-
+       stealth-API providers). See
+       docs/architecture/akamai-bypass-decision.md for the full
+       decision trail.
 
-       One-time zone setup at brightdata.com:
-         a. Sign up / log in. Add a payment method.
-         b. Navigate: Proxy & Scraping Infra → Browser API → Add.
-         c. Zone name: descriptive, e.g. "levelog_scraping_browser".
-         d. Pricing tier: "pay-as-you-go" ($8.40/GB, $20/mo
-            minimum).
-         e. Premium domains: OFF. DOB NOW is not on Bright Data's
-            premium list — the upcharge would be wasted.
-         f. CAPTCHA solver: ON (default; no surcharge on standard
-            plans). Useful in case DOB NOW ever triggers reCAPTCHA
-            on the post-login flow.
-         g. Allowed IPs (security): add the operator laptop's
-            current public IP. Limits CDP-URL exposure if the
-            URL ever leaks. Update if your ISP rotates the IP.
-         h. Save. From the zone overview's "Access parameters",
-            copy the CDP URL. Format:
-              wss://brd-customer-hl_<id>-zone-<name>:<password>@brd.superproxy.io:9222
+       Why it works: real Chrome's TLS ClientHello + behavioral
+       signature is NOT in Akamai's threat-intel feeds. Bundled
+       Playwright-Chromium's JA3 IS. Combined with the operator's
+       residential ISP IP and storage_state cookies seeded via a
+       real human login, this passes Akamai's first-contact check.
 
-       Wire the URL into the worker:
-         - Edit dob_worker/.env.local
-         - Set BRIGHT_DATA_CDP_URL=<the URL from step h>
-         - Force-recreate the worker container so it re-reads .env.local:
-             docker compose up -d --force-recreate dob_worker
+       Volume ceiling: ~2 filings/day across ≤20 GCs. Above that,
+       Akamai's "many users from one IP" heuristic starts firing.
+       v2 scope (operator-fleet model) is documented in the
+       architecture doc.
+
+       What's required:
+         a. Worker container ships with google-chrome-stable
+            installed via apt (added to Dockerfile in MR.13).
+            No operator action — `docker compose build dob_worker`
+            picks it up.
+         b. Storage_state cookies seeded per GC via the existing
+            seed_storage_state.py script (step 9). Re-seed after
+            this commit lands because the launch fingerprint
+            changes slightly (real Chrome vs. bundled Chromium).
+         c. (Optional) WEBSHARE_PROXY_URL set if you want a
+            residential proxy fallback layered between the worker
+            and DOB NOW. Default direct egress from operator's IP.
 
        Verify:
          docker compose logs --tail=20 dob_worker
        On the next File Renewal click, look for:
-         [dob_now_filing] connecting to Bright Data Browser API ...
+         [dob_now_filing] launching real Chrome (channel='chrome')
+           with direct egress (no proxy)
        Followed by login / navigation / submit / confirmation —
        NO "Akamai challenge detected (status=403)" warning.
 
-       If unset, the handler returns failed/bright_data_cdp_url_missing
-       at pre-flight (no wasted Bright Data spend on misconfig).
+       What this REPLACES (vs. MR.12 Bright Data):
+         - chromium.connect_over_cdp(BRIGHT_DATA_CDP_URL) → gone.
+         - Pre-flight bright_data_cdp_url_missing failure mode →
+           gone.
+         - Bright Data Browser API zone subscription → cancel it
+           (free trial, no charge if within window).
 
-       Cost notes:
-         - Empirical estimate: ~$0.04–$0.13 per filing (5–15 MB
-           per session at $8.40/GB).
-         - $20/mo minimum binds until ~200 filings/mo.
-         - Probe data cost via Bright Data dashboard "Playground":
-           navigate to https://a810-dobnow.nyc.gov/Publish/Index.html
-           once, read bytes-transferred, multiply by ~10 page loads.
-
-       What this REPLACES:
-         - Local Chromium launch in dob_now_filing handler (gone).
-         - Webshare residential proxy (never worked for DOB NOW;
-           operator can cancel the subscription if BIS scraping
-           via WEBSHARE_PROXY_URL isn't actively used).
-         - Storage_state cookie seeding for the dob_now_filing
-           path (Bright Data handles session identity).
-         - cloudflared egress experiments — Cloudflare Tunnel is
-           inbound-only; egress IP shaping requires Zero Trust
-           enterprise. Bright Data is the right tool for this job.
+       What this RESTORES (vs. MR.12):
+         - Storage_state load/save via with_browser_context.
+         - lib/browser_launch.get_launch_args() with
+           channel="chrome" + headless=False.
+         - Optional Webshare proxy fallback path.
 ```
 
 ## Architecture

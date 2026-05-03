@@ -1,16 +1,22 @@
-"""MR.11.3 — shared Chromium launch + context configuration tests.
+"""MR.13 — shared real-Chrome launch + context configuration tests.
 
 Pure-function coverage. The whole point of lib/browser_launch.py is
 that the seed script (scripts/seed_storage_state.py) and the worker
 handler (handlers/dob_now_filing.py) produce IDENTICAL browser
-fingerprints. These tests pin the contract so a future commit that
-adds a worker-only flag (or an operator-only viewport) breaks
-loudly instead of silently drifting Akamai's "same-browser?" check
-out of alignment.
+fingerprints AND that both use real Chrome (channel="chrome") not
+the bundled playwright-chromium. Pinned here so a future commit
+that flips channel back to chromium, drops --no-sandbox, or
+introduces a worker-only flag breaks loudly instead of silently
+drifting Akamai's "same-browser?" check out of alignment.
+
+MR.12 Bright Data tests removed: the handler no longer dials a
+remote CDP endpoint; it launches local Chrome. The CDP-helper
+test class was deleted (no dead-code coverage of removed paths).
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -22,22 +28,26 @@ sys.path.insert(0, str(_DOB_WORKER))
 
 class TestGetLaunchArgs(unittest.TestCase):
 
-    def test_default_is_headless_with_new_mode_flag(self):
+    def test_default_is_headed_chrome_channel(self):
+        """MR.13 default: channel='chrome' + headless=False. Real
+        Chrome under Xvfb is what bypasses Akamai. Bundled
+        chromium-headless-shell would NOT — pinned here."""
         from lib.browser_launch import get_launch_args
         result = get_launch_args()
-        self.assertIs(result["headless"], True)
-        # --headless=new is the Chromium 109+ mode that produces a
-        # closer-to-real-Chrome fingerprint than legacy headless.
-        self.assertIn("--headless=new", result["args"])
-
-    def test_explicit_headless_false_omits_headless_flag(self):
-        """The seed script overrides headless=False because the
-        operator needs to interact with the window. In that mode
-        --headless=new is wrong (we're not headless at all)."""
-        from lib.browser_launch import get_launch_args
-        result = get_launch_args(headless=False)
+        self.assertEqual(result["channel"], "chrome")
         self.assertIs(result["headless"], False)
+        # MR.13 — no --headless=new flag. We're not headless at all.
         self.assertNotIn("--headless=new", result["args"])
+        self.assertNotIn("--headless", result["args"])
+
+    def test_explicit_headless_true_still_uses_chrome_channel(self):
+        """If a future test path passes headless=True (e.g. a CI
+        smoke test), channel stays "chrome" — the load-bearing
+        choice is the binary, not the headless mode."""
+        from lib.browser_launch import get_launch_args
+        result = get_launch_args(headless=True)
+        self.assertEqual(result["channel"], "chrome")
+        self.assertIs(result["headless"], True)
 
     def test_base_flags_present_in_both_modes(self):
         from lib.browser_launch import get_launch_args
@@ -116,10 +126,6 @@ class TestSeedAndWorkerShareIdenticalFingerprint(unittest.TestCase):
     Akamai."""
 
     def test_user_agent_identical_across_modes(self):
-        """Worker uses get_launch_args(headless=True) + get_context_args().
-        Seed uses get_launch_args(headless=False) + get_context_args().
-        The UA comes from get_context_args() and is the same object
-        across both — this test makes the invariant explicit."""
         from lib.browser_launch import get_context_args
         worker_ua = get_context_args()["user_agent"]
         seed_ua = get_context_args()["user_agent"]
@@ -133,89 +139,85 @@ class TestSeedAndWorkerShareIdenticalFingerprint(unittest.TestCase):
         self.assertEqual(a["locale"], b["locale"])
         self.assertEqual(a["timezone_id"], b["timezone_id"])
 
-    def test_base_launch_flags_identical_across_headless_modes(self):
-        """The non-headless flags (everything except --headless=new)
-        must be byte-identical between seed and worker. If a
-        worker-only flag sneaks in, this test surfaces it."""
+    def test_channel_chrome_identical_across_modes(self):
+        """MR.13 — both seed and worker MUST use channel='chrome'.
+        If one drifts to bundled chromium, Akamai sees two different
+        TLS fingerprints and rejects the worker."""
         from lib.browser_launch import get_launch_args
-        worker_flags = set(get_launch_args(headless=True)["args"]) - {"--headless=new"}
-        seed_flags = set(get_launch_args(headless=False)["args"])
-        self.assertEqual(worker_flags, seed_flags)
+        self.assertEqual(get_launch_args(headless=True)["channel"], "chrome")
+        self.assertEqual(get_launch_args(headless=False)["channel"], "chrome")
 
-
-# ── MR.12 — Bright Data Browser API CDP helper ─────────────────────
-
-
-class TestGetCdpEndpointUrl(unittest.TestCase):
-    """The active dob_now_filing handler relies on this helper to
-    surface a clear pre-flight error when the operator hasn't
-    completed the Bright Data zone setup. Tests pin both the
-    happy path and the loud-fail behavior."""
-
-    def test_returns_url_when_env_var_set(self):
-        import os
-        from lib.browser_launch import get_cdp_endpoint_url
-        url = "wss://brd-customer-hl_xxxxxxxx-zone-test:secret@brd.superproxy.io:9222"
-        os.environ["BRIGHT_DATA_CDP_URL"] = url
-        try:
-            self.assertEqual(get_cdp_endpoint_url(), url)
-        finally:
-            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
-
-    def test_strips_whitespace(self):
-        """Operators copy/paste from the Bright Data dashboard;
-        trailing newlines / spaces are common. Strip them."""
-        import os
-        from lib.browser_launch import get_cdp_endpoint_url
-        os.environ["BRIGHT_DATA_CDP_URL"] = "  wss://brd.example  \n"
-        try:
-            self.assertEqual(get_cdp_endpoint_url(), "wss://brd.example")
-        finally:
-            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
-
-    def test_raises_when_env_var_missing(self):
-        import os
-        from lib.browser_launch import (
-            get_cdp_endpoint_url,
-            BrightDataConfigError,
+    def test_launch_flags_identical_across_modes(self):
+        """All flags identical regardless of headless mode (MR.13
+        doesn't add --headless=new at all)."""
+        from lib.browser_launch import get_launch_args
+        self.assertEqual(
+            set(get_launch_args(headless=True)["args"]),
+            set(get_launch_args(headless=False)["args"]),
         )
-        os.environ.pop("BRIGHT_DATA_CDP_URL", None)
-        with self.assertRaises(BrightDataConfigError) as cm:
-            get_cdp_endpoint_url()
-        # The error message must point the operator at the env var
-        # AND the README setup step — actionable, not vague.
-        msg = str(cm.exception)
-        self.assertIn("BRIGHT_DATA_CDP_URL", msg)
-        self.assertIn("README", msg)
 
-    def test_raises_when_env_var_empty_string(self):
-        """Empty-string is the failure mode when an operator
-        adds the env var line to .env.local but forgets to paste
-        the value."""
-        import os
-        from lib.browser_launch import (
-            get_cdp_endpoint_url,
-            BrightDataConfigError,
-        )
-        os.environ["BRIGHT_DATA_CDP_URL"] = ""
-        try:
-            with self.assertRaises(BrightDataConfigError):
-                get_cdp_endpoint_url()
-        finally:
-            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
 
-    def test_raises_when_env_var_whitespace_only(self):
-        import os
-        from lib.browser_launch import (
-            get_cdp_endpoint_url,
-            BrightDataConfigError,
+# ── MR.13 — Optional Webshare proxy fallback ──────────────────────
+
+
+class TestGetProxyArgs(unittest.TestCase):
+    """Optional proxy plumbing. Unset → None (default direct path).
+    Set → Playwright's expected dict shape with separated
+    username/password fields (Chromium ignores inline creds in
+    `server=`; this is the war-story-encoded behavior)."""
+
+    def setUp(self):
+        # Capture so we restore in tearDown — env mutation MUST NOT
+        # leak between tests.
+        self._saved = os.environ.get("WEBSHARE_PROXY_URL")
+
+    def tearDown(self):
+        if self._saved is None:
+            os.environ.pop("WEBSHARE_PROXY_URL", None)
+        else:
+            os.environ["WEBSHARE_PROXY_URL"] = self._saved
+
+    def test_returns_none_when_unset(self):
+        from lib.browser_launch import get_proxy_args
+        os.environ.pop("WEBSHARE_PROXY_URL", None)
+        self.assertIsNone(get_proxy_args())
+
+    def test_returns_none_when_empty_string(self):
+        from lib.browser_launch import get_proxy_args
+        os.environ["WEBSHARE_PROXY_URL"] = ""
+        self.assertIsNone(get_proxy_args())
+
+    def test_returns_none_when_whitespace_only(self):
+        from lib.browser_launch import get_proxy_args
+        os.environ["WEBSHARE_PROXY_URL"] = "   \n  "
+        self.assertIsNone(get_proxy_args())
+
+    def test_parses_full_url_into_dict_shape(self):
+        """Webshare URLs come in the form
+        http://username:password@host:port. Chromium needs them
+        split — server stripped of creds, username + password
+        as separate keys."""
+        from lib.browser_launch import get_proxy_args
+        os.environ["WEBSHARE_PROXY_URL"] = (
+            "http://user1:pass1@p.webshare.io:9999"
         )
-        os.environ["BRIGHT_DATA_CDP_URL"] = "   \n  "
-        try:
-            with self.assertRaises(BrightDataConfigError):
-                get_cdp_endpoint_url()
-        finally:
-            os.environ.pop("BRIGHT_DATA_CDP_URL", None)
+        cfg = get_proxy_args()
+        self.assertEqual(cfg["server"], "http://p.webshare.io:9999")
+        self.assertEqual(cfg["username"], "user1")
+        self.assertEqual(cfg["password"], "pass1")
+        # Critical: creds NOT in server URL.
+        self.assertNotIn("user1", cfg["server"])
+        self.assertNotIn("pass1", cfg["server"])
+
+    def test_parses_no_credentials(self):
+        """A bare proxy URL without auth should still produce a
+        valid Playwright shape — caller can use it as-is."""
+        from lib.browser_launch import get_proxy_args
+        os.environ["WEBSHARE_PROXY_URL"] = "http://p.example.com:8080"
+        cfg = get_proxy_args()
+        self.assertEqual(cfg["server"], "http://p.example.com:8080")
+        self.assertNotIn("username", cfg)
+        self.assertNotIn("password", cfg)
 
 
 if __name__ == "__main__":

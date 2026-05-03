@@ -1,101 +1,47 @@
 """Shared Chromium launch + context configuration.
 
-MR.12 status (2026-05-03)
+MR.13 status (2026-05-03)
 ─────────────────────────
-The dob_now_filing handler PIVOTED off local Chromium to Bright
-Data's Browser API for Akamai bypass — see
-docs/architecture/akamai-bypass-decision.md for why
-fingerprint-matching alone (which is what this module does) was
-necessary but not sufficient.
+The dob_now_filing handler runs **real Chrome** (not bundled
+Chromium) launched headed inside the worker container's Xvfb
+virtual display. See docs/architecture/akamai-bypass-decision.md
+for the full decision trail (warm cookies → fingerprint match →
+preserve-on-failure → residential proxy → cloudflared → Bright
+Data Browser API → real Chrome local).
 
-The active dob_now_filing path now uses get_cdp_endpoint_url()
-to dial Bright Data over CDP. The legacy local-Chromium helpers
-get_launch_args() / get_context_args() are KEPT but used only by:
-  • scripts/seed_storage_state.py (vestigial after MR.12; kept for
-    any future warm-session use case on a non-Akamai site)
-  • lib/browser_context.with_browser_context (vestigial in the
-    active path; kept for any future per-GC local-Chromium handler)
+The MR.12 Bright Data path was implemented and removed: Bright
+Data classifies *.gov domains as restricted and blocks them at
+the proxy layer (industry-wide pattern across managed-stealth-
+API providers). The pivot to MR.13 is "real Chrome on operator's
+laptop, paced at v1 volume" — capped at ≤2 filings/day across
+≤20 GCs to stay below Akamai's "many-users-from-one-IP" heuristic.
 
-Do not delete these helpers — they're correct, just not the
-active path. Use get_cdp_endpoint_url() for new Akamai-protected
-work.
-
-Why the legacy helpers existed
-──────────────────────────────
-DOB NOW is fronted by Akamai Bot Manager. Akamai fingerprints
-sessions across MANY axes — not just cookies — and any drift
-between the browser used to seed a warm session (operator's
-non-headless interactive run via scripts/seed_storage_state.py)
-and the browser used at filing time (worker's headless run via
-handlers/dob_now_filing.py) gets flagged. Even when the seeded
-cookies are present, a TLS/JA3 fingerprint mismatch, viewport
-size drift, or a different user-agent string is enough to fail
-the Bot Manager's "is this the same browser identity that earned
-these cookies?" check.
-
-MR.11.3 made these match across seed+worker. It still 403'd —
-because Akamai also inspects TLS ClientHello (JA3) and IP
-reputation, neither of which a local Chromium can disguise.
-Hence the MR.12 pivot.
+The load-bearing change vs. pre-MR.12 is `channel="chrome"` —
+Playwright launches the OS's installed Chrome instead of the
+bundled `playwright-chromium` build. Bundled Chromium has a JA3
+TLS fingerprint Akamai's threat-intel feeds know about; real
+Chrome does not.
 
 Helpers
 ───────
-  • get_cdp_endpoint_url()         — Bright Data Browser API URL
-    (active dob_now_filing path).
-  • get_launch_args(headless=...)  — legacy local-Chromium kwargs.
-  • get_context_args()             — legacy new_context kwargs.
+  • get_launch_args(headless=...)  — kwargs for chromium.launch()
+                                      including channel="chrome".
+  • get_context_args()             — kwargs for browser.new_context().
+  • get_proxy_args()               — optional Webshare proxy kwargs
+                                      from WEBSHARE_PROXY_URL env var.
+                                      Layered as a fallback to mask
+                                      operator's residential IP if
+                                      Akamai starts flagging it.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 
-# ── Bright Data Browser API (MR.12 — active path) ──────────────────
-
-
-class BrightDataConfigError(RuntimeError):
-    """Raised when BRIGHT_DATA_CDP_URL is missing/empty.
-
-    Surfaced at handler entry as a fail-fast pre-flight check so
-    the operator gets a clear error in the FilingJob audit log
-    instead of a downstream Playwright connect timeout 30 seconds
-    later. Caller is expected to translate this into
-    HandlerResult(status='failed', detail='bright_data_cdp_url_missing').
-    """
-
-
-BRIGHT_DATA_ENV_VAR = "BRIGHT_DATA_CDP_URL"
-
-
-def get_cdp_endpoint_url() -> str:
-    """Return the Bright Data Browser API CDP endpoint URL.
-
-    The URL is expected to be a websocket of the form:
-        wss://brd-customer-hl_<id>-zone-<name>:<password>@brd.superproxy.io:9222
-
-    Read from the BRIGHT_DATA_CDP_URL env var. Fails loud
-    (BrightDataConfigError) when unset — the dob_now_filing
-    handler cannot proceed without it post-MR.12.
-
-    See docs/architecture/akamai-bypass-decision.md for context."""
-    cdp_url = os.environ.get(BRIGHT_DATA_ENV_VAR, "").strip()
-    if not cdp_url:
-        raise BrightDataConfigError(
-            f"{BRIGHT_DATA_ENV_VAR} is not set. The dob_now_filing handler "
-            "uses Bright Data Browser API for Akamai bypass — local Chromium "
-            "alone cannot pass DOB NOW's bot check. See "
-            "dob_worker/README.md operator setup step 11 (Bright Data "
-            "Browser API zone) and "
-            "docs/architecture/akamai-bypass-decision.md for context."
-        )
-    return cdp_url
-
-
-# ── Legacy: local Chromium fingerprint config (pre-MR.12) ──────────
-# Kept for the seed script + with_browser_context. Not reached by
-# the active dob_now_filing path.
+# ── Chromium / real-Chrome launch config ──────────────────────────
 
 
 # Pin to a current Chrome stable major. Update when the
@@ -107,6 +53,13 @@ def get_cdp_endpoint_url() -> str:
 # Choice: 130.0.0.0 (Chrome stable as of 2026-04). The trailing
 # .0.0 keeps the patch-level non-specific so the UA doesn't have
 # to chase point releases.
+#
+# NOTE (MR.13): when channel="chrome" is in effect, Playwright
+# uses whatever real Chrome is installed in the container. The
+# real Chrome's UA may differ slightly from this constant — but
+# Playwright respects an explicit user_agent kwarg in new_context
+# regardless of the underlying browser binary, so the wire UA
+# stays consistent for fingerprint-matching with the seed run.
 CHROME_VERSION = "130.0.0.0"
 USER_AGENT = (
     f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -130,7 +83,7 @@ EXTRA_HTTP_HEADERS: Dict[str, str] = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Chromium launch flags. Each one earns its keep:
+# Chrome launch flags. Each one earns its keep:
 #  --no-sandbox                          — required when running as
 #                                          root inside the Docker
 #                                          container (no user
@@ -139,28 +92,24 @@ EXTRA_HTTP_HEADERS: Dict[str, str] = {
 #                                          navigator.webdriver=true
 #                                          marker that Bot Manager
 #                                          checks early.
-#  --disable-features=IsolateOrigins,…   — disables Site Isolation,
-#                                          which leaks process-
-#                                          per-origin behavior that
+#  --disable-features=IsolateOrigins,…   — disables Site Isolation
+#                                          (leaks process-per-origin
+#                                          behavior that bundled
 #                                          headless Chromium handles
-#                                          differently than real
-#                                          Chrome (a known fingerprint
-#                                          vector).
+#                                          differently from real
+#                                          Chrome — less relevant
+#                                          under MR.13 since we ARE
+#                                          real Chrome, but cheap).
 #  --disable-dev-shm-usage               — avoids the small /dev/shm
 #                                          tmpfs Docker provides;
 #                                          unrelated to fingerprinting
 #                                          but prevents OOM crashes
-#                                          mid-flow that would look
-#                                          like a Chromium bug.
-#  --headless=new                        — ONLY appended when headless
-#                                          is True. Chromium's new
-#                                          headless mode (109+) renders
-#                                          via the same code path as
-#                                          headed Chrome, so it
-#                                          presents far fewer headless-
-#                                          specific markers (no missing
-#                                          plugins, real window dims,
-#                                          full canvas/WebGL surfaces).
+#                                          mid-flow.
+#
+# MR.13 — note we DO NOT include `--headless=new`. The worker now
+# launches Chrome headed (`headless=False`) inside the container's
+# Xvfb virtual display. Headed Chrome has the smallest possible
+# detection surface — no headless-specific markers at all.
 _BASE_LAUNCH_FLAGS = (
     "--no-sandbox",
     "--disable-blink-features=AutomationControlled",
@@ -169,24 +118,32 @@ _BASE_LAUNCH_FLAGS = (
 )
 
 
-def get_launch_args(*, headless: bool = True) -> Dict[str, Any]:
+def get_launch_args(*, headless: bool = False) -> Dict[str, Any]:
     """Return kwargs for `await playwright.chromium.launch(**...)`.
 
-    Pass `headless=False` from the seed script (operator needs the
-    visible browser window). Default True for the worker handler.
+    MR.13 default is `headless=False` because the worker runs Chrome
+    inside Xvfb (entrypoint.sh starts the virtual display before
+    invoking the worker process). Headed Chrome under Xvfb has a
+    fingerprint indistinguishable from a human's desktop Chrome —
+    that's the whole reason MR.13 works.
 
-    The `--headless=new` arg is added automatically when headless=True
-    so the worker uses Chromium's new headless mode (Chromium 109+),
-    which produces a fingerprint nearly identical to headed Chrome.
-    The legacy `--headless` flag (the default before "new" mode) is
-    avoided entirely because it's the easy-mode tell for Bot Manager.
+    The seed script passes `headless=False` for the same reason
+    plus the obvious one (operator needs to interact with the
+    browser to log in).
+
+    `channel="chrome"` is the load-bearing flag. It tells Playwright
+    to use the OS's installed Chrome (apt google-chrome-stable in the
+    worker container) instead of Playwright's bundled
+    playwright-chromium. The bundled build has a JA3 TLS fingerprint
+    Akamai's threat-intel feeds recognize; real Chrome does not.
+
+    Requires Chrome to be installed in the worker container — see
+    Dockerfile (apt-get install google-chrome-stable).
     """
-    args = list(_BASE_LAUNCH_FLAGS)
-    if headless:
-        args.append("--headless=new")
     return {
+        "channel": "chrome",
         "headless": headless,
-        "args": args,
+        "args": list(_BASE_LAUNCH_FLAGS),
     }
 
 
@@ -206,3 +163,55 @@ def get_context_args() -> Dict[str, Any]:
         "timezone_id": TIMEZONE_ID,
         "extra_http_headers": dict(EXTRA_HTTP_HEADERS),
     }
+
+
+# ── Optional Webshare proxy fallback (MR.13) ──────────────────────
+
+
+WEBSHARE_PROXY_ENV_VAR = "WEBSHARE_PROXY_URL"
+
+
+def get_proxy_args() -> Optional[Dict[str, str]]:
+    """Convert WEBSHARE_PROXY_URL into the dict shape Playwright's
+    chromium.launch() expects, or None if the env var is unset.
+
+    Format expected:
+        http://username:password@host:port
+
+    Returns Playwright shape:
+        {"server": "http://host:port", "username": "...", "password": "..."}
+
+    Why the dict-form (not just `server` with inline creds): Chromium
+    IGNORES inline credentials in the `server=` field — CONNECT goes
+    out without Proxy-Authorization, Webshare returns 407, and
+    Playwright surfaces it as a 30-second `page.goto` timeout. Same
+    quirk handlers/bis_scrape.py hit during BIS work; this helper
+    factors out the parsing.
+
+    Returns None if WEBSHARE_PROXY_URL is unset — caller must check
+    and conditionally include in launch kwargs:
+
+        proxy = get_proxy_args()
+        if proxy is not None:
+            launch_kwargs["proxy"] = proxy
+
+    MR.13 status: optional fallback. The default v1 path is direct
+    egress from operator's residential IP. If Akamai starts
+    flagging that IP, layering Webshare adds a different residential
+    IP between operator and DOB NOW.
+    """
+    raw = os.environ.get(WEBSHARE_PROXY_ENV_VAR, "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if not parsed.hostname or not parsed.port:
+        # Malformed; fall back to handing Playwright the raw string
+        # and let it surface whatever error it surfaces.
+        return {"server": raw}
+    server = f"{parsed.scheme or 'http'}://{parsed.hostname}:{parsed.port}"
+    cfg: Dict[str, str] = {"server": server}
+    if parsed.username:
+        cfg["username"] = parsed.username
+    if parsed.password:
+        cfg["password"] = parsed.password
+    return cfg
