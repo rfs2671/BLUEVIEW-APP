@@ -1189,7 +1189,11 @@ class ProjectResponse(BaseModel):
     # admin / PLUTO-lookup edits track their source.
     bbl_source: Optional[str] = None  # "address_lookup_at_creation" | "pluto_lookup" | "manual_entry" | "geosupport" | "user_corrected"
     bbl_last_synced: Optional[datetime] = None
-    track_dob_status: bool = False
+    # MR.14 (commit 2a) — default True. The v1 monitoring product
+    # treats DOB-signal polling as the core feature; opt-in to "no,
+    # don't track me" is now the unusual case. Existing False docs
+    # are NOT migrated (operator F7 — customer choice to flip).
+    track_dob_status: bool = True
     report_email_list: List[str] = []
     report_send_time: str = "18:00"
     project_class: Optional[str] = "regular"
@@ -5118,7 +5122,12 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     project_dict["bbl"] = None
     project_dict["bbl_source"] = None
     project_dict["bbl_last_synced"] = None
-    project_dict["track_dob_status"] = False
+    # MR.14 (commit 2a) — default True. v1 monitoring product treats
+    # DOB-signal polling as the core feature; new projects opt IN by
+    # default. Operator F7: existing False docs are NOT migrated
+    # (customer choice). Override below from BIN-resolution logic
+    # only flips it when bin_result explicitly says so.
+    project_dict["track_dob_status"] = True
 
     address_for_bin = project_dict.get("address") or project_dict.get("location") or ""
     if address_for_bin:
@@ -5128,7 +5137,14 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
             project_dict["bbl"] = bin_result["bbl"]
             project_dict["bbl_source"] = "address_lookup_at_creation"
             project_dict["bbl_last_synced"] = now
-        project_dict["track_dob_status"] = bin_result["track_dob_status"]
+        # MR.14 (commit 2a) — do NOT downgrade track_dob_status from
+        # the True default just because no BIN resolved at creation
+        # time. Address-fallback in _query_dob_apis still produces
+        # signals for non-BIN projects, and the nightly scan already
+        # filters projects with neither bin nor address. The
+        # bin_result hint is informational only for new schema.
+        if bin_result.get("track_dob_status") is True:
+            project_dict["track_dob_status"] = True
 
         # Upgrade the project's address to GeoSearch's canonical form
         # (e.g. "852 E 176" → "852 EAST 176 STREET, Bronx, NY, USA").
@@ -12148,15 +12164,20 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             continue
         raw_dob_id = f"311:{unique_key}"
 
-        # Dedupe against prior inserts — the `raw_dob_id` unique index handles
-        # collisions, but we still want to know if it existed so we don't
-        # fire an alert on known records.
-        existing = await db.dob_logs.find_one({"raw_dob_id": raw_dob_id})
-        if existing:
-            continue
+        # MR.14 (commit 2a) — apply v1-monitoring diffing semantics:
+        # most-recent dob_log per raw_dob_id; insert new row only when
+        # complaint_status differs. Pre-MR.14 the 311 path skipped any
+        # existing row entirely (no update-in-place); now status
+        # transitions (Open → In Progress → Closed) become activity-feed
+        # events without losing the prior history.
+        existing = await db.dob_logs.find_one(
+            {"raw_dob_id": raw_dob_id},
+            sort=[("detected_at", -1)],
+        )
 
         ctype = (rec.get("complaint_type") or "").strip()
         severity = _severity_for_311(ctype)
+        complaint_status = rec.get("status") or None
 
         address_parts = [
             (rec.get("incident_address") or "").strip(),
@@ -12184,7 +12205,7 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             # frontend timeline shows the same fields as DOB complaints.
             "complaint_number":  unique_key,
             "complaint_type":    ctype or None,
-            "complaint_status":  rec.get("status") or None,
+            "complaint_status":  complaint_status,
             "complaint_date":    rec.get("created_date"),
             "closed_date":       rec.get("closed_date"),
             "description":       (rec.get("descriptor") or "").strip() or None,
@@ -12195,6 +12216,24 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             "agency_name":       (rec.get("agency_name") or "").strip() or None,
             "resolution_description": (rec.get("resolution_description") or "").strip() or None,
         }
+        # MR.14 (commit 2a) v1-monitoring schema additions.
+        current_status = _extract_dob_log_status(doc)
+        doc["current_status"] = current_status
+        doc["signal_kind"] = "complaint"
+        doc["read_by_user"] = []
+
+        if existing and existing.get("current_status") == current_status:
+            # Status unchanged. The 311 path historically skipped on
+            # any existing row — preserve that behavior (don't refresh
+            # mutable fields here; 311 records are append-once-then-
+            # closed and rarely benefit from updates between polls).
+            continue
+
+        # Either first time OR status changed. Stamp transition markers.
+        doc["previous_status"] = (
+            existing.get("current_status") if existing else None
+        )
+        doc["status_changed_at"] = now
 
         try:
             await db.dob_logs.insert_one(doc)
@@ -12207,7 +12246,10 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # complaints without spamming the owner.
                 await _send_critical_dob_alert_throttled(project, doc, source="311")
         except Exception as e:
-            # The unique index on raw_dob_id will reject duplicates; swallow.
+            # MR.14 (commit 2a) — the legacy unique index on
+            # raw_dob_id is being dropped in this commit, so duplicate-
+            # key errors should no longer occur. Keeping the swallow
+            # for one deploy cycle in case the index drop is delayed.
             msg = str(e).lower()
             if "duplicate key" in msg:
                 continue
@@ -12321,6 +12363,76 @@ def _classify_permit_class(work_type: Optional[str]) -> str:
     if wt in _BLDRS_PAVEMENT_WORK_TYPES:
         return "bldrs_pavement"
     return "standard"
+
+
+# ── MR.14 (commit 2a) — dob_logs status diffing helpers ──────────────
+#
+# v1 monitoring-product invariant (operator F5): each poll diffs the
+# incoming record's status against the most-recent dob_logs entry
+# for the same raw_dob_id. New row created ONLY when status differs.
+# previous_status + status_changed_at on the new row record the
+# transition; the activity feed reads these as "this just changed"
+# events.
+#
+# Status field name varies per record_type (each Socrata dataset
+# uses different conventions — DOB NOW Build's `permit_status`,
+# DOB Inspections' `inspection_result`, etc.). The map below
+# normalizes which field to read; _extract_dob_log_status returns
+# the universal current_status string for the diffing comparator.
+
+DOB_RECORD_TYPE_STATUS_FIELDS: Dict[str, str] = {
+    "permit":     "permit_status",       # rbx6-tga4 / dm9a-ab7w / ipu4-2q9a
+    "violation":  "status",              # _extract_violation_fields composes
+    "complaint":  "complaint_status",    # eabe-havv (DOB) and erm2-nwe9 (311) both
+    "inspection": "inspection_result",   # p937-wjvj — None for scheduled-not-yet-done
+    "swo":        "status",              # SWO is a violation subtype; same field
+    "job_status": "filing_status",       # w9ak-ipjd
+}
+
+
+def _extract_dob_log_status(dob_log: dict) -> Optional[str]:
+    """Return the universal current_status for diffing. Reads the
+    record-type-appropriate field per DOB_RECORD_TYPE_STATUS_FIELDS.
+
+    Returns:
+      - normalized string (uppercased + stripped) for non-empty values
+      - None when the field is absent / empty / unknown record_type
+
+    Caller persists the returned value on the dob_log doc as
+    `current_status` so future polls can diff without re-parsing
+    the dataset-specific field name.
+    """
+    rt = (dob_log.get("record_type") or "").lower().strip()
+    field = DOB_RECORD_TYPE_STATUS_FIELDS.get(rt)
+    if not field:
+        return None
+    val = dob_log.get(field)
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    return s.upper()
+
+
+def _extract_job_status_fields(rec: dict) -> dict:
+    """Extract filing-status fields from DOB NOW Job Application
+    Filings (w9ak-ipjd). The dataset's status column is
+    `filing_status` (e.g. 'Approved', 'Disapproved', 'Withdrawn',
+    'Pending'). Pre-MR.14 this dataset's records were inserted
+    without an extras-extractor, so filing_status didn't survive
+    onto dob_logs and couldn't be diffed."""
+    fields = {}
+    fields["filing_status"] = (
+        rec.get("filing_status")
+        or rec.get("current_filing_status")
+        or rec.get("job_status")
+        or None
+    )
+    fields["job_filing_number"] = rec.get("job_filing_number") or rec.get("job__") or None
+    fields["filing_date"] = rec.get("filing_date") or rec.get("latest_action_date") or None
+    fields["job_description"] = rec.get("job_description") or None
+    return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
 def _extract_permit_fields(rec: dict) -> dict:
@@ -13142,6 +13254,12 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 extra_fields = _extract_complaint_fields(rec)
             elif record_type == "inspection":
                 extra_fields = _extract_inspection_fields(rec)
+            elif record_type == "job_status":
+                # MR.14 (commit 2a) — capture filing_status so diffing
+                # has a value to compare against. Pre-MR.14 this
+                # dataset was inserted without extras and couldn't
+                # surface filing-status transitions.
+                extra_fields = _extract_job_status_fields(rec)
 
             dob_log = {
                 "project_id": project_id,
@@ -13159,10 +13277,30 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 "is_deleted": False,
                 **extra_fields,
             }
+            # MR.14 (commit 2a) — universal current_status field
+            # (read by diffing logic below). signal_kind is a
+            # placeholder mirroring record_type in 2a; commit 2b
+            # refines per-template (e.g. inspection →
+            # inspection_scheduled / inspection_passed / failed).
+            current_status = _extract_dob_log_status(dob_log)
+            dob_log["current_status"] = current_status
+            dob_log["signal_kind"] = record_type
+            dob_log["read_by_user"] = []
 
-            existing = await db.dob_logs.find_one({"raw_dob_id": raw_id})
-            if existing:
-                # Update mutable fields — status, severity, expiration, summary
+            # MR.14 (commit 2a) — diffing logic. Find the most-recent
+            # dob_log for this raw_dob_id; compare current_status.
+            #   • No prior row OR status changed → INSERT new row with
+            #     previous_status set to the prior current_status.
+            #   • Status unchanged → update mutable fields on the
+            #     existing row (severity / summary / next_action may
+            #     have shifted even when status didn't).
+            existing = await db.dob_logs.find_one(
+                {"raw_dob_id": raw_id},
+                sort=[("detected_at", -1)],
+            )
+            if existing and existing.get("current_status") == current_status:
+                # No status change — refresh mutable fields. Don't
+                # insert a duplicate.
                 update_fields = {
                     "severity": dob_log["severity"],
                     "next_action": dob_log["next_action"],
@@ -13172,17 +13310,25 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     **extra_fields,
                 }
                 await db.dob_logs.update_one(
-                    {"raw_dob_id": raw_id},
+                    {"_id": existing["_id"]},
                     {"$set": update_fields},
                 )
                 dob_log["id"] = str(existing["_id"])
-                # Only alert if severity escalated to Action — and route
-                # through the throttled wrapper so initial-scan
+                # Only alert if severity escalated to Action — and
+                # route through the throttled wrapper so initial-scan
                 # suppression + 24h dedupe apply.
                 old_severity = existing.get("severity", "")
                 if severity == "Action" and old_severity != "Action":
                     await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
             else:
+                # Either first time OR status changed. Stamp
+                # transition markers and insert a new row. The
+                # activity feed surfaces these as "this changed"
+                # events.
+                dob_log["previous_status"] = (
+                    existing.get("current_status") if existing else None
+                )
+                dob_log["status_changed_at"] = now
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
@@ -22191,11 +22337,12 @@ async def startup_event():
         replace_existing=True,
     )
     
-    # DOB compliance scanner — runs every 30 minutes
+    # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
+    # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
+    # 311 stays at 30 min."
     scheduler.add_job(
         nightly_dob_scan,
-        'interval',
-        minutes=30,
+        IntervalTrigger(minutes=15),
         id='dob_nightly_scan',
         replace_existing=True,
     )
@@ -22217,18 +22364,18 @@ async def startup_event():
         replace_existing=True,
     )
 
-    # MR.8: DOB approval watcher — every 30 min, checks dob_logs for
-    # renewed permit expirations and transitions matching renewals
-    # from AWAITING_DOB_APPROVAL → COMPLETED. Staggered 10 min off the
-    # nightly_dob_scan tick so dob_logs is freshly refreshed before
-    # the watcher reads it (worst case is one missed read window;
-    # the next 30-min cycle catches it).
+    # MR.8 + MR.14 (commit 2a): DOB approval watcher — every 15 min,
+    # checks dob_logs for renewed permit expirations and transitions
+    # matching renewals from AWAITING_DOB_APPROVAL → COMPLETED.
+    # Staggered 5 min off the dob_nightly_scan tick so dob_logs is
+    # freshly refreshed before the watcher reads it. Cadence dropped
+    # from 30 → 15 min to match the new DOB-side polling rate.
     scheduler.add_job(
         dob_approval_watcher,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=15),
         id='dob_approval_watcher',
         replace_existing=True,
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=10),
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
 
     # MR.9: daily 7am ET reminder cron — sends T-30 / T-14 / T-7
@@ -22247,14 +22394,17 @@ async def startup_event():
         replace_existing=True,
     )
 
-    # 311 fast poll — every 30 minutes, staggered 15 min off the DOB scan so
-    # the two don't spike the outbound HTTP client at the same time.
+    # 311 fast poll — every 30 minutes (operator F1 — kept at 30 min;
+    # 311 itself updates ~hourly, pushing to 15 min would mostly burn
+    # Socrata quota). Staggered ~7 min off the DOB scan tick so the
+    # two pollers don't spike the outbound HTTP client at the same
+    # time.
     scheduler.add_job(
         _poll_311_fast_complaints,
         IntervalTrigger(minutes=30),
         id='dob_311_fast_poll',
         replace_existing=True,
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=15),
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=7),
     )
 
     # Nightly compliance check — missing logbooks, missing SSP, expiring licenses
@@ -22413,7 +22563,60 @@ async def startup_event():
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
     await db.dob_logs.create_index([("company_id", 1)])
-    await db.dob_logs.create_index("raw_dob_id", unique=True, sparse=True)
+
+    # MR.14 (commit 2a) — drop the legacy `raw_dob_id` unique index
+    # and replace with a non-unique lookup index. The v1 monitoring
+    # product's status-change diffing intentionally inserts MULTIPLE
+    # rows per raw_dob_id (one per status transition); the prior
+    # unique constraint would reject those. Idempotent: drop only
+    # if it exists and is the unique-flagged form.
+    try:
+        existing_indexes = await db.dob_logs.index_information()
+        legacy_idx = existing_indexes.get("raw_dob_id_1")
+        if legacy_idx and legacy_idx.get("unique"):
+            await db.dob_logs.drop_index("raw_dob_id_1")
+            logger.info("Dropped legacy unique index dob_logs.raw_dob_id_1 (MR.14)")
+    except Exception as _drop_err:
+        logger.warning(
+            "Could not drop legacy raw_dob_id_1 unique index "
+            "(may already be dropped or replaced): %s", _drop_err,
+        )
+    # Non-unique lookup index. The diffing logic in
+    # _query_dob_apis / 311 paths uses find_one(sort=detected_at desc)
+    # to pick the most recent doc for status comparison.
+    await db.dob_logs.create_index([("raw_dob_id", 1), ("detected_at", -1)])
+
+    # MR.14 (commit 2a) — TTL retention (operator F8):
+    #   • 90 days for record_type in {permit, complaint, inspection, job_status}
+    #   • 365 days for record_type in {violation, swo}
+    # Two TTL indexes with partialFilterExpression. MongoDB requires
+    # the indexed field to be a Date for TTL to fire — `detected_at`
+    # is set to datetime.now(timezone.utc) on every insert above, so
+    # this works without a backfill. Existing docs without
+    # `detected_at` set won't be expired (TTL skips non-Date values).
+    await _ensure_index_resilient(
+        db.dob_logs,
+        keys=[("detected_at", 1)],
+        name="dob_logs_ttl_short",
+        expireAfterSeconds=90 * 24 * 60 * 60,  # 90 days
+        partialFilterExpression={
+            "record_type": {"$in": ["permit", "complaint", "inspection", "job_status"]},
+        },
+    )
+    await _ensure_index_resilient(
+        db.dob_logs,
+        keys=[("detected_at", 1)],
+        name="dob_logs_ttl_long",
+        expireAfterSeconds=365 * 24 * 60 * 60,  # 365 days
+        partialFilterExpression={
+            "record_type": {"$in": ["violation", "swo"]},
+        },
+    )
+
+    # MR.14 (commit 2a) — index for the activity feed's "unread for me"
+    # query. read_by_user is an array of user IDs; multikey index
+    # supports `{read_by_user: {$ne: <my_id>}}` filter cheaply.
+    await db.dob_logs.create_index([("project_id", 1), ("read_by_user", 1), ("detected_at", -1)])
 
     # Card audit module init — injects db + R2 + VLM adapter. Must run
     # AFTER _r2_client is initialized (which happens at module import
