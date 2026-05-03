@@ -140,10 +140,15 @@ class TestStatusFieldMapCoverage(unittest.TestCase):
 
     def test_map_covers_all_known_record_types(self):
         from server import DOB_RECORD_TYPE_STATUS_FIELDS
-        # The set of record_types that appear in extra_fields branching
-        # in nightly_dob_scan / 311-poll. Update this set when a new
-        # record_type is added.
-        EXPECTED = {"permit", "violation", "complaint", "inspection", "swo", "job_status"}
+        # Set of record_types that appear in extra_fields branching
+        # in nightly_dob_scan / 311-poll. Update when adding a new
+        # record_type. MR.14 commit 2b added cofo/facade_fisp/
+        # boiler/elevator.
+        EXPECTED = {
+            "permit", "violation", "complaint", "inspection",
+            "swo", "job_status",
+            "cofo", "facade_fisp", "boiler", "elevator",
+        }
         self.assertEqual(
             set(DOB_RECORD_TYPE_STATUS_FIELDS.keys()),
             EXPECTED,

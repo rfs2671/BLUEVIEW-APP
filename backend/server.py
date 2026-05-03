@@ -14,7 +14,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -11643,7 +11643,109 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "complaint_number",
         })
 
-    
+    # ── MR.14 (commit 2b) — five new monitoring datasets ──────────
+    # Verified Socrata IDs as of 2026-05-03 (operator F2/F3/F4 +
+    # web verification). The four-letter dataset codes called out
+    # by the operator (`if-bn-mnnh`, `bs9k-acwn`) did not match
+    # the live datasets; correct IDs below. Surfaced in the commit
+    # body for visibility.
+
+    # ── STOP WORK ORDERS (3usq-5cid) - dedicated SWO dataset ──
+    # Replaces the legacy text-match-on-violations path. Note: this
+    # dataset is "Stop Work Orders since Article 202.6" — only
+    # captures SWOs issued under Article 202.6 (a recent law).
+    # Pre-Article-202.6 SWOs may not appear here. False-negative
+    # risk surfaced in commit body.
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
+            "params": {"bin": nyc_bin, "$limit": "50", "$order": "issue_date DESC"},
+            "record_type": "swo",
+            "id_field": "stop_work_order_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/3usq-5cid.json",
+            "params": {
+                "house_number": house_num,
+                "$where": f"upper(street_name) like '%{street_name}%'",
+                "$limit": "50",
+                "$order": "issue_date DESC",
+            },
+            "record_type": "swo",
+            "id_field": "stop_work_order_number",
+        })
+
+    # ── CERTIFICATE OF OCCUPANCY (pkdm-hqz6) - DOB NOW: CofO ──
+    # Per operator F3, replaces the unverified bs9k-acwn candidate
+    # with the live DOB NOW: Certificate of Occupancy dataset.
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/pkdm-hqz6.json",
+            "params": {"bin": nyc_bin, "$limit": "50", "$order": "issuance_date DESC"},
+            "record_type": "cofo",
+            "id_field": "co_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/pkdm-hqz6.json",
+            "params": {
+                "house_number": house_num,
+                "$where": f"upper(street_name) like '%{street_name}%'",
+                "$limit": "50",
+                "$order": "issuance_date DESC",
+            },
+            "record_type": "cofo",
+            "id_field": "co_number",
+        })
+
+    # ── FAÇADE FISP (xubg-57si) - DOB NOW: Safety Façades ──
+    # Operator F4 — required for v1 monitoring scope.
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/xubg-57si.json",
+            "params": {"bin": nyc_bin, "$limit": "50", "$order": "filing_date DESC"},
+            "record_type": "facade_fisp",
+            "id_field": "filing_number",
+        })
+    if house_num and street_name:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/xubg-57si.json",
+            "params": {
+                "house_number": house_num,
+                "$where": f"upper(street_name) like '%{street_name}%'",
+                "$limit": "50",
+                "$order": "filing_date DESC",
+            },
+            "record_type": "facade_fisp",
+            "id_field": "filing_number",
+        })
+
+    # ── BOILER COMPLIANCE (52dp-yji6) - DOB NOW: Safety Boiler ──
+    # Operator F4 — required for v1 monitoring scope.
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/52dp-yji6.json",
+            "params": {"bin_number": nyc_bin, "$limit": "50", "$order": "report_filing_date DESC"},
+            "record_type": "boiler",
+            "id_field": "tracking_number",
+        })
+    # Boiler dataset is BIN-keyed; address fallback skipped (the
+    # dataset's only address fields describe the building, not the
+    # filing — and BIN coverage is reliable for boilered buildings).
+
+    # ── ELEVATOR COMPLIANCE (e5aq-a4j2) - DOB NOW Elevator ──
+    # Operator F4 — required for v1 monitoring scope.
+    if bin_usable:
+        endpoints.append({
+            "url": "https://data.cityofnewyork.us/resource/e5aq-a4j2.json",
+            "params": {"bin": nyc_bin, "$limit": "100", "$order": "filing_date DESC"},
+            "record_type": "elevator",
+            "id_field": "device_number",
+        })
+    # Elevator dataset is BIN-keyed; same reasoning as boiler.
+
+
     # Per-endpoint counters so permit-count regressions ("previously 7,
     # now 2") can be diagnosed from a single sync log line without
     # live-tailing. Reported after the loop completes.
@@ -12217,9 +12319,10 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             "resolution_description": (rec.get("resolution_description") or "").strip() or None,
         }
         # MR.14 (commit 2a) v1-monitoring schema additions.
+        # MR.14 (commit 2b) — classifier-driven signal_kind.
         current_status = _extract_dob_log_status(doc)
         doc["current_status"] = current_status
-        doc["signal_kind"] = "complaint"
+        doc["signal_kind"] = _signal_kind_for(doc)
         doc["read_by_user"] = []
 
         if existing and existing.get("current_status") == current_status:
@@ -12365,6 +12468,54 @@ def _classify_permit_class(work_type: Optional[str]) -> str:
     return "standard"
 
 
+# ── MR.14 (commit 2b) — seed-suppression window for activity feed ────
+#
+# The first poll after MR.14 commit 2a deploys created ~25k synthetic
+# "seed transition" rows (one per pre-existing dob_logs entry, with
+# previous_status=None). The activity feed in the UI must not drown
+# in these on day one. Suppression is gated by a time window:
+#
+#   MR14_SEED_WINDOW_START — ISO-8601 timestamp; usually shortly
+#                            before commit 2a's Railway deploy.
+#   MR14_SEED_WINDOW_DURATION_MIN — minutes after start to suppress.
+#                                   Default 90 (covers the 15-min
+#                                   first poll plus generous buffer
+#                                   for deploy timing slippage).
+#
+# Both env-configurable. If MR14_SEED_WINDOW_START is unset or
+# malformed the helper returns (None, None) and suppression is OFF
+# (rows render normally). Operator action checklist for setting
+# this is in the commit body.
+#
+# After the seed window closes, any new previous_status=None rows
+# are TRUE new signals (a brand-new permit/violation/etc. that DOB
+# issued post-deploy). Those WILL render — that's the point.
+
+_MR14_SEED_WINDOW_DEFAULT_DURATION_MIN = 90
+
+
+def _mr14_seed_window() -> Tuple[Optional[datetime], Optional[datetime]]:
+    """Returns (start, end) datetimes UTC for the MR.14 seed window,
+    or (None, None) when the env var is unset/malformed."""
+    raw = (os.environ.get("MR14_SEED_WINDOW_START") or "").strip()
+    if not raw:
+        return None, None
+    try:
+        start = datetime.fromisoformat(raw)
+    except ValueError:
+        logger.warning("[MR14] malformed MR14_SEED_WINDOW_START=%r; ignoring", raw)
+        return None, None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    duration_raw = (os.environ.get("MR14_SEED_WINDOW_DURATION_MIN") or "").strip()
+    try:
+        duration_min = int(duration_raw) if duration_raw else _MR14_SEED_WINDOW_DEFAULT_DURATION_MIN
+    except ValueError:
+        duration_min = _MR14_SEED_WINDOW_DEFAULT_DURATION_MIN
+    end = start + timedelta(minutes=duration_min)
+    return start, end
+
+
 # ── MR.14 (commit 2a) — dob_logs status diffing helpers ──────────────
 #
 # v1 monitoring-product invariant (operator F5): each poll diffs the
@@ -12381,13 +12532,31 @@ def _classify_permit_class(work_type: Optional[str]) -> str:
 # the universal current_status string for the diffing comparator.
 
 DOB_RECORD_TYPE_STATUS_FIELDS: Dict[str, str] = {
-    "permit":     "permit_status",       # rbx6-tga4 / dm9a-ab7w / ipu4-2q9a
-    "violation":  "status",              # _extract_violation_fields composes
-    "complaint":  "complaint_status",    # eabe-havv (DOB) and erm2-nwe9 (311) both
-    "inspection": "inspection_result",   # p937-wjvj — None for scheduled-not-yet-done
-    "swo":        "status",              # SWO is a violation subtype; same field
-    "job_status": "filing_status",       # w9ak-ipjd
+    "permit":       "permit_status",       # rbx6-tga4 / dm9a-ab7w / ipu4-2q9a
+    "violation":    "status",              # _extract_violation_fields composes
+    "complaint":    "complaint_status",    # eabe-havv (DOB) and erm2-nwe9 (311) both
+    "inspection":   "inspection_result",   # p937-wjvj — None for scheduled-not-yet-done
+    "swo":          "status",              # SWO is a violation subtype; same field
+    "job_status":   "filing_status",       # w9ak-ipjd
+    # MR.14 (commit 2b) new record types — extras populate
+    # `current_status` directly (the extractor already normalizes
+    # the source-dataset's status field). Map points at
+    # current_status for these so the diffing comparator stays
+    # uniform across all record_types.
+    "cofo":         "current_status",      # pkdm-hqz6
+    "facade_fisp":  "current_status",      # xubg-57si
+    "boiler":       "current_status",      # 52dp-yji6
+    "elevator":     "current_status",      # e5aq-a4j2
 }
+
+
+def _signal_kind_for(dob_log: dict) -> str:
+    """Module-level shim around lib.dob_signal_classifier.classify_signal_kind.
+    Insertion sites call this without importing the helper directly,
+    so test fixtures can monkey-patch the classifier on the server
+    module surface."""
+    from lib.dob_signal_classifier import classify_signal_kind
+    return classify_signal_kind(dob_log)
 
 
 def _extract_dob_log_status(dob_log: dict) -> Optional[str]:
@@ -12413,6 +12582,71 @@ def _extract_dob_log_status(dob_log: dict) -> Optional[str]:
     if not s:
         return None
     return s.upper()
+
+
+def _extract_swo_fields(rec: dict) -> dict:
+    """MR.14 (commit 2b) — extract from the 3usq-5cid Stop Work
+    Orders dataset. Status field on this dataset is the SWO's
+    active/rescinded state."""
+    return {
+        "stop_work_order_number": rec.get("stop_work_order_number") or None,
+        "violation_date": rec.get("issue_date") or rec.get("date_issued") or None,
+        "description": rec.get("description") or rec.get("reason") or None,
+        "status": rec.get("status") or rec.get("current_status") or None,
+        "violation_subtype": (
+            "SWO_PARTIAL"
+            if "PARTIAL" in str(rec.get("description") or "").upper()
+            else "SWO_FULL"
+        ),
+    }
+
+
+def _extract_cofo_fields(rec: dict) -> dict:
+    """MR.14 (commit 2b) — extract from pkdm-hqz6 (DOB NOW: CofO)."""
+    return {
+        "co_number": rec.get("co_number") or rec.get("certificate_of_occupancy_number") or None,
+        "cofo_type": rec.get("co_type") or rec.get("type") or None,
+        "current_status": rec.get("co_status") or rec.get("status") or None,
+        "issuance_date": rec.get("issuance_date") or rec.get("issued_date") or None,
+        "expiration_date": rec.get("expiration_date") or None,
+        "job_filing_number": rec.get("job_filing_number") or rec.get("job_number") or None,
+    }
+
+
+def _extract_facade_fisp_fields(rec: dict) -> dict:
+    """MR.14 (commit 2b) — extract from xubg-57si
+    (DOB NOW: Safety Façades)."""
+    return {
+        "filing_number": rec.get("filing_number") or None,
+        "current_status": rec.get("filing_status") or rec.get("status") or None,
+        "fisp_cycle": rec.get("cycle") or rec.get("filing_cycle") or None,
+        "filing_date": rec.get("filing_date") or None,
+        "qewi_name": rec.get("qewi_name") or rec.get("qewi") or None,
+    }
+
+
+def _extract_boiler_fields(rec: dict) -> dict:
+    """MR.14 (commit 2b) — extract from 52dp-yji6 (DOB NOW: Boiler)."""
+    return {
+        "tracking_number": rec.get("tracking_number") or None,
+        "boiler_id": rec.get("boiler_id") or rec.get("device_number") or None,
+        "current_status": rec.get("report_status") or rec.get("status") or None,
+        "filing_date": rec.get("report_filing_date") or rec.get("filing_date") or None,
+        "inspection_date": rec.get("inspection_date") or None,
+        "inspection_result": rec.get("defects_exist") or rec.get("inspection_result") or None,
+    }
+
+
+def _extract_elevator_fields(rec: dict) -> dict:
+    """MR.14 (commit 2b) — extract from e5aq-a4j2 (DOB NOW Elevator
+    Safety Compliance)."""
+    return {
+        "device_number": rec.get("device_number") or None,
+        "current_status": rec.get("device_status") or rec.get("filing_status") or None,
+        "filing_date": rec.get("filing_date") or None,
+        "inspection_date": rec.get("inspection_date") or None,
+        "inspection_result": rec.get("inspection_status") or None,
+    }
 
 
 def _extract_job_status_fields(rec: dict) -> dict:
@@ -13248,8 +13482,20 @@ async def run_dob_sync_for_project(project: dict) -> list:
             extra_fields = {}
             if record_type == "permit":
                 extra_fields = _extract_permit_fields(rec)
-            elif record_type in ("violation", "swo"):
+            elif record_type == "violation":
                 extra_fields = _extract_violation_fields(rec)
+            elif record_type == "swo":
+                # MR.14 (commit 2b) — SWO records can come from two
+                # paths: (1) text-match on violation records (legacy
+                # path; uses _extract_violation_fields); (2) the new
+                # 3usq-5cid Stop Work Orders dataset (uses
+                # _extract_swo_fields). Discriminate on the presence
+                # of `stop_work_order_number` in the raw record (only
+                # the dedicated dataset has that field).
+                if rec.get("stop_work_order_number"):
+                    extra_fields = _extract_swo_fields(rec)
+                else:
+                    extra_fields = _extract_violation_fields(rec)
             elif record_type == "complaint":
                 extra_fields = _extract_complaint_fields(rec)
             elif record_type == "inspection":
@@ -13260,6 +13506,14 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 # dataset was inserted without extras and couldn't
                 # surface filing-status transitions.
                 extra_fields = _extract_job_status_fields(rec)
+            elif record_type == "cofo":
+                extra_fields = _extract_cofo_fields(rec)
+            elif record_type == "facade_fisp":
+                extra_fields = _extract_facade_fisp_fields(rec)
+            elif record_type == "boiler":
+                extra_fields = _extract_boiler_fields(rec)
+            elif record_type == "elevator":
+                extra_fields = _extract_elevator_fields(rec)
 
             dob_log = {
                 "project_id": project_id,
@@ -13278,13 +13532,14 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 **extra_fields,
             }
             # MR.14 (commit 2a) — universal current_status field
-            # (read by diffing logic below). signal_kind is a
-            # placeholder mirroring record_type in 2a; commit 2b
-            # refines per-template (e.g. inspection →
-            # inspection_scheduled / inspection_passed / failed).
+            # (read by diffing logic below).
+            # MR.14 (commit 2b) — signal_kind now derived from the
+            # classifier (lib/dob_signal_classifier.py) instead of
+            # mirroring record_type. Drives plain-English templates
+            # + notification routing.
             current_status = _extract_dob_log_status(dob_log)
             dob_log["current_status"] = current_status
-            dob_log["signal_kind"] = record_type
+            dob_log["signal_kind"] = _signal_kind_for(dob_log)
             dob_log["read_by_user"] = []
 
             # MR.14 (commit 2a) — diffing logic. Find the most-recent
@@ -13962,6 +14217,17 @@ async def get_dob_logs(
     record_type: Optional[str] = Query(None, description="Filter: complaint, violation, job_status, swo"),
     limit: int = Query(50, ge=1, le=200),
     skip: int = Query(0, ge=0),
+    include_seed: bool = Query(
+        False,
+        description=(
+            "MR.14 (commit 2b) — include the synthetic seed-transition "
+            "rows that were inserted when MR.14 first deployed (one per "
+            "pre-existing dob_logs entry, marking the moment LeveLog "
+            "started tracking it). Default False so the activity feed "
+            "doesn't drown in 'we started tracking this' noise on day "
+            "one. Pass include_seed=true for admin/debug views."
+        ),
+    ),
 ):
     """Get translated DOB logs for a project, sorted by detected_at descending."""
     project = await db.projects.find_one({
@@ -13970,17 +14236,46 @@ async def get_dob_logs(
     })
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
- 
+
     company_id = get_user_company_id(current_user)
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
- 
+
     query = {"project_id": project_id, "is_deleted": {"$ne": True}}
     if severity:
         query["severity"] = severity
     if record_type:
         query["record_type"] = record_type
- 
+    if not include_seed:
+        # MR.14 (commit 2b) — operator UX guard. Seed-transition rows
+        # were inserted on MR.14's first poll for every pre-existing
+        # dob_logs entry, with previous_status=None and current_status
+        # pulled from that-poll's data. Without filtering, day-one
+        # activity feeds drown in ~25k synthetic "we started tracking
+        # this on May 3" rows.
+        #
+        # Distinguishing seed rows from true new-signal rows is
+        # subtle: both have previous_status=None. The only reliable
+        # marker is that seed rows were ALL inserted within a narrow
+        # window (~2a's first poll after deploy). True new signals
+        # post-deploy spread out over time as DOB issues new
+        # permits/violations/etc. We exploit this with a fixed
+        # time-window suppression bounded by env-configurable start
+        # + duration (defaults below).
+        #
+        # MR14_SEED_WINDOW_START defaults to an empty/wide-open
+        # window before MR.14's deploy moment if unset (suppresses
+        # nothing); operator sets the precise deploy timestamp post-
+        # deploy via Railway env. After the seed window closes (~1
+        # hour post-deploy), all post-deploy rows with
+        # previous_status=None are TRUE new signals worth surfacing.
+        seed_start, seed_end = _mr14_seed_window()
+        if seed_start is not None and seed_end is not None:
+            query["$nor"] = [{
+                "previous_status": None,
+                "created_at": {"$gte": seed_start, "$lt": seed_end},
+            }]
+
     total = await db.dob_logs.count_documents(query)
     logs = await db.dob_logs.find(query).sort("detected_at", -1).skip(skip).limit(limit).to_list(limit)
  
