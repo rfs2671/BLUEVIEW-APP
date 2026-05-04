@@ -606,44 +606,26 @@ def _filing_job_audit_event(
     }
 
 
-# Redis enqueue — soft import. `redis.asyncio` is optional at module-
-# load (tests don't need it; the production deploy installs it via
-# requirements.txt). Cloud-side LPUSH paired with the worker's BRPOP
-# (dob_worker/lib/queue_client.py).
+# MR.14 commit 4a — Redis filing-queue helper REMOVED.
 #
-# Note on env-var freshness: REDIS_URL is read INSIDE _lpush_filing_queue
-# on every call rather than cached at module load. This protects against
-# a class of stale-config bugs where the backend process started before
-# the operator set REDIS_URL on the Railway service — module-level
-# os.environ.get(...) caching would persist the empty value forever
-# until a redeploy. Reading per-call costs ~1us and lets a fresh REDIS_URL
-# (e.g. after rotating Redis credentials during incident response) flow
-# in without restarting the process. FILING_QUEUE_KEY is read the same
-# way for the same reason; the value is unlikely to change at runtime
-# but the pattern is consistent and trivial.
-DEFAULT_FILING_QUEUE_KEY = "levelog:filing-queue"
+# Pre-4a, _lpush_filing_queue LPUSH'd onto a Redis queue that the
+# dob_worker container BRPOP'd. v1 monitoring product ships without
+# the worker, so the queue is dead. The redis package is also
+# removed from backend/requirements.txt. The legacy
+# enqueue_filing_job endpoint at permit_renewal.py:enqueue_filing_job
+# now raises RuntimeError("renewal_automation_deferred_to_v2") which
+# its existing try/except catches and surfaces as 503 — frontend's
+# "File Renewal" button is removed in commit 4c.
 
 
 async def _lpush_filing_queue(payload: dict):
-    """LPUSH the job payload onto Redis. Fails-loud (raises) if
-    REDIS_URL is unset OR redis package isn't installed — the enqueue
-    endpoint catches and surfaces 503 to the caller. Tests patch this
-    function directly so they don't need a live Redis.
-
-    REDIS_URL is read fresh on every call (see module-level note)."""
-    redis_url = os.environ.get("REDIS_URL", "")
-    if not redis_url:
-        raise RuntimeError("REDIS_URL not configured — cannot enqueue filing job")
-    try:
-        import redis.asyncio as redis_asyncio
-    except ImportError as e:
-        raise RuntimeError(f"redis package not installed: {e}") from e
-    queue_key = os.environ.get("FILING_QUEUE_KEY", DEFAULT_FILING_QUEUE_KEY)
-    client = redis_asyncio.from_url(redis_url, encoding="utf-8", decode_responses=True)
-    try:
-        await client.lpush(queue_key, json.dumps(payload))
-    finally:
-        await client.close()
+    """MR.14 commit 4a — stub that always raises. Renewal automation
+    deferred to v2; this exists only so legacy callers (the
+    enqueue_filing_job endpoint, removed in 4c) don't NameError —
+    they instead get a clear 503 with code 'renewal_automation_deferred'."""
+    raise RuntimeError(
+        "renewal_automation_deferred_to_v2: filing queue removed in MR.14 commit 4a"
+    )
 
 
 class Company(BaseModel):
@@ -1628,6 +1610,8 @@ class DOBLogResponse(BaseModel):
     previous_status: Optional[str] = None
     status_changed_at: Optional[datetime] = None
     read_by_user: Optional[list] = None
+    # MR.14 commit 4a — stored seed-transition flag.
+    is_seed_transition: Optional[bool] = None
     # MR.14 commit 3 — server-side rendered template output.
     # title/body/severity_kind/action_text come from
     # lib.dob_signal_templates.render_signal applied to signal_kind.
@@ -12381,14 +12365,16 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
         )
         doc["status_changed_at"] = now
 
-        # MR.14 fix (incident 2026-05-03) — same seed-transition guard
-        # as the DOB path. Synthetic seeds where existing legacy doc
-        # lacks current_status MUST NOT fire alerts. See server.py
-        # run_dob_sync_for_project for the full reasoning.
+        # MR.14 commit 4a — stamp is_seed_transition on every 311
+        # dob_log write. Same discriminator + reasoning as DOB-side
+        # path: synthetic seeds where existing legacy doc lacks the
+        # current_status field MUST NOT fire alerts AND must be
+        # suppressed in the activity feed by default.
         is_seed_transition_311 = (
             existing is not None
             and "current_status" not in existing
         )
+        doc["is_seed_transition"] = is_seed_transition_311
 
         try:
             await db.dob_logs.insert_one(doc)
@@ -12520,52 +12506,16 @@ def _classify_permit_class(work_type: Optional[str]) -> str:
     return "standard"
 
 
-# ── MR.14 (commit 2b) — seed-suppression window for activity feed ────
+# ── MR.14 commit 4a — seed-suppression via stored field ──────────
 #
-# The first poll after MR.14 commit 2a deploys created ~25k synthetic
-# "seed transition" rows (one per pre-existing dob_logs entry, with
-# previous_status=None). The activity feed in the UI must not drown
-# in these on day one. Suppression is gated by a time window:
+# The time-window heuristic from commits 2b/3 (MR14_SEED_WINDOW_START
+# + MR14_SEED_WINDOW_DURATION_MIN env vars) is REMOVED. Replaced by
+# is_seed_transition: bool stamped at insert time on every dob_log
+# write. The discriminator is more durable (works retroactively;
+# survives Railway env churn; cheap to index).
 #
-#   MR14_SEED_WINDOW_START — ISO-8601 timestamp; usually shortly
-#                            before commit 2a's Railway deploy.
-#   MR14_SEED_WINDOW_DURATION_MIN — minutes after start to suppress.
-#                                   Default 90 (covers the 15-min
-#                                   first poll plus generous buffer
-#                                   for deploy timing slippage).
-#
-# Both env-configurable. If MR14_SEED_WINDOW_START is unset or
-# malformed the helper returns (None, None) and suppression is OFF
-# (rows render normally). Operator action checklist for setting
-# this is in the commit body.
-#
-# After the seed window closes, any new previous_status=None rows
-# are TRUE new signals (a brand-new permit/violation/etc. that DOB
-# issued post-deploy). Those WILL render — that's the point.
-
-_MR14_SEED_WINDOW_DEFAULT_DURATION_MIN = 90
-
-
-def _mr14_seed_window() -> Tuple[Optional[datetime], Optional[datetime]]:
-    """Returns (start, end) datetimes UTC for the MR.14 seed window,
-    or (None, None) when the env var is unset/malformed."""
-    raw = (os.environ.get("MR14_SEED_WINDOW_START") or "").strip()
-    if not raw:
-        return None, None
-    try:
-        start = datetime.fromisoformat(raw)
-    except ValueError:
-        logger.warning("[MR14] malformed MR14_SEED_WINDOW_START=%r; ignoring", raw)
-        return None, None
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
-    duration_raw = (os.environ.get("MR14_SEED_WINDOW_DURATION_MIN") or "").strip()
-    try:
-        duration_min = int(duration_raw) if duration_raw else _MR14_SEED_WINDOW_DEFAULT_DURATION_MIN
-    except ValueError:
-        duration_min = _MR14_SEED_WINDOW_DEFAULT_DURATION_MIN
-    end = start + timedelta(minutes=duration_min)
-    return start, end
+# Operator action: delete MR14_SEED_WINDOW_START + MR14_SEED_WINDOW_
+# DURATION_MIN from Railway. They no longer affect anything.
 
 
 # ── MR.14 (commit 2a) — dob_logs status diffing helpers ──────────────
@@ -13636,27 +13586,22 @@ async def run_dob_sync_for_project(project: dict) -> list:
                     existing.get("current_status") if existing else None
                 )
                 dob_log["status_changed_at"] = now
-                result = await db.dob_logs.insert_one(dob_log)
-                dob_log["id"] = str(result.inserted_id)
-                inserted_logs.append(dob_log)
-                # MR.14 fix (incident 2026-05-03) — suppress alerts on
-                # synthetic seed transitions. A "legacy existing doc"
-                # lacks the `current_status` field (added in MR.14
-                # commit 2a). When diffing detects
-                # `legacy_existing.current_status (None) != incoming.current_status`,
-                # it inserts a transition row that doesn't represent
-                # any real change in the customer's reality — just the
-                # moment LeveLog learned about the record's status.
-                # Don't email on these. True new signals (no existing
-                # at all) still fire alerts; true status changes
-                # (existing has current_status, incoming differs) do too.
-                # Once all legacy dob_logs have current_status populated
-                # (after one full poll cycle), this check naturally
-                # disengages — the discriminator becomes always False.
+                # MR.14 commit 4a — stamp is_seed_transition on the
+                # doc itself. Replaces the time-window-env-var
+                # heuristic from commit 2b/3 with a durable, stored
+                # discriminator. A row is a synthetic seed iff the
+                # existing doc was a legacy pre-MR.14 entry (lacks
+                # current_status field). Stored on every insert so
+                # the activity feed can filter cheaply via index;
+                # also gates the alert call below.
                 is_seed_transition = (
                     existing is not None
                     and "current_status" not in existing
                 )
+                dob_log["is_seed_transition"] = is_seed_transition
+                result = await db.dob_logs.insert_one(dob_log)
+                dob_log["id"] = str(result.inserted_id)
+                inserted_logs.append(dob_log)
                 if severity == "Action" and not is_seed_transition:
                     await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
         except Exception as e:
@@ -14407,34 +14352,16 @@ async def get_dob_logs(
         query["read_by_user.user_id"] = {"$ne": caller_user_id}
 
     if not include_seed:
-        # MR.14 (commit 2b) — operator UX guard. Seed-transition rows
-        # were inserted on MR.14's first poll for every pre-existing
-        # dob_logs entry, with previous_status=None and current_status
-        # pulled from that-poll's data. Without filtering, day-one
-        # activity feeds drown in ~25k synthetic "we started tracking
-        # this on May 3" rows.
-        #
-        # Distinguishing seed rows from true new-signal rows is
-        # subtle: both have previous_status=None. The only reliable
-        # marker is that seed rows were ALL inserted within a narrow
-        # window (~2a's first poll after deploy). True new signals
-        # post-deploy spread out over time as DOB issues new
-        # permits/violations/etc. We exploit this with a fixed
-        # time-window suppression bounded by env-configurable start
-        # + duration (defaults below).
-        #
-        # MR14_SEED_WINDOW_START defaults to an empty/wide-open
-        # window before MR.14's deploy moment if unset (suppresses
-        # nothing); operator sets the precise deploy timestamp post-
-        # deploy via Railway env. After the seed window closes (~1
-        # hour post-deploy), all post-deploy rows with
-        # previous_status=None are TRUE new signals worth surfacing.
-        seed_start, seed_end = _mr14_seed_window()
-        if seed_start is not None and seed_end is not None:
-            query["$nor"] = [{
-                "previous_status": None,
-                "created_at": {"$gte": seed_start, "$lt": seed_end},
-            }]
+        # MR.14 commit 4a — field-based seed suppression. Replaces
+        # the commit-2b/3 time-window heuristic that depended on
+        # the operator setting MR14_SEED_WINDOW_START on Railway.
+        # is_seed_transition is now stamped at insert time (see
+        # run_dob_sync_for_project + _poll_311_fast_complaints) and
+        # carries the authoritative discriminator: True iff the
+        # existing legacy doc lacked the current_status field.
+        # Cheaper to filter (no time math) and works retroactively
+        # AND for any future seed-style migration.
+        query["is_seed_transition"] = {"$ne": True}
 
     total = await db.dob_logs.count_documents(query)
     # MR.14 commit 3 — sort by status_changed_at DESC, then
@@ -14661,13 +14588,8 @@ async def mark_all_dob_logs_read(
         "read_by_user.user_id": {"$ne": user_id},
     }
 
-    # Apply seed-suppression by default (matches GET endpoint).
-    seed_start, seed_end = _mr14_seed_window()
-    if seed_start is not None and seed_end is not None:
-        query["$nor"] = [{
-            "previous_status": None,
-            "created_at": {"$gte": seed_start, "$lt": seed_end},
-        }]
+    # MR.14 commit 4a — field-based seed suppression. Matches GET.
+    query["is_seed_transition"] = {"$ne": True}
 
     result = await db.dob_logs.update_many(
         query,
@@ -21495,526 +21417,15 @@ async def _card_audit_vlm_adapter(jpeg_bytes: bytes, prompt: str) -> str:
 
 
 # ════════════════════════════════════════════════════════════════════
-# MR.5 — INTERNAL endpoints for the local dob_worker.
+# MR.14 commit 4a — worker-internal endpoints REMOVED.
+#
+# v1 monitoring product ships without a local agent container. The
+# /api/internal/* endpoints (permit-renewal-claim, job-result,
+# agent-heartbeat, filing-jobs/{id}, filing-job-event) plus the
+# WORKER_SECRET header validator + the _stale_claim_watchdog +
+# _heartbeat_watchdog scheduler crons are gone. Renewal automation
+# is deferred to v2.
 # ════════════════════════════════════════════════════════════════════
-# Three endpoints, all gated by X-Worker-Secret header. Optional
-# cf-access-jwt validation is accepted but not yet enforced (v2 makes
-# it mandatory). All under /api/internal/* — never reachable by user
-# tokens; only the worker hits these.
-
-WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
-
-
-def _validate_worker_secret(request: Request):
-    """Reject if X-Worker-Secret header doesn't match. Constant-time
-    comparison via secrets.compare_digest to defeat timing attacks
-    on the secret length / prefix."""
-    import secrets as _secrets
-    if not WORKER_SECRET:
-        # Backend env not configured — refuse all worker traffic
-        # rather than silently accept (the worker would then succeed
-        # with an empty header).
-        raise HTTPException(
-            status_code=503,
-            detail="Worker integration not configured (WORKER_SECRET unset)",
-        )
-    presented = request.headers.get("X-Worker-Secret", "")
-    if not _secrets.compare_digest(presented, WORKER_SECRET):
-        raise HTTPException(status_code=401, detail="Invalid worker secret")
-
-
-@api_router.post("/internal/permit-renewal-claim")
-async def internal_permit_renewal_claim(
-    request: Request,
-    body: dict,
-):
-    """Worker calls this BEFORE running a dob_now_filing handler.
-    Records a claim on the renewal so the stale-claim watchdog can
-    return it to the queue if the worker crashes. Returns 200 if
-    claimed, 409 if the renewal is already in a non-claimable state
-    ({IN_PROGRESS, AWAITING_DOB_APPROVAL, COMPLETED, FAILED})."""
-    _validate_worker_secret(request)
-    permit_renewal_id = body.get("permit_renewal_id")
-    worker_id = body.get("worker_id") or "unknown"
-    if not permit_renewal_id:
-        raise HTTPException(status_code=400, detail="permit_renewal_id required")
-    from permit_renewal import RenewalStatus
-    NON_CLAIMABLE = {
-        RenewalStatus.IN_PROGRESS,
-        RenewalStatus.AWAITING_DOB_APPROVAL,
-        RenewalStatus.COMPLETED,
-        RenewalStatus.FAILED,
-    }
-    renewal = await db.permit_renewals.find_one({"_id": to_query_id(permit_renewal_id)})
-    if not renewal:
-        raise HTTPException(status_code=404, detail="Renewal not found")
-    if renewal.get("status") in NON_CLAIMABLE:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Renewal in non-claimable status {renewal.get('status')!r}",
-        )
-    now = datetime.now(timezone.utc)
-    await db.permit_renewals.update_one(
-        {"_id": to_query_id(permit_renewal_id)},
-        {"$set": {
-            "status": RenewalStatus.IN_PROGRESS,
-            "claim_at": now,
-            "claimed_by_worker_id": worker_id,
-            "updated_at": now,
-        }},
-    )
-    return {"claimed": True, "permit_renewal_id": permit_renewal_id}
-
-
-@api_router.post("/internal/job-result")
-async def internal_job_result(request: Request, body: dict):
-    """Worker calls this after every handler completes. Cloud
-    transitions BOTH the filing_jobs doc (when filing_job_id is on
-    the result, MR.6+) AND the permit_renewals doc (existing MR.5
-    behavior) based on result.status.
-
-    Worker contract for filing_job_id propagation: handlers carry the
-    filing_job_id from the queue payload through to the result. If
-    the field is absent on the result body (legacy bis_scrape jobs,
-    or in-flight MR.5-vintage runs that pre-date MR.6), the
-    filing_jobs branch is skipped.
-
-    Cancellation handling: if cancellation_requested=True on the
-    filing_job, we record the result as 'cancelled' regardless of
-    what the worker reported — operator intent wins. The worker
-    contract is to short-circuit before posting result when it sees
-    cancellation_requested, but we double-check here so a
-    well-behaved worker that reports 'completed' on a cancelled job
-    doesn't undo the operator's cancel.
-    """
-    _validate_worker_secret(request)
-    from permit_renewal import RenewalStatus
-
-    job_id = body.get("job_id") or "unknown"
-    job_type = body.get("job_type") or "unknown"
-    permit_renewal_id = body.get("permit_renewal_id")
-    filing_job_id = body.get("filing_job_id")  # MR.6 — set by dob_now_filing handler
-    result = body.get("result") or {}
-    status_value = (result.get("status") or "").lower()
-    worker_id = body.get("worker_id") or "unknown_worker"
-    now = datetime.now(timezone.utc)
-
-    # Audit log every result regardless of state-transition.
-    await db.agent_job_results.insert_one({
-        "job_id": job_id,
-        "job_type": job_type,
-        "permit_renewal_id": permit_renewal_id,
-        "filing_job_id": filing_job_id,
-        "worker_id": body.get("worker_id"),
-        "result": result,
-        "received_at": now,
-    })
-
-    # ── MR.6: filing_jobs state machine ──────────────────────────────
-    # When filing_job_id is set, transition the FilingJob doc and
-    # append an audit-log entry. Do this BEFORE the permit_renewals
-    # transition so the FilingJob is the canonical source for the job
-    # result; if the renewal update fails we still have the audit.
-    filing_job_transitioned = False
-    if filing_job_id:
-        existing_job = await db.filing_jobs.find_one({"_id": filing_job_id})
-        if existing_job:
-            current_status = existing_job.get("status")
-            cancellation_requested = bool(
-                existing_job.get("cancellation_requested")
-            )
-
-            # Cancellation override: if the operator requested cancel
-            # while this job was in-flight, force the resolution to
-            # CANCELLED regardless of what the worker reports. The
-            # well-behaved worker should already have detected the
-            # flag and reported status=cancelled itself; this branch
-            # handles the misbehaving / racing worker.
-            if cancellation_requested and current_status not in FILING_JOB_TERMINAL_STATUSES:
-                effective_status = FilingJobStatus.CANCELLED.value
-                effective_event_type = "cancelled"
-                effective_detail = (
-                    f"Worker reported {status_value!r} but cancellation was "
-                    f"requested by operator; resolving as cancelled."
-                )
-            else:
-                # Map worker-reported status → FilingJobStatus value.
-                worker_to_filing_status = {
-                    "filed":     FilingJobStatus.FILED.value,
-                    "completed": FilingJobStatus.COMPLETED.value,
-                    "failed":    FilingJobStatus.FAILED.value,
-                    "cancelled": FilingJobStatus.CANCELLED.value,
-                }
-                effective_status = worker_to_filing_status.get(status_value)
-                effective_event_type = status_value or "unknown"
-                effective_detail = (
-                    result.get("detail") or f"Worker reported {status_value!r}"
-                )
-
-            if effective_status is not None:
-                set_fields: Dict[str, Any] = {
-                    "status": effective_status,
-                    "updated_at": now,
-                }
-                # Status-specific bookkeeping.
-                if effective_status in FILING_JOB_TERMINAL_STATUSES:
-                    set_fields["completed_at"] = now
-                if effective_status == FilingJobStatus.FAILED.value:
-                    set_fields["failure_reason"] = result.get("detail")
-                # DOB confirmation number, if present, is preserved
-                # regardless of status — useful even on FAILED jobs
-                # where DOB returned a confirmation before rejecting.
-                confirmation = result.get("dob_confirmation_number")
-                if confirmation:
-                    set_fields["dob_confirmation_number"] = confirmation
-
-                audit_event = _filing_job_audit_event(
-                    event_type=effective_event_type,
-                    actor=worker_id,
-                    detail=effective_detail,
-                    metadata={
-                        k: v for k, v in {
-                            "dob_confirmation_number": confirmation,
-                            "worker_reported_status": status_value,
-                        }.items() if v is not None
-                    },
-                )
-                await db.filing_jobs.update_one(
-                    {"_id": filing_job_id},
-                    {
-                        "$set": set_fields,
-                        "$push": {"audit_log": audit_event},
-                    },
-                )
-                filing_job_transitioned = True
-
-    # bis_scrape jobs don't touch renewals — log and return.
-    if not permit_renewal_id:
-        return {"recorded": True, "filing_job_transitioned": filing_job_transitioned}
-
-    transitions = {
-        "filed":     RenewalStatus.AWAITING_DOB_APPROVAL,
-        "completed": RenewalStatus.COMPLETED,
-        "failed":    RenewalStatus.FAILED,
-    }
-    new_status = transitions.get(status_value)
-    if new_status is None:
-        # not_implemented / cancelled / unknown — no permit_renewals state change.
-        return {
-            "recorded": True,
-            "transitioned": False,
-            "filing_job_transitioned": filing_job_transitioned,
-        }
-
-    update_set = {
-        "status": new_status,
-        "updated_at": now,
-    }
-    if status_value == "filed":
-        update_set["filed_at"] = now
-    elif status_value == "completed":
-        update_set["completed_at"] = now
-    elif status_value == "failed":
-        update_set["failure_reason"] = result.get("detail")
-    # MR.6 — propagate confirmation number to the renewal doc too,
-    # so the existing UI surfaces it without joining filing_jobs.
-    confirmation = result.get("dob_confirmation_number")
-    if confirmation:
-        update_set["dob_confirmation_number"] = confirmation
-
-    await db.permit_renewals.update_one(
-        {"_id": to_query_id(permit_renewal_id)},
-        {"$set": update_set},
-    )
-    return {
-        "recorded": True,
-        "transitioned": True,
-        "new_status": new_status.value,
-        "filing_job_transitioned": filing_job_transitioned,
-    }
-
-
-@api_router.post("/internal/agent-heartbeat")
-async def internal_agent_heartbeat(request: Request, body: dict):
-    """Worker posts state every 60s. Upsert one doc per worker_id
-    so heartbeat-watchdog can read the latest value cheaply."""
-    _validate_worker_secret(request)
-    worker_id = body.get("worker_id")
-    if not worker_id:
-        raise HTTPException(status_code=400, detail="worker_id required")
-    await db.agent_heartbeats.update_one(
-        {"_id": worker_id},
-        {"$set": {
-            **body,
-            "received_at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
-    return {"received": True}
-
-
-@api_router.get("/internal/filing-jobs/{filing_job_id}")
-async def internal_get_filing_job(filing_job_id: str, request: Request):
-    """MR.11 Bug 2 fix — worker-tier read of a single FilingJob doc.
-
-    Why this exists: the dob_now_filing handler's _check_cancellation
-    path needs to read the latest FilingJob (specifically the
-    `cancellation_requested` flag and the `audit_log` for
-    operator_response polling). The matching READ surface that
-    already exists for operators is
-    `GET /api/permit-renewals/{id}/filing-jobs`, but that endpoint
-    is gated by Depends(get_current_user) — bearer/cookie auth that
-    the worker doesn't carry. The worker has only X-Worker-Secret.
-
-    Worker calls were 401-ing silently; _check_cancellation soft-
-    failed to "not cancelled" and the handler proceeded with already-
-    cancelled jobs. This internal-tier endpoint pairs the same data
-    the operator-tier returns with worker-tier auth, closing the gap.
-
-    Defensive ciphertext strip on output (mirrors the operator-tier
-    serializer in permit_renewal.py:_serialize_filing_job) — schema
-    doesn't carry ciphertext on filing_jobs but the strip is belt-
-    and-suspenders against future drift."""
-    _validate_worker_secret(request)
-    job = await db.filing_jobs.find_one(
-        {"_id": filing_job_id, "is_deleted": {"$ne": True}}
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="FilingJob not found")
-    out = serialize_id(dict(job))
-    out.pop("encrypted_ciphertext", None)
-    return out
-
-
-@api_router.post("/internal/filing-job-event")
-async def internal_filing_job_event(request: Request, body: dict):
-    """MR.11 — worker-side audit-log append for mid-flight events.
-
-    Lets the worker raise events the UI needs to show (claimed,
-    started, captcha_required, 2fa_required, etc.) WITHOUT going
-    through the terminal /job-result path. The matching operator
-    response flows back through MR.7's /operator-input endpoint;
-    the worker polls audit_log via the existing
-    GET /api/permit-renewals/{id}/filing-jobs to consume it.
-
-    Body: {filing_job_id, event_type, actor?, detail?, metadata?}.
-    Auth: X-Worker-Secret (same as the other /internal/* endpoints).
-
-    Why this endpoint: MR.7 documented the worker-side challenge
-    contract but no append mechanism shipped. The /job-result
-    endpoint only $push-es audit events for terminal status
-    transitions (filed/completed/failed/cancelled); intermediate
-    events were unreachable by the worker. MR.11 needs them for
-    the 2FA/CAPTCHA prompt round-trip.
-    """
-    _validate_worker_secret(request)
-    filing_job_id = body.get("filing_job_id")
-    event_type = body.get("event_type")
-    if not filing_job_id or not event_type:
-        raise HTTPException(
-            status_code=400,
-            detail="filing_job_id and event_type are required",
-        )
-    actor = body.get("actor") or "worker"
-    detail = body.get("detail") or ""
-    metadata = body.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        raise HTTPException(
-            status_code=400,
-            detail="metadata must be an object if provided",
-        )
-
-    event = _filing_job_audit_event(
-        event_type=event_type,
-        actor=actor,
-        detail=detail,
-        metadata=metadata,
-    )
-    result = await db.filing_jobs.update_one(
-        {"_id": filing_job_id, "is_deleted": {"$ne": True}},
-        {
-            "$set": {"updated_at": event["timestamp"]},
-            "$push": {"audit_log": event},
-        },
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="filing_job not found")
-    return {
-        "appended": True,
-        "filing_job_id": filing_job_id,
-        "event_type": event_type,
-    }
-
-
-# ── Watchdog jobs (scheduled at startup, see startup_event) ───────
-
-async def _stale_claim_watchdog():
-    """Every 5 min: clean up stuck claims in two collections.
-
-    permit_renewals (MR.5): IN_PROGRESS rows with claim_at >30 min
-    ago revert to ELIGIBLE; the bookkeeping fields are unset.
-
-    filing_jobs (MR.6): jobs in {claimed, in_progress} with
-    claimed_at OR started_at >30 min ago either:
-      - retry_count < FILING_JOB_RETRY_LIMIT: revert to QUEUED,
-        retry_count++, audit-log "stale_claim_recovered" — operator's
-        next enqueue or the cron re-fires the job;
-      - retry_count >= FILING_JOB_RETRY_LIMIT: mark FAILED with
-        failure_reason="exceeded_retry_limit", audit-log
-        "retry_limit_exceeded".
-    Recovery is per-doc, not bulk update_many, because the audit_log
-    $push needs the per-doc retry_count to compute the next state.
-    """
-    try:
-        from permit_renewal import RenewalStatus
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
-        now = datetime.now(timezone.utc)
-
-        # ── permit_renewals (MR.5 behavior, unchanged) ──────────────
-        result = await db.permit_renewals.update_many(
-            {
-                "status": RenewalStatus.IN_PROGRESS,
-                "claim_at": {"$lt": cutoff},
-                "is_deleted": {"$ne": True},
-            },
-            {"$set": {
-                # Revert to ELIGIBLE so the next eligibility scan or
-                # operator trigger can re-prepare. Drop the claim
-                # bookkeeping fields.
-                "status": RenewalStatus.ELIGIBLE,
-                "stale_claim_cleared_at": now,
-                "updated_at": now,
-            }, "$unset": {"claim_at": "", "claimed_by_worker_id": ""}},
-        )
-        if result.modified_count > 0:
-            logger.warning(
-                "[stale_claim_watchdog] cleared %d stale renewal claims",
-                result.modified_count,
-            )
-
-        # ── filing_jobs (MR.6 behavior) ──────────────────────────────
-        # Find candidates: in-flight statuses with stale claim/start.
-        stale_jobs_cursor = db.filing_jobs.find({
-            "status": {"$in": list(FILING_JOB_INFLIGHT_STATUSES)},
-            "is_deleted": {"$ne": True},
-            "$or": [
-                {"claimed_at": {"$lt": cutoff}},
-                {"started_at": {"$lt": cutoff}},
-            ],
-        })
-        recovered = 0
-        gave_up = 0
-        async for job in stale_jobs_cursor:
-            job_id = job.get("_id")
-            current_retry = int(job.get("retry_count") or 0)
-
-            if current_retry < FILING_JOB_RETRY_LIMIT:
-                # Revert to queued for re-enqueue. Retry counter ticks
-                # up; bookkeeping fields are cleared so the next claim
-                # starts clean.
-                event = _filing_job_audit_event(
-                    event_type="stale_claim_recovered",
-                    actor="system",
-                    detail=(
-                        f"Watchdog reverted stale {job.get('status')!r} claim "
-                        f"to queued (retry {current_retry + 1}/{FILING_JOB_RETRY_LIMIT})"
-                    ),
-                    metadata={
-                        "previous_status": job.get("status"),
-                        "previous_worker_id": job.get("claimed_by_worker_id"),
-                        "previous_retry_count": current_retry,
-                    },
-                )
-                await db.filing_jobs.update_one(
-                    {"_id": job_id},
-                    {
-                        "$set": {
-                            "status": FilingJobStatus.QUEUED.value,
-                            "retry_count": current_retry + 1,
-                            "claimed_by_worker_id": None,
-                            "claimed_at": None,
-                            "started_at": None,
-                            "updated_at": now,
-                        },
-                        "$push": {"audit_log": event},
-                    },
-                )
-                recovered += 1
-                # Note: re-LPUSH onto Redis is the responsibility of
-                # the next operator enqueue OR a future periodic
-                # re-enqueue cron. The watchdog only owns the cloud-
-                # side state revert. This is intentional — we don't
-                # want the watchdog to silently re-LPUSH a job whose
-                # snapshot might have been invalidated by intervening
-                # data changes (credential rotated, readiness gate
-                # would now fail, etc.). MR.7's UI surfaces these
-                # back-to-queued jobs so the operator can decide.
-            else:
-                # Retry cap hit → terminal failure.
-                event = _filing_job_audit_event(
-                    event_type="retry_limit_exceeded",
-                    actor="system",
-                    detail=(
-                        f"Watchdog gave up after {current_retry} retries; "
-                        f"marking job failed."
-                    ),
-                    metadata={
-                        "retry_count": current_retry,
-                        "limit": FILING_JOB_RETRY_LIMIT,
-                    },
-                )
-                await db.filing_jobs.update_one(
-                    {"_id": job_id},
-                    {
-                        "$set": {
-                            "status": FilingJobStatus.FAILED.value,
-                            "failure_reason": "exceeded_retry_limit",
-                            "completed_at": now,
-                            "updated_at": now,
-                        },
-                        "$push": {"audit_log": event},
-                    },
-                )
-                gave_up += 1
-
-        if recovered or gave_up:
-            logger.warning(
-                "[stale_claim_watchdog] filing_jobs: recovered=%d gave_up=%d",
-                recovered, gave_up,
-            )
-    except Exception as e:
-        logger.error(f"[stale_claim_watchdog] error: {e!r}")
-
-
-async def _heartbeat_watchdog():
-    """Every 5 min: flag workers as degraded when no heartbeat in
-    >30 min. Stores per-worker degraded flags in system_status.
-    Email escalation lands in MR.9; MR.5 surfaces the flag only."""
-    try:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
-        recent = db.agent_heartbeats.find(
-            {}, {"_id": 1, "received_at": 1},
-        )
-        async for hb in recent:
-            received_at = hb.get("received_at")
-            worker_id = hb.get("_id")
-            if not isinstance(received_at, datetime):
-                continue
-            if received_at.tzinfo is None:
-                received_at = received_at.replace(tzinfo=timezone.utc)
-            degraded = received_at < cutoff
-            await db.system_status.update_one(
-                {"_id": f"agent_heartbeat:{worker_id}"},
-                {"$set": {
-                    "worker_id": worker_id,
-                    "degraded": degraded,
-                    "last_heartbeat_at": received_at,
-                    "checked_at": datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
-    except Exception as e:
-        logger.error(f"[heartbeat_watchdog] error: {e!r}")
 
 
 # ── MR.8: DOB approval watcher ─────────────────────────────────────
@@ -22696,31 +22107,9 @@ async def shutdown_db_client():
 async def startup_event():
     logger.info("Starting Levelog API with Sync Support...")
 
-    # MR.13 — surface the eligibility-bypass override loudly at boot
-    # so it can't accidentally stay set in production. Triggers when
-    # the operator set ELIGIBILITY_BYPASS_DAYS_REMAINING for a smoke
-    # test. The repeated `WARNING` log is intentional — operators
-    # scanning Railway logs should see this first thing.
-    try:
-        from lib.eligibility_v2 import (
-            get_eligibility_bypass_setting,
-            ELIGIBILITY_BYPASS_ENV_VAR,
-        )
-        _bypass = get_eligibility_bypass_setting()
-        if _bypass is not None:
-            label = "ANY (no upper bound)" if _bypass == -1 else f"{_bypass} days"
-            logger.warning("=" * 72)
-            logger.warning(
-                "[ELIGIBILITY BYPASS ACTIVE] %s=%s (%s) — temporary "
-                "override for testing. This MUST be unset in production.",
-                ELIGIBILITY_BYPASS_ENV_VAR,
-                os.environ.get(ELIGIBILITY_BYPASS_ENV_VAR, ""),
-                label,
-            )
-            logger.warning("=" * 72)
-    except Exception as _bypass_err:
-        # Never let the bypass-warning block startup; log and move on.
-        logger.error("Failed to evaluate eligibility bypass at boot: %s", _bypass_err)
+    # MR.14 commit 4a — ELIGIBILITY_BYPASS_DAYS_REMAINING boot warning
+    # removed alongside the bypass helpers. The env var is fully dead
+    # post-4a; operator deletes it from Railway as part of cleanup.
 
     # Initialize R2 storage client
     global _r2_client
@@ -23050,22 +22439,8 @@ async def startup_event():
         replace_existing=True,
     )
 
-    # MR.5: stale-claim watchdog — clears IN_PROGRESS claims older
-    # than 30 min so the renewal re-enters the queue. Every 5 min.
-    scheduler.add_job(
-        _stale_claim_watchdog,
-        IntervalTrigger(minutes=5),
-        id='stale_claim_watchdog',
-        replace_existing=True,
-    )
-    # MR.5: heartbeat watchdog — flags workers as degraded after
-    # 30 min absence. Email escalation in MR.9.
-    scheduler.add_job(
-        _heartbeat_watchdog,
-        IntervalTrigger(minutes=5),
-        id='heartbeat_watchdog',
-        replace_existing=True,
-    )
+    # MR.14 commit 4a — stale_claim_watchdog + heartbeat_watchdog
+    # scheduler entries removed alongside the worker container.
 
     # MR.8 + MR.14 (commit 2a): DOB approval watcher — every 15 min,
     # checks dob_logs for renewed permit expirations and transitions
@@ -23320,12 +22695,17 @@ async def startup_event():
     # query. read_by_user is an array of {user_id, read_at} dicts;
     # multikey on the sub-field supports
     # `{read_by_user.user_id: {$ne: <my_id>}}` cheaply.
-    # NOTE — superseded the commit 2a index which assumed a flat
-    # list of user_ids. The 2a-shaped index is harmless to leave
-    # but adds no value; cleanup deferred.
     await db.dob_logs.create_index([
         ("project_id", 1),
         ("read_by_user.user_id", 1),
+        ("status_changed_at", -1),
+    ])
+    # MR.14 commit 4a — index for seed-suppression filter. Default
+    # activity-feed query is `{is_seed_transition: {$ne: true}}`
+    # scoped to a project; this composite supports it cheaply.
+    await db.dob_logs.create_index([
+        ("project_id", 1),
+        ("is_seed_transition", 1),
         ("status_changed_at", -1),
     ])
 

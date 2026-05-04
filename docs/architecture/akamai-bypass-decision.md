@@ -1,11 +1,31 @@
 # Akamai Bypass — Architecture Decision
 
-**Status**: Accepted (MR.13 — supersedes MR.12)
-**Date**: 2026-05-03 (MR.12, superseded) → 2026-05-03 (MR.13, current)
+> ## ⚠️ SUPERSEDED (MR.14 commit 4a, 2026-05-03)
+>
+> v1 ships as a monitoring-only product. Renewal automation is
+> deferred to v2. This document is preserved as historical record
+> of the bypass approaches we tried (warm cookies → fingerprint
+> matching → preserve-on-failure → residential proxy → cloudflared
+> → Bright Data → real Chrome local), all of which are now moot.
+>
+> The `dob_worker/` directory + Bright Data + Webshare proxy +
+> ELIGIBILITY_BYPASS_DAYS_REMAINING + cloudflared scaffold are
+> all REMOVED from the codebase as of MR.14 commit 4a.
+>
+> See **[v1-monitoring-architecture.md](./v1-monitoring-architecture.md)**
+> for the current product architecture.
+>
+> If LeveLog returns to filing automation in a future v2, the
+> approaches catalogued below are the prior art — read them first
+> so v2 doesn't relitigate the dead ends.
+
+---
+
+**Status**: SUPERSEDED by v1-monitoring-architecture.md (MR.14)
+**Original decision date**: 2026-05-03 (MR.12 → MR.13)
 **Decider**: Operator (Roy Fisman) + claude-code engineering session
-**Affects**: `dob_worker/handlers/dob_now_filing.py` and the entire
-DOB NOW automation path. **Does NOT affect** `dob_worker/handlers/bis_scrape.py`,
-which targets the legacy BIS site (no Akamai protection).
+**Originally affected**: `dob_worker/handlers/dob_now_filing.py` and the
+DOB NOW automation path (now removed in MR.14 commit 4a).
 
 ## ⚠️ TEMPORARY OVERRIDE — `ELIGIBILITY_BYPASS_DAYS_REMAINING`
 

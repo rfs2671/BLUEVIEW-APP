@@ -30,119 +30,15 @@ from lib.fee_schedule import get_fee
 logger = logging.getLogger(__name__)
 
 
-# ── MR.13 — Temporary smoke-test bypass for the 30-day window ──────
+# MR.14 commit 4a — ELIGIBILITY_BYPASS_DAYS_REMAINING REMOVED.
 #
-# Set ELIGIBILITY_BYPASS_DAYS_REMAINING on Railway to widen (or
-# disable) the renewal window for ONE smoke test, then revert.
-#
-# Values:
-#   unset / empty       → enforce the standard 30-day window (default)
-#   positive int N      → extend the window to N days (e.g. 365)
-#   "ANY" or "-1"       → no upper bound; any permit becomes eligible
-#                         regardless of days-until-expiration
-#
-# Reads:
-#   - permit_renewal.check_renewal_eligibility (legacy 30-day blocker
-#     at permit_renewal.py:669)
-#   - permit_renewal.nightly_renewal_scan (sweep-creates renewal docs;
-#     bypass widens the 0<days≤30 window so renewals get created for
-#     permits further out, giving the operator something to click)
-#
-# DO NOT ship to production. The architecture decision doc
-# (docs/architecture/akamai-bypass-decision.md) carries a prominent
-# warning section and the operator action checklist for unset.
+# The MR.13 smoke-test bypass was a temporary override for testing
+# the renewal automation pipeline against permits outside the 30-day
+# window. Renewal automation is deferred to v2; the bypass is no
+# longer needed. Operator action: delete
+# ELIGIBILITY_BYPASS_DAYS_REMAINING from Railway.
 
-ELIGIBILITY_BYPASS_ENV_VAR = "ELIGIBILITY_BYPASS_DAYS_REMAINING"
 DEFAULT_RENEWAL_WINDOW_DAYS = 30
-
-_BYPASS_LOG_FIRED = False  # process-local — log once per worker boot
-
-
-def _read_bypass_raw() -> str:
-    return (os.environ.get(ELIGIBILITY_BYPASS_ENV_VAR) or "").strip()
-
-
-def get_eligibility_bypass_setting() -> Optional[int]:
-    """Parse the bypass env var.
-
-    Returns:
-      - None when env var is unset / empty / malformed (fail-closed:
-        a typo'd value behaves like "no override").
-      - -1 sentinel when the operator set "ANY" or "-1" (bypass
-        entirely; no upper bound on days-remaining).
-      - positive int N when the operator set a numeric override.
-    """
-    raw = _read_bypass_raw()
-    if not raw:
-        return None
-    if raw.upper() == "ANY" or raw == "-1":
-        return -1
-    try:
-        n = int(raw)
-    except ValueError:
-        logger.warning(
-            "[eligibility] Malformed %s=%r — ignoring, enforcing default %dd window",
-            ELIGIBILITY_BYPASS_ENV_VAR, raw, DEFAULT_RENEWAL_WINDOW_DAYS,
-        )
-        return None
-    if n < 0:
-        # Any negative coerces to "bypass entirely" — convenience for
-        # operators who type -1, -100, etc.
-        return -1
-    return n
-
-
-def get_effective_renewal_window_days(
-    default: int = DEFAULT_RENEWAL_WINDOW_DAYS,
-) -> Optional[int]:
-    """Returns the effective renewal-window in days.
-
-    Returns:
-      - default (typically 30) when bypass is unset.
-      - N when bypass is a positive int N (extends window to N days).
-      - None when bypass is "ANY" / "-1" (no upper bound).
-
-    Side effect: logs a one-shot WARNING the first time per process
-    that an active bypass is detected. Subsequent calls don't repeat
-    the log to avoid spam.
-    """
-    setting = get_eligibility_bypass_setting()
-    if setting is None:
-        return default
-
-    global _BYPASS_LOG_FIRED
-    if not _BYPASS_LOG_FIRED:
-        raw = _read_bypass_raw()
-        logger.warning(
-            "[eligibility] BYPASS active: %s=%s — "
-            "TEMPORARY override for smoke testing. UNSET this in "
-            "production. See docs/architecture/akamai-bypass-decision.md.",
-            ELIGIBILITY_BYPASS_ENV_VAR, raw,
-        )
-        _BYPASS_LOG_FIRED = True
-
-    if setting == -1:
-        return None
-    return setting
-
-
-def is_within_renewal_window(
-    days_left: int,
-    *,
-    default_window_days: int = DEFAULT_RENEWAL_WINDOW_DAYS,
-) -> bool:
-    """True if days_left falls within the (possibly bypass-extended)
-    renewal window. Caller owns the days_left calculation; this is
-    pure policy.
-
-    "Within window" means days_left <= effective window. days_left can
-    be negative (already expired) — the caller handles that with its
-    own semantics (e.g. paa_required for >60 days expired).
-    """
-    window = get_effective_renewal_window_days(default_window_days)
-    if window is None:
-        return True  # bypass entirely
-    return days_left <= window
 
 
 # ── Result shape constants ──────────────────────────────────────────

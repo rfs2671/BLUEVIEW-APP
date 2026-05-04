@@ -1,60 +1,11 @@
-# MR.5 — local agent orchestration.
+# MR.14 commit 4a — v1 monitoring product ships WITHOUT a local
+# agent container. The dob_worker / cloudflared services that
+# previously lived here are removed (renewal automation deferred
+# to v2). LeveLog v1 is a pure monitoring + notification product
+# served by the Railway backend; nothing runs on operator laptops.
 #
-# Runs the dob_worker container alongside an optional cloudflared
-# sidecar for tunnel-routed egress. Bind-mounts the operator's
-# storage_state and keys directories from outside the repo tree
-# (so the private key is never near the code).
-#
-# Operator pre-deploy steps (see dob_worker/README.md):
-#   1. Create the host directories the bind-mounts target:
-#        mkdir -p ~/.levelog/agent-keys ~/.levelog/agent-storage
-#        chmod 0700 ~/.levelog/agent-keys
-#   2. Generate the keypair:
-#        docker compose run --rm dob_worker python scripts/generate_keypair.py
-#   3. Provision Railway Redis add-on; copy connection string to
-#      .env.local as REDIS_URL.
-#   4. Set WORKER_SECRET in both Railway backend env AND .env.local.
-#   5. (Optional v1) install cloudflared, create a tunnel; uncomment
-#      the cloudflared service below.
-#   6. docker compose up -d dob_worker
+# This file is preserved as an empty stub so any deployment
+# automation that referenced docker-compose continues to no-op
+# gracefully. Future v2 services would land here.
 
-services:
-  dob_worker:
-    build:
-      context: ./dob_worker
-      dockerfile: Dockerfile
-    container_name: dob_worker
-    restart: unless-stopped
-    env_file:
-      - ./dob_worker/.env.local
-    environment:
-      - PRIVATE_KEY_PATH=/keys/agent.key
-      - STORAGE_STATE_DIR=/storage
-    volumes:
-      # Private key bind-mount. Read-only inside the container.
-      # Source path uses ${LEVELOG_AGENT_KEYS_DIR} for cross-platform
-      # compatibility (Windows: C:\Users\<u>\.levelog\agent-keys;
-      # Linux/macOS: ~/.levelog/agent-keys). Set in shell env or
-      # via .env.local.
-      - "${LEVELOG_AGENT_KEYS_DIR:-./keys-host-fallback}:/keys:ro"
-      # storage_state bind-mount. Read-write so per-GC profiles
-      # rotate persistently across container restarts.
-      - "${LEVELOG_AGENT_STORAGE_DIR:-./storage-host-fallback}:/storage"
-    # No HTTP port — worker only makes outbound calls. If an inbound
-    # webhook channel is added in v2 (operator → worker), expose it
-    # here AND configure cloudflared ingress accordingly.
-
-  # Cloudflare Tunnel (optional in v1, required in v2 for stable
-  # residential IP egress). Uncomment AFTER `cloudflared tunnel
-  # create agent-tunnel-1` and pasting the resulting credentials
-  # JSON into ./cloudflared/credentials.json (NOT committed —
-  # already in .gitignore).
-  #
-  # cloudflared:
-  #   image: cloudflare/cloudflared:latest
-  #   container_name: agent_cloudflared
-  #   restart: unless-stopped
-  #   command: tunnel --config /etc/cloudflared/config.yml run agent-tunnel-1
-  #   volumes:
-  #     - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
-  #     - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro
+services: {}

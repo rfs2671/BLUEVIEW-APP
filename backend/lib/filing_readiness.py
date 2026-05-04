@@ -113,15 +113,9 @@ def _terminal_statuses() -> set:
     return {"completed", "failed"}
 
 
-# MR.13 — re-export the bypass helper from the shared lib so any
-# future days-based readiness check defined in this file inherits
-# the same env-var override (ELIGIBILITY_BYPASS_DAYS_REMAINING).
-# Currently filing_readiness has no days-window check; keeping this
-# import-of-record so a future check picks up the bypass without a
-# second source of truth.
-from lib.eligibility_v2 import (  # noqa: E402, F401
-    get_effective_renewal_window_days,
-)
+# MR.14 commit 4a — eligibility-bypass helper re-export removed.
+# The MR.13 ELIGIBILITY_BYPASS_DAYS_REMAINING env var is gone.
+# Restored hard-coded 30-day window; no helper needed.
 
 
 # ── Individual checks (pure functions) ─────────────────────────────
