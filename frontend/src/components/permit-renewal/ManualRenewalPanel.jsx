@@ -1,60 +1,56 @@
 /**
  * ManualRenewalPanel
  * ══════════════════
- * Renders the structured manual-renewal panel for permits the v2
- * dispatcher emits with action.kind === "manual_renewal_dob_now"
- * (the MANUAL_1YR_CEILING strategy in backend/lib/eligibility_v2.py).
+ * Manual-renewal information + Start Renewal flow for v2-dispatcher
+ * permits whose action.kind is "manual_renewal_dob_now".
  *
  * History:
- *   MR.1 (commit 967294c) — introduced inline; pure information layer.
- *   MR.1.5 (commit 8daee73) — extracted to its own component file +
- *     wired through the actionRenderers-map dispatch.
- *   MR.1.6 (commit 50bf481) — issuance_date plumbing for date-specific copy.
- *   MR.7 (this commit)     — replaces the disabled "Prepare Filing"
- *     placeholder with a live "File Renewal" button. When a filing_job
- *     is active for this permit, renders FilingStatusCard in place of
- *     the button. Caption: "Filed under your own DOB NOW credentials
- *     by the LeveLog agent." Readiness gate (MR.3) blocks the button
- *     with a blocker-summary tooltip when filing-readiness reports
- *     ready=false.
+ *   MR.1   — introduced inline; pure information layer.
+ *   MR.1.5 — extracted to its own component file.
+ *   MR.1.6 — issuance_date plumbing.
+ *   MR.7   — replaced "Prepare Filing" placeholder with a live
+ *            "File Renewal" button + FilingStatusCard polling.
+ *   MR.14 4a — worker container removed.
+ *   MR.14 4b — credentials field removed.
+ *   MR.14 4c — this commit. Replaced "File Renewal" with the
+ *            "Start Renewal" affordance: clicking opens DOB NOW
+ *            in a new tab AND surfaces a slide-out panel with the
+ *            pre-filled PW2 values for the operator to copy in
+ *            manually. LeveLog never files; the user files manually.
+ *            Detection of completion is delegated to MR.8's
+ *            dob_approval_watcher (NYC Open Data poll).
  *
  * Props:
- *   renewal         — the permit_renewal doc (MR.1's contract).
- *   filingJobs      — array of filing_jobs for this permit_renewal_id,
- *                     newest-first. MR.6's GET response shape. Pass
- *                     [] if not yet loaded; the panel renders the idle
- *                     File button in that case (no flash of empty state).
- *   onJobsChange    — callback invoked after enqueue / cancel / status
- *                     transition to ask the parent to refetch the jobs
- *                     for this renewal.
+ *   renewal       — the permit_renewal doc. Carries
+ *                   manual_renewal_started_at when the operator has
+ *                   already clicked Start Renewal (MR.14 4c new
+ *                   field), and new_expiration_date / status when
+ *                   MR.8's watcher has detected the renewed permit.
+ *   onRenewalChange — optional callback invoked after a successful
+ *                   POST /start-renewal-clicked so the parent can
+ *                   refetch the renewal list and surface the new
+ *                   state on the next render.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Pressable,
-  ActivityIndicator,
+  Linking,
+  Platform,
 } from 'react-native';
-import { Send, Lock } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
 import { useTheme } from '../../context/ThemeContext';
 import { MANUAL_RENEWAL_RULE_CITATION } from '../../constants/dobRules';
 import apiClient from '../../utils/api';
 import FilingStatusCard from './FilingStatusCard';
-
-// MR.6 terminal statuses — kept in sync with FilingStatusCard.jsx
-// and backend/server.py FILING_JOB_TERMINAL_STATUSES.
-const TERMINAL_STATUSES = new Set([
-  'filed', 'completed', 'failed', 'cancelled',
-]);
+import StartRenewalPanel from './StartRenewalPanel';
 
 // Local formatDate — matches the helper in
 // frontend/app/project/[id]/permit-renewal.jsx line ~132. Inlined
-// here rather than promoted to a shared util to keep MR.1.5 a
-// pure refactor; future commit can DRY this up if a third caller
-// emerges.
+// here rather than promoted to a shared util to keep the cross-file
+// surface minimal.
 const formatDate = (dateStr) => {
   if (!dateStr) return '—';
   const d = new Date(dateStr);
@@ -69,43 +65,68 @@ const formatDate = (dateStr) => {
   });
 };
 
-const ManualRenewalPanel = ({ renewal, filingJobs = [], onJobsChange }) => {
+// Open the DOB NOW landing page in a new browser tab (web) or via
+// Linking (native). The constant is exported by StartRenewalPanel so
+// both UX surfaces stay in lockstep.
+const openDobNow = () => {
+  const url = StartRenewalPanel.DOB_NOW_URL;
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  Linking.openURL(url).catch((e) => {
+    console.warn('[ManualRenewalPanel] could not open DOB NOW:', e?.message);
+  });
+};
+
+const ManualRenewalPanel = ({ renewal, onRenewalChange }) => {
   const { colors } = useTheme();
   const s = buildStyles(colors);
 
-  // Active filing job = newest non-terminal entry. The list is sorted
-  // newest-first by the backend so [0] when present is the relevant one.
-  const activeJob =
-    filingJobs.find((j) => !TERMINAL_STATUSES.has(j.status)) || null;
+  const renewalId = renewal.id || renewal._id;
 
-  // Readiness gate state — only fetched when there's no active job AND
-  // the operator might click File. We don't pre-fetch readiness for
-  // every panel mount because /filing-readiness runs 10 checks on the
-  // server and is heavier than a single doc fetch. We fetch on first
-  // render of the idle state only.
+  // Has the operator already clicked Start Renewal? Sourced from the
+  // renewal doc — MR.14 4c stamps manual_renewal_started_at on the
+  // /start-renewal-clicked endpoint.
+  const alreadyStarted = Boolean(renewal.manual_renewal_started_at);
+
   const [readiness, setReadiness] = useState(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
-  const [enqueueLoading, setEnqueueLoading] = useState(false);
-  const [enqueueError, setEnqueueError] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState(null);
 
-  // Fetch readiness when the idle button could render (no active job).
-  // Re-fetch when the jobs list flips back to "no active" (e.g. after
-  // a job completes or is cancelled and the operator might re-file).
+  // Slide-out panel state: visible flag + the most recently fetched
+  // field map. The map comes back inline from the start-renewal-clicked
+  // response so we don't need a second round-trip in the happy path;
+  // for "View values again" in the in-progress state we fall back to
+  // the MR.4 GET /pw2-field-map endpoint.
+  const [panelVisible, setPanelVisible] = useState(false);
+  const [fieldMap, setFieldMap] = useState(null);
+
+  // Pre-fetch readiness only when the idle button could render (no
+  // started-at yet AND not in renewed state). Skip when alreadyStarted
+  // because the readiness check is for the click; a re-render of the
+  // in-progress branch doesn't need it.
   useEffect(() => {
-    if (activeJob) return undefined;
+    if (alreadyStarted) return undefined;
+    if (renewal?.status === 'completed') return undefined;
     let cancelled = false;
     setReadinessLoading(true);
     apiClient
-      .get(`/api/permit-renewals/${renewal.id || renewal._id}/filing-readiness`)
+      .get(`/api/permit-renewals/${renewalId}/filing-readiness`)
       .then((resp) => {
         if (!cancelled) setReadiness(resp.data);
       })
       .catch((e) => {
-        // Soft fail — show a neutral state (button disabled with a
-        // generic message) rather than blocking the whole panel.
         if (!cancelled) {
-          console.warn('[ManualRenewalPanel] readiness fetch failed:', e?.message);
-          setReadiness({ ready: false, blockers: ['Could not check readiness'] });
+          console.warn(
+            '[ManualRenewalPanel] readiness fetch failed:',
+            e?.message
+          );
+          setReadiness({
+            ready: false,
+            blockers: ['Could not check readiness'],
+          });
         }
       })
       .finally(() => {
@@ -114,60 +135,78 @@ const ManualRenewalPanel = ({ renewal, filingJobs = [], onJobsChange }) => {
     return () => {
       cancelled = true;
     };
-  }, [activeJob, renewal.id, renewal._id]);
+  }, [alreadyStarted, renewal?.status, renewalId]);
 
-  const handleFile = async () => {
-    setEnqueueLoading(true);
-    setEnqueueError(null);
+  const handleStartRenewal = useCallback(async () => {
+    setStarting(true);
+    setStartError(null);
     try {
-      await apiClient.post(
-        `/api/permit-renewals/${renewal.id || renewal._id}/file`
+      const resp = await apiClient.post(
+        `/api/permit-renewals/${renewalId}/start-renewal-clicked`
       );
-      // Tell the parent to re-fetch jobs; the next render will show
-      // FilingStatusCard with the freshly-queued job.
-      if (typeof onJobsChange === 'function') {
-        onJobsChange();
+      // Open DOB NOW first — operator's eye lands on the new tab,
+      // then they switch back to LeveLog and the panel is already
+      // populated with values to copy.
+      openDobNow();
+      setFieldMap(resp.data?.field_map || null);
+      setPanelVisible(true);
+      if (typeof onRenewalChange === 'function') {
+        onRenewalChange();
       }
     } catch (e) {
-      // The 6-gate enqueue endpoint surfaces structured detail.code
-      // values: mode_not_live, readiness_blocked, mapper_unmappable_fields,
-      // no_filing_rep, no_active_credential, filing_job_already_active,
-      // redis_enqueue_failed. We surface a friendly message + the
-      // structured code so the operator (or support) can correlate.
-      // MR.7-followup: mapper_unmappable_fields now carries
-      // critical_unmappable_fields (the actual blockers) AND
-      // full_unmappable_fields (the full list, includes informational
-      // entries like work_permit_number). We render both distinctly.
       const detail = e?.response?.data?.detail;
-      const code = typeof detail === 'object' ? detail.code : null;
-      const message = typeof detail === 'object'
-        ? (detail.message || 'Enqueue failed')
-        : (typeof detail === 'string' ? detail : 'Enqueue failed');
-      const criticalUnmappable = typeof detail === 'object'
-        ? detail.critical_unmappable_fields
-        : null;
-      const fullUnmappable = typeof detail === 'object'
-        ? detail.full_unmappable_fields
-        : null;
-      setEnqueueError({
-        code,
-        message,
-        criticalUnmappable,
-        fullUnmappable,
-      });
-      setEnqueueLoading(false);
+      if (typeof detail === 'object' && detail !== null) {
+        setStartError({
+          message: detail.message || 'Could not start renewal.',
+          code: detail.code,
+          blockers: detail.blockers,
+        });
+      } else {
+        setStartError({
+          message:
+            typeof detail === 'string'
+              ? detail
+              : e?.message || 'Could not start renewal.',
+        });
+      }
+    } finally {
+      setStarting(false);
     }
-  };
+  }, [renewalId, onRenewalChange]);
+
+  // "View values again" — operator already clicked, panel was closed,
+  // they want to see the values without re-recording the click.
+  const handleViewValuesAgain = useCallback(async () => {
+    setStartError(null);
+    if (fieldMap) {
+      // We have a cached map from the original click. Just re-open.
+      setPanelVisible(true);
+      return;
+    }
+    try {
+      const resp = await apiClient.get(
+        `/api/permit-renewals/${renewalId}/pw2-field-map`
+      );
+      setFieldMap(resp.data || null);
+      setPanelVisible(true);
+    } catch (e) {
+      console.warn(
+        '[ManualRenewalPanel] re-fetch field map failed:',
+        e?.message
+      );
+      setStartError({
+        message: 'Could not load renewal values. Try refreshing.',
+      });
+    }
+  }, [fieldMap, renewalId]);
 
   return (
     <View style={s.manualRenewalPanel}>
-      <Text style={s.manualRenewalHeader}>
-        Manual Renewal Required
-      </Text>
+      <Text style={s.manualRenewalHeader}>Manual Renewal Required</Text>
       <Text style={s.manualRenewalExplanation}>
         {renewal.issuance_date
-          ? `This permit was issued on ${formatDate(renewal.issuance_date)}. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. Filing happens at DOB NOW with the licensee's NYC.ID.`
-          : `This permit has reached the one-year mark from original issuance. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. Filing happens at DOB NOW with the licensee's NYC.ID.`}
+          ? `This permit was issued on ${formatDate(renewal.issuance_date)}. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. You file at DOB NOW with the licensee's NYC.ID; LeveLog tracks the click and detects completion via the NYC Open Data feed.`
+          : `This permit has reached the one-year mark from original issuance. NYC DOB requires work permits older than one year to be renewed manually, regardless of insurance status. You file at DOB NOW with the licensee's NYC.ID; LeveLog tracks the click and detects completion via the NYC Open Data feed.`}
       </Text>
 
       <View style={s.manualRenewalFeeBlock}>
@@ -178,75 +217,40 @@ const ManualRenewalPanel = ({ renewal, filingJobs = [], onJobsChange }) => {
       </View>
 
       <View style={s.manualRenewalDetails}>
-        <View style={s.manualRenewalDetailRow}>
-          <Text style={s.manualRenewalDetailLabel}>
-            Job Filing Number
-          </Text>
-          <Text style={s.manualRenewalDetailValue}>
-            {renewal.job_number || '—'}
-          </Text>
-        </View>
-        <View style={s.manualRenewalDetailRow}>
-          <Text style={s.manualRenewalDetailLabel}>
-            Work Type
-          </Text>
-          <Text style={s.manualRenewalDetailValue}>
-            {renewal.permit_type || '—'}
-          </Text>
-        </View>
-        <View style={s.manualRenewalDetailRow}>
-          <Text style={s.manualRenewalDetailLabel}>
-            Current Expiration
-          </Text>
-          <Text style={s.manualRenewalDetailValue}>
-            {formatDate(renewal.current_expiration)}
-          </Text>
-        </View>
-        <View style={s.manualRenewalDetailRow}>
-          <Text style={s.manualRenewalDetailLabel}>
-            Days Until Expiration
-          </Text>
-          <Text style={s.manualRenewalDetailValue}>
-            {typeof renewal.days_until_expiry === 'number'
+        <DetailRow s={s} label="Job Filing Number" value={renewal.job_number || '—'} />
+        <DetailRow s={s} label="Work Type" value={renewal.permit_type || '—'} />
+        <DetailRow
+          s={s}
+          label="Current Expiration"
+          value={formatDate(renewal.current_expiration)}
+        />
+        <DetailRow
+          s={s}
+          label="Days Until Expiration"
+          value={
+            typeof renewal.days_until_expiry === 'number'
               ? `${renewal.days_until_expiry}d`
-              : '—'}
-          </Text>
-        </View>
+              : '—'
+          }
+        />
       </View>
 
-      {/* MR.7: live trigger OR FilingStatusCard depending on whether
-          a non-terminal filing job exists for this renewal. */}
-      {activeJob ? (
-        <FilingStatusCard
-          permitRenewalId={renewal.id || renewal._id}
-          initialJob={activeJob}
-          onJobUpdate={() => {
-            // FilingStatusCard polls and feeds us the freshest job;
-            // we ask the parent to re-sync its master jobs list so
-            // History (and any other consumers) stay aligned.
-            if (typeof onJobsChange === 'function') onJobsChange();
-          }}
-          onTerminal={() => {
-            if (typeof onJobsChange === 'function') onJobsChange();
-          }}
-          onRetryRequested={handleFile}
-        />
-      ) : (
-        <View style={s.idleStateBlock}>
-          <FilingButton
-            readiness={readiness}
-            readinessLoading={readinessLoading}
-            enqueueLoading={enqueueLoading}
-            enqueueError={enqueueError}
-            onPress={handleFile}
-            colors={colors}
-            styles={s}
-          />
-          <Text style={s.manualRenewalCtaCaption}>
-            Filed under your own DOB NOW credentials by the LeveLog agent.
-          </Text>
-        </View>
-      )}
+      <FilingStatusCard
+        renewal={renewal}
+        readiness={readiness}
+        readinessLoading={readinessLoading}
+        onStartRenewal={handleStartRenewal}
+        onViewValuesAgain={handleViewValuesAgain}
+        starting={starting}
+        error={startError}
+      />
+
+      <StartRenewalPanel
+        visible={panelVisible}
+        fieldMap={fieldMap}
+        onClose={() => setPanelVisible(false)}
+        onReopenDob={openDobNow}
+      />
 
       <Text style={s.manualRenewalCitation}>
         Reference: {MANUAL_RENEWAL_RULE_CITATION}
@@ -255,129 +259,14 @@ const ManualRenewalPanel = ({ renewal, filingJobs = [], onJobsChange }) => {
   );
 };
 
-// ── FilingButton subcomponent ──────────────────────────────────────
+const DetailRow = ({ s, label, value }) => (
+  <View style={s.manualRenewalDetailRow}>
+    <Text style={s.manualRenewalDetailLabel}>{label}</Text>
+    <Text style={s.manualRenewalDetailValue}>{value}</Text>
+  </View>
+);
 
-const FilingButton = ({
-  readiness,
-  readinessLoading,
-  enqueueLoading,
-  enqueueError,
-  onPress,
-  colors,
-  styles: s,
-}) => {
-  // Loading state while readiness resolves — render a stable button
-  // shape so layout doesn't jump. We disable until we know.
-  if (readinessLoading || readiness === null) {
-    return (
-      <Pressable disabled style={[s.manualRenewalCta, s.manualRenewalCtaDisabled]}>
-        <ActivityIndicator size="small" color={colors.text.muted} />
-        <Text style={s.manualRenewalCtaText}>Checking readiness…</Text>
-      </Pressable>
-    );
-  }
-
-  if (!readiness.ready) {
-    // Disabled button + blockers list. React Native doesn't have a
-    // native tooltip primitive, so we render the blockers as a
-    // compact bullet list under the button — operator sees the
-    // reason without hover.
-    const blockers = readiness.blockers || [];
-    return (
-      <View style={s.disabledStack}>
-        <Pressable disabled style={[s.manualRenewalCta, s.manualRenewalCtaDisabled]}>
-          <Lock size={14} color={colors.text.muted} />
-          <Text style={s.manualRenewalCtaText}>File Renewal</Text>
-        </Pressable>
-        <View style={s.blockersBlock}>
-          <Text style={s.blockersHeader}>Blocked — resolve before filing:</Text>
-          {blockers.map((b, i) => (
-            <Text key={i} style={s.blockerItem}>• {b}</Text>
-          ))}
-        </View>
-      </View>
-    );
-  }
-
-  // Idle / loading / error states for the active button.
-  return (
-    <View style={s.activeStack}>
-      <Pressable
-        style={[
-          s.manualRenewalCta,
-          s.manualRenewalCtaActive,
-          enqueueLoading && s.buttonDisabled,
-        ]}
-        onPress={onPress}
-        disabled={enqueueLoading}
-      >
-        {enqueueLoading ? (
-          <>
-            <ActivityIndicator size="small" color="#fff" />
-            <Text style={[s.manualRenewalCtaText, s.manualRenewalCtaTextActive]}>
-              Enqueuing…
-            </Text>
-          </>
-        ) : (
-          <>
-            <Send size={14} color="#fff" />
-            <Text style={[s.manualRenewalCtaText, s.manualRenewalCtaTextActive]}>
-              File Renewal
-            </Text>
-          </>
-        )}
-      </Pressable>
-      {enqueueError && (
-        <View style={s.errorBlock}>
-          {/* MR.7-followup: mapper_unmappable_fields now distinguishes
-              critical (hard blockers) from full (includes informational
-              entries like work_permit_number that DO NOT block filing).
-              Render the critical list as the primary blocker text;
-              show the full list only when there's no critical list
-              (defensive — this case should not occur post-fix because
-              the gate now allows non-critical-only through). */}
-          {enqueueError.code === 'mapper_unmappable_fields' &&
-           Array.isArray(enqueueError.criticalUnmappable) &&
-           enqueueError.criticalUnmappable.length > 0 ? (
-            <>
-              <Text style={s.errorMessage}>
-                Cannot file: these required fields are missing from your data:
-              </Text>
-              {enqueueError.criticalUnmappable.map((entry, i) => (
-                <Text key={i} style={s.errorBlockerItem}>• {entry}</Text>
-              ))}
-              <Text style={s.errorCode}>code: {enqueueError.code}</Text>
-            </>
-          ) : enqueueError.code === 'mapper_unmappable_fields' &&
-              Array.isArray(enqueueError.fullUnmappable) &&
-              enqueueError.fullUnmappable.length > 0 ? (
-            // Defensive fall-through: backend reported the error code
-            // but no critical list. Should not happen post-fix; if it
-            // does, the operator can still see the data without a hard
-            // dead-end.
-            <>
-              <Text style={s.errorMessage}>
-                All required fields present. Filing was enqueued with
-                non-critical fields skipped.
-              </Text>
-              {enqueueError.fullUnmappable.map((entry, i) => (
-                <Text key={i} style={s.errorBlockerItem}>• {entry}</Text>
-              ))}
-              <Text style={s.errorCode}>code: {enqueueError.code}</Text>
-            </>
-          ) : (
-            <>
-              <Text style={s.errorMessage}>{enqueueError.message}</Text>
-              {enqueueError.code && (
-                <Text style={s.errorCode}>code: {enqueueError.code}</Text>
-              )}
-            </>
-          )}
-        </View>
-      )}
-    </View>
-  );
-};
+export default ManualRenewalPanel;
 
 // ── Styles ─────────────────────────────────────────────────────────
 
@@ -446,109 +335,6 @@ function buildStyles(colors) {
       color: colors.text.primary,
     },
 
-    // ── CTA stack ─────────────────────────────────────────────────
-    idleStateBlock: {
-      gap: 6,
-      marginTop: spacing.xs,
-    },
-    activeStack: {
-      gap: spacing.sm,
-    },
-    disabledStack: {
-      gap: spacing.sm,
-    },
-    manualRenewalCta: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 8,
-      paddingVertical: spacing.sm + 2,
-      paddingHorizontal: spacing.md,
-      borderRadius: borderRadius.md,
-      marginTop: spacing.xs,
-    },
-    manualRenewalCtaActive: {
-      backgroundColor: '#3b82f6',
-      borderWidth: 0,
-    },
-    manualRenewalCtaDisabled: {
-      backgroundColor: colors.glass.background,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-      opacity: 0.7,
-    },
-    buttonDisabled: {
-      opacity: 0.6,
-    },
-    manualRenewalCtaText: {
-      fontFamily: typography.semibold,
-      fontSize: 14,
-      color: colors.text.muted,
-      letterSpacing: 0.3,
-    },
-    manualRenewalCtaTextActive: {
-      color: '#fff',
-    },
-    manualRenewalCtaCaption: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      textAlign: 'center',
-      marginTop: 6,
-      marginBottom: spacing.sm,
-    },
-
-    // ── blockers ──────────────────────────────────────────────────
-    blockersBlock: {
-      padding: spacing.sm,
-      backgroundColor: '#f59e0b15',
-      borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: '#f59e0b40',
-      gap: 4,
-    },
-    blockersHeader: {
-      fontFamily: typography.semibold,
-      fontSize: 12,
-      color: '#f59e0b',
-      marginBottom: 2,
-    },
-    blockerItem: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.secondary,
-      lineHeight: 18,
-    },
-
-    // ── error block ───────────────────────────────────────────────
-    errorBlock: {
-      padding: spacing.sm,
-      backgroundColor: '#ef444415',
-      borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: '#ef444440',
-      gap: 2,
-    },
-    errorMessage: {
-      fontFamily: typography.medium,
-      fontSize: 12,
-      color: '#ef4444',
-    },
-    errorBlockerItem: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: '#ef4444',
-      lineHeight: 18,
-      marginLeft: 4,
-    },
-    errorCode: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: '#ef4444',
-      opacity: 0.8,
-      marginTop: 2,
-    },
-
     // ── citation ──────────────────────────────────────────────────
     manualRenewalCitation: {
       fontFamily: typography.regular,
@@ -562,5 +348,3 @@ function buildStyles(colors) {
     },
   });
 }
-
-export default ManualRenewalPanel;

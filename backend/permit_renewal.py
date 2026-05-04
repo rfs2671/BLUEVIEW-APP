@@ -1525,41 +1525,143 @@ def create_permit_renewal_routes(
             out.pop("encrypted_ciphertext", None)
         return out
 
-    # POST /api/permit-renewals/{permit_renewal_id}/file
-    @api_router.post("/permit-renewals/{permit_renewal_id}/file")
-    async def enqueue_filing_job(
+    # MR.14 commit 4c: POST /api/permit-renewals/{permit_renewal_id}/file
+    # is GONE. The endpoint that originally enqueued a Redis job for
+    # the local Playwright agent (MR.6) became a 503 stub in 4b after
+    # 4a removed the worker container; 4c removes it entirely. The v1
+    # product is a DOB compliance monitoring tool — LeveLog never
+    # files anything. Replaced by POST /start-renewal-clicked below.
+
+    # MR.14 commit 4c: POST /api/permit-renewals/{permit_renewal_id}/start-renewal-clicked
+    @api_router.post(
+        "/permit-renewals/{permit_renewal_id}/start-renewal-clicked"
+    )
+    async def start_renewal_clicked(
         permit_renewal_id: str,
         current_user=Depends(get_current_user),
     ):
-        """MR.14 commit 4b - legacy stub. Renewal automation is
-        deferred to v2; v1 is a monitoring product.
+        """Operator clicked 'Start Renewal'. Records the click on the
+        renewal doc + its embedded audit log, then returns the PW2
+        field-map output so the frontend can open the slide-out copy
+        panel without a second round-trip.
 
-        Originally validated readiness, snapshotted the PW2 field
-        map, looked up the active filing-rep credential + the
-        company's signed authorization, and LPUSH'd a payload onto
-        Redis for the dob_worker container to claim. The worker
-        container, the Redis queue, the agent_public_keys
-        collection, the filing_reps[].credentials field, and the
-        browser-side encryption path are all gone (commits 4a + 4b).
+        Side effects:
+          - Append {event_type='manual_renewal_started', timestamp,
+            actor, renewal_id} to permit_renewals.{id}.manual_renewal_audit_log
+            ($push, append-only).
+          - $set permit_renewals.{id}.manual_renewal_started_at = now
+            (idempotent — last click wins; the audit log preserves
+            history).
+          - $set permit_renewals.{id}.manual_renewal_started_by = actor.
 
-        Endpoint kept until 4c so the frontend's existing 'File
-        Renewal' button gets a clean 503 with a stable error code
-        instead of a NameError. 4c removes both this endpoint and
-        the button, replacing the UX with a 'Start Renewal'
-        affordance that opens DOB NOW in a new tab and shows
-        pre-filled PW2 values for manual copy-in."""
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": (
-                    "Filing automation has been deferred to v2 - "
-                    "LeveLog v1 ships as a DOB compliance "
-                    "monitoring product. Use DOB NOW directly to "
-                    "file renewals."
-                ),
-                "code": "renewal_automation_deferred",
+        We deliberately do NOT flip renewal.status here. The renewal
+        is in 'eligible' until DOB stamps the new expiration; MR.8's
+        Open Data watcher (dob_approval_watcher in server.py) detects
+        the new permit row at DOB, computes the new_expiration_date,
+        and transitions status → COMPLETED. That's the only place
+        renewal.status reflects 'really filed at DOB'.
+
+        Returns:
+          {
+            renewal_id: str,
+            started_at: ISO datetime,
+            started_by: str,
+            field_map: <Pw2FieldMap.model_dump output, includes
+                       critical_unmappable_fields +
+                       non_critical_unmappable_fields like the
+                       MR.4 GET endpoint>,
+          }
+
+        Response also passes through readiness blockers when
+        readiness fails: status 409 with the blocker list. The
+        frontend should run filing-readiness BEFORE calling this
+        endpoint so the user only sees the panel when they can
+        actually copy values into a working DOB NOW form, but the
+        gate here protects against accidental clicks on a not-ready
+        renewal.
+
+        Implementation note: Routes Mongo + helper access through
+        `_server.X` rather than the closure-captured `db` /
+        `to_query_id` so HTTP-level test fixtures that patch
+        `server.db` reach this endpoint (closures don't see those
+        patches). Same shape as the MR.6 endpoints further down.
+        """
+        try:
+            from backend import server as _server
+        except ModuleNotFoundError:
+            import server as _server
+
+        from lib.pw2_field_mapper import (
+            map_pw2_fields,
+            partition_unmappable_fields,
+        )
+        from lib.filing_readiness import check_filing_readiness
+
+        renewal = await _server.db.permit_renewals.find_one(
+            {"_id": _server.to_query_id(permit_renewal_id)}
+        )
+        if not renewal:
+            raise HTTPException(status_code=404, detail="Renewal not found")
+        company_id = _server.get_user_company_id(current_user)
+        if company_id and renewal.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Readiness gate — same shape as the MR.4 /pw2-field-map
+        # endpoint above. We don't 409 silently; the operator gets
+        # the blocker list back so the panel can render the same
+        # readiness UX the button uses.
+        readiness = await check_filing_readiness(_server.db, permit_renewal_id)
+        if not readiness.ready:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        "Filing readiness check failed; resolve "
+                        "blockers before starting the renewal."
+                    ),
+                    "code": "readiness_blocked",
+                    "blockers": readiness.blockers,
+                },
+            )
+
+        now = datetime.now(timezone.utc)
+        actor = (
+            current_user.get("user_id")
+            or current_user.get("id")
+            or current_user.get("email")
+            or "operator"
+        )
+        audit_event = {
+            "event_type": "manual_renewal_started",
+            "timestamp": now,
+            "actor": actor,
+            "renewal_id": permit_renewal_id,
+        }
+
+        await _server.db.permit_renewals.update_one(
+            {"_id": _server.to_query_id(permit_renewal_id)},
+            {
+                "$set": {
+                    "manual_renewal_started_at": now,
+                    "manual_renewal_started_by": actor,
+                    "updated_at": now,
+                },
+                "$push": {"manual_renewal_audit_log": audit_event},
             },
         )
+
+        field_map = await map_pw2_fields(_server.db, permit_renewal_id)
+        partitioned = partition_unmappable_fields(field_map.unmappable_fields)
+        out = field_map.model_dump()
+        out["critical_unmappable_fields"] = partitioned["critical"]
+        out["non_critical_unmappable_fields"] = partitioned["non_critical"]
+
+        return {
+            "renewal_id": permit_renewal_id,
+            "started_at": now.isoformat(),
+            "started_by": actor,
+            "field_map": out,
+        }
 
     # GET /api/permit-renewals/{permit_renewal_id}/filing-jobs
     @api_router.get("/permit-renewals/{permit_renewal_id}/filing-jobs")

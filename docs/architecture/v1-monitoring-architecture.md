@@ -11,7 +11,12 @@ LeveLog v1 is a **DOB compliance monitoring + notification product**
 for NYC General Contractors. We poll public NYC Open Data datasets
 on a per-project basis, classify the records into plain-English
 signals, and surface them in an activity feed + push critical
-ones over email. **We do not file renewals**.
+ones over email. **LeveLog never files anything.** When a permit
+needs renewal, the operator clicks **Start Renewal**, which opens
+DOB NOW in a new tab and surfaces a slide-out panel of pre-filled
+PW2 values to copy in by hand. The Open Data watcher then detects
+the renewed permit on its next 15-minute poll and flips the
+renewal status to Completed automatically.
 
 The earlier MR.5–MR.13 effort attempted to automate renewal filing
 through the DOB NOW portal (Playwright + warm cookies + various
@@ -103,11 +108,96 @@ the v1 value prop and treat filing automation as a v2 question.
   `/api/owner/companies/{id}/authorization`) and the
   `AUTHORIZATION_TEXT_VERSION` constant remain on the backend
   for historical reference; the v1 frontend never reaches them.
-- **"File Renewal" button**. Replaced by "Start Renewal" UX
-  (commit 4c) that opens DOB NOW in a new tab + shows the
-  pre-filled PW2 values for the operator to copy in manually.
+- **"File Renewal" button**. Replaced in MR.14 commit 4c by the
+  "Start Renewal" UX (described in detail below).
 - **Operator agent on operator's laptop**. Pure cloud-hosted
   product; nothing runs locally.
+
+## Start Renewal UX (MR.14 commit 4c)
+
+When a permit hits the one-year ceiling and the v2 dispatcher emits
+`action.kind === "manual_renewal_dob_now"`, the renewal card surfaces
+the **Start Renewal** affordance instead of the legacy automated
+filing button. The flow:
+
+```
+operator opens permit-renewal page
+         │
+         ▼
+ManualRenewalPanel renders FilingStatusCard
+         │
+         ▼ (renewal not started yet)
+[Start Renewal] button + readiness check
+         │
+         │ click
+         ▼
+POST /api/permit-renewals/{id}/start-renewal-clicked
+         │
+         ├──── records `manual_renewal_audit_log` entry on
+         │     the renewal doc (event_type=manual_renewal_started,
+         │     timestamp, actor)
+         │
+         ├──── stamps `manual_renewal_started_at` +
+         │     `manual_renewal_started_by` on the renewal doc
+         │
+         └──── returns the MR.4 PW2 mapper output (Pw2FieldMap +
+               critical / non_critical unmappable partitions)
+                                │
+                                ▼
+              frontend opens DOB NOW (new tab) +
+              renders <StartRenewalPanel/> with grouped
+              click-to-copy fields:
+                • Applicant Info
+                • Job & Permit
+                • Renewal Details
+                • Required Attachments
+                • [warnings] Missing required fields
+                • [info]    Informational only
+                • Notes
+                                │
+                                ▼
+       operator copies values into DOB NOW manually
+                                │
+                                ▼
+             FilingStatusCard now renders the
+             "Filing in progress" state (driven by
+             renewal.manual_renewal_started_at)
+                                │
+                                ▼
+       operator submits at DOB NOW; the new permit
+       lands in NYC Open Data within minutes
+                                │
+                                ▼
+   MR.8 dob_approval_watcher (15-min cron) sees the
+   new permit row, computes new_expiration_date,
+   flips renewal.status → COMPLETED, stamps
+   renewal.new_expiration_date
+                                │
+                                ▼
+        FilingStatusCard renders the "Renewed" state:
+        confirmation # + new expiration + "View on DOB NOW"
+```
+
+Three render branches in `FilingStatusCard.jsx`, all driven by
+fields ON the renewal doc itself (no polling, no filing_jobs):
+
+1. **Pre-renewal**: `manual_renewal_started_at` is null AND
+   status is not 'completed'. Shows the Start Renewal button +
+   readiness check.
+2. **In-progress**: `manual_renewal_started_at` is set AND status
+   is not 'completed'. Shows "Filing in progress" reminder + a
+   "View values again" link that re-opens the panel without
+   re-recording the click.
+3. **Renewed**: status is 'completed' OR `new_expiration_date` is
+   set. Shows the new expiration + DOB confirmation number (if
+   present) + a "View on DOB NOW" deep-link.
+
+The Open Data watcher path is the v1 detection mechanism — same
+`dob_approval_watcher` that's been in production since MR.8. It
+matches by job_filing_number / BIN against NYC Open Data DOB NOW
+filings, so the operator's manual filing at DOB NOW lands in the
+same dataset the watcher polls. No new infrastructure is needed
+for "did the user actually file" detection.
 
 ## Data model
 
@@ -117,7 +207,7 @@ the v1 value prop and treat filing automation as a v2 question.
 | `agent_public_keys` | REMOVED in MR.14 commit 4b — operator drops via `db.agent_public_keys.drop()`. The collection backed the worker's RSA-4096 hybrid encryption scheme; with the worker container gone (4a) and the credentials field gone (4b), nothing reads or writes it. |
 | `projects` | Per-jobsite. `track_dob_status` defaults to True; polled if BIN or address resolves. |
 | `dob_logs` | Append-only stream of DOB signals. One row per (raw_dob_id, transition). Carries `signal_kind`, `current_status`, `previous_status`, `status_changed_at`, `is_seed_transition`, `read_by_user[]`. |
-| `permit_renewals` | Historical from MR.6 work. The 30-day-window sweep still creates records but no automated filing path consumes them. |
+| `permit_renewals` | Historical from MR.6 work. The 30-day-window sweep still creates records. v1 surfaces them through the Start Renewal UX. New fields added in MR.14 commit 4c: `manual_renewal_started_at`, `manual_renewal_started_by`, `manual_renewal_audit_log[]`. |
 | `notification_log` | Append-only audit of every email send. Status: sent / suppressed_idempotent / suppressed_kill_switch / suppressed_flag_off / suppressed_no_key / failed. |
 
 ## Polling cadences
@@ -220,6 +310,55 @@ Read it before re-attempting any of these.
    returns 503 with code='renewal_automation_deferred' from
      POST /api/permit-renewals/{id}/file
    The button itself goes away in commit 4c.
+```
+
+## Operator action checklist (post-MR.14 commit 4c)
+
+```
+1. Smoke-test the Start Renewal flow on a real renewal record
+   (NOT the 24 stranded ones from the pre-4b ciphertext era —
+   pick one with credentials cleared by 4b's migration):
+
+     • Open the project's permit-renewal page
+     • Expand the permit card
+     • Click "Start Renewal"
+     • Verify DOB NOW opens in a new browser tab AND the slide-out
+       panel appears with grouped fields
+     • Verify each field has a working "Copy" button (click ↦
+       value lands on the clipboard, button shows "Copied")
+     • Close the panel and click "View values again" — values
+       should re-display without recording a second click in the
+       audit log
+
+2. Verify audit_log records the click:
+     db.permit_renewals.findOne({_id: <renewal_id>}, {
+       manual_renewal_started_at: 1,
+       manual_renewal_started_by: 1,
+       manual_renewal_audit_log: 1,
+     })
+   Expected:
+     • manual_renewal_started_at = ISO timestamp of the click
+     • manual_renewal_started_by = operator's user_id / email
+     • manual_renewal_audit_log = [{event_type:'manual_renewal_started',
+                                    timestamp, actor, renewal_id}]
+
+3. Complete the renewal at DOB NOW during testing if you want
+   end-to-end validation. The MR.8 dob_approval_watcher runs every
+   15 minutes; once Open Data picks up your new permit row, the
+   watcher will:
+     • compute the new_expiration_date
+     • flip renewal.status → COMPLETED
+     • update FilingStatusCard's render to the "Renewed" state
+       (no operator action; the next page render reflects it)
+
+4. Verify the legacy /file endpoint is GONE (404, not 503):
+     POST /api/permit-renewals/{id}/file
+   Should return 404 in commit 4c (was 503 in 4b).
+
+5. (Optional cleanup) The cancel-filing-job and operator-input
+   endpoints still exist for historical filing_jobs. They have no
+   v1 caller. Decide later whether to remove them; harmless to
+   leave.
 ```
 
 ## Future revisits

@@ -689,24 +689,29 @@ export default function PermitRenewalScreen() {
               now — the takeover is complete. */}
           {isExpanded && (() => {
             const ActionRenderer = actionRenderers[renewal.action?.kind];
-            // MR.7: pass the filing_jobs cache + a refetch callback so
-            // ManualRenewalPanel can render FilingStatusCard for active
-            // jobs and FilingHistorySection can render the historical
-            // list without each component making its own round-trip.
+            // MR.14 4c: ManualRenewalPanel no longer needs the
+            // filing_jobs cache — its render is driven by fields ON
+            // the renewal doc (manual_renewal_started_at, status,
+            // new_expiration_date). The cache stays around solely
+            // for FilingHistorySection, which auto-hides when empty
+            // (so new permits with no historical jobs render nothing
+            // there).
             const filingJobsForThisRenewal =
               filingJobsByRenewalId[renewal.id] || [];
-            const refetchJobs = () => fetchFilingJobsFor(renewal.id);
+            const refetchRenewals = () => fetchRenewals();
             if (ActionRenderer) {
               return (
                 <View style={s.expandedSection}>
                   <ActionRenderer
                     renewal={renewal}
-                    filingJobs={filingJobsForThisRenewal}
-                    onJobsChange={refetchJobs}
+                    onRenewalChange={refetchRenewals}
                   />
-                  {/* MR.7: read-only history of every filing_job
-                      (terminal + non-terminal) for this permit.
-                      Auto-hides when the list is empty. */}
+                  {/* Read-only history of every filing_job (terminal +
+                      non-terminal) for this permit. Auto-hides when
+                      the list is empty — and after MR.14 4a removed
+                      the worker, no new filing_jobs land, so this
+                      section only renders for permits with pre-4a
+                      historical attempts. */}
                   <FilingHistorySection filingJobs={filingJobsForThisRenewal} />
                 </View>
               );
@@ -923,19 +928,13 @@ export default function PermitRenewalScreen() {
                 )}
 
                 {canOpenDob && !(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
-                  // TODO(local-agent): both URL paths in the previous
-                  // implementation produced dead links — the hardcoded
-                  // fallback (#!/service-worker-dashboard) ignored the
-                  // permit context, AND the backend-supplied
-                  // renewalData?.dob_now_url
-                  // (#!/service/DobDashboard/1/{job}) doesn't work
-                  // either: DOB NOW does not support URL-based
-                  // deep-linking, the renew screen routes to home in
-                  // a fresh session. Disabled until the local
-                  // Playwright agent (cloud queues, laptop pulls and
-                  // executes via stored DOB NOW credentials per GC)
-                  // ships. Visual parity with MR.1's
-                  // "Prepare Filing — coming soon" placeholder CTA.
+                  // MR.14 4c: This branch renders ONLY for the
+                  // legacy default-path render — the manual_renewal_dob_now
+                  // permits hit the actionRenderers takeover above and
+                  // never reach here. The "Automated filing" affordance
+                  // is permanently disabled in v1: LeveLog never files,
+                  // the user files manually at DOB NOW with the values
+                  // surfaced by ManualRenewalPanel's StartRenewalPanel.
                   <GlassButton
                     title="Automated filing — coming soon"
                     icon={

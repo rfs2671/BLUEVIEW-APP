@@ -374,15 +374,12 @@ export default function DOBLogsScreen() {
                 />
               )}
               {needsRenewal && (
-                // TODO(local-agent): the previous implementation
-                // opened DOB NOW via Linking.openURL with a URL that
-                // ignored the permit context — DOB NOW does not
-                // support URL-based deep-linking, the renew screen
-                // routes to home in a fresh session. Disabled until
-                // the local Playwright agent (cloud queues, laptop
-                // pulls and executes via stored DOB NOW credentials
-                // per GC) ships. Visual parity with MR.1's
-                // "Prepare Filing — coming soon" placeholder CTA.
+                // MR.14 4c: This dob-logs view doesn't carry the
+                // renewal record needed to drive the Start Renewal
+                // panel (that lives on the permit-renewal page).
+                // We render a disabled placeholder here so the row
+                // looks coherent and users navigate to the renewal
+                // page for the actual Start Renewal flow.
                 <GlassButton
                   title="Automated filing — coming soon"
                   icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.muted} />}
