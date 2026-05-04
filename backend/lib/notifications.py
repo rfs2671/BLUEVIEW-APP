@@ -92,6 +92,12 @@ NOTIFICATION_STATUS_SUPPRESSED_NO_KEY = "suppressed_no_key"
 # rows with this status mean the kill switch was active when the
 # send was attempted. Audit trail of what would have gone out.
 NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH = "suppressed_kill_switch"
+# Phase B1a — per-user preferences statuses. The preferences pipeline
+# only fires when the caller passes `signal_kind` in metadata AND
+# the recipient resolves to a users.{_id}; otherwise the legacy path
+# runs unchanged.
+NOTIFICATION_STATUS_SUPPRESSED_USER_PREF = "suppressed_user_pref"
+NOTIFICATION_STATUS_SUPPRESSED_USER_PREF_DIGEST = "suppressed_user_pref_digest"
 
 VALID_NOTIFICATION_STATUSES = frozenset({
     NOTIFICATION_STATUS_SENT,
@@ -100,6 +106,8 @@ VALID_NOTIFICATION_STATUSES = frozenset({
     NOTIFICATION_STATUS_SUPPRESSED_IDEMPOTENT,
     NOTIFICATION_STATUS_SUPPRESSED_NO_KEY,
     NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH,
+    NOTIFICATION_STATUS_SUPPRESSED_USER_PREF,
+    NOTIFICATION_STATUS_SUPPRESSED_USER_PREF_DIGEST,
 })
 
 
@@ -217,9 +225,25 @@ async def send_notification(
     document (without _id, since the caller usually doesn't need it).
 
     Order of checks:
+      0. NOTIFICATIONS_KILL_SWITCH set? → log `suppressed_kill_switch`,
+         return. Hot toggle; read fresh on every call.
       1. Idempotent? → log `suppressed_idempotent`, return.
+      1.5 (Phase B1a) — per-user preferences. ONLY runs when caller
+         passes `metadata['signal_kind']` AND the recipient resolves
+         to a users.{_id}. When applicable:
+           • feed_only / threshold-suppressed → log
+             `suppressed_user_pref`, return.
+           • digest_daily / digest_weekly → enqueue on digest_queue
+             + log `suppressed_user_pref_digest`, return.
+           • immediate (or any path that wants email NOW) → fall
+             through to the legacy Step 2-4.
+         When the caller does NOT pass signal_kind (every existing
+         caller pre-Phase-B1a), this step is skipped entirely and
+         the legacy path runs unchanged. This is the
+         default-pass-byte-for-byte contract that keeps the 502
+         existing tests passing.
       2. NOTIFICATIONS_ENABLED off? → log `suppressed_flag_off`,
-         return. (This honors the operator's pre-key-rotation safety
+         return. (Honors the operator's pre-key-rotation safety
          valve — see MR.9 spec task 10.)
       3. RESEND_API_KEY missing? → log `suppressed_no_key`, return.
          Distinct from `suppressed_flag_off` so the operator can
@@ -229,6 +253,7 @@ async def send_notification(
     """
     recipient = (recipient or "").strip().lower()
     now = datetime.now(timezone.utc)
+    metadata = metadata or {}
 
     # Step 0 — emergency kill switch. MUST run before everything
     # else. Incident 2026-05-03: customer michael@blueviewbuilders.com
@@ -269,6 +294,97 @@ async def send_notification(
             metadata=metadata,
             now=now,
         )
+
+    # Step 1.5 — per-user preferences (Phase B1a). Opt-in via
+    # metadata['signal_kind']; legacy callers skip entirely. We resolve
+    # recipient → user_id by email; non-LeveLog-account recipients
+    # (e.g. external filing_reps) skip too. The lookup + decision are
+    # cheap (one find_one + one find_one + a pure function); the
+    # exception path is broad so a transient Mongo blip on the
+    # preferences read doesn't block the send.
+    signal_kind = metadata.get("signal_kind") if isinstance(metadata, dict) else None
+    if signal_kind:
+        try:
+            from lib import notification_preferences as _nprefs
+            user_id = await _nprefs.resolve_user_id_by_email(db, recipient)
+            if user_id:
+                project_id = (
+                    metadata.get("project_id")
+                    if isinstance(metadata, dict) else None
+                )
+                severity = (
+                    metadata.get("severity")
+                    if isinstance(metadata, dict) else None
+                ) or "info"
+                prefs = await _nprefs.get_effective_preferences(
+                    db, user_id=user_id, project_id=project_id,
+                )
+                decision = _nprefs.compute_routing_decision(
+                    prefs,
+                    signal_kind=signal_kind,
+                    severity=severity,
+                )
+                if decision.should_queue_digest and decision.digest_kind:
+                    await _nprefs.enqueue_digest(
+                        db,
+                        user_id=user_id,
+                        recipient_email=recipient,
+                        signal_kind=signal_kind,
+                        severity=severity,
+                        entity_id=permit_renewal_id,
+                        trigger_type=trigger_type,
+                        subject=subject,
+                        html=html,
+                        text=text,
+                        metadata=metadata,
+                        delivery=decision.digest_kind,
+                        digest_window=prefs.get("digest_window") or {},
+                        now=now,
+                    )
+                    return await _write_log_entry(
+                        db,
+                        permit_renewal_id=permit_renewal_id,
+                        trigger_type=trigger_type,
+                        recipient=recipient,
+                        status=NOTIFICATION_STATUS_SUPPRESSED_USER_PREF_DIGEST,
+                        subject=subject,
+                        metadata={
+                            **metadata,
+                            "user_pref_user_id": user_id,
+                            "user_pref_decision": decision.delivery,
+                            "user_pref_digest_kind": decision.digest_kind,
+                        },
+                        now=now,
+                    )
+                if not decision.should_send_email_now:
+                    # feed_only, channels_empty, severity_below_threshold,
+                    # or unknown_delivery — log + return without email.
+                    return await _write_log_entry(
+                        db,
+                        permit_renewal_id=permit_renewal_id,
+                        trigger_type=trigger_type,
+                        recipient=recipient,
+                        status=NOTIFICATION_STATUS_SUPPRESSED_USER_PREF,
+                        subject=subject,
+                        metadata={
+                            **metadata,
+                            "user_pref_user_id": user_id,
+                            "user_pref_decision": decision.delivery,
+                            "user_pref_suppress_reason": decision.suppress_reason,
+                        },
+                        now=now,
+                    )
+                # decision.should_send_email_now is True — fall through
+                # to legacy steps 2-4.
+        except Exception as _pref_err:
+            # Defensive: never let a preferences-pipeline bug block
+            # an email. Log + fall through to legacy behavior.
+            logger.warning(
+                "[notifications] preferences pipeline failed for "
+                "trigger=%s recipient=%s signal_kind=%s: %r — "
+                "falling back to legacy send path",
+                trigger_type, recipient, signal_kind, _pref_err,
+            )
 
     # Step 2 — feature flag.
     if not NOTIFICATIONS_ENABLED:

@@ -3525,6 +3525,274 @@ async def admin_resend_notification(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Phase B1a — Per-user notification preferences (4 endpoints).
+# ──────────────────────────────────────────────────────────────────────
+#
+# All four endpoints route through lib/notification_preferences.py
+# helpers. The PATCH endpoints are upsert: missing record → create +
+# apply patch; existing record → merge in the validated patch fields.
+# Project-scoped variants share the same logic with project_id filled.
+
+def _user_id_str(current_user: dict) -> str:
+    """Stable string user id across legacy + new code paths."""
+    return str(
+        current_user.get("user_id")
+        or current_user.get("id")
+        or current_user.get("_id")
+        or ""
+    )
+
+
+async def _can_caller_modify_user_in_project(
+    *, current_user: dict, target_user_id: str, project_id: str,
+) -> bool:
+    """A user can always modify their own preferences. An admin /
+    owner of the company that owns the project can modify any
+    company member's project-scoped preferences."""
+    caller_id = _user_id_str(current_user)
+    if caller_id and caller_id == str(target_user_id):
+        return True
+    role = current_user.get("role")
+    if role not in ("admin", "owner"):
+        return False
+    caller_company = get_user_company_id(current_user)
+    if not caller_company:
+        return False
+    project = await db.projects.find_one(
+        {"_id": to_query_id(project_id)},
+        {"company_id": 1},
+    )
+    if not project:
+        return False
+    return str(project.get("company_id")) == str(caller_company)
+
+
+def _serialize_prefs(doc: dict) -> dict:
+    """Project the preferences doc for the API consumer. Coerces
+    _id → id, normalizes datetimes via the existing serialize_id
+    pattern."""
+    out = serialize_id(dict(doc))
+    return out
+
+
+async def _apply_prefs_patch(
+    *,
+    user_id: str,
+    project_id: Optional[str],
+    body: dict,
+) -> dict:
+    """Validate + merge a partial-update body. Returns the updated
+    preferences document. Idempotent: empty body re-saves the
+    existing record (or creates a defaults record)."""
+    from lib import notification_preferences as _nprefs
+
+    body = body or {}
+    errors: List[str] = []
+
+    overrides_patch = None
+    if "signal_kind_overrides" in body:
+        overrides_patch, errs = _nprefs.normalize_signal_kind_overrides(
+            body.get("signal_kind_overrides"),
+        )
+        errors.extend(errs)
+
+    routes_patch = None
+    if "channel_routes_default" in body:
+        routes_patch, errs = _nprefs.normalize_channel_routes_default(
+            body.get("channel_routes_default"),
+        )
+        errors.extend(errs)
+
+    window_patch = None
+    if "digest_window" in body:
+        window_patch, errs = _nprefs.normalize_digest_window(
+            body.get("digest_window"),
+        )
+        errors.extend(errs)
+
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid preferences patch", "errors": errors},
+        )
+
+    existing = await _nprefs.fetch_preferences_record(
+        db, user_id=user_id, project_id=project_id,
+    )
+    now = datetime.now(timezone.utc)
+
+    if existing is None:
+        new_doc = _nprefs.build_default_preferences(
+            user_id=user_id, project_id=project_id,
+        )
+        if overrides_patch is not None:
+            new_doc["signal_kind_overrides"] = {
+                **new_doc["signal_kind_overrides"],
+                **overrides_patch,
+            }
+        if routes_patch is not None:
+            new_doc["channel_routes_default"] = {
+                **new_doc["channel_routes_default"],
+                **routes_patch,
+            }
+        if window_patch is not None:
+            new_doc["digest_window"] = {
+                **new_doc["digest_window"],
+                **window_patch,
+            }
+        new_doc["updated_at"] = now
+        result = await db.notification_preferences.insert_one(new_doc)
+        new_doc["_id"] = result.inserted_id
+        return new_doc
+
+    set_fields: Dict[str, Any] = {"updated_at": now}
+    if overrides_patch is not None:
+        merged = {
+            **(existing.get("signal_kind_overrides") or {}),
+            **overrides_patch,
+        }
+        set_fields["signal_kind_overrides"] = merged
+    if routes_patch is not None:
+        merged_routes = {
+            **(existing.get("channel_routes_default")
+               or _nprefs.default_channel_routes_default()),
+            **routes_patch,
+        }
+        set_fields["channel_routes_default"] = merged_routes
+    if window_patch is not None:
+        merged_window = {
+            **(existing.get("digest_window")
+               or _nprefs.default_digest_window()),
+            **window_patch,
+        }
+        set_fields["digest_window"] = merged_window
+
+    await db.notification_preferences.update_one(
+        {"_id": existing["_id"]},
+        {"$set": set_fields},
+    )
+    refreshed = await db.notification_preferences.find_one(
+        {"_id": existing["_id"]},
+    )
+    return refreshed or existing
+
+
+@api_router.get(
+    "/users/me/notification-preferences",
+    tags=["Notifications"],
+)
+async def get_my_notification_preferences(
+    current_user=Depends(get_current_user),
+):
+    """Return the current user's user-global preferences. If no
+    record exists, return the defaults (the response is the same
+    shape; `id` is absent for synthesized defaults so the client
+    knows it's a virtual record)."""
+    from lib import notification_preferences as _nprefs
+
+    user_id = _user_id_str(current_user)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id on token")
+    record = await _nprefs.fetch_preferences_record(
+        db, user_id=user_id, project_id=None,
+    )
+    if record is None:
+        return _nprefs.build_default_preferences(
+            user_id=user_id, project_id=None,
+        )
+    return _serialize_prefs(record)
+
+
+@api_router.patch(
+    "/users/me/notification-preferences",
+    tags=["Notifications"],
+)
+async def patch_my_notification_preferences(
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Partial update of the user's user-global preferences. Creates
+    a record from defaults if none exists. Validates each patch
+    chunk; rejects with 400 + structured error list on bad input."""
+    user_id = _user_id_str(current_user)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id on token")
+    updated = await _apply_prefs_patch(
+        user_id=user_id, project_id=None, body=body,
+    )
+    return _serialize_prefs(updated)
+
+
+@api_router.get(
+    "/projects/{project_id}/notification-preferences/{user_id}",
+    tags=["Notifications"],
+)
+async def get_project_notification_preferences(
+    project_id: str,
+    user_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Return project-scoped preferences for a user. Auth: caller
+    must be the user_id themselves OR an admin/owner of the company
+    that owns the project. Falls back to user-global, then defaults,
+    when no project-scoped record exists — same effective shape the
+    routing decision sees at send time."""
+    from lib import notification_preferences as _nprefs
+
+    if not await _can_caller_modify_user_in_project(
+        current_user=current_user,
+        target_user_id=user_id,
+        project_id=project_id,
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    record = await _nprefs.fetch_preferences_record(
+        db, user_id=user_id, project_id=project_id,
+    )
+    if record is not None:
+        return _serialize_prefs(record)
+    # Fall back to user-global, project_id annotated so the client
+    # can persist a project-scoped patch that inherits the shape.
+    user_global = await _nprefs.fetch_preferences_record(
+        db, user_id=user_id, project_id=None,
+    )
+    if user_global is not None:
+        out = _serialize_prefs(user_global)
+        out["project_id"] = project_id
+        out.pop("id", None)
+        return out
+    return _nprefs.build_default_preferences(
+        user_id=user_id, project_id=project_id,
+    )
+
+
+@api_router.patch(
+    "/projects/{project_id}/notification-preferences/{user_id}",
+    tags=["Notifications"],
+)
+async def patch_project_notification_preferences(
+    project_id: str,
+    user_id: str,
+    body: dict,
+    current_user=Depends(get_current_user),
+):
+    """Partial update of project-scoped preferences. Auth: same as
+    GET. Creates a project-scoped record from defaults if none
+    exists; the project-scoped record overrides the user-global
+    record at routing time."""
+    if not await _can_caller_modify_user_in_project(
+        current_user=current_user,
+        target_user_id=user_id,
+        project_id=project_id,
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+    updated = await _apply_prefs_patch(
+        user_id=user_id, project_id=project_id, body=body,
+    )
+    return _serialize_prefs(updated)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # MR.10 — Agent public-key registry — REMOVED in MR.14 commit 4b.
 # ──────────────────────────────────────────────────────────────────────
 #
@@ -22214,6 +22482,74 @@ async def startup_event():
         name="renewal_alert_sent_ttl",
         expireAfterSeconds=90 * 24 * 60 * 60,
     )
+
+    # Phase B1a — notification_preferences. Unique compound on
+    # (user_id, project_id) so each (user, project-or-null) pair
+    # carries at most one record. Project-scoped reads compose with
+    # the user-global fallback in lib.notification_preferences.
+    await _ensure_index_resilient(
+        db.notification_preferences,
+        keys=[("user_id", 1), ("project_id", 1)],
+        name="notification_preferences_user_project_unique",
+        unique=True,
+    )
+    # Fast user_id-only lookup for the global fallback path.
+    await _ensure_index_resilient(
+        db.notification_preferences,
+        keys=[("user_id", 1)],
+        name="notification_preferences_user",
+    )
+
+    # Phase B1a — digest_queue. The dispatcher claims by status +
+    # scheduled_send_at; we also support per-user lookups for the
+    # "View pending digest items" admin surface that lands in B1b.
+    await _ensure_index_resilient(
+        db.digest_queue,
+        keys=[("status", 1), ("scheduled_send_at", 1)],
+        name="digest_queue_status_sched",
+    )
+    await _ensure_index_resilient(
+        db.digest_queue,
+        keys=[("user_id", 1), ("scheduled_send_at", 1), ("status", 1)],
+        name="digest_queue_user_sched",
+    )
+
+    # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
+    # interval as the DOB nightly_dob_scan so digest-eligible items
+    # never wait more than one tick past their scheduled_send_at.
+    # max_instances=1 + coalesce=True follow the pattern of the
+    # eligibility shadow sweep below: a slow run skips its
+    # successor instead of stacking.
+    try:
+        from lib.notification_preferences import dispatch_digests as _dispatch_digests
+        from lib.notifications import send_notification as _digest_send_fn
+
+        async def _digest_dispatcher_tick():
+            try:
+                await _dispatch_digests(
+                    db, send_notification_fn=_digest_send_fn,
+                )
+            except Exception as _e:
+                logger.error(
+                    "[digest_dispatcher] tick failed: %r", _e,
+                )
+
+        scheduler.add_job(
+            _digest_dispatcher_tick,
+            IntervalTrigger(minutes=15),
+            id='digest_dispatcher',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2),
+        )
+        logger.info(
+            "📬 Digest dispatcher scheduled (every 15 min)"
+        )
+    except Exception as _digest_job_err:
+        logger.error(
+            "digest_dispatcher scheduler wire failed: %r", _digest_job_err,
+        )
 
     scheduler.start()
     logger.info("📧 Report email scheduler started")
