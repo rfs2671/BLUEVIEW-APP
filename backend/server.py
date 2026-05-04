@@ -483,28 +483,13 @@ class FilingJobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
-# Statuses from which the job CANNOT return to the queue and CANNOT
-# be cancelled. The DELETE cancellation endpoint refuses with 409 if
-# the job is in any of these.
-FILING_JOB_TERMINAL_STATUSES = {
-    FilingJobStatus.FILED.value,
-    FilingJobStatus.COMPLETED.value,
-    FilingJobStatus.FAILED.value,
-    FilingJobStatus.CANCELLED.value,
-}
-
-# Statuses where the worker may still be operating on the job —
-# stale-claim recovery looks at these, and cancellation must use the
-# soft `cancellation_requested` flag instead of an immediate status
-# flip (worker checks the flag before posting results).
-FILING_JOB_INFLIGHT_STATUSES = {
-    FilingJobStatus.CLAIMED.value,
-    FilingJobStatus.IN_PROGRESS.value,
-}
-
-# Retry cap for stale-claim recovery before the watchdog gives up
-# and marks the job failed. 3 matches the user-visible retry count.
-FILING_JOB_RETRY_LIMIT = 3
+# MR.14 commit 5 — FILING_JOB_TERMINAL_STATUSES, FILING_JOB_INFLIGHT_STATUSES,
+# and FILING_JOB_RETRY_LIMIT REMOVED. The cancel_filing_job and
+# submit_operator_input endpoints that consumed them are gone (no v1
+# code path queues filing_jobs for the worker, so there's nothing to
+# cancel or feed CAPTCHA / 2FA into). FilingJobStatus enum stays as
+# a documentation/serializer convenience for GET /filing-jobs reading
+# the historical filing_jobs collection.
 
 
 class FilingJobEvent(BaseModel):
