@@ -11977,6 +11977,17 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
 
     subject = f"New {rt} on {project_name}"
 
+    # Incident 2026-05-03 — emergency kill switch. See
+    # lib/notifications.is_email_kill_switch_on for context.
+    from lib.notifications import is_email_kill_switch_on
+    if is_email_kill_switch_on():
+        logger.warning(
+            "[critical_dob_alert] EMERGENCY KILL SWITCH active; halting send "
+            "subject=%r recipients=%s",
+            subject, recipients,
+        )
+        return
+
     try:
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({
@@ -13978,6 +13989,14 @@ async def _send_renewal_digest_email(recipients: list, subject: str, html: str) 
             f"{len(recipients)} recipient(s) with subject={subject!r}"
         )
         return
+    # Incident 2026-05-03 — emergency kill switch.
+    from lib.notifications import is_email_kill_switch_on
+    if is_email_kill_switch_on():
+        logger.warning(
+            "[renewal_digest] EMERGENCY KILL SWITCH active; halting send "
+            "subject=%r recipients=%d", subject, len(recipients),
+        )
+        return
     try:
         resend.api_key = RESEND_API_KEY
         # Resend Python SDK is sync — but the call is fast (<1s typical),
@@ -14480,6 +14499,15 @@ async def check_and_send_reports():
 
         try:
             html = await generate_combined_report(project_id, today)
+            # Incident 2026-05-03 — emergency kill switch.
+            from lib.notifications import is_email_kill_switch_on
+            if is_email_kill_switch_on():
+                logger.warning(
+                    "[daily_report] EMERGENCY KILL SWITCH active; halting "
+                    "send for project=%s recipients=%d",
+                    project_name, len(email_list),
+                )
+                continue
             resend.Emails.send({
                 "from": "Levelog Reports <reports@levelog.com>",
                 "to": email_list,
@@ -14622,6 +14650,15 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
         </div>
         """
 
+        # Incident 2026-05-03 — emergency kill switch.
+        from lib.notifications import is_email_kill_switch_on
+        if is_email_kill_switch_on():
+            logger.warning(
+                "[annotation] EMERGENCY KILL SWITCH active; halting send "
+                "ann_id=%s recipients=%d", ann_id, len(recipient_emails),
+            )
+            return
+
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({
             "from": "Levelog Plans <plans@levelog.com>",
@@ -14673,6 +14710,16 @@ async def _send_reply_notification(annotation: dict, thread_entry: dict):
             <p style="text-align:center;font-size:10px;color:#cbd5e1;margin-top:16px;letter-spacing:2px;">LEVELOG</p>
         </div>
         """
+
+        # Incident 2026-05-03 — emergency kill switch.
+        from lib.notifications import is_email_kill_switch_on
+        if is_email_kill_switch_on():
+            logger.warning(
+                "[reply_notification] EMERGENCY KILL SWITCH active; "
+                "halting send ann_id=%s recipient=%s",
+                ann_id, creator.get("email"),
+            )
+            return
 
         resend.api_key = RESEND_API_KEY
         resend.Emails.send({

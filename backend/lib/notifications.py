@@ -36,6 +36,28 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────
 
+# ⚠️ EMERGENCY KILL SWITCH (incident 2026-05-03) ─────────────────────
+# Read FRESH on every call so an operator can flip it via Railway env
+# without a restart. NOTIFICATIONS_ENABLED below is read once at
+# module load and requires a restart — this kill switch does not.
+#
+# When NOTIFICATIONS_KILL_SWITCH is set to ANY non-empty value
+# (1, true, yes, ON, anything truthy), every email send path that
+# calls is_email_kill_switch_on() returns early without sending.
+#
+# Removal: clear the env var on Railway after the underlying
+# notification bug is fixed. The kill-switch helper stays in place
+# permanently as the safety valve.
+
+def is_email_kill_switch_on() -> bool:
+    """Returns True iff outbound email is HALTED for an incident.
+    Caller MUST log + skip when this returns True. Reads env var
+    on every call (no module-load cache) so the operator can flip
+    the switch via Railway without restarting the backend."""
+    raw = (os.environ.get("NOTIFICATIONS_KILL_SWITCH") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 NOTIFICATIONS_ENABLED = os.environ.get(
     "NOTIFICATIONS_ENABLED", "false"
 ).strip().lower() in ("1", "true", "yes", "on")
@@ -66,6 +88,10 @@ NOTIFICATION_STATUS_FAILED = "failed"
 NOTIFICATION_STATUS_SUPPRESSED_FLAG_OFF = "suppressed_flag_off"
 NOTIFICATION_STATUS_SUPPRESSED_IDEMPOTENT = "suppressed_idempotent"
 NOTIFICATION_STATUS_SUPPRESSED_NO_KEY = "suppressed_no_key"
+# Incident 2026-05-03 — emergency halt status. notification_log
+# rows with this status mean the kill switch was active when the
+# send was attempted. Audit trail of what would have gone out.
+NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH = "suppressed_kill_switch"
 
 VALID_NOTIFICATION_STATUSES = frozenset({
     NOTIFICATION_STATUS_SENT,
@@ -73,6 +99,7 @@ VALID_NOTIFICATION_STATUSES = frozenset({
     NOTIFICATION_STATUS_SUPPRESSED_FLAG_OFF,
     NOTIFICATION_STATUS_SUPPRESSED_IDEMPOTENT,
     NOTIFICATION_STATUS_SUPPRESSED_NO_KEY,
+    NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH,
 })
 
 
@@ -196,6 +223,28 @@ async def send_notification(
     """
     recipient = (recipient or "").strip().lower()
     now = datetime.now(timezone.utc)
+
+    # Step 0 — emergency kill switch. MUST run before everything
+    # else. Incident 2026-05-03: customer michael@blueviewbuilders.com
+    # received 20+ emails. Operator flipped NOTIFICATIONS_KILL_SWITCH
+    # on Railway; this branch halts all outbound mail without
+    # requiring a backend restart.
+    if is_email_kill_switch_on():
+        logger.warning(
+            "[notifications] EMERGENCY KILL SWITCH active; halting send "
+            "trigger=%s renewal=%s recipient=%s subject=%r",
+            trigger_type, permit_renewal_id, recipient, subject,
+        )
+        return await _write_log_entry(
+            db,
+            permit_renewal_id=permit_renewal_id,
+            trigger_type=trigger_type,
+            recipient=recipient,
+            status=NOTIFICATION_STATUS_SUPPRESSED_KILL_SWITCH,
+            subject=subject,
+            metadata=metadata,
+            now=now,
+        )
 
     # Step 1 — idempotency.
     if await is_idempotent_skip(

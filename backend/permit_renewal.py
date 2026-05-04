@@ -1063,6 +1063,16 @@ async def _send_health_check_alert(db, issues: List[str]):
         </div>
         """
 
+        # Incident 2026-05-03 — emergency kill switch.
+        from lib.notifications import is_email_kill_switch_on
+        if is_email_kill_switch_on():
+            logger.warning(
+                "[health_check_alert] EMERGENCY KILL SWITCH active; "
+                "halting send recipient=%s issues=%d",
+                recipient, len(issues),
+            )
+            return
+
         resend.Emails.send({
             "from": "Levelog Alerts <alerts@levelog.com>",
             "to": [recipient],
