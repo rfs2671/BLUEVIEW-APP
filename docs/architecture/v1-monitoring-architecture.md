@@ -87,9 +87,22 @@ the v1 value prop and treat filing automation as a v2 question.
   Bright Data, no Webshare proxy, no real Chrome stealth. The
   `dob_worker/` directory was removed in MR.14 commit 4a.
 - **Encrypted DOB credentials at rest**. The
-  `companies.filing_reps[].credentials` field + `agent_public_keys`
-  collection + browser-side encryption are removed in MR.14
-  commit 4b.
+  `companies.filing_reps[].credentials` field + the
+  `agent_public_keys` collection + the browser-side
+  `encryptCredentials` SubtleCrypto path were removed in
+  MR.14 commit 4b. Operators can no longer enter or rotate
+  DOB NOW credentials through the owner portal — there is no
+  longer a credential entry surface anywhere in the product.
+  The corresponding backend endpoints (POST/GET/DELETE under
+  `/api/owner/companies/{id}/filing-reps/{rep_id}/credentials`,
+  plus the `/api/admin/agent-keys` CRUD and the no-auth
+  `/api/agent-public-key` read) are gone. Backfill migration:
+  `backend/scripts/migrate_clear_filing_rep_credentials.py`
+  ($unset of the dead field on every existing rep). MR.10's
+  filing-authorization endpoints (GET/POST
+  `/api/owner/companies/{id}/authorization`) and the
+  `AUTHORIZATION_TEXT_VERSION` constant remain on the backend
+  for historical reference; the v1 frontend never reaches them.
 - **"File Renewal" button**. Replaced by "Start Renewal" UX
   (commit 4c) that opens DOB NOW in a new tab + shows the
   pre-filled PW2 values for the operator to copy in manually.
@@ -100,7 +113,8 @@ the v1 value prop and treat filing automation as a v2 question.
 
 | Collection | Purpose |
 |---|---|
-| `companies` | One per GC; carries license + insurance metadata. `filing_reps[].credentials` field is removed in 4b. |
+| `companies` | One per GC; carries license + insurance metadata. `filing_reps[].credentials` field REMOVED in MR.14 commit 4b (operator runs `migrate_clear_filing_rep_credentials.py` to strip from existing docs). |
+| `agent_public_keys` | REMOVED in MR.14 commit 4b — operator drops via `db.agent_public_keys.drop()`. The collection backed the worker's RSA-4096 hybrid encryption scheme; with the worker container gone (4a) and the credentials field gone (4b), nothing reads or writes it. |
 | `projects` | Per-jobsite. `track_dob_status` defaults to True; polled if BIN or address resolves. |
 | `dob_logs` | Append-only stream of DOB signals. One row per (raw_dob_id, transition). Carries `signal_kind`, `current_status`, `previous_status`, `status_changed_at`, `is_seed_transition`, `read_by_user[]`. |
 | `permit_renewals` | Historical from MR.6 work. The 30-day-window sweep still creates records but no automated filing path consumes them. |
@@ -168,6 +182,44 @@ Read it before re-attempting any of these.
      - Visit /project/{id}/activity — feed renders
      - Trigger /api/projects/{id}/dob-sync — new dob_logs appear
      - Check notification_log for recent sends
+```
+
+## Operator action checklist (post-MR.14 commit 4b)
+
+```
+1. Run the backfill migration with MONGO_URL + DB_NAME set:
+     python -m backend.scripts.migrate_clear_filing_rep_credentials --dry-run
+   Inspect the per-doc breakdown + total ciphertext-bytes-to-free,
+   then re-run with --execute when satisfied:
+     python -m backend.scripts.migrate_clear_filing_rep_credentials --execute
+
+2. Drop the now-orphaned agent_public_keys collection:
+     mongosh "$MONGO_URL/$DB_NAME" --eval "db.agent_public_keys.drop()"
+
+3. Verify no lingering credential field references in Mongo:
+     db.companies.find({"filing_reps.credentials": {$exists: true}}).count()
+   Should return 0 after the migration.
+
+4. Verify owner portal:
+     - Open the Owner Portal → expand a company's filing_reps drawer
+     - The rep cards should NOT display credential status pills,
+       "Add credentials" / "Rotate" / "Revoke" buttons, or open
+       the encrypt-credentials modal
+     - The filing-authorization modal should not appear
+
+5. Verify backend endpoints return 404:
+     POST   /api/owner/companies/{id}/filing-reps/{rep}/credentials
+     GET    /api/owner/companies/{id}/filing-reps/{rep}/credentials
+     DELETE /api/owner/companies/{id}/filing-reps/{rep}/credentials/active
+     POST   /api/admin/agent-keys
+     GET    /api/admin/agent-keys
+     DELETE /api/admin/agent-keys/{key_id}
+     GET    /api/agent-public-key
+
+6. Verify the legacy "File Renewal" button (still present in 4b)
+   returns 503 with code='renewal_automation_deferred' from
+     POST /api/permit-renewals/{id}/file
+   The button itself goes away in commit 4c.
 ```
 
 ## Future revisits

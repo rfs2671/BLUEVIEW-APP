@@ -1,4 +1,4 @@
-"""MR.10 — Authorization document acceptance + MR.6 enqueue gate.
+"""MR.10 — Authorization document acceptance.
 
 Coverage:
   • GET /api/owner/companies/{id}/authorization — returns text + status.
@@ -8,9 +8,11 @@ Coverage:
   • POST — re-posting overwrites with new accepted_at.
   • POST — empty typed name → 400.
   • Admin auth gate on both endpoints.
-  • MR.6 enqueue gate: company without authorization → 400 with
-    code='authorization_required'.
-  • MR.6 enqueue gate: company with stale-version authorization → 400.
+
+MR.14 commit 4b — enqueue-gate integration tests REMOVED. The
+enqueue endpoint is now a hard 503 stub; the credential and
+authorization gates inside it are dead code (no behavior to pin).
+The endpoint itself goes away entirely in commit 4c.
 """
 
 from __future__ import annotations
@@ -227,170 +229,10 @@ class TestPostAuthorization(unittest.TestCase):
             restore()
 
 
-# ── MR.6 enqueue gate integration ──────────────────────────────────
-
-class TestMr6EnqueueGate(unittest.TestCase):
-    """Confirms the MR.6 enqueue endpoint refuses companies without
-    authorization. Exercises only the gate; other gates are stubbed
-    to pass."""
-
-    def _full_db_stub(self, *, company):
-        mock_db = MagicMock()
-        mock_db.permit_renewals = MagicMock()
-        mock_db.permit_renewals.find_one = AsyncMock(return_value={
-            "_id": "r1", "company_id": "co_a", "status": "eligible",
-        })
-        mock_db.permit_renewals.update_one = AsyncMock()
-        mock_db.companies = MagicMock()
-        mock_db.companies.find_one = AsyncMock(return_value=company)
-        mock_db.filing_jobs = MagicMock()
-        mock_db.filing_jobs.find_one = AsyncMock(return_value=None)
-        return mock_db
-
-    def _patch_lib_imports(self):
-        import lib.filing_readiness as fr_mod
-        import lib.pw2_field_mapper as pw_mod
-
-        class _Readiness:
-            ready = True
-            blockers = []
-
-        class _FieldMap:
-            unmappable_fields = []
-            fields = {}
-            permit_class = "DOB_NOW"
-            attachments_required = []
-            notes = []
-            permit_renewal_id = "r1"
-
-            def model_dump(self):
-                return {
-                    "permit_renewal_id": "r1", "permit_class": "DOB_NOW",
-                    "fields": {}, "attachments_required": [],
-                    "notes": [], "unmappable_fields": [],
-                }
-
-        return [
-            patch.object(fr_mod, "check_filing_readiness",
-                         AsyncMock(return_value=_Readiness())),
-            patch.object(pw_mod, "map_pw2_fields",
-                         AsyncMock(return_value=_FieldMap())),
-        ]
-
-    def _setup_client(self):
-        import server
-        user = {"id": "u1", "_id": "u1", "role": "admin", "company_id": "co_a"}
-
-        async def _fake_user():
-            return user
-
-        server.app.dependency_overrides[server.get_current_user] = _fake_user
-        return TestClient(server.app), lambda: server.app.dependency_overrides.clear()
-
-    def _credentialed_company(self, *, authorization=None):
-        now = datetime.now(timezone.utc)
-        return {
-            "_id": "co_a",
-            "name": "Test",
-            "filing_reps": [{
-                "id": "rep_primary", "name": "Jane",
-                "license_class": "GC", "license_number": "626198",
-                "email": "jane@example.com", "is_primary": True,
-                "created_at": now, "updated_at": now,
-                "credentials": [{
-                    "version": 1, "encrypted_ciphertext": "b64",
-                    "public_key_fingerprint": "fp",
-                    "created_at": now, "superseded_at": None,
-                }],
-            }],
-            "authorization": authorization,
-        }
-
-    def test_no_authorization_blocks_enqueue(self):
-        import server
-        client, restore = self._setup_client()
-        mock_db = self._full_db_stub(
-            company=self._credentialed_company(authorization=None),
-        )
-        patches = self._patch_lib_imports()
-        try:
-            for p in patches:
-                p.__enter__()
-            with patch.object(server, "db", mock_db), \
-                 patch.object(server, "to_query_id", side_effect=lambda x: x), \
-                 patch.dict(os.environ, {"ELIGIBILITY_REWRITE_MODE": "live"}):
-                resp = client.post("/api/permit-renewals/r1/file")
-            self.assertEqual(resp.status_code, 400)
-            self.assertEqual(
-                resp.json()["detail"]["code"], "authorization_required",
-            )
-        finally:
-            for p in patches:
-                p.__exit__(None, None, None)
-            restore()
-
-    def test_stale_version_authorization_blocks_enqueue(self):
-        import server
-        client, restore = self._setup_client()
-        stale_auth = {
-            "version": "0.9-stale",
-            "accepted_at": datetime.now(timezone.utc),
-            "licensee_name_typed": "Test",
-            "accepted_by_user_id": "u1",
-        }
-        mock_db = self._full_db_stub(
-            company=self._credentialed_company(authorization=stale_auth),
-        )
-        patches = self._patch_lib_imports()
-        try:
-            for p in patches:
-                p.__enter__()
-            with patch.object(server, "db", mock_db), \
-                 patch.object(server, "to_query_id", side_effect=lambda x: x), \
-                 patch.dict(os.environ, {"ELIGIBILITY_REWRITE_MODE": "live"}):
-                resp = client.post("/api/permit-renewals/r1/file")
-            self.assertEqual(resp.status_code, 400)
-            detail = resp.json()["detail"]
-            self.assertEqual(detail["code"], "authorization_required")
-            self.assertEqual(detail["stored_version"], "0.9-stale")
-        finally:
-            for p in patches:
-                p.__exit__(None, None, None)
-            restore()
-
-    def test_current_version_authorization_passes_gate(self):
-        import server
-        client, restore = self._setup_client()
-        current_auth = {
-            "version": server.AUTHORIZATION_TEXT_VERSION,
-            "accepted_at": datetime.now(timezone.utc),
-            "licensee_name_typed": "Test",
-            "accepted_by_user_id": "u1",
-        }
-        mock_db = self._full_db_stub(
-            company=self._credentialed_company(authorization=current_auth),
-        )
-        # Mock the Redis enqueue so the test doesn't try a real LPUSH.
-        lpush_mock = AsyncMock()
-        # Add insert_one for the filing_jobs collection.
-        mock_db.filing_jobs.insert_one = AsyncMock()
-        mock_db.filing_jobs.delete_one = AsyncMock()
-
-        patches = self._patch_lib_imports()
-        try:
-            for p in patches:
-                p.__enter__()
-            with patch.object(server, "db", mock_db), \
-                 patch.object(server, "to_query_id", side_effect=lambda x: x), \
-                 patch.object(server, "_lpush_filing_queue", lpush_mock), \
-                 patch.dict(os.environ, {"ELIGIBILITY_REWRITE_MODE": "live"}):
-                resp = client.post("/api/permit-renewals/r1/file")
-            # Authorization gate passes; downstream succeeds.
-            self.assertEqual(resp.status_code, 200, resp.text)
-        finally:
-            for p in patches:
-                p.__exit__(None, None, None)
-            restore()
+# ── MR.6 enqueue gate integration — REMOVED in MR.14 commit 4b.
+# enqueue_filing_job is a hard 503 stub; the credential gate +
+# authorization gate inside it are dead code with no behavior to
+# pin. The endpoint itself goes away entirely in commit 4c.
 
 
 if __name__ == "__main__":

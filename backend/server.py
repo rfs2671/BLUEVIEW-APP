@@ -406,32 +406,12 @@ def to_query_id(id_str: str):
 # company); filing_reps captures the roster of authorized filers,
 # potentially many, distinct trade scopes.
 #
-# Credential ciphertext storage (DOB NOW password) lands HERE in MR.6.
-# The cloud only ever sees opaque base64 ciphertext + metadata; the
-# encrypt path runs client-side in MR.10's onboarding UI using the
-# operator's RSA-4096 public key, and only the worker's private key
-# (~/.levelog/agent-keys/agent.key, 0400) can decrypt. Versioning is
-# append-only: every new credential gets the next integer; the prior
-# active credential gets `superseded_at` stamped at push time. The
-# active credential is the entry with `superseded_at is None` and the
-# highest version. Revoke == set superseded_at without a replacement.
-class FilingRepCredential(BaseModel):
-    """MR.6 — encrypted DOB NOW credential for a filing_rep.
-
-    Cloud is intentionally blind to the cleartext: ciphertext is the
-    output of MR.5's hybrid scheme (AES-256-GCM data key wrapped by
-    RSA-OAEP-4096 against the operator's public key, base64-encoded).
-    `public_key_fingerprint` lets the worker assert it's about to
-    decrypt with a key whose public-half matches the one used to
-    encrypt — a hard error otherwise (prevents silently passing
-    ciphertext to the wrong worker laptop)."""
-    version: int                                 # auto-incremented per filing_rep, 1-indexed
-    encrypted_ciphertext: str                    # base64(RSA-OAEP-wrapped AES-GCM blob), opaque
-    public_key_fingerprint: str                  # SHA-256 hex of the encrypting public key
-    created_at: datetime
-    superseded_at: Optional[datetime] = None     # set when newer version pushes OR explicit revoke
-
-
+# MR.14 commit 4b — encrypted-credentials field REMOVED. v1 monitoring
+# product never holds DOB NOW passwords; the FilingRepCredential model
+# + the agent_public_keys collection + the browser-side encryption
+# path are all gone. The roster (name + license + email + primary
+# flag) stays — it's still needed for notification routing and is a
+# precondition for the v2 filing-automation revisit.
 class FilingRep(BaseModel):
     id: str                                   # uuid4 hex, generated server-side on POST
     name: str                                 # licensed individual's full legal name
@@ -442,9 +422,6 @@ class FilingRep(BaseModel):
     is_primary: bool = False                  # exactly one per company; default routing for filings
     created_at: datetime
     updated_at: datetime
-    # MR.6 — encrypted credential history (append-only). Default empty
-    # so existing reads of pre-MR.6 documents don't ValidationError.
-    credentials: List[FilingRepCredential] = []
 
 
 FILING_REP_LICENSE_CLASSES = {
@@ -475,16 +452,6 @@ class FilingRepUpdate(BaseModel):
     license_type: Optional[str] = None
     email: Optional[EmailStr] = None
     is_primary: Optional[bool] = None
-
-
-class FilingRepCredentialCreate(BaseModel):
-    """MR.6 — payload for POST /filing-reps/{rep_id}/credentials.
-
-    `version`, `created_at`, `superseded_at` are managed server-side.
-    The client only ships the ciphertext + fingerprint of the public
-    key it used to encrypt."""
-    encrypted_ciphertext: str
-    public_key_fingerprint: str
 
 
 # ── MR.6: filing_jobs collection ─────────────────────────────────────
@@ -574,18 +541,8 @@ class FilingJob(BaseModel):
 
 
 # ── MR.6 helpers — pure functions, used by the endpoints below ──────
-
-def filing_rep_active_credential(rep: dict) -> Optional[dict]:
-    """Return the active credential entry on a filing_rep dict, or
-    None if no credential is currently active. Active = highest
-    `version` among entries where `superseded_at is None`."""
-    if not isinstance(rep, dict):
-        return None
-    creds = rep.get("credentials") or []
-    active = [c for c in creds if c.get("superseded_at") is None]
-    if not active:
-        return None
-    return max(active, key=lambda c: c.get("version") or 0)
+# MR.14 commit 4b: filing_rep_active_credential() helper REMOVED.
+# v1 monitoring product never reads filing_reps[].credentials.
 
 
 def _filing_job_audit_event(
@@ -757,10 +714,11 @@ VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 #   1. backend/requirements.txt missing redis package — production
 #      500 because the lazy import path fired only in production,
 #      tests mocked the helper.
-#   2. companies.filing_reps[].credentials field default {} did not
+#   2. companies.filing_reps[].credentials field default [] did not
 #      survive Mongo writes on legacy filing-rep docs that predated
-#      the field. MR.10 fixed via _lift_credentials_field +
-#      backend/scripts/migrate_filing_reps_credentials_init.py.
+#      the field. MR.10 fixed via on-the-fly $set + a backfill
+#      migration. Both the field and the lift logic are GONE in
+#      MR.14 commit 4b — the credentials field no longer exists.
 #   3. THIS — projects.gates (and 5 sibling list fields) default
 #      protected reads via Pydantic's `[]` default, but
 #      ProjectCreate.gates: Optional[List[...]] = None was carried
@@ -3146,14 +3104,10 @@ async def add_filing_rep(
         "is_primary": bool(body.is_primary),
         "created_at": now,
         "updated_at": now,
-        # MR.10 forward fix: initialize the credentials array on
-        # insert so MR.10's add_filing_rep_credential endpoint
-        # doesn't have to lift a missing field via its defensive
-        # guard. The MR.6 Pydantic model declares this field with
-        # a default of [], but Pydantic defaults don't write through
-        # to MongoDB on dict-shaped inserts — without this line,
-        # new reps would still ship without the field on disk.
-        "credentials": [],
+        # MR.14 commit 4b — credentials field REMOVED. The MR.10
+        # forward-fix that initialized `credentials: []` on insert
+        # is gone with the field; v1 monitoring product never holds
+        # DOB NOW passwords.
     }
 
     # Push the new rep onto the array.
@@ -3256,21 +3210,18 @@ async def delete_filing_rep(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# MR.6 — Filing-rep credentials (encrypted DOB NOW passwords).
+# MR.6 — Filing-rep credentials — REMOVED in MR.14 commit 4b.
 # ──────────────────────────────────────────────────────────────────────
-# Three endpoints under /owner/companies/{company_id}/filing-reps/{rep_id}/credentials:
-#   POST   — push a new credential, supersede the prior active, $push w/ next version
-#   DELETE — revoke the current active credential without replacement
-#   GET    — list metadata (version, created_at, superseded_at, fingerprint).
-#            CIPHERTEXT IS NEVER RETURNED to the UI; the worker reads it
-#            from the queue payload, not from this endpoint.
-#
-# Concurrency note: two simultaneous POST writers can race between the
-# supersede step and the push step, producing same-version duplicates.
-# This is documented in MR.6's architectural surprises; in practice
-# operators rotate credentials rarely and the race window is on the
-# order of milliseconds. A future hardening pass can use a Mongo
-# aggregation-pipeline update to make the supersede + push truly atomic.
+# v1 monitoring product never holds DOB NOW passwords. The three
+# endpoints under
+# /owner/companies/{company_id}/filing-reps/{rep_id}/credentials
+# (GET / POST / DELETE-active) are gone, the
+# `filing_rep_active_credential` helper is gone, and the backfill
+# migration `backend/scripts/migrate_clear_filing_rep_credentials.py`
+# strips the now-dead `credentials` field off existing companies docs.
+# A future v2 filing-automation revisit will need to re-design this
+# surface — the prior shape is preserved in MR.6's git history if
+# needed for reference.
 
 def _find_filing_rep(company: dict, rep_id: str) -> Optional[dict]:
     """Locate a filing_rep entry inside a company doc by rep_id.
@@ -3280,229 +3231,6 @@ def _find_filing_rep(company: dict, rep_id: str) -> Optional[dict]:
         if rep.get("id") == rep_id:
             return rep
     return None
-
-
-def _strip_credential_ciphertext(cred: dict) -> dict:
-    """Project a credential entry to its metadata-only form for GET
-    responses. Ciphertext is opaque-but-still-secret material; never
-    surface it through the read API."""
-    return {
-        "version": cred.get("version"),
-        "public_key_fingerprint": cred.get("public_key_fingerprint"),
-        "created_at": cred.get("created_at"),
-        "superseded_at": cred.get("superseded_at"),
-    }
-
-
-@api_router.get(
-    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials",
-    tags=["Owner"],
-)
-async def list_filing_rep_credentials(
-    company_id: str,
-    rep_id: str,
-    current_user=Depends(get_current_user),
-):
-    """List credential metadata for a filing_rep. Ordered version desc.
-    Ciphertext is intentionally NOT included — the UI never has any
-    reason to see it, only the worker decrypts."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    company = await db.companies.find_one(
-        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
-    )
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    rep = _find_filing_rep(company, rep_id)
-    if rep is None:
-        raise HTTPException(status_code=404, detail="Filing representative not found")
-
-    creds = rep.get("credentials") or []
-    return sorted(
-        [_strip_credential_ciphertext(c) for c in creds],
-        key=lambda c: (c.get("version") or 0),
-        reverse=True,
-    )
-
-
-@api_router.post(
-    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials",
-    tags=["Owner"],
-)
-async def add_filing_rep_credential(
-    company_id: str,
-    rep_id: str,
-    body: FilingRepCredentialCreate,
-    current_user=Depends(get_current_user),
-):
-    """Push a new credential. Side effects:
-      1. Stamp `superseded_at` on the prior active credential (if any).
-      2. Compute next version = max(existing.version) + 1 (1-indexed).
-      3. $push the new credential entry on filing_reps[rep].credentials.
-
-    Two MongoDB ops because $set + $push on the same array element
-    in one update is awkward with array_filters; we eat the
-    millisecond-scale race window between them. The new credential
-    entry is the only one with superseded_at=None when this returns,
-    barring a concurrent writer."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    if not body.encrypted_ciphertext or not body.public_key_fingerprint:
-        raise HTTPException(
-            status_code=400,
-            detail="encrypted_ciphertext and public_key_fingerprint are required",
-        )
-
-    company = await db.companies.find_one(
-        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
-    )
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    rep = _find_filing_rep(company, rep_id)
-    if rep is None:
-        raise HTTPException(status_code=404, detail="Filing representative not found")
-
-    now = datetime.now(timezone.utc)
-
-    # 0. Defensive lift: pre-MR.10 reps were inserted by add_filing_rep
-    #    without a `credentials` field. The MR.6 Pydantic model declares
-    #    `credentials: List[FilingRepCredential] = []` as a read-side
-    #    default, but Pydantic defaults don't write through on insert,
-    #    so legacy docs in production lack the field entirely (verified
-    #    against BlueView's reps post-MR.10 deploy). The supersede $set
-    #    below traverses the path `filing_reps.$[rep].credentials.$[cred]`
-    #    which raises Mongo `PathNotViable` when the credentials array
-    #    is absent. Lift the field to [] for any rep missing it. The
-    #    matching backfill migration in
-    #    backend/scripts/migrate_filing_reps_credentials_init.py
-    #    sweeps prod once; this guard keeps the endpoint correct even
-    #    if the migration hasn't been run yet, OR if a future code
-    #    path inserts a rep without the field (regression-evident
-    #    via the test pinned in test_filing_rep_credentials.py).
-    #    Idempotent: $elemMatch with `$exists: False` matches nothing
-    #    on already-initialized reps, so the update is a no-op.
-    await db.companies.update_one(
-        {
-            "_id": to_query_id(company_id),
-            "filing_reps": {
-                "$elemMatch": {
-                    "id": rep_id,
-                    "credentials": {"$exists": False},
-                },
-            },
-        },
-        {"$set": {"filing_reps.$.credentials": []}},
-    )
-
-    # 1. Supersede the prior active credential, if any. array_filters
-    #    matches every credential entry on this rep where superseded_at
-    #    is None (exactly one in the steady state — an empty match
-    #    when no prior credential exists is a no-op).
-    await db.companies.update_one(
-        {"_id": to_query_id(company_id)},
-        {"$set": {
-            "filing_reps.$[rep].credentials.$[cred].superseded_at": now,
-            "filing_reps.$[rep].updated_at": now,
-        }},
-        array_filters=[
-            {"rep.id": rep_id},
-            {"cred.superseded_at": None},
-        ],
-    )
-
-    # 2. Compute next version from the (potentially-now-superseded)
-    #    credentials list.
-    existing_versions = [
-        (c.get("version") or 0) for c in (rep.get("credentials") or [])
-    ]
-    next_version = (max(existing_versions) if existing_versions else 0) + 1
-
-    new_credential = {
-        "version": next_version,
-        "encrypted_ciphertext": body.encrypted_ciphertext,
-        "public_key_fingerprint": body.public_key_fingerprint,
-        "created_at": now,
-        "superseded_at": None,
-    }
-
-    # 3. $push the new entry.
-    await db.companies.update_one(
-        {"_id": to_query_id(company_id)},
-        {"$push": {"filing_reps.$[rep].credentials": new_credential}},
-        array_filters=[{"rep.id": rep_id}],
-    )
-
-    # Return the new credential — metadata-only. Caller never needs
-    # to read back what they wrote.
-    return _strip_credential_ciphertext(new_credential)
-
-
-@api_router.delete(
-    "/owner/companies/{company_id}/filing-reps/{rep_id}/credentials/active",
-    tags=["Owner"],
-)
-async def revoke_filing_rep_active_credential(
-    company_id: str,
-    rep_id: str,
-    current_user=Depends(get_current_user),
-):
-    """Revoke the current active credential WITHOUT replacement. Sets
-    superseded_at on the active entry. Subsequent enqueue requests
-    will fail the credential-gate check (active_credential() returns
-    None). 404 if no active credential exists.
-
-    Distinct from DELETE on the filing_rep itself, which removes the
-    rep entirely. This endpoint preserves the rep + its credential
-    history; only the active credential is killed."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    company = await db.companies.find_one(
-        {"_id": to_query_id(company_id), "is_deleted": {"$ne": True}}
-    )
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-
-    rep = _find_filing_rep(company, rep_id)
-    if rep is None:
-        raise HTTPException(status_code=404, detail="Filing representative not found")
-
-    active = filing_rep_active_credential(rep)
-    if active is None:
-        raise HTTPException(
-            status_code=404,
-            detail="No active credential to revoke",
-        )
-
-    now = datetime.now(timezone.utc)
-    result = await db.companies.update_one(
-        {"_id": to_query_id(company_id)},
-        {"$set": {
-            "filing_reps.$[rep].credentials.$[cred].superseded_at": now,
-            "filing_reps.$[rep].updated_at": now,
-        }},
-        array_filters=[
-            {"rep.id": rep_id},
-            {"cred.version": active.get("version"), "cred.superseded_at": None},
-        ],
-    )
-    if result.modified_count == 0:
-        # Race: another writer just superseded it. Surface as 404 so
-        # the caller can re-read state.
-        raise HTTPException(
-            status_code=404,
-            detail="Active credential changed between read and revoke",
-        )
-
-    return {
-        "revoked": True,
-        "version": active.get("version"),
-        "superseded_at": now,
-    }
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -3812,170 +3540,44 @@ async def admin_resend_notification(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# MR.10 — Agent public-key registry + authorization document.
+# MR.10 — Agent public-key registry — REMOVED in MR.14 commit 4b.
 # ──────────────────────────────────────────────────────────────────────
 #
-# The local Docker agent generates an RSA-4096 keypair on first run
-# (dob_worker/scripts/generate_keypair.py, MR.5). The operator pastes
-# the public key into the Owner Portal; this server stores it in
-# `agent_public_keys`. The frontend's credential-entry form fetches
-# the active key (GET /agent-public-key, no auth — public keys are
-# public by definition), encrypts the operator-typed credentials in
-# the browser using the SubtleCrypto Web Crypto API, and POSTs the
-# resulting ciphertext to the existing MR.6 /credentials endpoint.
+# The agent_public_keys collection backed the worker's hybrid-encryption
+# scheme: operator pastes RSA-4096 public key from the local agent into
+# the Owner Portal; frontend uses it via SubtleCrypto to wrap operator-
+# typed DOB NOW credentials before POSTing ciphertext to the credentials
+# endpoint; worker decrypts with the matching private key. With the
+# worker container gone (MR.14 commit 4a) and the credentials field
+# gone (4b above), there is nothing left to encrypt for or decrypt with
+# — the four endpoints
+#   POST   /api/admin/agent-keys
+#   GET    /api/admin/agent-keys
+#   DELETE /api/admin/agent-keys/{key_id}
+#   GET    /api/agent-public-key      (no-auth read)
+# and the `_compute_public_key_fingerprint` helper are removed.
 #
-# Byte format MUST match dob_worker/lib/crypto.py:
-#   [4-byte big-endian RSA-wrapped-key length]
-#   [RSA-OAEP-SHA256-wrapped 32-byte AES key]
-#   [12-byte AES-GCM nonce]
-#   [AES-GCM ciphertext + 16-byte tag concatenated]
-# Final blob is base64-encoded for JSON transport.
+# Operator drops the `agent_public_keys` collection from Mongo by hand
+# after deploy:  db.agent_public_keys.drop()
 #
-# Authorization document: one-time-per-company gate. Operator must
-# accept text + type the licensee name before any credentials can
-# be added. MR.6's enqueue endpoint refuses jobs for companies
-# without a non-null `authorization` field.
-
-def _compute_public_key_fingerprint(pem: str) -> str:
-    """SHA-256 hex digest of the DER-encoded SubjectPublicKeyInfo.
-
-    Matches the fingerprint convention the frontend SubtleCrypto path
-    can reproduce: hash the DER bytes (i.e. the binary content between
-    the PEM markers), output as lowercase hex. Frontend can verify
-    by re-deriving from the same PEM."""
-    from cryptography.hazmat.primitives import serialization
-    import hashlib
-    pub = serialization.load_pem_public_key(pem.encode("utf-8"))
-    der = pub.public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    return hashlib.sha256(der).hexdigest()
-
-
-class AgentPublicKeyCreate(BaseModel):
-    """POST body for /api/admin/agent-keys."""
-    worker_id: str
-    public_key_pem: str
-
-
-@api_router.post("/admin/agent-keys", tags=["Admin"])
-async def admin_register_agent_key(
-    body: AgentPublicKeyCreate,
-    current_user=Depends(get_current_user),
-):
-    """Register an agent's public key. Owner-tier. The operator runs
-    `docker compose run --rm dob_worker python scripts/generate_keypair.py`
-    on the local agent (per MR.5's operator pre-deploy checklist),
-    copies the printed public-key PEM, and pastes it here."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    pem = (body.public_key_pem or "").strip()
-    if not pem.startswith("-----BEGIN PUBLIC KEY-----") or "-----END PUBLIC KEY-----" not in pem:
-        raise HTTPException(
-            status_code=400,
-            detail="public_key_pem must be a valid SubjectPublicKeyInfo PEM",
-        )
-
-    try:
-        fingerprint = _compute_public_key_fingerprint(pem)
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Could not parse public key: {e}",
-        )
-
-    now = datetime.now(timezone.utc)
-    doc = {
-        "worker_id": body.worker_id,
-        "public_key_pem": pem,
-        "fingerprint_sha256": fingerprint,
-        "created_at": now,
-        "revoked_at": None,
-    }
-    result = await db.agent_public_keys.insert_one(doc)
-    doc["_id"] = result.inserted_id
-    return serialize_id(dict(doc))
-
-
-@api_router.get("/admin/agent-keys", tags=["Admin"])
-async def admin_list_agent_keys(
-    current_user=Depends(get_current_user),
-):
-    """List all registered agent public keys (active + revoked).
-    Used by the operator portal to audit which keypairs are
-    authorized to decrypt credentials."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    cursor = db.agent_public_keys.find({}).sort("created_at", -1)
-    keys: List[Dict[str, Any]] = []
-    async for doc in cursor:
-        keys.append(serialize_id(dict(doc)))
-    return {"keys": keys, "total": len(keys)}
-
-
-@api_router.delete("/admin/agent-keys/{key_id}", tags=["Admin"])
-async def admin_revoke_agent_key(
-    key_id: str,
-    current_user=Depends(get_current_user),
-):
-    """Mark an agent key revoked. Subsequent credential encryptions
-    must use a non-revoked active key. Existing credentials encrypted
-    against a now-revoked key remain valid until the agent stops
-    decrypting them — revocation is forward-only."""
-    if current_user.get("role") != "owner":
-        raise HTTPException(status_code=403, detail="Owner access required")
-
-    now = datetime.now(timezone.utc)
-    result = await db.agent_public_keys.update_one(
-        {"_id": to_query_id(key_id)},
-        {"$set": {"revoked_at": now}},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Agent key not found")
-    return {"revoked": True, "key_id": key_id, "revoked_at": now}
-
-
-@api_router.get("/agent-public-key")
-async def public_get_active_agent_key():
-    """No-auth read of the active agent public key. Public keys are
-    public by definition; the frontend uses this to encrypt operator-
-    typed credentials before POST /credentials.
-
-    Returns the most recently created key with revoked_at=null. 503
-    when no active key exists — operator must register one via
-    POST /api/admin/agent-keys before credentials can be added."""
-    active = await db.agent_public_keys.find_one(
-        {"revoked_at": None},
-        sort=[("created_at", -1)],
-    )
-    if not active:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "No active agent key registered. Run "
-                "scripts/generate_keypair.py on the local agent and "
-                "POST the public key to /api/admin/agent-keys."
-            ),
-        )
-    # Return only the public-facing fields. We never expose the
-    # full Mongo doc (created_at and worker_id are fine to expose
-    # but stripping them keeps the API surface minimal — frontend
-    # only needs the PEM + fingerprint to encrypt).
-    return {
-        "public_key_pem": active.get("public_key_pem"),
-        "fingerprint_sha256": active.get("fingerprint_sha256"),
-        "worker_id": active.get("worker_id"),
-    }
+# A future v2 filing-automation revisit will need to re-design this
+# surface (likely in a different shape — managed-stealth providers
+# host the key material, not the operator's laptop).
 
 
 # ── Authorization document ─────────────────────────────────────────
-# One-time-per-company gate. Operator accepts the text + types the
-# licensee name to confirm. Credentials cannot be added (frontend
-# blocks the modal) and renewals cannot be filed (MR.6 gate refuses
-# enqueue) until authorization is on file.
+# Historical MR.10 surface. The frontend credential-entry UI used to
+# require the operator to accept this text + type the licensee name
+# before any credentials could be added. With credentials removed
+# in MR.14 commit 4b, the credential-entry UI is gone too — these
+# endpoints remain on the backend for historical-record purposes
+# but are not reached by any v1 frontend code path.
+#
+# A future v2 filing-automation revisit may want to keep / re-use the
+# same shape (one-time-per-company acceptance, version-bump re-arms
+# the gate); leaving it intact preserves that option without committing
+# to keeping it forever. Cleanup TODO: revisit after v2 design is
+# settled.
 
 class AuthorizationAccept(BaseModel):
     """POST body for /api/owner/companies/{id}/authorization."""
@@ -5088,8 +4690,8 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
     # through model_dump() as {"gates": None}. ProjectResponse below
     # rejects None for its non-Optional List type. Forward-init now
     # so the Mongo insert is shape-stable AND the response succeeds.
-    # Same fix shape as MR.10's _lift_credentials_field +
-    # migrate_filing_reps_credentials_init.py.
+    # (Same fix shape as the historical filing_reps credentials lift,
+    # which was removed in MR.14 commit 4b along with the field.)
     _lift_project_list_defaults(project_dict)
 
     if project_dict.get("address") and (not project_dict.get("name") or project_dict["name"] == project_dict["address"]):

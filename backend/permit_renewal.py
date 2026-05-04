@@ -1531,313 +1531,35 @@ def create_permit_renewal_routes(
         permit_renewal_id: str,
         current_user=Depends(get_current_user),
     ):
-        """Operator/admin trigger: validate, snapshot, enqueue.
+        """MR.14 commit 4b - legacy stub. Renewal automation is
+        deferred to v2; v1 is a monitoring product.
 
-        Gate chain (all must pass; first failure short-circuits):
-          1. Tenant guard (company_id matches caller).
-          2. ELIGIBILITY_REWRITE_MODE == 'live' — refuses in shadow/off
-             so we never enqueue jobs the legacy path is still owning.
-          3. Filing readiness (MR.3) — must be ready=true.
-          4. PW2 field map (MR.4) — must produce zero unmappable
-             entries on CRITICAL_PW2_FIELDS. Non-critical entries
-             (work_permit_number, bbl, gc_license_number, etc.) are
-             allowed through and recorded in the FilingJob audit_log
-             via a `non_critical_unmappable_fields` event so the gap
-             is captured without blocking the filing.
-          5. Filing rep with active credential exists.
-          6. No non-terminal FilingJob already exists for this
-             permit_renewal_id (dedup; concurrent operator clicks).
+        Originally validated readiness, snapshotted the PW2 field
+        map, looked up the active filing-rep credential + the
+        company's signed authorization, and LPUSH'd a payload onto
+        Redis for the dob_worker container to claim. The worker
+        container, the Redis queue, the agent_public_keys
+        collection, the filing_reps[].credentials field, and the
+        browser-side encryption path are all gone (commits 4a + 4b).
 
-        On success, atomically:
-          - Insert filing_jobs doc (status=queued, audit_log=[queued]).
-          - LPUSH the agent payload onto Redis.
-          - $set permit_renewals.status = AWAITING_DOB_FILING.
-
-        Failure modes:
-          - 400 if mode/readiness/mapper gates fail → caller fixes data.
-          - 404 if the renewal or filing_rep is missing.
-          - 409 on dedup (a non-terminal job already exists).
-          - 503 if Redis is unreachable — the FilingJob doc is rolled
-            back so the dedup gate doesn't permanently lock the
-            renewal.
-        """
-        import os as _os
-        import uuid as _uuid
-        from lib.filing_readiness import check_filing_readiness
-        from lib.pw2_field_mapper import map_pw2_fields
-        # Lazy import — server.py imports this module so we can't import
-        # back at module-load. Function-level is fine. Routing all
-        # `db` / `to_query_id` access through `_server.X` lets test
-        # fixtures patch `server.db` / `server.to_query_id` and have
-        # those patches reach this code (closure-captured `db` would
-        # bypass the patch — see scope note above).
-        try:
-            from backend import server as _server
-        except ModuleNotFoundError:
-            import server as _server
-
-        # 1. Tenant guard.
-        renewal = await _server.db.permit_renewals.find_one(
-            {"_id": _server.to_query_id(permit_renewal_id)}
-        )
-        if not renewal:
-            raise HTTPException(status_code=404, detail="Renewal not found")
-        renewal_company_id = renewal.get("company_id")
-        caller_company_id = _server.get_user_company_id(current_user)
-        if caller_company_id and renewal_company_id != caller_company_id:
-            raise HTTPException(status_code=403, detail="Access denied")
-
-        # 2. ELIGIBILITY_REWRITE_MODE gate. Stripped + lowered to match
-        #    the existing dispatcher behavior.
-        mode = (_os.environ.get("ELIGIBILITY_REWRITE_MODE") or "").strip().lower()
-        if mode != "live":
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": (
-                        "ELIGIBILITY_REWRITE_MODE must be 'live' to enqueue "
-                        "filing jobs (current: %r)" % mode
-                    ),
-                    "code": "mode_not_live",
-                },
-            )
-
-        # 3. Filing readiness (MR.3).
-        readiness = await check_filing_readiness(_server.db, permit_renewal_id)
-        if not readiness.ready:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "Filing readiness check failed",
-                    "code": "readiness_blocked",
-                    "blockers": readiness.blockers,
-                },
-            )
-
-        # 4. PW2 field map (MR.4) — partition unmappable entries into
-        #    critical vs. non-critical and only block on critical.
-        #    Non-critical unmappable fields (work_permit_number, bbl,
-        #    gc_license_number, issuance_date, effective_expiry) are
-        #    informational; the agent fills the form fine without them.
-        #    Critical entries (applicant_*, project_address, bin,
-        #    job_filing_number, current_expiration_date) are hard
-        #    blockers — DOB rejects or the agent can't run form-fill.
-        from lib.pw2_field_mapper import partition_unmappable_fields
-        field_map = await map_pw2_fields(_server.db, permit_renewal_id)
-        partitioned = partition_unmappable_fields(field_map.unmappable_fields)
-        if partitioned["critical"]:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "PW2 field mapper produced critical unmappable fields",
-                    "code": "mapper_unmappable_fields",
-                    "critical_unmappable_fields": partitioned["critical"],
-                    "full_unmappable_fields": field_map.unmappable_fields,
-                },
-            )
-
-        # 5. Filing rep with active credential.
-        company = await _server.db.companies.find_one(
-            {"_id": _server.to_query_id(renewal_company_id), "is_deleted": {"$ne": True}}
-        )
-        if not company:
-            raise HTTPException(
-                status_code=404,
-                detail="Company not found for renewal",
-            )
-
-        # Pick the primary filing_rep — same dispatch convention as
-        # the rest of MR.4. Operator can override later via MR.7's UI;
-        # MR.6 honors the existing primary.
-        filing_reps = company.get("filing_reps") or []
-        primary_rep = next(
-            (r for r in filing_reps if r.get("is_primary")),
-            filing_reps[0] if filing_reps else None,
-        )
-        if primary_rep is None:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "No filing_rep on company",
-                    "code": "no_filing_rep",
-                },
-            )
-
-        active_cred = _server.filing_rep_active_credential(primary_rep)
-        if active_cred is None:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "Filing rep has no active credential",
-                    "code": "no_active_credential",
-                    "filing_rep_id": primary_rep.get("id"),
-                },
-            )
-
-        # MR.10 — authorization gate. The company must have accepted
-        # the current authorization text before any filing job can be
-        # enqueued. We check version match (not just presence) so a
-        # future text version bump invalidates stale acceptances and
-        # forces re-confirmation.
-        auth = company.get("authorization") or None
-        if (
-            auth is None
-            or auth.get("version") != _server.AUTHORIZATION_TEXT_VERSION
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": (
-                        "Company has not accepted the current filing "
-                        "authorization. Operator must accept in "
-                        "Settings → Filing Reps before filing."
-                    ),
-                    "code": "authorization_required",
-                    "current_version": _server.AUTHORIZATION_TEXT_VERSION,
-                    "stored_version": (auth or {}).get("version"),
-                },
-            )
-
-        # 6. Dedup gate — refuse if a non-terminal FilingJob already
-        #    exists for this renewal.
-        existing_inflight = await _server.db.filing_jobs.find_one({
-            "permit_renewal_id": permit_renewal_id,
-            "status": {"$nin": list(_server.FILING_JOB_TERMINAL_STATUSES)},
-            "is_deleted": {"$ne": True},
-        })
-        if existing_inflight:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "A non-terminal filing job already exists for this renewal",
-                    "code": "filing_job_already_active",
-                    "existing_job_id": str(existing_inflight.get("_id")),
-                    "existing_status": existing_inflight.get("status"),
-                },
-            )
-
-        # All gates passed — build the FilingJob doc and the queue
-        # payload. Atomic-ish: if the LPUSH fails, we delete the
-        # filing_jobs doc so the dedup gate doesn't lock the renewal
-        # forever.
-        now = datetime.now(timezone.utc)
-        filing_job_id = _uuid.uuid4().hex
-        actor = (
-            current_user.get("user_id")
-            or current_user.get("email")
-            or "operator"
-        )
-        initial_event = _server._filing_job_audit_event(
-            event_type="queued",
-            actor=actor,
-            detail="Enqueue triggered by operator",
-            metadata={
-                "filing_rep_id": primary_rep.get("id"),
-                "credential_version": active_cred.get("version"),
+        Endpoint kept until 4c so the frontend's existing 'File
+        Renewal' button gets a clean 503 with a stable error code
+        instead of a NameError. 4c removes both this endpoint and
+        the button, replacing the UX with a 'Start Renewal'
+        affordance that opens DOB NOW in a new tab and shows
+        pre-filled PW2 values for manual copy-in."""
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "Filing automation has been deferred to v2 - "
+                    "LeveLog v1 ships as a DOB compliance "
+                    "monitoring product. Use DOB NOW directly to "
+                    "file renewals."
+                ),
+                "code": "renewal_automation_deferred",
             },
         )
-
-        # Build the audit log starting with the queued event. If the
-        # mapper produced any non-critical unmappable fields (e.g.
-        # work_permit_number per architectural note 3 in MR.4), record
-        # them as a SECOND event so the audit trail captures the data
-        # gap without blocking the filing. Critical fields would have
-        # already raised at the gate above.
-        audit_log_events = [initial_event]
-        if partitioned["non_critical"]:
-            audit_log_events.append(
-                _server._filing_job_audit_event(
-                    event_type="non_critical_unmappable_fields",
-                    actor="system",
-                    detail=(
-                        "Mapper reported "
-                        f"{len(partitioned['non_critical'])} "
-                        "non-critical unmappable field(s); enqueue "
-                        "proceeded. Operator may backfill at leisure."
-                    ),
-                    metadata={
-                        "unmappable_fields": partitioned["non_critical"],
-                    },
-                )
-            )
-
-        pw2_field_map_snapshot = field_map.model_dump()
-
-        filing_job_doc = {
-            "_id": filing_job_id,
-            "permit_renewal_id": permit_renewal_id,
-            "company_id": renewal_company_id,
-            "filing_rep_id": primary_rep.get("id"),
-            "credential_version": active_cred.get("version"),
-            "pw2_field_map": pw2_field_map_snapshot,
-            "status": _server.FilingJobStatus.QUEUED.value,
-            "claimed_by_worker_id": None,
-            "claimed_at": None,
-            "started_at": None,
-            "completed_at": None,
-            "failure_reason": None,
-            "dob_confirmation_number": None,
-            "retry_count": 0,
-            "cancellation_requested": False,
-            "audit_log": audit_log_events,
-            "created_at": now,
-            "updated_at": now,
-            "is_deleted": False,
-        }
-
-        await _server.db.filing_jobs.insert_one(filing_job_doc)
-
-        # Queue payload — ciphertext travels here, NOT in filing_jobs.
-        # `idempotency_key` lets the worker dedupe re-deliveries
-        # (BRPOP is at-most-once when the worker doesn't crash, but
-        # the watchdog re-enqueues stale claims, so the same logical
-        # job can land twice on bad days).
-        day_bucket = now.strftime("%Y%m%d")
-        queue_payload = {
-            "id": _uuid.uuid4().hex,
-            "type": "dob_now_filing",
-            "data": {
-                "filing_job_id": filing_job_id,
-                "permit_renewal_id": permit_renewal_id,
-                "encrypted_credentials_b64": active_cred.get("encrypted_ciphertext"),
-                "filing_rep_id": primary_rep.get("id"),
-                "pw2_field_map": pw2_field_map_snapshot,
-            },
-            "idempotency_key": f"dob_now_filing:{permit_renewal_id}:{day_bucket}",
-            "enqueued_at": now.isoformat(),
-        }
-
-        try:
-            await _server._lpush_filing_queue(queue_payload)
-        except Exception as enqueue_err:
-            # Roll back the filing_jobs insert so the dedup gate doesn't
-            # lock this renewal. We don't append a "failed" audit event
-            # because the doc is being deleted; the operator's next
-            # enqueue attempt will surface the underlying error again.
-            await _server.db.filing_jobs.delete_one({"_id": filing_job_id})
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "message": "Failed to enqueue job onto Redis",
-                    "code": "redis_enqueue_failed",
-                    "error": str(enqueue_err),
-                },
-            )
-
-        # Transition the renewal to AWAITING_DOB_FILING. The worker
-        # later flips it to IN_PROGRESS via /internal/permit-renewal-claim.
-        await _server.db.permit_renewals.update_one(
-            {"_id": _server.to_query_id(permit_renewal_id)},
-            {"$set": {
-                "status": RenewalStatus.AWAITING_DOB_FILING,
-                "updated_at": now,
-            }},
-        )
-
-        # Return the filing_job WITHOUT exposing the ciphertext.
-        # filing_jobs schema doesn't carry ciphertext, but the
-        # _serialize_filing_job redact is belt-and-suspenders.
-        return _serialize_filing_job(filing_job_doc)
 
     # GET /api/permit-renewals/{permit_renewal_id}/filing-jobs
     @api_router.get("/permit-renewals/{permit_renewal_id}/filing-jobs")

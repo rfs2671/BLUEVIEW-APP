@@ -40,10 +40,9 @@ import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
-// MR.10 — client-side hybrid encryption for DOB NOW credentials.
-// SubtleCrypto Web Crypto API; byte format mirrors
-// dob_worker/lib/crypto.py:decrypt_credentials.
-import { encryptCredentials } from '../../src/lib/agent_crypto';
+// MR.14 commit 4b — DOB NOW credential encryption removed. v1
+// monitoring product never holds credentials; the agent_crypto
+// import + the credential modal + the authorization gate are gone.
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 
 // Owner password
@@ -96,45 +95,10 @@ const ownerAPI = {
     return r.data;
   },
 
-  // MR.10 — credential management on a filing_rep.
-  listCredentials: async (companyId, repId) => {
-    const r = await apiClient.get(
-      `/api/owner/companies/${companyId}/filing-reps/${repId}/credentials`
-    );
-    return r.data;
-  },
-  addCredential: async (companyId, repId, payload) => {
-    const r = await apiClient.post(
-      `/api/owner/companies/${companyId}/filing-reps/${repId}/credentials`,
-      payload
-    );
-    return r.data;
-  },
-  revokeActiveCredential: async (companyId, repId) => {
-    const r = await apiClient.delete(
-      `/api/owner/companies/${companyId}/filing-reps/${repId}/credentials/active`
-    );
-    return r.data;
-  },
-
-  // MR.10 — agent public key (no-auth read).
-  getAgentPublicKey: async () => {
-    const r = await apiClient.get(`/api/agent-public-key`);
-    return r.data;
-  },
-
-  // MR.10 — authorization document.
-  getAuthorization: async (companyId) => {
-    const r = await apiClient.get(`/api/owner/companies/${companyId}/authorization`);
-    return r.data;
-  },
-  acceptAuthorization: async (companyId, licensee_name_typed) => {
-    const r = await apiClient.post(
-      `/api/owner/companies/${companyId}/authorization`,
-      { licensee_name_typed }
-    );
-    return r.data;
-  },
+  // MR.14 commit 4b — credential + agent-key + authorization API
+  // helpers REMOVED. The backend endpoints they called are gone
+  // (or, for /authorization, kept as historical scaffolding the v1
+  // frontend never reaches).
 };
 
 // MR.2 — license class enum, mirrors backend FILING_REP_LICENSE_CLASSES.
@@ -213,32 +177,10 @@ export default function OwnerPortalScreen() {
   });
   const [savingFilingRep, setSavingFilingRep] = useState(false);
 
-  // MR.10 — credentials state. credentialsByRep is keyed
-  // `${companyId}:${repId}` because rep_id is unique only within a
-  // single company; concatenating both keys avoids collisions across
-  // companies.
-  const [credentialsByRep, setCredentialsByRep] = useState({});
-  const [showCredentialModal, setShowCredentialModal] = useState(false);
-  const [credentialModalContext, setCredentialModalContext] = useState(null); // {companyId, repId, repName}
-  const [credentialForm, setCredentialForm] = useState({
-    username: '', password: '', confirm: '', authorized: false,
-  });
-  const [savingCredential, setSavingCredential] = useState(false);
-  const [credentialError, setCredentialError] = useState(null);
-
-  // MR.10 — authorization modal (one-time-per-company gate before
-  // any credentials can be added). Triggered automatically when the
-  // operator clicks "Add credentials" on a filing_rep whose company
-  // has no current-version authorization on file.
-  const [showAuthorizationModal, setShowAuthorizationModal] = useState(false);
-  const [authorizationData, setAuthorizationData] = useState(null); // GET response
-  const [authorizationLicenseeTyped, setAuthorizationLicenseeTyped] = useState('');
-  const [authorizationAgreed, setAuthorizationAgreed] = useState(false);
-  const [savingAuthorization, setSavingAuthorization] = useState(false);
-  const [authorizationError, setAuthorizationError] = useState(null);
-  // Pending action after authorization acceptance — re-opens the
-  // credential modal once the operator clears the auth gate.
-  const [pendingPostAuthAction, setPendingPostAuthAction] = useState(null);
+  // MR.14 commit 4b — credential + authorization state REMOVED. v1
+  // monitoring product never holds DOB NOW credentials, so the
+  // owner portal no longer surfaces a credential modal or the
+  // pre-acceptance authorization gate.
 
   // Selected data
   const [selectedCompany, setSelectedCompany] = useState(null);
@@ -484,184 +426,15 @@ export default function OwnerPortalScreen() {
     }
   };
 
-  // ── MR.10 — credentials + authorization ──────────────────────────
-
-  // Lazy-load credentials list on demand (when the filing_reps drawer
-  // opens). Cache by `${companyId}:${repId}` to keep keys unique
-  // across companies.
-  const loadCredentialsFor = async (companyId, repId) => {
-    const key = `${companyId}:${repId}`;
-    try {
-      const list = await ownerAPI.listCredentials(companyId, repId);
-      setCredentialsByRep((prev) => ({ ...prev, [key]: list || [] }));
-    } catch (e) {
-      console.warn('[credentials] list failed:', e?.message || e);
-      setCredentialsByRep((prev) => ({ ...prev, [key]: [] }));
-    }
-  };
-
-  // Auto-fetch credentials whenever a filing_reps list changes for a
-  // company. Cheap (one round-trip per rep) and keeps the status
-  // pills accurate without explicit refresh.
-  useEffect(() => {
-    Object.entries(filingRepsByCompany).forEach(([companyId, reps]) => {
-      (reps || []).forEach((rep) => {
-        const key = `${companyId}:${rep.id}`;
-        if (credentialsByRep[key] === undefined) {
-          loadCredentialsFor(companyId, rep.id);
-        }
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filingRepsByCompany]);
-
-  // Active credential = highest version with no superseded_at.
-  const activeCredentialFor = (companyId, repId) => {
-    const list = credentialsByRep[`${companyId}:${repId}`] || [];
-    const active = list.filter((c) => !c.superseded_at);
-    if (!active.length) return null;
-    return active.reduce(
-      (best, c) => (best && (best.version || 0) >= (c.version || 0) ? best : c),
-      null,
-    );
-  };
-
-  const openCredentialModal = async (companyId, rep) => {
-    // Authorization gate: check before opening the credential modal
-    // so the operator only sees the auth flow once per company.
-    let auth;
-    try {
-      auth = await ownerAPI.getAuthorization(companyId);
-    } catch (e) {
-      toast.error('Error', 'Could not check authorization status.');
-      return;
-    }
-    if (!auth.accepted) {
-      // Open authorization modal; once accepted, re-open credential
-      // modal automatically.
-      setAuthorizationData(auth);
-      setAuthorizationLicenseeTyped('');
-      setAuthorizationAgreed(false);
-      setAuthorizationError(null);
-      setPendingPostAuthAction({ kind: 'open_credential_modal', companyId, rep });
-      setShowAuthorizationModal(true);
-      return;
-    }
-    // Already authorized — open the credential modal directly.
-    setCredentialModalContext({ companyId, repId: rep.id, repName: rep.name });
-    setCredentialForm({ username: '', password: '', confirm: '', authorized: false });
-    setCredentialError(null);
-    setShowCredentialModal(true);
-  };
-
-  const handleSaveCredential = async () => {
-    if (!credentialModalContext) return;
-    const { companyId, repId } = credentialModalContext;
-    const { username, password, confirm, authorized } = credentialForm;
-
-    if (!username.trim() || !password) {
-      setCredentialError('Username and password are required.');
-      return;
-    }
-    if (password !== confirm) {
-      setCredentialError('Passwords do not match.');
-      return;
-    }
-    if (!authorized) {
-      setCredentialError('You must check the authorization box to submit.');
-      return;
-    }
-
-    setSavingCredential(true);
-    setCredentialError(null);
-    try {
-      // 1. Fetch the active agent public key.
-      const keyInfo = await ownerAPI.getAgentPublicKey();
-      // 2. Encrypt {username, password} client-side. Returns base64
-      //    blob in the [4-byte BE wrapped-key length | wrapped_key |
-      //    nonce | ciphertext+tag] format the agent decrypts.
-      const ciphertext = await encryptCredentials(
-        { username: username.trim(), password },
-        keyInfo.public_key_pem,
-      );
-      // 3. POST. Backend stores ciphertext + fingerprint; never
-      //    sees plaintext.
-      await ownerAPI.addCredential(companyId, repId, {
-        encrypted_ciphertext: ciphertext,
-        public_key_fingerprint: keyInfo.fingerprint_sha256,
-      });
-      // 4. Refresh list + close modal.
-      await loadCredentialsFor(companyId, repId);
-      toast.success('Credentials Added', 'Encrypted and stored.');
-      setShowCredentialModal(false);
-    } catch (e) {
-      console.error('[credentials] save failed:', e);
-      const detail = e?.response?.data?.detail;
-      const msg = typeof detail === 'string'
-        ? detail
-        : (detail?.message || e?.message || 'Could not save credentials.');
-      setCredentialError(msg);
-    } finally {
-      setSavingCredential(false);
-    }
-  };
-
-  const handleRevokeActiveCredential = async (companyId, rep) => {
-    Alert.alert(
-      'Revoke Credentials',
-      `Revoke ${rep.name}'s active DOB NOW credentials? Future filings will be blocked until new credentials are added.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Revoke', style: 'destructive', onPress: async () => {
-          try {
-            await ownerAPI.revokeActiveCredential(companyId, rep.id);
-            await loadCredentialsFor(companyId, rep.id);
-            toast.success('Revoked', 'Active credential superseded.');
-          } catch (e) {
-            console.error('[credentials] revoke failed:', e);
-            toast.error('Error', 'Could not revoke credential.');
-          }
-        } },
-      ],
-    );
-  };
-
-  const handleAcceptAuthorization = async () => {
-    if (!authorizationData) return;
-    if (!authorizationAgreed) {
-      setAuthorizationError('You must check the agreement box.');
-      return;
-    }
-    if (!authorizationLicenseeTyped.trim()) {
-      setAuthorizationError('Type the licensee name to confirm.');
-      return;
-    }
-    setSavingAuthorization(true);
-    setAuthorizationError(null);
-    try {
-      const companyId = authorizationData.company_id;
-      await ownerAPI.acceptAuthorization(companyId, authorizationLicenseeTyped.trim());
-      toast.success('Authorized', 'Filing authorization recorded.');
-      setShowAuthorizationModal(false);
-      // Resume the pending action if there was one.
-      if (pendingPostAuthAction?.kind === 'open_credential_modal') {
-        const { rep } = pendingPostAuthAction;
-        setCredentialModalContext({ companyId, repId: rep.id, repName: rep.name });
-        setCredentialForm({ username: '', password: '', confirm: '', authorized: false });
-        setCredentialError(null);
-        setShowCredentialModal(true);
-      }
-      setPendingPostAuthAction(null);
-    } catch (e) {
-      const detail = e?.response?.data?.detail;
-      const msg = typeof detail === 'string'
-        ? detail
-        : (detail?.message || 'Could not accept authorization.');
-      setAuthorizationError(msg);
-    } finally {
-      setSavingAuthorization(false);
-    }
-  };
+  // ── MR.14 commit 4b — credential + authorization handlers REMOVED.
+  //
+  // Previously this section held loadCredentialsFor /
+  // activeCredentialFor / openCredentialModal / handleSaveCredential /
+  // handleRevokeActiveCredential / handleAcceptAuthorization plus the
+  // useEffect that auto-fetched credentials per filing_rep. With the
+  // backend credential-management endpoints, the agent_public_keys
+  // collection, and the agent_crypto.js encryption helper all gone,
+  // the v1 owner portal exposes filing_reps roster CRUD only.
 
   const handleDeleteCompany = (company) => {
     const companyAdminsList = admins.filter(a => a.company_id === company.id);
@@ -1004,63 +777,10 @@ export default function OwnerPortalScreen() {
                                   {' · '}#{rep.license_number}
                                 </Text>
                                 <Text style={styles.filingRepMeta} numberOfLines={1}>{rep.email}</Text>
-                                {/* MR.10 — credential status pill + actions */}
-                                {(() => {
-                                  const active = activeCredentialFor(company.id, rep.id);
-                                  const all = credentialsByRep[`${company.id}:${rep.id}`] || [];
-                                  const hasAny = all.length > 0;
-                                  const everRevoked = hasAny && !active;
-                                  let label, color;
-                                  if (active) {
-                                    const dateStr = active.created_at
-                                      ? new Date(active.created_at).toLocaleDateString(
-                                          'en-US', { month: 'short', day: 'numeric', year: 'numeric' }
-                                        )
-                                      : '';
-                                    label = `Credentials active (v${active.version}${dateStr ? `, added ${dateStr}` : ''})`;
-                                    color = '#10b981';
-                                  } else if (everRevoked) {
-                                    label = 'Credentials revoked';
-                                    color = '#6b7280';
-                                  } else {
-                                    label = 'No credentials';
-                                    color = '#9ca3af';
-                                  }
-                                  return (
-                                    <View style={[styles.filingRepCredsRow, { borderColor: `${color}40`, backgroundColor: `${color}15` }]}>
-                                      <Text style={[styles.filingRepCredsLabel, { color }]}>
-                                        {label}
-                                      </Text>
-                                      <View style={styles.filingRepCredsBtns}>
-                                        {active ? (
-                                          <>
-                                            <Pressable
-                                              onPress={() => openCredentialModal(company.id, rep)}
-                                              style={styles.filingRepCredsBtn}
-                                            >
-                                              <Text style={styles.filingRepCredsBtnText}>Rotate</Text>
-                                            </Pressable>
-                                            <Pressable
-                                              onPress={() => handleRevokeActiveCredential(company.id, rep)}
-                                              style={[styles.filingRepCredsBtn, styles.filingRepCredsBtnDanger]}
-                                            >
-                                              <Text style={[styles.filingRepCredsBtnText, { color: '#ef4444' }]}>
-                                                Revoke
-                                              </Text>
-                                            </Pressable>
-                                          </>
-                                        ) : (
-                                          <Pressable
-                                            onPress={() => openCredentialModal(company.id, rep)}
-                                            style={styles.filingRepCredsBtn}
-                                          >
-                                            <Text style={styles.filingRepCredsBtnText}>Add credentials</Text>
-                                          </Pressable>
-                                        )}
-                                      </View>
-                                    </View>
-                                  );
-                                })()}
+                                {/* MR.14 commit 4b — credential status pill REMOVED.
+                                    v1 monitoring product never holds DOB NOW
+                                    passwords, so the rep card no longer surfaces
+                                    "Add credentials" / "Rotate" / "Revoke". */}
                               </View>
                             ))
                           )}
@@ -1611,195 +1331,11 @@ export default function OwnerPortalScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* MR.10 — Authorization document modal. One-time-per-company
-            gate. Operator must check the agreement box AND type the
-            licensee name before credentials can be added. */}
-        <Modal
-          visible={showAuthorizationModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowAuthorizationModal(false)}
-        >
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={{ flex: 1 }}
-          >
-            <Pressable
-              style={styles.modalBackdrop}
-              onPress={() => setShowAuthorizationModal(false)}
-            />
-            <View style={[styles.modalContent, isWeb && webModalContentMaxHeight ? { maxHeight: webModalContentMaxHeight } : null]}>
-              <GlassCard style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Filing Authorization</Text>
-                  <Pressable onPress={() => setShowAuthorizationModal(false)}>
-                    <X size={20} strokeWidth={1.5} color={colors.text.muted} />
-                  </Pressable>
-                </View>
-                <ScrollView
-                  style={isWeb && webScrollMaxHeight ? { maxHeight: webScrollMaxHeight } : null}
-                >
-                  <View style={styles.cardContent}>
-                    <ScrollView style={styles.authScroll} nestedScrollEnabled>
-                      <Text style={styles.authText}>
-                        {authorizationData?.authorization_text || 'Loading authorization text…'}
-                      </Text>
-                    </ScrollView>
-
-                    <Pressable
-                      style={styles.authCheckRow}
-                      onPress={() => setAuthorizationAgreed((v) => !v)}
-                    >
-                      <View style={[styles.authCheckBox, authorizationAgreed && styles.authCheckBoxOn]}>
-                        {authorizationAgreed && (
-                          <Text style={{ color: '#fff', fontSize: 12, lineHeight: 14 }}>✓</Text>
-                        )}
-                      </View>
-                      <Text style={styles.authCheckText}>
-                        I have read and agree to the terms above.
-                      </Text>
-                    </Pressable>
-
-                    <Text style={[styles.formLabel, { marginTop: 4 }]}>
-                      Type the licensee name to confirm
-                      {authorizationData?.expected_licensee_name
-                        ? ` ("${authorizationData.expected_licensee_name}")`
-                        : ''}
-                    </Text>
-                    <GlassInput
-                      value={authorizationLicenseeTyped}
-                      onChangeText={setAuthorizationLicenseeTyped}
-                      placeholder="Enter licensee name exactly as registered"
-                      autoCapitalize="words"
-                    />
-
-                    {authorizationError && (
-                      <Text style={styles.modalErrorText}>{authorizationError}</Text>
-                    )}
-
-                    <View style={styles.modalActions}>
-                      <GlassButton
-                        title="Cancel"
-                        onPress={() => setShowAuthorizationModal(false)}
-                        style={{ flex: 1 }}
-                      />
-                      <GlassButton
-                        title={savingAuthorization ? 'Saving…' : 'Accept'}
-                        onPress={handleAcceptAuthorization}
-                        disabled={savingAuthorization || !authorizationAgreed || !authorizationLicenseeTyped.trim()}
-                        loading={savingAuthorization}
-                        style={{ flex: 1 }}
-                      />
-                    </View>
-                  </View>
-                </ScrollView>
-              </GlassCard>
-            </View>
-          </KeyboardAvoidingView>
-        </Modal>
-
-        {/* MR.10 — Credentials entry modal. Encrypts client-side via
-            agent_crypto.js (SubtleCrypto) before posting; backend
-            never sees plaintext. */}
-        <Modal
-          visible={showCredentialModal}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setShowCredentialModal(false)}
-        >
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            style={{ flex: 1 }}
-          >
-            <Pressable
-              style={styles.modalBackdrop}
-              onPress={() => setShowCredentialModal(false)}
-            />
-            <View style={[styles.modalContent, isWeb && webModalContentMaxHeight ? { maxHeight: webModalContentMaxHeight } : null]}>
-              <GlassCard style={styles.modalCard}>
-                <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>
-                    DOB NOW Credentials{credentialModalContext?.repName ? ` — ${credentialModalContext.repName}` : ''}
-                  </Text>
-                  <Pressable onPress={() => setShowCredentialModal(false)}>
-                    <X size={20} strokeWidth={1.5} color={colors.text.muted} />
-                  </Pressable>
-                </View>
-                <ScrollView
-                  style={isWeb && webScrollMaxHeight ? { maxHeight: webScrollMaxHeight } : null}
-                >
-                  <View style={styles.cardContent}>
-                    <Text style={styles.formLabel}>Username (DOB NOW NYC.ID email)</Text>
-                    <GlassInput
-                      value={credentialForm.username}
-                      onChangeText={(v) => setCredentialForm((f) => ({ ...f, username: v }))}
-                      placeholder="filer@example.com"
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={[styles.formLabel, { marginTop: spacing.sm }]}>Password</Text>
-                    <GlassInput
-                      value={credentialForm.password}
-                      onChangeText={(v) => setCredentialForm((f) => ({ ...f, password: v }))}
-                      placeholder="DOB NOW password"
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <Text style={[styles.formLabel, { marginTop: spacing.sm }]}>Re-enter password</Text>
-                    <GlassInput
-                      value={credentialForm.confirm}
-                      onChangeText={(v) => setCredentialForm((f) => ({ ...f, confirm: v }))}
-                      placeholder="Confirm password"
-                      secureTextEntry
-                      autoCapitalize="none"
-                    />
-
-                    <Pressable
-                      style={styles.authCheckRow}
-                      onPress={() => setCredentialForm((f) => ({ ...f, authorized: !f.authorized }))}
-                    >
-                      <View style={[styles.authCheckBox, credentialForm.authorized && styles.authCheckBoxOn]}>
-                        {credentialForm.authorized && (
-                          <Text style={{ color: '#fff', fontSize: 12, lineHeight: 14 }}>✓</Text>
-                        )}
-                      </View>
-                      <Text style={styles.authCheckText}>
-                        I authorize LeveLog to use these credentials to file
-                        permit renewals on my behalf under my own DOB account.
-                      </Text>
-                    </Pressable>
-
-                    {credentialError && (
-                      <Text style={styles.modalErrorText}>{credentialError}</Text>
-                    )}
-
-                    <View style={styles.modalActions}>
-                      <GlassButton
-                        title="Cancel"
-                        onPress={() => setShowCredentialModal(false)}
-                        style={{ flex: 1 }}
-                      />
-                      <GlassButton
-                        title={savingCredential ? 'Encrypting…' : 'Save Credentials'}
-                        onPress={handleSaveCredential}
-                        disabled={
-                          savingCredential
-                          || !credentialForm.username.trim()
-                          || !credentialForm.password
-                          || !credentialForm.authorized
-                        }
-                        loading={savingCredential}
-                        style={{ flex: 1 }}
-                      />
-                    </View>
-                  </View>
-                </ScrollView>
-              </GlassCard>
-            </View>
-          </KeyboardAvoidingView>
-        </Modal>
+        {/* MR.14 commit 4b — Authorization document modal + DOB NOW
+            credential entry modal REMOVED. v1 monitoring product
+            never holds credentials, so the operator never has to
+            sign the filing-authorization gate or paste a NYC.ID
+            email + password. */}
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -2048,84 +1584,10 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
     paddingLeft: 20,  // align under filingRepName, past the star icon
   },
-  // ── MR.10 — credential status pill + buttons ──
-  filingRepCredsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    borderRadius: borderRadius.sm,
-    borderWidth: 1,
-    gap: 8,
-  },
-  filingRepCredsLabel: {
-    flex: 1,
-    fontSize: 11,
-    fontFamily: typography.medium,
-  },
-  filingRepCredsBtns: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  filingRepCredsBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: borderRadius.sm,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-  },
-  filingRepCredsBtnDanger: {
-    backgroundColor: 'rgba(239,68,68,0.10)',
-    borderColor: 'rgba(239,68,68,0.30)',
-  },
-  filingRepCredsBtnText: {
-    fontSize: 11,
-    color: colors.text.primary,
-    fontFamily: typography.medium,
-  },
-  // ── MR.10 — authorization + credential modal styles ──
-  authText: {
-    fontSize: 12,
-    lineHeight: 18,
-    color: colors.text.secondary,
-    fontFamily: typography.regular,
-  },
-  authScroll: {
-    maxHeight: 240,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: borderRadius.sm,
-    padding: spacing.sm,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  authCheckRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    paddingVertical: 8,
-  },
-  authCheckBox: {
-    width: 18, height: 18,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.30)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  authCheckBoxOn: {
-    backgroundColor: '#3b82f6',
-    borderColor: '#3b82f6',
-  },
-  authCheckText: {
-    flex: 1,
-    fontSize: 12,
-    color: colors.text.primary,
-    lineHeight: 18,
-  },
+  // ── MR.14 commit 4b — credential pill + authorization modal styles
+  // REMOVED. The corresponding JSX is gone; keeping the unused style
+  // entries would be dead weight. Restore from MR.10 git history if
+  // a v2 filing-automation revisit needs them again.
   modalErrorText: {
     fontSize: 12,
     color: '#ef4444',

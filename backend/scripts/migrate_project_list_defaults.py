@@ -32,7 +32,10 @@ removes the "wait, why are these three docs returning fields
 that don't exist on disk?" surprise for any future operator
 inspecting Mongo directly.
 
-Same shape as MR.10's migrate_filing_reps_credentials_init.py.
+Same shape as MR.10's filing_reps[].credentials lift migration
+(both that script and the underlying field were removed in
+MR.14 commit 4b along with the rest of the credential-storage
+surface).
 
 Fields lifted (mirror of _PROJECT_LIST_DEFAULT_FIELDS in
 backend/server.py — single source of truth):
