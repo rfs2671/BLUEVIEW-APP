@@ -11977,33 +11977,51 @@ async def _send_critical_dob_alert(project: dict, dob_log: dict):
 
     subject = f"New {rt} on {project_name}"
 
-    # Incident 2026-05-03 — emergency kill switch. See
-    # lib/notifications.is_email_kill_switch_on for context.
-    from lib.notifications import is_email_kill_switch_on
-    if is_email_kill_switch_on():
-        logger.warning(
-            "[critical_dob_alert] EMERGENCY KILL SWITCH active; halting send "
-            "subject=%r recipients=%s",
-            subject, recipients,
-        )
-        return
-
-    try:
-        resend.api_key = RESEND_API_KEY
-        resend.Emails.send({
-            "from":     "Levelog <notifications@levelog.com>",
-            "to":       recipients,
-            "subject":  subject,
-            "html":     html_body,
-            "text":     text_body,
-            "reply_to": "support@levelog.com",
-        })
-        logger.info(
-            f"DOB notification sent for {project_name} "
-            f"({rt}) to {len(recipients)} recipients"
-        )
-    except Exception as e:
-        logger.error(f"Failed to send DOB notification: {e}")
+    # MR.14 fix — route through lib/notifications.send_notification.
+    # That helper provides:
+    #   • Universal NOTIFICATIONS_KILL_SWITCH check
+    #   • trigger_key idempotency (per recipient, 23h window)
+    #   • notification_log audit trail
+    #   • NOTIFICATIONS_ENABLED + RESEND_API_KEY gates
+    # Pre-MR.14 this site called resend.Emails.send directly, which
+    # bypassed all of those — that's how the 2026-05-03 flood
+    # reached michael@blueviewbuilders.com without dedup.
+    #
+    # entity_id encodes the record being alerted on. Combined with
+    # trigger_type='critical_dob_alert' and per-recipient dedup, the
+    # idempotency check guarantees one alert per record per recipient
+    # per 23 hours, regardless of how many polls fire in between.
+    raw_dob_id = dob_log.get("raw_dob_id") or ""
+    entity_id = f"dob_log:{raw_dob_id}" if raw_dob_id else f"project:{project.get('_id')}"
+    from lib.notifications import send_notification
+    for recipient in recipients:
+        try:
+            await send_notification(
+                db,
+                permit_renewal_id=entity_id,
+                trigger_type="critical_dob_alert",
+                recipient=recipient,
+                subject=subject,
+                html=html_body,
+                text=text_body,
+                metadata={
+                    "project_id": str(project.get("_id") or ""),
+                    "project_name": project_name,
+                    "record_type": rt_raw,
+                    "raw_dob_id": raw_dob_id,
+                    "severity": dob_log.get("severity"),
+                },
+            )
+        except Exception as e:
+            logger.error(
+                f"DOB notification send_notification error "
+                f"recipient={recipient}: {e}"
+            )
+    logger.info(
+        f"DOB notification dispatched for {project_name} "
+        f"({rt}) to {len(recipients)} recipient(s) "
+        f"via lib/notifications (idempotency-keyed by entity_id={entity_id})"
+    )
 
 
 # ==================== DOB ALERT GATING ====================
@@ -12349,10 +12367,19 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
         )
         doc["status_changed_at"] = now
 
+        # MR.14 fix (incident 2026-05-03) — same seed-transition guard
+        # as the DOB path. Synthetic seeds where existing legacy doc
+        # lacks current_status MUST NOT fire alerts. See server.py
+        # run_dob_sync_for_project for the full reasoning.
+        is_seed_transition_311 = (
+            existing is not None
+            and "current_status" not in existing
+        )
+
         try:
             await db.dob_logs.insert_one(doc)
             new_count += 1
-            if severity == "Action":
+            if severity == "Action" and not is_seed_transition_311:
                 action_count += 1
                 # Fire critical alert through the throttled wrapper.
                 # Initial-scan suppression here means the very first 311
@@ -13598,7 +13625,25 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 result = await db.dob_logs.insert_one(dob_log)
                 dob_log["id"] = str(result.inserted_id)
                 inserted_logs.append(dob_log)
-                if severity == "Action":
+                # MR.14 fix (incident 2026-05-03) — suppress alerts on
+                # synthetic seed transitions. A "legacy existing doc"
+                # lacks the `current_status` field (added in MR.14
+                # commit 2a). When diffing detects
+                # `legacy_existing.current_status (None) != incoming.current_status`,
+                # it inserts a transition row that doesn't represent
+                # any real change in the customer's reality — just the
+                # moment LeveLog learned about the record's status.
+                # Don't email on these. True new signals (no existing
+                # at all) still fire alerts; true status changes
+                # (existing has current_status, incoming differs) do too.
+                # Once all legacy dob_logs have current_status populated
+                # (after one full poll cycle), this check naturally
+                # disengages — the discriminator becomes always False.
+                is_seed_transition = (
+                    existing is not None
+                    and "current_status" not in existing
+                )
+                if severity == "Action" and not is_seed_transition:
                     await _send_critical_dob_alert_throttled(project, dob_log, source="dob")
         except Exception as e:
             logger.error(f"Failed to process dob_log for raw_id={raw_id} type={rec.get('_record_type')}: {e}", exc_info=True)
@@ -13902,7 +13947,9 @@ async def renewal_digest_daily_cron():
 
         # Send via Resend (or no-op if env unset).
         try:
-            await _send_renewal_digest_email(recipients, subject, html)
+            await _send_renewal_digest_email(
+                recipients, subject, html, company_id=str(company_id),
+            )
         except Exception as e:
             logger.error(
                 f"[renewal_digest] send failed for company={company_id}: {e!r}"
@@ -13981,35 +14028,47 @@ async def _resolve_renewal_digest_recipients(company: dict) -> list:
     return out
 
 
-async def _send_renewal_digest_email(recipients: list, subject: str, html: str) -> None:
-    """Resend send. No-op if RESEND_API_KEY env is unset (dev environments)."""
-    if not RESEND_API_KEY:
-        logger.debug(
-            f"[renewal_digest] RESEND_API_KEY unset; would have sent to "
-            f"{len(recipients)} recipient(s) with subject={subject!r}"
-        )
+async def _send_renewal_digest_email(
+    recipients: list,
+    subject: str,
+    html: str,
+    *,
+    company_id: Optional[str] = None,
+) -> None:
+    """MR.14 fix — route through lib/notifications.send_notification.
+    Per-recipient idempotency via entity_id keyed on
+    (company_id, date) so a single company's daily digest won't
+    re-send to the same recipient if the cron fires twice in a 23h
+    window."""
+    if not recipients:
         return
-    # Incident 2026-05-03 — emergency kill switch.
-    from lib.notifications import is_email_kill_switch_on
-    if is_email_kill_switch_on():
-        logger.warning(
-            "[renewal_digest] EMERGENCY KILL SWITCH active; halting send "
-            "subject=%r recipients=%d", subject, len(recipients),
-        )
-        return
-    try:
-        resend.api_key = RESEND_API_KEY
-        # Resend Python SDK is sync — but the call is fast (<1s typical),
-        # acceptable to run in the cron event loop.
-        resend.Emails.send({
-            "from": "Levelog <notifications@levelog.com>",
-            "to": recipients,
-            "subject": subject,
-            "html": html,
-        })
-    except Exception as e:
-        # Re-raise so the caller skips marking idempotency.
-        raise
+    date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # If company_id wasn't passed (legacy callers), use a date-only
+    # entity_id. Slightly looser dedup but still bounded to one
+    # email per recipient per day.
+    entity_id = (
+        f"renewal_digest:{company_id}:{date_key}"
+        if company_id else f"renewal_digest:global:{date_key}"
+    )
+    text_fallback = f"{subject}\n\n(Open the email in HTML for the full digest.)"
+    from lib.notifications import send_notification
+    for recipient in recipients:
+        try:
+            await send_notification(
+                db,
+                permit_renewal_id=entity_id,
+                trigger_type="renewal_digest",
+                recipient=recipient,
+                subject=subject,
+                html=html,
+                text=text_fallback,
+                metadata={"company_id": company_id, "date": date_key},
+            )
+        except Exception as e:
+            logger.error(
+                f"renewal_digest send_notification error "
+                f"recipient={recipient}: {e}"
+            )
 
 
 async def _eligibility_shadow_sweep():
@@ -14499,28 +14558,52 @@ async def check_and_send_reports():
 
         try:
             html = await generate_combined_report(project_id, today)
-            # Incident 2026-05-03 — emergency kill switch.
-            from lib.notifications import is_email_kill_switch_on
-            if is_email_kill_switch_on():
-                logger.warning(
-                    "[daily_report] EMERGENCY KILL SWITCH active; halting "
-                    "send for project=%s recipients=%d",
-                    project_name, len(email_list),
-                )
-                continue
-            resend.Emails.send({
-                "from": "Levelog Reports <reports@levelog.com>",
-                "to": email_list,
-                "subject": f"Daily Report - {project_name} - {today}",
-                "html": html,
-            })
+            subject = f"Daily Report - {project_name} - {today}"
+            text = (
+                f"Daily Report for {project_name} on {today}.\n"
+                f"Open the email in HTML for the full content."
+            )
+            # MR.14 fix — route through send_notification.
+            # entity_id keys per (project, date) so a recurring cron
+            # tick (every minute) at the same target time only sends
+            # once per recipient per day.
+            entity_id = f"daily_report:{project_id}:{today}"
+            from lib.notifications import send_notification
+            sent_to = []
+            for recipient in email_list:
+                try:
+                    result = await send_notification(
+                        db,
+                        permit_renewal_id=entity_id,
+                        trigger_type="project_daily_report",
+                        recipient=recipient,
+                        subject=subject,
+                        html=html,
+                        text=text,
+                        metadata={
+                            "project_id": project_id,
+                            "project_name": project_name,
+                            "date": today,
+                        },
+                    )
+                    if result.get("status") == "sent":
+                        sent_to.append(recipient)
+                except Exception as e:
+                    logger.error(
+                        f"daily_report send_notification error project={project_name} "
+                        f"recipient={recipient}: {e}"
+                    )
             await db.report_emails.insert_one({
                 "project_id": project_id,
                 "date": today,
                 "sent_at": now,
                 "recipients": email_list,
+                "actually_sent_to": sent_to,
             })
-            logger.info(f"Report sent for {project_name} to {len(email_list)} recipients")
+            logger.info(
+                f"Report dispatched for {project_name} to {len(email_list)} "
+                f"recipient(s); {len(sent_to)} actually sent (rest deduped or suppressed)"
+            )
         except Exception as e:
             logger.error(f"Failed to send report for {project_name}: {e}")
 
@@ -14650,23 +14733,35 @@ async def _send_annotation_emails(annotation: dict, project_name: str, recipient
         </div>
         """
 
-        # Incident 2026-05-03 — emergency kill switch.
-        from lib.notifications import is_email_kill_switch_on
-        if is_email_kill_switch_on():
-            logger.warning(
-                "[annotation] EMERGENCY KILL SWITCH active; halting send "
-                "ann_id=%s recipients=%d", ann_id, len(recipient_emails),
-            )
-            return
-
-        resend.api_key = RESEND_API_KEY
-        resend.Emails.send({
-            "from": "Levelog Plans <plans@levelog.com>",
-            "to": recipient_emails,
-            "subject": f"Plan Note — {project_name}",
-            "html": html,
-        })
-        logger.info(f"Annotation email sent to {len(recipient_emails)} recipients for {ann_id}")
+        # MR.14 fix — route through send_notification. Annotations
+        # are immutable once created (the note text doesn't change),
+        # so per-recipient idempotency on (annotation_id, recipient)
+        # matches the natural "tell each recipient once" contract.
+        subject = f"Plan Note — {project_name}"
+        text = f"{creator_name} left a plan note on {project_name}: {comment_text}\n\nView: {short_link}"
+        from lib.notifications import send_notification
+        for recipient in recipient_emails:
+            try:
+                await send_notification(
+                    db,
+                    permit_renewal_id=f"annotation:{ann_id}",
+                    trigger_type="annotation_note",
+                    recipient=recipient,
+                    subject=subject,
+                    html=html,
+                    text=text,
+                    metadata={
+                        "annotation_id": ann_id,
+                        "project_id": str(project_id),
+                        "creator_name": creator_name,
+                    },
+                )
+            except Exception as e:
+                logger.error(
+                    f"annotation send_notification error ann_id={ann_id} "
+                    f"recipient={recipient}: {e}"
+                )
+        logger.info(f"Annotation email dispatched to {len(recipient_emails)} recipient(s) for {ann_id}")
     except Exception as e:
         logger.error(f"Failed to send annotation email: {e}")
 
@@ -14711,24 +14806,38 @@ async def _send_reply_notification(annotation: dict, thread_entry: dict):
         </div>
         """
 
-        # Incident 2026-05-03 — emergency kill switch.
-        from lib.notifications import is_email_kill_switch_on
-        if is_email_kill_switch_on():
-            logger.warning(
-                "[reply_notification] EMERGENCY KILL SWITCH active; "
-                "halting send ann_id=%s recipient=%s",
-                ann_id, creator.get("email"),
+        # MR.14 fix — route through send_notification. entity_id
+        # combines annotation + thread_entry IDs so each individual
+        # reply triggers at most one email per recipient (rather than
+        # all replies bunching under a single annotation key).
+        thread_entry_id = thread_entry.get("id") or thread_entry.get("_id") or ""
+        subject = f"Reply on Plan Note — {project_name}"
+        text = (
+            f"{replier_name} replied on the plan note for {project_name}: "
+            f"{reply_text}\n\nView thread: {short_link}"
+        )
+        from lib.notifications import send_notification
+        try:
+            await send_notification(
+                db,
+                permit_renewal_id=f"annotation_reply:{ann_id}:{thread_entry_id}",
+                trigger_type="annotation_reply",
+                recipient=creator["email"],
+                subject=subject,
+                html=html,
+                text=text,
+                metadata={
+                    "annotation_id": ann_id,
+                    "thread_entry_id": str(thread_entry_id),
+                    "creator_id": str(creator_id),
+                    "replier_id": str(replier_id),
+                },
             )
-            return
-
-        resend.api_key = RESEND_API_KEY
-        resend.Emails.send({
-            "from": "Levelog Plans <plans@levelog.com>",
-            "to": [creator["email"]],
-            "subject": f"Reply on Plan Note — {project_name}",
-            "html": html,
-        })
-        logger.info(f"Reply notification sent for annotation {ann_id}")
+        except Exception as e:
+            logger.error(
+                f"reply_notification send_notification error ann_id={ann_id}: {e}"
+            )
+        logger.info(f"Reply notification dispatched for annotation {ann_id}")
     except Exception as e:
         logger.error(f"Failed to send reply notification: {e}")
 

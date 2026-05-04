@@ -181,8 +181,14 @@ async def is_idempotent_skip(
     recipient: str,
 ) -> bool:
     """Returns True if a prior notification_log entry exists with
-    status='sent' for the same (renewal, trigger, recipient) within
-    IDEMPOTENCY_WINDOW_HOURS. Caller skips the send when True."""
+    status='sent' for the same (entity, trigger, recipient) within
+    IDEMPOTENCY_WINDOW_HOURS. Caller skips the send when True.
+
+    The `permit_renewal_id` field is historical — post-MR.14
+    consolidation it stores generic entity IDs (e.g.
+    "dob_log:permit:B00736930:Foundation",
+    "annotation:abc123", "daily_report:proj_1:2026-05-03").
+    Callers pass the appropriate entity-id for their event type."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=IDEMPOTENCY_WINDOW_HOURS)
     existing = await db.notification_log.find_one({
         "permit_renewal_id": permit_renewal_id,

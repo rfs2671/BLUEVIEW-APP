@@ -1063,26 +1063,33 @@ async def _send_health_check_alert(db, issues: List[str]):
         </div>
         """
 
-        # Incident 2026-05-03 — emergency kill switch.
-        from lib.notifications import is_email_kill_switch_on
-        if is_email_kill_switch_on():
-            logger.warning(
-                "[health_check_alert] EMERGENCY KILL SWITCH active; "
-                "halting send recipient=%s issues=%d",
-                recipient, len(issues),
-            )
-            return
-
-        resend.Emails.send({
-            "from": "Levelog Alerts <alerts@levelog.com>",
-            "to": [recipient],
-            "subject": (
-                f"⚠️ DOB NOW Health Check Alert "
-                f"({len(issues)} issue{'s' if len(issues) != 1 else ''})"
-            ),
-            "html": html,
-        })
-        logger.info(f"Health check alert sent to {recipient}")
+        # MR.14 fix — route through lib/notifications.send_notification.
+        # entity_id keys per-day so a recurring issue gets at most one
+        # email per 23h. Replaces the in-band cooldown check above
+        # (which is now redundant with idempotency, but kept for
+        # defense-in-depth and the existing system_config tracking).
+        subject = (
+            f"⚠️ DOB NOW Health Check Alert "
+            f"({len(issues)} issue{'s' if len(issues) != 1 else ''})"
+        )
+        text = (
+            f"DOB NOW Health Check detected {len(issues)} issue(s):\n\n"
+            + "\n".join(f"  • {i}" for i in issues)
+            + f"\n\nDetected at {datetime.now(timezone.utc).isoformat()}"
+        )
+        date_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from lib.notifications import send_notification
+        await send_notification(
+            db,
+            permit_renewal_id=f"health_check:{date_key}",
+            trigger_type="dob_now_health_check",
+            recipient=recipient,
+            subject=subject,
+            html=html,
+            text=text,
+            metadata={"issue_count": len(issues), "issues": issues},
+        )
+        logger.info(f"Health check alert dispatched to {recipient}")
 
         # Record send time for 24h cooldown
         await db.system_config.update_one(
