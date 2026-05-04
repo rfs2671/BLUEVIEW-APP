@@ -1622,6 +1622,20 @@ class DOBLogResponse(BaseModel):
     # Sprint 6 fields
     notice_type: Optional[str] = None
     compliance_deadline: Optional[str] = None
+    # MR.14 commit 2a — v1 monitoring schema additions.
+    signal_kind: Optional[str] = None
+    current_status: Optional[str] = None
+    previous_status: Optional[str] = None
+    status_changed_at: Optional[datetime] = None
+    read_by_user: Optional[list] = None
+    # MR.14 commit 3 — server-side rendered template output.
+    # title/body/severity_kind/action_text come from
+    # lib.dob_signal_templates.render_signal applied to signal_kind.
+    title: Optional[str] = None
+    body: Optional[str] = None
+    severity_kind: Optional[str] = None
+    action_text: Optional[str] = None
+    is_read: Optional[bool] = None
 
 
 class DOBConfigUpdate(BaseModel):
@@ -14293,7 +14307,7 @@ async def get_dob_logs(
     current_user=Depends(get_current_user),
     severity: Optional[str] = Query(None, description="Filter: Low, Medium, Critical"),
     record_type: Optional[str] = Query(None, description="Filter: complaint, violation, job_status, swo"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(20, ge=1, le=200),
     skip: int = Query(0, ge=0),
     include_seed: bool = Query(
         False,
@@ -14306,8 +14320,55 @@ async def get_dob_logs(
             "one. Pass include_seed=true for admin/debug views."
         ),
     ),
+    # MR.14 commit 3 — activity-feed filters.
+    signal_kinds: Optional[str] = Query(
+        None,
+        description=(
+            "Comma-separated list of signal_kind values to filter by "
+            "(e.g. 'permit_expired,violation_dob,stop_work_full'). "
+            "Match is OR across the list. Empty means no filter."
+        ),
+    ),
+    severity_kind: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by template severity kind: 'critical', 'warning', "
+            "or 'info'. Distinct from the legacy 'severity' field "
+            "(Low/Medium/Critical) which uses different values."
+        ),
+    ),
+    date_range: str = Query(
+        "30d",
+        description=(
+            "today | 7d | 30d | all. Filters by detected_at relative "
+            "to now. Default '30d' to keep the feed responsive on "
+            "projects with long histories."
+        ),
+    ),
+    unread_only: bool = Query(
+        False,
+        description=(
+            "When True, return only logs where the current user has "
+            "NOT marked the row read (i.e. their user_id is not in "
+            "the read_by_user[].user_id list)."
+        ),
+    ),
+    search: Optional[str] = Query(
+        None,
+        description=(
+            "Free-text search over rendered title + body. "
+            "Case-insensitive substring match. Empty means no filter."
+        ),
+    ),
 ):
-    """Get translated DOB logs for a project, sorted by detected_at descending."""
+    """Get translated DOB logs for a project, sorted by status_changed_at
+    desc then detected_at desc.
+
+    MR.14 commit 3 — server-side renders signal_kind into title /
+    body / severity_kind / action_text via lib/dob_signal_templates.
+    Frontend doesn't re-implement template logic; copy edits land in
+    one place.
+    """
     project = await db.projects.find_one({
         "_id": to_query_id(project_id),
         "is_deleted": {"$ne": True},
@@ -14319,11 +14380,32 @@ async def get_dob_logs(
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
+    # Caller's user_id — used for read_by_user filtering + per-row is_read flag.
+    caller_user_id = str(current_user.get("_id") or current_user.get("id") or "")
+
     query = {"project_id": project_id, "is_deleted": {"$ne": True}}
     if severity:
         query["severity"] = severity
     if record_type:
         query["record_type"] = record_type
+
+    # MR.14 commit 3 — signal_kinds CSV filter.
+    if signal_kinds:
+        kinds = [k.strip() for k in signal_kinds.split(",") if k.strip()]
+        if kinds:
+            query["signal_kind"] = {"$in": kinds}
+
+    # MR.14 commit 3 — date range filter.
+    if date_range and date_range != "all":
+        days_map = {"today": 1, "7d": 7, "30d": 30}
+        days = days_map.get(date_range, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        query["detected_at"] = {"$gte": cutoff}
+
+    # MR.14 commit 3 — unread-only filter.
+    if unread_only and caller_user_id:
+        query["read_by_user.user_id"] = {"$ne": caller_user_id}
+
     if not include_seed:
         # MR.14 (commit 2b) — operator UX guard. Seed-transition rows
         # were inserted on MR.14's first poll for every pre-existing
@@ -14355,9 +14437,23 @@ async def get_dob_logs(
             }]
 
     total = await db.dob_logs.count_documents(query)
-    logs = await db.dob_logs.find(query).sort("detected_at", -1).skip(skip).limit(limit).to_list(limit)
- 
+    # MR.14 commit 3 — sort by status_changed_at DESC, then
+    # detected_at DESC. This surfaces TRUE status changes ahead of
+    # mere re-detections of unchanged records.
+    logs = await db.dob_logs.find(query).sort([
+        ("status_changed_at", -1),
+        ("detected_at", -1),
+    ]).skip(skip).limit(limit).to_list(limit)
+
+    # MR.14 commit 3 — search filter (post-render). Templates render
+    # the user-facing title + body; search those rather than the raw
+    # ai_summary so the UX matches what the user sees.
+    search_term = (search or "").strip().lower() if search else ""
+
     serialized_logs = []
+    # Lazy-import the templates module so test environments that
+    # don't exercise the activity feed don't pay the import cost.
+    from lib.dob_signal_templates import render_signal as _render_signal
     for log in logs:
         try:
             raw = log.get("raw_record") or {}
@@ -14414,6 +14510,44 @@ async def get_dob_logs(
                         label = f"{label_phase} Inspection"
                     job_str = f" (Job {job_id})" if job_id else ""
                     log["ai_summary"] = f"{label}{job_str} — Result: {result}"
+            # MR.14 commit 3 — server-side render via templates.
+            # signal_kind drives the per-template renderer; output
+            # is added to the dict before Pydantic serialization so
+            # the frontend gets title/body/severity_kind/action_text
+            # without re-implementing template logic.
+            try:
+                rendered = _render_signal(log.get("signal_kind") or "", log)
+            except Exception as _re:
+                logger.warning(
+                    "render_signal failed for log %s kind=%r: %s",
+                    log.get("_id"), log.get("signal_kind"), _re,
+                )
+                rendered = {}
+
+            log["title"] = rendered.get("title") or log.get("ai_summary") or ""
+            log["body"] = rendered.get("body") or ""
+            log["severity_kind"] = rendered.get("severity") or "info"
+            log["action_text"] = rendered.get("action_text") or log.get("next_action") or ""
+
+            # Apply post-render filters before serializing.
+            if severity_kind and log["severity_kind"] != severity_kind:
+                continue
+            if search_term:
+                hay = (log["title"] + " " + log["body"]).lower()
+                if search_term not in hay:
+                    continue
+
+            # is_read computed per-caller. Each entry in read_by_user
+            # is {user_id, read_at}; check user_id presence.
+            log_reads = log.get("read_by_user") or []
+            log["is_read"] = (
+                bool(caller_user_id)
+                and any(
+                    isinstance(r, dict) and r.get("user_id") == caller_user_id
+                    for r in log_reads
+                )
+            )
+
             serialized_logs.append(DOBLogResponse(**serialize_id(dict(log))))
         except Exception as e:
             logger.error(f"Failed to serialize dob_log {log.get('_id')}: {e}")
@@ -14426,8 +14560,126 @@ async def get_dob_logs(
         "total": total,
         "logs": serialized_logs,
     }
- 
- 
+
+
+# ── MR.14 commit 3 — mark-as-read endpoints ──────────────────────
+
+
+async def _verify_dob_log_access(project_id: str, current_user: dict) -> dict:
+    """Shared auth + tenant check for mark-as-read endpoints. Returns
+    the project doc on success; raises HTTPException on failure."""
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    return project
+
+
+@api_router.post("/projects/{project_id}/dob-logs/{log_id}/mark-read")
+async def mark_dob_log_read(
+    project_id: str,
+    log_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Mark a single dob_log as read for the calling user.
+
+    Idempotent: if the user has already marked this row read, the
+    second call is a no-op (the existing read_by_user[].user_id
+    entry is detected and we don't double-write).
+    """
+    await _verify_dob_log_access(project_id, current_user)
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="No caller user_id")
+
+    # Use $addToSet semantics manually: upsert only when this user_id
+    # isn't already in the array. Mongo's $addToSet on an array of
+    # subdocs is exact-match (would match {user_id, read_at} pairs as
+    # whole units). We want match-by-user_id only, so we do a
+    # find-then-update flow.
+    existing = await db.dob_logs.find_one(
+        {
+            "_id": to_query_id(log_id),
+            "project_id": project_id,
+            "is_deleted": {"$ne": True},
+        },
+        {"read_by_user": 1},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="DOB log not found")
+
+    already_read = any(
+        isinstance(r, dict) and r.get("user_id") == user_id
+        for r in (existing.get("read_by_user") or [])
+    )
+    if already_read:
+        return {"updated": False, "reason": "already_read", "log_id": log_id}
+
+    now = datetime.now(timezone.utc)
+    result = await db.dob_logs.update_one(
+        {"_id": to_query_id(log_id), "project_id": project_id},
+        {"$push": {"read_by_user": {"user_id": user_id, "read_at": now}}},
+    )
+    return {
+        "updated": result.modified_count == 1,
+        "log_id": log_id,
+        "read_at": now.isoformat(),
+    }
+
+
+@api_router.post("/projects/{project_id}/dob-logs/mark-all-read")
+async def mark_all_dob_logs_read(
+    project_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Mark all unread dob_logs for this project as read for the
+    calling user. Bounded by the activity-feed defaults (last 30
+    days, no seed-transitions) to avoid unbounded writes if a
+    project's history is huge.
+    """
+    await _verify_dob_log_access(project_id, current_user)
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="No caller user_id")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    now = datetime.now(timezone.utc)
+
+    # Build the same query the activity feed uses by default so
+    # mark-all-read affects exactly the rows the user CAN see (no
+    # marking seed transitions or older-than-30d rows they're not
+    # currently looking at).
+    query = {
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+        "detected_at": {"$gte": cutoff},
+        "read_by_user.user_id": {"$ne": user_id},
+    }
+
+    # Apply seed-suppression by default (matches GET endpoint).
+    seed_start, seed_end = _mr14_seed_window()
+    if seed_start is not None and seed_end is not None:
+        query["$nor"] = [{
+            "previous_status": None,
+            "created_at": {"$gte": seed_start, "$lt": seed_end},
+        }]
+
+    result = await db.dob_logs.update_many(
+        query,
+        {"$push": {"read_by_user": {"user_id": user_id, "read_at": now}}},
+    )
+    return {
+        "updated": result.modified_count,
+        "user_id": user_id,
+        "read_at": now.isoformat(),
+    }
+
+
 @api_router.post("/projects/{project_id}/dob-sync")
 async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user)):
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
@@ -23064,10 +23316,18 @@ async def startup_event():
         },
     )
 
-    # MR.14 (commit 2a) — index for the activity feed's "unread for me"
-    # query. read_by_user is an array of user IDs; multikey index
-    # supports `{read_by_user: {$ne: <my_id>}}` filter cheaply.
-    await db.dob_logs.create_index([("project_id", 1), ("read_by_user", 1), ("detected_at", -1)])
+    # MR.14 (commit 3) — index for the activity feed's "unread for me"
+    # query. read_by_user is an array of {user_id, read_at} dicts;
+    # multikey on the sub-field supports
+    # `{read_by_user.user_id: {$ne: <my_id>}}` cheaply.
+    # NOTE — superseded the commit 2a index which assumed a flat
+    # list of user_ids. The 2a-shaped index is harmless to leave
+    # but adds no value; cleanup deferred.
+    await db.dob_logs.create_index([
+        ("project_id", 1),
+        ("read_by_user.user_id", 1),
+        ("status_changed_at", -1),
+    ])
 
     # Card audit module init — injects db + R2 + VLM adapter. Must run
     # AFTER _r2_client is initialized (which happens at module import

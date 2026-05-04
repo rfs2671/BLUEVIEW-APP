@@ -746,14 +746,43 @@ export const reportsAPI = {
 };
 
 export const dobAPI = {
+  // MR.14 commit 3 — activity feed query supports the full filter set:
+  //   severity, record_type, signal_kinds (array), severity_kind,
+  //   date_range, unread_only, search, limit, skip, include_seed.
   getLogs: async (projectId, params = {}) => {
     const queryParts = [];
-    if (params.severity) queryParts.push(`severity=${params.severity}`);
-    if (params.record_type) queryParts.push(`record_type=${params.record_type}`);
-    if (params.limit) queryParts.push(`limit=${params.limit}`);
-    if (params.skip) queryParts.push(`skip=${params.skip}`);
+    if (params.severity) queryParts.push(`severity=${encodeURIComponent(params.severity)}`);
+    if (params.record_type) queryParts.push(`record_type=${encodeURIComponent(params.record_type)}`);
+    if (params.signal_kinds && params.signal_kinds.length) {
+      queryParts.push(`signal_kinds=${encodeURIComponent(params.signal_kinds.join(','))}`);
+    }
+    if (params.severity_kind) queryParts.push(`severity_kind=${encodeURIComponent(params.severity_kind)}`);
+    if (params.date_range) queryParts.push(`date_range=${encodeURIComponent(params.date_range)}`);
+    if (params.unread_only) queryParts.push(`unread_only=true`);
+    if (params.search) queryParts.push(`search=${encodeURIComponent(params.search)}`);
+    if (typeof params.limit === 'number') queryParts.push(`limit=${params.limit}`);
+    if (typeof params.skip === 'number') queryParts.push(`skip=${params.skip}`);
+    if (params.include_seed) queryParts.push(`include_seed=true`);
     const queryString = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
     const response = await apiClient.get(`/api/projects/${projectId}/dob-logs${queryString}`);
+    return response.data;
+  },
+
+  // MR.14 commit 3 — mark a single dob_log as read for the calling user.
+  markRead: async (projectId, logId) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/dob-logs/${logId}/mark-read`
+    );
+    return response.data;
+  },
+
+  // MR.14 commit 3 — bulk-mark all unread dob_logs in the activity-feed
+  // window (last 30 days, excluding seed transitions). Server applies the
+  // same scope filter as the default GET to keep the write bounded.
+  markAllRead: async (projectId) => {
+    const response = await apiClient.post(
+      `/api/projects/${projectId}/dob-logs/mark-all-read`
+    );
     return response.data;
   },
 

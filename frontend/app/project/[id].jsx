@@ -43,6 +43,7 @@ import {
   Shield,
   MessageCircle,
   ListChecks,
+  Activity,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -505,6 +506,9 @@ export default function ProjectDetailScreen() {
   const quickActions = [
     { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/construction-plans`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
+    // MR.14 commit 3 — v1 monitoring product surface. Activity feed
+    // sits ABOVE the legacy DOB Compliance entry; both are reachable.
+    { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#10b981' },
