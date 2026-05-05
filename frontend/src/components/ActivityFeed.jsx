@@ -1,5 +1,5 @@
 /**
- * MR.14 commit 3 — Activity feed component.
+ * MR.14 commit 3 / Phase B0.1 — Activity feed component.
  *
  * Renders the v1 monitoring product's signal stream for a single
  * project. Reads from GET /api/projects/{id}/dob-logs (server-side
@@ -7,16 +7,22 @@
  * lives backend-side; this component is a pure renderer + filter
  * controller.
  *
+ * Phase B0.1: rewritten to use the LeveLog design system.
+ *   • useTheme() for theme-aware colors (dark + light).
+ *   • GlassCard for signal cards, modal cards, filter panel.
+ *   • typography.label for uppercase tracked section headers
+ *     (matches "QUICK ACTIONS", "ON-SITE WORKERS", etc. on the
+ *     project hub).
+ *   • colors.status.* for severity coloring (matches the rest of
+ *     the app's status indicators).
+ *   • All buttons / chips / inputs match patterns used elsewhere.
+ *
  * Mobile + desktop responsive. Filter panel collapses to a bottom
  * sheet on narrow viewports.
  *
  * Props:
  *   projectId: string (required)
  *   onUnreadCountChange?: (count: number) => void  // hook for badges
- *
- * The component owns its own data fetching. Parent passes projectId
- * and optionally subscribes to unread-count changes for header
- * badges / nav decoration.
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
@@ -35,7 +41,6 @@ import {
 } from 'react-native';
 import {
   AlertTriangle,
-  CheckCircle,
   Info,
   X,
   Filter,
@@ -48,33 +53,45 @@ import {
   CheckCheck,
   RefreshCw,
 } from 'lucide-react-native';
+import { GlassCard } from './GlassCard';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius, typography } from '../styles/theme';
 import { dobAPI } from '../utils/api';
 
-// ── Severity-coded styling ────────────────────────────────────────
+// ── Severity palette helper ───────────────────────────────────────
+//
+// Severity colors are theme-aware: they mirror colors.status.* +
+// colors.error / .warning / .primary so the feed feels visually
+// part of the rest of the app (the same red on a critical signal
+// here matches the red on a critical status pill on the project
+// hub). The Icon assignment is intentional: critical/warning both
+// use AlertTriangle; info uses the Info glyph.
 
-const SEVERITY_STYLES = {
-  critical: {
-    color: '#ef4444',
-    bg: 'rgba(239, 68, 68, 0.08)',
-    border: 'rgba(239, 68, 68, 0.3)',
-    label: 'Critical',
-    Icon: AlertTriangle,
-  },
-  warning: {
-    color: '#f59e0b',
-    bg: 'rgba(245, 158, 11, 0.08)',
-    border: 'rgba(245, 158, 11, 0.3)',
-    label: 'Warning',
-    Icon: AlertTriangle,
-  },
-  info: {
-    color: '#3b82f6',
-    bg: 'rgba(59, 130, 246, 0.08)',
-    border: 'rgba(59, 130, 246, 0.3)',
-    label: 'Info',
-    Icon: Info,
-  },
-};
+function buildSeverityPalette(colors) {
+  return {
+    critical: {
+      color: colors.error,
+      bg: colors.status?.errorBg || 'rgba(239, 68, 68, 0.10)',
+      border: colors.error,
+      label: 'Critical',
+      Icon: AlertTriangle,
+    },
+    warning: {
+      color: colors.warning,
+      bg: colors.status?.warningBg || 'rgba(251, 191, 36, 0.20)',
+      border: colors.warning,
+      label: 'Warning',
+      Icon: AlertTriangle,
+    },
+    info: {
+      color: colors.primary,
+      bg: 'rgba(59, 130, 246, 0.12)',
+      border: colors.primary,
+      label: 'Info',
+      Icon: Info,
+    },
+  };
+}
 
 // ── Date-range filter options ─────────────────────────────────────
 
@@ -151,24 +168,35 @@ function humanizeKind(kind) {
 
 // ── Signal card ───────────────────────────────────────────────────
 
-function SignalCard({ log, onMarkRead, onViewRaw }) {
+function SignalCard({ log, onMarkRead, onViewRaw, styles, colors, severityPalette }) {
   const [expanded, setExpanded] = useState(false);
-  const sev = SEVERITY_STYLES[log.severity_kind] || SEVERITY_STYLES.info;
+  const sev = severityPalette[log.severity_kind] || severityPalette.info;
   const SevIcon = sev.Icon;
   const isRead = !!log.is_read;
 
   return (
-    <View style={[
-      styles.card,
-      { borderLeftColor: sev.color },
-      isRead && styles.cardRead,
-    ]}>
+    <GlassCard
+      style={[
+        styles.card,
+        // Severity stripe along the leading edge — matches the
+        // visual language of severity-tagged content elsewhere.
+        { borderLeftWidth: 3, borderLeftColor: sev.color },
+        isRead && styles.cardRead,
+      ]}
+      hoverEffect={false}
+    >
       <View style={styles.cardHeader}>
-        <View style={[styles.iconBubble, { backgroundColor: sev.bg }]}>
+        <View style={[
+          styles.iconBubble,
+          { backgroundColor: sev.bg, borderColor: `${sev.color}40` },
+        ]}>
           <SevIcon size={18} color={sev.color} />
         </View>
         <View style={styles.cardHeaderText}>
-          <Text style={[styles.cardTitle, isRead && styles.textMuted]} numberOfLines={2}>
+          <Text
+            style={[styles.cardTitle, isRead && styles.textMuted]}
+            numberOfLines={2}
+          >
             {log.title || log.ai_summary || 'DOB record'}
           </Text>
           <Text style={styles.cardMeta}>
@@ -176,11 +204,19 @@ function SignalCard({ log, onMarkRead, onViewRaw }) {
             {log.signal_kind ? ` · ${humanizeKind(log.signal_kind)}` : ''}
           </Text>
         </View>
-        {!isRead && <View style={[styles.unreadDot, { backgroundColor: sev.color }]} />}
+        {!isRead && (
+          <View
+            style={[styles.unreadDot, { backgroundColor: sev.color }]}
+            accessibilityLabel="Unread"
+          />
+        )}
       </View>
 
       {log.body ? (
-        <Text style={[styles.cardBody, isRead && styles.textMuted]} numberOfLines={3}>
+        <Text
+          style={[styles.cardBody, isRead && styles.textMuted]}
+          numberOfLines={3}
+        >
           {log.body}
         </Text>
       ) : null}
@@ -194,11 +230,16 @@ function SignalCard({ log, onMarkRead, onViewRaw }) {
           <Text style={[styles.actionToggleText, { color: sev.color }]}>
             {expanded ? 'Hide what to do' : 'What to do'}
           </Text>
-          {expanded ? <ChevronUp size={14} color={sev.color} /> : <ChevronDown size={14} color={sev.color} />}
+          {expanded
+            ? <ChevronUp size={14} color={sev.color} />
+            : <ChevronDown size={14} color={sev.color} />}
         </Pressable>
       ) : null}
       {expanded && log.action_text ? (
-        <View style={[styles.actionPanel, { backgroundColor: sev.bg }]}>
+        <View style={[
+          styles.actionPanel,
+          { backgroundColor: sev.bg, borderColor: `${sev.color}40` },
+        ]}>
           <Text style={styles.actionPanelText}>{log.action_text}</Text>
         </View>
       ) : null}
@@ -209,7 +250,7 @@ function SignalCard({ log, onMarkRead, onViewRaw }) {
             onPress={() => Linking.openURL(log.dob_link).catch(() => {})}
             style={styles.cardActionBtn}
           >
-            <ExternalLink size={14} color="#64748b" />
+            <ExternalLink size={14} color={colors.text.muted} />
             <Text style={styles.cardActionText}>Open on DOB</Text>
           </Pressable>
         ) : null}
@@ -223,23 +264,31 @@ function SignalCard({ log, onMarkRead, onViewRaw }) {
             accessibilityRole="button"
             accessibilityLabel="Mark as read"
           >
-            <Eye size={14} color="#64748b" />
+            <Eye size={14} color={colors.text.muted} />
             <Text style={styles.cardActionText}>Mark read</Text>
           </Pressable>
         ) : (
           <View style={[styles.cardActionBtn, styles.cardActionBtnEnd]}>
-            <EyeOff size={14} color="#94a3b8" />
+            <EyeOff size={14} color={colors.text.subtle || colors.text.muted} />
             <Text style={[styles.cardActionText, styles.textMuted]}>Read</Text>
           </View>
         )}
       </View>
-    </View>
+    </GlassCard>
   );
 }
 
 // ── Filter panel ──────────────────────────────────────────────────
 
-function FilterPanel({ filters, onChange, onClose, isMobile }) {
+function FilterPanel({
+  filters,
+  onChange,
+  onClose,
+  isMobile,
+  styles,
+  colors,
+  severityPalette,
+}) {
   const [search, setSearch] = useState(filters.search || '');
 
   const togglesignalKind = (kind) => {
@@ -249,40 +298,32 @@ function FilterPanel({ filters, onChange, onClose, isMobile }) {
       : [...current, kind];
     onChange({ ...filters, signal_kinds: next });
   };
-
   const setSeverityKind = (sk) => {
     onChange({ ...filters, severity_kind: filters.severity_kind === sk ? null : sk });
   };
-
-  const setDateRange = (dr) => {
-    onChange({ ...filters, date_range: dr });
-  };
-
-  const toggleUnreadOnly = () => {
+  const setDateRange = (dr) => onChange({ ...filters, date_range: dr });
+  const toggleUnreadOnly = () =>
     onChange({ ...filters, unread_only: !filters.unread_only });
-  };
-
-  const applySearch = () => {
-    onChange({ ...filters, search: search.trim() });
-  };
+  const applySearch = () => onChange({ ...filters, search: search.trim() });
 
   return (
     <ScrollView
       style={[styles.filterPanel, isMobile && styles.filterPanelMobile]}
-      contentContainerStyle={{ paddingBottom: 32 }}
+      contentContainerStyle={{ paddingBottom: spacing.xl }}
+      showsVerticalScrollIndicator={false}
     >
       <View style={styles.filterHeader}>
         <Text style={styles.filterTitle}>Filters</Text>
         {onClose ? (
-          <Pressable onPress={onClose} accessibilityRole="button">
-            <X size={20} color="#64748b" />
+          <Pressable onPress={onClose} accessibilityRole="button" hitSlop={8}>
+            <X size={20} color={colors.text.muted} />
           </Pressable>
         ) : null}
       </View>
 
-      <Text style={styles.filterSectionLabel}>Search</Text>
+      <Text style={styles.filterSectionLabel}>SEARCH</Text>
       <View style={styles.searchRow}>
-        <Search size={16} color="#94a3b8" />
+        <Search size={16} color={colors.text.muted} />
         <TextInput
           style={styles.searchInput}
           value={search}
@@ -290,42 +331,45 @@ function FilterPanel({ filters, onChange, onClose, isMobile }) {
           onSubmitEditing={applySearch}
           onBlur={applySearch}
           placeholder="Search title or body…"
-          placeholderTextColor="#94a3b8"
+          placeholderTextColor={colors.text.subtle || colors.text.muted}
           returnKeyType="search"
         />
       </View>
 
-      <Text style={styles.filterSectionLabel}>Date range</Text>
+      <Text style={styles.filterSectionLabel}>DATE RANGE</Text>
       <View style={styles.pillRow}>
-        {DATE_RANGE_OPTIONS.map((opt) => (
-          <Pressable
-            key={opt.value}
-            onPress={() => setDateRange(opt.value)}
-            style={[
-              styles.pill,
-              filters.date_range === opt.value && styles.pillActive,
-            ]}
-          >
-            <Text style={[
-              styles.pillText,
-              filters.date_range === opt.value && styles.pillTextActive,
-            ]}>{opt.label}</Text>
-          </Pressable>
-        ))}
+        {DATE_RANGE_OPTIONS.map((opt) => {
+          const active = filters.date_range === opt.value;
+          return (
+            <Pressable
+              key={opt.value}
+              onPress={() => setDateRange(opt.value)}
+              style={[styles.pill, active && styles.pillActive]}
+            >
+              <Text style={[
+                styles.pillText,
+                active && styles.pillTextActive,
+              ]}>{opt.label}</Text>
+            </Pressable>
+          );
+        })}
       </View>
 
-      <Text style={styles.filterSectionLabel}>Severity</Text>
+      <Text style={styles.filterSectionLabel}>SEVERITY</Text>
       <View style={styles.pillRow}>
         {['critical', 'warning', 'info'].map((sk) => {
           const active = filters.severity_kind === sk;
-          const sev = SEVERITY_STYLES[sk];
+          const sev = severityPalette[sk];
           return (
             <Pressable
               key={sk}
               onPress={() => setSeverityKind(sk)}
               style={[
                 styles.pill,
-                active && { backgroundColor: sev.bg, borderColor: sev.color },
+                active && {
+                  backgroundColor: sev.bg,
+                  borderColor: sev.color,
+                },
               ]}
             >
               <Text style={[
@@ -338,13 +382,18 @@ function FilterPanel({ filters, onChange, onClose, isMobile }) {
       </View>
 
       <Pressable onPress={toggleUnreadOnly} style={styles.unreadToggle}>
-        <View style={[styles.checkbox, filters.unread_only && styles.checkboxActive]}>
+        <View
+          style={[
+            styles.checkbox,
+            filters.unread_only && styles.checkboxActive,
+          ]}
+        >
           {filters.unread_only ? <CheckCheck size={12} color="#fff" /> : null}
         </View>
         <Text style={styles.unreadToggleText}>Show unread only</Text>
       </Pressable>
 
-      <Text style={styles.filterSectionLabel}>Signal type</Text>
+      <Text style={styles.filterSectionLabel}>SIGNAL TYPE</Text>
       {SIGNAL_KIND_GROUPS.map((group) => (
         <View key={group.label} style={styles.kindGroup}>
           <Text style={styles.kindGroupLabel}>{group.label}</Text>
@@ -373,36 +422,53 @@ function FilterPanel({ filters, onChange, onClose, isMobile }) {
 
 // ── Raw-data modal ────────────────────────────────────────────────
 
-function RawDataModal({ log, onClose }) {
+function RawDataModal({ log, onClose, styles, colors }) {
   if (!log) return null;
-  // Show all top-level keys + values, prettified.
   const entries = Object.entries(log).filter(([k]) => !k.startsWith('_'));
   return (
-    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Raw DOB record</Text>
-            <Pressable onPress={onClose} accessibilityRole="button">
-              <X size={20} color="#64748b" />
-            </Pressable>
-          </View>
-          <ScrollView style={{ maxHeight: 480 }}>
-            {entries.map(([k, v]) => (
-              <View key={k} style={styles.rawRow}>
-                <Text style={styles.rawKey}>{k}</Text>
-                <Text style={styles.rawValue} selectable>
-                  {v === null || v === undefined
-                    ? '—'
-                    : typeof v === 'object'
-                    ? JSON.stringify(v, null, 2)
-                    : String(v)}
-                </Text>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      </View>
+    <Modal visible animationType="fade" transparent onRequestClose={onClose}>
+      <Pressable
+        style={styles.modalOverlay}
+        onPress={onClose}
+        accessibilityRole="button"
+      >
+        <Pressable
+          // Inner pressable intercepts taps so clicking inside the
+          // card doesn't dismiss.
+          onPress={() => {}}
+          style={{ width: '100%', maxWidth: 720 }}
+        >
+          <GlassCard variant="modal" style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Raw DOB record</Text>
+              <Pressable
+                onPress={onClose}
+                accessibilityRole="button"
+                hitSlop={8}
+              >
+                <X size={20} color={colors.text.muted} />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={{ maxHeight: 480 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {entries.map(([k, v]) => (
+                <View key={k} style={styles.rawRow}>
+                  <Text style={styles.rawKey}>{k}</Text>
+                  <Text style={styles.rawValue} selectable>
+                    {v === null || v === undefined
+                      ? '—'
+                      : typeof v === 'object'
+                      ? JSON.stringify(v, null, 2)
+                      : String(v)}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+          </GlassCard>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 }
@@ -422,6 +488,9 @@ const DEFAULT_FILTERS = {
 export default function ActivityFeed({ projectId, onUnreadCountChange }) {
   const { width } = useWindowDimensions();
   const isMobile = width < 768;
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
+  const severityPalette = useMemo(() => buildSeverityPalette(colors), [colors]);
 
   const [logs, setLogs] = useState([]);
   const [total, setTotal] = useState(0);
@@ -488,9 +557,7 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
     try {
       await dobAPI.markRead(projectId, log.id);
       setLogs((prev) =>
-        prev.map((l) =>
-          l.id === log.id ? { ...l, is_read: true } : l,
-        ),
+        prev.map((l) => (l.id === log.id ? { ...l, is_read: true } : l)),
       );
     } catch (e) {
       console.error('[ActivityFeed] markRead error:', e);
@@ -509,7 +576,6 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
   const visibleLogs = logs;
   const unreadCount = visibleLogs.filter((l) => !l.is_read).length;
 
-  // Empty-state messaging.
   const filtersActive = useMemo(() => {
     return (
       (filters.signal_kinds || []).length > 0 ||
@@ -526,31 +592,50 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
 
   return (
     <View style={[styles.container, isMobile && styles.containerMobile]}>
-      {/* Header bar */}
+      {/* Header bar — uppercase tracked label + counts */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Activity</Text>
+          <Text style={styles.headerLabel}>ACTIVITY</Text>
           <Text style={styles.headerSubtitle}>
             {total} signal{total === 1 ? '' : 's'}
             {unreadCount > 0 ? ` · ${unreadCount} unread` : ''}
           </Text>
         </View>
-        <Pressable onPress={onRefresh} style={styles.headerBtn} accessibilityLabel="Refresh">
-          <RefreshCw size={16} color="#64748b" />
+        <Pressable
+          onPress={onRefresh}
+          style={({ pressed }) => [
+            styles.headerBtn,
+            pressed && styles.headerBtnPressed,
+          ]}
+          accessibilityLabel="Refresh"
+        >
+          <RefreshCw size={14} color={colors.text.secondary} />
         </Pressable>
         {unreadCount > 0 ? (
-          <Pressable onPress={handleMarkAllRead} style={styles.headerBtn}>
-            <CheckCheck size={14} color="#3b82f6" />
-            <Text style={styles.headerBtnText}>Mark all read</Text>
+          <Pressable
+            onPress={handleMarkAllRead}
+            style={({ pressed }) => [
+              styles.headerBtn,
+              styles.headerBtnPrimary,
+              pressed && styles.headerBtnPressed,
+            ]}
+          >
+            <CheckCheck size={14} color={colors.primary} />
+            <Text style={[styles.headerBtnText, { color: colors.primary }]}>
+              Mark all read
+            </Text>
           </Pressable>
         ) : null}
         {isMobile ? (
           <Pressable
             onPress={() => setFiltersOpen(true)}
-            style={styles.headerBtn}
+            style={({ pressed }) => [
+              styles.headerBtn,
+              pressed && styles.headerBtnPressed,
+            ]}
             accessibilityLabel="Open filters"
           >
-            <Filter size={16} color="#64748b" />
+            <Filter size={14} color={colors.text.secondary} />
             <Text style={styles.headerBtnText}>Filters</Text>
           </Pressable>
         ) : null}
@@ -569,14 +654,23 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
             filters={filters}
             onChange={setFilters}
             isMobile={false}
+            styles={styles}
+            colors={colors}
+            severityPalette={severityPalette}
           />
         ) : null}
 
         {/* Feed */}
         <ScrollView
           style={styles.feed}
+          contentContainerStyle={styles.feedContent}
+          showsVerticalScrollIndicator={false}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.text.muted}
+            />
           }
           onMomentumScrollEnd={(e) => {
             const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
@@ -592,11 +686,11 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
         >
           {loading && visibleLogs.length === 0 ? (
             <View style={styles.loadingState}>
-              <ActivityIndicator size="large" color="#3b82f6" />
+              <ActivityIndicator size="large" color={colors.primary} />
             </View>
           ) : visibleLogs.length === 0 ? (
             <View style={styles.emptyState}>
-              <Info size={28} color="#94a3b8" />
+              <Info size={28} color={colors.text.muted} />
               <Text style={styles.emptyStateText}>{emptyStateMsg}</Text>
             </View>
           ) : (
@@ -607,12 +701,15 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
                   log={log}
                   onMarkRead={handleMarkRead}
                   onViewRaw={setRawModalLog}
+                  styles={styles}
+                  colors={colors}
+                  severityPalette={severityPalette}
                 />
               ))}
               {hasMore ? (
                 <View style={styles.loadMoreRow}>
                   {loading ? (
-                    <ActivityIndicator size="small" color="#94a3b8" />
+                    <ActivityIndicator size="small" color={colors.text.muted} />
                   ) : (
                     <Text style={styles.loadMoreText}>Scroll for more…</Text>
                   )}
@@ -631,21 +728,35 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
           transparent
           onRequestClose={() => setFiltersOpen(false)}
         >
-          <View style={styles.modalOverlay}>
-            <View style={styles.bottomSheet}>
-              <FilterPanel
-                filters={filters}
-                onChange={setFilters}
-                onClose={() => setFiltersOpen(false)}
-                isMobile
-              />
-            </View>
-          </View>
+          <Pressable
+            style={styles.modalOverlay}
+            onPress={() => setFiltersOpen(false)}
+            accessibilityRole="button"
+          >
+            <Pressable onPress={() => {}} style={styles.bottomSheetWrap}>
+              <GlassCard variant="modal" style={styles.bottomSheet}>
+                <FilterPanel
+                  filters={filters}
+                  onChange={setFilters}
+                  onClose={() => setFiltersOpen(false)}
+                  isMobile
+                  styles={styles}
+                  colors={colors}
+                  severityPalette={severityPalette}
+                />
+              </GlassCard>
+            </Pressable>
+          </Pressable>
         </Modal>
       ) : null}
 
       {rawModalLog ? (
-        <RawDataModal log={rawModalLog} onClose={() => setRawModalLog(null)} />
+        <RawDataModal
+          log={rawModalLog}
+          onClose={() => setRawModalLog(null)}
+          styles={styles}
+          colors={colors}
+        />
       ) : null}
     </View>
   );
@@ -653,348 +764,392 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
 
 // ── Styles ────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  containerMobile: {
-    paddingHorizontal: 0,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-    backgroundColor: '#ffffff',
-    gap: 8,
-  },
-  headerTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#0f172a',
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: '#64748b',
-    marginTop: 2,
-  },
-  headerBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#f1f5f9',
-  },
-  headerBtnText: {
-    fontSize: 12,
-    color: '#475569',
-    fontWeight: '500',
-  },
-  body: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  bodyMobile: {
-    flexDirection: 'column',
-  },
-  feed: {
-    flex: 1,
-    padding: 12,
-  },
-  filterPanel: {
-    width: 280,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    backgroundColor: '#ffffff',
-    borderRightWidth: 1,
-    borderRightColor: '#e2e8f0',
-  },
-  filterPanelMobile: {
-    width: '100%',
-    paddingHorizontal: 16,
-    borderRightWidth: 0,
-  },
-  filterHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  filterTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-  },
-  filterSectionLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  searchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 6,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 14,
-    color: '#0f172a',
-    paddingVertical: 0,
-  },
-  pillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  pill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 14,
-    backgroundColor: '#f1f5f9',
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  pillActive: {
-    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-    borderColor: 'rgba(59, 130, 246, 0.3)',
-  },
-  pillText: {
-    fontSize: 12,
-    color: '#475569',
-  },
-  pillTextActive: {
-    color: '#1d4ed8',
-    fontWeight: '600',
-  },
-  unreadToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 16,
-  },
-  checkbox: {
-    width: 16,
-    height: 16,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: '#cbd5e1',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxActive: {
-    backgroundColor: '#3b82f6',
-    borderColor: '#3b82f6',
-  },
-  unreadToggleText: {
-    fontSize: 13,
-    color: '#475569',
-  },
-  kindGroup: {
-    marginTop: 8,
-  },
-  kindGroupLabel: {
-    fontSize: 11,
-    color: '#94a3b8',
-    fontWeight: '500',
-    marginBottom: 4,
-  },
-  card: {
-    backgroundColor: '#ffffff',
-    padding: 14,
-    marginBottom: 10,
-    borderRadius: 8,
-    borderLeftWidth: 4,
-    borderColor: '#e2e8f0',
-    borderWidth: StyleSheet.hairlineWidth,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  cardRead: {
-    opacity: 0.7,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    marginBottom: 8,
-  },
-  iconBubble: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cardHeaderText: {
-    flex: 1,
-  },
-  cardTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#0f172a',
-    lineHeight: 18,
-  },
-  cardMeta: {
-    fontSize: 11,
-    color: '#94a3b8',
-    marginTop: 3,
-  },
-  unreadDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginTop: 6,
-  },
-  cardBody: {
-    fontSize: 13,
-    color: '#475569',
-    lineHeight: 18,
-    marginBottom: 8,
-  },
-  textMuted: {
-    color: '#94a3b8',
-  },
-  actionToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginVertical: 4,
-  },
-  actionToggleText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  actionPanel: {
-    padding: 10,
-    borderRadius: 6,
-    marginVertical: 4,
-  },
-  actionPanelText: {
-    fontSize: 13,
-    color: '#0f172a',
-    lineHeight: 17,
-  },
-  cardActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 8,
-    paddingTop: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#e2e8f0',
-  },
-  cardActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  cardActionBtnEnd: {
-    marginLeft: 'auto',
-  },
-  cardActionText: {
-    fontSize: 12,
-    color: '#64748b',
-  },
-  loadingState: {
-    paddingVertical: 60,
-    alignItems: 'center',
-  },
-  emptyState: {
-    paddingVertical: 60,
-    alignItems: 'center',
-    gap: 12,
-  },
-  emptyStateText: {
-    fontSize: 14,
-    color: '#64748b',
-    textAlign: 'center',
-    paddingHorizontal: 40,
-  },
-  loadMoreRow: {
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  loadMoreText: {
-    fontSize: 12,
-    color: '#94a3b8',
-  },
-  errorBanner: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  errorText: {
-    fontSize: 13,
-    color: '#ef4444',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  bottomSheet: {
-    maxHeight: '80%',
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingTop: 8,
-  },
-  modalCard: {
-    margin: 24,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    maxHeight: '80%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
-  },
-  rawRow: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#e2e8f0',
-  },
-  rawKey: {
-    fontSize: 11,
-    color: '#64748b',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  rawValue: {
-    fontSize: 13,
-    color: '#0f172a',
-    marginTop: 2,
-    fontFamily: 'monospace',
-  },
-});
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      // Transparent so AnimatedBackground (mounted by the route
+      // shell) shows through. Matches the chrome of every other
+      // page in the app.
+      backgroundColor: 'transparent',
+    },
+    containerMobile: {
+      paddingHorizontal: 0,
+    },
+
+    // ── Header ───────────────────────────────────────────────────
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.glass.border,
+      backgroundColor: 'transparent',
+      gap: spacing.sm,
+    },
+    headerLabel: {
+      ...typography.label,
+      color: colors.text.muted,
+    },
+    headerSubtitle: {
+      fontSize: 12,
+      color: colors.text.muted,
+      marginTop: 4,
+    },
+    headerBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingHorizontal: spacing.sm + 2,
+      paddingVertical: 6,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      backgroundColor: colors.glass.background,
+    },
+    headerBtnPrimary: {
+      backgroundColor: 'rgba(59, 130, 246, 0.10)',
+      borderColor: 'rgba(59, 130, 246, 0.40)',
+    },
+    headerBtnPressed: {
+      opacity: 0.7,
+      transform: [{ scale: 0.98 }],
+    },
+    headerBtnText: {
+      fontSize: 12,
+      color: colors.text.secondary,
+      fontWeight: '500',
+    },
+
+    // ── Body / layout ────────────────────────────────────────────
+    body: {
+      flex: 1,
+      flexDirection: 'row',
+    },
+    bodyMobile: {
+      flexDirection: 'column',
+    },
+    feed: {
+      flex: 1,
+    },
+    feedContent: {
+      padding: spacing.md,
+      gap: spacing.md,
+    },
+
+    // ── Filter panel ─────────────────────────────────────────────
+    filterPanel: {
+      width: 300,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      borderRightWidth: 1,
+      borderRightColor: colors.glass.border,
+      backgroundColor: 'transparent',
+    },
+    filterPanelMobile: {
+      width: '100%',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.lg,
+      borderRightWidth: 0,
+    },
+    filterHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.md,
+    },
+    filterTitle: {
+      fontSize: 18,
+      fontWeight: '500',
+      color: colors.text.primary,
+    },
+    filterSectionLabel: {
+      ...typography.label,
+      color: colors.text.muted,
+      marginTop: spacing.lg,
+      marginBottom: spacing.sm,
+    },
+
+    // ── Search ───────────────────────────────────────────────────
+    searchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm + 2,
+      backgroundColor: colors.glass.background,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    searchInput: {
+      flex: 1,
+      fontSize: 14,
+      color: colors.text.primary,
+      paddingVertical: 0,
+      // RN web: outline ring on focus would clash with the glass
+      // border. The input borrows the parent's border instead.
+      outlineStyle: 'none',
+    },
+
+    // ── Pills / chips ────────────────────────────────────────────
+    pillRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 6,
+    },
+    pill: {
+      paddingHorizontal: spacing.sm + 2,
+      paddingVertical: 6,
+      borderRadius: borderRadius.full,
+      backgroundColor: colors.glass.background,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    pillActive: {
+      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      borderColor: colors.primary,
+    },
+    pillText: {
+      fontSize: 12,
+      color: colors.text.secondary,
+    },
+    pillTextActive: {
+      color: colors.primary,
+      fontWeight: '600',
+    },
+
+    // ── Unread toggle ────────────────────────────────────────────
+    unreadToggle: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    checkbox: {
+      width: 18,
+      height: 18,
+      borderRadius: 4,
+      borderWidth: 1.5,
+      borderColor: colors.border?.medium || colors.glass.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    checkboxActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    unreadToggleText: {
+      fontSize: 13,
+      color: colors.text.secondary,
+    },
+    kindGroup: {
+      marginTop: spacing.sm,
+    },
+    kindGroupLabel: {
+      fontSize: 11,
+      color: colors.text.muted,
+      fontWeight: '500',
+      marginBottom: 4,
+    },
+
+    // ── Signal card ──────────────────────────────────────────────
+    card: {
+      // GlassCard handles padding via its cardContent rule
+      // (default: spacing.xl). Override with a tighter pad so the
+      // feed shows more cards per viewport without feeling cramped.
+      // The GlassCard component still renders the gradient + blur
+      // layers underneath.
+      padding: 0,
+      // The leading severity stripe is a 3px left border, applied
+      // here on the outer card. GlassCard's content padding is
+      // unaffected.
+      borderTopLeftRadius: borderRadius.xxl,
+      borderBottomLeftRadius: borderRadius.xxl,
+    },
+    cardRead: {
+      opacity: 0.65,
+    },
+    cardHeader: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: spacing.sm + 2,
+      marginBottom: spacing.sm,
+    },
+    iconBubble: {
+      width: 32,
+      height: 32,
+      borderRadius: borderRadius.full,
+      borderWidth: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    cardHeaderText: {
+      flex: 1,
+    },
+    cardTitle: {
+      fontSize: 14,
+      fontWeight: '600',
+      color: colors.text.primary,
+      lineHeight: 19,
+    },
+    cardMeta: {
+      fontSize: 11,
+      color: colors.text.muted,
+      marginTop: 3,
+    },
+    unreadDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      marginTop: 6,
+    },
+    cardBody: {
+      fontSize: 13,
+      color: colors.text.secondary,
+      lineHeight: 19,
+      marginBottom: spacing.sm,
+    },
+    textMuted: {
+      color: colors.text.muted,
+    },
+    actionToggle: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginVertical: 4,
+      alignSelf: 'flex-start',
+    },
+    actionToggleText: {
+      fontSize: 12,
+      fontWeight: '500',
+    },
+    actionPanel: {
+      padding: spacing.sm + 2,
+      borderRadius: borderRadius.md,
+      marginVertical: spacing.xs,
+      borderWidth: 1,
+    },
+    actionPanelText: {
+      fontSize: 13,
+      color: colors.text.primary,
+      lineHeight: 18,
+    },
+    cardActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+      marginTop: spacing.sm,
+      paddingTop: spacing.sm,
+      borderTopWidth: 1,
+      borderTopColor: colors.glass.border,
+    },
+    cardActionBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+    },
+    cardActionBtnEnd: {
+      marginLeft: 'auto',
+    },
+    cardActionText: {
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+
+    // ── Loading / empty states ───────────────────────────────────
+    loadingState: {
+      paddingVertical: 60,
+      alignItems: 'center',
+    },
+    emptyState: {
+      paddingVertical: 60,
+      alignItems: 'center',
+      gap: spacing.sm + 4,
+    },
+    emptyStateText: {
+      fontSize: 14,
+      color: colors.text.muted,
+      textAlign: 'center',
+      paddingHorizontal: spacing.xl,
+      lineHeight: 20,
+    },
+    loadMoreRow: {
+      paddingVertical: spacing.md,
+      alignItems: 'center',
+    },
+    loadMoreText: {
+      fontSize: 12,
+      color: colors.text.muted,
+    },
+    errorBanner: {
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm + 2,
+      backgroundColor: colors.status?.errorBg || 'rgba(239, 68, 68, 0.10)',
+      borderBottomWidth: 1,
+      borderBottomColor: `${colors.error}40`,
+    },
+    errorText: {
+      fontSize: 13,
+      color: colors.error,
+    },
+
+    // ── Modal ────────────────────────────────────────────────────
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.55)',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      padding: spacing.md,
+    },
+    bottomSheetWrap: {
+      width: '100%',
+      maxWidth: 720,
+      maxHeight: '85%',
+    },
+    bottomSheet: {
+      // GlassCard renders the surface; the inner FilterPanel
+      // ScrollView paints the content.
+      padding: 0,
+    },
+    modalCard: {
+      // For the raw-data modal — GlassCard variant="modal" wraps
+      // the content in a blurred glass surface, theme-aware.
+      padding: 0,
+      maxHeight: '85%',
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.glass.border,
+    },
+    modalTitle: {
+      fontSize: 16,
+      fontWeight: '500',
+      color: colors.text.primary,
+    },
+    rawRow: {
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.sm + 2,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.glass.border,
+    },
+    rawKey: {
+      ...typography.label,
+      fontSize: 10,
+      color: colors.text.muted,
+    },
+    rawValue: {
+      fontSize: 13,
+      color: colors.text.primary,
+      marginTop: 4,
+      fontFamily: 'monospace',
+      lineHeight: 18,
+    },
+  });
+}
