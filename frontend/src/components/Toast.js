@@ -146,11 +146,16 @@ export const ToastProvider = ({ children }) => {
 };
 
 export const useToast = () => {
-  const context = useContext(ToastContext);
-  if (!context) {
-    throw new Error('useToast must be used within a ToastProvider');
-  }
-  return context;
+  // Phase C1.1 — never throw. The previous implementation threw
+  // when ToastContext was null, which forced every consumer to
+  // wrap the call in try/catch (see RouteGuard pre-C1). React's
+  // rules-of-hooks consider useXxx() inside a try/catch a
+  // conditional-hook pattern — the throwing branch creates a
+  // hook-order discrepancy that surfaces in production as
+  // React error #310. By returning null here, consumers can call
+  // useToast() unconditionally and just guard the result before
+  // touching toast.error / toast.success.
+  return useContext(ToastContext) || null;
 };
 
 const styles = StyleSheet.create({

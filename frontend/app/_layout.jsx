@@ -146,20 +146,20 @@ function _userInOnboarding(user) {
 }
 
 function RouteGuard() {
+  // Phase C1.1 — every hook below is called unconditionally on every
+  // render, in a stable order. Pre-C1.1 the useToast() call was
+  // wrapped in try/catch, which is a rules-of-hooks (d) pattern —
+  // a hook that runs in only one branch of a try/catch creates a
+  // conditional-hook footprint that surfaces as React error #310 in
+  // production builds (the pattern was latent until C1's
+  // @sentry/react bundling reorganized the module-load sequence
+  // enough to trip it). useToast now returns null instead of
+  // throwing when the provider is missing, so the call is safe
+  // unconditional.
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
-  // useToast throws if ToastContext isn't provided. Under normal
-  // mounting order it is (ToastProvider wraps AppShell which contains
-  // us), but a single render-order hiccup or hot-reload can flip
-  // this into a tree-crashing render error. Catch it defensively —
-  // the toast is a UX sprinkle, not a correctness requirement.
-  let toast = null;
-  try {
-    toast = useToast();
-  } catch (_e) {
-    toast = null;
-  }
+  const toast = useToast();
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
