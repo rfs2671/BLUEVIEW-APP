@@ -173,6 +173,201 @@ SCREENSHOT_ENABLED = False
 
 scheduler = AsyncIOScheduler()
 
+# ── Phase C1: Sentry error tracking ───────────────────────────────
+#
+# Initializes the Sentry SDK at module import. Graceful degradation:
+# if SENTRY_DSN is unset OR the sentry-sdk package isn't installed
+# (local dev / pytest without the prod requirements), this block
+# logs a single warning and the rest of the app continues to import
+# normally. No code path elsewhere in the app references sentry_sdk
+# without going through `_sentry_capture()` or the `_SENTRY_AVAILABLE`
+# guard, so the rest of the codebase stays decoupled.
+#
+# Tagging: per-request user_id / company_id are pushed into the
+# Sentry scope inside `get_current_user` (see below). environment
+# is set globally on init.
+#
+# PII scrubbing: the `_sentry_before_send` hook redacts request
+# bodies for paths matching /api/auth/* (login + register payloads
+# carry plain-text passwords) and /api/users/me/notification-
+# preferences (preference docs may carry future PII fields). It
+# also drops 404s and known-bot user-agent traffic so the free-tier
+# Sentry quota isn't burned on noise.
+
+_SENTRY_AVAILABLE = False
+try:
+    import sentry_sdk  # type: ignore
+    from sentry_sdk.integrations.fastapi import FastApiIntegration  # type: ignore
+    from sentry_sdk.integrations.starlette import StarletteIntegration  # type: ignore
+    from sentry_sdk.integrations.logging import LoggingIntegration  # type: ignore
+    _SENTRY_AVAILABLE = True
+except ImportError:  # pragma: no cover — local dev path
+    sentry_sdk = None  # type: ignore
+
+
+# Paths whose request bodies must be redacted. Match prefix.
+_SENTRY_REDACT_PATH_PREFIXES = (
+    "/api/auth/",
+    "/api/users/me/notification-preferences",
+)
+
+# Bot user-agent fragments. Lower-cased contains-match.
+_SENTRY_BOT_UA_FRAGMENTS = (
+    "bot", "spider", "crawler", "preview", "headless",
+    "facebookexternalhit", "googlebot", "bingbot",
+    "ahrefsbot", "semrushbot",
+)
+
+
+def _sentry_should_drop_event(event):
+    """Return True when an event should be discarded BEFORE the SDK
+    serializes the body. Used to keep the free-tier Sentry quota
+    from being burned on 404s and bot traffic — neither of which
+    represents a real bug."""
+    request = (event or {}).get("request") or {}
+    headers = request.get("headers") or {}
+
+    # Bot user-agent → drop
+    ua = (headers.get("user-agent") or headers.get("User-Agent") or "").lower()
+    if any(frag in ua for frag in _SENTRY_BOT_UA_FRAGMENTS):
+        return True
+
+    # 404 → drop
+    contexts = (event or {}).get("contexts") or {}
+    response = contexts.get("response") or {}
+    if response.get("status_code") == 404:
+        return True
+
+    # FastAPI 404s surface as HTTPException with status_code=404 in
+    # the exception value's metadata. Best-effort match on the
+    # exception type + message.
+    exc = (event or {}).get("exception") or {}
+    for v in (exc.get("values") or []):
+        et = (v.get("type") or "").lower()
+        ev = (v.get("value") or "").lower()
+        if et == "httpexception" and (
+            "404" in ev or "not found" in ev
+        ):
+            return True
+
+    return False
+
+
+def _sentry_redact_request_body(event):
+    """In-place scrub the event's request.data / request.body if the
+    URL path matches a redact-prefix. Returns the (mutated) event."""
+    request = (event or {}).get("request")
+    if not request:
+        return event
+
+    url = request.get("url") or ""
+    # Match by path. URLs from Sentry are full URLs; pull the path
+    # via the cheapest possible split — no urllib import needed.
+    path = url
+    if "://" in path:
+        try:
+            path = "/" + path.split("://", 1)[1].split("/", 1)[1]
+        except Exception:
+            path = ""
+    if "?" in path:
+        path = path.split("?", 1)[0]
+
+    if any(path.startswith(p) for p in _SENTRY_REDACT_PATH_PREFIXES):
+        if "data" in request:
+            request["data"] = "[redacted by levelog scrubber]"
+        if "body" in request:
+            request["body"] = "[redacted by levelog scrubber]"
+        # Also scrub query string params — passwords/tokens shouldn't
+        # be there, but defense in depth.
+        if "query_string" in request:
+            request["query_string"] = "[redacted by levelog scrubber]"
+
+    # Always strip Authorization + Cookie headers regardless of path.
+    headers = request.get("headers") or {}
+    for hkey in list(headers.keys()):
+        if hkey.lower() in ("authorization", "cookie", "set-cookie", "x-api-key"):
+            headers[hkey] = "[redacted]"
+
+    return event
+
+
+def _sentry_before_send(event, hint):
+    """Hook called for every event before the SDK ships it. Returns
+    None to drop the event entirely; returns the (possibly mutated)
+    event to send it."""
+    try:
+        if _sentry_should_drop_event(event):
+            return None
+        return _sentry_redact_request_body(event)
+    except Exception:
+        # Never let a scrubber bug break Sentry shipment — fall
+        # through with the unscrubbed event. The Sentry SDK has its
+        # own default scrubbers that cover the obvious cases.
+        return event
+
+
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "").strip()
+SENTRY_ENVIRONMENT = (
+    os.environ.get("RAILWAY_ENVIRONMENT")
+    or os.environ.get("SENTRY_ENVIRONMENT")
+    or "development"
+)
+
+if _SENTRY_AVAILABLE and SENTRY_DSN:
+    try:
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            environment=SENTRY_ENVIRONMENT,
+            traces_sample_rate=0.1,        # 10% transaction sampling
+            profiles_sample_rate=0.0,      # off — cost without signal
+            send_default_pii=False,        # we explicitly opt-in via tags
+            integrations=[
+                FastApiIntegration(transaction_style="endpoint"),
+                StarletteIntegration(transaction_style="endpoint"),
+                # Don't auto-capture log records as breadcrumbs by
+                # default — too noisy. Explicit logger.error calls
+                # the operator wants tracked can call
+                # sentry_sdk.capture_message themselves.
+                LoggingIntegration(level=None, event_level=None),
+            ],
+            before_send=_sentry_before_send,
+            release=os.environ.get("RAILWAY_GIT_COMMIT_SHA", ""),
+        )
+    except Exception as _init_err:
+        logging.getLogger(__name__).warning(
+            f"[sentry] init failed: {_init_err!r}; running without "
+            f"error tracking"
+        )
+        _SENTRY_AVAILABLE = False
+elif not SENTRY_DSN:
+    logging.getLogger(__name__).info(
+        "[sentry] SENTRY_DSN not set; error tracking disabled "
+        "(safe default for local + dev environments)"
+    )
+
+
+def _sentry_set_user_context(user: dict) -> None:
+    """Push user_id + company_id into the Sentry per-request scope.
+    Called from get_current_user once auth resolves. No-op when
+    Sentry is disabled."""
+    if not _SENTRY_AVAILABLE or sentry_sdk is None:
+        return
+    try:
+        sentry_sdk.set_user({
+            "id": str(user.get("id") or user.get("_id") or ""),
+            "ip_address": "{{auto}}",
+        })
+        company_id = user.get("company_id")
+        if company_id:
+            sentry_sdk.set_tag("company_id", str(company_id))
+        role = user.get("role")
+        if role:
+            sentry_sdk.set_tag("role", str(role))
+    except Exception:
+        # Tagging is purely additive; never let it bubble.
+        pass
+
+
 app = FastAPI(title="Levelog API", version="2.0.0")
 
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "").split(",") if os.environ.get("ALLOWED_ORIGINS") else [
@@ -1945,6 +2140,9 @@ async def get_current_user(
                     device_data["company_id"] = project.get("company_id")
 
             logger.info(f"✅ AUTH SUCCESS: Site device {user_id}")
+            # Phase C1: tag the Sentry scope with site-device identity
+            # so any exception during the request is attributable.
+            _sentry_set_user_context(device_data)
             return device_data
 
         user = await db.users.find_one({"_id": to_query_id(user_id)})
@@ -1955,6 +2153,9 @@ async def get_current_user(
         user_data = serialize_id(user)
         user_data["site_mode"] = False
         logger.info(f"✅ AUTH SUCCESS: User {user_id}, role={user_data.get('role')}")
+        # Phase C1: tag the Sentry scope with user_id + company_id +
+        # role for every authenticated request.
+        _sentry_set_user_context(user_data)
         return user_data
 
     except jwt.ExpiredSignatureError:
@@ -2859,6 +3060,32 @@ async def update_password(body: UpdatePasswordRequest, current_user=Depends(get_
 
     logger.info(f"User {current_user['id']} (role={role}) changed their password")
     return {"message": "Password updated successfully"}
+
+# ==================== ADMIN — SENTRY HEALTH CHECK ====================
+
+@api_router.get("/admin/_sentry_test")
+async def admin_sentry_test(current_user = Depends(get_admin_user)):
+    """Phase C1 — intentionally raises so an operator can verify
+    Sentry capture end-to-end after a deploy. Admin-only.
+
+    Usage:
+      curl -H "Authorization: Bearer <admin-token>" \\
+           https://api.levelog.com/api/admin/_sentry_test
+
+    The endpoint always returns 500 with a fixed exception type
+    that's easy to spot in the Sentry dashboard. The exception
+    message is constant so re-runs deduplicate into a single Sentry
+    issue rather than a flood of new ones.
+
+    This is NOT a kill-switch test (that's a separate runbook
+    procedure) and it does NOT trigger a notification. It only
+    proves Sentry is wired correctly.
+    """
+    raise RuntimeError(
+        "Phase C1 Sentry health-check exception (intentional). "
+        "Hit by /api/admin/_sentry_test."
+    )
+
 
 # ==================== ADMIN USER MANAGEMENT ====================
 

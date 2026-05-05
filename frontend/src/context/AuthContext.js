@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { authAPI, getToken, getStoredUser, setStoredUser, clearAuth } from '../utils/api';
+import { setSentryUser, clearSentryUser } from '../lib/sentry';
 
 const AuthContext = createContext(null);
 
@@ -60,6 +61,13 @@ export const AuthProvider = ({ children }) => {
           setUser(normalizedUser);
           await setStoredUser(normalizedUser);
           setIsAuthenticated(true);
+          // Phase C1: tag Sentry events with user_email + company.
+          // No-op when Sentry isn't initialized (no DSN) — safe in dev.
+          setSentryUser({
+            email: normalizedUser.email,
+            company_name: normalizedUser.company_name,
+            role: normalizedUser.role,
+          });
 
           if (userData.site_mode) {
             setSiteMode(true);
@@ -129,6 +137,13 @@ export const AuthProvider = ({ children }) => {
     setUser(normalizedUser);
     await setStoredUser(normalizedUser);
     setIsAuthenticated(true);
+    // Phase C1: tag Sentry on explicit login too (validateSession
+    // covers re-loads, login covers fresh sign-ins).
+    setSentryUser({
+      email: normalizedUser.email,
+      company_name: normalizedUser.company_name,
+      role: normalizedUser.role,
+    });
 
     if (userData.site_mode) {
       setSiteMode(true);
@@ -156,6 +171,10 @@ export const AuthProvider = ({ children }) => {
       setIsAuthenticated(false);
       setSiteMode(false);
       setSiteProject(null);
+      // Phase C1: clear Sentry user tagging on logout so events
+      // captured before the next login aren't attributed to the
+      // previous user.
+      clearSentryUser();
     }
   };
 

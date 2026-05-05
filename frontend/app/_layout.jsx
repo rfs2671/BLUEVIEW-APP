@@ -8,6 +8,14 @@ import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
+import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
+
+// Phase C1: initialize Sentry at module top-level so any error
+// during AuthProvider / ThemeProvider / DatabaseProvider mounting
+// is captured. No-op when EXPO_PUBLIC_SENTRY_DSN is unset (local
+// dev, preview deploys without Sentry). Init is idempotent — safe
+// to call from module scope on hot-reload.
+initSentry();
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -22,6 +30,14 @@ class ErrorBoundary extends React.Component {
   componentDidCatch(error, errorInfo) {
     console.error('App crash caught by ErrorBoundary:', error, errorInfo);
     this.setState({ errorInfo });
+    // Phase C1: forward render-time crashes to Sentry. captureException
+    // is a no-op when Sentry isn't initialized (no DSN), so this is
+    // safe in local dev too.
+    try {
+      sentryCaptureException(error, {
+        componentStack: (errorInfo && errorInfo.componentStack) || null,
+      });
+    } catch (_e) { /* never let the error path itself throw */ }
   }
 
   render() {

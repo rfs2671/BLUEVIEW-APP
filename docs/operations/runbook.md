@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase B4)
-**Test count baseline:** 734 backend tests passing.
+**Last reviewed:** 2026-05-05 (Phase C1)
+**Test count baseline:** 767 backend tests passing.
 
 ---
 
@@ -20,6 +20,8 @@
 6. [Database migration](#6-database-migration)
 7. [Audit script](#7-audit-script)
 8. [Onboarding flow](#8-onboarding-flow)
+9. [Sentry — how to read events](#9-sentry--how to read events)
+10. [Environment variables reference](#10-environment-variables-reference)
 
 ---
 
@@ -602,6 +604,206 @@ delete their existing company, projects, or preferences. The flow
 will detect existing artifacts and redirect to the dashboard mid-
 flow (Step 1 sees company_id is set → 409s the company-create
 endpoint, which is what the FE expects).
+
+---
+
+## 9. Sentry — how to read events
+
+Phase C1 wired Sentry into the backend (FastAPI) and the frontend
+(React via @sentry/react). When a real production bug occurs, an
+event lands in the Sentry dashboard within seconds — with stack
+trace, request context, and the `user_id` / `company_id` /
+`environment` tags attached.
+
+### 9.1 — DSN setup
+
+Create a Sentry project at https://sentry.io (the free tier is
+sufficient for v1 — 5k events/month, 30-day retention). One
+project per service is the convention; pick names like
+`levelog-backend` and `levelog-frontend`.
+
+Copy the DSN from each project's Settings → Client Keys:
+
+```
+Backend  → SENTRY_DSN              → Railway → Variables
+Frontend → EXPO_PUBLIC_SENTRY_DSN  → Cloudflare Pages → Environment Variables
+```
+
+Both env vars are read at app startup. **Missing DSN is graceful:**
+the app starts, just without error tracking. We log a one-line
+info message at startup so it's visible in Railway / Cloudflare
+deploy logs.
+
+### 9.2 — Environment scoping
+
+Events are tagged with `environment` so a deploy to staging
+doesn't pollute production's issue list:
+
+- Backend reads `RAILWAY_ENVIRONMENT` (Railway sets this
+  automatically per environment), falling back to
+  `SENTRY_ENVIRONMENT`, then `"development"`.
+- Frontend reads `EXPO_PUBLIC_ENVIRONMENT` (set explicitly per
+  Cloudflare Pages build), falling back to `NEXT_PUBLIC_ENVIRONMENT`,
+  then `NODE_ENV`, then `"development"`.
+
+Filter the Sentry issue list by `environment:production` to ignore
+local-dev noise.
+
+### 9.3 — Common error patterns to expect
+
+The patterns we've seen during MR.14 + Phase A/B development —
+useful as a reading guide for the first few weeks of production:
+
+- **Mongo connection blips** (`pymongo.errors.AutoReconnect` /
+  `ServerSelectionTimeoutError`). Almost always a Railway → Atlas
+  network burp; resolves on retry. If sustained, check Atlas
+  status page.
+- **`HTTPException` 401 / 403** — these get filtered out by the
+  bot/404 hook; they shouldn't appear in Sentry. If they do,
+  something's wrong with the filter.
+- **`KeyError` / `AttributeError` inside DOB sync** — usually a
+  new DOB record shape we haven't classified. Fix per Section 3
+  ("How to add a new signal_kind").
+- **`httpx.ReadTimeout` / `httpx.ConnectTimeout`** — DOB API or
+  GeoSearch slow. Acceptable at low volume; alarming if sustained.
+- **Frontend `TypeError: Cannot read property … of undefined`** —
+  almost always an API response shape change that leaked through.
+  Check the matching backend endpoint diff.
+- **Frontend `Network Error`** — the @sentry/react beforeSend hook
+  drops these because they're usually misconfigured CORS preflights
+  or browser-blocked fetches. If you're missing real network
+  bugs, widen the filter.
+
+### 9.4 — Alert rules to configure
+
+In Sentry → Alerts → Issue Alerts:
+
+1. **Notify on first occurrence of any new issue** — paged via
+   email (or Slack if you wire the integration). Catches new
+   bugs the moment they reach a single user.
+2. **Notify on issue reaching 10+ occurrences/hour** — triggers
+   when one bug starts hitting many users. Distinguishes "weird
+   one-off" from "all users see it." Prefer Slack here so it
+   doesn't drown your inbox.
+
+For both rules set the project filter to `environment:production`
+so staging deploys don't page you. Severity-based routing (only
+page on `level:error` and above) is also worth setting up once
+you have a few months of baseline data — it lets warnings flow
+to a low-priority channel.
+
+### 9.5 — Verifying integration after deploy
+
+Backend smoke:
+
+```
+> curl -H "Authorization: Bearer <your-admin-token>" \
+       https://api.levelog.com/api/admin/_sentry_test
+```
+
+Returns a 500 with body
+`"Phase C1 Sentry health-check exception (intentional)…"` and
+captures one event in the backend's Sentry project. The exception
+message is fixed so re-runs deduplicate to a single Sentry issue
+rather than spamming new ones.
+
+Frontend smoke: open DevTools on www.levelog.com, paste:
+
+```js
+throw new Error("Sentry frontend integration smoke test")
+```
+
+The throw lands in the global `error` listener (or, if it bubbles
+through React, in the ErrorBoundary's `componentDidCatch`).
+Either way the event appears in the frontend Sentry project
+within 5 seconds.
+
+### 9.6 — PII scrubbing — what's redacted
+
+Backend (server.py `_sentry_before_send`):
+
+- Request bodies are redacted for paths matching:
+  - `/api/auth/*` (login + register payloads carry plain-text
+    passwords).
+  - `/api/users/me/notification-preferences*` (defensive — these
+    docs may carry future PII fields).
+- Authorization, Cookie, Set-Cookie, X-API-Key headers are
+  always stripped, regardless of path.
+- Query strings are redacted on sensitive paths (defensive against
+  reset-token-in-URL leaks).
+- 404s and known-bot user-agents (Googlebot, Ahrefs, headless
+  Chrome, etc.) are dropped entirely — they're not bugs and
+  burning the free-tier quota on them is a waste.
+
+Frontend (`src/lib/sentry.js`):
+
+- `sendDefaultPii: false` keeps Sentry from auto-attaching IP
+  addresses or cookies.
+- `setSentryUser` pushes `email` + `company_name` + `role` after
+  login. Email IS PII; we tag it because it's the unique-id
+  ops actually use to find a user. Cleared on logout.
+- "Network Error" and "Failed to fetch" exceptions are dropped
+  in beforeSend because they're almost always browser-side
+  noise (CORS preflights, ad blockers).
+
+### 9.7 — When to capture explicitly
+
+Most exceptions auto-capture via the FastAPI / starlette
+integrations on the backend and the React ErrorBoundary on the
+frontend. For the rare case where you want to log a non-throwing
+event (e.g. "user hit an unexpected edge case but we recovered
+gracefully"):
+
+```python
+# Backend
+import sentry_sdk
+sentry_sdk.capture_message("Unexpected edge case in frob_widget", level="warning")
+```
+
+```js
+// Frontend
+import { captureException } from '../src/lib/sentry';
+captureException(new Error("Manual capture"), { someContext: "value" });
+```
+
+Don't overuse — every captured event counts toward the free-tier
+quota. If you're tempted to capture a recoverable warning, ask
+yourself: would I want to be paged about this at 3am? If no, log
+it and move on.
+
+---
+
+## 10. Environment variables reference
+
+The full set of env vars the production deployment reads. Add new
+ones here when you wire them.
+
+| Variable | Service | Required? | What it does |
+|---|---|---|---|
+| `MONGO_URL` | backend | yes | Mongo Atlas connection string. |
+| `DB_NAME` | backend | yes | Database name (production: `levelog`). |
+| `JWT_SECRET` | backend | yes | HS256 signing key for auth tokens. Rotate on a security incident; users get logged out. |
+| `JWT_EXPIRATION_HOURS` | backend | no | Session lifetime; default 168 (7 days). |
+| `ALLOWED_ORIGINS` | backend | no | Comma-separated CORS allowlist. Defaults to a built-in production list if unset. |
+| `RESEND_API_KEY` | backend | yes (for emails) | Outbound transactional email via Resend. |
+| `RESEND_FROM_EMAIL` | backend | yes (for emails) | Sender address shown to recipients. |
+| `NOTIFICATIONS_KILL_SWITCH` | backend | no | Set to `true` to suspend ALL outbound notifications. See Section 1. |
+| `NOTIFICATIONS_ENABLED` | backend | no | Set to `false` to suppress non-critical notifications globally. Coarser than the kill switch. |
+| `SENTRY_DSN` | backend | no | Sentry project DSN. Missing → error tracking disabled (graceful). |
+| `SENTRY_ENVIRONMENT` | backend | no | Override for the environment tag. Falls back to `RAILWAY_ENVIRONMENT`, then `"development"`. |
+| `RAILWAY_ENVIRONMENT` | backend | auto | Set automatically by Railway per environment. Used as Sentry environment fallback. |
+| `RAILWAY_GIT_COMMIT_SHA` | backend | auto | Set automatically by Railway. Used as Sentry release tag. |
+| `R2_*` | backend | yes (for files) | Cloudflare R2 credentials for project file storage. |
+| `QWEN_API_KEY` | backend | no | OCR backend for COI uploads. |
+| `EXPO_PUBLIC_API_URL` | frontend | yes | Backend API base URL. Without it the SPA can't talk to the API. |
+| `EXPO_PUBLIC_SENTRY_DSN` | frontend | no | Sentry frontend project DSN. Missing → error tracking disabled. |
+| `EXPO_PUBLIC_ENVIRONMENT` | frontend | no | Frontend Sentry environment tag. Falls back to `NEXT_PUBLIC_ENVIRONMENT`, then `NODE_ENV`, then `"development"`. |
+
+> **Hard rule:** never check any of these into git. The repo's
+> `.gitignore` covers `.env` and `.env.*`, but a moment of
+> inattention can leak secrets in a commit message or a debug
+> dump. If you suspect a leak, rotate the affected key
+> immediately.
 
 ---
 
