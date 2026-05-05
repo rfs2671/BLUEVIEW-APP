@@ -75,14 +75,69 @@ def _run(coro):
 
 class TestDefaults(unittest.TestCase):
 
-    def test_default_channel_routes_michael_pattern(self):
+    def test_default_channel_routes_critical_only_pattern(self):
+        """Phase B1a.1 — Critical-only-by-default. Replaces the
+        prior 'Michael defense-in-depth' shape (B1a):
+            critical=[email], warning=[email], info=[in_app]
+        with the stricter:
+            critical=[email], warning=[], info=[]
+        so users without a saved record see the B1b.1 'Critical only'
+        preset selected on the settings page (no shape mismatch
+        forcing 'Custom' detection)."""
         from lib.notification_preferences import default_channel_routes_default
         routes = default_channel_routes_default()
         self.assertEqual(routes["critical"], ["email"])
-        self.assertEqual(routes["warning"], ["email"])
-        # Defense-in-depth: info severity does NOT email by default.
-        # This is the operator's "Michael defense-in-depth" guarantee.
-        self.assertEqual(routes["info"], ["in_app"])
+        # Warning + info default to NO channel — only the explicit
+        # per-signal overrides in default_signal_kind_overrides()
+        # decide which signals fire.
+        self.assertEqual(routes["warning"], [])
+        self.assertEqual(routes["info"], [])
+
+    def test_default_signal_kind_overrides_critical_only_pattern(self):
+        """Phase B1a.1 — every default has explicit per-signal
+        overrides for ALL 26 signal_kinds. The 6 listed in
+        DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS get email/immediate;
+        the other 20 get feed_only. severity_threshold is 'any'
+        across the board."""
+        from lib.notification_preferences import (
+            default_signal_kind_overrides,
+            DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS,
+            ALL_DEFAULT_SIGNAL_KINDS,
+        )
+        overrides = default_signal_kind_overrides()
+        # All 26 kinds present.
+        self.assertEqual(len(overrides), 26)
+        self.assertEqual(set(overrides.keys()), set(ALL_DEFAULT_SIGNAL_KINDS))
+        # 6 specific critical kinds.
+        critical_email_kinds = {
+            "violation_dob", "violation_ecb",
+            "stop_work_full", "stop_work_partial",
+            "inspection_failed", "filing_disapproved",
+        }
+        self.assertEqual(set(DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS), critical_email_kinds)
+        for kind in critical_email_kinds:
+            self.assertEqual(
+                overrides[kind],
+                {
+                    "channels": ["email"],
+                    "severity_threshold": "any",
+                    "delivery": "immediate",
+                },
+                f"{kind} should default to email/immediate",
+            )
+        # 20 non-critical kinds → feed_only.
+        feed_only_kinds = set(ALL_DEFAULT_SIGNAL_KINDS) - critical_email_kinds
+        self.assertEqual(len(feed_only_kinds), 20)
+        for kind in feed_only_kinds:
+            self.assertEqual(
+                overrides[kind],
+                {
+                    "channels": [],
+                    "severity_threshold": "any",
+                    "delivery": "feed_only",
+                },
+                f"{kind} should default to feed_only",
+            )
 
     def test_default_delivery_for_severity(self):
         from lib.notification_preferences import default_delivery_for_severity
@@ -91,12 +146,21 @@ class TestDefaults(unittest.TestCase):
         self.assertEqual(default_delivery_for_severity("info"), "feed_only")
 
     def test_build_default_preferences_shape(self):
+        """Phase B1a.1 — synthesized defaults now ship with explicit
+        per-signal overrides (26 entries) AND the new critical-only
+        channel routes."""
         from lib.notification_preferences import build_default_preferences
         doc = build_default_preferences("u_test")
         self.assertEqual(doc["user_id"], "u_test")
         self.assertIsNone(doc["project_id"])
-        self.assertEqual(doc["signal_kind_overrides"], {})
-        self.assertIn("critical", doc["channel_routes_default"])
+        # signal_kind_overrides is now fully populated, NOT empty.
+        # 26 kinds match the B1b.1 'Critical only' preset shape.
+        self.assertEqual(len(doc["signal_kind_overrides"]), 26)
+        # New critical-only routes.
+        self.assertEqual(
+            doc["channel_routes_default"],
+            {"critical": ["email"], "warning": [], "info": []},
+        )
         self.assertIn("daily_at", doc["digest_window"])
         self.assertIsInstance(doc["created_at"], datetime)
 
@@ -127,10 +191,19 @@ class TestComputeRoutingDecision(unittest.TestCase):
         self.assertFalse(d.should_queue_digest)
         self.assertEqual(d.delivery, "immediate")
 
-    def test_default_warning_queues_digest(self):
+    def test_warning_with_email_route_queues_digest(self):
+        """Routing decision pin: when channel_routes_default[warning]
+        contains email and there's no per-signal override, a
+        warning-severity signal queues a daily digest. Phase B1a.1
+        defaults no longer route warning to email — this test
+        passes EXPLICIT routes so the routing pathway stays
+        exercised regardless of what the defaults are."""
         from lib.notification_preferences import compute_routing_decision
+        prefs = self._prefs(
+            routes={"critical": ["email"], "warning": ["email"], "info": []},
+        )
         d = compute_routing_decision(
-            self._prefs(),
+            prefs,
             signal_kind="complaint_dob",
             severity="warning",
         )
@@ -138,18 +211,54 @@ class TestComputeRoutingDecision(unittest.TestCase):
         self.assertTrue(d.should_queue_digest)
         self.assertEqual(d.digest_kind, "digest_daily")
 
-    def test_default_info_feed_only(self):
+    def test_default_warning_suppresses_when_route_empty(self):
+        """Phase B1a.1 — warning severity with empty channel route
+        and no per-signal override yields suppress_reason='channels_empty'.
+        This is the new default behavior: customers don't get
+        warning emails by default. (B1a previously routed
+        warning → email digest.)"""
         from lib.notification_preferences import compute_routing_decision
         d = compute_routing_decision(
-            self._prefs(),
+            self._prefs(),  # uses new defaults: warning=[]
+            signal_kind="complaint_dob",
+            severity="warning",
+        )
+        self.assertFalse(d.should_send_email_now)
+        self.assertFalse(d.should_queue_digest)
+        self.assertEqual(d.suppress_reason, "channels_empty")
+
+    def test_info_with_in_app_route_yields_feed_only(self):
+        """Routing decision pin: when channel_routes_default[info]
+        contains in_app and there's no per-signal override, an
+        info-severity signal yields suppress_reason='feed_only'.
+        Same shape as the B1a default; we keep this path tested
+        even though the new B1a.1 default routes info=[]."""
+        from lib.notification_preferences import compute_routing_decision
+        prefs = self._prefs(
+            routes={"critical": ["email"], "warning": [], "info": ["in_app"]},
+        )
+        d = compute_routing_decision(
+            prefs,
             signal_kind="permit_issued",
             severity="info",
         )
-        # info severity defaults to in_app channel, feed_only delivery.
-        # Result: no email, no queue, no immediate; suppress_reason='feed_only'.
         self.assertFalse(d.should_send_email_now)
         self.assertFalse(d.should_queue_digest)
         self.assertEqual(d.suppress_reason, "feed_only")
+
+    def test_default_info_suppresses_when_route_empty(self):
+        """Phase B1a.1 — info severity with empty channel route
+        and no per-signal override yields suppress_reason='channels_empty'.
+        New default behavior."""
+        from lib.notification_preferences import compute_routing_decision
+        d = compute_routing_decision(
+            self._prefs(),  # uses new defaults: info=[]
+            signal_kind="permit_issued",
+            severity="info",
+        )
+        self.assertFalse(d.should_send_email_now)
+        self.assertFalse(d.should_queue_digest)
+        self.assertEqual(d.suppress_reason, "channels_empty")
 
     def test_per_signal_override_wins(self):
         from lib.notification_preferences import compute_routing_decision
@@ -276,11 +385,29 @@ def _build_prefs_db_mock(*, records=None):
 class TestEffectivePreferences(unittest.TestCase):
 
     def test_returns_defaults_when_no_record(self):
+        """Phase B1a.1 — synthesized defaults now ship with 26
+        per-signal overrides (Critical-only preset shape) plus
+        the new critical-only channel routes."""
         from lib.notification_preferences import get_effective_preferences
         db = _build_prefs_db_mock(records=[])
         prefs = _run(get_effective_preferences(db, user_id="u1"))
-        self.assertEqual(prefs["signal_kind_overrides"], {})
-        self.assertIn("channel_routes_default", prefs)
+        # 26 per-signal overrides shipped with defaults.
+        self.assertEqual(len(prefs["signal_kind_overrides"]), 26)
+        # New routes: critical=[email], warning=[], info=[].
+        self.assertEqual(
+            prefs["channel_routes_default"],
+            {"critical": ["email"], "warning": [], "info": []},
+        )
+        # Sanity: violation_dob is one of the 6 critical-email kinds.
+        self.assertEqual(
+            prefs["signal_kind_overrides"]["violation_dob"]["delivery"],
+            "immediate",
+        )
+        # And permit_issued (info-severity) is feed_only.
+        self.assertEqual(
+            prefs["signal_kind_overrides"]["permit_issued"]["delivery"],
+            "feed_only",
+        )
 
     def test_user_global_record_returned(self):
         from lib.notification_preferences import get_effective_preferences
@@ -386,6 +513,11 @@ def _setup_client(*, role="admin", user_id="u_test", company_id="co_a"):
 class TestGetMyPreferences(unittest.TestCase):
 
     def test_returns_defaults_when_no_record(self):
+        """Phase B1a.1 — HTTP-level pin of the new synthesized
+        defaults shape. The GET response is the same shape a
+        saved record would carry, so the B1b.1 frontend's
+        detectActivePreset() reliably resolves to 'critical_only'
+        on first visit (no shape mismatch forcing 'Custom')."""
         import server
         client, restore = _setup_client(user_id="u1")
         mock_db = _build_prefs_db_mock(records=[])
@@ -396,9 +528,23 @@ class TestGetMyPreferences(unittest.TestCase):
             body = resp.json()
             self.assertEqual(body["user_id"], "u1")
             self.assertIsNone(body["project_id"])
-            self.assertEqual(body["signal_kind_overrides"], {})
-            # Michael defense-in-depth defaults present in response.
-            self.assertEqual(body["channel_routes_default"]["info"], ["in_app"])
+            # 26 per-signal overrides shipped with defaults.
+            self.assertEqual(len(body["signal_kind_overrides"]), 26)
+            # New critical-only channel routes.
+            self.assertEqual(
+                body["channel_routes_default"],
+                {"critical": ["email"], "warning": [], "info": []},
+            )
+            # Spot-check: one of the 6 critical-email kinds.
+            self.assertEqual(
+                body["signal_kind_overrides"]["filing_disapproved"]["delivery"],
+                "immediate",
+            )
+            # Spot-check: a non-critical kind defaults to feed_only.
+            self.assertEqual(
+                body["signal_kind_overrides"]["complaint_311"]["delivery"],
+                "feed_only",
+            )
         finally:
             restore()
 
@@ -462,6 +608,10 @@ class TestPatchMyPreferences(unittest.TestCase):
         return db, store
 
     def test_creates_record_from_defaults_with_patch_applied(self):
+        """Phase B1a.1 — when the user has no record and PATCH-es a
+        single override, the upsert path seeds the record from the
+        new Critical-only defaults (26 overrides + critical-only
+        routes) and then merges the patched override on top."""
         import server
         client, restore = _setup_client(user_id="u1")
         mock_db, store = self._patch_db_for_upsert()
@@ -483,9 +633,20 @@ class TestPatchMyPreferences(unittest.TestCase):
             self.assertEqual(resp.status_code, 200, resp.text)
             mock_db.notification_preferences.insert_one.assert_awaited_once()
             saved = store["doc"]
-            self.assertIn("complaint_311", saved["signal_kind_overrides"])
-            # Defaults preserved alongside the patched override.
-            self.assertEqual(saved["channel_routes_default"]["info"], ["in_app"])
+            # The patched override lands on top of the default for
+            # complaint_311 (which by default is feed_only).
+            self.assertEqual(
+                saved["signal_kind_overrides"]["complaint_311"]["delivery"],
+                "immediate",
+            )
+            # The other 25 default overrides remain intact — the
+            # patch merge is additive within signal_kind_overrides.
+            self.assertEqual(len(saved["signal_kind_overrides"]), 26)
+            # New critical-only channel routes preserved.
+            self.assertEqual(
+                saved["channel_routes_default"],
+                {"critical": ["email"], "warning": [], "info": []},
+            )
         finally:
             restore()
 

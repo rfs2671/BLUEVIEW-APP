@@ -89,13 +89,35 @@ DOB jargon (PAA, FISP, CofO, TCO, OATH) gets inline parenthetical
 explanation.
 
 Severity → notification routing
-(`backend/lib/dob_signal_notifications.py`):
+(`backend/lib/dob_signal_notifications.py`) and per-user
+preferences (`backend/lib/notification_preferences.py`).
+
+**Defaults — Critical-only-by-default (Phase B1a.1)**: a user
+without a saved `notification_preferences` record gets:
+
+| Signal_kind | Delivery |
+|---|---|
+| `violation_dob`, `violation_ecb`, `stop_work_full`, `stop_work_partial`, `inspection_failed`, `filing_disapproved` | Immediate email |
+| All other 20 signal_kinds | Feed-only (Activity tab; no email) |
+
+Channel routing fallback (applies only to FUTURE-added signal_kinds
+not in the explicit per-signal default overrides):
 
 | Severity | Channel |
 |---|---|
-| Critical | Immediate email |
-| Warning | Daily digest (7 AM ET) |
-| Info | Weekly digest or feed-only |
+| Critical | `[email]` |
+| Warning | `[]` (feed-only) |
+| Info | `[]` (feed-only) |
+
+Customers opt in to more aggressive routing via the B1b settings
+UI presets (`Standard`, `Everything`) or per-signal customization.
+The Critical-only default replaced B1a's "Michael defense-in-depth"
+pattern (`critical=[email], warning=[email] (digest), info=[in_app]`)
+after customer feedback on the original B1b UI flagged that the
+default was still too noisy. Pinned by
+`test_default_channel_routes_critical_only_pattern` and
+`test_default_signal_kind_overrides_critical_only_pattern` in
+`test_notification_preferences.py`.
 
 Every email path routes through `lib.notifications.send_notification`
 (MR.14-incident consolidation). Properties:

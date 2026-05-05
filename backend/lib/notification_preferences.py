@@ -13,11 +13,17 @@ Design contract — non-negotiable:
     Step 0–4 sequence in lib/notifications.py.
 
   • Default behavior — even when signal_kind IS supplied — must
-    match the operator's "Michael defense-in-depth" pattern:
-      - critical → email
-      - warning  → daily digest
-      - info     → in_app (= feed-only, no email, no SMS)
-    Customers opt in to more.
+    match the "Critical-only by default" pattern (Phase B1a.1
+    update; was "Michael defense-in-depth" in B1a):
+      - 6 critical signal_kinds → email immediate
+        (violation_dob, violation_ecb, stop_work_full,
+         stop_work_partial, inspection_failed, filing_disapproved)
+      - everything else → feed-only (no email, no SMS)
+      - channel_routes_default: critical=[email], warning=[],
+        info=[] — applies only to signal_kinds NOT in the
+        explicit per-signal overrides (e.g. future-added kinds).
+    Customers opt in to more via the B1b settings UI presets
+    ("Standard" or "Everything") or per-signal customization.
 
   • Recipients without a LeveLog user account (e.g. filing_reps
     whose email isn't on the users collection) get the legacy
@@ -171,24 +177,118 @@ NOTIFICATION_STATUS_SUPPRESSED_USER_PREF = "suppressed_user_pref"
 NOTIFICATION_STATUS_SUPPRESSED_USER_PREF_DIGEST = "suppressed_user_pref_digest"
 
 
-# ── Defaults — Michael defense-in-depth ────────────────────────────
+# ── Defaults — Critical-only by default (Phase B1a.1) ─────────────
+
+
+# The 6 signal_kinds that fire an immediate email under the
+# Critical-only default. Mirrors the B1b.1 "Critical only" preset
+# definition exactly so a user with synthesized defaults sees the
+# Critical-only radio selected on the settings page (no Custom
+# state forced by an unmatched-shape mismatch).
+#
+# This list is INTENTIONALLY a subset of the canonically-critical
+# signal_kinds from lib/dob_signal_templates.py. permit_expired,
+# permit_revoked, final_signoff, and cofo_final are canonically
+# critical-severity but excluded here per operator decision: they
+# are predictable lifecycle events (renewal flow already surfaces
+# permit_expired) or rare enough to not justify an immediate email
+# by default. Power users opt in via the Standard / Everything
+# presets or per-signal overrides.
+DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS = (
+    "violation_dob",
+    "violation_ecb",
+    "stop_work_full",
+    "stop_work_partial",
+    "inspection_failed",
+    "filing_disapproved",
+)
+
+
+# The full set of signal_kinds the classifier emits. Mirrors the
+# 9-family taxonomy in frontend/src/constants/signalKinds.js +
+# the test_v1_monitoring_invariants.py pin. 26 total. Adding a new
+# kind here AUTOMATICALLY gives it a feed_only default (since it
+# won't be in DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS), which is the
+# fail-closed convention.
+ALL_DEFAULT_SIGNAL_KINDS = (
+    # permits
+    "permit_issued", "permit_expired", "permit_revoked", "permit_renewed",
+    # filings
+    "filing_approved", "filing_disapproved", "filing_withdrawn",
+    "filing_pending",
+    # violations
+    "violation_dob", "violation_ecb", "violation_resolved",
+    # stop work orders
+    "stop_work_full", "stop_work_partial",
+    # complaints
+    "complaint_dob", "complaint_311",
+    # inspections
+    "inspection_scheduled", "inspection_passed", "inspection_failed",
+    "final_signoff",
+    # cofo
+    "cofo_temporary", "cofo_final", "cofo_pending",
+    # compliance filings
+    "facade_fisp", "boiler_inspection", "elevator_inspection",
+    # license renewals
+    "license_renewal_due",
+)
 
 
 def default_channel_routes_default() -> Dict[str, List[str]]:
-    """Severity → channels for users who haven't set explicit
-    overrides. Conservative pattern: info goes feed-only (no
-    email), warning goes email but only via the daily digest,
-    critical goes email immediately.
+    """Severity → channels for signal_kinds that LACK an explicit
+    per-signal override. Critical-only-by-default pattern (Phase
+    B1a.1):
 
-    NOTE: this maps severity → channels. Whether the email is
-    immediate or queued for digest is a separate decision that
-    falls out of compute_routing_decision based on the caller's
-    delivery setting (defaults below)."""
+        critical → [email]
+        warning  → []
+        info     → []
+
+    Note: with default_signal_kind_overrides() shipping per-signal
+    entries for every kind in ALL_DEFAULT_SIGNAL_KINDS, this fallback
+    only applies to FUTURE-added signal_kinds the classifier emits
+    that aren't in the default-overrides set yet. Critical → email
+    keeps newly-introduced critical signals from being silently
+    suppressed; warning + info default to empty so new kinds don't
+    accidentally email the entire user base before the operator
+    has a chance to map them.
+
+    Was: critical=[email], warning=[email], info=[in_app] in B1a
+    (the 'Michael defense-in-depth' pattern). Customer feedback on
+    B1b drove the shift to this stricter default in B1a.1."""
     return {
         SEVERITY_CRITICAL: [CHANNEL_EMAIL],
-        SEVERITY_WARNING:  [CHANNEL_EMAIL],
-        SEVERITY_INFO:     [CHANNEL_IN_APP],
+        SEVERITY_WARNING:  [],
+        SEVERITY_INFO:     [],
     }
+
+
+def default_signal_kind_overrides() -> Dict[str, Dict[str, Any]]:
+    """Per-signal override map for users without a saved record.
+    Phase B1a.1: shipping ALL 26 signal_kinds with explicit overrides
+    so the synthesized GET response matches the B1b.1 'Critical only'
+    preset shape exactly. detectActivePreset() in the frontend then
+    returns 'critical_only' for new users — no 'Custom' detection
+    forced by a shape mismatch.
+
+    The 6 DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS get email/immediate;
+    the other 20 get feed_only. severity_threshold='any' across the
+    board (lets the threshold gate stay neutral; users opt into
+    severity-based filtering via the per-signal customizer)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for kind in ALL_DEFAULT_SIGNAL_KINDS:
+        if kind in DEFAULT_CRITICAL_EMAIL_SIGNAL_KINDS:
+            out[kind] = {
+                "channels": [CHANNEL_EMAIL],
+                "severity_threshold": SEVERITY_THRESHOLD_ANY,
+                "delivery": DELIVERY_IMMEDIATE,
+            }
+        else:
+            out[kind] = {
+                "channels": [],
+                "severity_threshold": SEVERITY_THRESHOLD_ANY,
+                "delivery": DELIVERY_FEED_ONLY,
+            }
+    return out
 
 
 def default_digest_window() -> Dict[str, Any]:
@@ -217,12 +317,16 @@ def build_default_preferences(
     the response shape when no record exists (GET endpoint), as the
     starting shape for a brand-new PATCH-creates-record code path,
     and as the seed when the dispatcher needs a routing decision
-    on a user that's never customized anything."""
+    on a user that's never customized anything.
+
+    Phase B1a.1: signal_kind_overrides is no longer empty — it ships
+    fully-populated with the Critical-only preset shape so the GET
+    response exactly matches the B1b.1 'Critical only' radio."""
     now = datetime.now(timezone.utc)
     return {
         "user_id": str(user_id),
         "project_id": str(project_id) if project_id is not None else None,
-        "signal_kind_overrides": {},
+        "signal_kind_overrides": default_signal_kind_overrides(),
         "channel_routes_default": default_channel_routes_default(),
         "digest_window": default_digest_window(),
         "created_at": now,
@@ -302,7 +406,8 @@ async def get_effective_preferences(
       1. project-scoped record for (user, project) → wins entirely
          on signal_kind_overrides + channel_routes_default + digest_window.
       2. user-global record (project_id IS None) → fallback.
-      3. compiled defaults — operator's Michael defense-in-depth.
+      3. compiled defaults — Critical-only-by-default (Phase B1a.1;
+         was 'Michael defense-in-depth' in B1a).
 
     The returned dict is shaped like a preferences record: fields
     that aren't customized fall back to defaults via .get on the
