@@ -3766,6 +3766,102 @@ async def get_project_notification_preferences(
     )
 
 
+@api_router.get(
+    "/users/me/recent-signals",
+    tags=["Notifications"],
+)
+async def get_my_recent_signals(
+    days: int = 7,
+    current_user=Depends(get_current_user),
+):
+    """Return per-signal_kind counts of dob_logs that fired against
+    the caller's company in the last `days` days. Used by the
+    notification preferences UI to show "you'd receive ~N
+    notifications per week with these settings."
+
+    This is a count, NOT a replay through the routing decision —
+    that's deferred to B1c. Tenant-scoped: only the caller's
+    company_id is considered. Site-mode device tokens are rejected
+    (preferences are per-user, not per-device).
+
+    Response shape:
+      {
+        "days": 7,
+        "since": "2026-04-27T00:00:00+00:00",
+        "counts_by_signal_kind": {
+          "violation_dob": 3,
+          "complaint_311": 12,
+          ...
+        },
+        "total": <sum of counts>
+      }
+
+    Caps `days` at 90 (defensive — anything longer is a different
+    query shape). Negative or zero days → 1 day floor."""
+    if current_user.get("site_mode"):
+        raise HTTPException(
+            status_code=403,
+            detail="Site-mode devices have no per-user preferences",
+        )
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        # No company means no signals to count; return empty payload
+        # with the correct shape so the UI doesn't crash.
+        now = datetime.now(timezone.utc)
+        return {
+            "days": days,
+            "since": now.isoformat(),
+            "counts_by_signal_kind": {},
+            "total": 0,
+        }
+
+    # Sanitize the window.
+    try:
+        d = int(days)
+    except Exception:
+        d = 7
+    d = max(1, min(d, 90))
+    since = datetime.now(timezone.utc) - timedelta(days=d)
+
+    # Aggregate by signal_kind. dob_logs.detected_at is set on every
+    # insert (verified via the index pass at startup); we filter by
+    # detected_at + company_id, project to signal_kind, group + count.
+    pipeline = [
+        {"$match": {
+            "company_id": company_id,
+            "is_deleted": {"$ne": True},
+            "detected_at": {"$gte": since},
+        }},
+        {"$group": {
+            "_id": {"$ifNull": ["$signal_kind", "(none)"]},
+            "count": {"$sum": 1},
+        }},
+    ]
+
+    counts: Dict[str, int] = {}
+    total = 0
+    try:
+        async for row in db.dob_logs.aggregate(pipeline):
+            kind = row.get("_id") or "(none)"
+            cnt = int(row.get("count") or 0)
+            counts[str(kind)] = cnt
+            total += cnt
+    except Exception as e:
+        logger.warning(
+            "[recent-signals] aggregation failed for company=%s: %r",
+            company_id, e,
+        )
+        # Soft-fail: empty counts. The UI can still render the page
+        # without the tooltip data.
+
+    return {
+        "days": d,
+        "since": since.isoformat(),
+        "counts_by_signal_kind": counts,
+        "total": total,
+    }
+
+
 @api_router.patch(
     "/projects/{project_id}/notification-preferences/{user_id}",
     tags=["Notifications"],

@@ -28,6 +28,8 @@ import {
   Clock,
   Edit3,
   CalendarDays,
+  Bell,
+  ChevronRight,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
@@ -386,6 +388,30 @@ export default function SettingsScreen() {
               />
             </View>
           </GlassCard>
+
+          {/* ── NOTIFICATIONS ─────────────────────────────────────────── */}
+          <Text style={s.sectionLabel}>NOTIFICATIONS</Text>
+          <Pressable
+            onPress={() => router.push('/settings/notifications')}
+            style={({ pressed }) => [
+              { opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <GlassCard style={s.card}>
+              <View style={s.settingRow}>
+                <View style={s.settingLeft}>
+                  <Bell size={20} strokeWidth={1.5} color={colors.text.secondary} />
+                  <View>
+                    <Text style={s.settingTitle}>Notification Preferences</Text>
+                    <Text style={s.settingSubtitle}>
+                      Tune which DOB compliance signals reach you and how
+                    </Text>
+                  </View>
+                </View>
+                <ChevronRight size={20} strokeWidth={1.5} color={colors.text.muted} />
+              </View>
+            </GlassCard>
+          </Pressable>
 
           {/* ── PERSONAL DETAILS ───────────────────────────────────────── */}
           <Text style={s.sectionLabel}>PERSONAL DETAILS</Text>
