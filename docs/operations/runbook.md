@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase C1.2.1)
-**Test count baseline:** 824 backend tests passing.
+**Last reviewed:** 2026-05-05 (Phase C2)
+**Test count baseline:** 828 backend tests passing.
 
 ---
 
@@ -22,7 +22,8 @@
 8. [Onboarding flow](#8-onboarding-flow)
 9. [Sentry — how to read events](#9-sentry--how to read events)
 10. [Sentry source maps](#10-sentry-source-maps)
-11. [Environment variables reference](#11-environment-variables-reference)
+11. [Rate limiting](#11-rate-limiting)
+12. [Environment variables reference](#12-environment-variables-reference)
 
 ---
 
@@ -904,7 +905,133 @@ leak even when the upload was skipped.
 
 ---
 
-## 11. Environment variables reference
+## 11. Rate limiting
+
+Phase C2 introduced a single-process, in-memory rate-limit
+middleware in `backend/lib/rate_limits.py`. Pre-launch hardening
+to keep brute-force, signup spam, and accidental-loop clients
+from chewing through the public surface. `slowapi` and `limits`
+are pinned in `requirements.txt` for the eventual swap to a
+Redis-backed limiter; the current middleware is custom because
+slowapi's decorator-per-endpoint model would touch ~40 routes
+and create N points of regression risk. One config table, one
+matcher, one identifier resolver — easier to audit.
+
+### 11.1 — Per-endpoint limits
+
+Pin all changes in `lib/rate_limits.RATE_LIMITS`. The table is
+match-in-order — declare more-specific patterns above catch-alls.
+
+| Method  | Path | Limit | Identifier |
+|---|---|---|---|
+| POST    | `/api/auth/login` | 5 / 5 minutes | IP |
+| POST    | `/api/auth/register` | 3 / 1 hour | IP |
+| POST    | `/api/auth/forgot-password` | 3 / 1 hour | IP |
+| POST    | `/api/auth/reset-password` | 5 / 1 hour | IP |
+| POST    | `/api/onboarding/company` | 30 / 5 minutes | user |
+| POST    | `/api/onboarding/project` | 30 / 5 minutes | user |
+| POST    | `/api/onboarding/filing-reps` | 30 / 5 minutes | user |
+| PATCH   | `/api/users/me/onboarding-step` | 30 / 5 minutes | user |
+| GET     | `/api/users/me/notification-preferences` | 60 / 1 minute | user |
+| PATCH/PUT | `/api/users/me/notification-preferences` | 30 / 5 minutes | user |
+| POST    | `/api/users/me/notification-preferences/preview` | 60 / 1 minute | user |
+| GET     | `/api/projects/{id}/notification-preferences/{user_id}` | 60 / 1 minute | user |
+| PATCH/PUT | `/api/projects/{id}/notification-preferences/{user_id}` | 30 / 5 minutes | user |
+| DELETE  | `/api/projects/{id}/notification-preferences/{user_id}` | 10 / 5 minutes | user |
+| POST    | `/api/projects` | 10 / 5 minutes | user |
+| PUT/PATCH | `/api/projects/{id}` | 30 / 5 minutes | user |
+| DELETE  | `/api/projects/{id}` | 10 / 5 minutes | user |
+| GET     | `/api/admin/_sentry_test` | 5 / 5 minutes | IP |
+| ANY     | `/api/admin/*` (catch-all) | 60 / 1 minute | IP |
+| ANY     | other `/api/*` (default) | 100 / 1 minute | user |
+
+Identifier semantics:
+
+- **user** — JWT `sub` claim. If the request has no Bearer
+  token, an expired token, or a malformed token, the limiter
+  DOWNGRADES to IP — an unauthenticated caller hitting a
+  user-scoped endpoint is still rate limited, just by the
+  weaker IP key.
+- **IP** — `X-Forwarded-For` leftmost entry (Vercel /
+  Cloudflare set this to the real client IP) → fallback to
+  `request.client.host`.
+
+### 11.2 — When to add a new endpoint
+
+1. Pick a limit that's tight enough to block abuse but loose
+   enough that the legitimate FE never hits it. Read endpoints
+   often want 60/min; mutating endpoints often want 10-30 /
+   5 minutes.
+2. Pick the identifier kind. Public/unauthenticated endpoints
+   = IP. Authenticated endpoints = user. (Multi-user GCs share
+   a `company_id` but each user has their own counter — that's
+   intentional. Per-tenant rate limiting is v1.1 work.)
+3. Add a row to `RATE_LIMITS` in `lib/rate_limits.py`. Keep
+   most-specific patterns above catch-alls.
+4. Add a `TestConfigTable` assertion to
+   `tests/test_c2_rate_limits.py` so the limit + kind are
+   pinned. A future "tidy the table" patch can't drop the row.
+
+### 11.3 — How to read Sentry warnings for rate-limit hits
+
+Every blocked request fires `sentry_sdk.capture_message(...,
+level="warning")` with a body like:
+
+```
+rate_limit_exceeded route=/api/auth/login kind=ip
+```
+
+Sentry's own dedup folds repeats under one issue with a count.
+Filter by `level:warning` + the literal string
+`rate_limit_exceeded` in the issue title.
+
+What to do when you see a spike:
+- **Sustained spike on `/api/auth/login`** — likely a
+  credential-stuffing attempt. Verify via `notification_log`
+  (failed login attempts may correlate). Don't disable the
+  limiter; let it do its job. If the source IP is targeting
+  a known-good user, escalate to the user's owner.
+- **Spike on `/api/onboarding/*`** — usually a bug in the FE
+  that's hitting a step submit in a loop. Reproduce locally;
+  fix the FE; don't widen the limit.
+- **Spike on `/api/users/me/notification-preferences`** — same
+  story; FE polling bug.
+- **Spike on the `/api/admin/{rest:path}` catch-all** — only
+  admin tooling reaches these endpoints; usually means an
+  internal script forgot to throttle. Identify the caller via
+  the X-Forwarded-For tag in the Sentry event and ping them.
+
+### 11.4 — Bypass for emergencies
+
+If the limiter itself has a bug (false positives blocking a
+real customer, or a config mistake locking out the operator
+trying to debug), set on Railway:
+
+```
+Railway → backend service → Variables → RATE_LIMITS_DISABLED=true
+→ Save & redeploy
+```
+
+The middleware reads the env var at every request, so the
+flip takes effect immediately on the next request after the
+new deploy boots.
+
+**Hard rule:** unset within 4 hours. The kill switch is for
+incident response, not for indefinite operation. Production
+must run with limits ON.
+
+### 11.5 — Single-instance limitation (v1)
+
+This middleware uses an in-process dict-of-counters. When we
+scale Railway horizontally to N instances, each instance gets
+its own counter and the effective cap becomes N×limit. v1
+ships single-instance so this is currently safe. v1.1 should
+swap to a Redis-backed limiter (slowapi's MovingWindowRateLimiter
++ RedisStorage; both already in `requirements.txt`).
+
+---
+
+## 12. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
@@ -920,6 +1047,7 @@ ones here when you wire them.
 | `RESEND_FROM_EMAIL` | backend | yes (for emails) | Sender address shown to recipients. |
 | `NOTIFICATIONS_KILL_SWITCH` | backend | no | Set to `true` to suspend ALL outbound notifications. See Section 1. |
 | `NOTIFICATIONS_ENABLED` | backend | no | Set to `false` to suppress non-critical notifications globally. Coarser than the kill switch. |
+| `RATE_LIMITS_DISABLED` | backend | no | Set to `true` to bypass the C2 rate-limit middleware entirely. Emergency lever — see Section 11.4. Unset within 4 hours; production must run with limits ON. |
 | `SENTRY_DSN` | backend | no | Sentry project DSN. Missing → error tracking disabled (graceful). |
 | `SENTRY_ENVIRONMENT` | backend | no | Override for the environment tag. Falls back to `RAILWAY_ENVIRONMENT`, then `"development"`. |
 | `RAILWAY_ENVIRONMENT` | backend | auto | Set automatically by Railway per environment. Used as Sentry environment fallback. |

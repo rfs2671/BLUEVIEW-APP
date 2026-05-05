@@ -81,6 +81,43 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
+// ── Phase C2: 429 rate-limit handling ─────────────────────────────
+//
+// The backend's lib/rate_limits.py middleware returns 429 with a
+// JSON body { error, retry_after_seconds, limit } and a Retry-After
+// header on every blocked request. We surface a user-friendly
+// message via the supplied toast hook (set once at app boot via
+// registerRateLimitToast); we do NOT auto-retry — retrying would
+// just amplify the abuse signal and burn the user's window faster.
+//
+// Auth-form-specific lockout (login form locks for retry_after_seconds)
+// is handled at the call site (see login.jsx in a future commit if
+// needed); this interceptor only owns the toast and the rejected
+// promise.
+let _onRateLimitedToast = null;
+export const registerRateLimitToast = (toastFn) => {
+  _onRateLimitedToast = typeof toastFn === 'function' ? toastFn : null;
+};
+
+export const parseRateLimitError = (err) => {
+  if (!err || !err.response || err.response.status !== 429) return null;
+  const body = err.response.data || {};
+  const retryAfterFromHeader = parseInt(
+    err.response.headers?.['retry-after'] || '0', 10,
+  );
+  const retry =
+    Number.isFinite(body.retry_after_seconds) && body.retry_after_seconds > 0
+      ? body.retry_after_seconds
+      : Number.isFinite(retryAfterFromHeader) && retryAfterFromHeader > 0
+        ? retryAfterFromHeader
+        : 60;
+  return {
+    retryAfterSeconds: retry,
+    limit: body.limit || null,
+    error: body.error || 'rate_limit_exceeded',
+  };
+};
+
 // Response interceptor for error handling
 apiClient.interceptors.response.use(
   (response) => response,
@@ -88,6 +125,20 @@ apiClient.interceptors.response.use(
     if (error.response?.status === 401) {
       await clearAuth();
       // Navigation will be handled by AuthContext
+    } else if (error.response?.status === 429) {
+      const info = parseRateLimitError(error);
+      if (info && _onRateLimitedToast) {
+        try {
+          _onRateLimitedToast({
+            retryAfterSeconds: info.retryAfterSeconds,
+            limit: info.limit,
+            // User-facing message — "Please try again in N seconds"
+            // is friendlier than the raw 429 stack.
+            message:
+              `Too many requests. Please try again in ${info.retryAfterSeconds} seconds.`,
+          });
+        } catch (_e) { /* never let the error path itself throw */ }
+      }
     }
     return Promise.reject(error);
   }

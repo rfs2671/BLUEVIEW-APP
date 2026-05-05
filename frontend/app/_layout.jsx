@@ -9,6 +9,7 @@ import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
+import { registerRateLimitToast } from '../src/utils/api';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -238,7 +239,20 @@ function RouteGuard() {
 
 function AppShell() {
   const { isDark, themeKey } = useTheme();
+  const toast = useToast();
   const bg = isDark ? '#050a12' : '#D6E4F7';
+
+  // Phase C2 — bridge 429 responses from api.js's response
+  // interceptor to the user-visible toast system. Re-registers
+  // every render so the latest toast handle is always live.
+  useEffect(() => {
+    registerRateLimitToast(({ message }) => {
+      if (toast && typeof toast.error === 'function') {
+        toast.error('Slow down', message);
+      }
+    });
+    return () => registerRateLimitToast(null);
+  }, [toast]);
 
   return (
     <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>

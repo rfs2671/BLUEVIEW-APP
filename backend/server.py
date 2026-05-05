@@ -392,6 +392,45 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
 )
 
+# ── Phase C2: rate limiting + abuse protection ────────────────────
+#
+# In-memory fixed-window limiter wrapping every /api/* request.
+# Config table + matcher live in `lib/rate_limits.py`. Auth + the
+# Phase B3 onboarding flow get the tightest caps; admin routes get
+# IP-scoped caps; everything else falls through to a 100/min default.
+#
+# Sentry warnings on block. RATE_LIMITS_DISABLED=true bypasses the
+# whole middleware (emergency lever — see runbook §11). Health probes
+# + docs are excluded.
+try:
+    from lib.rate_limits import make_middleware as _make_rl_middleware
+
+    def _rl_sentry_capture(message, level="warning"):
+        # Bridge to the Sentry helper above. Noop when Sentry SDK
+        # isn't installed (local pytest); real capture in production.
+        if _SENTRY_AVAILABLE and sentry_sdk is not None:
+            try:
+                sentry_sdk.capture_message(message, level=level)
+            except Exception:
+                pass
+
+    app.add_middleware(
+        _make_rl_middleware(
+            jwt_secret=JWT_SECRET,
+            jwt_algorithm=JWT_ALGORITHM,
+            sentry_capture=_rl_sentry_capture,
+        ),
+    )
+except Exception as _rl_err:
+    # Defensive: if the rate-limit module fails to load (corrupt
+    # requirements, syntax error in a hot patch, etc.) the app
+    # still boots so we can iterate on the fix. Logged loudly so
+    # ops sees it.
+    logging.getLogger(__name__).error(
+        f"[rate_limits] middleware NOT installed: {_rl_err!r}; "
+        f"all endpoints currently unrestricted",
+    )
+
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
