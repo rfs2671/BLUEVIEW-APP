@@ -1,44 +1,43 @@
 /**
- * /settings/notifications — Phase B1b notification preferences UI.
- *
- * Consumes B1a backend endpoints:
- *   GET   /api/users/me/notification-preferences  → load + defaults
- *   PATCH /api/users/me/notification-preferences  → save
- *   GET   /api/users/me/recent-signals?days=7     → "you'd receive ~N" tooltip
+ * /settings/notifications — Phase B1b.1 progressive disclosure.
  *
  * Layout:
- *   • Header: title + 1-2 sentence explainer + back button.
- *   • Section A: per-signal_kind controls, grouped by family,
- *     each family collapsible (default expanded on desktop,
- *     collapsed on mobile).
- *   • Section B: severity-keyed channel routes (the
- *     channel_routes_default config — fallback when no per-kind
- *     override exists).
- *   • Section C: digest timing (daily_at, weekly_day, timezone).
- *   • Section D: per-project overrides (collapsible — link list,
- *     real per-project page lands in B1c).
- *   • Section E: footer with Save / Reset / last-saved.
+ *   Header — back + simplified copy.
+ *   Section A — three preset radio cards (Critical only / Standard /
+ *     Everything) + "Customize per signal type" link toggling the
+ *     advanced section.
+ *   Section B — delivery timing (compact, always visible).
+ *   Section C — advanced (collapsible). Channel routing by severity
+ *     + per-signal table grouped by family. Header carries a
+ *     "Reset to <anchorPreset>" link when the anchor preset is not
+ *     'custom'.
+ *   Footer — last-saved + Save / Reset (sticky on mobile).
  *
- * State management:
- *   • prefs: the in-memory editable copy of the loaded record.
- *   • dirty: boolean — true iff prefs differs from initialPrefs.
- *   • saving: boolean — true while PATCH is in flight.
- *   • recent: {signal_kind: count, ...} — for the tooltip.
+ * State:
+ *   prefs              — current editable copy.
+ *   initialPrefs       — last-saved server snapshot. dirty = JSON
+ *                        diff against prefs.
+ *   anchorPreset       — the preset the user explicitly intended.
+ *                        Initialized to detectActivePreset(initialPrefs);
+ *                        updated on every preset radio click. Drives
+ *                        the "Reset to <preset>" affordance even
+ *                        when the user customizes inside Advanced
+ *                        and the live detection drifts to 'custom'.
+ *   advancedOpen       — collapsible state for Section C. Defaults
+ *                        to true when the active preset is 'custom'
+ *                        (so a user landing on a custom shape sees
+ *                        the per-signal table immediately).
  *
- * Save flow: PATCH the WHOLE prefs object (signal_kind_overrides +
- * channel_routes_default + digest_window). The backend's
- * normalize_*_patch helpers validate; on success we replace the
- * cached initialPrefs so the dirty flag clears.
- *
- * Mobile:
- *   • Each section is an accordion (collapsed by default).
- *   • Save button sticks to the bottom.
- *   • Toggles + dropdowns are touch-sized.
- *
- * SMS channel: rendered as a disabled toggle with a "Coming in v1.1"
- * pill. In_app channel: rendered as a regular toggle but labeled
- * "Currently shows in Activity feed" (tooltip). Both are accepted
- * by the backend schema even though only email is deliverable today.
+ * Interaction:
+ *   • Clicking a preset radio → applies that preset's shape via
+ *     buildPresetPrefs, sets anchorPreset.
+ *   • Clicking "Reset to <preset>" → re-applies anchorPreset.
+ *   • Editing inside Advanced → prefs mutates; the live-detected
+ *     preset drifts to 'custom'; radio renders unfilled. anchorPreset
+ *     stays so the Reset link remains accessible.
+ *   • Save → PATCH the whole prefs object; on success, replace
+ *     initialPrefs with the response. anchorPreset stays consistent
+ *     because Save doesn't change the preset intent.
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
@@ -49,7 +48,6 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  Switch,
   Platform,
   useWindowDimensions,
 } from 'react-native';
@@ -69,6 +67,7 @@ import {
   AlertCircle,
   Check,
   Clock,
+  Sliders,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -81,9 +80,14 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
-  TOTAL_SIGNAL_KINDS,
   SEVERITY_PALETTE,
 } from '../../src/constants/signalKinds';
+import {
+  PRESETS,
+  PRESET_ORDER,
+  buildPresetPrefs,
+  detectActivePreset,
+} from '../../src/utils/notificationPresets';
 
 // ── Static select options ────────────────────────────────────────
 
@@ -132,13 +136,12 @@ const MOBILE_BREAKPOINT = 720;
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/**
- * Returns the effective override for a signal_kind, merging the
- * stored override with the implicit default (channels = severity →
- * channel_routes_default[severity], threshold = 'any', delivery =
- * default-for-severity). Used to populate row controls when no
- * explicit override exists yet.
- */
+function defaultDeliveryFor(severity) {
+  if (severity === 'critical') return 'immediate';
+  if (severity === 'warning') return 'digest_daily';
+  return 'feed_only';
+}
+
 function effectiveOverrideFor(prefs, kind) {
   const stored =
     prefs?.signal_kind_overrides && prefs.signal_kind_overrides[kind.key];
@@ -161,15 +164,7 @@ function effectiveOverrideFor(prefs, kind) {
   };
 }
 
-function defaultDeliveryFor(severity) {
-  if (severity === 'critical') return 'immediate';
-  if (severity === 'warning') return 'digest_daily';
-  return 'feed_only';
-}
-
 function deepEqual(a, b) {
-  // Shallow-enough equality for the prefs object — JSON stringify is
-  // fine because prefs are dicts of dicts of primitives + lists.
   try {
     return JSON.stringify(a) === JSON.stringify(b);
   } catch (_e) {
@@ -177,74 +172,51 @@ function deepEqual(a, b) {
   }
 }
 
-// ── Channel toggle (with disabled SMS) ──────────────────────────
+// ── Channel toggle row ──────────────────────────────────────────
 
 const CHANNEL_TOGGLES = [
-  {
-    key: 'email',
-    label: 'Email',
-    Icon: Mail,
-    enabled: true,
-    badge: null,
-  },
-  {
-    key: 'sms',
-    label: 'SMS',
-    Icon: MessageSquare,
-    enabled: false,
-    badge: 'v1.1',
-  },
-  {
-    key: 'in_app',
-    label: 'In-App',
-    Icon: Smartphone,
-    enabled: true,
-    badge: 'feed',
-  },
+  { key: 'email', label: 'Email', Icon: Mail, enabled: true, badge: null },
+  { key: 'sms', label: 'SMS', Icon: MessageSquare, enabled: false, badge: 'v1.1' },
+  { key: 'in_app', label: 'In-App', Icon: Smartphone, enabled: true, badge: 'feed' },
 ];
 
-const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false }) => {
-  return (
-    <View style={[styles.channelRow, compact && styles.channelRowCompact]}>
-      {CHANNEL_TOGGLES.map((ch) => {
-        const isOn = (channels || []).includes(ch.key);
-        const baseStyle = [
-          styles.channelChip,
-          isOn && styles.channelChipOn,
-          !ch.enabled && styles.channelChipDisabled,
-        ];
-        return (
-          <Pressable
-            key={ch.key}
-            onPress={ch.enabled ? () => onChange(ch.key, !isOn) : undefined}
-            disabled={!ch.enabled}
-            style={baseStyle}
+const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false }) => (
+  <View style={[styles.channelRow, compact && styles.channelRowCompact]}>
+    {CHANNEL_TOGGLES.map((ch) => {
+      const isOn = (channels || []).includes(ch.key);
+      return (
+        <Pressable
+          key={ch.key}
+          onPress={ch.enabled ? () => onChange(ch.key, !isOn) : undefined}
+          disabled={!ch.enabled}
+          style={[
+            styles.channelChip,
+            isOn && styles.channelChipOn,
+            !ch.enabled && styles.channelChipDisabled,
+          ]}
+        >
+          <ch.Icon
+            size={13}
+            strokeWidth={1.5}
+            color={isOn ? '#fff' : colors.text.muted}
+          />
+          <Text
+            style={[
+              styles.channelChipLabel,
+              isOn && { color: '#fff' },
+              !ch.enabled && { color: colors.text.muted },
+            ]}
           >
-            <ch.Icon
-              size={13}
-              strokeWidth={1.5}
-              color={isOn ? '#fff' : colors.text.muted}
-            />
-            <Text
-              style={[
-                styles.channelChipLabel,
-                isOn && { color: '#fff' },
-                !ch.enabled && { color: colors.text.muted },
-              ]}
-            >
-              {ch.label}
-            </Text>
-            {ch.badge && (
-              <Text style={styles.channelBadge}>{ch.badge}</Text>
-            )}
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-};
+            {ch.label}
+          </Text>
+          {ch.badge && <Text style={styles.channelBadge}>{ch.badge}</Text>}
+        </Pressable>
+      );
+    })}
+  </View>
+);
 
-// ── Lightweight select: tap to cycle. No native Picker for web parity. ──
+// ── Lightweight cycling select ──────────────────────────────────
 
 const SelectChip = ({ value, options, onChange, styles, colors }) => {
   const idx = options.findIndex((o) => o.value === value);
@@ -269,8 +241,6 @@ const SelectChip = ({ value, options, onChange, styles, colors }) => {
   );
 };
 
-// ── Severity badge ──────────────────────────────────────────────
-
 const SeverityBadge = ({ severity, styles }) => {
   const palette = SEVERITY_PALETTE[severity] || SEVERITY_PALETTE.info;
   return (
@@ -287,19 +257,57 @@ const SeverityBadge = ({ severity, styles }) => {
   );
 };
 
+// ── Preset radio card ────────────────────────────────────────────
+
+const PresetRadioCard = ({
+  preset,
+  selected,
+  onSelect,
+  styles,
+  colors,
+}) => (
+  <Pressable
+    onPress={() => onSelect(preset.key)}
+    style={({ pressed }) => [
+      styles.presetCard,
+      selected && styles.presetCardSelected,
+      pressed && { opacity: 0.85 },
+    ]}
+  >
+    <View
+      style={[
+        styles.presetRadio,
+        selected && styles.presetRadioSelected,
+      ]}
+    >
+      {selected && <View style={styles.presetRadioInner} />}
+    </View>
+    <View style={styles.presetTextBlock}>
+      <View style={styles.presetTitleRow}>
+        <Text style={styles.presetTitle}>{preset.label}</Text>
+        {preset.badge && (
+          <Text style={styles.presetBadge}>{preset.badge}</Text>
+        )}
+      </View>
+      <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
+      <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
+    </View>
+  </Pressable>
+);
+
 // ── Main page ────────────────────────────────────────────────────
 
 export default function NotificationPreferencesScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const toast = useToast();
   const styles = useMemo(() => buildStyles(colors), [colors]);
 
   const { width: winWidth } = useWindowDimensions();
   const isMobile = winWidth < MOBILE_BREAKPOINT;
 
-  // ── Auth guard ────────────────────────────────────────────────
+  // Auth guard
   useEffect(() => {
     if (authLoading) return undefined;
     if (isAuthenticated === false) {
@@ -309,7 +317,7 @@ export default function NotificationPreferencesScreen() {
     return undefined;
   }, [isAuthenticated, authLoading]);
 
-  // ── State ─────────────────────────────────────────────────────
+  // ── State ──
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [initialPrefs, setInitialPrefs] = useState(null);
@@ -319,15 +327,23 @@ export default function NotificationPreferencesScreen() {
   const [saveError, setSaveError] = useState(null);
   const [lastSavedAt, setLastSavedAt] = useState(null);
 
-  // Family expand state. Defaults: expanded on desktop, collapsed on mobile.
+  // The preset the user "intended" — drives Reset to <preset>.
+  // Initialized on load to whatever the saved prefs match. Updated
+  // whenever the user clicks a preset radio.
+  const [anchorPreset, setAnchorPreset] = useState('critical_only');
+
+  // Advanced section toggle. Default: collapsed unless prefs are
+  // already custom (in which case the per-signal table is what the
+  // user needs to see).
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // Family expand state inside Advanced.
   const [expandedFamilies, setExpandedFamilies] = useState(() => {
     const out = {};
-    for (const fam of SIGNAL_FAMILIES) out[fam.key] = true;
+    for (const fam of SIGNAL_FAMILIES) out[fam.key] = !isMobile;
     return out;
   });
   useEffect(() => {
-    // When switching between desktop ↔ mobile breakpoints, recompute
-    // defaults. Operator-explicit toggles persist for the session.
     setExpandedFamilies((prev) => {
       const out = {};
       for (const fam of SIGNAL_FAMILIES) {
@@ -338,21 +354,26 @@ export default function NotificationPreferencesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile]);
 
-  const [showProjectsSection, setShowProjectsSection] = useState(false);
-
-  // ── Initial load ──────────────────────────────────────────────
+  // ── Initial load ──
   const loadPreferences = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     try {
       const [prefsResp, recentResp] = await Promise.all([
         apiClient.get('/api/users/me/notification-preferences'),
-        apiClient.get('/api/users/me/recent-signals?days=7').catch(() => ({ data: { counts_by_signal_kind: {} } })),
+        apiClient
+          .get('/api/users/me/recent-signals?days=7')
+          .catch(() => ({ data: { counts_by_signal_kind: {} } })),
       ]);
       const data = prefsResp.data || {};
       setInitialPrefs(data);
-      setPrefs(JSON.parse(JSON.stringify(data)));  // deep clone for edits
+      setPrefs(JSON.parse(JSON.stringify(data)));
       setLastSavedAt(data.updated_at || null);
+      const detected = detectActivePreset(data);
+      setAnchorPreset(detected);
+      // Auto-expand Advanced when the loaded prefs are custom — the
+      // user almost certainly wants to see what they've got configured.
+      setAdvancedOpen(detected === 'custom');
       const counts = (recentResp.data && recentResp.data.counts_by_signal_kind) || {};
       setRecentCounts(counts);
     } catch (e) {
@@ -367,13 +388,19 @@ export default function NotificationPreferencesScreen() {
     if (isAuthenticated) loadPreferences();
   }, [isAuthenticated, loadPreferences]);
 
-  // ── Dirty tracking ────────────────────────────────────────────
+  // Live-detected preset (from current edits, not the anchor).
+  const livePreset = useMemo(
+    () => (prefs ? detectActivePreset(prefs) : 'custom'),
+    [prefs],
+  );
+
+  // Dirty: prefs differ from saved state.
   const dirty = useMemo(() => {
     if (!initialPrefs || !prefs) return false;
     return !deepEqual(initialPrefs, prefs);
   }, [initialPrefs, prefs]);
 
-  // ── Mutators ──────────────────────────────────────────────────
+  // ── Mutators ──
   const updatePrefs = (mutator) => {
     setPrefs((prev) => {
       if (!prev) return prev;
@@ -381,6 +408,19 @@ export default function NotificationPreferencesScreen() {
       mutator(next);
       return next;
     });
+  };
+
+  const handlePresetSelect = (presetKey) => {
+    if (!prefs) return;
+    setPrefs((prev) => buildPresetPrefs(presetKey, prev));
+    setAnchorPreset(presetKey);
+    setSaveError(null);
+  };
+
+  const handleResetToAnchor = () => {
+    if (!prefs || anchorPreset === 'custom') return;
+    setPrefs((prev) => buildPresetPrefs(anchorPreset, prev));
+    setSaveError(null);
   };
 
   const updateOverride = (signalKind, partial) => {
@@ -399,16 +439,11 @@ export default function NotificationPreferencesScreen() {
     });
   };
 
-  const resetOverride = (signalKind) => {
-    updatePrefs((next) => {
-      if (next.signal_kind_overrides && signalKind in next.signal_kind_overrides) {
-        delete next.signal_kind_overrides[signalKind];
-      }
-    });
-  };
-
   const toggleChannelOnRow = (signalKind, channel, on) => {
-    const eff = effectiveOverrideFor(prefs, SIGNAL_KIND_INDEX[signalKind] || { key: signalKind, defaultSeverity: 'info' });
+    const eff = effectiveOverrideFor(
+      prefs,
+      SIGNAL_KIND_INDEX[signalKind] || { key: signalKind, defaultSeverity: 'info' },
+    );
     const next = on
       ? Array.from(new Set([...eff.channels, channel]))
       : eff.channels.filter((c) => c !== channel);
@@ -434,7 +469,7 @@ export default function NotificationPreferencesScreen() {
     });
   };
 
-  // ── Save ──────────────────────────────────────────────────────
+  // ── Save ──
   const handleSave = async () => {
     if (!prefs || saving) return;
     setSaving(true);
@@ -453,16 +488,19 @@ export default function NotificationPreferencesScreen() {
       setInitialPrefs(saved);
       setPrefs(JSON.parse(JSON.stringify(saved)));
       setLastSavedAt(saved.updated_at || new Date().toISOString());
+      // Recompute anchor — saving a custom shape locks in 'custom'
+      // as the new anchor; saving a preset shape keeps it as that
+      // preset.
+      const detected = detectActivePreset(saved);
+      setAnchorPreset(detected);
       toast.success('Saved', 'Your notification preferences are updated.');
     } catch (e) {
       const detail = e?.response?.data?.detail;
       let msg;
       if (typeof detail === 'object' && detail !== null) {
-        if (Array.isArray(detail.errors)) {
-          msg = detail.errors.join('\n');
-        } else {
-          msg = detail.message || 'Save failed';
-        }
+        msg = Array.isArray(detail.errors)
+          ? detail.errors.join('\n')
+          : (detail.message || 'Save failed');
       } else if (typeof detail === 'string') {
         msg = detail;
       } else {
@@ -475,13 +513,14 @@ export default function NotificationPreferencesScreen() {
     }
   };
 
-  const handleResetAll = () => {
+  const handleResetUnsaved = () => {
     if (!initialPrefs) return;
     setPrefs(JSON.parse(JSON.stringify(initialPrefs)));
+    setAnchorPreset(detectActivePreset(initialPrefs));
     setSaveError(null);
   };
 
-  // ── Render ────────────────────────────────────────────────────
+  // ── Render ──
 
   if (loading || !prefs) {
     return (
@@ -510,6 +549,8 @@ export default function NotificationPreferencesScreen() {
       })}`
     : 'Not yet saved';
 
+  const anchorPresetMeta = PRESETS[anchorPreset];
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -519,7 +560,7 @@ export default function NotificationPreferencesScreen() {
           style={styles.scroll}
           contentContainerStyle={[
             styles.scrollContent,
-            isMobile && { paddingBottom: 120 },  // room for sticky save bar
+            isMobile && { paddingBottom: 120 },
           ]}
           showsVerticalScrollIndicator={false}
         >
@@ -528,170 +569,61 @@ export default function NotificationPreferencesScreen() {
             <View style={styles.introHeader}>
               <Bell size={22} strokeWidth={1.5} color={colors.text.primary} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.introTitle}>Notification Preferences</Text>
+                <Text style={styles.introTitle}>Choose how we notify you</Text>
                 <Text style={styles.introBody}>
-                  Choose which DOB compliance signals reach you and how. Defaults
-                  are conservative — info-severity stays in the activity feed,
-                  warnings are batched into a daily 7am digest, critical alerts
-                  email you immediately.
+                  Pick a preset that matches your style, or customize per signal type.
                 </Text>
               </View>
             </View>
           </GlassCard>
 
-          {/* ── SECTION A — Per-signal_kind ────────────────────────────── */}
-          <Text style={styles.sectionLabel}>WHAT YOU&apos;LL BE NOTIFIED ABOUT</Text>
-          <Text style={styles.sectionBlurb}>
-            One row per signal type ({TOTAL_SIGNAL_KINDS} total). Adjust channels,
-            severity threshold, and delivery cadence per signal. Reset a row to
-            inherit the severity-default routing in section B.
-          </Text>
-          {SIGNAL_FAMILIES.map((fam) => {
-            const expanded = !!expandedFamilies[fam.key];
-            return (
-              <GlassCard key={fam.key} style={styles.familyCard}>
-                <Pressable
-                  onPress={() =>
-                    setExpandedFamilies((prev) => ({ ...prev, [fam.key]: !prev[fam.key] }))
-                  }
-                  style={styles.familyHeader}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.familyTitle}>{fam.label}</Text>
-                    {fam.blurb && (
-                      <Text style={styles.familyBlurb}>{fam.blurb}</Text>
-                    )}
-                  </View>
-                  {expanded ? (
-                    <ChevronUp size={18} strokeWidth={1.5} color={colors.text.muted} />
-                  ) : (
-                    <ChevronDown size={18} strokeWidth={1.5} color={colors.text.muted} />
-                  )}
-                </Pressable>
-                {expanded && (
-                  <View style={styles.familyBody}>
-                    {fam.kinds.map((kind) => {
-                      const eff = effectiveOverrideFor(prefs, kind);
-                      const recent = recentCounts[kind.key] || 0;
-                      return (
-                        <View key={kind.key} style={styles.kindRow}>
-                          <View style={styles.kindRowHeader}>
-                            <View style={{ flex: 1 }}>
-                              <View style={styles.kindRowTitleRow}>
-                                <Text style={styles.kindRowLabel}>{kind.label}</Text>
-                                <SeverityBadge
-                                  severity={kind.defaultSeverity}
-                                  styles={styles}
-                                />
-                              </View>
-                              <Text style={styles.kindRowTooltip}>{kind.tooltip}</Text>
-                              <Text style={styles.kindRowRecent}>
-                                {recent === 0
-                                  ? 'No matches in last 7 days'
-                                  : `${recent} matched in last 7 days`}
-                              </Text>
-                            </View>
-                            {eff.isExplicit && (
-                              <Pressable
-                                onPress={() => resetOverride(kind.key)}
-                                style={styles.resetRowBtn}
-                              >
-                                <RotateCcw size={12} strokeWidth={1.5} color={colors.text.muted} />
-                                <Text style={styles.resetRowBtnText}>Reset</Text>
-                              </Pressable>
-                            )}
-                          </View>
-                          <ChannelToggleRow
-                            channels={eff.channels}
-                            onChange={(ch, on) => toggleChannelOnRow(kind.key, ch, on)}
-                            colors={colors}
-                            styles={styles}
-                          />
-                          <View style={styles.kindRowControls}>
-                            <View style={styles.kindRowControlGroup}>
-                              <Text style={styles.kindRowControlLabel}>
-                                Severity threshold
-                              </Text>
-                              <SelectChip
-                                value={eff.severity_threshold}
-                                options={THRESHOLD_OPTIONS}
-                                onChange={(v) =>
-                                  updateOverride(kind.key, { severity_threshold: v })
-                                }
-                                styles={styles}
-                                colors={colors}
-                              />
-                            </View>
-                            <View style={styles.kindRowControlGroup}>
-                              <Text style={styles.kindRowControlLabel}>
-                                Delivery
-                              </Text>
-                              <SelectChip
-                                value={eff.delivery}
-                                options={DELIVERY_OPTIONS}
-                                onChange={(v) =>
-                                  updateOverride(kind.key, { delivery: v })
-                                }
-                                styles={styles}
-                                colors={colors}
-                              />
-                            </View>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-              </GlassCard>
-            );
-          })}
-
-          {/* ── SECTION B — Severity-keyed defaults ─────────────────────── */}
-          <Text style={styles.sectionLabel}>CHANNEL ROUTING BY SEVERITY</Text>
-          <Text style={styles.sectionBlurb}>
-            When no per-signal override exists, signals route by severity using
-            these channels.
-          </Text>
-          <GlassCard style={styles.card}>
-            {['critical', 'warning', 'info'].map((sev) => {
-              const channels = (prefs.channel_routes_default || {})[sev] || [];
-              return (
-                <View key={sev} style={styles.severityRow}>
-                  <View style={styles.severityRowLeft}>
-                    <SeverityBadge severity={sev} styles={styles} />
-                    <Text style={styles.severityHelp}>
-                      {sev === 'critical'
-                        ? 'Stop work orders, failed inspections, DOB violations'
-                        : sev === 'warning'
-                        ? 'DOB complaints, scheduled inspections, license renewals due'
-                        : 'New permits, filing approvals, 311 calls'}
-                    </Text>
-                  </View>
-                  <ChannelToggleRow
-                    channels={channels}
-                    onChange={(ch, on) => toggleSeverityChannel(sev, ch, on)}
-                    colors={colors}
-                    styles={styles}
-                    compact
-                  />
-                </View>
-              );
-            })}
-          </GlassCard>
-
-          {/* ── SECTION C — Delivery timing ──────────────────────────────── */}
-          <Text style={styles.sectionLabel}>DELIVERY TIMING</Text>
-          <Text style={styles.sectionBlurb}>
-            When digests fire and which timezone the schedule respects.
-          </Text>
-          <GlassCard style={styles.card}>
-            <View style={styles.timingRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.timingLabel}>Daily digest time</Text>
-                <Text style={styles.timingHelp}>
-                  When the daily-digest signals fire each morning.
+          {/* ── Section A — Presets ─────────────────────────────── */}
+          <View style={styles.presetGroup}>
+            {PRESET_ORDER.map((key) => (
+              <PresetRadioCard
+                key={key}
+                preset={PRESETS[key]}
+                selected={livePreset === key}
+                onSelect={handlePresetSelect}
+                styles={styles}
+                colors={colors}
+              />
+            ))}
+            <Pressable
+              onPress={() => setAdvancedOpen((v) => !v)}
+              style={styles.customizeLink}
+            >
+              <Sliders size={14} strokeWidth={1.5} color={colors.text.primary} />
+              <Text style={styles.customizeLinkText}>
+                {advancedOpen
+                  ? 'Hide per-signal customization'
+                  : 'Customize per signal type'}
+              </Text>
+              {advancedOpen ? (
+                <ChevronUp size={14} strokeWidth={1.5} color={colors.text.muted} />
+              ) : (
+                <ChevronDown size={14} strokeWidth={1.5} color={colors.text.muted} />
+              )}
+            </Pressable>
+            {livePreset === 'custom' && (
+              <View style={styles.customStateBanner}>
+                <Info size={13} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={styles.customStateBannerText}>
+                  You&apos;ve customized per-signal settings — none of the
+                  presets above match exactly.
+                  {anchorPreset !== 'custom'
+                    ? ` Click "Reset to ${PRESETS[anchorPreset].label}" inside Advanced to revert.`
+                    : ''}
                 </Text>
               </View>
+            )}
+          </View>
+
+          {/* ── Section B — Delivery timing ─────────────────────── */}
+          <Text style={styles.sectionLabel}>DELIVERY TIMING</Text>
+          <GlassCard style={styles.timingCard}>
+            <View style={styles.timingRow}>
+              <Text style={styles.timingLabel}>Daily digest time</Text>
               <SelectChip
                 value={(prefs.digest_window && prefs.digest_window.daily_at) || '07:00'}
                 options={HOUR_OPTIONS}
@@ -701,12 +633,7 @@ export default function NotificationPreferencesScreen() {
               />
             </View>
             <View style={styles.timingRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.timingLabel}>Weekly digest day</Text>
-                <Text style={styles.timingHelp}>
-                  Day of the week the weekly digest sends.
-                </Text>
-              </View>
+              <Text style={styles.timingLabel}>Weekly digest day</Text>
               <SelectChip
                 value={(prefs.digest_window && prefs.digest_window.weekly_day) || 'monday'}
                 options={WEEKLY_DAY_OPTIONS}
@@ -715,13 +642,8 @@ export default function NotificationPreferencesScreen() {
                 colors={colors}
               />
             </View>
-            <View style={styles.timingRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.timingLabel}>Timezone</Text>
-                <Text style={styles.timingHelp}>
-                  Used for both daily and weekly digest schedules.
-                </Text>
-              </View>
+            <View style={[styles.timingRow, styles.timingRowLast]}>
+              <Text style={styles.timingLabel}>Timezone</Text>
               <SelectChip
                 value={(prefs.digest_window && prefs.digest_window.timezone) || 'America/New_York'}
                 options={TIMEZONE_OPTIONS}
@@ -732,31 +654,148 @@ export default function NotificationPreferencesScreen() {
             </View>
           </GlassCard>
 
-          {/* ── SECTION D — Per-project overrides (collapsible) ────────── */}
-          <Pressable
-            onPress={() => setShowProjectsSection((v) => !v)}
-            style={styles.collapsedSectionHeader}
-          >
-            <Text style={styles.sectionLabel}>PER-PROJECT OVERRIDES</Text>
-            {showProjectsSection ? (
-              <ChevronUp size={16} strokeWidth={1.5} color={colors.text.muted} />
-            ) : (
-              <ChevronDown size={16} strokeWidth={1.5} color={colors.text.muted} />
-            )}
-          </Pressable>
-          {showProjectsSection && (
-            <GlassCard style={styles.card}>
-              <View style={styles.b1cPlaceholder}>
-                <Info size={16} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.b1cPlaceholderText}>
-                  Per-project preference overrides ship in B1c. The backend
-                  endpoints already exist; the per-project UI page lands next.
-                </Text>
+          {/* ── Section C — Advanced (collapsible) ──────────────── */}
+          {advancedOpen && (
+            <View>
+              <View style={styles.advancedHeaderRow}>
+                <Text style={styles.sectionLabel}>ADVANCED — PER-SIGNAL TYPE</Text>
+                {anchorPreset !== 'custom' && anchorPresetMeta && (
+                  <Pressable onPress={handleResetToAnchor} style={styles.resetAnchorLink}>
+                    <RotateCcw size={12} strokeWidth={1.5} color={colors.text.muted} />
+                    <Text style={styles.resetAnchorLinkText}>
+                      Reset to {anchorPresetMeta.label}
+                    </Text>
+                  </Pressable>
+                )}
               </View>
-            </GlassCard>
+              <Text style={styles.sectionBlurb}>
+                Per-signal overrides take precedence over the preset shape. Each
+                row carries channel toggles, a severity threshold, and a
+                delivery cadence.
+              </Text>
+
+              {/* Channel routes by severity (fallback for unknown future kinds) */}
+              <GlassCard style={styles.routesCard}>
+                <Text style={styles.routesHeader}>Severity fallback routes</Text>
+                <Text style={styles.routesHelp}>
+                  Applies only to signal types not explicitly set below
+                  (e.g. new signal types added in future updates).
+                </Text>
+                {['critical', 'warning', 'info'].map((sev) => {
+                  const channels = (prefs.channel_routes_default || {})[sev] || [];
+                  return (
+                    <View key={sev} style={styles.severityRow}>
+                      <SeverityBadge severity={sev} styles={styles} />
+                      <ChannelToggleRow
+                        channels={channels}
+                        onChange={(ch, on) => toggleSeverityChannel(sev, ch, on)}
+                        colors={colors}
+                        styles={styles}
+                        compact
+                      />
+                    </View>
+                  );
+                })}
+              </GlassCard>
+
+              {/* Per-signal table — 9 family cards */}
+              {SIGNAL_FAMILIES.map((fam) => {
+                const expanded = !!expandedFamilies[fam.key];
+                return (
+                  <GlassCard key={fam.key} style={styles.familyCard}>
+                    <Pressable
+                      onPress={() =>
+                        setExpandedFamilies((prev) => ({
+                          ...prev,
+                          [fam.key]: !prev[fam.key],
+                        }))
+                      }
+                      style={styles.familyHeader}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.familyTitle}>{fam.label}</Text>
+                        {fam.blurb && (
+                          <Text style={styles.familyBlurb}>{fam.blurb}</Text>
+                        )}
+                      </View>
+                      {expanded ? (
+                        <ChevronUp size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      ) : (
+                        <ChevronDown size={18} strokeWidth={1.5} color={colors.text.muted} />
+                      )}
+                    </Pressable>
+                    {expanded && (
+                      <View style={styles.familyBody}>
+                        {fam.kinds.map((kind) => {
+                          const eff = effectiveOverrideFor(prefs, kind);
+                          const recent = recentCounts[kind.key] || 0;
+                          return (
+                            <View key={kind.key} style={styles.kindRow}>
+                              <View style={styles.kindRowHeader}>
+                                <View style={{ flex: 1 }}>
+                                  <View style={styles.kindRowTitleRow}>
+                                    <Text style={styles.kindRowLabel}>{kind.label}</Text>
+                                    <SeverityBadge
+                                      severity={kind.defaultSeverity}
+                                      styles={styles}
+                                    />
+                                  </View>
+                                  <Text style={styles.kindRowTooltip}>{kind.tooltip}</Text>
+                                  <Text style={styles.kindRowRecent}>
+                                    {recent === 0
+                                      ? 'No matches in last 7 days'
+                                      : `${recent} matched in last 7 days`}
+                                  </Text>
+                                </View>
+                              </View>
+                              <ChannelToggleRow
+                                channels={eff.channels}
+                                onChange={(ch, on) => toggleChannelOnRow(kind.key, ch, on)}
+                                colors={colors}
+                                styles={styles}
+                              />
+                              <View style={styles.kindRowControls}>
+                                <View style={styles.kindRowControlGroup}>
+                                  <Text style={styles.kindRowControlLabel}>
+                                    Severity threshold
+                                  </Text>
+                                  <SelectChip
+                                    value={eff.severity_threshold}
+                                    options={THRESHOLD_OPTIONS}
+                                    onChange={(v) =>
+                                      updateOverride(kind.key, { severity_threshold: v })
+                                    }
+                                    styles={styles}
+                                    colors={colors}
+                                  />
+                                </View>
+                                <View style={styles.kindRowControlGroup}>
+                                  <Text style={styles.kindRowControlLabel}>
+                                    Delivery
+                                  </Text>
+                                  <SelectChip
+                                    value={eff.delivery}
+                                    options={DELIVERY_OPTIONS}
+                                    onChange={(v) =>
+                                      updateOverride(kind.key, { delivery: v })
+                                    }
+                                    styles={styles}
+                                    colors={colors}
+                                  />
+                                </View>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </GlassCard>
+                );
+              })}
+            </View>
           )}
 
-          {/* ── Footer info ─────────────────────────────────────────── */}
+          {/* Footer */}
           <View style={styles.footerInfoRow}>
             <Clock size={12} strokeWidth={1.5} color={colors.text.muted} />
             <Text style={styles.footerInfoText}>{lastSavedLabel}</Text>
@@ -765,7 +804,7 @@ export default function NotificationPreferencesScreen() {
             <View style={styles.desktopActionRow}>
               <GlassButton
                 title="Reset to last saved"
-                onPress={handleResetAll}
+                onPress={handleResetUnsaved}
                 disabled={!dirty || saving}
                 icon={<RotateCcw size={14} strokeWidth={1.5} color={colors.text.primary} />}
               />
@@ -790,7 +829,7 @@ export default function NotificationPreferencesScreen() {
         {isMobile && (
           <View style={styles.mobileStickyBar}>
             <Pressable
-              onPress={handleResetAll}
+              onPress={handleResetUnsaved}
               disabled={!dirty || saving}
               style={[
                 styles.mobileSecondaryBtn,
@@ -831,7 +870,7 @@ const Header = ({ router, colors, styles }) => (
     <Pressable onPress={() => router.back()} style={styles.backBtn}>
       <ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />
     </Pressable>
-    <Text style={styles.headerTitle}>Notification Preferences</Text>
+    <Text style={styles.headerTitle}>Notifications</Text>
     <View style={{ width: 28 }} />
   </View>
 );
@@ -849,10 +888,8 @@ function buildStyles(colors) {
       paddingVertical: spacing.md,
     },
     backBtn: {
-      width: 28,
-      height: 28,
-      alignItems: 'center',
-      justifyContent: 'center',
+      width: 28, height: 28,
+      alignItems: 'center', justifyContent: 'center',
     },
     headerTitle: {
       fontFamily: typography.semibold,
@@ -865,7 +902,6 @@ function buildStyles(colors) {
       paddingBottom: spacing.xl,
       gap: spacing.md,
     },
-
     loadingWrap: {
       flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     },
@@ -887,18 +923,14 @@ function buildStyles(colors) {
       color: colors.text.primary,
     },
 
-    // ── Intro ──
-    introCard: {
-      padding: spacing.lg,
-    },
+    // Intro
+    introCard: { padding: spacing.lg },
     introHeader: {
-      flexDirection: 'row',
-      gap: spacing.md,
-      alignItems: 'flex-start',
+      flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start',
     },
     introTitle: {
       fontFamily: typography.semibold,
-      fontSize: 16,
+      fontSize: 17,
       color: colors.text.primary,
       marginBottom: 4,
     },
@@ -909,7 +941,7 @@ function buildStyles(colors) {
       lineHeight: 19,
     },
 
-    // ── Section labels ──
+    // Section labels
     sectionLabel: {
       fontFamily: typography.semibold,
       fontSize: 11,
@@ -925,23 +957,170 @@ function buildStyles(colors) {
       marginBottom: spacing.sm,
       lineHeight: 17,
     },
-    card: {
+
+    // ── Preset radio cards ──
+    presetGroup: { gap: spacing.sm },
+    presetCard: {
+      flexDirection: 'row',
+      gap: spacing.md,
       padding: spacing.md,
-      gap: spacing.sm,
+      borderRadius: borderRadius.lg,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      backgroundColor: colors.glass.background,
+      alignItems: 'flex-start',
     },
-    collapsedSectionHeader: {
+    presetCardSelected: {
+      borderColor: '#3b82f6',
+      backgroundColor: 'rgba(59, 130, 246, 0.08)',
+    },
+    presetRadio: {
+      width: 18, height: 18,
+      borderRadius: 9,
+      borderWidth: 2,
+      borderColor: colors.glass.border,
+      alignItems: 'center', justifyContent: 'center',
+      marginTop: 2,
+    },
+    presetRadioSelected: { borderColor: '#3b82f6' },
+    presetRadioInner: {
+      width: 10, height: 10, borderRadius: 5, backgroundColor: '#3b82f6',
+    },
+    presetTextBlock: { flex: 1 },
+    presetTitleRow: {
+      flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4,
+    },
+    presetTitle: {
+      fontFamily: typography.semibold,
+      fontSize: 15,
+      color: colors.text.primary,
+    },
+    presetBadge: {
+      fontFamily: typography.semibold,
+      fontSize: 10,
+      letterSpacing: 0.6,
+      color: '#3b82f6',
+      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+      borderRadius: 4,
+      textTransform: 'uppercase',
+    },
+    presetSubtitle: {
+      fontFamily: typography.medium,
+      fontSize: 13,
+      color: colors.text.secondary,
+      lineHeight: 18,
+      marginBottom: 4,
+    },
+    presetBodyHelp: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: colors.text.muted,
+      lineHeight: 17,
+    },
+
+    customizeLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: spacing.sm,
+      paddingHorizontal: spacing.sm,
+      alignSelf: 'flex-start',
+    },
+    customizeLinkText: {
+      fontFamily: typography.medium,
+      fontSize: 13,
+      color: colors.text.primary,
+      textDecorationLine: 'underline',
+    },
+    customStateBanner: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: 6,
+      padding: spacing.sm,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      backgroundColor: colors.glass.background,
+    },
+    customStateBannerText: {
+      flex: 1,
+      fontFamily: typography.regular,
+      fontSize: 11,
+      color: colors.text.muted,
+      lineHeight: 16,
+    },
+
+    // ── Timing card (compact) ──
+    timingCard: { padding: spacing.md, gap: 0 },
+    timingRow: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingVertical: spacing.xs,
-      marginTop: spacing.md,
+      paddingVertical: spacing.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.glass.border,
+    },
+    timingRowLast: { borderBottomWidth: 0 },
+    timingLabel: {
+      fontFamily: typography.medium,
+      fontSize: 13,
+      color: colors.text.primary,
     },
 
-    // ── Family card ──
-    familyCard: {
-      padding: 0,
-      overflow: 'hidden',
+    // ── Advanced section ──
+    advancedHeaderRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: 6,
+      marginTop: spacing.md,
+      marginBottom: 4,
     },
+    resetAnchorLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingVertical: 4,
+      paddingHorizontal: 8,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+    },
+    resetAnchorLinkText: {
+      fontFamily: typography.medium,
+      fontSize: 11,
+      color: colors.text.muted,
+    },
+
+    // Severity routes inside advanced
+    routesCard: { padding: spacing.md, gap: spacing.xs, marginBottom: spacing.sm },
+    routesHeader: {
+      fontFamily: typography.semibold,
+      fontSize: 13,
+      color: colors.text.primary,
+    },
+    routesHelp: {
+      fontFamily: typography.regular,
+      fontSize: 11,
+      color: colors.text.muted,
+      lineHeight: 16,
+      marginBottom: spacing.xs,
+    },
+    severityRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingVertical: spacing.xs,
+      borderTopWidth: 1,
+      borderTopColor: colors.glass.border,
+      flexWrap: 'wrap',
+    },
+
+    // Family cards
+    familyCard: { padding: 0, overflow: 'hidden' },
     familyHeader: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -964,8 +1143,6 @@ function buildStyles(colors) {
       paddingBottom: spacing.md,
       gap: spacing.md,
     },
-
-    // ── Kind row ──
     kindRow: {
       paddingVertical: spacing.sm,
       borderTopWidth: 1,
@@ -973,9 +1150,7 @@ function buildStyles(colors) {
       gap: spacing.sm,
     },
     kindRowHeader: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      alignItems: 'flex-start',
+      flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
     },
     kindRowTitleRow: {
       flexDirection: 'row',
@@ -1001,30 +1176,13 @@ function buildStyles(colors) {
       letterSpacing: 0.3,
       marginTop: 4,
     },
-    resetRowBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingVertical: 4,
-      paddingHorizontal: 8,
-      borderRadius: borderRadius.sm,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
-    },
-    resetRowBtnText: {
-      fontFamily: typography.medium,
-      fontSize: 11,
-      color: colors.text.muted,
-    },
     kindRowControls: {
       flexDirection: 'row',
       gap: spacing.sm,
       flexWrap: 'wrap',
     },
     kindRowControlGroup: {
-      gap: 2,
-      flex: 1,
-      minWidth: 140,
+      gap: 2, flex: 1, minWidth: 140,
     },
     kindRowControlLabel: {
       fontFamily: typography.regular,
@@ -1032,28 +1190,7 @@ function buildStyles(colors) {
       color: colors.text.muted,
     },
 
-    // ── Severity row ──
-    severityRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: spacing.md,
-      paddingVertical: spacing.sm,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-      flexWrap: 'wrap',
-    },
-    severityRowLeft: {
-      flex: 1, gap: 4,
-      minWidth: 200,
-    },
-    severityHelp: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      lineHeight: 16,
-    },
-
-    // ── Severity badge ──
+    // Severity badge
     sevBadge: {
       paddingVertical: 2, paddingHorizontal: 8,
       borderRadius: borderRadius.sm,
@@ -1066,15 +1203,11 @@ function buildStyles(colors) {
       letterSpacing: 0.5,
     },
 
-    // ── Channel chips ──
+    // Channel chips
     channelRow: {
-      flexDirection: 'row',
-      gap: 6,
-      flexWrap: 'wrap',
+      flexDirection: 'row', gap: 6, flexWrap: 'wrap',
     },
-    channelRowCompact: {
-      justifyContent: 'flex-end',
-    },
+    channelRowCompact: { justifyContent: 'flex-end' },
     channelChip: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1090,9 +1223,7 @@ function buildStyles(colors) {
       backgroundColor: '#3b82f6',
       borderColor: '#3b82f6',
     },
-    channelChipDisabled: {
-      opacity: 0.55,
-    },
+    channelChipDisabled: { opacity: 0.55 },
     channelChipLabel: {
       fontFamily: typography.medium,
       fontSize: 12,
@@ -1109,7 +1240,7 @@ function buildStyles(colors) {
       marginLeft: 2,
     },
 
-    // ── SelectChip ──
+    // SelectChip
     selectChip: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1129,48 +1260,9 @@ function buildStyles(colors) {
       flexShrink: 1,
     },
 
-    // ── Timing ──
-    timingRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: spacing.sm,
-      paddingVertical: spacing.sm,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-    },
-    timingLabel: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
-    timingHelp: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      marginTop: 2,
-      lineHeight: 16,
-    },
-
-    // ── Project placeholder ──
-    b1cPlaceholder: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      alignItems: 'flex-start',
-      padding: spacing.sm,
-    },
-    b1cPlaceholderText: {
-      flex: 1,
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.secondary,
-      lineHeight: 17,
-    },
-
-    // ── Footer ──
+    // Footer
     footerInfoRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 6,
+      flexDirection: 'row', alignItems: 'center', gap: 6,
       marginTop: spacing.md,
     },
     footerInfoText: {
@@ -1203,7 +1295,7 @@ function buildStyles(colors) {
       lineHeight: 17,
     },
 
-    // ── Mobile sticky bar ──
+    // Mobile sticky bar
     mobileStickyBar: {
       position: 'absolute',
       bottom: 0,
@@ -1247,8 +1339,6 @@ function buildStyles(colors) {
       fontSize: 13,
       color: colors.text.muted,
     },
-    mobileBtnDisabled: {
-      opacity: 0.5,
-    },
+    mobileBtnDisabled: { opacity: 0.5 },
   });
 }

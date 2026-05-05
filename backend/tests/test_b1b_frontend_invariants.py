@@ -164,9 +164,12 @@ class TestPreferencesPageStructure(unittest.TestCase):
         text = PREFS_PAGE.read_text(encoding="utf-8")
         self.assertIn("const handleSave", text)
 
-    def test_page_has_reset_handler(self):
+    def test_page_has_reset_unsaved_handler(self):
+        """B1b.1 — Reset to last-saved (the dirty-edits revert).
+        Distinct from Reset to anchor preset, which uses
+        handleResetToAnchor below."""
         text = PREFS_PAGE.read_text(encoding="utf-8")
-        self.assertIn("const handleResetAll", text)
+        self.assertIn("const handleResetUnsaved", text)
 
     def test_page_has_dirty_tracking(self):
         text = PREFS_PAGE.read_text(encoding="utf-8")
@@ -180,6 +183,66 @@ class TestPreferencesPageStructure(unittest.TestCase):
         text = PREFS_PAGE.read_text(encoding="utf-8")
         self.assertIn("MOBILE_BREAKPOINT", text)
         self.assertIn("isMobile", text)
+
+
+# ── B1b.1 progressive-disclosure structure ────────────────────────
+
+
+class TestProgressiveDisclosure(unittest.TestCase):
+    """Pins the B1b.1 layout: preset radio cards + collapsible
+    advanced section + Reset-to-anchor flow."""
+
+    def test_page_imports_presets_module(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("from '../../src/utils/notificationPresets'", text)
+
+    def test_page_uses_detect_active_preset(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("detectActivePreset", text)
+
+    def test_page_uses_build_preset_prefs(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("buildPresetPrefs", text)
+
+    def test_page_renders_preset_cards(self):
+        """The PresetRadioCard component renders one card per preset
+        in PRESET_ORDER."""
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("PresetRadioCard", text)
+        self.assertIn("PRESET_ORDER.map", text)
+
+    def test_page_has_anchor_preset_state(self):
+        """anchorPreset is the user's intended preset; drives the
+        Reset-to-<preset> link inside Advanced even after the user
+        customizes per-signal settings."""
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("anchorPreset", text)
+        self.assertIn("setAnchorPreset", text)
+
+    def test_page_has_handle_preset_select(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("const handlePresetSelect", text)
+
+    def test_page_has_handle_reset_to_anchor(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("const handleResetToAnchor", text)
+
+    def test_page_has_advanced_section_state(self):
+        """Advanced section is collapsible. Closed by default
+        unless live preset is custom (handled in load callback)."""
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("advancedOpen", text)
+        self.assertIn("setAdvancedOpen", text)
+
+    def test_page_has_customize_link(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("Customize per signal type", text)
+
+    def test_page_has_simplified_title(self):
+        """Header copy update — 'Choose how we notify you' replaces
+        the wordier 'Notification Preferences' for the in-page H1."""
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("Choose how we notify you", text)
 
 
 if __name__ == "__main__":
