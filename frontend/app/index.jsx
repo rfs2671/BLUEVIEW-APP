@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Dimensions, Image } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -79,7 +79,20 @@ export default function DashboardScreen() {
   const [activeCheckIns, setActiveCheckIns] = useState([]);
 
   const [layoutReady, setLayoutReady] = useState(false);
-  
+
+  // Phase C1.3 — first-poll banner state (Phase B3) hoisted to the
+  // top of the component alongside the rest of the hooks. Pre-C1.3
+  // these lived ~150 lines down, AFTER the `if (authLoading) return …`
+  // early-return block, which made them conditional. On the first
+  // render with authLoading=true, the early return fired before
+  // these ran (12 hooks); on the next render with authLoading=false
+  // they DID run (14 hooks). Hook count divergence → React error
+  // #310 in production. Sentry diagnosed this once C1.2.1 wired
+  // source maps. The fix is purely structural: same hooks, same
+  // semantics, just declared above the early return so they
+  // ALWAYS run on every render.
+  const [dismissedBanners, setDismissedBanners] = useState({});
+
   useEffect(() => {
     const timer = requestAnimationFrame(() => setLayoutReady(true));
     return () => cancelAnimationFrame(timer);
@@ -97,6 +110,39 @@ export default function DashboardScreen() {
       fetchData();
     }
   }, [isAuthenticated]);
+
+  // Phase C1.3 — first-poll banner: AsyncStorage hydration on
+  // mount. Hoisted alongside the other useEffects above the early
+  // return.
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('bv_first_poll_dismissed');
+        if (raw) setDismissedBanners(JSON.parse(raw));
+      } catch (_e) { /* noop */ }
+    })();
+  }, []);
+
+  // Phase C1.3 — derive the banner project memo above the early
+  // return too. Reads `projects` (state) + `dismissedBanners`
+  // (state) so it must re-run on either state change.
+  const firstPollBannerProject = useMemo(() => {
+    if (!Array.isArray(projects) || projects.length === 0) return null;
+    const now = Date.now();
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    for (const p of projects) {
+      const pid = p.id || p._id;
+      if (!pid) continue;
+      if (dismissedBanners[pid]) continue;
+      const completedAt = p.first_poll_completed_at;
+      if (!completedAt) continue;
+      const t = new Date(completedAt).getTime();
+      if (Number.isNaN(t)) continue;
+      if (now - t > TWENTY_FOUR_HOURS_MS) continue;
+      return p;
+    }
+    return null;
+  }, [projects, dismissedBanners]);
 
   const fetchData = async () => {
     try {
@@ -223,17 +269,9 @@ export default function DashboardScreen() {
   };
 
   // ── Phase B3: first-poll banner (24h) ──────────────────────────
-  const [dismissedBanners, setDismissedBanners] = useState({});
-  useEffect(() => {
-    // Hydrate the dismissal map from AsyncStorage on mount.
-    (async () => {
-      try {
-        const raw = await AsyncStorage.getItem('bv_first_poll_dismissed');
-        if (raw) setDismissedBanners(JSON.parse(raw));
-      } catch (_e) { /* noop */ }
-    })();
-  }, []);
-
+  // Hooks for this banner (useState + useEffect + useMemo) live at
+  // the top of the component now; the helpers below just consume
+  // their values. See the C1.3 comment at the hoisted hooks above.
   const dismissBanner = async (projectId) => {
     const next = { ...dismissedBanners, [projectId]: Date.now() };
     setDismissedBanners(next);
@@ -245,25 +283,9 @@ export default function DashboardScreen() {
     } catch (_e) { /* noop */ }
   };
 
-  // Find a project whose first poll completed in the last 24h that
-  // the user hasn't dismissed yet.
-  const firstPollBannerProject = useMemo(() => {
-    if (!Array.isArray(projects) || projects.length === 0) return null;
-    const now = Date.now();
-    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-    for (const p of projects) {
-      const pid = p.id || p._id;
-      if (!pid) continue;
-      if (dismissedBanners[pid]) continue;
-      const completedAt = p.first_poll_completed_at;
-      if (!completedAt) continue;
-      const t = new Date(completedAt).getTime();
-      if (Number.isNaN(t)) continue;
-      if (now - t > TWENTY_FOUR_HOURS_MS) continue;
-      return p;
-    }
-    return null;
-  }, [projects, dismissedBanners]);
+  // (firstPollBannerProject useMemo lives at the top of the
+  // component alongside the other hooks — see the hoisted block
+  // above the early `if (authLoading) return` guard.)
 
   const renderFirstPollBanner = () => {
     if (!firstPollBannerProject) return null;
