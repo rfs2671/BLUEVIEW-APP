@@ -53,6 +53,8 @@ import {
   CheckCheck,
   RefreshCw,
 } from 'lucide-react-native';
+import InfoTooltip from './InfoTooltip';
+import { SIGNAL_KIND_GROUP_HELP } from '../utils/signalKindHelp';
 import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -396,7 +398,17 @@ function FilterPanel({
       <Text style={styles.filterSectionLabel}>SIGNAL TYPE</Text>
       {SIGNAL_KIND_GROUPS.map((group) => (
         <View key={group.label} style={styles.kindGroup}>
-          <Text style={styles.kindGroupLabel}>{group.label}</Text>
+          {/* Phase B3: tooltip on each filter group label explaining
+              the kinds in that group in plain English. Per-chip
+              tooltips would clutter at 26 chips; group-level
+              tooltips cover all chips in 8 lookups. */}
+          <View style={styles.kindGroupHeader}>
+            <Text style={styles.kindGroupLabel}>{group.label}</Text>
+            <InfoTooltip
+              text={SIGNAL_KIND_GROUP_HELP[group.label] || ''}
+              size={13}
+            />
+          </View>
           <View style={styles.pillRow}>
             {group.kinds.map((kind) => {
               const active = (filters.signal_kinds || []).includes(kind);
@@ -586,9 +598,14 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
     );
   }, [filters]);
 
+  // Phase B3: empty-state copy. When no filters are active and the
+  // feed is empty, this is most often a brand-new project waiting on
+  // its first 15-min poll. The friendlier copy points the operator
+  // at the right expectation rather than implying nothing has
+  // happened.
   const emptyStateMsg = filtersActive
     ? 'No signals matching your filters.'
-    : "No activity in the past 30 days. We're monitoring DOB for changes.";
+    : "We're monitoring DOB. Your first signals will appear within 15 minutes.";
 
   return (
     <View style={[styles.container, isMobile && styles.containerMobile]}>
@@ -947,11 +964,16 @@ function buildStyles(colors, isDark) {
     kindGroup: {
       marginTop: spacing.sm,
     },
+    kindGroupHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      marginBottom: 4,
+    },
     kindGroupLabel: {
       fontSize: 11,
       color: colors.text.muted,
       fontWeight: '500',
-      marginBottom: 4,
     },
 
     // ── Signal card ──────────────────────────────────────────────

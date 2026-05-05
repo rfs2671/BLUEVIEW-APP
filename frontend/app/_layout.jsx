@@ -117,6 +117,18 @@ const errorStyles = StyleSheet.create({
   },
 });
 
+// Phase B3 — onboarding state values from the backend that mean "user
+// is mid-flow and must land on /onboarding". Pre-B3 users (no field
+// on doc) get show_onboarding=false from the API and never trip this.
+const _ONBOARDING_IN_FLIGHT_STEPS = new Set(['1', '2', '3', '4']);
+
+function _userInOnboarding(user) {
+  if (!user) return false;
+  const step = user.onboarding_step;
+  if (step === undefined || step === null) return false;
+  return _ONBOARDING_IN_FLIGHT_STEPS.has(String(step));
+}
+
 function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
@@ -143,6 +155,22 @@ function RouteGuard() {
 
     const isSiteDevice = siteMode || user?.role === 'site_device';
     const isCp = user?.role === 'cp';
+
+    // Phase B3: customer onboarding gate. Newly-registered users
+    // (onboarding_step ∈ {1,2,3,4} on their /auth/me payload) land
+    // on /onboarding on every authed page until they hit
+    // "completed" or "skipped". Site devices and CPs are excluded —
+    // those role gates run below and have stricter path constraints.
+    if (
+      !isSiteDevice &&
+      !isCp &&
+      _userInOnboarding(user) &&
+      pathname !== '/onboarding' &&
+      pathname !== '/login'
+    ) {
+      router.replace('/onboarding');
+      return;
+    }
 
     // Site device: can ONLY be on /site/*, /login
     if (isSiteDevice) {

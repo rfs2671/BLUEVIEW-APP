@@ -1080,8 +1080,7 @@ export default function PermitRenewalScreen() {
                 No Renewals Pending
               </Text>
               <Text style={s.emptyDesc}>
-                Permits expiring within 30 days will
-                automatically appear here.
+                When permits approach renewal, you'll see them here.
               </Text>
             </GlassCard>
           ) : (

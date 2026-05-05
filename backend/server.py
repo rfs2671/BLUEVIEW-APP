@@ -2300,7 +2300,18 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     user_dict["updated_at"] = now
     user_dict["assigned_projects"] = []
     user_dict["is_deleted"] = False
-    
+
+    # Phase B3: every newly-registered user starts the customer
+    # onboarding flow at step 1. The frontend RouteGuard reads
+    # `onboarding_step` via /auth/me and routes the user to
+    # /onboarding until they hit `completed` or `skipped`.
+    # Pre-B3 users (no `onboarding_step` field on their doc) are
+    # treated as already onboarded by the GET status endpoint, so
+    # the existing 622 production users / 3 active projects don't
+    # see the flow.
+    user_dict["onboarding_step"] = "1"
+    user_dict["onboarding_completed_at"] = None
+
     # If no company_id provided, this is invalid (except for testing)
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
         raise HTTPException(status_code=400, detail="Company ID required")
@@ -2329,6 +2340,359 @@ async def get_me(current_user = Depends(get_current_user)):
     if "password" in user:
         del user["password"]
     return user
+
+
+# ── Phase B3: customer onboarding state ────────────────────────────
+#
+# A new GC signs up via /auth/register, which sets
+# onboarding_step="1" + onboarding_completed_at=None on the user
+# doc. The frontend RouteGuard reads /api/users/me/onboarding-status
+# on every authed page; when show_onboarding=True it forces a
+# redirect to /onboarding. Each step PATCHes the step field; the
+# final step PATCHes step="completed" which also stamps
+# onboarding_completed_at = now().
+#
+# Backward-compat: pre-B3 users have NEITHER field on their doc.
+# The GET endpoint synthesizes show_onboarding=False for them so
+# the production user base never sees the flow.
+
+VALID_ONBOARDING_STEPS = {"1", "2", "3", "4", "skipped", "completed"}
+
+
+class OnboardingStepUpdate(BaseModel):
+    step: str  # "1" | "2" | "3" | "4" | "skipped" | "completed"
+
+
+@api_router.get("/users/me/onboarding-status")
+async def get_onboarding_status(current_user = Depends(get_current_user)):
+    """Returns the user's current onboarding state.
+
+    Response shape:
+      {
+        "show_onboarding": bool,    # frontend redirect flag
+        "step": str,                # "1"|"2"|"3"|"4"|"skipped"|"completed"
+        "completed_at": datetime | None,
+      }
+
+    Pre-B3 users (no onboarding_step on the doc) get
+    show_onboarding=False so existing customers don't see the flow.
+    """
+    user_doc = await db.users.find_one(
+        {"_id": to_query_id(current_user["id"])}
+    )
+    if not user_doc:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    step = user_doc.get("onboarding_step")
+    completed_at = user_doc.get("onboarding_completed_at")
+
+    # Pre-B3 user: neither field present on the doc → treat as
+    # already onboarded.
+    if step is None:
+        return {
+            "show_onboarding": False,
+            "step": "completed",
+            "completed_at": None,
+        }
+
+    # Terminal states: don't show the flow again.
+    if step in ("completed", "skipped"):
+        return {
+            "show_onboarding": False,
+            "step": step,
+            "completed_at": completed_at,
+        }
+
+    # In-flight: the FE redirects to /onboarding.
+    return {
+        "show_onboarding": True,
+        "step": step,
+        "completed_at": None,
+    }
+
+
+# ── Phase B3: per-step persistence endpoints ──────────────────────
+#
+# The four onboarding steps wire to:
+#   step 1 → POST /api/onboarding/company  (creates + links to user)
+#   step 2 → POST /api/onboarding/project  (uses user.company_id)
+#   step 3 → POST /api/onboarding/filing-reps  ($push into company.filing_reps)
+#   step 4 → PATCH /api/users/me/notification-preferences  (existing B1a/B1b endpoint)
+#
+# Each step's submit also hits PATCH /api/users/me/onboarding-step
+# to advance state. The endpoints below intentionally don't gate on
+# the existing "owner-only" role check used by /api/owner/companies
+# and /api/owner/companies/{id}/filing-reps — those guard the global
+# admin tooling. The new GC user is a per-company admin, not a
+# LeveLog-platform owner. Each onboarding endpoint is gated instead
+# on the user's onboarding_step being in the in-flight states
+# {1,2,3,4} so they can't be replayed after onboarding completes.
+
+
+class OnboardingCompanyCreate(BaseModel):
+    """Phase B3 — Step 1 form payload."""
+    name: str
+    license_number: Optional[str] = None    # GC license number
+    office_address: Optional[str] = None    # primary office address
+
+
+class OnboardingProjectCreate(BaseModel):
+    """Phase B3 — Step 2 form payload. Subset of ProjectCreate;
+    BIN auto-resolve still happens via fetch_nyc_bin_from_address
+    when the project doc is created (mirrors create_project)."""
+    name: str
+    address: Optional[str] = None
+    expected_start_date: Optional[str] = None    # ISO yyyy-mm-dd
+    expected_completion_date: Optional[str] = None
+
+
+class OnboardingFilingRep(BaseModel):
+    name: str
+    license_number: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class OnboardingFilingRepsCreate(BaseModel):
+    filing_reps: List[OnboardingFilingRep] = []
+
+
+_IN_FLIGHT_ONBOARDING_STEPS = {"1", "2", "3", "4"}
+
+
+def _onboarding_in_flight(user: dict) -> bool:
+    """True iff the user is mid-onboarding (step 1-4). Pre-B3 users
+    (no field on doc) and completed/skipped users get False — their
+    onboarding endpoints are 409'd to prevent replays."""
+    step = user.get("onboarding_step")
+    return step in _IN_FLIGHT_ONBOARDING_STEPS
+
+
+@api_router.post("/onboarding/company")
+async def onboarding_create_company(
+    body: OnboardingCompanyCreate,
+    current_user = Depends(get_current_user),
+):
+    """Phase B3 — Step 1 submit. Creates the new GC's company and
+    auto-links the authenticated user to it (sets user.company_id +
+    company_name). One-shot per user.
+    """
+    if not _onboarding_in_flight(current_user):
+        raise HTTPException(
+            status_code=409,
+            detail="Onboarding is not in flight for this user.",
+        )
+    if current_user.get("company_id"):
+        raise HTTPException(
+            status_code=409,
+            detail="User is already linked to a company.",
+        )
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Company name is required")
+
+    existing = await db.companies.find_one(
+        {"name": name, "is_deleted": {"$ne": True}}
+    )
+    if existing:
+        # Don't error — link the user to the existing company. This
+        # handles the "two co-workers from the same GC sign up" path
+        # where the second user should land in the same tenant rather
+        # than create a duplicate.
+        company_id = str(existing["_id"])
+    else:
+        now = datetime.now(timezone.utc)
+        company_doc = {
+            "name": name,
+            "created_at": now,
+            "updated_at": now,
+            "created_by": str(current_user.get("id")),
+            "is_deleted": False,
+            "gc_license_number": (body.license_number or None),
+            "office_address": (body.office_address or None),
+            "gc_resolved": False,
+            "gc_insurance_records": [],
+            "filing_reps": [],
+        }
+        result = await db.companies.insert_one(company_doc)
+        company_id = str(result.inserted_id)
+
+    # Link the user.
+    await db.users.update_one(
+        {"_id": to_query_id(current_user["id"])},
+        {"$set": {
+            "company_id": company_id,
+            "company_name": name,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+
+    return {"company_id": company_id, "name": name}
+
+
+@api_router.post("/onboarding/project")
+async def onboarding_create_project(
+    body: OnboardingProjectCreate,
+    current_user = Depends(get_current_user),
+):
+    """Phase B3 — Step 2 submit. Creates the user's first project
+    under their (newly-created) company. track_dob_status defaults
+    to True so the 15-min poller picks it up immediately."""
+    if not _onboarding_in_flight(current_user):
+        raise HTTPException(
+            status_code=409,
+            detail="Onboarding is not in flight for this user.",
+        )
+    company_id = current_user.get("company_id")
+    if not company_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Step 1 must complete before adding a project.",
+        )
+
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Project name is required")
+
+    address = (body.address or "").strip() or None
+
+    # BIN auto-resolve (mirrors create_project line ~5399). Soft-fail
+    # — a project still gets created even if GeoSearch is down; the
+    # nightly poller will heal the BIN later.
+    nyc_bin = None
+    bbl = None
+    normalized_address = address
+    track_dob_status = True
+    if address:
+        try:
+            bin_result = await fetch_nyc_bin_from_address(address)
+            nyc_bin = bin_result.get("nyc_bin")
+            bbl = bin_result.get("bbl")
+            if bin_result.get("normalized_address"):
+                normalized_address = bin_result["normalized_address"]
+            if bin_result.get("track_dob_status") is False:
+                track_dob_status = False
+        except Exception as _e:
+            logger.warning(
+                f"BIN auto-resolve failed during onboarding for "
+                f"{address!r}: {_e}"
+            )
+
+    now = datetime.now(timezone.utc)
+    project_doc = {
+        "name": name,
+        "address": normalized_address,
+        "status": "active",
+        "company_id": company_id,
+        "created_by": str(current_user.get("id")),
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+        "nyc_bin": nyc_bin,
+        "bbl": bbl,
+        "track_dob_status": track_dob_status,
+        "expected_start_date": (body.expected_start_date or None),
+        "expected_completion_date": (body.expected_completion_date or None),
+        "assigned_users": [],
+    }
+    result = await db.projects.insert_one(project_doc)
+    project_doc["id"] = str(result.inserted_id)
+    project_doc.pop("_id", None)
+
+    return project_doc
+
+
+@api_router.post("/onboarding/filing-reps")
+async def onboarding_add_filing_reps(
+    body: OnboardingFilingRepsCreate,
+    current_user = Depends(get_current_user),
+):
+    """Phase B3 — Step 3 submit. Pushes one or more filing_reps onto
+    the user's company. Filing reps are licensed individuals who file
+    paperwork — collected here for visibility (not credentials)."""
+    if not _onboarding_in_flight(current_user):
+        raise HTTPException(
+            status_code=409,
+            detail="Onboarding is not in flight for this user.",
+        )
+    company_id = current_user.get("company_id")
+    if not company_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Step 1 must complete before adding filing reps.",
+        )
+
+    now = datetime.now(timezone.utc)
+    new_reps = []
+    for rep in (body.filing_reps or []):
+        nm = (rep.name or "").strip()
+        if not nm:
+            continue  # silently drop empty rows
+        new_reps.append({
+            "id": str(uuid.uuid4()),
+            "name": nm,
+            "license_number": (rep.license_number or None),
+            "email": (rep.email or None),
+            "phone": (rep.phone or None),
+            "is_primary": False,
+            "credentials": [],  # B3 does not collect credentials
+            "added_at": now,
+            "updated_at": now,
+        })
+
+    if new_reps:
+        await db.companies.update_one(
+            {"_id": to_query_id(company_id)},
+            {
+                "$push": {"filing_reps": {"$each": new_reps}},
+                "$set": {"updated_at": now},
+            },
+        )
+
+    return {"added": len(new_reps), "filing_reps": new_reps}
+
+
+@api_router.patch("/users/me/onboarding-step")
+async def update_onboarding_step(
+    body: OnboardingStepUpdate,
+    current_user = Depends(get_current_user),
+):
+    """Advance the user's onboarding state.
+
+    Frontend calls this:
+      • after each step's form submit (step → next step number)
+      • when the user clicks "I'll do this later" / "Skip this step"
+        (step → "skipped" or the next step number, depending on UX)
+      • after step 4 finishes (step → "completed")
+
+    `completed` also stamps onboarding_completed_at to now().
+    """
+    step = (body.step or "").strip()
+    if step not in VALID_ONBOARDING_STEPS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid onboarding step: {step!r}. "
+                   f"Must be one of {sorted(VALID_ONBOARDING_STEPS)}.",
+        )
+
+    now = datetime.now(timezone.utc)
+    set_ops = {"onboarding_step": step, "updated_at": now}
+    if step == "completed":
+        set_ops["onboarding_completed_at"] = now
+
+    result = await db.users.update_one(
+        {"_id": to_query_id(current_user["id"])},
+        {"$set": set_ops},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "step": step,
+        "completed_at": set_ops.get("onboarding_completed_at"),
+    }
+
 
 @api_router.put("/auth/profile")
 async def update_profile(body: UpdateProfileRequest, current_user=Depends(get_current_user)):
@@ -13916,6 +14280,44 @@ async def run_dob_sync_for_project(project: dict) -> list:
         f"DOB sync for project {project_id}: {len(inserted_logs)} new records "
         f"({sum(1 for l in inserted_logs if l.get('severity') == 'Critical')} critical)"
     )
+
+    # Phase B3: first-poll summary for new-customer banner. Idempotent —
+    # only writes once per project. Triggered ONCE on the first DOB
+    # sync (when the project doc has no first_poll_completed_at).
+    # The dashboard FE shows a 24h banner ("Initial scan complete for
+    # {project_name} — found N permits, X violations, Y inspections")
+    # by inspecting these fields. Wrapped in try/except so a count or
+    # write hiccup never breaks the sync.
+    try:
+        proj_doc = await db.projects.find_one({"_id": to_query_id(project_id)})
+        if proj_doc and not proj_doc.get("first_poll_completed_at"):
+            permits_count = await db.dob_logs.count_documents(
+                {"project_id": project_id, "record_type": "permit"}
+            )
+            violations_count = await db.dob_logs.count_documents(
+                {"project_id": project_id, "record_type": "violation"}
+            )
+            inspections_count = await db.dob_logs.count_documents(
+                {"project_id": project_id, "record_type": "inspection"}
+            )
+            await db.projects.update_one(
+                {"_id": to_query_id(project_id)},
+                {"$set": {
+                    "first_poll_completed_at": datetime.now(timezone.utc),
+                    "first_poll_summary": {
+                        "permits": permits_count,
+                        "violations": violations_count,
+                        "inspections": inspections_count,
+                    },
+                }},
+            )
+            logger.info(
+                f"first_poll_summary stamped for project {project_id}: "
+                f"{permits_count}p / {violations_count}v / {inspections_count}i"
+            )
+    except Exception as _e:
+        logger.warning(f"first_poll_summary write failed for {project_id}: {_e}")
+
     # Mark the initial DOB scan done for this project so subsequent scans
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.

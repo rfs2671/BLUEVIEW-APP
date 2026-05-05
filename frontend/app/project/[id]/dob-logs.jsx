@@ -43,6 +43,7 @@ import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import InfoTooltip from '../../../src/components/InfoTooltip';
 
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
@@ -980,7 +981,14 @@ export default function DOBLogsScreen() {
                   <Text style={s.inputHint}>Find your BIN at a810-bisweb.nyc.gov</Text>
                 </View>
                 <Pressable style={s.toggleRow} onPress={() => setConfigTracking(!configTracking)}>
-                  <Text style={s.toggleLabel}>Enable DOB Tracking</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={s.toggleLabel}>Enable DOB Tracking</Text>
+                    {/* Phase B3: tooltip explaining what monitoring means. */}
+                    <InfoTooltip
+                      text="When enabled, LeveLog scans NYC DOB datasets every 15 minutes for permits, filings, violations, inspections, complaints, and stop-work orders linked to this project's BIN or address. New signals appear in the Activity feed; critical items trigger an email per your notification preferences."
+                      size={14}
+                    />
+                  </View>
                   <View style={[s.toggle, configTracking && s.toggleOn]}>
                     <View style={[s.toggleDot, configTracking && s.toggleDotOn]} />
                   </View>

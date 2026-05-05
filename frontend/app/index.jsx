@@ -12,7 +12,11 @@ import {
   ClipboardList,
   Shield,
   HardHat,
+  Plus,
+  Sparkles,
+  X,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
@@ -156,6 +160,17 @@ export default function DashboardScreen() {
     { icon: MapPin,    value: stats.onSiteNow,      label: isDark ? 'On Site' : 'On Site Now',    path: '/workers'  },
   ];
 
+  // ── Phase B3: empty state for owners/admins with no projects ────────
+  // Surfaces a CTA + welcome copy when the dashboard has nothing to
+  // show. Triggers when the user has admin/owner role AND projects
+  // length is 0 AND we've finished loading. Skip-onboarding path
+  // lands here (so does any authed user with zero projects).
+  const showProjectsEmptyState =
+    !loading &&
+    (user?.role === 'admin' || user?.role === 'owner') &&
+    Array.isArray(projects) &&
+    projects.length === 0;
+
   const screenWidth = Dimensions.get('window').width;
   const tilePadding = spacing.lg * 2;
   const tileGap = spacing.sm;
@@ -178,6 +193,119 @@ export default function DashboardScreen() {
           ))}
         </View>
       </>
+    );
+  };
+
+  // ── Phase B3: empty state for fresh customers ──────────────────
+  const renderProjectsEmptyState = () => {
+    if (!showProjectsEmptyState) return null;
+    return (
+      <GlassCard style={s.emptyStateCard}>
+        <IconPod size={48} style={{ marginBottom: spacing.md }}>
+          <Sparkles size={24} strokeWidth={1.5} color={colors.text.primary} />
+        </IconPod>
+        <Text style={[s.emptyStateTitle, { color: colors.text.primary }]}>
+          Welcome to LeveLog
+        </Text>
+        <Text style={[s.emptyStateBody, { color: colors.text.secondary }]}>
+          Add your first project to start monitoring DOB activity. We'll
+          pull permits, filings, violations, and inspections every 15
+          minutes.
+        </Text>
+        <GlassButton
+          title="Add Project"
+          icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
+          onPress={() => router.push('/projects')}
+          style={s.emptyStateCta}
+        />
+      </GlassCard>
+    );
+  };
+
+  // ── Phase B3: first-poll banner (24h) ──────────────────────────
+  const [dismissedBanners, setDismissedBanners] = useState({});
+  useEffect(() => {
+    // Hydrate the dismissal map from AsyncStorage on mount.
+    (async () => {
+      try {
+        const raw = await AsyncStorage.getItem('bv_first_poll_dismissed');
+        if (raw) setDismissedBanners(JSON.parse(raw));
+      } catch (_e) { /* noop */ }
+    })();
+  }, []);
+
+  const dismissBanner = async (projectId) => {
+    const next = { ...dismissedBanners, [projectId]: Date.now() };
+    setDismissedBanners(next);
+    try {
+      await AsyncStorage.setItem(
+        'bv_first_poll_dismissed',
+        JSON.stringify(next),
+      );
+    } catch (_e) { /* noop */ }
+  };
+
+  // Find a project whose first poll completed in the last 24h that
+  // the user hasn't dismissed yet.
+  const firstPollBannerProject = useMemo(() => {
+    if (!Array.isArray(projects) || projects.length === 0) return null;
+    const now = Date.now();
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    for (const p of projects) {
+      const pid = p.id || p._id;
+      if (!pid) continue;
+      if (dismissedBanners[pid]) continue;
+      const completedAt = p.first_poll_completed_at;
+      if (!completedAt) continue;
+      const t = new Date(completedAt).getTime();
+      if (Number.isNaN(t)) continue;
+      if (now - t > TWENTY_FOUR_HOURS_MS) continue;
+      return p;
+    }
+    return null;
+  }, [projects, dismissedBanners]);
+
+  const renderFirstPollBanner = () => {
+    if (!firstPollBannerProject) return null;
+    const p = firstPollBannerProject;
+    const summary = p.first_poll_summary || {};
+    const permits = summary.permits || 0;
+    const violations = summary.violations || 0;
+    const inspections = summary.inspections || 0;
+    const pid = p.id || p._id;
+    return (
+      <GlassCard style={s.firstPollBanner}>
+        <View style={s.firstPollBannerRow}>
+          <IconPod size={40}>
+            <Sparkles size={18} strokeWidth={1.5} color={colors.text.primary} />
+          </IconPod>
+          <View style={{ flex: 1 }}>
+            <Text style={[s.firstPollBannerTitle, { color: colors.text.primary }]}>
+              Initial scan complete for {p.name || 'your project'}
+            </Text>
+            <Text style={[s.firstPollBannerBody, { color: colors.text.secondary }]}>
+              Found {permits} permit{permits === 1 ? '' : 's'}, {violations}{' '}
+              violation{violations === 1 ? '' : 's'}, {inspections} inspection
+              {inspections === 1 ? '' : 's'}.
+            </Text>
+            <Pressable
+              onPress={() => router.push(`/project/${pid}/activity`)}
+              style={s.firstPollBannerCta}
+            >
+              <Text style={[s.firstPollBannerCtaText, { color: colors.primary }]}>
+                View activity →
+              </Text>
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() => dismissBanner(pid)}
+            accessibilityLabel="Dismiss banner"
+            style={s.firstPollBannerDismiss}
+          >
+            <X size={16} color={colors.text.muted} />
+          </Pressable>
+        </View>
+      </GlassCard>
     );
   };
 
@@ -244,9 +372,15 @@ export default function DashboardScreen() {
                 </View>
               </View>
 
+              {/* B3: 24h first-poll banner */}
+              {renderFirstPollBanner()}
+
               <GlassCard style={s.darkStatsCard}>
                 {renderStats()}
               </GlassCard>
+
+              {/* B3: empty state when no projects */}
+              {renderProjectsEmptyState()}
 
               <SyncButton onSyncComplete={fetchData} />
 
@@ -257,6 +391,9 @@ export default function DashboardScreen() {
                LIGHT MODE — hero card layout (target design)
                ══════════════════════════════════════════════════════════════ */
             <>
+              {/* B3: 24h first-poll banner */}
+              {renderFirstPollBanner()}
+
               <GlassCard style={s.heroCard}>
                 {/* Date on top */}
                 <Text style={[s.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
@@ -267,10 +404,13 @@ export default function DashboardScreen() {
 
                 {/* Email */}
                 <Text style={[s.heroEmail, { color: colors.text.muted }]}>{getUserEmail()}</Text>
-                
+
                 {/* Stats inside the card */}
                 {renderStats()}
               </GlassCard>
+
+              {/* B3: empty state when no projects */}
+              {renderProjectsEmptyState()}
 
               <SyncButton onSyncComplete={fetchData} />
 
@@ -467,6 +607,70 @@ function buildStyles(colors, isDark) {
     letterSpacing: 1.5,
     marginBottom: spacing.md,
     marginTop: spacing.md,
+  },
+
+  /* ── B3: empty state ──────────────────────────────────────────────────── */
+  emptyStateCard: {
+    alignItems: 'center',
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.lg,
+  },
+  emptyStateTitle: {
+    fontFamily: typography.semibold,
+    fontSize: 22,
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: spacing.sm,
+    textAlign: 'center',
+  },
+  emptyStateBody: {
+    fontFamily: typography.regular,
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.text.secondary,
+    textAlign: 'center',
+    maxWidth: 420,
+    marginBottom: spacing.lg,
+  },
+  emptyStateCta: {
+    minWidth: 180,
+  },
+
+  /* ── B3: first-poll banner ────────────────────────────────────────────── */
+  firstPollBanner: {
+    marginBottom: spacing.lg,
+  },
+  firstPollBannerRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+  },
+  firstPollBannerTitle: {
+    fontFamily: typography.semibold,
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text.primary,
+    marginBottom: 2,
+  },
+  firstPollBannerBody: {
+    fontFamily: typography.regular,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.text.secondary,
+    marginBottom: spacing.xs,
+  },
+  firstPollBannerCta: {
+    paddingVertical: 4,
+    alignSelf: 'flex-start',
+  },
+  firstPollBannerCtaText: {
+    fontFamily: typography.medium,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  firstPollBannerDismiss: {
+    padding: spacing.xs,
   },
 
   /* ── Admin grid ────────────────────────────────────────────────────────── */

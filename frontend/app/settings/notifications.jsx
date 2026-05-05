@@ -94,6 +94,8 @@ import {
   buildPresetPrefs,
   detectActivePreset,
 } from '../../src/utils/notificationPresets';
+import { SIGNAL_KIND_HELP } from '../../src/utils/signalKindHelp';
+import InfoTooltip from '../../src/components/InfoTooltip';
 
 // ── Static select options ────────────────────────────────────────
 
@@ -835,6 +837,14 @@ export default function NotificationPreferencesScreen() {
                                       severity={kind.defaultSeverity}
                                       styles={styles}
                                     />
+                                    {/* Phase B3: per-kind "What does this mean?"
+                                        link with plain-English help. */}
+                                    {SIGNAL_KIND_HELP[kind.key] ? (
+                                      <InfoTooltip
+                                        text={SIGNAL_KIND_HELP[kind.key]}
+                                        label="What does this mean?"
+                                      />
+                                    ) : null}
                                   </View>
                                   <Text style={styles.kindRowTooltip}>{kind.tooltip}</Text>
                                   <Text style={styles.kindRowRecent}>

@@ -94,6 +94,27 @@ apiClient.interceptors.response.use(
 );
 
 /**
+ * Phase B3 — customer onboarding flow.
+ *
+ * The frontend RouteGuard reads onboardingAPI.getStatus() on every
+ * authed page; when show_onboarding=true it forces a redirect to
+ * /onboarding. Each step calls patchStep() to advance / skip / mark
+ * complete. Pre-B3 users (no `onboarding_step` field on doc) get
+ * show_onboarding=false from the backend and never see the flow.
+ */
+export const onboardingAPI = {
+  getStatus: async () => {
+    const response = await apiClient.get('/api/users/me/onboarding-status');
+    return response.data;
+  },
+
+  patchStep: async (step) => {
+    const response = await apiClient.patch('/api/users/me/onboarding-step', { step });
+    return response.data;
+  },
+};
+
+/**
  * Authentication APIs
  */
 export const authAPI = {
