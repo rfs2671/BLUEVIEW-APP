@@ -106,7 +106,21 @@ function main() {
   }
 
   // ── Step 2: the actual build ───────────────────────────────────
-  run('npx', ['expo', 'export', '--platform', 'web', '--clear']);
+  // --source-maps tells Expo's CLI to pass serializerIncludeMaps +
+  // includeSourceMaps through to Metro, which emits a `.map` file
+  // alongside every `.js` chunk under dist/. Without this flag,
+  // expo export defaults to map-less output (smaller dist, but
+  // unsymbolicatable Sentry events).
+  //
+  // C1.2 shipped without this flag — the upload step ran and
+  // hit Sentry successfully, but the build log said
+  //   "could not determine a source map reference" and
+  //   "removed 0 .map file(s)"
+  // because there was nothing to upload.
+  //
+  // The flag has been part of the @expo/cli `export` command
+  // since SDK 50 (legacy alias --dump-sourcemap; -s shorthand).
+  run('npx', ['expo', 'export', '--platform', 'web', '--clear', '--source-maps']);
 
   // ── Steps 3-4: source map upload ───────────────────────────────
   // Conditional on SENTRY_AUTH_TOKEN — forks and preview deploys

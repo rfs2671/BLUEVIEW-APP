@@ -115,6 +115,22 @@ class TestBuildWrapperContent(unittest.TestCase):
         self.assertIn("'--platform'", self.text)
         self.assertIn("'web'", self.text)
 
+    def test_passes_source_maps_flag_to_expo_export(self):
+        """Phase C1.2.1 — Expo's `expo export` command does NOT
+        emit source maps by default. Without the --source-maps
+        flag, the dist/ tree contains zero .map files and the
+        Sentry CLI upload at the next step has nothing to ship.
+        C1.2 was bitten by this: the upload ran but reached Sentry
+        with zero artifacts, so events never resolved to readable
+        stacks.
+
+        The --source-maps flag has been part of @expo/cli's export
+        command since SDK 50 (legacy alias --dump-sourcemap; -s
+        shorthand). Pinning the long-form here so a future
+        cleanup that "shortens" the args list doesn't silently
+        regress the symbolication pipeline."""
+        self.assertIn("'--source-maps'", self.text)
+
     def test_uses_sentry_cli_inject_and_upload(self):
         # Both subcommands MUST be present — inject without upload
         # leaves orphaned debug IDs in the bundle; upload without

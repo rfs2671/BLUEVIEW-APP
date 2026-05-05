@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase C1.2)
-**Test count baseline:** 805 backend tests passing.
+**Last reviewed:** 2026-05-05 (Phase C1.2.1)
+**Test count baseline:** 824 backend tests passing.
 
 ---
 
@@ -793,7 +793,15 @@ around `expo export` that runs at every Vercel build:
    matches the release we upload maps under. The two MUST agree —
    Sentry can't surface source maps for an event whose `release`
    tag doesn't match an uploaded release.
-2. Runs the existing `expo export --platform web --clear`.
+2. Runs `expo export --platform web --clear --source-maps`. The
+   `--source-maps` flag is **load-bearing**: Expo's CLI does NOT
+   emit source maps by default, and without them the upload step
+   below has nothing to ship. C1.2 shipped without this flag and
+   the upload reached Sentry with zero artifacts (the Vercel build
+   log said `removed 0 .map file(s)` and Sentry events still came
+   back minified). The flag has been part of `@expo/cli`'s export
+   command since SDK 50 — legacy alias `--dump-sourcemap`,
+   shorthand `-s`.
 3. If `SENTRY_AUTH_TOKEN` is set:
      `npx @sentry/cli sourcemaps inject ./dist`
      `npx @sentry/cli sourcemaps upload --org levelog \
@@ -870,6 +878,15 @@ leak even when the upload was skipped.
 
 ### 10.6 — Common failure modes
 
+- **Build log says `removed 0 .map file(s)` AND
+  `could not determine a source map reference`** — the Expo
+  export ran without the `--source-maps` flag, so the dist/
+  tree never contained any maps to upload. The `sentry-cli
+  sourcemaps upload` step succeeds but ships nothing. Fix:
+  ensure `frontend/scripts/build-with-sourcemaps.js` passes
+  `--source-maps` to `expo export`. C1.2.1 (commit 92ad71a's
+  follow-up) added this; a regression would re-trip the same
+  trap.
 - **"release not found" warning in Sentry event** — the runtime
   `release` doesn't match any uploaded release. Almost always
   because `VERCEL_GIT_COMMIT_SHA` wasn't set during build.
