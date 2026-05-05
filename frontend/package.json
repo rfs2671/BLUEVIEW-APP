@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web --port 3000",
-    "build": "expo export --platform web --clear",
+    "build": "node scripts/build-with-sourcemaps.js",
+    "build:expo-only": "expo export --platform web --clear",
     "update": "eas update --auto"
   },
   "dependencies": {
@@ -62,6 +63,7 @@
   "devDependencies": {
     "@babel/core": "^7.25.0",
     "@babel/plugin-proposal-decorators": "^7.25.0",
+    "@sentry/cli": "^2.39.0",
     "eas-cli": "^18.7.0"
   },
   "private": true,

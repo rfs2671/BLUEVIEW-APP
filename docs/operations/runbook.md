@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase C1)
-**Test count baseline:** 767 backend tests passing.
+**Last reviewed:** 2026-05-05 (Phase C1.2)
+**Test count baseline:** 805 backend tests passing.
 
 ---
 
@@ -21,7 +21,8 @@
 7. [Audit script](#7-audit-script)
 8. [Onboarding flow](#8-onboarding-flow)
 9. [Sentry — how to read events](#9-sentry--how to read events)
-10. [Environment variables reference](#10-environment-variables-reference)
+10. [Sentry source maps](#10-sentry-source-maps)
+11. [Environment variables reference](#11-environment-variables-reference)
 
 ---
 
@@ -773,7 +774,120 @@ it and move on.
 
 ---
 
-## 10. Environment variables reference
+## 10. Sentry source maps
+
+Phase C1.2 wired source-map upload to Sentry so production stack
+traces resolve to readable `file:line:column` references instead
+of the minified `t.j(z, 17)` gibberish. Without source maps a
+React error #310 (or any production crash) is essentially
+undebuggable from Sentry alone — you'd need to reproduce locally,
+which for hook-order bugs is often impossible.
+
+### 10.1 — How it works
+
+`frontend/scripts/build-with-sourcemaps.js` is a Node wrapper
+around `expo export` that runs at every Vercel build:
+
+1. Copies `VERCEL_GIT_COMMIT_SHA` → `EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA`
+   so the runtime bundle's `Sentry.init({ release: ... })`
+   matches the release we upload maps under. The two MUST agree —
+   Sentry can't surface source maps for an event whose `release`
+   tag doesn't match an uploaded release.
+2. Runs the existing `expo export --platform web --clear`.
+3. If `SENTRY_AUTH_TOKEN` is set:
+     `npx @sentry/cli sourcemaps inject ./dist`
+     `npx @sentry/cli sourcemaps upload --org levelog \
+        --project levelog-frontend --release "$VERCEL_GIT_COMMIT_SHA" ./dist`
+4. **Always** deletes every `*.map` file under `./dist`, regardless
+   of whether the upload ran. Source maps must NEVER be served
+   from `www.levelog.com` — they reveal pre-mangled identifiers
+   and (depending on bundler config) embedded source. The `dist/`
+   tree that Cloudflare Pages serves contains zero `.map` files
+   after the build.
+
+Forks / preview deploys without `SENTRY_AUTH_TOKEN` build cleanly
+but skip the upload step. Step 4 still runs, so no `.map` files
+leak even when the upload was skipped.
+
+### 10.2 — How to get a Sentry auth token
+
+1. Visit `https://levelog.sentry.io/settings/account/api/auth-tokens/`.
+2. Click "Create New Token".
+3. Name: `vercel-source-maps`.
+4. Scopes — minimum needed:
+   - `project:releases` (create + finalize releases, upload artifacts)
+   - `project:read` (look up the project slug)
+5. Copy the token. It's shown ONCE; if you lose it, revoke and
+   create a new one.
+
+### 10.3 — How to set it on Vercel
+
+1. Vercel dashboard → `levelog` (frontend project) → Settings →
+   Environment Variables.
+2. Add:
+     Name:        `SENTRY_AUTH_TOKEN`
+     Value:       (paste the token from step 10.2)
+     Environments: **Production only** — preview deploys don't
+                   need to upload, and exposing the token to
+                   preview env increases the blast radius if a
+                   bad PR gets the token.
+3. Save. The next push to `main` picks it up.
+
+### 10.4 — How to verify upload worked
+
+1. Push a commit to `main`. Vercel auto-deploys.
+2. Open Vercel → Deployments → click the live deploy → Build Logs.
+3. Search for `[c1.2-build]` lines. You should see:
+     `[c1.2-build] release tag: <sha>`
+     `[c1.2-build] uploading source maps to Sentry for release <sha>`
+     `[c1.2-build] Uploaded source maps for release <sha>`
+     `[c1.2-build] removed N .map file(s) from .../dist`
+   If you see "SENTRY_AUTH_TOKEN not set — skipping" instead, the
+   token isn't set on Vercel. Re-do step 10.3.
+4. Visit `https://levelog.sentry.io/releases/`. The new release
+   should appear at the top with the same SHA.
+5. Click into the release. The "Source Maps" tab should show one
+   row per JS chunk (typically 5-15 entries depending on bundle
+   splitting).
+
+### 10.5 — How to test end-to-end
+
+1. Open `www.levelog.com` in DevTools.
+2. Console:
+     `throw new Error("Sentry source-map smoke test")`
+3. Open the corresponding event in Sentry (filter by your user
+   email tag).
+4. Stack trace should show:
+     `at MyComponent (frontend/app/some/file.jsx:42:10)`
+   instead of:
+     `at t.j (chunk-abc.js:1:1234)`
+5. If you see the latter, source maps didn't apply. Check:
+   - Build log shows "Uploaded source maps" (step 10.4).
+   - The event's `release` tag matches an uploaded release.
+   - The `release` tag is NOT `"development"` (= the
+     `EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA` env var didn't propagate
+     to the runtime bundle).
+
+### 10.6 — Common failure modes
+
+- **"release not found" warning in Sentry event** — the runtime
+  `release` doesn't match any uploaded release. Almost always
+  because `VERCEL_GIT_COMMIT_SHA` wasn't set during build.
+- **Sentry events still show minified stacks even after upload** —
+  the `release` value at `Sentry.init()` time and the `--release`
+  flag at upload time don't match. The build script enforces this
+  (both read from the same env var) but if you customize either,
+  re-verify they agree.
+- **`Authorization Required (401)` in build log** — token is wrong
+  or expired. Re-create per 10.2.
+- **Build fails with `command not found: @sentry/cli`** — devDep
+  not installed. Make sure `npm install` ran and `frontend/node_modules/@sentry/cli/`
+  exists. On Vercel this happens automatically; locally run
+  `npm install` in `frontend/`.
+
+---
+
+## 11. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
@@ -798,6 +912,9 @@ ones here when you wire them.
 | `EXPO_PUBLIC_API_URL` | frontend | yes | Backend API base URL. Without it the SPA can't talk to the API. |
 | `EXPO_PUBLIC_SENTRY_DSN` | frontend | no | Sentry frontend project DSN. Missing → error tracking disabled. |
 | `EXPO_PUBLIC_ENVIRONMENT` | frontend | no | Frontend Sentry environment tag. Falls back to `NEXT_PUBLIC_ENVIRONMENT`, then `NODE_ENV`, then `"development"`. |
+| `EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA` | frontend | auto (build script) | Sentry release tag at runtime. Set automatically by `frontend/scripts/build-with-sourcemaps.js` from `VERCEL_GIT_COMMIT_SHA`. MUST match the release that source maps are uploaded under. |
+| `VERCEL_GIT_COMMIT_SHA` | build | auto | Set automatically by Vercel during build. Read by the build wrapper. |
+| `SENTRY_AUTH_TOKEN` | build | no (recommended for prod) | Auth token used by `@sentry/cli` to upload source maps. Production-environment-only on Vercel. Without it the build still completes, just no source map upload — Sentry events render with minified stacks. |
 
 > **Hard rule:** never check any of these into git. The repo's
 > `.gitignore` covers `.env` and `.env.*`, but a moment of

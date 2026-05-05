@@ -47,6 +47,20 @@ const DSN =
   (typeof process !== 'undefined' && process.env &&
     process.env.EXPO_PUBLIC_SENTRY_DSN) || '';
 
+// Phase C1.2 — release tag MUST match the release that
+// scripts/build-with-sourcemaps.js uploads source maps under, so
+// Sentry can resolve minified stack traces to readable file:line.
+// Vercel auto-injects VERCEL_GIT_COMMIT_SHA at build time; the
+// build wrapper copies it into the EXPO_PUBLIC_ namespace so
+// metro inlines it into the runtime bundle. Falls back to
+// 'development' when neither is set (local dev, forks, preview
+// deploys without the build wrapper).
+const RELEASE =
+  (typeof process !== 'undefined' && process.env && (
+    process.env.EXPO_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
+    process.env.EXPO_PUBLIC_SENTRY_RELEASE
+  )) || 'development';
+
 export function initSentry() {
   if (_initialized) return true;
   if (!DSN || !DSN.trim()) {
@@ -65,6 +79,7 @@ export function initSentry() {
     Sentry.init({
       dsn: DSN,
       environment: ENV,
+      release: RELEASE,
       tracesSampleRate: 0.1,
       replaysSessionSampleRate: 0,
       replaysOnErrorSampleRate: 0,
