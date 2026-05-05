@@ -245,5 +245,92 @@ class TestProgressiveDisclosure(unittest.TestCase):
         self.assertIn("Choose how we notify you", text)
 
 
+# ── B1c — live preview + per-project ──────────────────────────────
+
+
+class TestB1cPreviewSurface(unittest.TestCase):
+    """The global page renders a PreviewCard subcomponent + calls
+    the preview endpoint debounced 500ms after prefs change."""
+
+    def test_page_calls_preview_endpoint(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("/api/users/me/notification-preferences/preview", text)
+
+    def test_page_renders_preview_card(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("PreviewCard", text)
+
+    def test_page_has_debounced_preview_effect(self):
+        """Debounce keeps the preview from hammering the backend on
+        every keystroke. 500ms is the agreed delay."""
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("setTimeout", text)
+        self.assertIn("500", text)
+
+
+class TestB1cProjectListSurface(unittest.TestCase):
+
+    def test_page_calls_project_summary_endpoint(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("/api/users/me/project-preferences-summary", text)
+
+    def test_page_navigates_to_project_route(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("/settings/notifications/project/", text)
+
+    def test_page_renders_projects_list(self):
+        text = PREFS_PAGE.read_text(encoding="utf-8")
+        self.assertIn("ProjectsList", text)
+
+
+# ── Per-project preferences page ──────────────────────────────────
+
+
+PROJECT_PAGE = (
+    _FRONTEND
+    / "app" / "settings" / "notifications" / "project" / "[project_id].jsx"
+)
+
+
+class TestProjectPreferencesPage(unittest.TestCase):
+
+    def test_file_present(self):
+        self.assertTrue(PROJECT_PAGE.exists(), str(PROJECT_PAGE))
+
+    def test_imports_presets_module(self):
+        text = PROJECT_PAGE.read_text(encoding="utf-8")
+        self.assertIn("from '../../../../src/utils/notificationPresets'", text)
+
+    def test_calls_project_scoped_endpoints(self):
+        text = PROJECT_PAGE.read_text(encoding="utf-8")
+        # GET via project-scoped path.
+        self.assertIn("/api/projects/${projectId}/notification-preferences/", text)
+        # Preview project-scoped via query param.
+        self.assertIn("?project_id=", text)
+
+    def test_has_reset_to_user_global_handler(self):
+        text = PROJECT_PAGE.read_text(encoding="utf-8")
+        self.assertIn("handleResetToUserGlobal", text)
+
+    def test_calls_delete_endpoint_on_reset(self):
+        text = PROJECT_PAGE.read_text(encoding="utf-8")
+        # DELETE the project-scoped record + navigate back.
+        self.assertIn("apiClient.delete", text)
+        self.assertIn(
+            "router.replace('/settings/notifications')",
+            text,
+        )
+
+    def test_back_button_returns_to_global_settings(self):
+        text = PROJECT_PAGE.read_text(encoding="utf-8")
+        # The back button uses router.replace (not router.back) so a
+        # deep-linked refresh on the project page returns to the
+        # global page.
+        self.assertIn(
+            "router.replace('/settings/notifications')",
+            text,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

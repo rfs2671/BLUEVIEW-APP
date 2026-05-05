@@ -3888,6 +3888,322 @@ async def patch_project_notification_preferences(
     return _serialize_prefs(updated)
 
 
+# Phase B1c — DELETE project-scoped record (Reset to user-global).
+@api_router.delete(
+    "/projects/{project_id}/notification-preferences/{user_id}",
+    tags=["Notifications"],
+)
+async def delete_project_notification_preferences(
+    project_id: str,
+    user_id: str,
+    current_user=Depends(get_current_user),
+):
+    """Reset-to-user-global. Removes the project-scoped preferences
+    record so the user falls back to their user-global settings for
+    this project. Returns 200 even if no record exists (idempotent
+    — calling reset twice is safe). Auth: same as PATCH."""
+    if not await _can_caller_modify_user_in_project(
+        current_user=current_user,
+        target_user_id=user_id,
+        project_id=project_id,
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+    result = await db.notification_preferences.delete_one({
+        "user_id": str(user_id),
+        "project_id": str(project_id),
+    })
+    return {
+        "deleted": result.deleted_count > 0,
+        "user_id": str(user_id),
+        "project_id": str(project_id),
+    }
+
+
+# Phase B1c — Project preferences summary (badge data for the
+# settings page's "Per-project overrides" list).
+@api_router.get(
+    "/users/me/project-preferences-summary",
+    tags=["Notifications"],
+)
+async def get_my_project_preferences_summary(
+    current_user=Depends(get_current_user),
+):
+    """Returns the caller's projects + a flag for each indicating
+    whether a project-scoped notification_preferences record exists.
+    Drives the settings page "Per-project overrides" list:
+    'Default' badge when has_override=False, 'Customized' when True.
+
+    Tenant-scoped: only the caller's company's projects are returned.
+    Site-mode device tokens → 403.
+
+    Response shape:
+      {
+        projects: [
+          {project_id, name, address, has_override: bool}
+        ],
+        total: <int>
+      }
+    """
+    if current_user.get("site_mode"):
+        raise HTTPException(
+            status_code=403,
+            detail="Site-mode devices have no per-user preferences",
+        )
+    user_id = _user_id_str(current_user)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id on token")
+    company_id = get_user_company_id(current_user)
+    if not company_id:
+        return {"projects": [], "total": 0}
+
+    # 1. List projects scoped to the caller's company.
+    project_cursor = db.projects.find(
+        {
+            "company_id": company_id,
+            "is_deleted": {"$ne": True},
+        },
+        {"_id": 1, "name": 1, "address": 1},
+    ).sort("name", 1)
+    projects: List[Dict[str, Any]] = []
+    project_ids: List[str] = []
+    async for p in project_cursor:
+        pid = str(p.get("_id"))
+        project_ids.append(pid)
+        projects.append({
+            "project_id": pid,
+            "name": p.get("name") or "",
+            "address": p.get("address") or "",
+            "has_override": False,
+        })
+
+    if not project_ids:
+        return {"projects": [], "total": 0}
+
+    # 2. Look up which of those projects have a record for this user.
+    override_cursor = db.notification_preferences.find(
+        {
+            "user_id": user_id,
+            "project_id": {"$in": project_ids},
+        },
+        {"project_id": 1},
+    )
+    overridden = set()
+    async for r in override_cursor:
+        overridden.add(str(r.get("project_id")))
+
+    for entry in projects:
+        if entry["project_id"] in overridden:
+            entry["has_override"] = True
+
+    return {"projects": projects, "total": len(projects)}
+
+
+# Phase B1c — Live preview engine.
+@api_router.post(
+    "/users/me/notification-preferences/preview",
+    tags=["Notifications"],
+)
+async def preview_my_notification_preferences(
+    body: dict,
+    current_user=Depends(get_current_user),
+    project_id: Optional[str] = None,
+    days: int = 7,
+):
+    """Replay the last N days of dob_logs through the supplied
+    preferences and return per-signal_kind aggregates of what the
+    user WOULD have received under those settings.
+
+    Body shape: same as PATCH (signal_kind_overrides + channel_routes_default
+    + digest_window). Validation reuses the normalize_* helpers; bad
+    input returns 400 with the structured error list.
+
+    `project_id` query param: when set, scopes the dob_logs to that
+    project and validates caller has access (same auth gate as the
+    project-scoped GET/PATCH endpoints). When unset, scopes to the
+    caller's company.
+
+    `days` clamped to [1, 30]. The 30-day cap keeps the worst-case
+    scan bounded; preview is a UX affordance, not a forensic tool.
+
+    Caching: 30s in-memory TTL keyed by (user_id, project_id, prefs
+    hash, days). Same operator dragging toggles around the settings
+    page sees a cached response on consecutive calls within the
+    window.
+
+    Returns:
+      {
+        window_days, since,
+        would_receive_email: [{signal_kind, count, delivery}, ...],
+        would_suppress: [{signal_kind, count, reason}, ...],
+        summary: {immediate_emails, digest_daily_signals,
+                  digest_weekly_signals, suppressed_signals,
+                  total_signals_seen},
+      }
+    """
+    from lib import notification_preferences as _nprefs
+
+    if current_user.get("site_mode"):
+        raise HTTPException(
+            status_code=403,
+            detail="Site-mode devices have no preferences",
+        )
+
+    user_id = _user_id_str(current_user)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user id on token")
+
+    company_id = get_user_company_id(current_user)
+
+    # Project scope check (when supplied). Preview reads dob_logs
+    # scoped to the project — if the project lives in a different
+    # company, that's a tenant violation regardless of the
+    # _can_caller_modify_user_in_project "self always allowed"
+    # short-circuit. Explicit company-ownership check here.
+    if project_id is not None:
+        proj = await db.projects.find_one(
+            {"_id": to_query_id(project_id)},
+            {"company_id": 1},
+        )
+        if (
+            not proj
+            or (
+                company_id
+                and str(proj.get("company_id")) != str(company_id)
+            )
+        ):
+            raise HTTPException(status_code=403, detail="Access denied")
+    if not company_id:
+        return _empty_preview_response(days)
+
+    # Sanitize days.
+    try:
+        d = int(days)
+    except Exception:
+        d = 7
+    d = max(1, min(d, 30))
+
+    # Validate body — same chunked normalization as PATCH.
+    body = body or {}
+    overrides_patch, errs_a = _nprefs.normalize_signal_kind_overrides(
+        body.get("signal_kind_overrides"),
+    )
+    routes_patch, errs_b = _nprefs.normalize_channel_routes_default(
+        body.get("channel_routes_default"),
+    )
+    window_patch, errs_c = _nprefs.normalize_digest_window(
+        body.get("digest_window"),
+    )
+    errors = errs_a + errs_b + errs_c
+    if errors:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Invalid preferences body",
+                "errors": errors,
+            },
+        )
+
+    # Build the prefs document compute_routing_decision consumes.
+    prefs = {
+        "signal_kind_overrides": overrides_patch,
+        "channel_routes_default": (
+            routes_patch
+            if routes_patch
+            else _nprefs.default_channel_routes_default()
+        ),
+        "digest_window": (
+            window_patch if window_patch else _nprefs.default_digest_window()
+        ),
+    }
+
+    # Cache lookup.
+    cache_key = _nprefs._preview_cache_key(
+        user_id=user_id, project_id=project_id, prefs=prefs, days=d,
+    )
+    cached = _nprefs.preview_cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+
+    # Pull dob_logs.
+    since = datetime.now(timezone.utc) - timedelta(days=d)
+    log_query: Dict[str, Any] = {
+        "company_id": company_id,
+        "is_deleted": {"$ne": True},
+        "detected_at": {"$gte": since},
+    }
+    if project_id is not None:
+        log_query["project_id"] = project_id
+
+    logs: List[Dict[str, Any]] = []
+    try:
+        async for log in db.dob_logs.find(log_query):
+            logs.append(log)
+    except Exception as e:
+        logger.warning(
+            "[preview] dob_logs scan failed for company=%s project=%s: %r",
+            company_id, project_id, e,
+        )
+        # Soft-fail: empty aggregate. UI still renders.
+
+    # Severity resolver — call into the templates layer to mirror
+    # production routing exactly. Falls back to 'info' on any error.
+    try:
+        from lib.dob_signal_templates import render_signal as _render_signal
+    except ImportError:
+        _render_signal = None
+
+    def _severity_resolver(signal_kind: str, log: Dict[str, Any]) -> str:
+        if _render_signal is None:
+            return "info"
+        try:
+            rendered = _render_signal(signal_kind, log) or {}
+            return rendered.get("severity") or "info"
+        except Exception:
+            return "info"
+
+    aggregate = _nprefs.aggregate_preview_decisions(
+        logs=logs,
+        prefs=prefs,
+        severity_resolver=_severity_resolver,
+    )
+
+    response = {
+        "window_days": d,
+        "since": since.isoformat(),
+        "scope": "project" if project_id is not None else "user_global",
+        "project_id": project_id,
+        **aggregate,
+    }
+    _nprefs.preview_cache_store(cache_key, response)
+    return response
+
+
+def _empty_preview_response(days: int) -> Dict[str, Any]:
+    """Shaped-empty preview payload for the no-company-id case.
+    Keeps the UI's render path safe."""
+    try:
+        d = int(days)
+    except Exception:
+        d = 7
+    d = max(1, min(d, 30))
+    now = datetime.now(timezone.utc)
+    return {
+        "window_days": d,
+        "since": (now - timedelta(days=d)).isoformat(),
+        "scope": "user_global",
+        "project_id": None,
+        "would_receive_email": [],
+        "would_suppress": [],
+        "summary": {
+            "immediate_emails": 0,
+            "digest_daily_signals": 0,
+            "digest_weekly_signals": 0,
+            "suppressed_signals": 0,
+            "total_signals_seen": 0,
+        },
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────
 # MR.10 — Agent public-key registry — REMOVED in MR.14 commit 4b.
 # ──────────────────────────────────────────────────────────────────────

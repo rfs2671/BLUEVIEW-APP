@@ -1,43 +1,27 @@
 /**
- * /settings/notifications — Phase B1b.1 progressive disclosure.
+ * /settings/notifications/project/[project_id] — Phase B1c.
  *
- * Layout:
- *   Header — back + simplified copy.
- *   Section A — three preset radio cards (Critical only / Standard /
- *     Everything) + "Customize per signal type" link toggling the
- *     advanced section.
- *   Section B — delivery timing (compact, always visible).
- *   Section C — advanced (collapsible). Channel routing by severity
- *     + per-signal table grouped by family. Header carries a
- *     "Reset to <anchorPreset>" link when the anchor preset is not
- *     'custom'.
- *   Footer — last-saved + Save / Reset (sticky on mobile).
+ * Project-scoped notification preferences. Same preset cards +
+ * delivery timing + advanced section as the global settings page,
+ * but:
+ *   • Loads via GET /api/projects/{id}/notification-preferences/{user_id}.
+ *     The backend falls back to user-global → defaults when no
+ *     project-scoped record exists, so the form always renders
+ *     against a fully-populated shape.
+ *   • Saves via PATCH /api/projects/{id}/notification-preferences/{user_id}.
+ *   • Header shows project name + address.
+ *   • "Reset to user-global preferences" header button — DELETE
+ *     the project-scoped record, then navigate back to the global
+ *     settings page.
+ *   • Live preview is project-scoped (preview endpoint takes the
+ *     project_id query param).
  *
- * State:
- *   prefs              — current editable copy.
- *   initialPrefs       — last-saved server snapshot. dirty = JSON
- *                        diff against prefs.
- *   anchorPreset       — the preset the user explicitly intended.
- *                        Initialized to detectActivePreset(initialPrefs);
- *                        updated on every preset radio click. Drives
- *                        the "Reset to <preset>" affordance even
- *                        when the user customizes inside Advanced
- *                        and the live detection drifts to 'custom'.
- *   advancedOpen       — collapsible state for Section C. Defaults
- *                        to true when the active preset is 'custom'
- *                        (so a user landing on a custom shape sees
- *                        the per-signal table immediately).
- *
- * Interaction:
- *   • Clicking a preset radio → applies that preset's shape via
- *     buildPresetPrefs, sets anchorPreset.
- *   • Clicking "Reset to <preset>" → re-applies anchorPreset.
- *   • Editing inside Advanced → prefs mutates; the live-detected
- *     preset drifts to 'custom'; radio renders unfilled. anchorPreset
- *     stays so the Reset link remains accessible.
- *   • Save → PATCH the whole prefs object; on success, replace
- *     initialPrefs with the response. anchorPreset stays consistent
- *     because Save doesn't change the preset intent.
+ * The form-rendering logic largely mirrors the global page. We
+ * deliberately don't extract a shared component because that would
+ * touch the byte-for-byte test pins on the global file. The shared
+ * pieces (PRESET_ORDER, PRESETS, buildPresetPrefs, detectActivePreset,
+ * SIGNAL_FAMILIES, SIGNAL_KIND_INDEX, SEVERITY_PALETTE) all import
+ * from the existing modules so the shapes are guaranteed identical.
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
@@ -48,10 +32,10 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  Platform,
+  Alert,
   useWindowDimensions,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -65,52 +49,46 @@ import {
   RotateCcw,
   Info,
   AlertCircle,
-  Check,
-  Clock,
-  Sliders,
   Eye,
   Mailbox,
   Inbox,
   Building2,
-  CheckCircle2,
-  ChevronRight,
+  Sliders,
+  Clock,
 } from 'lucide-react-native';
-import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard } from '../../src/components/GlassCard';
-import GlassButton from '../../src/components/GlassButton';
-import { useAuth } from '../../src/context/AuthContext';
-import { useTheme } from '../../src/context/ThemeContext';
-import { useToast } from '../../src/components/Toast';
-import apiClient from '../../src/utils/api';
-import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import AnimatedBackground from '../../../../src/components/AnimatedBackground';
+import { GlassCard } from '../../../../src/components/GlassCard';
+import GlassButton from '../../../../src/components/GlassButton';
+import { useAuth } from '../../../../src/context/AuthContext';
+import { useTheme } from '../../../../src/context/ThemeContext';
+import { useToast } from '../../../../src/components/Toast';
+import apiClient from '../../../../src/utils/api';
+import { spacing, borderRadius, typography } from '../../../../src/styles/theme';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
   SEVERITY_PALETTE,
-} from '../../src/constants/signalKinds';
+} from '../../../../src/constants/signalKinds';
 import {
   PRESETS,
   PRESET_ORDER,
   buildPresetPrefs,
   detectActivePreset,
-} from '../../src/utils/notificationPresets';
+} from '../../../../src/utils/notificationPresets';
 
-// ── Static select options ────────────────────────────────────────
-
+// Static option lists — same as the global page.
 const DELIVERY_OPTIONS = [
   { value: 'immediate', label: 'Immediate' },
   { value: 'digest_daily', label: 'Daily digest' },
   { value: 'digest_weekly', label: 'Weekly digest' },
   { value: 'feed_only', label: 'Feed only' },
 ];
-
 const THRESHOLD_OPTIONS = [
   { value: 'any', label: 'Any severity' },
   { value: 'warning_or_above', label: 'Warning or higher' },
   { value: 'critical_only', label: 'Critical only' },
   { value: 'none', label: 'Off' },
 ];
-
 const WEEKLY_DAY_OPTIONS = [
   { value: 'monday', label: 'Monday' },
   { value: 'tuesday', label: 'Tuesday' },
@@ -120,7 +98,6 @@ const WEEKLY_DAY_OPTIONS = [
   { value: 'saturday', label: 'Saturday' },
   { value: 'sunday', label: 'Sunday' },
 ];
-
 const TIMEZONE_OPTIONS = [
   { value: 'America/New_York', label: 'Eastern (NYC)' },
   { value: 'America/Chicago', label: 'Central' },
@@ -128,7 +105,6 @@ const TIMEZONE_OPTIONS = [
   { value: 'America/Los_Angeles', label: 'Pacific' },
   { value: 'UTC', label: 'UTC' },
 ];
-
 const HOUR_OPTIONS = (() => {
   const out = [];
   for (let h = 0; h < 24; h++) {
@@ -140,17 +116,14 @@ const HOUR_OPTIONS = (() => {
 
 const MOBILE_BREAKPOINT = 720;
 
-// ── Helpers ──────────────────────────────────────────────────────
-
+// Helpers (duplicated from global page; small + cheap).
 function defaultDeliveryFor(severity) {
   if (severity === 'critical') return 'immediate';
   if (severity === 'warning') return 'digest_daily';
   return 'feed_only';
 }
-
 function effectiveOverrideFor(prefs, kind) {
-  const stored =
-    prefs?.signal_kind_overrides && prefs.signal_kind_overrides[kind.key];
+  const stored = prefs?.signal_kind_overrides && prefs.signal_kind_overrides[kind.key];
   if (stored) {
     return {
       channels: Array.isArray(stored.channels) ? stored.channels : [],
@@ -159,9 +132,7 @@ function effectiveOverrideFor(prefs, kind) {
       isExplicit: true,
     };
   }
-  const routes =
-    (prefs?.channel_routes_default && prefs.channel_routes_default[kind.defaultSeverity]) ||
-    [];
+  const routes = (prefs?.channel_routes_default && prefs.channel_routes_default[kind.defaultSeverity]) || [];
   return {
     channels: routes,
     severity_threshold: 'any',
@@ -169,16 +140,10 @@ function effectiveOverrideFor(prefs, kind) {
     isExplicit: false,
   };
 }
-
 function deepEqual(a, b) {
-  try {
-    return JSON.stringify(a) === JSON.stringify(b);
-  } catch (_e) {
-    return false;
-  }
+  try { return JSON.stringify(a) === JSON.stringify(b); }
+  catch (_e) { return false; }
 }
-
-// ── Channel toggle row ──────────────────────────────────────────
 
 const CHANNEL_TOGGLES = [
   { key: 'email', label: 'Email', Icon: Mail, enabled: true, badge: null },
@@ -201,18 +166,8 @@ const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false 
             !ch.enabled && styles.channelChipDisabled,
           ]}
         >
-          <ch.Icon
-            size={13}
-            strokeWidth={1.5}
-            color={isOn ? '#fff' : colors.text.muted}
-          />
-          <Text
-            style={[
-              styles.channelChipLabel,
-              isOn && { color: '#fff' },
-              !ch.enabled && { color: colors.text.muted },
-            ]}
-          >
+          <ch.Icon size={13} strokeWidth={1.5} color={isOn ? '#fff' : colors.text.muted} />
+          <Text style={[styles.channelChipLabel, isOn && { color: '#fff' }, !ch.enabled && { color: colors.text.muted }]}>
             {ch.label}
           </Text>
           {ch.badge && <Text style={styles.channelBadge}>{ch.badge}</Text>}
@@ -221,8 +176,6 @@ const ChannelToggleRow = ({ channels, onChange, colors, styles, compact = false 
     })}
   </View>
 );
-
-// ── Lightweight cycling select ──────────────────────────────────
 
 const SelectChip = ({ value, options, onChange, styles, colors }) => {
   const idx = options.findIndex((o) => o.value === value);
@@ -234,10 +187,7 @@ const SelectChip = ({ value, options, onChange, styles, colors }) => {
   return (
     <Pressable
       onPress={cycle}
-      style={({ pressed }) => [
-        styles.selectChip,
-        pressed && { opacity: 0.7 },
-      ]}
+      style={({ pressed }) => [styles.selectChip, pressed && { opacity: 0.7 }]}
     >
       <Text style={styles.selectChipText} numberOfLines={1}>
         {options[safeIdx]?.label || value}
@@ -250,12 +200,7 @@ const SelectChip = ({ value, options, onChange, styles, colors }) => {
 const SeverityBadge = ({ severity, styles }) => {
   const palette = SEVERITY_PALETTE[severity] || SEVERITY_PALETTE.info;
   return (
-    <View
-      style={[
-        styles.sevBadge,
-        { backgroundColor: palette.bg, borderColor: `${palette.color}80` },
-      ]}
-    >
+    <View style={[styles.sevBadge, { backgroundColor: palette.bg, borderColor: `${palette.color}80` }]}>
       <Text style={[styles.sevBadgeText, { color: palette.color }]}>
         {palette.label}
       </Text>
@@ -263,15 +208,7 @@ const SeverityBadge = ({ severity, styles }) => {
   );
 };
 
-// ── Preset radio card ────────────────────────────────────────────
-
-const PresetRadioCard = ({
-  preset,
-  selected,
-  onSelect,
-  styles,
-  colors,
-}) => (
+const PresetRadioCard = ({ preset, selected, onSelect, styles }) => (
   <Pressable
     onPress={() => onSelect(preset.key)}
     style={({ pressed }) => [
@@ -280,20 +217,13 @@ const PresetRadioCard = ({
       pressed && { opacity: 0.85 },
     ]}
   >
-    <View
-      style={[
-        styles.presetRadio,
-        selected && styles.presetRadioSelected,
-      ]}
-    >
+    <View style={[styles.presetRadio, selected && styles.presetRadioSelected]}>
       {selected && <View style={styles.presetRadioInner} />}
     </View>
     <View style={styles.presetTextBlock}>
       <View style={styles.presetTitleRow}>
         <Text style={styles.presetTitle}>{preset.label}</Text>
-        {preset.badge && (
-          <Text style={styles.presetBadge}>{preset.badge}</Text>
-        )}
+        {preset.badge && <Text style={styles.presetBadge}>{preset.badge}</Text>}
       </View>
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
@@ -301,19 +231,19 @@ const PresetRadioCard = ({
   </Pressable>
 );
 
-// ── Main page ────────────────────────────────────────────────────
+// ── Page ─────────────────────────────────────────────────────────
 
-export default function NotificationPreferencesScreen() {
+export default function ProjectNotificationPreferencesScreen() {
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const params = useLocalSearchParams();
+  const projectId = params?.project_id;
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const { colors } = useTheme();
   const toast = useToast();
   const styles = useMemo(() => buildStyles(colors), [colors]);
-
   const { width: winWidth } = useWindowDimensions();
   const isMobile = winWidth < MOBILE_BREAKPOINT;
 
-  // Auth guard
   useEffect(() => {
     if (authLoading) return undefined;
     if (isAuthenticated === false) {
@@ -323,39 +253,18 @@ export default function NotificationPreferencesScreen() {
     return undefined;
   }, [isAuthenticated, authLoading]);
 
-  // ── State ──
+  // ── State ─────────────────────────────────────────────────────
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  const [project, setProject] = useState(null);
   const [initialPrefs, setInitialPrefs] = useState(null);
   const [prefs, setPrefs] = useState(null);
-  const [recentCounts, setRecentCounts] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState(null);
+  const [resetting, setResetting] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState(null);
-
-  // Phase B1c — live preview state.
-  const [preview, setPreview] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState(null);
-
-  // Phase B1c — per-project list state. Loads lazily when user
-  // expands the Per-project overrides section.
-  const [projectsList, setProjectsList] = useState(null); // null = not loaded
-  const [projectsLoading, setProjectsLoading] = useState(false);
-  const [projectsError, setProjectsError] = useState(null);
-  const [showProjectsSection, setShowProjectsSection] = useState(false);
-
-  // The preset the user "intended" — drives Reset to <preset>.
-  // Initialized on load to whatever the saved prefs match. Updated
-  // whenever the user clicks a preset radio.
   const [anchorPreset, setAnchorPreset] = useState('critical_only');
-
-  // Advanced section toggle. Default: collapsed unless prefs are
-  // already custom (in which case the per-signal table is what the
-  // user needs to see).
   const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  // Family expand state inside Advanced.
   const [expandedFamilies, setExpandedFamilies] = useState(() => {
     const out = {};
     for (const fam of SIGNAL_FAMILIES) out[fam.key] = !isMobile;
@@ -372,16 +281,20 @@ export default function NotificationPreferencesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMobile]);
 
-  // ── Initial load ──
+  // Live preview (project-scoped via ?project_id=).
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const userId = user?.id || user?._id || user?.user_id;
+
   const loadPreferences = useCallback(async () => {
+    if (!projectId || !userId) return;
     setLoading(true);
     setLoadError(null);
     try {
-      const [prefsResp, recentResp] = await Promise.all([
-        apiClient.get('/api/users/me/notification-preferences'),
-        apiClient
-          .get('/api/users/me/recent-signals?days=7')
-          .catch(() => ({ data: { counts_by_signal_kind: {} } })),
+      const [prefsResp, projResp] = await Promise.all([
+        apiClient.get(`/api/projects/${projectId}/notification-preferences/${userId}`),
+        apiClient.get(`/api/projects/${projectId}`).catch(() => ({ data: null })),
       ]);
       const data = prefsResp.data || {};
       setInitialPrefs(data);
@@ -389,43 +302,33 @@ export default function NotificationPreferencesScreen() {
       setLastSavedAt(data.updated_at || null);
       const detected = detectActivePreset(data);
       setAnchorPreset(detected);
-      // Auto-expand Advanced when the loaded prefs are custom — the
-      // user almost certainly wants to see what they've got configured.
       setAdvancedOpen(detected === 'custom');
-      const counts = (recentResp.data && recentResp.data.counts_by_signal_kind) || {};
-      setRecentCounts(counts);
+      if (projResp?.data) setProject(projResp.data);
     } catch (e) {
-      console.error('[notification-preferences] load failed:', e?.message || e);
-      setLoadError('Could not load your notification preferences. Please try again.');
+      console.error('[project-prefs] load failed:', e?.message || e);
+      setLoadError('Could not load this project’s notification preferences.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [projectId, userId]);
 
   useEffect(() => {
-    if (isAuthenticated) loadPreferences();
-  }, [isAuthenticated, loadPreferences]);
+    if (isAuthenticated && userId && projectId) loadPreferences();
+  }, [isAuthenticated, userId, projectId, loadPreferences]);
 
-  // Live-detected preset (from current edits, not the anchor).
   const livePreset = useMemo(
     () => (prefs ? detectActivePreset(prefs) : 'custom'),
     [prefs],
   );
 
-  // Dirty: prefs differ from saved state.
   const dirty = useMemo(() => {
     if (!initialPrefs || !prefs) return false;
     return !deepEqual(initialPrefs, prefs);
   }, [initialPrefs, prefs]);
 
-  // Phase B1c — debounced live preview fetch.
-  // Re-runs 500ms after the operator stops dragging toggles, so the
-  // preview reflects the IN-MEMORY prefs (not the saved server state).
-  // The backend caches per-(user, prefs hash) for 30s — burst toggling
-  // through presets settles into a single cached lookup quickly.
+  // Debounced project-scoped preview.
   useEffect(() => {
-    if (!prefs) return undefined;
-    setPreviewError(null);
+    if (!prefs || !projectId) return undefined;
     let cancelled = false;
     const handle = setTimeout(async () => {
       setPreviewLoading(true);
@@ -436,17 +339,13 @@ export default function NotificationPreferencesScreen() {
           digest_window: prefs.digest_window || {},
         };
         const resp = await apiClient.post(
-          '/api/users/me/notification-preferences/preview',
+          `/api/users/me/notification-preferences/preview?project_id=${encodeURIComponent(projectId)}`,
           payload,
         );
         if (!cancelled) setPreview(resp.data || null);
       } catch (e) {
         if (!cancelled) {
-          console.warn(
-            '[notification-preferences] preview failed:',
-            e?.message || e,
-          );
-          setPreviewError('Could not load preview. Try again in a moment.');
+          console.warn('[project-prefs] preview failed:', e?.message || e);
         }
       } finally {
         if (!cancelled) setPreviewLoading(false);
@@ -456,38 +355,9 @@ export default function NotificationPreferencesScreen() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [prefs]);
+  }, [prefs, projectId]);
 
-  // Phase B1c — load the per-project list when the user expands
-  // the section. Cached for the session; re-loads on save (so the
-  // badge for the just-saved project updates).
-  const loadProjects = useCallback(async () => {
-    setProjectsLoading(true);
-    setProjectsError(null);
-    try {
-      const resp = await apiClient.get(
-        '/api/users/me/project-preferences-summary',
-      );
-      setProjectsList(resp.data?.projects || []);
-    } catch (e) {
-      console.warn(
-        '[notification-preferences] project list failed:',
-        e?.message || e,
-      );
-      setProjectsError('Could not load project list.');
-      setProjectsList([]);
-    } finally {
-      setProjectsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (showProjectsSection && projectsList === null) {
-      loadProjects();
-    }
-  }, [showProjectsSection, projectsList, loadProjects]);
-
-  // ── Mutators ──
+  // Mutators.
   const updatePrefs = (mutator) => {
     setPrefs((prev) => {
       if (!prev) return prev;
@@ -496,20 +366,17 @@ export default function NotificationPreferencesScreen() {
       return next;
     });
   };
-
-  const handlePresetSelect = (presetKey) => {
+  const handlePresetSelect = (key) => {
     if (!prefs) return;
-    setPrefs((prev) => buildPresetPrefs(presetKey, prev));
-    setAnchorPreset(presetKey);
+    setPrefs((prev) => buildPresetPrefs(key, prev));
+    setAnchorPreset(key);
     setSaveError(null);
   };
-
   const handleResetToAnchor = () => {
     if (!prefs || anchorPreset === 'custom') return;
     setPrefs((prev) => buildPresetPrefs(anchorPreset, prev));
     setSaveError(null);
   };
-
   const updateOverride = (signalKind, partial) => {
     updatePrefs((next) => {
       const base = (next.signal_kind_overrides && next.signal_kind_overrides[signalKind]) || {};
@@ -525,7 +392,6 @@ export default function NotificationPreferencesScreen() {
       };
     });
   };
-
   const toggleChannelOnRow = (signalKind, channel, on) => {
     const eff = effectiveOverrideFor(
       prefs,
@@ -536,7 +402,6 @@ export default function NotificationPreferencesScreen() {
       : eff.channels.filter((c) => c !== channel);
     updateOverride(signalKind, { channels: next });
   };
-
   const toggleSeverityChannel = (severity, channel, on) => {
     updatePrefs((next) => {
       next.channel_routes_default = next.channel_routes_default || {
@@ -548,7 +413,6 @@ export default function NotificationPreferencesScreen() {
         : cur.filter((c) => c !== channel);
     });
   };
-
   const updateDigestWindow = (key, value) => {
     updatePrefs((next) => {
       next.digest_window = next.digest_window || {};
@@ -556,9 +420,8 @@ export default function NotificationPreferencesScreen() {
     });
   };
 
-  // ── Save ──
   const handleSave = async () => {
-    if (!prefs || saving) return;
+    if (!prefs || saving || !projectId || !userId) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -568,19 +431,16 @@ export default function NotificationPreferencesScreen() {
         digest_window: prefs.digest_window || {},
       };
       const resp = await apiClient.patch(
-        '/api/users/me/notification-preferences',
+        `/api/projects/${projectId}/notification-preferences/${userId}`,
         payload,
       );
       const saved = resp.data || prefs;
       setInitialPrefs(saved);
       setPrefs(JSON.parse(JSON.stringify(saved)));
       setLastSavedAt(saved.updated_at || new Date().toISOString());
-      // Recompute anchor — saving a custom shape locks in 'custom'
-      // as the new anchor; saving a preset shape keeps it as that
-      // preset.
       const detected = detectActivePreset(saved);
       setAnchorPreset(detected);
-      toast.success('Saved', 'Your notification preferences are updated.');
+      toast.success('Saved', `Preferences saved for ${project?.name || 'this project'}.`);
     } catch (e) {
       const detail = e?.response?.data?.detail;
       let msg;
@@ -607,13 +467,53 @@ export default function NotificationPreferencesScreen() {
     setSaveError(null);
   };
 
-  // ── Render ──
+  const handleResetToUserGlobal = () => {
+    if (!projectId || !userId || resetting) return;
+    Alert.alert(
+      'Reset to user-global?',
+      'This will remove this project’s custom preferences. The project will use your global notification settings instead.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            setResetting(true);
+            try {
+              await apiClient.delete(
+                `/api/projects/${projectId}/notification-preferences/${userId}`,
+              );
+              toast.success(
+                'Reset',
+                'Project will now use your global preferences.',
+              );
+              router.replace('/settings/notifications');
+            } catch (e) {
+              toast.error(
+                'Could not reset',
+                e?.response?.data?.detail?.message || e?.message || 'Try again.',
+              );
+            } finally {
+              setResetting(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // ── Render ────────────────────────────────────────────────────
 
   if (loading || !prefs) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={styles.container} edges={['top']}>
-          <Header router={router} colors={colors} styles={styles} />
+          <Header
+            router={router}
+            colors={colors}
+            styles={styles}
+            project={project}
+          />
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={colors.text.primary} />
             <Text style={styles.loadingText}>
@@ -634,14 +534,13 @@ export default function NotificationPreferencesScreen() {
     ? `Last saved ${new Date(lastSavedAt).toLocaleString('en-US', {
         month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
       })}`
-    : 'Not yet saved';
-
+    : 'Not yet saved for this project';
   const anchorPresetMeta = PRESETS[anchorPreset];
 
   return (
     <AnimatedBackground>
       <SafeAreaView style={styles.container} edges={['top']}>
-        <Header router={router} colors={colors} styles={styles} />
+        <Header router={router} colors={colors} styles={styles} project={project} />
 
         <ScrollView
           style={styles.scroll}
@@ -651,20 +550,40 @@ export default function NotificationPreferencesScreen() {
           ]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Intro */}
+          {/* Project meta + reset-to-user-global */}
           <GlassCard style={styles.introCard}>
             <View style={styles.introHeader}>
-              <Bell size={22} strokeWidth={1.5} color={colors.text.primary} />
+              <Building2 size={22} strokeWidth={1.5} color={colors.text.primary} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.introTitle}>Choose how we notify you</Text>
+                <Text style={styles.introTitle}>
+                  {project?.name || 'Project preferences'}
+                </Text>
+                {project?.address && (
+                  <Text style={styles.introAddr}>{project.address}</Text>
+                )}
                 <Text style={styles.introBody}>
-                  Pick a preset that matches your style, or customize per signal type.
+                  Custom preferences for this project. They override your
+                  user-global settings whenever a signal lands on this project.
                 </Text>
               </View>
             </View>
+            <Pressable
+              onPress={handleResetToUserGlobal}
+              disabled={resetting}
+              style={[styles.resetGlobalBtn, resetting && { opacity: 0.6 }]}
+            >
+              {resetting ? (
+                <ActivityIndicator size="small" color={colors.text.muted} />
+              ) : (
+                <RotateCcw size={14} strokeWidth={1.5} color={colors.text.muted} />
+              )}
+              <Text style={styles.resetGlobalBtnText}>
+                Reset to user-global preferences
+              </Text>
+            </Pressable>
           </GlassCard>
 
-          {/* ── Section A — Presets ─────────────────────────────── */}
+          {/* Section A — Presets */}
           <View style={styles.presetGroup}>
             {PRESET_ORDER.map((key) => (
               <PresetRadioCard
@@ -673,7 +592,6 @@ export default function NotificationPreferencesScreen() {
                 selected={livePreset === key}
                 onSelect={handlePresetSelect}
                 styles={styles}
-                colors={colors}
               />
             ))}
             <Pressable
@@ -682,9 +600,7 @@ export default function NotificationPreferencesScreen() {
             >
               <Sliders size={14} strokeWidth={1.5} color={colors.text.primary} />
               <Text style={styles.customizeLinkText}>
-                {advancedOpen
-                  ? 'Hide per-signal customization'
-                  : 'Customize per signal type'}
+                {advancedOpen ? 'Hide per-signal customization' : 'Customize per signal type'}
               </Text>
               {advancedOpen ? (
                 <ChevronUp size={14} strokeWidth={1.5} color={colors.text.muted} />
@@ -696,8 +612,7 @@ export default function NotificationPreferencesScreen() {
               <View style={styles.customStateBanner}>
                 <Info size={13} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={styles.customStateBannerText}>
-                  You&apos;ve customized per-signal settings — none of the
-                  presets above match exactly.
+                  You&apos;ve customized per-signal settings for this project.
                   {anchorPreset !== 'custom'
                     ? ` Click "Reset to ${PRESETS[anchorPreset].label}" inside Advanced to revert.`
                     : ''}
@@ -706,16 +621,16 @@ export default function NotificationPreferencesScreen() {
             )}
           </View>
 
-          {/* ── Live preview card (Phase B1c) ──────────────────── */}
+          {/* Live preview (project-scoped) */}
           <PreviewCard
             preview={preview}
             loading={previewLoading}
-            error={previewError}
+            project={project}
             styles={styles}
             colors={colors}
           />
 
-          {/* ── Section B — Delivery timing ─────────────────────── */}
+          {/* Section B — Delivery timing */}
           <Text style={styles.sectionLabel}>DELIVERY TIMING</Text>
           <GlassCard style={styles.timingCard}>
             <View style={styles.timingRow}>
@@ -750,7 +665,7 @@ export default function NotificationPreferencesScreen() {
             </View>
           </GlassCard>
 
-          {/* ── Section C — Advanced (collapsible) ──────────────── */}
+          {/* Section C — Advanced */}
           {advancedOpen && (
             <View>
               <View style={styles.advancedHeaderRow}>
@@ -764,18 +679,10 @@ export default function NotificationPreferencesScreen() {
                   </Pressable>
                 )}
               </View>
-              <Text style={styles.sectionBlurb}>
-                Per-signal overrides take precedence over the preset shape. Each
-                row carries channel toggles, a severity threshold, and a
-                delivery cadence.
-              </Text>
-
-              {/* Channel routes by severity (fallback for unknown future kinds) */}
               <GlassCard style={styles.routesCard}>
                 <Text style={styles.routesHeader}>Severity fallback routes</Text>
                 <Text style={styles.routesHelp}>
-                  Applies only to signal types not explicitly set below
-                  (e.g. new signal types added in future updates).
+                  Applies only to signal types not explicitly set below.
                 </Text>
                 {['critical', 'warning', 'info'].map((sev) => {
                   const channels = (prefs.channel_routes_default || {})[sev] || [];
@@ -794,7 +701,6 @@ export default function NotificationPreferencesScreen() {
                 })}
               </GlassCard>
 
-              {/* Per-signal table — 9 family cards */}
               {SIGNAL_FAMILIES.map((fam) => {
                 const expanded = !!expandedFamilies[fam.key];
                 return (
@@ -824,7 +730,6 @@ export default function NotificationPreferencesScreen() {
                       <View style={styles.familyBody}>
                         {fam.kinds.map((kind) => {
                           const eff = effectiveOverrideFor(prefs, kind);
-                          const recent = recentCounts[kind.key] || 0;
                           return (
                             <View key={kind.key} style={styles.kindRow}>
                               <View style={styles.kindRowHeader}>
@@ -837,11 +742,6 @@ export default function NotificationPreferencesScreen() {
                                     />
                                   </View>
                                   <Text style={styles.kindRowTooltip}>{kind.tooltip}</Text>
-                                  <Text style={styles.kindRowRecent}>
-                                    {recent === 0
-                                      ? 'No matches in last 7 days'
-                                      : `${recent} matched in last 7 days`}
-                                  </Text>
                                 </View>
                               </View>
                               <ChannelToggleRow
@@ -858,9 +758,7 @@ export default function NotificationPreferencesScreen() {
                                   <SelectChip
                                     value={eff.severity_threshold}
                                     options={THRESHOLD_OPTIONS}
-                                    onChange={(v) =>
-                                      updateOverride(kind.key, { severity_threshold: v })
-                                    }
+                                    onChange={(v) => updateOverride(kind.key, { severity_threshold: v })}
                                     styles={styles}
                                     colors={colors}
                                   />
@@ -872,9 +770,7 @@ export default function NotificationPreferencesScreen() {
                                   <SelectChip
                                     value={eff.delivery}
                                     options={DELIVERY_OPTIONS}
-                                    onChange={(v) =>
-                                      updateOverride(kind.key, { delivery: v })
-                                    }
+                                    onChange={(v) => updateOverride(kind.key, { delivery: v })}
                                     styles={styles}
                                     colors={colors}
                                   />
@@ -889,30 +785,6 @@ export default function NotificationPreferencesScreen() {
                 );
               })}
             </View>
-          )}
-
-          {/* ── Per-project overrides (Phase B1c) ──────────────── */}
-          <Pressable
-            onPress={() => setShowProjectsSection((v) => !v)}
-            style={styles.projectsSectionHeader}
-          >
-            <Text style={styles.sectionLabel}>PER-PROJECT OVERRIDES</Text>
-            {showProjectsSection ? (
-              <ChevronUp size={16} strokeWidth={1.5} color={colors.text.muted} />
-            ) : (
-              <ChevronDown size={16} strokeWidth={1.5} color={colors.text.muted} />
-            )}
-          </Pressable>
-          {showProjectsSection && (
-            <ProjectsList
-              router={router}
-              projects={projectsList}
-              loading={projectsLoading}
-              error={projectsError}
-              onRefresh={loadProjects}
-              styles={styles}
-              colors={colors}
-            />
           )}
 
           {/* Footer */}
@@ -945,7 +817,6 @@ export default function NotificationPreferencesScreen() {
           )}
         </ScrollView>
 
-        {/* Mobile sticky save bar */}
         {isMobile && (
           <View style={styles.mobileStickyBar}>
             <Pressable
@@ -983,29 +854,31 @@ export default function NotificationPreferencesScreen() {
   );
 }
 
-// ── Live preview card (Phase B1c) ──────────────────────────────
+// ── Subcomponents ───────────────────────────────────────────────
 
-const PreviewCard = ({ preview, loading, error, styles, colors }) => {
-  // Empty / no-data state.
-  if (!preview && !loading && !error) {
-    return null;
-  }
-  if (error && !preview) {
-    return (
-      <GlassCard style={styles.previewCard}>
-        <View style={styles.previewHeader}>
-          <Eye size={16} strokeWidth={1.5} color={colors.text.muted} />
-          <Text style={styles.previewTitle}>Preview unavailable</Text>
-        </View>
-        <Text style={styles.previewError}>{error}</Text>
-      </GlassCard>
-    );
-  }
+const Header = ({ router, colors, styles, project }) => (
+  <View style={styles.header}>
+    <Pressable
+      onPress={() => router.replace('/settings/notifications')}
+      style={styles.backBtn}
+    >
+      <ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />
+    </Pressable>
+    <View style={{ flex: 1, alignItems: 'center' }}>
+      <Text style={styles.headerTitle} numberOfLines={1}>
+        {project?.name || 'Project notifications'}
+      </Text>
+      <Text style={styles.headerSubtitle}>Project-scoped overrides</Text>
+    </View>
+    <View style={{ width: 28 }} />
+  </View>
+);
 
+const PreviewCard = ({ preview, loading, project, styles, colors }) => {
+  if (!preview) return null;
   const summary = (preview && preview.summary) || {};
   const total = summary.total_signals_seen || 0;
-
-  if (preview && total === 0 && !loading) {
+  if (total === 0 && !loading) {
     return (
       <GlassCard style={styles.previewCard}>
         <View style={styles.previewHeader}>
@@ -1013,53 +886,17 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
           <Text style={styles.previewTitle}>Live preview</Text>
         </View>
         <Text style={styles.previewEmpty}>
-          No DOB activity in the last 7 days to preview against. Once
-          signals start landing, this card will show what your settings
-          would deliver.
+          No DOB activity in the last 7 days for {project?.name || 'this project'}.
         </Text>
       </GlassCard>
     );
   }
-
   const stats = [
-    {
-      key: 'immediate',
-      Icon: Mail,
-      iconColor: '#ef4444',
-      bg: 'rgba(239, 68, 68, 0.10)',
-      count: summary.immediate_emails || 0,
-      label: 'immediate emails',
-      tip: 'Sent right when each signal lands.',
-    },
-    {
-      key: 'digest_daily',
-      Icon: Mailbox,
-      iconColor: '#f59e0b',
-      bg: 'rgba(245, 158, 11, 0.10)',
-      count: summary.digest_daily_signals || 0,
-      label: 'in daily digest',
-      tip: 'Batched into a 7am email each day.',
-    },
-    {
-      key: 'digest_weekly',
-      Icon: Mailbox,
-      iconColor: '#3b82f6',
-      bg: 'rgba(59, 130, 246, 0.10)',
-      count: summary.digest_weekly_signals || 0,
-      label: 'in weekly digest',
-      tip: 'Batched into one Monday email per week.',
-    },
-    {
-      key: 'feed',
-      Icon: Inbox,
-      iconColor: '#6b7280',
-      bg: 'rgba(107, 114, 128, 0.10)',
-      count: summary.suppressed_signals || 0,
-      label: 'feed-only',
-      tip: 'Visible in the activity feed; no email.',
-    },
+    { key: 'i', Icon: Mail, c: '#ef4444', bg: 'rgba(239,68,68,0.10)', count: summary.immediate_emails || 0, label: 'immediate emails' },
+    { key: 'd', Icon: Mailbox, c: '#f59e0b', bg: 'rgba(245,158,11,0.10)', count: summary.digest_daily_signals || 0, label: 'daily digest' },
+    { key: 'w', Icon: Mailbox, c: '#3b82f6', bg: 'rgba(59,130,246,0.10)', count: summary.digest_weekly_signals || 0, label: 'weekly digest' },
+    { key: 'f', Icon: Inbox, c: '#6b7280', bg: 'rgba(107,114,128,0.10)', count: summary.suppressed_signals || 0, label: 'feed-only' },
   ];
-
   return (
     <GlassCard style={styles.previewCard}>
       <View style={styles.previewHeader}>
@@ -1069,130 +906,22 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
             Live preview — last 7 days{loading ? ' (updating…)' : ''}
           </Text>
           <Text style={styles.previewSubtitle}>
-            With these settings, you would receive:
+            For {project?.name || 'this project'} only.
           </Text>
         </View>
       </View>
       <View style={styles.previewGrid}>
         {stats.map((s) => (
           <View key={s.key} style={[styles.previewStat, { backgroundColor: s.bg }]}>
-            <s.Icon size={14} strokeWidth={1.5} color={s.iconColor} />
-            <Text style={[styles.previewStatCount, { color: s.iconColor }]}>
-              {s.count}
-            </Text>
+            <s.Icon size={14} strokeWidth={1.5} color={s.c} />
+            <Text style={[styles.previewStatCount, { color: s.c }]}>{s.count}</Text>
             <Text style={styles.previewStatLabel}>{s.label}</Text>
-            <Text style={styles.previewStatTip}>{s.tip}</Text>
           </View>
         ))}
       </View>
-      <Text style={styles.previewFootnote}>
-        Counts based on {total} DOB signal{total === 1 ? '' : 's'}{' '}
-        observed across your projects in the last 7 days.
-      </Text>
     </GlassCard>
   );
 };
-
-// ── Per-project list (Phase B1c) ────────────────────────────────
-
-const ProjectsList = ({
-  router, projects, loading, error, onRefresh, styles, colors,
-}) => {
-  if (loading && (!projects || projects.length === 0)) {
-    return (
-      <GlassCard style={styles.projectsCard}>
-        <ActivityIndicator size="small" color={colors.text.muted} />
-      </GlassCard>
-    );
-  }
-  if (error) {
-    return (
-      <GlassCard style={styles.projectsCard}>
-        <Text style={styles.previewError}>{error}</Text>
-        <Pressable onPress={onRefresh} style={styles.retryBtn}>
-          <Text style={styles.retryBtnText}>Retry</Text>
-        </Pressable>
-      </GlassCard>
-    );
-  }
-  if (!projects || projects.length === 0) {
-    return (
-      <GlassCard style={styles.projectsCard}>
-        <Text style={styles.previewEmpty}>
-          No projects on this account yet. Add a project to set
-          per-project notification overrides.
-        </Text>
-      </GlassCard>
-    );
-  }
-  return (
-    <GlassCard style={styles.projectsCard}>
-      <Text style={styles.projectsHelp}>
-        Override your notification settings per project. Projects without
-        an override use the global settings above.
-      </Text>
-      {projects.map((p) => (
-        <Pressable
-          key={p.project_id}
-          onPress={() =>
-            router.push(`/settings/notifications/project/${p.project_id}`)
-          }
-          style={({ pressed }) => [
-            styles.projectRow,
-            pressed && { opacity: 0.7 },
-          ]}
-        >
-          <Building2 size={16} strokeWidth={1.5} color={colors.text.muted} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.projectRowName} numberOfLines={1}>
-              {p.name || '(unnamed project)'}
-            </Text>
-            {p.address && (
-              <Text style={styles.projectRowAddress} numberOfLines={1}>
-                {p.address}
-              </Text>
-            )}
-          </View>
-          <View
-            style={[
-              styles.projectBadge,
-              p.has_override
-                ? styles.projectBadgeOverride
-                : styles.projectBadgeDefault,
-            ]}
-          >
-            {p.has_override ? (
-              <CheckCircle2 size={11} strokeWidth={1.5} color="#3b82f6" />
-            ) : null}
-            <Text
-              style={[
-                styles.projectBadgeText,
-                p.has_override
-                  ? { color: '#3b82f6' }
-                  : { color: colors.text.muted },
-              ]}
-            >
-              {p.has_override ? 'Customized' : 'Default'}
-            </Text>
-          </View>
-          <ChevronRight size={16} strokeWidth={1.5} color={colors.text.muted} />
-        </Pressable>
-      ))}
-    </GlassCard>
-  );
-};
-
-// ── Header subcomponent ─────────────────────────────────────────
-
-const Header = ({ router, colors, styles }) => (
-  <View style={styles.header}>
-    <Pressable onPress={() => router.back()} style={styles.backBtn}>
-      <ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />
-    </Pressable>
-    <Text style={styles.headerTitle}>Notifications</Text>
-    <View style={{ width: 28 }} />
-  </View>
-);
 
 // ── Styles ──────────────────────────────────────────────────────
 
@@ -1206,14 +935,18 @@ function buildStyles(colors) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
     },
-    backBtn: {
-      width: 28, height: 28,
-      alignItems: 'center', justifyContent: 'center',
-    },
+    backBtn: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
     headerTitle: {
       fontFamily: typography.semibold,
-      fontSize: 16,
+      fontSize: 15,
       color: colors.text.primary,
+    },
+    headerSubtitle: {
+      fontFamily: typography.regular,
+      fontSize: 10,
+      color: colors.text.muted,
+      letterSpacing: 0.4,
+      textTransform: 'uppercase',
     },
     scroll: { flex: 1 },
     scrollContent: {
@@ -1221,14 +954,8 @@ function buildStyles(colors) {
       paddingBottom: spacing.xl,
       gap: spacing.md,
     },
-    loadingWrap: {
-      flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
-    },
-    loadingText: {
-      fontFamily: typography.regular,
-      fontSize: 13,
-      color: colors.text.muted,
-    },
+    loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
+    loadingText: { fontFamily: typography.regular, fontSize: 13, color: colors.text.muted },
     retryBtn: {
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
@@ -1242,16 +969,19 @@ function buildStyles(colors) {
       color: colors.text.primary,
     },
 
-    // Intro
-    introCard: { padding: spacing.lg },
-    introHeader: {
-      flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start',
-    },
+    introCard: { padding: spacing.lg, gap: spacing.sm },
+    introHeader: { flexDirection: 'row', gap: spacing.md, alignItems: 'flex-start' },
     introTitle: {
       fontFamily: typography.semibold,
       fontSize: 17,
       color: colors.text.primary,
       marginBottom: 4,
+    },
+    introAddr: {
+      fontFamily: typography.regular,
+      fontSize: 12,
+      color: colors.text.muted,
+      marginBottom: spacing.xs,
     },
     introBody: {
       fontFamily: typography.regular,
@@ -1259,8 +989,23 @@ function buildStyles(colors) {
       color: colors.text.secondary,
       lineHeight: 19,
     },
+    resetGlobalBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.glass.border,
+      alignSelf: 'flex-start',
+    },
+    resetGlobalBtnText: {
+      fontFamily: typography.medium,
+      fontSize: 12,
+      color: colors.text.muted,
+    },
 
-    // Section labels
     sectionLabel: {
       fontFamily: typography.semibold,
       fontSize: 11,
@@ -1277,7 +1022,6 @@ function buildStyles(colors) {
       lineHeight: 17,
     },
 
-    // ── Preset radio cards ──
     presetGroup: { gap: spacing.sm },
     presetCard: {
       flexDirection: 'row',
@@ -1294,21 +1038,14 @@ function buildStyles(colors) {
       backgroundColor: 'rgba(59, 130, 246, 0.08)',
     },
     presetRadio: {
-      width: 18, height: 18,
-      borderRadius: 9,
-      borderWidth: 2,
-      borderColor: colors.glass.border,
-      alignItems: 'center', justifyContent: 'center',
-      marginTop: 2,
+      width: 18, height: 18, borderRadius: 9,
+      borderWidth: 2, borderColor: colors.glass.border,
+      alignItems: 'center', justifyContent: 'center', marginTop: 2,
     },
     presetRadioSelected: { borderColor: '#3b82f6' },
-    presetRadioInner: {
-      width: 10, height: 10, borderRadius: 5, backgroundColor: '#3b82f6',
-    },
+    presetRadioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#3b82f6' },
     presetTextBlock: { flex: 1 },
-    presetTitleRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4,
-    },
+    presetTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
     presetTitle: {
       fontFamily: typography.semibold,
       fontSize: 15,
@@ -1320,10 +1057,8 @@ function buildStyles(colors) {
       letterSpacing: 0.6,
       color: '#3b82f6',
       backgroundColor: 'rgba(59, 130, 246, 0.12)',
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      borderRadius: 4,
-      textTransform: 'uppercase',
+      paddingHorizontal: 6, paddingVertical: 2,
+      borderRadius: 4, textTransform: 'uppercase',
     },
     presetSubtitle: {
       fontFamily: typography.medium,
@@ -1338,7 +1073,6 @@ function buildStyles(colors) {
       color: colors.text.muted,
       lineHeight: 17,
     },
-
     customizeLink: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1371,139 +1105,18 @@ function buildStyles(colors) {
       lineHeight: 16,
     },
 
-    // ── Live preview card (Phase B1c) ──
-    previewCard: {
-      padding: spacing.md,
-      gap: spacing.sm,
-    },
-    previewHeader: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: spacing.sm,
-    },
-    previewTitle: {
-      fontFamily: typography.semibold,
-      fontSize: 13,
-      color: colors.text.primary,
-      marginBottom: 2,
-    },
-    previewSubtitle: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-    },
-    previewError: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: '#ef4444',
-      lineHeight: 17,
-    },
-    previewEmpty: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.muted,
-      lineHeight: 17,
-    },
-    previewGrid: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: spacing.sm,
-    },
-    previewStat: {
-      flex: 1,
-      minWidth: 130,
-      padding: spacing.sm,
-      borderRadius: borderRadius.md,
-      gap: 2,
-    },
-    previewStatCount: {
-      fontFamily: typography.semibold,
-      fontSize: 22,
-      lineHeight: 26,
-      marginTop: 2,
-    },
-    previewStatLabel: {
-      fontFamily: typography.medium,
-      fontSize: 12,
-      color: colors.text.primary,
-    },
-    previewStatTip: {
-      fontFamily: typography.regular,
-      fontSize: 10,
-      color: colors.text.muted,
-      lineHeight: 14,
-    },
-    previewFootnote: {
-      fontFamily: typography.regular,
-      fontSize: 10,
-      color: colors.text.muted,
-      fontStyle: 'italic',
-      marginTop: 4,
-    },
+    // Preview
+    previewCard: { padding: spacing.md, gap: spacing.sm },
+    previewHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+    previewTitle: { fontFamily: typography.semibold, fontSize: 13, color: colors.text.primary, marginBottom: 2 },
+    previewSubtitle: { fontFamily: typography.regular, fontSize: 11, color: colors.text.muted },
+    previewEmpty: { fontFamily: typography.regular, fontSize: 12, color: colors.text.muted, lineHeight: 17 },
+    previewGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    previewStat: { flex: 1, minWidth: 130, padding: spacing.sm, borderRadius: borderRadius.md, gap: 2 },
+    previewStatCount: { fontFamily: typography.semibold, fontSize: 22, lineHeight: 26, marginTop: 2 },
+    previewStatLabel: { fontFamily: typography.medium, fontSize: 12, color: colors.text.primary },
 
-    // ── Per-project section (Phase B1c) ──
-    projectsSectionHeader: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      paddingVertical: spacing.xs,
-      marginTop: spacing.md,
-    },
-    projectsCard: {
-      padding: spacing.md,
-      gap: spacing.sm,
-    },
-    projectsHelp: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.muted,
-      lineHeight: 17,
-      marginBottom: 4,
-    },
-    projectRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
-      paddingVertical: spacing.sm,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
-    },
-    projectRowName: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
-    projectRowAddress: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      marginTop: 1,
-    },
-    projectBadge: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: borderRadius.sm,
-      borderWidth: 1,
-    },
-    projectBadgeDefault: {
-      borderColor: colors.glass.border,
-      backgroundColor: 'transparent',
-    },
-    projectBadgeOverride: {
-      borderColor: 'rgba(59, 130, 246, 0.4)',
-      backgroundColor: 'rgba(59, 130, 246, 0.10)',
-    },
-    projectBadgeText: {
-      fontFamily: typography.semibold,
-      fontSize: 10,
-      letterSpacing: 0.4,
-      textTransform: 'uppercase',
-    },
-
-    // ── Timing card (compact) ──
+    // Timing
     timingCard: { padding: spacing.md, gap: 0 },
     timingRow: {
       flexDirection: 'row',
@@ -1514,13 +1127,9 @@ function buildStyles(colors) {
       borderBottomColor: colors.glass.border,
     },
     timingRowLast: { borderBottomWidth: 0 },
-    timingLabel: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
+    timingLabel: { fontFamily: typography.medium, fontSize: 13, color: colors.text.primary },
 
-    // ── Advanced section ──
+    // Advanced
     advancedHeaderRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1540,37 +1149,18 @@ function buildStyles(colors) {
       borderWidth: 1,
       borderColor: colors.glass.border,
     },
-    resetAnchorLinkText: {
-      fontFamily: typography.medium,
-      fontSize: 11,
-      color: colors.text.muted,
-    },
+    resetAnchorLinkText: { fontFamily: typography.medium, fontSize: 11, color: colors.text.muted },
 
-    // Severity routes inside advanced
     routesCard: { padding: spacing.md, gap: spacing.xs, marginBottom: spacing.sm },
-    routesHeader: {
-      fontFamily: typography.semibold,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
-    routesHelp: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      lineHeight: 16,
-      marginBottom: spacing.xs,
-    },
+    routesHeader: { fontFamily: typography.semibold, fontSize: 13, color: colors.text.primary },
+    routesHelp: { fontFamily: typography.regular, fontSize: 11, color: colors.text.muted, lineHeight: 16, marginBottom: spacing.xs },
     severityRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
+      flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
       paddingVertical: spacing.xs,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
+      borderTopWidth: 1, borderTopColor: colors.glass.border,
       flexWrap: 'wrap',
     },
 
-    // Family cards
     familyCard: { padding: 0, overflow: 'hidden' },
     familyHeader: {
       flexDirection: 'row',
@@ -1578,86 +1168,30 @@ function buildStyles(colors) {
       gap: spacing.sm,
       padding: spacing.md,
     },
-    familyTitle: {
-      fontFamily: typography.semibold,
-      fontSize: 14,
-      color: colors.text.primary,
-    },
-    familyBlurb: {
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: colors.text.muted,
-      marginTop: 2,
-    },
-    familyBody: {
-      paddingHorizontal: spacing.md,
-      paddingBottom: spacing.md,
-      gap: spacing.md,
-    },
+    familyTitle: { fontFamily: typography.semibold, fontSize: 14, color: colors.text.primary },
+    familyBlurb: { fontFamily: typography.regular, fontSize: 12, color: colors.text.muted, marginTop: 2 },
+    familyBody: { paddingHorizontal: spacing.md, paddingBottom: spacing.md, gap: spacing.md },
     kindRow: {
       paddingVertical: spacing.sm,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
+      borderTopWidth: 1, borderTopColor: colors.glass.border,
       gap: spacing.sm,
     },
-    kindRowHeader: {
-      flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start',
-    },
-    kindRowTitleRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
-      marginBottom: 2,
-    },
-    kindRowLabel: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.primary,
-    },
-    kindRowTooltip: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-      lineHeight: 15,
-    },
-    kindRowRecent: {
-      fontFamily: typography.regular,
-      fontSize: 10,
-      color: colors.text.subtle || colors.text.muted,
-      letterSpacing: 0.3,
-      marginTop: 4,
-    },
-    kindRowControls: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      flexWrap: 'wrap',
-    },
-    kindRowControlGroup: {
-      gap: 2, flex: 1, minWidth: 140,
-    },
-    kindRowControlLabel: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-    },
+    kindRowHeader: { flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-start' },
+    kindRowTitleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: 2 },
+    kindRowLabel: { fontFamily: typography.medium, fontSize: 13, color: colors.text.primary },
+    kindRowTooltip: { fontFamily: typography.regular, fontSize: 11, color: colors.text.muted, lineHeight: 15 },
+    kindRowControls: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+    kindRowControlGroup: { gap: 2, flex: 1, minWidth: 140 },
+    kindRowControlLabel: { fontFamily: typography.regular, fontSize: 11, color: colors.text.muted },
 
-    // Severity badge
     sevBadge: {
       paddingVertical: 2, paddingHorizontal: 8,
       borderRadius: borderRadius.sm,
-      borderWidth: 1,
-      alignSelf: 'flex-start',
+      borderWidth: 1, alignSelf: 'flex-start',
     },
-    sevBadgeText: {
-      fontFamily: typography.semibold,
-      fontSize: 10,
-      letterSpacing: 0.5,
-    },
+    sevBadgeText: { fontFamily: typography.semibold, fontSize: 10, letterSpacing: 0.5 },
 
-    // Channel chips
-    channelRow: {
-      flexDirection: 'row', gap: 6, flexWrap: 'wrap',
-    },
+    channelRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
     channelRowCompact: { justifyContent: 'flex-end' },
     channelChip: {
       flexDirection: 'row',
@@ -1670,28 +1204,18 @@ function buildStyles(colors) {
       borderColor: colors.glass.border,
       backgroundColor: 'transparent',
     },
-    channelChipOn: {
-      backgroundColor: '#3b82f6',
-      borderColor: '#3b82f6',
-    },
+    channelChipOn: { backgroundColor: '#3b82f6', borderColor: '#3b82f6' },
     channelChipDisabled: { opacity: 0.55 },
-    channelChipLabel: {
-      fontFamily: typography.medium,
-      fontSize: 12,
-      color: colors.text.primary,
-    },
+    channelChipLabel: { fontFamily: typography.medium, fontSize: 12, color: colors.text.primary },
     channelBadge: {
       fontFamily: typography.medium,
       fontSize: 9,
       color: colors.text.muted,
       backgroundColor: colors.glass.background,
-      paddingHorizontal: 4,
-      paddingVertical: 1,
-      borderRadius: 3,
-      marginLeft: 2,
+      paddingHorizontal: 4, paddingVertical: 1,
+      borderRadius: 3, marginLeft: 2,
     },
 
-    // SelectChip
     selectChip: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1704,92 +1228,39 @@ function buildStyles(colors) {
       backgroundColor: colors.glass.background,
       maxWidth: 220,
     },
-    selectChipText: {
-      fontFamily: typography.medium,
-      fontSize: 12,
-      color: colors.text.primary,
-      flexShrink: 1,
-    },
+    selectChipText: { fontFamily: typography.medium, fontSize: 12, color: colors.text.primary, flexShrink: 1 },
 
-    // Footer
-    footerInfoRow: {
-      flexDirection: 'row', alignItems: 'center', gap: 6,
-      marginTop: spacing.md,
-    },
-    footerInfoText: {
-      fontFamily: typography.regular,
-      fontSize: 11,
-      color: colors.text.muted,
-    },
-    desktopActionRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      justifyContent: 'flex-end',
-      marginTop: spacing.sm,
-    },
+    footerInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: spacing.md },
+    footerInfoText: { fontFamily: typography.regular, fontSize: 11, color: colors.text.muted },
+    desktopActionRow: { flexDirection: 'row', gap: spacing.sm, justifyContent: 'flex-end', marginTop: spacing.sm },
     errorBlock: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: spacing.sm,
-      padding: spacing.sm,
-      borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: '#ef444440',
-      backgroundColor: '#ef444415',
-      marginTop: spacing.sm,
+      flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
+      padding: spacing.sm, borderRadius: borderRadius.md,
+      borderWidth: 1, borderColor: '#ef444440',
+      backgroundColor: '#ef444415', marginTop: spacing.sm,
     },
-    errorBlockText: {
-      flex: 1,
-      fontFamily: typography.regular,
-      fontSize: 12,
-      color: '#ef4444',
-      lineHeight: 17,
-    },
+    errorBlockText: { flex: 1, fontFamily: typography.regular, fontSize: 12, color: '#ef4444', lineHeight: 17 },
 
-    // Mobile sticky bar
     mobileStickyBar: {
-      position: 'absolute',
-      bottom: 0,
-      left: 0,
-      right: 0,
-      flexDirection: 'row',
-      gap: spacing.sm,
+      position: 'absolute', bottom: 0, left: 0, right: 0,
+      flexDirection: 'row', gap: spacing.sm,
       padding: spacing.md,
-      borderTopWidth: 1,
-      borderTopColor: colors.glass.border,
+      borderTopWidth: 1, borderTopColor: colors.glass.border,
       backgroundColor: colors.background?.start || 'rgba(5,10,18,0.95)',
     },
     mobilePrimaryBtn: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 6,
-      paddingVertical: spacing.sm + 2,
-      borderRadius: borderRadius.md,
-      backgroundColor: '#3b82f6',
+      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: 6, paddingVertical: spacing.sm + 2,
+      borderRadius: borderRadius.md, backgroundColor: '#3b82f6',
     },
-    mobilePrimaryBtnText: {
-      fontFamily: typography.semibold,
-      fontSize: 14,
-      color: '#fff',
-    },
+    mobilePrimaryBtnText: { fontFamily: typography.semibold, fontSize: 14, color: '#fff' },
     mobileSecondaryBtn: {
-      flex: 1,
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 6,
-      paddingVertical: spacing.sm + 2,
+      flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+      gap: 6, paddingVertical: spacing.sm + 2,
       borderRadius: borderRadius.md,
-      borderWidth: 1,
-      borderColor: colors.glass.border,
+      borderWidth: 1, borderColor: colors.glass.border,
     },
-    mobileSecondaryBtnText: {
-      fontFamily: typography.medium,
-      fontSize: 13,
-      color: colors.text.muted,
-    },
+    mobileSecondaryBtnText: { fontFamily: typography.medium, fontSize: 13, color: colors.text.muted },
     mobileBtnDisabled: { opacity: 0.5 },
   });
 }

@@ -103,7 +103,10 @@ Schema — `digest_queue` collection
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import threading
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1031,3 +1034,178 @@ def normalize_digest_window(
             out["timezone"] = timezone_str
 
     return out, errors
+
+
+# ── Phase B1c — Preview cache ─────────────────────────────────────
+
+
+# In-memory TTL cache for the /preview endpoint. The key is
+# (user_id, project_id_or_empty, prefs_hash); the value is the
+# computed preview response dict. 30-second TTL avoids hammering
+# Mongo on every keystroke as the operator drags toggles around
+# the settings page. Per-process cache — Railway with a single
+# instance is fine; multi-instance just gets a per-instance miss.
+#
+# Thread-safe via a module-level lock. The endpoint is async but
+# we serialize cache reads/writes to keep semantics simple.
+
+_PREVIEW_CACHE_TTL_SECONDS = 30
+_PREVIEW_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_PREVIEW_CACHE_LOCK = threading.Lock()
+
+
+def _preview_cache_key(
+    *,
+    user_id: str,
+    project_id: Optional[str],
+    prefs: Dict[str, Any],
+    days: int,
+) -> str:
+    """Stable hash of (user, project, normalized prefs, window)."""
+    canonical = {
+        "user_id": str(user_id),
+        "project_id": str(project_id) if project_id else "",
+        "days": int(days),
+        "overrides": prefs.get("signal_kind_overrides") or {},
+        "routes": prefs.get("channel_routes_default") or {},
+    }
+    raw = json.dumps(canonical, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def preview_cache_lookup(key: str) -> Optional[Dict[str, Any]]:
+    """Return the cached preview response or None on miss/expiry.
+    Lazily evicts the entry on expiry."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    with _PREVIEW_CACHE_LOCK:
+        entry = _PREVIEW_CACHE.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at <= now_ts:
+            _PREVIEW_CACHE.pop(key, None)
+            return None
+        return value
+
+
+def preview_cache_store(key: str, value: Dict[str, Any]) -> None:
+    """Insert into the cache with the configured TTL."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    expires_at = now_ts + _PREVIEW_CACHE_TTL_SECONDS
+    with _PREVIEW_CACHE_LOCK:
+        _PREVIEW_CACHE[key] = (expires_at, value)
+        # Coarse cleanup: drop expired entries opportunistically when
+        # the dict grows past a soft cap. Avoids a long-lived process
+        # accumulating stale keys.
+        if len(_PREVIEW_CACHE) > 256:
+            stale = [k for k, (exp, _) in _PREVIEW_CACHE.items() if exp <= now_ts]
+            for k in stale:
+                _PREVIEW_CACHE.pop(k, None)
+
+
+def preview_cache_clear() -> None:
+    """Reset the cache. Used by tests."""
+    with _PREVIEW_CACHE_LOCK:
+        _PREVIEW_CACHE.clear()
+
+
+# ── Preview aggregation ──────────────────────────────────────────
+
+
+def aggregate_preview_decisions(
+    *,
+    logs,
+    prefs: Dict[str, Any],
+    severity_resolver,
+) -> Dict[str, Any]:
+    """Pure function. Run compute_routing_decision against each log
+    and bucket the outcomes by signal_kind + delivery cadence.
+
+    Args:
+      logs              — iterable of dob_log docs (already filtered
+                          to the relevant time window + tenant).
+      prefs             — preferences document. Same shape as the
+                          GET response / what compute_routing_decision
+                          consumes.
+      severity_resolver — callable(signal_kind, log) → severity
+                          string. Caller injects the resolver so this
+                          module doesn't import lib/dob_signal_templates
+                          (avoids a heavy dependency on the templates
+                          when only severity matters; the endpoint
+                          wires it through render_signal).
+
+    Returns the response shape the /preview endpoint returns:
+      {
+        would_receive_email: [{signal_kind, count, delivery}, ...],
+        would_suppress: [{signal_kind, count, reason}, ...],
+        summary: {immediate_emails, digest_daily_signals,
+                  digest_weekly_signals, suppressed_signals,
+                  total_signals_seen},
+      }
+    """
+    immediate: Dict[str, int] = {}
+    digest_daily: Dict[str, int] = {}
+    digest_weekly: Dict[str, int] = {}
+    suppressed: Dict[str, Tuple[int, str]] = {}  # kind -> (count, reason)
+    total = 0
+
+    for log in logs:
+        total += 1
+        signal_kind = (log.get("signal_kind") or "unknown")
+        try:
+            severity = severity_resolver(signal_kind, log) or "info"
+        except Exception:
+            severity = "info"
+        decision = compute_routing_decision(
+            prefs, signal_kind=signal_kind, severity=severity,
+        )
+        if decision.should_send_email_now:
+            immediate[signal_kind] = immediate.get(signal_kind, 0) + 1
+        elif decision.should_queue_digest:
+            if decision.digest_kind == DELIVERY_DIGEST_WEEKLY:
+                digest_weekly[signal_kind] = digest_weekly.get(signal_kind, 0) + 1
+            else:
+                digest_daily[signal_kind] = digest_daily.get(signal_kind, 0) + 1
+        else:
+            prev = suppressed.get(signal_kind)
+            reason = decision.suppress_reason or "feed_only"
+            suppressed[signal_kind] = (
+                (prev[0] + 1, prev[1]) if prev else (1, reason)
+            )
+
+    would_receive: List[Dict[str, Any]] = []
+    for kind in sorted(immediate.keys()):
+        would_receive.append({
+            "signal_kind": kind,
+            "count": immediate[kind],
+            "delivery": "immediate",
+        })
+    for kind in sorted(digest_daily.keys()):
+        would_receive.append({
+            "signal_kind": kind,
+            "count": digest_daily[kind],
+            "delivery": "digest_daily",
+        })
+    for kind in sorted(digest_weekly.keys()):
+        would_receive.append({
+            "signal_kind": kind,
+            "count": digest_weekly[kind],
+            "delivery": "digest_weekly",
+        })
+
+    would_suppress = [
+        {"signal_kind": kind, "count": cnt, "reason": reason}
+        for kind, (cnt, reason) in sorted(suppressed.items())
+    ]
+
+    return {
+        "would_receive_email": would_receive,
+        "would_suppress": would_suppress,
+        "summary": {
+            "immediate_emails": sum(immediate.values()),
+            "digest_daily_signals": sum(digest_daily.values()),
+            "digest_weekly_signals": sum(digest_weekly.values()),
+            "suppressed_signals": sum(c for c, _ in suppressed.values()),
+            "total_signals_seen": total,
+        },
+    }
