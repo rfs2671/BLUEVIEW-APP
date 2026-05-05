@@ -5,8 +5,12 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase C2)
-**Test count baseline:** 828 backend tests passing.
+**Last reviewed:** 2026-05-05 (Phase C3)
+**Test count baseline:** 866 backend tests passing.
+
+> **See also:** [`backup-restore.md`](./backup-restore.md) — Atlas
+> backup state, restore drill, disaster recovery, migration safety
+> pattern, and the freshness-verification script.
 
 ---
 
@@ -460,7 +464,24 @@ flag that defaults to True. Pattern:
 - Inspect the dry-run output for unexpected matches.
 - Re-run with `--execute` only after manual approval.
 
-### 6.3 — Soft-delete vs hard-delete
+### 6.3 — Pre-migration snapshot (Phase C3 hard rule)
+
+Before running ANY `backend/scripts/migrate_*.py` against
+production, take an on-demand Atlas snapshot. The full
+checklist + rollback procedure lives in
+[`backup-restore.md`](./backup-restore.md) §5; the short version:
+
+1. Atlas → production cluster → Backup → **Take Snapshot Now**.
+   Name it after the migration: `pre-mr14-foo-YYYY-MM-DD`.
+2. Wait for the snapshot row to turn green.
+3. Run with `--dry-run` first; inspect the change set.
+4. Run with `--execute`; capture stdout to a log.
+5. Run `audit_production.py` post-migration to verify counts.
+
+If the migration corrupts data, restore from the snapshot you
+took in step 1 — see `backup-restore.md` §4.
+
+### 6.4 — Soft-delete vs hard-delete
 
 We default to soft-delete (`is_deleted: true` flag). Hard-delete is
 reserved for:
@@ -1048,6 +1069,11 @@ ones here when you wire them.
 | `NOTIFICATIONS_KILL_SWITCH` | backend | no | Set to `true` to suspend ALL outbound notifications. See Section 1. |
 | `NOTIFICATIONS_ENABLED` | backend | no | Set to `false` to suppress non-critical notifications globally. Coarser than the kill switch. |
 | `RATE_LIMITS_DISABLED` | backend | no | Set to `true` to bypass the C2 rate-limit middleware entirely. Emergency lever — see Section 11.4. Unset within 4 hours; production must run with limits ON. |
+| `ATLAS_PUBLIC_KEY` | backup-cron | no | Atlas Programmatic API key (public). Used by `backend/scripts/verify_backup_freshness.py` (Phase C3). Project Read Only role. |
+| `ATLAS_PRIVATE_KEY` | backup-cron | no | Atlas Programmatic API key (private). Paired with `ATLAS_PUBLIC_KEY`. Stored in 1Password. |
+| `ATLAS_GROUP_ID` | backup-cron | no | Atlas Project (group) ID — 24-char hex from the Atlas dashboard URL. |
+| `ATLAS_CLUSTER_NAME` | backup-cron | no | Production cluster name, e.g. `levelog-prod`. |
+| `ATLAS_BACKUP_MAX_AGE_HOURS` | backup-cron | no | Threshold for the freshness check. Default 24. Set to 168 if running weekly. |
 | `SENTRY_DSN` | backend | no | Sentry project DSN. Missing → error tracking disabled (graceful). |
 | `SENTRY_ENVIRONMENT` | backend | no | Override for the environment tag. Falls back to `RAILWAY_ENVIRONMENT`, then `"development"`. |
 | `RAILWAY_ENVIRONMENT` | backend | auto | Set automatically by Railway per environment. Used as Sentry environment fallback. |
