@@ -63,6 +63,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import apiClient, { onboardingAPI } from '../src/utils/api';
+import InfoTooltip from '../src/components/InfoTooltip';
 import {
   PRESETS,
   PRESET_ORDER,
@@ -589,6 +590,13 @@ export default function OnboardingScreen() {
                     <View style={styles.presetBadge}>
                       <Text style={styles.presetBadgeText}>{preset.badge}</Text>
                     </View>
+                  ) : null}
+                  {/* Phase B4: tooltip on each preset radio in
+                      onboarding step 4. preset.bodyHelp is the
+                      detailed 1-2 sentence behavior description from
+                      the B1b.1 PRESETS object. */}
+                  {preset.bodyHelp ? (
+                    <InfoTooltip text={preset.bodyHelp} size={14} />
                   ) : null}
                 </View>
                 <Text style={styles.presetCardSubtitle}>{preset.subtitle}</Text>

@@ -296,6 +296,14 @@ const PresetRadioCard = ({
         {preset.badge && (
           <Text style={styles.presetBadge}>{preset.badge}</Text>
         )}
+        {/* Phase B4: explicit tooltip on each preset radio
+            explaining its specific behavior in 1-2 sentences.
+            preset.bodyHelp is the same copy used inline below;
+            the tooltip surfaces it as an explicit help affordance
+            for users who skim the inline subtitle. */}
+        {preset.bodyHelp ? (
+          <InfoTooltip text={preset.bodyHelp} size={14} />
+        ) : null}
       </View>
       <Text style={styles.presetSubtitle}>{preset.subtitle}</Text>
       <Text style={styles.presetBodyHelp}>{preset.bodyHelp}</Text>
