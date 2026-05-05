@@ -1,0 +1,6 @@
+# Audit reports land here.
+#
+# Naming convention: production-data-audit-YYYY-MM-DD.md
+#
+# Run the audit script per docs/audits/HOW-TO.md. Each report is
+# committed to track production state over time.
