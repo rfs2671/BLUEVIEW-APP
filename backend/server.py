@@ -3346,6 +3346,269 @@ async def admin_delete_feature_flag(
     return {"deleted": flag}
 
 
+# ==================== PHASE V2.0 — COMPLIANCE LOGBOOK =================
+#
+# v2 feature, gated behind `v2_logbook` feature flag (E1). Default
+# OFF — every endpoint below returns 404 if the flag isn't enabled
+# for the caller. v1 customers see nothing.
+#
+# Schema + detectors live in backend/lib/logbook/. Endpoints here
+# are thin: feature-flag check → route to the appropriate detector
+# / aggregator → return.
+#
+# Cron tick: nightly_logbook_tick (3 AM ET) — wired in the
+# startup block that registers other crons (~line 23800).
+
+import lib.logbook as _logbook  # local import; see lib/logbook/__init__.py
+
+
+async def _logbook_flag_enabled_for(current_user) -> bool:
+    """Feature flag check used by every logbook endpoint. Returns
+    False if disabled — endpoint converts that to a 404 so
+    flag-off clients can't even probe the endpoint surface."""
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
+    company_id = current_user.get("company_id")
+    return await feature_flags.is_feature_enabled(
+        db, "v2_logbook",
+        user_id=user_id or None,
+        company_id=str(company_id) if company_id else None,
+    )
+
+
+def _logbook_404():
+    """Hide the surface from flag-off callers — 404, not 403,
+    because we don't want unauth signals leaking the existence
+    of v2 features."""
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@api_router.get("/projects/{project_id}/logbook/audit")
+async def get_logbook_audit(
+    project_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Calendar grid view: per-day completeness summary across
+    all logbook categories. Frontend renders this as
+    green/yellow/red day cells.
+
+    Default window: last 30 days through today (inclusive).
+    """
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+
+    # Date range
+    end_d = _logbook.schema.str_to_date(end_date) if end_date else datetime.now(timezone.utc).date()
+    start_d = _logbook.schema.str_to_date(start_date) if start_date else (end_d - timedelta(days=30))
+    if not start_d or not end_d or start_d > end_d:
+        raise HTTPException(status_code=422, detail="Invalid date range")
+
+    cursor = db.logbook_entries.find({
+        "project_id": project_id,
+        "entry_date": {
+            "$gte": _logbook.schema.date_to_str(start_d),
+            "$lte": _logbook.schema.date_to_str(end_d),
+        },
+    })
+    by_day: Dict[str, Dict[str, int]] = {}
+    async for e in cursor:
+        d = e.get("entry_date") or ""
+        bucket = by_day.setdefault(d, {
+            "complete": 0, "missing": 0, "deficient": 0, "total": 0,
+        })
+        st = e.get("status") or ""
+        if st in bucket:
+            bucket[st] += 1
+        bucket["total"] += 1
+
+    # Walk every day in range so the FE can render gaps as "no
+    # data" without inferring.
+    days_out: List[Dict[str, Any]] = []
+    cur = start_d
+    while cur <= end_d:
+        key = _logbook.schema.date_to_str(cur)
+        bucket = by_day.get(key, {
+            "complete": 0, "missing": 0, "deficient": 0, "total": 0,
+        })
+        if bucket["missing"] > 0 or bucket["deficient"] > 0:
+            color = "red" if bucket["missing"] > 0 else "yellow"
+        elif bucket["complete"] > 0:
+            color = "green"
+        else:
+            color = "grey"  # no data
+        days_out.append({"date": key, "color": color, "counts": bucket})
+        cur = cur + timedelta(days=1)
+
+    return {
+        "project_id": project_id,
+        "start_date": _logbook.schema.date_to_str(start_d),
+        "end_date": _logbook.schema.date_to_str(end_d),
+        "days": days_out,
+    }
+
+
+@api_router.get("/projects/{project_id}/logbook/missing")
+async def get_logbook_missing(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+    docs = await db.logbook_entries.find({
+        "project_id": project_id,
+        "status": _logbook.STATUS_MISSING,
+    }).sort("entry_date", -1).limit(500).to_list(500)
+    return {"entries": [serialize_id(d) for d in docs]}
+
+
+@api_router.get("/projects/{project_id}/logbook/deficiencies")
+async def get_logbook_deficiencies(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+    docs = await db.logbook_entries.find({
+        "project_id": project_id,
+        "category": _logbook.CATEGORY_DEFICIENCY,
+    }).sort("entry_date", -1).limit(500).to_list(500)
+    return {"entries": [serialize_id(d) for d in docs]}
+
+
+@api_router.get("/projects/{project_id}/logbook/attestations")
+async def get_logbook_attestations(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+    docs = await db.logbook_entries.find({
+        "project_id": project_id,
+        "category": _logbook.CATEGORY_LL196,
+    }).sort("entry_date", -1).limit(500).to_list(500)
+    return {"entries": [serialize_id(d) for d in docs]}
+
+
+class LL196GenerateRequest(BaseModel):
+    year: int
+    month: int
+
+
+@api_router.post("/projects/{project_id}/logbook/attestations/generate")
+async def generate_ll196_attestation_endpoint(
+    project_id: str,
+    body: LL196GenerateRequest,
+    current_user = Depends(get_current_user),
+):
+    """Trigger LL196 PDF generation for one project + month.
+    Idempotent — re-generation overwrites the R2 object in place
+    and upserts the logbook_entries row."""
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+    if body.month < 1 or body.month > 12:
+        raise HTTPException(status_code=422, detail="month must be 1..12")
+    if body.year < 2020 or body.year > 2100:
+        raise HTTPException(status_code=422, detail="year out of range")
+
+    from lib.logbook.ll196 import generate_ll196_attestation
+    try:
+        entry = await generate_ll196_attestation(
+            db,
+            project_id=project_id,
+            year=body.year,
+            month=body.month,
+            triggered_by_user_id=str(current_user.get("id") or ""),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"entry": serialize_id(dict(entry))}
+
+
+@api_router.get("/projects/{project_id}/logbook/export")
+async def export_logbook(
+    project_id: str,
+    format: str = "pdf",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Render the full audit window as a single PDF for download
+    by compliance staff / inspectors. Streamed inline; no R2
+    persistence — exports are point-in-time snapshots."""
+    if not await _logbook_flag_enabled_for(current_user):
+        _logbook_404()
+    if format != "pdf":
+        raise HTTPException(status_code=422, detail="format must be pdf")
+
+    end_d = _logbook.schema.str_to_date(end_date) if end_date else datetime.now(timezone.utc).date()
+    start_d = _logbook.schema.str_to_date(start_date) if start_date else (end_d - timedelta(days=30))
+    if not start_d or not end_d or start_d > end_d:
+        raise HTTPException(status_code=422, detail="Invalid date range")
+
+    cursor = db.logbook_entries.find({
+        "project_id": project_id,
+        "entry_date": {
+            "$gte": _logbook.schema.date_to_str(start_d),
+            "$lte": _logbook.schema.date_to_str(end_d),
+        },
+    }).sort("entry_date", 1)
+    entries = []
+    async for d in cursor:
+        entries.append(serialize_id(d))
+
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    project_name = (project or {}).get("name", "")
+
+    # Build a minimal HTML rendering — same style language as the
+    # LL196 PDF so the output looks consistent.
+    rows = []
+    for e in entries:
+        rows.append(
+            f"<tr>"
+            f"<td>{e.get('entry_date','')}</td>"
+            f"<td>{e.get('category','')}</td>"
+            f"<td>{e.get('status','')}</td>"
+            f"<td>{(e.get('deficiency_reason') or '').replace('<', '&lt;')[:200]}</td>"
+            f"</tr>"
+        )
+    html = f"""<!doctype html><html><head><meta charset='utf-8'>
+<title>Compliance audit — {project_name}</title>
+<style>
+  body {{ font-family:'Helvetica',sans-serif; padding:32px; }}
+  h1 {{ font-size:22px; margin-bottom:6px; }}
+  .meta {{ color:#555; font-size:12px; margin-bottom:24px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:11px; }}
+  th, td {{ text-align:left; padding:5px 7px; border-bottom:1px solid #e5e7eb; }}
+  th {{ background:#f9fafb; }}
+</style></head><body>
+<h1>Compliance audit — {project_name}</h1>
+<div class='meta'>Period: {_logbook.schema.date_to_str(start_d)} to
+  {_logbook.schema.date_to_str(end_d)} · Entries: {len(entries)}</div>
+<table>
+<thead><tr><th>Date</th><th>Category</th><th>Status</th><th>Notes</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table></body></html>"""
+
+    try:
+        from weasyprint import HTML  # type: ignore
+        pdf_bytes = HTML(string=html).write_pdf()
+    except Exception as e:
+        logger.error(f"[logbook] export weasyprint failed: {e!r}")
+        raise HTTPException(status_code=500, detail="PDF render failed")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="logbook-{project_id}-'
+                f'{_logbook.schema.date_to_str(start_d)}-'
+                f'{_logbook.schema.date_to_str(end_d)}.pdf"'
+            ),
+        },
+    )
+
+
 # ==================== ADMIN USER MANAGEMENT ====================
 
 @api_router.get("/admin/users")
@@ -7857,7 +8120,29 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
-    
+
+    # Phase V2.0: post-save deficiency hook. Gated by the
+    # `v2_logbook` feature flag — flag-off customers see no
+    # behavior change. Wrapped in try/except so a hook bug never
+    # breaks the daily_log save itself.
+    try:
+        if project and await feature_flags.is_feature_enabled(
+            db, "v2_logbook",
+            user_id=str(current_user.get("id") or ""),
+            company_id=str(project.get("company_id") or "") or None,
+        ):
+            from lib.logbook.deficiency import run_deficiency_check_post_save
+            await run_deficiency_check_post_save(
+                db,
+                daily_log=log_dict,
+                project=project,
+            )
+    except Exception as _e:
+        logger.warning(
+            f"[v2_logbook] post-save deficiency hook failed for "
+            f"daily_log={log_dict.get('id')}: {_e!r}",
+        )
+
     return DailyLogResponse(**log_dict)
 
 @api_router.put("/daily-logs/{log_id}")
@@ -23709,6 +23994,29 @@ async def startup_event():
         id='report_email_scheduler',
         replace_existing=True,
     )
+
+    # Phase V2.0 — compliance logbook nightly tick. 3 AM ET so it
+    # runs after the 24h daily-log writing window closes. Both
+    # detectors are idempotent (upsert on the (project, date,
+    # category) unique index) so a tick that overlaps with admin-
+    # triggered runs is safe. Cron-driven, not interval-driven, so
+    # DST shifts are handled by the timezone string.
+    async def _logbook_nightly_tick():
+        try:
+            from lib.logbook.missing_detector import run_missing_detector_for_all_projects
+            from lib.logbook.deficiency import run_deficiency_detector_for_all_projects
+            await run_missing_detector_for_all_projects(db)
+            await run_deficiency_detector_for_all_projects(db)
+        except Exception as e:
+            logger.error(f"[v2_logbook] nightly tick failed: {e!r}", exc_info=True)
+    scheduler.add_job(
+        _logbook_nightly_tick,
+        CronTrigger(hour=3, minute=0, timezone="America/New_York"),
+        id='v2_logbook_nightly_tick',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
@@ -23956,6 +24264,20 @@ async def startup_event():
         keys=[("flag", 1), ("changed_at", -1)],
         name="feature_flag_audit_flag_changed",
     )
+
+    # Phase V2.0 — compliance logbook indexes. Sourced from
+    # lib/logbook/schema.py LOGBOOK_ENTRIES_INDEXES so the spec
+    # lives in one place. The unique index on
+    # (project_id, entry_date, category) enforces the dedupe
+    # guarantee the missing/deficiency detectors rely on for
+    # idempotent re-runs.
+    for _idx_spec in _logbook.LOGBOOK_ENTRIES_INDEXES:
+        await _ensure_index_resilient(
+            db.logbook_entries,
+            keys=_idx_spec["keys"],
+            name=_idx_spec["name"],
+            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
+        )
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
     # interval as the DOB nightly_dob_scan so digest-eligible items
