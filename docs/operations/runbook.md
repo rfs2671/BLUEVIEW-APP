@@ -5,12 +5,17 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-06 (Phase F1)
-**Test count baseline:** 891 backend tests passing.
+**Last reviewed:** 2026-05-06 (Phase E1)
+**Test count baseline:** 931 backend tests passing.
 
-> **See also:** [`backup-restore.md`](./backup-restore.md) — Atlas
-> backup state, restore drill, disaster recovery, migration safety
-> pattern, and the freshness-verification script.
+> **See also:**
+> • [`backup-restore.md`](./backup-restore.md) — Atlas backup, restore drill, DR procedure, migration safety.
+> • [`branching.md`](./branching.md) — main / develop / feature/* strategy, staging environment, Mongo refresh.
+> • [`feature-flags.md`](./feature-flags.md) — runtime flag system, rollout patterns (canary / percentage / kill switch), audit log.
+
+> _(top-of-doc cross-links above were updated for Phase E1; the
+> standalone backup-restore see-also that previously lived here
+> is now in the consolidated list.)_
 
 ---
 

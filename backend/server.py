@@ -3126,6 +3126,226 @@ async def admin_sentry_test(current_user = Depends(get_admin_user)):
     )
 
 
+# ==================== PHASE E1 — FEATURE FLAGS ========================
+#
+# The runtime side of the v2-development infrastructure. Every callable
+# v2 surface check ends up in lib/feature_flags.is_feature_enabled.
+# Schema, admin CRUD, and audit-log writes live here.
+#
+# Schema (collection: feature_flags):
+#   {
+#     flag: str,                      // unique, indexed
+#     enabled_globally: bool,         // default false
+#     enabled_for_companies: [str],   // company _ids
+#     enabled_for_users: [str],       // user _ids
+#     enabled_percentage: int,        // 0..100, default 0
+#     description: str,
+#     created_at, updated_at
+#   }
+#
+# Audit log (collection: feature_flag_audit_log):
+#   { flag, action: created|updated|deleted, before, after,
+#     changed_by_user_id, changed_at }
+#
+# Admin endpoints are caught by the C2 catch-all rate-limit rule
+# /api/admin/{rest:path} — 60 req/min/IP — so no extra rate-limit
+# config needed here.
+
+import lib.feature_flags as feature_flags  # local import; see lib/feature_flags.py
+
+
+class FeatureFlagCreate(BaseModel):
+    flag: str
+    enabled_globally: bool = False
+    enabled_for_companies: List[str] = []
+    enabled_for_users: List[str] = []
+    enabled_percentage: int = 0
+    description: str = ""
+
+
+class FeatureFlagUpdate(BaseModel):
+    enabled_globally: Optional[bool] = None
+    enabled_for_companies: Optional[List[str]] = None
+    enabled_for_users: Optional[List[str]] = None
+    enabled_percentage: Optional[int] = None
+    description: Optional[str] = None
+
+
+async def _write_flag_audit(
+    *,
+    flag: str,
+    action: str,
+    before: Optional[dict],
+    after: Optional[dict],
+    changed_by_user_id: str,
+) -> None:
+    """Best-effort audit log write. Never blocks the caller — a
+    missing audit row is preferable to failing an admin write."""
+    try:
+        await db.feature_flag_audit_log.insert_one({
+            "flag": flag,
+            "action": action,
+            "before": serialize_id(dict(before)) if before else None,
+            "after": serialize_id(dict(after)) if after else None,
+            "changed_by_user_id": changed_by_user_id,
+            "changed_at": datetime.now(timezone.utc),
+        })
+    except Exception as _e:
+        logger.warning(
+            f"feature_flag_audit_log insert skipped for "
+            f"flag={flag!r} action={action!r}: {_e}",
+        )
+
+
+@api_router.get("/feature-flags/me")
+async def get_my_feature_flags(current_user = Depends(get_current_user)):
+    """Return {flag: bool} for every flag in the system, evaluated
+    against the current user. The frontend FeatureFlagsProvider
+    calls this once at app boot + on login/logout to hydrate its
+    cache.
+
+    Auth-only (any authenticated user). The response NEVER includes
+    rollout config (enabled_percentage etc.) — clients only get
+    the resolved bool, not the rules. That's by design: clients
+    shouldn't be reasoning about percentage rollouts; they should
+    react to a yes/no.
+    """
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
+    company_id = current_user.get("company_id")
+    flags = await feature_flags.resolve_flags_for_user(
+        db, user_id=user_id or None,
+        company_id=str(company_id) if company_id else None,
+    )
+    return {"flags": flags}
+
+
+@api_router.get("/admin/feature-flags")
+async def admin_list_feature_flags(_admin = Depends(get_admin_user)):
+    """List all feature flags with full rollout config. Admin/owner only."""
+    docs = await db.feature_flags.find({}).sort("flag", 1).to_list(500)
+    return {"flags": [serialize_id(d) for d in docs]}
+
+
+@api_router.post("/admin/feature-flags")
+async def admin_create_feature_flag(
+    body: FeatureFlagCreate,
+    admin = Depends(get_admin_user),
+):
+    """Create a new feature flag. Defaults to disabled (no
+    accidental rollout from a typo'd POST). The unique index on
+    `flag` rejects duplicates."""
+    try:
+        normalized = feature_flags.normalize_flag_payload(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    existing = await db.feature_flags.find_one({"flag": normalized["flag"]})
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"flag {normalized['flag']!r} already exists",
+        )
+
+    now = datetime.now(timezone.utc)
+    doc = dict(normalized)
+    doc["created_at"] = now
+    doc["updated_at"] = now
+    await db.feature_flags.insert_one(doc)
+
+    # Cache invalidate so any prior negative-cache for this flag
+    # (we cache "flag absent" too) doesn't keep returning False
+    # for the next 60s.
+    feature_flags.cache_invalidate(normalized["flag"])
+
+    await _write_flag_audit(
+        flag=normalized["flag"],
+        action="created",
+        before=None,
+        after=doc,
+        changed_by_user_id=str(admin.get("id") or ""),
+    )
+
+    return serialize_id(dict(doc))
+
+
+@api_router.patch("/admin/feature-flags/{flag}")
+async def admin_update_feature_flag(
+    flag: str,
+    body: FeatureFlagUpdate,
+    admin = Depends(get_admin_user),
+):
+    """Update rollout config. PATCH semantics — only fields
+    present in the body are touched. Cache is invalidated on
+    successful write so the next /me read sees the new shape."""
+    existing = await db.feature_flags.find_one({"flag": flag})
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"flag {flag!r} not found")
+
+    set_ops: dict = {}
+    if body.enabled_globally is not None:
+        set_ops["enabled_globally"] = bool(body.enabled_globally)
+    if body.enabled_for_companies is not None:
+        set_ops["enabled_for_companies"] = [str(c) for c in body.enabled_for_companies if c]
+    if body.enabled_for_users is not None:
+        set_ops["enabled_for_users"] = [str(u) for u in body.enabled_for_users if u]
+    if body.enabled_percentage is not None:
+        pct = int(body.enabled_percentage)
+        if pct < 0 or pct > 100:
+            raise HTTPException(
+                status_code=422,
+                detail="enabled_percentage must be in [0, 100]",
+            )
+        set_ops["enabled_percentage"] = pct
+    if body.description is not None:
+        set_ops["description"] = body.description.strip()
+
+    if not set_ops:
+        raise HTTPException(status_code=422, detail="no fields to update")
+
+    set_ops["updated_at"] = datetime.now(timezone.utc)
+    await db.feature_flags.update_one(
+        {"flag": flag},
+        {"$set": set_ops},
+    )
+    feature_flags.cache_invalidate(flag)
+
+    after = await db.feature_flags.find_one({"flag": flag})
+    await _write_flag_audit(
+        flag=flag,
+        action="updated",
+        before=existing,
+        after=after,
+        changed_by_user_id=str(admin.get("id") or ""),
+    )
+    return serialize_id(dict(after)) if after else {}
+
+
+@api_router.delete("/admin/feature-flags/{flag}")
+async def admin_delete_feature_flag(
+    flag: str,
+    admin = Depends(get_admin_user),
+):
+    """Hard delete. Audit row records the prior shape so the
+    deletion can be reversed by re-creating the flag from the
+    audit log row (manual operation; not exposed as an endpoint
+    on purpose)."""
+    existing = await db.feature_flags.find_one({"flag": flag})
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"flag {flag!r} not found")
+
+    await db.feature_flags.delete_one({"flag": flag})
+    feature_flags.cache_invalidate(flag)
+
+    await _write_flag_audit(
+        flag=flag,
+        action="deleted",
+        before=existing,
+        after=None,
+        changed_by_user_id=str(admin.get("id") or ""),
+    )
+    return {"deleted": flag}
+
+
 # ==================== ADMIN USER MANAGEMENT ====================
 
 @api_router.get("/admin/users")
@@ -23718,6 +23938,23 @@ async def startup_event():
         db.digest_queue,
         keys=[("user_id", 1), ("scheduled_send_at", 1), ("status", 1)],
         name="digest_queue_user_sched",
+    )
+
+    # Phase E1 — feature flags. Unique index on `flag` enforces
+    # one document per flag name; the admin POST endpoint relies
+    # on this to reject duplicates with a 409.
+    await _ensure_index_resilient(
+        db.feature_flags,
+        keys=[("flag", 1)],
+        name="feature_flags_flag_unique",
+        unique=True,
+    )
+    # Audit log lookups by flag (newest first) for the
+    # "who changed what when" review query in runbook §13.
+    await _ensure_index_resilient(
+        db.feature_flag_audit_log,
+        keys=[("flag", 1), ("changed_at", -1)],
+        name="feature_flag_audit_flag_changed",
     )
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same

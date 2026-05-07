@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
+import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 
@@ -276,9 +277,11 @@ export default function RootLayout() {
         <ThemeProvider>
           <DatabaseProvider>
             <AuthProvider>
-              <ToastProvider>
-                <AppShell />
-              </ToastProvider>
+              <FeatureFlagsProvider>
+                <ToastProvider>
+                  <AppShell />
+                </ToastProvider>
+              </FeatureFlagsProvider>
             </AuthProvider>
           </DatabaseProvider>
         </ThemeProvider>
