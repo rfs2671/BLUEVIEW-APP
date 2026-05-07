@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-06 (Phase E1)
-**Test count baseline:** 931 backend tests passing.
+**Last reviewed:** 2026-05-07 (Phase C2.2)
+**Test count baseline:** 966 backend tests passing.
 
 > **See also:**
 > • [`backup-restore.md`](./backup-restore.md) — Atlas backup, restore drill, DR procedure, migration safety.
@@ -33,7 +33,8 @@
 10. [Sentry source maps](#10-sentry-source-maps)
 11. [Rate limiting](#11-rate-limiting)
 12. [WhatsApp voice note ingestion](#12-whatsapp-voice-note-ingestion)
-13. [Environment variables reference](#13-environment-variables-reference)
+13. [Dependency hygiene](#13-dependency-hygiene)
+14. [Environment variables reference](#14-environment-variables-reference)
 
 ---
 
@@ -1217,7 +1218,126 @@ function shape and inject it.
 
 ---
 
-## 13. Environment variables reference
+## 13. Dependency hygiene
+
+Every change to `requirements.txt` MUST resolve cleanly in a
+fresh venv before it lands on `main`. Phase C2.2 wires two
+gates to enforce this; both are mandatory.
+
+### 13.1 — The C2 → C2.1 incident
+
+C2 (commit `d157376`) added `slowapi` + `limits` to the
+requirements list as part of the rate-limit middleware. The
+`limits` package caps `packaging<25, >=21` transitively. The
+existing `packaging==25.0` hard pin already in the file
+contradicted that cap. Pip's resolver returns
+`ResolutionImpossible` on the conflict.
+
+The conflict was invisible for **two phases** (C3 and F1
+both shipped with the broken `requirements.txt`) because:
+
+- Every developer machine had `packaging==25.0` already
+  installed in its venv before `limits` was added. Pip never
+  had to re-resolve; it simply skipped the package and the
+  tests ran fine.
+- CI runs `pytest` against a pre-warmed venv, not from a
+  clean image, so it inherited the same false-clean state.
+- Railway is the ONLY environment that runs
+  `pip install -r requirements.txt` from a fresh Docker layer.
+  When Railway finally tried to redeploy, the build failed at
+  the `pip install` step before the FastAPI process could
+  boot. **Production went down.**
+
+C2.1 (commit `453040c`) was the immediate fix: loosen the
+pin to `packaging>=22,<25`. Pip resolves to `packaging-24.2`
++ `limits-4.8.0`. No code change required; nothing in
+backend/ imports `packaging` directly.
+
+### 13.2 — Pre-commit hook (local gate)
+
+`.githooks/pre-commit`:
+
+- Detects when `requirements.txt` (root) or
+  `backend/requirements.txt` is staged for commit.
+- If not staged → exits silently (< 1s overhead on normal
+  commits).
+- If staged → builds a temp venv, runs
+  `pip install --dry-run -r <path>`, blocks the commit on
+  resolver failure with the conflict message embedded, allows
+  it on success. Total runtime: ~5–15 seconds (varies with
+  pip's network speed).
+
+**Enable it locally:**
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Idempotent. Sets `git config core.hooksPath .githooks`. Run
+once per clone. Verify with:
+
+```bash
+git config --get core.hooksPath
+# expected: .githooks
+```
+
+### 13.3 — GitHub Actions (merge gate)
+
+`.github/workflows/check-requirements.yml` runs the same
+clean-venv resolution check on every PR that touches
+`requirements.txt`. The path filter keeps it from running on
+PRs that don't touch deps (most of them). The check appears
+as a required status on the PR; resolution failures block
+the merge.
+
+The pre-commit hook is the dev's safety net; the workflow is
+the merge gate for anyone who's disabled their hooks or
+committed via the GitHub web UI.
+
+### 13.4 — When the hook fires
+
+What you see locally if you stage a conflict:
+
+```
+[pre-commit] requirements.txt staged — running dependency-resolution check
+[pre-commit] ✗ requirements.txt has a dependency conflict.
+[pre-commit]   (clean-venv resolution failed in 7s)
+
+----- pip resolver output (last 30 lines) -----
+The conflict is caused by:
+    The user requested packaging==25.0
+    limits 4.8.0 depends on packaging<25 and >=21
+    [...]
+ERROR: ResolutionImpossible
+----- end -----
+```
+
+Read the conflict block, fix the requirements.txt edit (loosen
+a pin, swap to a range, drop the conflicting addition), re-stage,
+re-commit.
+
+### 13.5 — Hard rule: avoid hard pins on transitive deps
+
+The C2.1 root cause was that `packaging==25.0` was a passive
+lock — written into the file by whatever pip happened to
+resolve at lock time, NOT because we needed any 25.x feature.
+When a sibling dep widened its incompat range, the hard pin
+broke the tree.
+
+Use ranges for transitives:
+
+| Pin shape | When |
+|---|---|
+| `foo==X.Y.Z` (hard pin) | We depend on a SPECIFIC behavior (e.g. a private API, a known-good security version). Document the reason in a comment. |
+| `foo>=X,<Y` (range) | Default for transitive deps. Lets sibling packages widen freely without breaking the tree. |
+| `foo>=X` (open upper) | Only for trusted-stable APIs (e.g. our own internal libs). Risky for third-party — a breaking 2.0 release could ship overnight. |
+
+Audit the existing pins quarterly. Any hard pin without a
+comment explaining WHY is a candidate to widen to a range.
+
+---
+
+## 14. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
