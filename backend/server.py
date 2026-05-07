@@ -20605,12 +20605,129 @@ async def _process_whatsapp_message(payload: dict):
             # Unknown or unregistered number — stay silent
             return
 
-        # Transcribe audio if present
+        # Transcribe audio if present.
+        # Phase F1: voice notes go through the orchestration module
+        # (Whisper → no-speech / too-short check → translate → cost
+        # telemetry). Audio bytes are dropped immediately after
+        # Whisper returns; never written to R2 or disk. Idempotency
+        # is keyed by message_id via the whatsapp_voice_events
+        # collection — re-delivery of the same WaAPI webhook does
+        # NOT re-process or re-write.
         body = parsed["body"]
+        voice_telemetry = None
         if parsed["has_audio"]:
-            audio_bytes = await download_audio(parsed)
-            if audio_bytes:
-                body = await transcribe_audio(audio_bytes)
+            voice_message_id = parsed.get("message_id") or ""
+            already_processed = None
+            if voice_message_id:
+                try:
+                    already_processed = await db.whatsapp_voice_events.find_one(
+                        {"message_id": voice_message_id},
+                    )
+                except Exception:
+                    already_processed = None
+
+            if already_processed:
+                # Replay path — use the previously-computed transcript
+                # so re-delivered webhooks deterministically resolve
+                # to the same downstream behavior.
+                body = already_processed.get("english_transcript") or ""
+                voice_telemetry = already_processed.get("telemetry") or {}
+                if not body:
+                    # Original processing short-circuited; respond
+                    # with the same user-facing copy and skip extraction.
+                    user_reply = already_processed.get("user_reply") or ""
+                    if user_reply:
+                        await send_whatsapp_message(parsed["from"], user_reply)
+                    return
+            else:
+                audio_bytes = await download_audio(parsed)
+                if not audio_bytes:
+                    # WaAPI fetch failed (download_audio handles its own
+                    # retries internally; if it returns None we tell the
+                    # user to retype as text). Persist the failure for
+                    # idempotency + telemetry.
+                    user_reply = (
+                        "Voice note couldn't be processed, please retype "
+                        "as text."
+                    )
+                    try:
+                        await db.whatsapp_voice_events.insert_one({
+                            "message_id": voice_message_id,
+                            "company_id": None,
+                            "sender":     sender,
+                            "english_transcript": "",
+                            "original_transcript": "",
+                            "language_detected": None,
+                            "no_speech_prob": None,
+                            "user_reply": user_reply,
+                            "error_kind": "download_failed",
+                            "telemetry":  {"audio_bytes_size": 0},
+                            "received_at": datetime.now(timezone.utc),
+                        })
+                    except Exception as _e:
+                        logger.warning(
+                            f"voice event insert (download fail) skipped: {_e}",
+                        )
+                    if _SENTRY_AVAILABLE and sentry_sdk is not None:
+                        try:
+                            sentry_sdk.capture_message(
+                                f"voice_ingest_download_failed message_id="
+                                f"{voice_message_id}",
+                                level="warning",
+                            )
+                        except Exception:
+                            pass
+                    await send_whatsapp_message(parsed["from"], user_reply)
+                    return
+
+                from lib.voice_ingest import process_voice_note as _process_voice
+                vresult = await _process_voice(
+                    audio_bytes,
+                    openai_api_key=OPENAI_API_KEY,
+                    sentry_capture=(
+                        (lambda msg, level="warning":
+                            sentry_sdk.capture_message(msg, level=level))
+                        if _SENTRY_AVAILABLE and sentry_sdk is not None
+                        else None
+                    ),
+                )
+                # Drop the audio buffer — process_voice_note has
+                # already extracted everything it needs from it.
+                # Belt + suspenders against any future caller that
+                # reads `audio_bytes` after this point.
+                del audio_bytes
+
+                voice_telemetry = vresult.telemetry
+                # Persist the audit row for both success and failure.
+                try:
+                    await db.whatsapp_voice_events.insert_one({
+                        "message_id":         voice_message_id,
+                        "company_id":         None,  # filled below if extraction runs
+                        "sender":             sender,
+                        "english_transcript": vresult.english_transcript,
+                        "original_transcript": vresult.original_transcript,
+                        "language_detected":  vresult.language_detected,
+                        "no_speech_prob":     vresult.no_speech_prob,
+                        "user_reply":         vresult.user_reply or "",
+                        "error_kind":         vresult.error_kind,
+                        "telemetry":          voice_telemetry,
+                        "received_at":        datetime.now(timezone.utc),
+                    })
+                except Exception as _e:
+                    logger.warning(
+                        f"voice event insert skipped: {_e}",
+                    )
+
+                if not vresult.ok:
+                    # Short-circuit (low confidence / Whisper failure).
+                    # Reply with the user-facing copy and skip extraction.
+                    if vresult.user_reply:
+                        await send_whatsapp_message(
+                            parsed["from"], vresult.user_reply,
+                        )
+                    return
+
+                body = vresult.english_transcript
 
         if not body:
             return
@@ -20638,6 +20755,15 @@ async def _process_whatsapp_message(payload: dict):
             reply = await _handle_material_status(project_id)
         else:
             return
+
+        # Phase F1 — voice-note acknowledgment UX (path B). When the
+        # input arrived as audio, append the explicit confirmation
+        # cue so the user can sanity-check the extraction. Text
+        # messages stay unchanged.
+        if parsed.get("has_audio") and reply:
+            reply = reply.rstrip() + (
+                "\n\nReply CORRECT to confirm or describe what's wrong."
+            )
 
         await send_whatsapp_message(parsed["from"], reply)
 

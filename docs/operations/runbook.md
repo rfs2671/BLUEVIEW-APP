@@ -5,8 +5,8 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-05 (Phase C3)
-**Test count baseline:** 866 backend tests passing.
+**Last reviewed:** 2026-05-06 (Phase F1)
+**Test count baseline:** 891 backend tests passing.
 
 > **See also:** [`backup-restore.md`](./backup-restore.md) — Atlas
 > backup state, restore drill, disaster recovery, migration safety
@@ -27,7 +27,8 @@
 9. [Sentry — how to read events](#9-sentry--how to read events)
 10. [Sentry source maps](#10-sentry-source-maps)
 11. [Rate limiting](#11-rate-limiting)
-12. [Environment variables reference](#12-environment-variables-reference)
+12. [WhatsApp voice note ingestion](#12-whatsapp-voice-note-ingestion)
+13. [Environment variables reference](#13-environment-variables-reference)
 
 ---
 
@@ -1052,7 +1053,166 @@ swap to a Redis-backed limiter (slowapi's MovingWindowRateLimiter
 
 ---
 
-## 12. Environment variables reference
+## 12. WhatsApp voice note ingestion
+
+Phase F1 wired voice notes into the same WhatsApp agent that
+already processed text. A voice note webhook arrives → audio
+bytes are fetched once via WaAPI's `download-media` endpoint →
+Whisper transcribes (capturing `no_speech_prob` so we can detect
+silence/background noise) → GPT-4o-mini translates to English →
+the existing extraction layer runs as if the input were text.
+Audio is **never** persisted: no R2, no disk, no logging of the
+bytes. The bytes are released as soon as Whisper returns.
+
+### 12.1 — Pipeline at a glance
+
+```
+WaAPI inbound webhook (message.type ∈ {"ptt","audio"})
+    │
+    ▼
+download_audio (server.py)            ← WaAPI POST + decrypt if needed
+    │  ogg/opus bytes
+    ▼
+process_voice_note (lib/voice_ingest.py)
+    │  ┌── Whisper verbose_json
+    │  │     captures: transcript, language, duration_sec, no_speech_prob
+    │  ├── short-circuit if  len(transcript) < 5  OR  no_speech_prob > 0.6
+    │  │     → reply "I didn't catch that — can you resend?"  + skip extraction
+    │  └── translate_to_english (GPT-4o-mini)
+    │        falls back to original transcript on API failure
+    ▼
+extraction layer (existing, unchanged)
+    ▼
+agent reply  +  "\n\nReply CORRECT to confirm or describe what's wrong."
+```
+
+### 12.2 — Idempotency
+
+WaAPI may re-deliver a webhook (network blip, partial 5xx, etc.).
+The server.py call site checks the `whatsapp_voice_events`
+collection by `message_id` BEFORE downloading audio:
+
+  • Hit (already processed) → reuse the prior English transcript
+    for downstream extraction OR re-send the prior user-facing
+    error reply. No second Whisper call, no second translate
+    call, no second audit row.
+  • Miss → fetch + transcribe + translate + insert audit row.
+
+Each `whatsapp_voice_events` row carries:
+
+```
+{ message_id, sender, english_transcript, original_transcript,
+  language_detected, no_speech_prob, user_reply, error_kind,
+  telemetry: {whisper_*, translate_*, audio_bytes_size, ...},
+  received_at }
+```
+
+### 12.3 — Cost telemetry + projections
+
+OpenAI public pricing as of 2026-Q1 (verify quarterly; PRICING
+constant in `lib/voice_ingest.py` is the single source of truth):
+
+  • Whisper:     **$0.006 / audio minute**, billed in 1-second granularity.
+  • GPT-4o-mini: **$0.150 / 1M input tokens**, **$0.600 / 1M output tokens**.
+
+A typical 30-second jobsite voice note hits:
+
+  • Whisper:    30s ÷ 60 × $0.006 = **$0.003**
+  • Translate:  ~150 tokens in / ~150 tokens out ≈ **$0.0001125**
+  • Per-note total: **≈ $0.0031**
+
+Cost projection at a steady cadence of 20 voice notes per PM per
+working day (~22 weekdays/month):
+
+| PMs | Daily notes | Monthly notes | Monthly Whisper $ | Monthly translate $ | Monthly total $ |
+|---|---|---|---|---|---|
+| 1 | 20 | 440 | $1.32 | $0.05 | **$1.37** |
+| 10 | 200 | 4,400 | $13.20 | $0.50 | **$13.70** |
+| 100 | 2,000 | 44,000 | $132 | $5 | **$137** |
+
+Assumptions: 30s avg voice length; ~150 tokens per direction in
+translate. Real numbers will skew if voice notes are routinely
+longer or non-English (translate token count rises). Run a
+quarterly check by aggregating `whatsapp_voice_events.telemetry`
+sums per company.
+
+### 12.4 — Aggregating costs per company per month
+
+```
+> db.whatsapp_voice_events.aggregate([
+    { $match: {
+        received_at: {
+          $gte: ISODate("2026-05-01"), $lt: ISODate("2026-06-01")
+        },
+        "telemetry.whisper_cost_usd": { $exists: true }
+    }},
+    { $lookup: {
+        from: "whatsapp_contacts", localField: "sender",
+        foreignField: "phone", as: "_c"
+    }},
+    { $unwind: { path: "$_c", preserveNullAndEmptyArrays: true } },
+    { $group: {
+        _id: "$_c.company_id",
+        notes: { $sum: 1 },
+        whisper_usd: { $sum: "$telemetry.whisper_cost_usd" },
+        translate_usd: { $sum: "$telemetry.translate_cost_usd" },
+        total_usd: { $sum: {
+          $add: [
+            "$telemetry.whisper_cost_usd",
+            "$telemetry.translate_cost_usd"
+          ]
+        }}
+    }},
+    { $sort: { total_usd: -1 } }
+  ])
+```
+
+Use this for monthly billing review. Companies whose voice cost
+materially exceeds their plan tier are candidates for tier-up
+or per-overage charge per the billing model.
+
+### 12.5 — Common error patterns
+
+When Sentry surfaces a `voice_ingest_*` warning:
+
+- **`voice_ingest_whisper_failed`** — OpenAI 5xx or timeout.
+  The orchestrator already retried once; if it surfaces here,
+  Whisper's actually flapping. Check Sentry's "first seen"
+  timestamp against OpenAI's status page. Soft-fail: the user
+  got "Voice note couldn't be processed, please retype as text."
+- **`voice_ingest_download_failed`** — WaAPI's `download-media`
+  returned no usable bytes. Most common cause: the messageId
+  passed wasn't the SERIALIZED form (per Step 1 verification —
+  WaAPI requires `false_chatId_hash_sender@lid`, not the short
+  hash). Inspect `whatsapp_audio_probe` collection for the
+  exact response WaAPI returned.
+- **High `no_speech_prob` rate** — if `whatsapp_voice_events`
+  shows >20% of voice notes shorting on `no_speech_prob > 0.6`,
+  the threshold may be too aggressive for jobsite background
+  noise. Re-tune `NO_SPEECH_PROB_THRESHOLD` in
+  `lib/voice_ingest.py` (currently 0.6, conservative).
+
+### 12.6 — When to add new external models
+
+If OpenAI deprecates Whisper or the org swaps to a self-hosted
+ASR (`faster-whisper`, `whisperX`, etc.):
+
+1. The `whisper_fn` parameter on `process_voice_note` is the
+   injection point. Pass a function with the same signature
+   that returns a `WhisperResult` and the orchestrator works
+   unchanged.
+2. Update `PRICING` constants in `lib/voice_ingest.py` if the
+   per-minute rate differs.
+3. Update the cost projection table in §12.3 to match.
+
+The orchestrator pattern (whisper_fn / translate_fn injection)
+is specifically for this future swap. Don't rewrite the
+orchestrator — wrap a new ASR / translator behind the same
+function shape and inject it.
+
+---
+
+## 13. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
@@ -1080,6 +1240,10 @@ ones here when you wire them.
 | `RAILWAY_GIT_COMMIT_SHA` | backend | auto | Set automatically by Railway. Used as Sentry release tag. |
 | `R2_*` | backend | yes (for files) | Cloudflare R2 credentials for project file storage. |
 | `QWEN_API_KEY` | backend | no | OCR backend for COI uploads. |
+| `OPENAI_API_KEY` | backend | yes (for voice ingest) | Powers Whisper transcription + GPT-4o-mini translation in the WhatsApp voice pipeline (Phase F1). Without it, voice notes still get downloaded but the orchestrator returns a "couldn't process" reply and skips extraction. See Section 12. |
+| `WAAPI_BASE_URL` | backend | no | WaAPI base URL. Defaults to `https://waapi.app/api/v1`. |
+| `WAAPI_INSTANCE_ID` | backend | yes (for WhatsApp) | WaAPI instance numeric id. |
+| `WAAPI_TOKEN` | backend | yes (for WhatsApp) | WaAPI Bearer JWT token. |
 | `EXPO_PUBLIC_API_URL` | frontend | yes | Backend API base URL. Without it the SPA can't talk to the API. |
 | `EXPO_PUBLIC_SENTRY_DSN` | frontend | no | Sentry frontend project DSN. Missing → error tracking disabled. |
 | `EXPO_PUBLIC_ENVIRONMENT` | frontend | no | Frontend Sentry environment tag. Falls back to `NEXT_PUBLIC_ENVIRONMENT`, then `NODE_ENV`, then `"development"`. |
