@@ -5,13 +5,17 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-06 (Phase E1)
-**Test count baseline:** 931 backend tests passing.
+**Last reviewed:** 2026-05-07 (Phase V2.0 — feature/v2-logbook)
+**Test count baseline:** 1020 backend tests passing
+(966 prior on develop + 54 new V2.0).
+Production (`main`) is at 996 tests; the develop baseline excludes the
+main-only C2.1/C2.2 hotfixes.
 
 > **See also:**
 > • [`backup-restore.md`](./backup-restore.md) — Atlas backup, restore drill, DR procedure, migration safety.
 > • [`branching.md`](./branching.md) — main / develop / feature/* strategy, staging environment, Mongo refresh.
 > • [`feature-flags.md`](./feature-flags.md) — runtime flag system, rollout patterns (canary / percentage / kill switch), audit log.
+> • [`../features/v2-logbook.md`](../features/v2-logbook.md) — V2.0 compliance logbook (feature/v2-logbook branch, gated by `v2_logbook` flag). Operational notes below in §14.
 
 > _(top-of-doc cross-links above were updated for Phase E1; the
 > standalone backup-restore see-also that previously lived here
@@ -33,7 +37,8 @@
 10. [Sentry source maps](#10-sentry-source-maps)
 11. [Rate limiting](#11-rate-limiting)
 12. [WhatsApp voice note ingestion](#12-whatsapp-voice-note-ingestion)
-13. [Environment variables reference](#13-environment-variables-reference)
+13. [V2.0 — Compliance logbook (operational notes)](#13-v20--compliance-logbook-operational-notes)
+14. [Environment variables reference](#14-environment-variables-reference)
 
 ---
 
@@ -1217,7 +1222,136 @@ function shape and inject it.
 
 ---
 
-## 13. Environment variables reference
+## 13. V2.0 — Compliance logbook (operational notes)
+
+> Full feature documentation: [`../features/v2-logbook.md`](../features/v2-logbook.md).
+> This section covers what the on-call operator needs to know
+> when something goes sideways with the logbook surface.
+
+### 13.1 — How to confirm the feature is OFF (production)
+
+Default: `v2_logbook` flag absent from `feature_flags` collection
+→ `is_feature_enabled` returns False → endpoints 404, FE returns
+null. v1 customers see nothing.
+
+```js
+// In Mongo:
+db.feature_flags.findOne({flag: "v2_logbook"})
+// expected: null  (or {enabled_globally: false} after creation)
+```
+
+If a v1 customer reports seeing a v2 surface, check the audit
+log:
+
+```js
+db.feature_flag_audit_log.find({flag: "v2_logbook"})
+  .sort({changed_at: -1}).limit(10)
+```
+
+### 13.2 — How to roll out per `feature-flags.md` patterns
+
+```bash
+# 1. Create the flag (default OFF — first-touch is benign).
+curl -X POST https://api.levelog.com/api/admin/feature-flags \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"flag":"v2_logbook","description":"Compliance logbook system"}'
+
+# 2. Self-test: enable for the operator's own user_id only.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_logbook \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled_for_users":["<operator-user-id>"]}'
+
+# 3. Canary: BLUEVIEW.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_logbook \
+  -d '{"enabled_for_companies":["<blueview-company-id>"]}'
+
+# 4. Percentage rollout.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_logbook \
+  -d '{"enabled_percentage": 10}'   # then 50, then 100
+
+# 5. Kill switch (if anything goes sideways at any rollout step).
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_logbook \
+  -d '{"enabled_globally": false, "enabled_percentage": 0,
+       "enabled_for_companies": [], "enabled_for_users": []}'
+```
+
+Cache invalidates within 60s; the next `/api/feature-flags/me`
+read picks up the new state.
+
+### 13.3 — What the nightly tick does
+
+Cron job `v2_logbook_nightly_tick` runs at 3 AM ET. Two phases:
+
+  1. `run_missing_detector_for_all_projects(db)` — fills
+     `logbook_entries` with `status=missing` for every weekday
+     gap in `db.daily_logs`.
+  2. `run_deficiency_detector_for_all_projects(db)` — re-runs
+     the rules engine against the last 30 days of daily logs.
+
+Both are idempotent via the `(project_id, entry_date, category)`
+unique index. Re-runs produce no duplicates.
+
+If the tick fails, check Sentry first — the wrapper catches any
+exception and logs to `logger.error` (the Sentry integration
+captures level=error). Common failures:
+
+- Index missing — `_ensure_index_resilient` failed at startup.
+  Confirm via `db.logbook_entries.getIndexes()`.
+- Project query slow — too many active projects without an
+  `is_deleted` index. Look at the existing
+  `db.projects.getIndexes()`.
+
+### 13.4 — How to manually trigger the missing detector
+
+The nightly tick is the production path; for one-off operator
+runs:
+
+```python
+# In a Python REPL on Railway:
+from server import db
+from lib.logbook.missing_detector import run_missing_detector_for_all_projects
+import asyncio
+result = asyncio.run(run_missing_detector_for_all_projects(db))
+print(result)
+# {'projects_scanned': N, 'missing_entries_written': M, 'errors': K}
+```
+
+### 13.5 — How to manually trigger an LL196 attestation
+
+The endpoint is admin-callable per project per month:
+
+```bash
+curl -X POST \
+  https://api.levelog.com/api/projects/<project-id>/logbook/attestations/generate \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"year": 2026, "month": 5}'
+```
+
+R2 key is deterministic (`ll196/{company_id}/{project_id}/YYYY-MM.pdf`)
+so re-generation overwrites the prior PDF in place.
+
+### 13.6 — Common operator questions
+
+- **"Why does my brand-new project show 30 days of missing
+  entries?"** It doesn't. The `created_at` floor in
+  `detect_missing_for_project` clamps the start date to the
+  project's creation date. Pre-creation days are never flagged.
+- **"My project is on a 7-day-a-week schedule and the missing
+  detector is wrong."** Add `weekend_work: true` to the project
+  doc; the detector picks it up on the next tick.
+- **"The kill switch is on but I still see v2 in the FE."** The
+  FE flag map is per-session and the `useFeatureFlag` hook reads
+  from it without re-fetching. A logged-in user keeps the prior
+  state until they log out + back in (or call
+  `validateSession`). If you need an immediate flip, push a
+  notification asking affected users to log out and back in.
+
+---
+
+## 14. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
