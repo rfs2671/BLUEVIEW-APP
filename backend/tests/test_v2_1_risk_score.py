@@ -1170,9 +1170,18 @@ class TestFrontendRiskScoreCard(unittest.TestCase):
 
 
 class TestProjectDetailMount(unittest.TestCase):
-    """RiskScoreCard must be imported AND rendered in
-    project/[id].jsx — otherwise the gating works but no v2
-    customer ever sees the score."""
+    """A v2 risk-score surface MUST be mounted on the project
+    detail page — otherwise the gating works but no v2 customer
+    ever sees the score.
+
+    V2.1 originally pinned `<RiskScoreCard …/>`. V2.1.2 redesigned
+    the mount to `<RiskScoreCircle …/>` (compact gauge that opens
+    a side drawer); the original RiskScoreCard.jsx file is kept
+    on disk as a deprecated reference. These tests now track the
+    redesigned component to keep the v2-mount invariant alive.
+    The deeper redesign-specific contracts (no full-width card,
+    deprecation comment, drawer behavior, etc.) live in
+    test_v2_1_2_risk_score_redesign.py."""
 
     @classmethod
     def setUpClass(cls):
@@ -1182,15 +1191,19 @@ class TestProjectDetailMount(unittest.TestCase):
         )
 
     def test_imports_risk_score_card(self):
-        self.assertIn("import RiskScoreCard", self.text)
+        # Was: `import RiskScoreCard`. Post-V2.1.2: the new
+        # circle component is imported in the same role.
+        self.assertIn("import RiskScoreCircle", self.text)
 
     def test_mounts_risk_score_card(self):
-        self.assertIn("<RiskScoreCard", self.text)
+        # Was: `<RiskScoreCard`. Post-V2.1.2: the circle is the
+        # mounted surface.
+        self.assertIn("<RiskScoreCircle", self.text)
 
     def test_passes_projectid_prop(self):
-        # Mount must include projectId={projectId} so the card can
-        # fetch its data.
-        idx = self.text.find("<RiskScoreCard")
+        # Mount must include projectId={projectId} so the
+        # component can fetch its score.
+        idx = self.text.find("<RiskScoreCircle")
         close = self.text.find("/>", idx)
         snippet = self.text[idx:close + 2]
         self.assertIn("projectId={projectId}", snippet)
