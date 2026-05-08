@@ -438,7 +438,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
   },
   innerContainer: {
-    width: '100%',
+    // Phase V2.1.4 — pill sizes to content. Was `width: '100%'`
+    // which stretched the pill to the full container width and
+    // left visual empty space after the last nav item ("Settings").
+    // alignSelf:'center' lets the parent's alignItems:'center' do
+    // the horizontal centering of an intrinsically-sized child.
+    alignSelf: 'center',
     maxWidth: 700,
     borderRadius: borderRadius.full,
     overflow: 'hidden',

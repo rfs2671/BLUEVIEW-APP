@@ -46,10 +46,21 @@ import RiskScoreDrawer from './RiskScoreDrawer';
 
 // Color tokens — duplicated from RiskScoreCard so the new card can
 // stand alone. Tests pin these against backend schema.py::score_band.
-const BAND_GREEN  = { fg: '#22c55e', track: 'rgba(34, 197, 94, 0.18)',  label: 'LOW' };
-const BAND_YELLOW = { fg: '#eab308', track: 'rgba(234, 179, 8, 0.18)',  label: 'MODERATE' };
-const BAND_ORANGE = { fg: '#f97316', track: 'rgba(249, 115, 22, 0.18)', label: 'HIGH' };
-const BAND_RED    = { fg: '#ef4444', track: 'rgba(239, 68, 68, 0.20)',  label: 'CRITICAL' };
+//
+// Phase V2.1.4: band labels gained "RISK" suffix so the word
+// underneath the circle reads as a verdict in plain English
+// ("LOW RISK", "CRITICAL RISK") rather than an abbreviation
+// the operator's compliance staff has to learn.
+const BAND_GREEN  = { fg: '#22c55e', track: 'rgba(34, 197, 94, 0.18)',  label: 'LOW RISK' };
+const BAND_YELLOW = { fg: '#eab308', track: 'rgba(234, 179, 8, 0.18)',  label: 'MODERATE RISK' };
+const BAND_ORANGE = { fg: '#f97316', track: 'rgba(249, 115, 22, 0.18)', label: 'HIGH RISK' };
+const BAND_RED    = { fg: '#ef4444', track: 'rgba(239, 68, 68, 0.20)',  label: 'CRITICAL RISK' };
+
+// Title shown above the circle. Pinned in tests so an accidental
+// rename surfaces immediately.
+export const RISK_SCORE_TITLE = 'DOB Risk Score';
+// Band-word shown below the circle when there's no score yet.
+export const PENDING_LABEL = 'PENDING';
 
 // Score-band thresholds — pinned to backend schema.py::score_band.
 // Boundaries (≤30 green, ≤60 yellow, ≤80 orange, >80 red) match
@@ -126,13 +137,28 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
   const trackColor = band ? band.track : 'rgba(148, 163, 184, 0.20)';
   const ringColor  = band ? band.fg    : 'rgba(148, 163, 184, 0.55)';
   const fgColor    = band ? band.fg    : colors.text.muted;
-  const labelText  = band ? band.label : '—';
+  // Band word shown below the circle. Three states:
+  //   • has score   → "LOW RISK" / "MODERATE RISK" / etc. (color-matched)
+  //   • loading     → blank string (avoids label flicker while fetching)
+  //   • no score    → "PENDING" in neutral muted gray
+  const bandWordText = hasScore
+    ? band.label
+    : (loading ? '' : PENDING_LABEL);
+  const bandWordColor = hasScore ? fgColor : colors.text.muted;
 
   const ciLow  = hasScore ? Math.round(Number(scoreDoc.confidence_low  || 0)) : null;
   const ciHigh = hasScore ? Math.round(Number(scoreDoc.confidence_high || 0)) : null;
   const tooltipText = hasScore
     ? `${ciLow}–${ciHigh} / 100`
     : null;
+
+  // Compact font sizes for small circles (project list at size=56)
+  // and larger fonts for the prominent project-header circle
+  // (size=84). Mobile (<768 viewport) uses the same fonts as the
+  // small variant — readable but unobtrusive.
+  const compact = size < 70;
+  const titleFontSize    = compact ? 9  : 11;
+  const bandWordFontSize = compact ? 8  : 10;
 
   // Web hover handlers degrade to no-ops on native.
   const hoverProps = Platform.OS === 'web'
@@ -149,16 +175,33 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
         accessibilityRole="button"
         accessibilityLabel={
           hasScore
-            ? `Risk score ${Math.round(score)} of 100, ${labelText}. Tap to see breakdown.`
-            : 'Risk score not yet calculated. Tap for details.'
+            ? `${RISK_SCORE_TITLE} ${Math.round(score)} of 100, ${band.label}. Tap to see breakdown.`
+            : `${RISK_SCORE_TITLE} not yet calculated. Tap for details.`
         }
         style={({ pressed }) => [
           styles.wrap,
-          { width: size, height: size + 18 },  // +18 for label below
+          // Total height = title + circle + band word + small gaps.
+          // Title ≈ titleFontSize + 4px, band word ≈ bandWordFontSize + 4px.
+          {
+            width: Math.max(size, 96),
+            height: size + (titleFontSize + 4) + (bandWordFontSize + 6),
+          },
           pressed && styles.wrapPressed,
         ]}
         {...hoverProps}
       >
+        {/* Title above the circle — gives a number on its own
+            ("2") the context to be read as "DOB Risk Score 2". */}
+        <Text
+          style={[
+            styles.title,
+            { fontSize: titleFontSize, color: colors.text.muted },
+          ]}
+          numberOfLines={1}
+        >
+          {RISK_SCORE_TITLE}
+        </Text>
+
         <View style={{ width: size, height: size }}>
           <Svg width={size} height={size}>
             {/* Rotate -90deg so the radial fill grows clockwise
@@ -208,8 +251,14 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
           </View>
         </View>
 
-        <Text style={[styles.bandLabel, { color: fgColor }]}>
-          {labelText}
+        <Text
+          style={[
+            styles.bandLabel,
+            { fontSize: bandWordFontSize, color: bandWordColor },
+          ]}
+          numberOfLines={1}
+        >
+          {bandWordText}
         </Text>
 
         {/* Web hover tooltip — only renders on web AND only when
@@ -255,14 +304,26 @@ function buildStyles(colors, isDark) {
       fontWeight: '700',
       lineHeight: 22,
     },
+    title: {
+      // V2.1.4 — title above the circle. Muted small caps so it
+      // visually defers to the score number itself.
+      fontWeight: '600',
+      letterSpacing: 0.6,
+      textTransform: 'uppercase',
+      marginBottom: 4,
+    },
     bandLabel: {
-      marginTop: 2,
-      fontSize: 9,
+      // V2.1.4 — band-word ("LOW RISK" / "MODERATE RISK" / …)
+      // sits below the circle, color-matched to the band.
+      marginTop: 4,
       fontWeight: '700',
       letterSpacing: 0.8,
     },
     tooltip: {
       position: 'absolute',
+      // V2.1.4 — tooltip anchors at the very top of the wrap
+      // (above the title row) so it doesn't visually overlap
+      // the title on hover.
       top: -22,
       paddingHorizontal: 8,
       paddingVertical: 3,
