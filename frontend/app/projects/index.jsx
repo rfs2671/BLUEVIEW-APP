@@ -27,6 +27,7 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
+import RiskScoreCircle from '../../src/components/RiskScoreCircle';
 import GlassInput from '../../src/components/GlassInput';
 import { ProjectCardSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
@@ -263,6 +264,16 @@ export default function ProjectsScreen() {
                       </Text>
                     </View>
                   )}
+
+                  {/* Phase V2.1.2 — compact risk score gauge.
+                      Self-gates on v2_risk_score flag; renders
+                      nothing for v1 customers when off. Click
+                      opens the side drawer with full breakdown. */}
+                  <RiskScoreCircle
+                    projectId={getProjectId(project)}
+                    isAdmin={false}
+                    size={56}
+                  />
 
                   <Pressable
                     onPress={() => handleDeleteProject(getProjectId(project))}
