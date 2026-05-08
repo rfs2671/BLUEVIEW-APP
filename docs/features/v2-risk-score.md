@@ -225,23 +225,73 @@ Indexes (registered at startup via
 
 ## Frontend
 
-`<RiskScoreCard projectId={projectId} isAdmin={isAdmin} />`,
-mounted top-of-page in `frontend/app/project/[id].jsx`.
+> **V2.1.2 redesign — circle gauge with click-to-drawer pattern.**
+> The original V2.1 implementation mounted a full-width
+> `<RiskScoreCard …/>` text card on the project detail page.
+> Operator feedback: too visually heavy for what should be a
+> side feature, not a full tab. V2.1.2 replaces it with a
+> compact circular gauge (`<RiskScoreCircle …/>`) that opens
+> the full breakdown in a slide-in side drawer
+> (`<RiskScoreDrawer …/>`) on click. The old
+> `RiskScoreCard.jsx` is kept as a deprecated reference and
+> will be deleted after the redesign is verified in production.
 
-  • **First hook** in the component is
-    `useFeatureFlag('v2_risk_score')` — rules-of-hooks; same
-    C1.3 / V2.0 pattern. Tests pin the order via line-position
-    check.
+### `<RiskScoreCircle projectId={…} isAdmin={…} size={…} />`
+
+A compact SVG radial gauge (default 84 px, configurable). Mounted in two surfaces:
+
+  • **Project list** (`frontend/app/projects/index.jsx`) —
+    inline with each `GlassListItem`, before the delete button,
+    at `size={56}`. Each row paints its own circle from
+    `GET /api/projects/{id}/risk-score`.
+  • **Project detail header** (`frontend/app/project/[id].jsx`) —
+    in the right cluster of the project header card, next to
+    the QR badge, at `size={84}`.
+
+Behavior:
+
+  • **First hook** is `useFeatureFlag('v2_risk_score')` —
+    rules-of-hooks; same C1.3 / V2.0 / V2.1 pattern. Tests pin
+    the order via line-position check.
   • **Flag OFF** → returns `null` BEFORE fetching anything.
-    v1 users see nothing — no flicker, no spinner, no API call.
-  • **Flag ON, no score yet** → calm empty-state card. Never
-    crashes the parent screen.
-  • **Flag ON, score present** → score number, color band, CI,
-    top-5 contributing factors (collapsible drilldown), 30-day
-    sparkline.
-  • **Admin only** → "Was this score correct?" button opens an
-    inspector-review modal that POSTs to
+    v1 users see nothing.
+  • **Loading / no score / fetch failure** → renders a greyed
+    ring with `—`. Silent fail; never paints an error toast
+    (a list with 50 projects on a partial outage shouldn't
+    burn 50 toasts).
+  • **Score present** → radial fill colored by band, score
+    number centered, band label below (LOW / MODERATE / HIGH /
+    CRITICAL).
+  • **Hover (web)** → tooltip `low–high / 100`.
+  • **Click** → opens `<RiskScoreDrawer/>`. Never navigates
+    away from the current page.
+  • Score-band thresholds match
+    `lib/risk_score/schema.py::score_band` exactly. Tests pin
+    each boundary case (29, 30, 31, 60, 61, 80, 81, 99).
+
+### `<RiskScoreDrawer projectId={…} visible={…} onClose={…} />`
+
+Slide-in side drawer (460 px desktop / full-width on mobile <768 px). Renders the full breakdown:
+
+  • Big score number with band color + 95% CI prominently
+    displayed.
+  • Top-5 contributing factors with proportional bars colored
+    by band.
+  • **Recalculate now** — POSTs to
+    `/api/projects/{id}/risk-score/calculate`, updates the
+    drawer in place when it returns.
+  • **Admin only** — "Was this correct?" button opens the
+    same inspector-review modal that posts to
     `/api/projects/{id}/risk-score/calibration`.
+
+Closes on: X button, ESC key (web), backdrop tap.
+
+Hard rules pinned by tests:
+
+  • `useFeatureFlag('v2_risk_score')` is the FIRST hook.
+  • Flag OFF → null. `visible === false` → null (no DOM at
+    all when closed).
+  • ESC keydown listener bound on web, removed on unmount.
 
 ---
 

@@ -1,3 +1,8 @@
+// DEPRECATED: replaced by RiskScoreCircle + RiskScoreDrawer in V2.1.2.
+// Will be deleted after the redesign is verified in production.
+// No longer mounted anywhere as of V2.1.2 — kept here as a
+// reference for the V2.1 → V2.1.2 migration window only.
+//
 /**
  * Phase V2.1 — Risk Score Card.
  *

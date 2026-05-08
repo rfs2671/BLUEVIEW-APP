@@ -1,0 +1,78 @@
+# Phase C2.2 — clean-venv resolution check on every requirements.txt PR.
+#
+# Catches the class of bug that took production down between C2 and
+# C2.1: a transitive cap from a newly-added package conflicts with
+# an existing hard pin. The conflict is invisible on every developer
+# machine (their venvs already had the prior packages installed
+# and pip never re-resolves on top of an existing install) but
+# manifests on Railway's clean Docker image.
+#
+# The pre-commit hook (.githooks/pre-commit) is the local
+# safety net; this workflow is the merge gate for anyone who
+# disables their hooks or commits via the GitHub UI.
+#
+# Same check, same expected output:
+#
+#     pip install --dry-run -r requirements.txt
+#     # → ResolutionImpossible blocks the merge.
+#     # → success allows it through.
+#
+# The workflow runs ONLY when the PR touches requirements.txt
+# (path filter), so the rest of the CI fleet stays cheap.
+
+name: Check requirements.txt resolution
+
+on:
+  pull_request:
+    paths:
+      - 'requirements.txt'
+      - 'backend/requirements.txt'
+  # Manual trigger so an operator can re-run after fixing a bad
+  # requirements.txt edit without pushing a new commit.
+  workflow_dispatch: {}
+
+jobs:
+  resolve:
+    name: pip install --dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        # Pin to the same minor Railway uses so resolver behavior
+        # matches production's resolver behavior. If Railway ever
+        # bumps to 3.12, bump this in lockstep.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Locate requirements.txt
+        id: locate
+        run: |
+          if [ -f "requirements.txt" ]; then
+            echo "path=requirements.txt" >> "$GITHUB_OUTPUT"
+          elif [ -f "backend/requirements.txt" ]; then
+            echo "path=backend/requirements.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: no requirements.txt found at root or backend/."
+            exit 1
+          fi
+
+      - name: Create clean venv
+        run: |
+          python -m venv /tmp/req_check_venv
+          /tmp/req_check_venv/bin/pip install --upgrade --quiet pip
+
+      - name: Dry-run pip install
+        run: |
+          set -eo pipefail
+          /tmp/req_check_venv/bin/pip install \
+            --dry-run \
+            -r "${{ steps.locate.outputs.path }}"
+
+      - name: Success
+        if: success()
+        run: echo "✓ requirements.txt resolves cleanly"

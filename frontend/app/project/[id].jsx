@@ -48,7 +48,12 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
 import RenewalAlertCard from '../../src/components/RenewalAlertCard';
-import RiskScoreCard from '../../src/components/RiskScoreCard';
+// Phase V2.1.2 — RiskScoreCard is deprecated and no longer mounted.
+// Replaced by RiskScoreCircle (the compact gauge in the project
+// header) which itself opens RiskScoreDrawer on click. The old
+// RiskScoreCard.jsx is kept as a deprecated reference until the
+// redesign is verified, then deleted in a follow-up.
+import RiskScoreCircle from '../../src/components/RiskScoreCircle';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
@@ -593,18 +598,22 @@ export default function ProjectDetailScreen() {
                   <Text style={s.locationText}>{project?.location || project?.address || 'No location'}</Text>
                 </View>
               </View>
+              {/* Phase V2.1.2 — compact risk score gauge in the
+                  project header right cluster. Self-gates on
+                  v2_risk_score flag; renders nothing for v1 users.
+                  Click opens RiskScoreDrawer with the full
+                  breakdown. Replaces the old full-width
+                  RiskScoreCard mount (deprecated). */}
+              <RiskScoreCircle
+                projectId={projectId}
+                isAdmin={isAdmin}
+                size={84}
+              />
               <View style={s.qrBadge}>
                 <QrCode size={20} strokeWidth={1.5} color={colors.text.primary} />
               </View>
             </View>
           </GlassCard>
-
-          {/* Phase V2.1 — Risk Score Card. Self-gates on
-              v2_risk_score flag; renders nothing for v1 customers
-              when the flag is OFF. Mounted top-of-page so the
-              first thing operators see is the score, before
-              navigating to any sub-screen. */}
-          <RiskScoreCard projectId={projectId} isAdmin={isAdmin} />
 
           {/* Stats Row */}
           <View style={s.statsRow}>

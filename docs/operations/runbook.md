@@ -5,19 +5,19 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-07 (Phase V2.1 — feature/v2-risk-score)
-**Test count baseline:** 1099 backend tests passing on this branch
-(966 v1 baseline + 54 V2.0 logbook + 79 V2.1 risk score).
-Production (`main`) is at 1050 tests after V2.0.2 push; this
-branch will reach ~1129 tests after eventually merging to main
-(adds the C2.2 dependency-hygiene tests not present on develop).
+**Last reviewed:** 2026-05-07 (Phase V2.1.1 — V2.1 risk score reaches main)
+**Test count baseline:** 1129 backend tests passing on `main` (966 v1 baseline
++ 54 V2.0 logbook + 30 C2.2 dependency-hygiene + 79 V2.1 risk score). Both
+v2 features ship behind feature flags defaulting OFF; v1 customers see zero
+behavior change. C2.1 / C2.2 hotfixes preserved through V2.0.1 + V2.1.1
+merge resolutions.
 
 > **See also:**
 > • [`backup-restore.md`](./backup-restore.md) — Atlas backup, restore drill, DR procedure, migration safety.
 > • [`branching.md`](./branching.md) — main / develop / feature/* strategy, staging environment, Mongo refresh.
 > • [`feature-flags.md`](./feature-flags.md) — runtime flag system, rollout patterns (canary / percentage / kill switch), audit log.
-> • [`../features/v2-logbook.md`](../features/v2-logbook.md) — V2.0 compliance logbook, gated by `v2_logbook` flag. Operational notes below in §13.
-> • [`../features/v2-risk-score.md`](../features/v2-risk-score.md) — V2.1 risk score (this branch), gated by `v2_risk_score` flag. Operational notes below in §14.
+> • [`../features/v2-logbook.md`](../features/v2-logbook.md) — V2.0 compliance logbook (merged to `main` via V2.0.1, gated by `v2_logbook` flag default OFF). Operational notes below in §14.
+> • [`../features/v2-risk-score.md`](../features/v2-risk-score.md) — V2.1 risk score (merged to `main` via V2.1.1, gated by `v2_risk_score` flag default OFF). Operational notes below in §15.
 > • [`../features/v2-risk-score-weights.md`](../features/v2-risk-score-weights.md) — V2.1 weights table + per-weight rationale.
 
 > _(top-of-doc cross-links above were updated for Phase E1; the
@@ -40,9 +40,10 @@ branch will reach ~1129 tests after eventually merging to main
 10. [Sentry source maps](#10-sentry-source-maps)
 11. [Rate limiting](#11-rate-limiting)
 12. [WhatsApp voice note ingestion](#12-whatsapp-voice-note-ingestion)
-13. [V2.0 — Compliance logbook (operational notes)](#13-v20--compliance-logbook-operational-notes)
-14. [V2.1 — Risk score (operational notes)](#14-v21--risk-score-operational-notes)
-15. [Environment variables reference](#15-environment-variables-reference)
+13. [Dependency hygiene](#13-dependency-hygiene)
+14. [V2.0 — Compliance logbook (operational notes)](#14-v20--compliance-logbook-operational-notes)
+15. [V2.1 — Risk score (operational notes)](#15-v21--risk-score-operational-notes)
+16. [Environment variables reference](#16-environment-variables-reference)
 
 ---
 
@@ -1226,13 +1227,132 @@ function shape and inject it.
 
 ---
 
-## 13. V2.0 — Compliance logbook (operational notes)
+## 13. Dependency hygiene
+
+Every change to `requirements.txt` MUST resolve cleanly in a
+fresh venv before it lands on `main`. Phase C2.2 wires two
+gates to enforce this; both are mandatory.
+
+### 13.1 — The C2 → C2.1 incident
+
+C2 (commit `d157376`) added `slowapi` + `limits` to the
+requirements list as part of the rate-limit middleware. The
+`limits` package caps `packaging<25, >=21` transitively. The
+existing `packaging==25.0` hard pin already in the file
+contradicted that cap. Pip's resolver returns
+`ResolutionImpossible` on the conflict.
+
+The conflict was invisible for **two phases** (C3 and F1
+both shipped with the broken `requirements.txt`) because:
+
+- Every developer machine had `packaging==25.0` already
+  installed in its venv before `limits` was added. Pip never
+  had to re-resolve; it simply skipped the package and the
+  tests ran fine.
+- CI runs `pytest` against a pre-warmed venv, not from a
+  clean image, so it inherited the same false-clean state.
+- Railway is the ONLY environment that runs
+  `pip install -r requirements.txt` from a fresh Docker layer.
+  When Railway finally tried to redeploy, the build failed at
+  the `pip install` step before the FastAPI process could
+  boot. **Production went down.**
+
+C2.1 (commit `453040c`) was the immediate fix: loosen the
+pin to `packaging>=22,<25`. Pip resolves to `packaging-24.2`
++ `limits-4.8.0`. No code change required; nothing in
+backend/ imports `packaging` directly.
+
+### 13.2 — Pre-commit hook (local gate)
+
+`.githooks/pre-commit`:
+
+- Detects when `requirements.txt` (root) or
+  `backend/requirements.txt` is staged for commit.
+- If not staged → exits silently (< 1s overhead on normal
+  commits).
+- If staged → builds a temp venv, runs
+  `pip install --dry-run -r <path>`, blocks the commit on
+  resolver failure with the conflict message embedded, allows
+  it on success. Total runtime: ~5–15 seconds (varies with
+  pip's network speed).
+
+**Enable it locally:**
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Idempotent. Sets `git config core.hooksPath .githooks`. Run
+once per clone. Verify with:
+
+```bash
+git config --get core.hooksPath
+# expected: .githooks
+```
+
+### 13.3 — GitHub Actions (merge gate)
+
+`.github/workflows/check-requirements.yml` runs the same
+clean-venv resolution check on every PR that touches
+`requirements.txt`. The path filter keeps it from running on
+PRs that don't touch deps (most of them). The check appears
+as a required status on the PR; resolution failures block
+the merge.
+
+The pre-commit hook is the dev's safety net; the workflow is
+the merge gate for anyone who's disabled their hooks or
+committed via the GitHub web UI.
+
+### 13.4 — When the hook fires
+
+What you see locally if you stage a conflict:
+
+```
+[pre-commit] requirements.txt staged — running dependency-resolution check
+[pre-commit] ✗ requirements.txt has a dependency conflict.
+[pre-commit]   (clean-venv resolution failed in 7s)
+
+----- pip resolver output (last 30 lines) -----
+The conflict is caused by:
+    The user requested packaging==25.0
+    limits 4.8.0 depends on packaging<25 and >=21
+    [...]
+ERROR: ResolutionImpossible
+----- end -----
+```
+
+Read the conflict block, fix the requirements.txt edit (loosen
+a pin, swap to a range, drop the conflicting addition), re-stage,
+re-commit.
+
+### 13.5 — Hard rule: avoid hard pins on transitive deps
+
+The C2.1 root cause was that `packaging==25.0` was a passive
+lock — written into the file by whatever pip happened to
+resolve at lock time, NOT because we needed any 25.x feature.
+When a sibling dep widened its incompat range, the hard pin
+broke the tree.
+
+Use ranges for transitives:
+
+| Pin shape | When |
+|---|---|
+| `foo==X.Y.Z` (hard pin) | We depend on a SPECIFIC behavior (e.g. a private API, a known-good security version). Document the reason in a comment. |
+| `foo>=X,<Y` (range) | Default for transitive deps. Lets sibling packages widen freely without breaking the tree. |
+| `foo>=X` (open upper) | Only for trusted-stable APIs (e.g. our own internal libs). Risky for third-party — a breaking 2.0 release could ship overnight. |
+
+Audit the existing pins quarterly. Any hard pin without a
+comment explaining WHY is a candidate to widen to a range.
+
+---
+
+## 14. V2.0 — Compliance logbook (operational notes)
 
 > Full feature documentation: [`../features/v2-logbook.md`](../features/v2-logbook.md).
 > This section covers what the on-call operator needs to know
 > when something goes sideways with the logbook surface.
 
-### 13.1 — How to confirm the feature is OFF (production)
+### 14.1 — How to confirm the feature is OFF (production)
 
 Default: `v2_logbook` flag absent from `feature_flags` collection
 → `is_feature_enabled` returns False → endpoints 404, FE returns
@@ -1252,7 +1372,7 @@ db.feature_flag_audit_log.find({flag: "v2_logbook"})
   .sort({changed_at: -1}).limit(10)
 ```
 
-### 13.2 — How to roll out per `feature-flags.md` patterns
+### 14.2 — How to roll out per `feature-flags.md` patterns
 
 ```bash
 # 1. Create the flag (default OFF — first-touch is benign).
@@ -1284,7 +1404,7 @@ curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_logbook \
 Cache invalidates within 60s; the next `/api/feature-flags/me`
 read picks up the new state.
 
-### 13.3 — What the nightly tick does
+### 14.3 — What the nightly tick does
 
 Cron job `v2_logbook_nightly_tick` runs at 3 AM ET. Two phases:
 
@@ -1307,7 +1427,7 @@ captures level=error). Common failures:
   `is_deleted` index. Look at the existing
   `db.projects.getIndexes()`.
 
-### 13.4 — How to manually trigger the missing detector
+### 14.4 — How to manually trigger the missing detector
 
 The nightly tick is the production path; for one-off operator
 runs:
@@ -1322,7 +1442,7 @@ print(result)
 # {'projects_scanned': N, 'missing_entries_written': M, 'errors': K}
 ```
 
-### 13.5 — How to manually trigger an LL196 attestation
+### 14.5 — How to manually trigger an LL196 attestation
 
 The endpoint is admin-callable per project per month:
 
@@ -1337,7 +1457,7 @@ curl -X POST \
 R2 key is deterministic (`ll196/{company_id}/{project_id}/YYYY-MM.pdf`)
 so re-generation overwrites the prior PDF in place.
 
-### 13.6 — Common operator questions
+### 14.6 — Common operator questions
 
 - **"Why does my brand-new project show 30 days of missing
   entries?"** It doesn't. The `created_at` floor in
@@ -1355,7 +1475,7 @@ so re-generation overwrites the prior PDF in place.
 
 ---
 
-## 14. V2.1 — Risk score (operational notes)
+## 15. V2.1 — Risk score (operational notes)
 
 > Full feature documentation:
 > [`../features/v2-risk-score.md`](../features/v2-risk-score.md).
@@ -1364,7 +1484,7 @@ so re-generation overwrites the prior PDF in place.
 > This section covers what the on-call operator needs when
 > something goes sideways with the risk-score surface.
 
-### 14.1 — How to confirm the feature is OFF (production)
+### 15.1 — How to confirm the feature is OFF (production)
 
 Default: `v2_risk_score` flag absent from `feature_flags`
 collection → `is_feature_enabled` returns False → endpoints 404,
@@ -1385,7 +1505,7 @@ db.feature_flag_audit_log.find({flag: "v2_risk_score"})
   .sort({changed_at: -1}).limit(10)
 ```
 
-### 14.2 — How to roll out per `feature-flags.md` patterns
+### 15.2 — How to roll out per `feature-flags.md` patterns
 
 ```bash
 # 1. Create the flag (default OFF — first-touch is benign).
@@ -1414,7 +1534,7 @@ curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_risk_score \
 
 Cache invalidates within 60s.
 
-### 14.3 — What the daily tick does
+### 15.3 — What the daily tick does
 
 Cron job `v2_risk_score_daily_tick` runs at **4 AM ET**, one
 hour after the V2.0 logbook 3 AM tick (so logbook outputs are
@@ -1437,7 +1557,7 @@ exception and logs at level=error. Common failures:
   per project and continues; the `errors` count surfaces in the
   Sentry log.
 
-### 14.4 — How to manually trigger a recalculation
+### 15.4 — How to manually trigger a recalculation
 
 For one project:
 
@@ -1461,7 +1581,7 @@ print(result)
 # {'projects_scanned': N, 'scores_written': M, 'scores_skipped_fresh': K, 'errors': E}
 ```
 
-### 14.5 — How to check calibration stats
+### 15.5 — How to check calibration stats
 
 ```bash
 curl -s -H "Authorization: Bearer <admin-token>" \
@@ -1474,11 +1594,11 @@ the current model version. Computed on demand from the
 `risk_score_reviews` + `risk_scores` collections — not
 persisted unless the operator explicitly inserts a snapshot.
 
-### 14.6 — How to update weights (manual)
+### 15.6 — How to update weights (manual)
 
 DO NOT auto-update weights from calibration data. The flow is:
 
-1. Wait for ≥100 inspector reviews (run §14.5 to check
+1. Wait for ≥100 inspector reviews (run §15.5 to check
    `inspector_review_count`).
 2. Inspect Brier + ROC-AUC. If Brier > 0.20 OR ROC-AUC < 0.70
    the model is not adding much over chance and should be
@@ -1500,7 +1620,7 @@ and new model_version after enough reviews accumulate — confirm
 the new version improves on Brier + ROC-AUC. If it doesn't,
 roll back.
 
-### 14.7 — Common operator questions
+### 15.7 — Common operator questions
 
 - **"Why is my project's score so high?"** Open the card and
   expand the "Top contributing factors" drilldown — the first
@@ -1521,7 +1641,7 @@ roll back.
 
 ---
 
-## 15. Environment variables reference
+## 16. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.

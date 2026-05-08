@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# Phase C2.2 — pre-commit hook.
+#
+# Catches dependency-resolution conflicts in requirements.txt
+# BEFORE they reach Railway. C2 added `limits>=3.13.0`; the
+# transitive `packaging<25` cap conflicted with our existing
+# `packaging==25.0` hard pin. The conflict was invisible on every
+# developer machine (pre-installed venvs never re-resolve) and
+# only fired when Railway's clean Docker image tried `pip install`
+# from scratch. Production went down. C2.1 was the immediate fix.
+# This hook prevents the pattern from recurring.
+#
+# Behavior:
+#   • Fast path — requirements.txt not staged → exit 0 silently.
+#   • Slow path — requirements.txt staged:
+#       - Build a temp venv from the same `python` pip would use
+#         on Railway.
+#       - Run `pip install --dry-run -r requirements.txt`.
+#       - On ResolutionImpossible (or any non-zero exit): block
+#         the commit with a clear error pointing at the mismatch.
+#       - On success: print "✓ requirements.txt resolves cleanly"
+#         and let the commit through.
+#
+# Cross-platform: bash + python -m venv + pip. Runs from Git Bash
+# on Windows (where `python` resolves to the same Python the venv
+# was built with) and from /bin/bash on macOS/Linux. The pip
+# binary lives at `Scripts/pip.exe` on Windows venvs and `bin/pip`
+# elsewhere — we probe both.
+#
+# Cleanup: trap on EXIT removes the temp venv directory so a
+# Ctrl-C or pytest hard-fail doesn't leave junk in /tmp.
+#
+# Enable this hook locally:  bash scripts/install-hooks.sh
+# (sets git config core.hooksPath .githooks)
+
+set -euo pipefail
+
+# ── Fast path: requirements.txt not staged → exit silently ─────────
+#
+# Match BOTH the current root-level path AND the future
+# backend/-relative path so the hook keeps working if the file
+# moves later.
+if ! git diff --cached --name-only \
+        | grep -qE '^(backend/)?requirements\.txt$'; then
+    exit 0
+fi
+
+echo "[pre-commit] requirements.txt staged — running dependency-resolution check"
+
+# Locate the actual file (root or backend/, whichever exists).
+REQ_FILE=""
+if [ -f "requirements.txt" ]; then
+    REQ_FILE="requirements.txt"
+elif [ -f "backend/requirements.txt" ]; then
+    REQ_FILE="backend/requirements.txt"
+else
+    echo "[pre-commit] ERROR: requirements.txt is staged but not found on disk."
+    exit 1
+fi
+
+# ── Spin up a temp venv ────────────────────────────────────────────
+
+VENV_DIR="$(mktemp -d)"
+trap 'rm -rf "$VENV_DIR"' EXIT
+
+START_TS=$(date +%s)
+
+if ! python -m venv "$VENV_DIR" >/dev/null 2>&1; then
+    echo "[pre-commit] ERROR: failed to create temp venv at $VENV_DIR"
+    echo "  Make sure 'python' resolves to a working Python 3.11+."
+    exit 1
+fi
+
+# Locate pip. Windows venvs use Scripts/, POSIX venvs use bin/.
+if [ -x "$VENV_DIR/Scripts/pip.exe" ]; then
+    PIP="$VENV_DIR/Scripts/pip.exe"
+elif [ -x "$VENV_DIR/bin/pip" ]; then
+    PIP="$VENV_DIR/bin/pip"
+else
+    echo "[pre-commit] ERROR: cannot find pip in $VENV_DIR"
+    exit 1
+fi
+
+# Bring pip up-to-date so its resolver (which improved a lot in
+# 22.x and 23.x) matches Railway's. Quiet — we only care about the
+# resolver run, not pip's own upgrade noise.
+"$PIP" install --upgrade --quiet pip 2>/dev/null || true
+
+# ── The check ──────────────────────────────────────────────────────
+
+DRYRUN_LOG="$(mktemp)"
+trap 'rm -rf "$VENV_DIR" "$DRYRUN_LOG"' EXIT
+
+if "$PIP" install --dry-run -r "$REQ_FILE" >"$DRYRUN_LOG" 2>&1; then
+    END_TS=$(date +%s)
+    ELAPSED=$((END_TS - START_TS))
+    echo "[pre-commit] ✓ requirements.txt resolves cleanly (${ELAPSED}s)"
+    exit 0
+fi
+
+# Resolution failed. Surface the most useful chunk of pip's output
+# (the conflict explanation), not the entire log — pip's full output
+# is dozens of "depends on X" lines that obscure the headline.
+END_TS=$(date +%s)
+ELAPSED=$((END_TS - START_TS))
+echo
+echo "[pre-commit] ✗ requirements.txt has a dependency conflict."
+echo "[pre-commit]   (clean-venv resolution failed in ${ELAPSED}s)"
+echo
+echo "----- pip resolver output (last 30 lines) -----"
+tail -n 30 "$DRYRUN_LOG"
+echo "----- end -----"
+echo
+echo "[pre-commit] Fix the conflict before committing. The full log lives at:"
+echo "[pre-commit]   $DRYRUN_LOG"
+echo
+echo "[pre-commit] Rationale (Phase C2.1 post-mortem): hard pins on transitive"
+echo "[pre-commit]   deps are the usual cause. Use ranges (e.g. 'packaging>=22,<25')"
+echo "[pre-commit]   so a sibling package widening its compat window doesn't break"
+echo "[pre-commit]   the whole tree."
+exit 1

@@ -41,6 +41,19 @@ for the historical context.
 - **MongoDB** (local container or cluster connection string)
 - **npm** or **yarn**
 
+### Git hooks (one-time, after clone)
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Sets `git config core.hooksPath .githooks`. Runs the dependency-
+resolution check (`pip install --dry-run -r requirements.txt`) on
+every commit that touches the requirements file — catches the
+class of bug that took production down between Phase C2 and C2.1.
+See [`docs/operations/runbook.md`](./docs/operations/runbook.md) §13
+for the full rationale.
+
 ### Backend
 
 ```bash

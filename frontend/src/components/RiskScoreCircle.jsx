@@ -1,0 +1,280 @@
+/**
+ * Phase V2.1.2 — Compact Risk Score Circle gauge.
+ *
+ * Replaces the full-width text-heavy RiskScoreCard with a small
+ * SVG circular gauge intended to live inline in project lists
+ * and project detail headers as a side feature, not a full tab.
+ *
+ * Behavior:
+ *   • Diameter ~84 px. Fits next to existing badges + StatCards.
+ *   • Score number (0–100, rounded) inside the circle.
+ *   • Radial fill colored by band (matches lib/risk_score/schema.py
+ *     score_band thresholds: green ≤30, yellow ≤60, orange ≤80,
+ *     red >80).
+ *   • Hover (web) shows a small tooltip with the 95% CI range.
+ *   • Tap / click opens the side drawer (RiskScoreDrawer) for
+ *     full breakdown — never navigates away from the current page.
+ *   • Loading: solid grey ring + "—".
+ *   • No-score-yet: greyed ring + "—" placeholder.
+ *   • Fetch failure: silent (no scary error UI); falls back to "—".
+ *
+ * Hard rules pinned by tests:
+ *   • useFeatureFlag('v2_risk_score') is the FIRST hook in the
+ *     component (rules-of-hooks; same C1.3 / V2.0 / V2.1 pattern).
+ *   • Flag OFF returns null BEFORE fetching anything.
+ *   • Score-band thresholds match the backend (schema.py::score_band).
+ *
+ * Usage:
+ *   import RiskScoreCircle from '../../src/components/RiskScoreCircle';
+ *   <RiskScoreCircle projectId={projectId} isAdmin={isAdmin} size={84} />
+ */
+
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Pressable,
+  Platform,
+} from 'react-native';
+import Svg, { Circle, G } from 'react-native-svg';
+import { useFeatureFlag } from '../hooks/useFeatureFlag';
+import { useTheme } from '../context/ThemeContext';
+import { spacing, borderRadius, typography } from '../styles/theme';
+import apiClient from '../utils/api';
+import RiskScoreDrawer from './RiskScoreDrawer';
+
+// Color tokens — duplicated from RiskScoreCard so the new card can
+// stand alone. Tests pin these against backend schema.py::score_band.
+const BAND_GREEN  = { fg: '#22c55e', track: 'rgba(34, 197, 94, 0.18)',  label: 'LOW' };
+const BAND_YELLOW = { fg: '#eab308', track: 'rgba(234, 179, 8, 0.18)',  label: 'MODERATE' };
+const BAND_ORANGE = { fg: '#f97316', track: 'rgba(249, 115, 22, 0.18)', label: 'HIGH' };
+const BAND_RED    = { fg: '#ef4444', track: 'rgba(239, 68, 68, 0.20)',  label: 'CRITICAL' };
+
+// Score-band thresholds — pinned to backend schema.py::score_band.
+// Boundaries (≤30 green, ≤60 yellow, ≤80 orange, >80 red) match
+// exactly. A test in test_v2_1_2_risk_score_redesign.py asserts
+// each boundary case (29 / 30 / 31 / 60 / 61 / 80 / 81 / 99).
+export function bandFor(score) {
+  if (score == null) return BAND_GREEN;
+  const s = Number(score);
+  if (s <= 30) return BAND_GREEN;
+  if (s <= 60) return BAND_YELLOW;
+  if (s <= 80) return BAND_ORANGE;
+  return BAND_RED;
+}
+
+const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
+  // ── Flag check FIRST (rules-of-hooks). MUST stay at the top of
+  //    the component body, never inside a conditional or after an
+  //    early return. C1.3 incident pattern.
+  const v2RiskScoreEnabled = useFeatureFlag('v2_risk_score');
+
+  // All other hooks unconditional — they run on every render even
+  // when the flag is off; the return-null below is the LAST step.
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
+
+  const [loading, setLoading] = useState(true);
+  const [scoreDoc, setScoreDoc] = useState(null);
+  const [hovered, setHovered] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    if (!v2RiskScoreEnabled || !projectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoading(true);
+        const r = await apiClient.get(
+          `/api/projects/${projectId}/risk-score`,
+        );
+        if (!cancelled) setScoreDoc(r?.data?.score || null);
+      } catch (_e) {
+        // Silent fail — circle just shows "—". Project list with
+        // 50 projects shouldn't paint 50 error toasts.
+        if (!cancelled) setScoreDoc(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [v2RiskScoreEnabled, projectId]);
+
+  // ── Fail-closed render: flag OFF → nothing. ───────────────
+  if (!v2RiskScoreEnabled) {
+    return null;
+  }
+
+  // Geometry. The SVG ring uses stroke-dashoffset to render a
+  // radial fill 0..100% based on score / 100.
+  const stroke = Math.max(4, Math.round(size / 12));
+  const radius = (size - stroke) / 2;
+  const cx = size / 2;
+  const cy = size / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  const hasScore = scoreDoc && typeof scoreDoc.score === 'number';
+  const score = hasScore ? Number(scoreDoc.score) : null;
+  const band = hasScore ? bandFor(score) : null;
+
+  const fillFraction = hasScore ? Math.max(0, Math.min(1, score / 100)) : 0;
+  const dashOffset = circumference * (1 - fillFraction);
+
+  const trackColor = band ? band.track : 'rgba(148, 163, 184, 0.20)';
+  const ringColor  = band ? band.fg    : 'rgba(148, 163, 184, 0.55)';
+  const fgColor    = band ? band.fg    : colors.text.muted;
+  const labelText  = band ? band.label : '—';
+
+  const ciLow  = hasScore ? Math.round(Number(scoreDoc.confidence_low  || 0)) : null;
+  const ciHigh = hasScore ? Math.round(Number(scoreDoc.confidence_high || 0)) : null;
+  const tooltipText = hasScore
+    ? `${ciLow}–${ciHigh} / 100`
+    : null;
+
+  // Web hover handlers degrade to no-ops on native.
+  const hoverProps = Platform.OS === 'web'
+    ? {
+        onHoverIn:  () => setHovered(true),
+        onHoverOut: () => setHovered(false),
+      }
+    : {};
+
+  return (
+    <>
+      <Pressable
+        onPress={() => setDrawerOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={
+          hasScore
+            ? `Risk score ${Math.round(score)} of 100, ${labelText}. Tap to see breakdown.`
+            : 'Risk score not yet calculated. Tap for details.'
+        }
+        style={({ pressed }) => [
+          styles.wrap,
+          { width: size, height: size + 18 },  // +18 for label below
+          pressed && styles.wrapPressed,
+        ]}
+        {...hoverProps}
+      >
+        <View style={{ width: size, height: size }}>
+          <Svg width={size} height={size}>
+            {/* Rotate -90deg so the radial fill grows clockwise
+                from 12 o'clock instead of from 3 o'clock. */}
+            <G rotation={-90} origin={`${cx}, ${cy}`}>
+              {/* Track (full circle, faded) */}
+              <Circle
+                cx={cx}
+                cy={cy}
+                r={radius}
+                stroke={trackColor}
+                strokeWidth={stroke}
+                fill="transparent"
+              />
+              {/* Fill (partial arc proportional to score) */}
+              {hasScore && (
+                <Circle
+                  cx={cx}
+                  cy={cy}
+                  r={radius}
+                  stroke={ringColor}
+                  strokeWidth={stroke}
+                  fill="transparent"
+                  strokeDasharray={`${circumference}`}
+                  strokeDashoffset={dashOffset}
+                  strokeLinecap="round"
+                />
+              )}
+            </G>
+          </Svg>
+
+          {/* Score number absolutely centered inside the SVG. */}
+          <View style={[styles.numberOverlay, { width: size, height: size }]}>
+            {loading && !hasScore ? (
+              <Text style={[styles.numberText, { color: colors.text.muted }]}>
+                …
+              </Text>
+            ) : hasScore ? (
+              <Text style={[styles.numberText, { color: fgColor }]}>
+                {Math.round(score)}
+              </Text>
+            ) : (
+              <Text style={[styles.numberText, { color: colors.text.muted }]}>
+                —
+              </Text>
+            )}
+          </View>
+        </View>
+
+        <Text style={[styles.bandLabel, { color: fgColor }]}>
+          {labelText}
+        </Text>
+
+        {/* Web hover tooltip — only renders on web AND only when
+            we actually have a score to describe. Anchored above
+            the circle so it doesn't overlap the band label. */}
+        {Platform.OS === 'web' && hovered && hasScore && (
+          <View style={styles.tooltip} pointerEvents="none">
+            <Text style={styles.tooltipText}>{tooltipText}</Text>
+          </View>
+        )}
+      </Pressable>
+
+      <RiskScoreDrawer
+        projectId={projectId}
+        isAdmin={isAdmin}
+        visible={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        initialScore={scoreDoc}
+      />
+    </>
+  );
+};
+
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
+    wrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      // Sit cleanly inline with badges. No margin — the parent row
+      // (GlassListItem / project header) handles spacing.
+    },
+    wrapPressed: {
+      opacity: 0.7,
+    },
+    numberOverlay: {
+      position: 'absolute',
+      top: 0, left: 0,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    numberText: {
+      fontSize: 20,
+      fontWeight: '700',
+      lineHeight: 22,
+    },
+    bandLabel: {
+      marginTop: 2,
+      fontSize: 9,
+      fontWeight: '700',
+      letterSpacing: 0.8,
+    },
+    tooltip: {
+      position: 'absolute',
+      top: -22,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      backgroundColor: isDark ? 'rgba(0,0,0,0.85)' : 'rgba(15, 23, 42, 0.92)',
+      borderRadius: borderRadius.sm,
+    },
+    tooltipText: {
+      fontSize: 11,
+      color: '#ffffff',
+      fontWeight: '500',
+    },
+  });
+}
+
+export default RiskScoreCircle;
