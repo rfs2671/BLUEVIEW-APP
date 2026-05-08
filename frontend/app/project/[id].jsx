@@ -48,6 +48,7 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
 import RenewalAlertCard from '../../src/components/RenewalAlertCard';
+import RiskScoreCard from '../../src/components/RiskScoreCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
@@ -597,6 +598,13 @@ export default function ProjectDetailScreen() {
               </View>
             </View>
           </GlassCard>
+
+          {/* Phase V2.1 — Risk Score Card. Self-gates on
+              v2_risk_score flag; renders nothing for v1 customers
+              when the flag is OFF. Mounted top-of-page so the
+              first thing operators see is the score, before
+              navigating to any sub-screen. */}
+          <RiskScoreCard projectId={projectId} isAdmin={isAdmin} />
 
           {/* Stats Row */}
           <View style={s.statsRow}>

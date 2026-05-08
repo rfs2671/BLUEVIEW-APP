@@ -5,17 +5,20 @@
 > Phase A/B development arc so future operators don't have to
 > reverse-engineer the system.
 
-**Last reviewed:** 2026-05-07 (Phase V2.0.1 — develop merged into main)
-**Test count baseline:** 1050 backend tests passing on `main` (966 v1 baseline
-+ 54 V2.0 logbook + 30 C2.2 dependency-hygiene). C2.1 / C2.2 hotfixes that
-landed on `main` while V2.0 was on `feature/v2-logbook` are preserved through
-the V2.0.1 merge resolution.
+**Last reviewed:** 2026-05-07 (Phase V2.1.1 — V2.1 risk score reaches main)
+**Test count baseline:** 1129 backend tests passing on `main` (966 v1 baseline
++ 54 V2.0 logbook + 30 C2.2 dependency-hygiene + 79 V2.1 risk score). Both
+v2 features ship behind feature flags defaulting OFF; v1 customers see zero
+behavior change. C2.1 / C2.2 hotfixes preserved through V2.0.1 + V2.1.1
+merge resolutions.
 
 > **See also:**
 > • [`backup-restore.md`](./backup-restore.md) — Atlas backup, restore drill, DR procedure, migration safety.
 > • [`branching.md`](./branching.md) — main / develop / feature/* strategy, staging environment, Mongo refresh.
 > • [`feature-flags.md`](./feature-flags.md) — runtime flag system, rollout patterns (canary / percentage / kill switch), audit log.
-> • [`../features/v2-logbook.md`](../features/v2-logbook.md) — V2.0 compliance logbook (merged to `main` via Phase V2.0.1, gated by `v2_logbook` flag default OFF). Operational notes below in §14.
+> • [`../features/v2-logbook.md`](../features/v2-logbook.md) — V2.0 compliance logbook (merged to `main` via V2.0.1, gated by `v2_logbook` flag default OFF). Operational notes below in §14.
+> • [`../features/v2-risk-score.md`](../features/v2-risk-score.md) — V2.1 risk score (merged to `main` via V2.1.1, gated by `v2_risk_score` flag default OFF). Operational notes below in §15.
+> • [`../features/v2-risk-score-weights.md`](../features/v2-risk-score-weights.md) — V2.1 weights table + per-weight rationale.
 
 > _(top-of-doc cross-links above were updated for Phase E1; the
 > standalone backup-restore see-also that previously lived here
@@ -39,7 +42,8 @@ the V2.0.1 merge resolution.
 12. [WhatsApp voice note ingestion](#12-whatsapp-voice-note-ingestion)
 13. [Dependency hygiene](#13-dependency-hygiene)
 14. [V2.0 — Compliance logbook (operational notes)](#14-v20--compliance-logbook-operational-notes)
-15. [Environment variables reference](#15-environment-variables-reference)
+15. [V2.1 — Risk score (operational notes)](#15-v21--risk-score-operational-notes)
+16. [Environment variables reference](#16-environment-variables-reference)
 
 ---
 
@@ -1471,7 +1475,173 @@ so re-generation overwrites the prior PDF in place.
 
 ---
 
-## 15. Environment variables reference
+## 15. V2.1 — Risk score (operational notes)
+
+> Full feature documentation:
+> [`../features/v2-risk-score.md`](../features/v2-risk-score.md).
+> Weights + rationale:
+> [`../features/v2-risk-score-weights.md`](../features/v2-risk-score-weights.md).
+> This section covers what the on-call operator needs when
+> something goes sideways with the risk-score surface.
+
+### 15.1 — How to confirm the feature is OFF (production)
+
+Default: `v2_risk_score` flag absent from `feature_flags`
+collection → `is_feature_enabled` returns False → endpoints 404,
+FE returns null, scheduler tick is a no-op. v1 customers see
+nothing.
+
+```js
+// In Mongo:
+db.feature_flags.findOne({flag: "v2_risk_score"})
+// expected: null  (or {enabled_globally: false} after creation)
+```
+
+If a v1 customer reports seeing a v2 risk-score card, check the
+audit log:
+
+```js
+db.feature_flag_audit_log.find({flag: "v2_risk_score"})
+  .sort({changed_at: -1}).limit(10)
+```
+
+### 15.2 — How to roll out per `feature-flags.md` patterns
+
+```bash
+# 1. Create the flag (default OFF — first-touch is benign).
+curl -X POST https://api.levelog.com/api/admin/feature-flags \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{"flag":"v2_risk_score","description":"NYC DOB risk score (heuristic v1)"}'
+
+# 2. Self-test: enable for the operator's user_id only.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_risk_score \
+  -d '{"enabled_for_users":["<operator-user-id>"]}'
+
+# 3. Canary: BLUEVIEW.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_risk_score \
+  -d '{"enabled_for_companies":["<blueview-company-id>"]}'
+
+# 4. Percentage rollout (10 → 50 → 100 over 2 weeks).
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_risk_score \
+  -d '{"enabled_percentage": 10}'
+
+# 5. Kill switch.
+curl -X PATCH https://api.levelog.com/api/admin/feature-flags/v2_risk_score \
+  -d '{"enabled_globally": false, "enabled_percentage": 0,
+       "enabled_for_companies": [], "enabled_for_users": []}'
+```
+
+Cache invalidates within 60s.
+
+### 15.3 — What the daily tick does
+
+Cron job `v2_risk_score_daily_tick` runs at **4 AM ET**, one
+hour after the V2.0 logbook 3 AM tick (so logbook outputs are
+fresh when the score reads them). Two phases:
+
+  1. Probe `is_feature_enabled('v2_risk_score', user_id=None,
+     company_id=None)`. If globally off, return immediately.
+  2. Walk every active project, gather inputs, compute score,
+     persist a `risk_scores` doc. Idempotent via the 12h
+     freshness check — overlapping ticks don't double-write.
+
+If the tick fails, check Sentry — the wrapper catches any
+exception and logs at level=error. Common failures:
+
+- `is_feature_enabled` raised — Mongo unreachable, cache empty,
+  no graceful fallback path. Same root-cause class as the
+  feature-flag system going dark. Investigate `feature_flags`
+  collection availability.
+- One project's `gather_inputs` raised — the tick soft-fails
+  per project and continues; the `errors` count surfaces in the
+  Sentry log.
+
+### 15.4 — How to manually trigger a recalculation
+
+For one project:
+
+```bash
+curl -X POST \
+  https://api.levelog.com/api/projects/<project-id>/risk-score/calculate \
+  -H "Authorization: Bearer <user-token>"
+```
+
+This bypasses the 12h freshness check (`force=True`) so the
+operator gets a fresh score on demand.
+
+For all active projects (Python REPL on Railway):
+
+```python
+from server import db
+from lib.risk_score.orchestrator import run_risk_score_for_all_projects
+import asyncio
+result = asyncio.run(run_risk_score_for_all_projects(db))
+print(result)
+# {'projects_scanned': N, 'scores_written': M, 'scores_skipped_fresh': K, 'errors': E}
+```
+
+### 15.5 — How to check calibration stats
+
+```bash
+curl -s -H "Authorization: Bearer <admin-token>" \
+  https://api.levelog.com/api/admin/risk-score/calibration \
+  | jq .
+```
+
+Returns Brier score, ROC-AUC, sample size, and review count for
+the current model version. Computed on demand from the
+`risk_score_reviews` + `risk_scores` collections — not
+persisted unless the operator explicitly inserts a snapshot.
+
+### 15.6 — How to update weights (manual)
+
+DO NOT auto-update weights from calibration data. The flow is:
+
+1. Wait for ≥100 inspector reviews (run §15.5 to check
+   `inspector_review_count`).
+2. Inspect Brier + ROC-AUC. If Brier > 0.20 OR ROC-AUC < 0.70
+   the model is not adding much over chance and should be
+   adjusted.
+3. Edit `backend/lib/risk_score/heuristic.py::WEIGHTS`. Keep
+   the sum at 100 (the import-time assertion will crash the
+   process otherwise).
+4. Bump `MODEL_VERSION` in `backend/lib/risk_score/schema.py`.
+   This stamps new scores with the new version so historical
+   comparison is clean.
+5. Add a row to
+   [`v2-risk-score-weights.md`](../features/v2-risk-score-weights.md)
+   "Update history" table with the new metrics.
+6. Ship in a normal commit + deploy. The next 4 AM tick writes
+   scores under the new model_version.
+
+After deploy, run `compute_calibration_stats` for both the old
+and new model_version after enough reviews accumulate — confirm
+the new version improves on Brier + ROC-AUC. If it doesn't,
+roll back.
+
+### 15.7 — Common operator questions
+
+- **"Why is my project's score so high?"** Open the card and
+  expand the "Top contributing factors" drilldown — the first
+  3-5 inputs sorted by contribution will identify the dominant
+  driver. Each factor row shows the raw value and how much it
+  added to the total.
+- **"The score didn't update today."** Check Sentry for the
+  4 AM ET tick. Common cause: the daily tick saw the global
+  flag off (the feature flag was killed overnight) and
+  no-op'd. Other cause: the project was last scored within the
+  12h freshness window and the tick correctly skipped it.
+- **"Inspector said the score was wrong but I clicked Yes by
+  mistake."** Reviews are append-only and not editable through
+  the FE. To correct: post another review with the right
+  verdict — the aggregator treats them as separate samples,
+  which means reviewer disagreement is signal we want to keep,
+  not erase.
+
+---
+
+## 16. Environment variables reference
 
 The full set of env vars the production deployment reads. Add new
 ones here when you wire them.
