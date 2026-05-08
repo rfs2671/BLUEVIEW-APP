@@ -56,7 +56,7 @@ import { useTheme } from '../context/ThemeContext';
 import GlassButton from './GlassButton';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
-import { bandFor } from './RiskScoreCircle';
+import { bandFor, RISK_SCORE_TITLE } from './RiskScoreCircle';
 
 const FACTOR_LABELS = {
   active_dob_violations:               'Active DOB violations',
@@ -217,8 +217,13 @@ const RiskScoreDrawer = ({
               ) : (
                 <ShieldCheck size={20} strokeWidth={1.5} color={bandFg} />
               )}
+              {/* V2.1.4 — header title now matches the circle's
+                  title text ("DOB Risk Score") so the drawer
+                  reads as a continuation of the gauge the user
+                  just clicked. The band label moves to a
+                  prominent line under the score number below. */}
               <Text style={[styles.headerTitle, { color: bandFg }]}>
-                RISK SCORE{band ? ` · ${band.label}` : ''}
+                {RISK_SCORE_TITLE.toUpperCase()}
               </Text>
             </View>
             <Pressable
@@ -250,6 +255,16 @@ const RiskScoreDrawer = ({
                   </Text>
                   <Text style={styles.scoreOutOf}>/ 100</Text>
                 </View>
+                {/* V2.1.4 — band-word ("LOW RISK" / "MODERATE
+                    RISK" / etc.) displayed prominently below the
+                    score number, color-matched to the band. Same
+                    label string as the circle's band-word so the
+                    user sees a consistent verdict in both places. */}
+                {band && (
+                  <Text style={[styles.bandWord, { color: bandFg }]}>
+                    {band.label}
+                  </Text>
+                )}
                 <Text style={styles.ciText}>
                   95% confidence interval: {ciLow} – {ciHigh}
                 </Text>
@@ -459,6 +474,14 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       marginLeft: 6,
       marginBottom: 8,
+    },
+    bandWord: {
+      // V2.1.4 — drawer-body band-word. Slightly larger than the
+      // circle's band-word so it reads as a verdict heading.
+      marginTop: 4,
+      fontSize: 14,
+      fontWeight: '700',
+      letterSpacing: 1.2,
     },
     ciText: {
       fontSize: 13,

@@ -238,6 +238,15 @@ Indexes (registered at startup via
 
 ### `<RiskScoreCircle projectId={…} isAdmin={…} size={…} />`
 
+> **V2.1.4 — added label context.** Pre-V2.1.4 the gauge was a
+> bare number with a one-word band underneath; new users had no
+> way to know what the number meant or what scale it was on.
+> V2.1.4 adds a "DOB Risk Score" title above the circle and
+> changes the band word to a verdict in plain English ("LOW
+> RISK" / "MODERATE RISK" / "HIGH RISK" / "CRITICAL RISK"). The
+> drawer header now matches the title for visual continuity
+> from gauge → drawer.
+
 A compact SVG radial gauge (default 84 px, configurable). Mounted in two surfaces:
 
   • **Project list** (`frontend/app/projects/index.jsx`) —
@@ -248,6 +257,18 @@ A compact SVG radial gauge (default 84 px, configurable). Mounted in two surface
     in the right cluster of the project header card, next to
     the QR badge, at `size={84}`.
 
+Visual structure (V2.1.4):
+
+```
+┌────────────────────────┐
+│   DOB RISK SCORE       │  ← title (muted, ~11 px desktop / 9 px compact)
+│      ╭──────╮          │
+│      │  42  │          │  ← score number (band-colored)
+│      ╰──────╯          │
+│   MODERATE RISK        │  ← band word (band-colored)
+└────────────────────────┘
+```
+
 Behavior:
 
   • **First hook** is `useFeatureFlag('v2_risk_score')` —
@@ -255,16 +276,25 @@ Behavior:
     the order via line-position check.
   • **Flag OFF** → returns `null` BEFORE fetching anything.
     v1 users see nothing.
-  • **Loading / no score / fetch failure** → renders a greyed
-    ring with `—`. Silent fail; never paints an error toast
-    (a list with 50 projects on a partial outage shouldn't
-    burn 50 toasts).
-  • **Score present** → radial fill colored by band, score
-    number centered, band label below (LOW / MODERATE / HIGH /
-    CRITICAL).
-  • **Hover (web)** → tooltip `low–high / 100`.
+  • **Loading state** → title still visible; circle shows `…`;
+    band-word area renders empty (avoids flicker between
+    "PENDING" and the real verdict).
+  • **No score yet** → title still visible; circle shows `—`
+    (em dash); band-word reads `PENDING` in muted gray.
+  • **Score present** → title visible; radial fill colored by
+    band; score number centered; band-word below as a verdict
+    in plain English: `LOW RISK` / `MODERATE RISK` / `HIGH RISK`
+    / `CRITICAL RISK`, color-matched to the band.
+  • **Fetch failure** → silent fall-through to no-score state.
+    Never paints an error toast (a list with 50 projects on a
+    partial outage shouldn't burn 50 toasts).
+  • **Hover (web)** → tooltip `low–high / 100` anchored above
+    the title.
   • **Click** → opens `<RiskScoreDrawer/>`. Never navigates
     away from the current page.
+  • **Compact mode** (size < 70 px, used for project-list
+    rows and on mobile viewports) — title font drops to 9 px,
+    band-word drops to 8 px. Same content, smaller footprint.
   • Score-band thresholds match
     `lib/risk_score/schema.py::score_band` exactly. Tests pin
     each boundary case (29, 30, 31, 60, 61, 80, 81, 99).
@@ -273,8 +303,14 @@ Behavior:
 
 Slide-in side drawer (460 px desktop / full-width on mobile <768 px). Renders the full breakdown:
 
-  • Big score number with band color + 95% CI prominently
-    displayed.
+  • Header reads `DOB RISK SCORE` (V2.1.4 — matches the
+    circle's title for visual continuity).
+  • Big score number with band color, then a prominent
+    band-word line (`LOW RISK` / `MODERATE RISK` / etc.)
+    color-matched to the band — same verdict the circle
+    showed underneath, surfaced as a heading inside the
+    drawer body.
+  • 95% CI displayed beneath the band-word.
   • Top-5 contributing factors with proportional bars colored
     by band.
   • **Recalculate now** — POSTs to
