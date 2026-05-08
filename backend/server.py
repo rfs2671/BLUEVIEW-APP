@@ -3360,6 +3360,7 @@ async def admin_delete_feature_flag(
 # startup block that registers other crons (~line 23800).
 
 import lib.logbook as _logbook  # local import; see lib/logbook/__init__.py
+import lib.risk_score as _risk_score  # Phase V2.1; see lib/risk_score/__init__.py
 
 
 async def _logbook_flag_enabled_for(current_user) -> bool:
@@ -3607,6 +3608,148 @@ async def export_logbook(
             ),
         },
     )
+
+
+# ==================== V2.1 RISK SCORE ENDPOINTS =================
+#
+# Phase V2.1 — NYC DOB Risk Score. Heuristic v1 with bootstrap CI.
+# Every endpoint is gated by the `v2_risk_score` feature flag and
+# returns 404 (not 403) when the flag is off — same security
+# parity as the V2.0 logbook endpoints. The flag default is OFF;
+# v1 customers see no v2 surface.
+
+async def _risk_score_flag_enabled_for(current_user) -> bool:
+    """Feature-flag gate used by every risk-score endpoint."""
+    user_id = str(current_user.get("id") or current_user.get("_id") or "")
+    company_id = current_user.get("company_id")
+    return await feature_flags.is_feature_enabled(
+        db, "v2_risk_score",
+        user_id=user_id or None,
+        company_id=str(company_id) if company_id else None,
+    )
+
+
+def _risk_score_404():
+    """Hide the surface from flag-off callers — 404, not 403,
+    so flag-off probes can't even confirm the endpoint exists."""
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@api_router.get("/projects/{project_id}/risk-score")
+async def get_project_risk_score(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    """Return the latest risk score for a project. 404 if no
+    score has been calculated yet."""
+    if not await _risk_score_flag_enabled_for(current_user):
+        _risk_score_404()
+    cur = db[_risk_score.RISK_SCORES_COLLECTION].find({
+        "project_id": project_id,
+    }).sort("calculated_at", -1).limit(1)
+    latest = None
+    async for doc in cur:
+        latest = doc
+    if latest is None:
+        raise HTTPException(status_code=404, detail="No score yet")
+    return {"score": serialize_id(latest)}
+
+
+@api_router.get("/projects/{project_id}/risk-score/history")
+async def get_project_risk_score_history(
+    project_id: str,
+    days: int = Query(30, ge=1, le=365),
+    current_user = Depends(get_current_user),
+):
+    """Return the time series of risk scores for charting. Capped
+    at 365 days of history; default 30."""
+    if not await _risk_score_flag_enabled_for(current_user):
+        _risk_score_404()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    docs = await db[_risk_score.RISK_SCORES_COLLECTION].find({
+        "project_id": project_id,
+        "calculated_at": {"$gte": cutoff},
+    }).sort("calculated_at", -1).limit(500).to_list(500)
+    return {"history": [serialize_id(d) for d in docs]}
+
+
+@api_router.post("/projects/{project_id}/risk-score/calculate")
+async def calculate_project_risk_score(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    """On-demand recalculation. `force=True` so the freshness
+    check doesn't skip — the operator clicked Recalculate for a
+    reason."""
+    if not await _risk_score_flag_enabled_for(current_user):
+        _risk_score_404()
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    from lib.risk_score.orchestrator import run_risk_score_for_project
+    doc = await run_risk_score_for_project(
+        db, project=project, force=True,
+    )
+    if doc is None:
+        # `force=True` skips the freshness check, so a None result
+        # here means the project was missing identifiers — bubble
+        # up as 422.
+        raise HTTPException(status_code=422, detail="Score not produced")
+    return {"score": serialize_id(doc)}
+
+
+class RiskScoreCalibrationRequest(BaseModel):
+    score_id: str
+    was_high_risk_correct: bool
+    notes: Optional[str] = None
+
+
+@api_router.post("/projects/{project_id}/risk-score/calibration")
+async def submit_risk_score_calibration(
+    project_id: str,
+    body: RiskScoreCalibrationRequest,
+    current_user = Depends(get_current_user),
+):
+    """Log an inspector review. Body:
+        score_id: ObjectId-as-string of the risk_scores doc
+        was_high_risk_correct: bool — was the model right?
+        notes: optional free text
+
+    The review feeds the calibration aggregator
+    (`compute_calibration_stats`). Weight changes are MANUAL —
+    never auto-applied from this endpoint."""
+    if not await _risk_score_flag_enabled_for(current_user):
+        _risk_score_404()
+    if not body.score_id:
+        raise HTTPException(status_code=422, detail="score_id required")
+    from lib.risk_score.calibration import log_inspector_review
+    record = await log_inspector_review(
+        db,
+        score_id=body.score_id,
+        project_id=project_id,
+        was_high_risk_correct=body.was_high_risk_correct,
+        notes=body.notes,
+        reviewed_by_user_id=str(current_user.get("id") or ""),
+    )
+    return {"review": serialize_id(record)}
+
+
+@api_router.get("/admin/risk-score/calibration")
+async def get_admin_risk_score_calibration(
+    model_version: Optional[str] = None,
+    current_user = Depends(get_admin_user),
+):
+    """Aggregate calibration stats across all reviews. Admin-only
+    (the `get_admin_user` dependency enforces role). Computed on
+    demand from `risk_score_reviews` + `risk_scores`; not
+    persisted unless the operator explicitly snapshots it."""
+    if not await _risk_score_flag_enabled_for(current_user):
+        _risk_score_404()
+    from lib.risk_score.calibration import compute_calibration_stats
+    stats = await compute_calibration_stats(
+        db, model_version=model_version,
+    )
+    return {"calibration": stats}
 
 
 # ==================== ADMIN USER MANAGEMENT ====================
@@ -24017,7 +24160,45 @@ async def startup_event():
         max_instances=1,
         coalesce=True,
     )
-    
+
+    # Phase V2.1 — risk-score daily tick. 4 AM ET, one hour after
+    # the V2.0 logbook tick so it sees the freshest missing /
+    # deficiency entries on every run. Flag-gated globally — if
+    # the flag is absent OR explicitly disabled globally, the
+    # tick is a no-op (still iterates one cheap is_feature_enabled
+    # call but doesn't touch any project). Idempotent via the 12h
+    # freshness check inside run_risk_score_for_project, so
+    # overlapping ticks (manual rerun + cron tick) don't double-
+    # write.
+    async def _risk_score_daily_tick():
+        try:
+            # Probe the flag once with a synthetic admin context —
+            # if it's globally off, do nothing. We don't want to
+            # walk every project just to find out the flag's off.
+            globally_enabled = await feature_flags.is_feature_enabled(
+                db, "v2_risk_score",
+                user_id=None, company_id=None,
+            )
+            if not globally_enabled:
+                return
+            from lib.risk_score.orchestrator import (
+                run_risk_score_for_all_projects,
+            )
+            await run_risk_score_for_all_projects(db)
+        except Exception as e:
+            logger.error(
+                f"[v2_risk_score] daily tick failed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _risk_score_daily_tick,
+        CronTrigger(hour=4, minute=0, timezone="America/New_York"),
+        id='v2_risk_score_daily_tick',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
     # 311 stays at 30 min."
@@ -24274,6 +24455,31 @@ async def startup_event():
     for _idx_spec in _logbook.LOGBOOK_ENTRIES_INDEXES:
         await _ensure_index_resilient(
             db.logbook_entries,
+            keys=_idx_spec["keys"],
+            name=_idx_spec["name"],
+            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
+        )
+
+    # Phase V2.1 — risk-score indexes. Three additive collections,
+    # specs sourced from lib/risk_score/schema.py so the indexes
+    # follow the model definition.
+    for _idx_spec in _risk_score.RISK_SCORES_INDEXES:
+        await _ensure_index_resilient(
+            db[_risk_score.RISK_SCORES_COLLECTION],
+            keys=_idx_spec["keys"],
+            name=_idx_spec["name"],
+            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
+        )
+    for _idx_spec in _risk_score.RISK_SCORE_REVIEWS_INDEXES:
+        await _ensure_index_resilient(
+            db[_risk_score.RISK_SCORE_REVIEWS_COLLECTION],
+            keys=_idx_spec["keys"],
+            name=_idx_spec["name"],
+            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
+        )
+    for _idx_spec in _risk_score.RISK_SCORE_CALIBRATION_INDEXES:
+        await _ensure_index_resilient(
+            db[_risk_score.RISK_SCORE_CALIBRATION_COLLECTION],
             keys=_idx_spec["keys"],
             name=_idx_spec["name"],
             **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
