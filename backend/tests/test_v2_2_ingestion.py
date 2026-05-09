@@ -159,10 +159,13 @@ class TestCanonicalRecord(unittest.TestCase):
         rec = ing._to_canonical_record(raw, spec)
         self.assertIsNone(rec)
 
-    def test_pluto_synthesizes_record_id_from_bin(self):
+    def test_pluto_synthesizes_record_id_from_bbl(self):
+        """V2.2.3: PLUTO is BBL-keyed (natural_key='bbl'). The
+        Socrata 64uk-42ks dataset has no `bin` column, so the
+        V2.2.2 attempt to fall back from bin→bbl was an implicit
+        contract; V2.2.3 makes it explicit via `natural_key`."""
         spec = ing.DATASETS["pluto"]
         raw = {
-            "bin": "1234567",
             "bbl": "1001234567",
             "borough": "MN",
             "bldgclass": "R6",
@@ -170,12 +173,32 @@ class TestCanonicalRecord(unittest.TestCase):
         }
         rec = ing._to_canonical_record(raw, spec)
         self.assertIsNotNone(rec)
-        self.assertEqual(rec["record_id"], "pluto_1234567")
-        self.assertEqual(rec["bin"], "1234567")
+        self.assertEqual(rec["record_id"], "pluto_1001234567")
+        self.assertEqual(rec["bbl"], "1001234567")
 
-    def test_pluto_missing_bin_returns_none(self):
+    def test_pluto_strips_bbl_decimal_suffix(self):
+        """V2.2.3: PLUTO's Socrata payload returns BBL with a
+        `.00000000` decimal suffix on every row. Strip it so
+        record_id matches the BBL format used elsewhere."""
         spec = ing.DATASETS["pluto"]
-        raw = {"borough": "MN", "bldgclass": "R6"}
+        raw = {
+            "bbl": "4061730023.00000000",
+            "borough": "QN",
+        }
+        rec = ing._to_canonical_record(raw, spec)
+        self.assertIsNotNone(rec)
+        self.assertEqual(
+            rec["record_id"], "pluto_4061730023",
+            "PLUTO record_id must use the integer-string BBL form, "
+            "not the .00000000 decimal-suffix form Socrata returns",
+        )
+
+    def test_pluto_missing_natural_key_returns_none(self):
+        """When the natural_key field (bbl) is absent or empty,
+        canonicalization drops the row. Used to be named
+        `test_pluto_missing_bin_returns_none` pre-V2.2.3."""
+        spec = ing.DATASETS["pluto"]
+        raw = {"borough": "MN", "bldgclass": "R6"}  # no bbl
         rec = ing._to_canonical_record(raw, spec)
         self.assertIsNone(rec)
 
@@ -778,6 +801,338 @@ class TestPackageReExportsCommit2(unittest.TestCase):
         self.assertTrue(hasattr(stat_engine, "weekly_delta_all_datasets"))
         self.assertTrue(hasattr(stat_engine, "backfill_all_datasets"))
         self.assertTrue(hasattr(stat_engine, "forward_to_v22"))
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.2.3 — field_map rebuilds from real Socrata payloads + unified
+# drop-tracking. Each test name starts with "test_v22_3_" so a
+# future audit can grep them out together.
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestV22_3_DobInspectionsFieldMap(unittest.TestCase):
+    """V2.2.2 fixed the dataset id (ic3t-wcy2 → p937-wjvj) but
+    left the field_map referencing ic3t-wcy2's column names.
+    p937-wjvj's actual columns (verified by curl):
+      • bin (lowercase, NOT bin_number)
+      • job_ticket_or_work_order_id (NOT id) for record_id
+      • inspection_date is properly-typed; ISO comparator works
+    """
+
+    def test_v22_3_field_map_uses_real_p937wjvj_columns(self):
+        spec = ing.DATASETS["dob_inspections"]
+        fm = spec["field_map"]
+        # The two columns that were wrong post-V2.2.2.
+        self.assertEqual(fm["bin"], "bin")
+        self.assertEqual(
+            fm["record_id"], "job_ticket_or_work_order_id",
+        )
+        # And the date_field stays inspection_date (correct).
+        self.assertEqual(spec["date_field"], "inspection_date")
+
+    def test_v22_3_canonicalizes_real_p937wjvj_row(self):
+        """Feed a row shaped like what p937-wjvj actually returns
+        (sampled via curl 2026-05-09). Pre-V2.2.3 this row would
+        drop with reason='missing_record_id' because the field_map
+        looked for `id` (which doesn't exist). After V2.2.3 it
+        canonicalizes cleanly."""
+        spec = ing.DATASETS["dob_inspections"]
+        # This raw shape was captured from
+        # https://data.cityofnewyork.us/resource/p937-wjvj.json
+        raw = {
+            "inspection_type": "Initial",
+            "job_ticket_or_work_order_id": "11670593",
+            "job_id": "PC6530234",
+            "bbl": "2032890025",
+            "bin": "2016678",
+            "borough": "Bronx",
+            "inspection_date": "2010-08-30T15:23:11.000",
+            "result": "Passed",
+        }
+        rec = ing._to_canonical_record(raw, spec)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["record_id"], "11670593")
+        self.assertEqual(rec["bin"], "2016678")
+        self.assertEqual(rec["bbl"], "2032890025")
+        self.assertEqual(rec["result"], "Passed")
+        self.assertEqual(rec["job_id"], "PC6530234")
+
+
+class TestV22_3_DobPermitsWhereField(unittest.TestCase):
+    """V2.2.2 set date_field='filing_date' for ipu4-2q9a — but
+    filing_date is a TEXT column with mixed MM/DD/YYYY +
+    YYYY-MM-DD values that doesn't accept ISO comparators.
+    V2.2.3 routes WHERE/ORDER through Socrata's typed system
+    column `:updated_at` via the new `where_field` attribute."""
+
+    def test_v22_3_dob_permits_uses_updated_at_for_where(self):
+        spec = ing.DATASETS["dob_permits"]
+        self.assertEqual(spec.get("where_field"), ":updated_at")
+        # date_field stays filing_date so canonical occurred_date
+        # extraction still uses the user-meaningful column.
+        self.assertEqual(spec["date_field"], "filing_date")
+
+    def test_v22_3_no_issuance_date_in_dob_permits_config(self):
+        """Audit pin per the spec: 'grep the codebase for
+        "issuance_date" — should be zero hits in V2.2 ingestion
+        config after V2.2.3'. The dataset spec must not reference
+        issuance_date anywhere — that column produces 0 rows on
+        ISO WHERE due to the string-comparison gotcha."""
+        spec = ing.DATASETS["dob_permits"]
+        # date_field
+        self.assertNotEqual(spec.get("date_field"), "issuance_date")
+        # where_field
+        self.assertNotEqual(spec.get("where_field"), "issuance_date")
+        # field_map: any source pointing at issuance_date?
+        for canonical, source in spec["field_map"].items():
+            self.assertNotEqual(
+                source, "issuance_date",
+                f"{canonical} field maps to issuance_date — "
+                f"replace with filing_date",
+            )
+
+    def test_v22_3_backfill_uses_where_field_when_present(self):
+        """End-to-end: backfill_dataset on dob_permits should
+        send a WHERE clause built from `:updated_at`, NOT from
+        `filing_date`. We verify this by inspecting the params
+        the stub HTTP client receives."""
+        captured: list = []
+
+        class _CapturingClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a, **k): return None
+            async def get(self, url, params=None):
+                captured.append({"url": url, "params": dict(params or {})})
+                r = MagicMock()
+                r.status_code = 200
+                r.json = lambda: []
+                r.headers = {}
+                return r
+
+        db = _BackfillDb()
+        client = _CapturingClient()
+        _run(ing.backfill_dataset(
+            db, "dob_permits",
+            page_limit=100,
+            http_client=client,
+            max_pages=1,
+        ))
+        self.assertGreater(len(captured), 0, "backfill should issue at least one HTTP request")
+        params = captured[0]["params"]
+        where = params.get("$where", "")
+        self.assertIn(":updated_at", where,
+                      f"WHERE should use :updated_at, got: {where!r}")
+        self.assertNotIn("filing_date", where)
+        self.assertNotIn("issuance_date", where)
+
+
+class TestV22_3_PlutoBblNormalization(unittest.TestCase):
+    """V2.2.3 strips PLUTO's `.00000000` decimal suffix from BBL
+    so record_id matches the BBL format used elsewhere in the
+    codebase (e.g. `4061730023`, not `4061730023.00000000`)."""
+
+    def test_v22_3_normalize_natural_key_strips_decimal_zero(self):
+        # Direct call to the normalizer.
+        self.assertEqual(
+            ing._normalize_natural_key("4061730023.00000000"),
+            "4061730023",
+        )
+        # Already-clean BBL passes through.
+        self.assertEqual(
+            ing._normalize_natural_key("4061730023"),
+            "4061730023",
+        )
+        # Empty / None.
+        self.assertIsNone(ing._normalize_natural_key(None))
+        self.assertIsNone(ing._normalize_natural_key(""))
+        # Non-zero decimal — pass through (don't munge legit floats).
+        self.assertEqual(
+            ing._normalize_natural_key("3.5"),
+            "3.5",
+        )
+
+    def test_v22_3_pluto_real_socrata_row_canonicalizes(self):
+        """Feed a row shaped like what 64uk-42ks actually
+        returns (sampled via curl 2026-05-09). Verifies the
+        full integration: `bin` column absent, BBL with decimal
+        suffix, record_id strips the suffix."""
+        spec = ing.DATASETS["pluto"]
+        raw = {
+            # Captured from
+            # https://data.cityofnewyork.us/resource/64uk-42ks.json?$limit=1
+            "borough": "QN",
+            "block": "6173",
+            "lot": "23",
+            "address": "214-10 35 AVENUE",
+            "bldgclass": "A5",
+            "landuse": "1",
+            "lotarea": "2660",
+            "bldgarea": "1224",
+            "yearbuilt": "1950",
+            "numfloors": "2.0000000",
+            "bbl": "4061730023.00000000",
+            "ownername": "LIU, RUI TANG",
+            "zipcode": "11361",
+            # Note: NO `bin` column — confirmed via curl.
+        }
+        rec = ing._to_canonical_record(raw, spec)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["record_id"], "pluto_4061730023")
+        self.assertEqual(rec["bbl"], "4061730023.00000000")
+        self.assertEqual(rec["address"], "214-10 35 AVENUE")
+        self.assertEqual(rec["bldgclass"], "A5")
+
+
+class TestV22_3_CanonicalizeWithReason(unittest.TestCase):
+    """The new (record, drop_reason) two-step canonicalizer is
+    the foundation for V2.2.3 BUG 7 Part B. Pin the reason
+    strings so a future refactor doesn't silently rename them
+    (drop-reason logs in production are operator-facing)."""
+
+    def test_v22_3_canonicalize_with_reason_returns_record_on_success(self):
+        spec = ing.DATASETS["dob_violations"]
+        raw = {
+            "isn_dob_bis_viol": "VIOL_OK",
+            "bin": "1234567", "bbl": "1001234567", "boro": "M",
+            "issue_date": "2026-04-15",
+        }
+        rec, reason = ing._canonicalize_with_reason(raw, spec)
+        self.assertIsNotNone(rec)
+        self.assertIsNone(reason)
+
+    def test_v22_3_missing_record_id_reason_pinned(self):
+        spec = ing.DATASETS["dob_violations"]
+        raw = {"bin": "1234567"}  # no isn_dob_bis_viol
+        rec, reason = ing._canonicalize_with_reason(raw, spec)
+        self.assertIsNone(rec)
+        self.assertEqual(reason, "missing_record_id")
+
+    def test_v22_3_missing_natural_key_reason_pinned(self):
+        spec = ing.DATASETS["pluto"]
+        raw = {"borough": "MN"}  # no bbl (and no bin column on PLUTO)
+        rec, reason = ing._canonicalize_with_reason(raw, spec)
+        self.assertIsNone(rec)
+        self.assertEqual(reason, "missing_natural_key:bbl")
+
+
+class TestV22_3_DropTrackingUnified(unittest.TestCase):
+    """V2.2.3 BUG 7 Part B regression test: the drop-tracking
+    contract must hold for every canonicalization-failure path,
+    NOT just the V2.2.2 outer-loop case. Spec test:
+      'feeds a dataset 10 rows where 7 fail canonicalization
+       and 3 succeed; assert errors == 7, rows_upserted == 3.'
+    """
+
+    def test_v22_3_canonicalization_drop_increments_errors(self):
+        # 10 dob_violations rows. 3 valid, 7 missing record_id
+        # (i.e. canonicalization will return None with reason
+        # missing_record_id).
+        valid_rows = [
+            {"isn_dob_bis_viol": f"OK_{i}", "bin": "1234567",
+             "bbl": "1001234567", "boro": "M",
+             "issue_date": "2026-04-15"}
+            for i in range(3)
+        ]
+        invalid_rows = [
+            {"bin": f"BAD_{i}", "bbl": "1001234567", "boro": "M",
+             "issue_date": "2026-04-15"}  # no isn_dob_bis_viol
+            for i in range(7)
+        ]
+        page = valid_rows + invalid_rows
+
+        db = _BackfillDb()
+        client = _StubHttpClient([page])
+        summary = _run(ing.backfill_dataset(
+            db, "dob_violations",
+            page_limit=10,
+            http_client=client,
+            max_pages=1,
+        ))
+        self.assertEqual(summary["rows_seen"], 10)
+        self.assertEqual(summary["rows_upserted"], 3)
+        self.assertEqual(
+            summary["errors"], 7,
+            f"every canonicalization-drop must increment errors: {summary}",
+        )
+
+    def test_v22_3_dropped_row_log_includes_drop_reason(self):
+        """Pin: the dropped-row ERROR log must include the
+        specific drop reason string (e.g. 'missing_record_id'),
+        not just 'canonicalization returned None' as in V2.2.2."""
+        page = [
+            {"bin": "1234567", "bbl": "1001234567", "boro": "M",
+             "issue_date": "2026-04-15"},  # missing isn_dob_bis_viol
+        ]
+        db = _BackfillDb()
+        client = _StubHttpClient([page])
+        import logging
+        log_records: list = []
+        handler = logging.Handler()
+        handler.emit = lambda r: log_records.append(r)
+        ing_logger = logging.getLogger("lib.statistical_engine.ingestion")
+        ing_logger.addHandler(handler)
+        prev_level = ing_logger.level
+        ing_logger.setLevel(logging.DEBUG)
+        try:
+            _run(ing.backfill_dataset(
+                db, "dob_violations",
+                page_limit=10,
+                http_client=client,
+                max_pages=1,
+            ))
+        finally:
+            ing_logger.removeHandler(handler)
+            ing_logger.setLevel(prev_level)
+
+        error_lines = [
+            r for r in log_records
+            if r.levelno >= logging.ERROR
+            and "dropped row" in r.getMessage()
+        ]
+        self.assertGreaterEqual(
+            len(error_lines), 1,
+            "expected at least one dropped-row ERROR log",
+        )
+        # The reason field must appear in the message.
+        joined = "\n".join(r.getMessage() for r in error_lines)
+        self.assertIn(
+            "reason=missing_record_id", joined,
+            f"drop reason not in log message: {joined!r}",
+        )
+
+    def test_v22_3_forward_to_v22_logs_drop_reason(self):
+        """V2.2.3 BUG 7 Part B: forward_to_v22 was previously
+        silent on canonicalization-drop. Now it emits an ERROR
+        log so a poller-side bug becomes visible."""
+        db = _BackfillDb()
+        # Missing record_id source.
+        bad_raw = {"bin": "1234567", "issue_date": "2026-04-15"}
+        import logging
+        log_records: list = []
+        handler = logging.Handler()
+        handler.emit = lambda r: log_records.append(r)
+        ing_logger = logging.getLogger("lib.statistical_engine.ingestion")
+        ing_logger.addHandler(handler)
+        prev_level = ing_logger.level
+        ing_logger.setLevel(logging.DEBUG)
+        try:
+            ok = _run(ing.forward_to_v22(db, "dob_violations", bad_raw))
+        finally:
+            ing_logger.removeHandler(handler)
+            ing_logger.setLevel(prev_level)
+
+        self.assertFalse(ok, "drop should produce False return")
+        error_lines = [
+            r for r in log_records
+            if r.levelno >= logging.ERROR
+            and "forward_to_v22" in r.getMessage()
+            and "dropped row" in r.getMessage()
+        ]
+        self.assertGreaterEqual(
+            len(error_lines), 1,
+            "forward_to_v22 must log on canonicalization-drop "
+            "(was silent pre-V2.2.3)",
+        )
 
 
 if __name__ == "__main__":
