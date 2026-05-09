@@ -3668,19 +3668,16 @@ async def calculate_project_risk_score(
     project_id: str,
     current_user = Depends(get_current_user),
 ):
-    """On-demand recalculation. The full V2.2 scoring pipeline
-    lands in Commit 5; for now this endpoint validates the
-    project and returns a 202 placeholder so the FE
-    "Recalculate now" button doesn't error."""
+    """On-demand recalculation using the V2.2 statistical
+    engine. Runs all 8 triggers, gathers inputs, computes the
+    score + CI + factor breakdown, persists to risk_scores."""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    # Placeholder — Commit 5 wires the real recompute call.
-    return {
-        "status": "queued",
-        "model_version": _stat_engine.MODEL_VERSION,
-        "project_id": project_id,
-    }
+    doc = await _stat_engine.recompute_and_persist(db, project)
+    if not doc:
+        raise HTTPException(status_code=422, detail="Score not produced")
+    return {"score": serialize_id(doc)}
 
 
 # ==================== ADMIN USER MANAGEMENT ====================

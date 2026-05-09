@@ -29,6 +29,20 @@ collections so the score reflects the freshest data without
 waiting for the weekly cron.
 """
 
+from lib.statistical_engine.score import (  # noqa: F401
+    GROUP_WEIGHTS,
+    ALL_GROUPS,
+    GROUP_OWN_BUILDING,
+    GROUP_PEER_COMPARISON,
+    GROUP_ACTIVE_TRIGGERS,
+    GROUP_INTERNAL_COMPLIANCE,
+    BOOTSTRAP_SAMPLES,
+    BOOTSTRAP_NOISE_SIGMA,
+    CONFIDENCE_INTERVAL_PCT,
+    gather_score_inputs,
+    calculate_risk_score,
+    recompute_and_persist,
+)
 from lib.statistical_engine.triggers import (  # noqa: F401
     ALL_TRIGGER_KINDS,
     TRIGGER_311_AT_BIN,

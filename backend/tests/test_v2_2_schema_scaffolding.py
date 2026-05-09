@@ -454,16 +454,19 @@ class TestServerPyV22Wiring(unittest.TestCase):
             "risk_scores_project_calculated_desc", self.text,
         )
 
-    def test_calculate_returns_placeholder_in_commit_1(self):
-        # Commit 1 placeholder: calculate endpoint returns a
-        # `queued` status with model_version. Real recompute
-        # lands in Commit 5.
+    def test_calculate_uses_recompute_and_persist(self):
+        # Commit 5 — the calculate endpoint now invokes the real
+        # V2.2 scoring pipeline. The Commit 1 placeholder
+        # ("queued" status) was replaced when Commit 5 wired
+        # `_stat_engine.recompute_and_persist`. Pin the wiring
+        # so a future regression that re-stubs the endpoint
+        # surfaces immediately.
         anchor = "calculate_project_risk_score"
         s = self.text.find(anchor)
         self.assertGreater(s, 0)
-        e = self.text.find("\n\n", s + len("calculate_project_risk_score"))
-        slice_ = self.text[s:e]
-        self.assertIn('"queued"', slice_)
+        e = self.text.find("@api_router", s + len("calculate_project_risk_score"))
+        slice_ = self.text[s:e if e > s else s + 1000]
+        self.assertIn("_stat_engine.recompute_and_persist", slice_)
 
 
 # ──────────────────────────────────────────────────────────────────
