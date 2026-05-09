@@ -427,8 +427,9 @@ class TestRecomputeAndPersist(unittest.TestCase):
 
 
 class _SortLimitCursor:
-    """Cursor stub that supports the .find().sort().limit() chain
-    + async iteration the V2.2 risk-score endpoint uses."""
+    """Cursor stub that supports the .find().sort().limit() chain.
+    Both async iteration (latest-score endpoint) AND .to_list(n)
+    (history endpoint, V2.2.1.1) are supported."""
 
     def __init__(self, docs):
         self._docs = list(docs)
@@ -454,10 +455,22 @@ class _SortLimitCursor:
                 yield it
         return _gen()
 
+    def to_list(self, n=None):
+        # The history endpoint uses `await cursor.to_list(500)`.
+        # motor's .to_list returns an awaitable that resolves to
+        # the materialized list.
+        items = self._docs[:n] if (n is not None and n >= 0) else self._docs
+        async def _coro():
+            return items
+        return _coro()
+
 
 class _ModelVersionStubColl:
-    """Stub that emulates the find/sort/limit/__aiter__ chain
-    AND honors equality filters on (project_id, model_version)."""
+    """Stub that emulates the find/sort/limit/(async-iter | to_list)
+    chain AND honors:
+      • equality filters (project_id, model_version)
+      • {$gte: <datetime>} on calculated_at (history endpoint)
+    """
 
     def __init__(self):
         self.docs: list = []
@@ -468,7 +481,12 @@ class _ModelVersionStubColl:
         for d in self.docs:
             ok = True
             for k, v in q.items():
-                if d.get(k) != v:
+                actual = d.get(k)
+                if isinstance(v, dict) and "$gte" in v:
+                    if actual is None or actual < v["$gte"]:
+                        ok = False
+                        break
+                elif actual != v:
                     ok = False
                     break
             if ok:
@@ -553,6 +571,88 @@ class TestGetRiskScoreFiltersModelVersion(unittest.TestCase):
                 self.assertNotEqual(
                     body["score"].get("id"), "v21_row",
                 )
+        finally:
+            restore()
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.2.1.1 — GET /risk-score/history must filter by model_version
+# ──────────────────────────────────────────────────────────────────
+#
+# Same logical bug as V2.2.1, on the time-series endpoint. Without
+# the filter the trend chart on a long-lived project would mix
+# V2.1 heuristic-v1 points with V2.2 statistical-v1 points —
+# visually continuous but semantically apples-and-oranges since
+# the two models have different scoring distributions.
+
+
+class TestGetRiskScoreHistoryFiltersModelVersion(unittest.TestCase):
+    """V2.2.1.1 regression test for the
+    "GET /history mixes V2.1 heuristic-v1 + V2.2 statistical-v1
+    rows" bug.
+
+    Fixture: 4 rows on the same project — 2 heuristic-v1 (older)
+    + 2 statistical-v1 (newer), all within the 30-day window.
+    GET /history?days=30 MUST return exactly the 2 V2.2 rows.
+    """
+
+    def test_history_filters_by_statistical_v1(self):
+        from unittest.mock import patch
+        import server
+
+        now = datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc)
+        # Older V2.1 rows (still within the 30-day window so the
+        # cutoff doesn't accidentally filter them — the bug is
+        # specifically about model_version, not the time window).
+        d_minus_15 = now - timedelta(days=15)
+        d_minus_12 = now - timedelta(days=12)
+        # Newer V2.2 rows.
+        d_minus_3 = now - timedelta(days=3)
+        d_minus_1 = now - timedelta(days=1)
+
+        risk_scores = _ModelVersionStubColl()
+        risk_scores.docs.extend([
+            {"_id": "v21_a", "project_id": "P1",
+             "model_version": "heuristic-v1", "score": 11.0,
+             "calculated_at": d_minus_15},
+            {"_id": "v21_b", "project_id": "P1",
+             "model_version": "heuristic-v1", "score": 13.0,
+             "calculated_at": d_minus_12},
+            {"_id": "v22_a", "project_id": "P1",
+             "model_version": "statistical-v1", "score": 41.0,
+             "calculated_at": d_minus_3},
+            {"_id": "v22_b", "project_id": "P1",
+             "model_version": "statistical-v1", "score": 47.0,
+             "calculated_at": d_minus_1},
+        ])
+
+        stub_db = MagicMock()
+        stub_db.risk_scores = risk_scores
+
+        client, restore = _setup_authed_client()
+        try:
+            with patch.object(server, "db", stub_db):
+                r = client.get("/api/projects/P1/risk-score/history?days=30")
+                self.assertEqual(r.status_code, 200, r.text)
+                body = r.json()
+                self.assertIn("history", body)
+                items = body["history"]
+                # Exactly 2 — the V2.2 rows. NOT 4.
+                self.assertEqual(
+                    len(items), 2,
+                    f"history returned {len(items)} rows, expected 2 "
+                    f"V2.2 rows (V2.1 rows must be filtered out)",
+                )
+                # All returned items are V2.2.
+                for item in items:
+                    self.assertEqual(
+                        item.get("model_version"), "statistical-v1",
+                        f"non-V2.2 row leaked through: {item}",
+                    )
+                # And critically, NEITHER V2.1 row id appears.
+                returned_ids = {item.get("id") for item in items}
+                self.assertNotIn("v21_a", returned_ids)
+                self.assertNotIn("v21_b", returned_ids)
         finally:
             restore()
 
