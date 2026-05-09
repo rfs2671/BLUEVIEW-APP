@@ -86,35 +86,57 @@ DATASETS = {
         "collection": NYC_INSPECTIONS_COLLECTION,
         # V2.2.2 BUG 1 fix: was "ic3t-wcy2" (returned HTTP 400 —
         # wrong dataset). Correct DOB Inspections dataset is
-        # p937-wjvj, confirmed against the legacy DOB sync in
-        # server.py which orders by inspection_date DESC on this
-        # exact id.
+        # p937-wjvj.
+        # V2.2.3 BUG 5 fix: V2.2.2 changed the dataset id but
+        # left the field_map referencing ic3t-wcy2's column
+        # names. p937-wjvj has different columns. Verified by
+        # curling https://data.cityofnewyork.us/resource/p937-wjvj.json:
+        #   - BIN column is `bin` (lowercase), NOT `bin_number`
+        #   - There is no `id` column; record_id source is
+        #     `job_ticket_or_work_order_id` (unique 100/100 in a
+        #     100-row sample, never null)
+        #   - `inspection_date` IS a properly-typed date column
+        #     and accepts ISO-string WHERE comparators directly
         "socrata_id": "p937-wjvj",
         "date_field": "inspection_date",
         "field_map": {
-            "record_id":       "id",
-            "bin":             "bin_number",
+            "record_id":       "job_ticket_or_work_order_id",
+            "bin":             "bin",
             "bbl":             "bbl",
             "borough":         "borough",
             "occurred_date":   "inspection_date",
             "inspection_type": "inspection_type",
             "result":          "result",
+            "job_id":          "job_id",
         },
     },
     "dob_permits": {
         "collection": NYC_PERMITS_COLLECTION,
         "socrata_id": "ipu4-2q9a",
-        # V2.2.2 BUG 2 fix: was "issuance_date" — that column does
-        # not exist on this Socrata dataset, so the WHERE silently
-        # matched 0 rows. The legacy DOB sync uses `filing_date` on
-        # ipu4-2q9a; same fix applied here. The field_map's
-        # occurred_date source is updated to match so we actually
-        # capture a populated value.
-        "date_field": "filing_date",
+        # V2.2.3 BUG 6 fix — root cause was hypothesis (b):
+        # `filing_date` is a TEXT column with mixed
+        # MM/DD/YYYY and YYYY-MM-DD values, so ISO comparators
+        # against it return 0 rows lexicographically. Verified
+        # by curling several WHERE shapes:
+        #   $where=filing_date >= '2024-01-01T00:00:00'  → 0 rows
+        #   $where=filing_date >= '2024-01-01'           → 0 rows
+        #   $where=filing_date >= '01/01/2024'           → returns
+        #     rows from 2022 (lex match, not chrono — useless)
+        #   $where=:updated_at >= '2024-01-01'           → works
+        # Socrata's system column `:updated_at` IS a real
+        # timestamp on every dataset. Use it for WHERE/ORDER and
+        # keep filing_date for canonical occurred_date display.
+        # `where_field` is a new attribute (V2.2.3) consumed by
+        # the WHERE/ORDER builders in the backfill / weekly-delta
+        # paths; it falls back to `date_field` when absent.
+        # Also: `bbl` is NOT a column on ipu4-2q9a. The dataset
+        # has borough+block+lot separately. Removed from field_map
+        # rather than mapping to a None-producing key.
+        "date_field":   "filing_date",
+        "where_field":  ":updated_at",
         "field_map": {
             "record_id":       "job__",
             "bin":             "bin__",
-            "bbl":             "bbl",
             "borough":         "borough",
             "occurred_date":   "filing_date",
             "permit_status":   "permit_status",
@@ -170,13 +192,30 @@ DATASETS = {
     },
     # PLUTO is special — snapshot, not event stream. Lower
     # ingestion frequency. Full table re-pulled on PLUTO release
-    # (~quarterly per NYC City Planning); upsert by BIN.
+    # (~quarterly per NYC City Planning); upsert by BBL.
+    #
+    # V2.2.3 BUG 7 Part A fix: 64uk-42ks does NOT have a `bin`
+    # column — verified by curling
+    # https://data.cityofnewyork.us/resource/64uk-42ks.json
+    # (the 71-column response includes `bbl`, `borough`, `block`,
+    # `lot`, etc. but no `bin`). PLUTO is BBL-keyed in reality
+    # because a single tax lot can have multiple BINs. Removed
+    # the `bin` field_map entry rather than letting it resolve
+    # to None on every row. `natural_key` (new attribute,
+    # V2.2.3) tells the canonicalizer which field to synthesize
+    # record_id from for snapshot datasets — this replaces the
+    # implicit "fall back from bin to bbl" logic from V2.2.2.
+    #
+    # PLUTO's bbl values come back with a `.00000000` decimal
+    # suffix (e.g. "4061730023.00000000"). The canonicalizer
+    # strips this so record_id is `pluto_4061730023`, matching
+    # the BBL format used elsewhere in the codebase.
     "pluto": {
         "collection": NYC_PLUTO_COLLECTION,
         "socrata_id": "64uk-42ks",
-        "date_field": None,  # snapshot, no occurred_date
+        "date_field": None,         # snapshot, no occurred_date
+        "natural_key": "bbl",       # used by snapshot record_id synthesis
         "field_map": {
-            "bin":           "bin",
             "bbl":           "bbl",
             "borough":       "borough",
             "bldgclass":     "bldgclass",
@@ -185,6 +224,9 @@ DATASETS = {
             "numfloors":     "numfloors",
             "lotarea":       "lotarea",
             "bldgarea":      "bldgarea",
+            "address":       "address",
+            "ownername":     "ownername",
+            "zipcode":       "zipcode",
         },
     },
 }
@@ -204,43 +246,86 @@ MAX_BACKOFF_SECONDS = 60.0
 # ── Field normalization ───────────────────────────────────────────
 
 
-def _to_canonical_record(
-    raw_row: Dict[str, Any], dataset_spec: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    """Map a raw Socrata row to our canonical record shape using
-    the dataset's field_map. Returns None if the record_id is
-    missing or empty (degenerate row — skip rather than upsert
-    a record without a dedupe key).
+def _normalize_natural_key(value: Any) -> Optional[str]:
+    """Coerce a natural-key value (typically PLUTO's BBL) to a
+    canonical string. Strips trailing decimal-zero suffix that
+    PLUTO's Socrata payload uses on numeric columns
+    (`"4061730023.00000000"` → `"4061730023"`)."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if "." in s:
+        # Strip a `.0+` suffix (e.g. PLUTO's bbl), but only if the
+        # remainder is purely digits. Keeps real decimal strings
+        # like "1.5" intact for non-PLUTO callers.
+        head, tail = s.split(".", 1)
+        if head.isdigit() and set(tail) <= {"0"}:
+            return head
+    return s
 
-    PLUTO record_id synthesis (V2.2.2 BUG 4 fix): PLUTO is
-    BBL-keyed in reality (a single lot can have multiple BINs),
-    and the live Socrata payload doesn't always expose `bin` at
-    the lowercase column name we expect. Synthesis prefers BIN
-    when present, falls back to BBL — BBL is on every PLUTO row
-    and is PLUTO's natural primary key. A row with neither
-    returns None and is counted as a row-drop error by the
-    backfill loop.
+
+def _canonicalize_with_reason(
+    raw_row: Dict[str, Any], dataset_spec: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Map a raw Socrata row to our canonical record shape.
+
+    Returns ``(record, drop_reason)``:
+      • Success: ``(canonical_record_dict, None)``.
+      • Drop: ``(None, "<reason>")`` — the reason names the
+        specific contract failure so the backfill loop can log
+        a useful diagnostic instead of a generic
+        "canonicalization returned None".
+
+    Drop reasons:
+      • ``"missing_record_id"``    — event dataset row had no
+                                     value at the field_map's
+                                     record_id source.
+      • ``"missing_natural_key:<field>"`` — snapshot dataset
+                                     row had no value at the
+                                     spec's natural_key source.
+
+    V2.2.3 BUG 7 Part B fix: this function replaces the
+    pre-V2.2.3 ``_to_canonical_record`` (which is now a thin
+    wrapper). The two-step return shape gives the loops in
+    backfill_dataset / weekly_delta_dataset / forward_to_v22
+    enough information to log a SPECIFIC drop reason at the
+    SOURCE of the drop. Pre-V2.2.3 every drop logged the same
+    "canonicalization returned None" string, so when production
+    saw 4999 PLUTO rows drop the operator couldn't tell whether
+    BIN was missing, BBL was missing, both, or something else.
     """
     out: Dict[str, Any] = {}
     fm = dataset_spec["field_map"]
     for canonical, source in fm.items():
-        out[canonical] = raw_row.get(source)
-    rec_id = out.get("record_id") or raw_row.get(fm.get("record_id", ""))
-    # PLUTO uses `bin` as its natural key (no record_id).
-    if "record_id" in fm and not rec_id:
-        return None
-    if "record_id" not in fm:
-        # PLUTO: synthesize a stable record_id, preferring BIN if
-        # present, falling back to BBL. Either uniquely identifies
-        # a PLUTO row and both are stable across PLUTO releases.
-        bin_val = out.get("bin")
-        bbl_val = out.get("bbl")
-        if bin_val:
-            out["record_id"] = f"pluto_{bin_val}"
-        elif bbl_val:
-            out["record_id"] = f"pluto_{bbl_val}"
-        else:
-            return None
+        out[canonical] = raw_row.get(source) if source else None
+
+    # Event datasets: record_id is required and must be in the
+    # field_map.
+    if "record_id" in fm:
+        rec_id = out.get("record_id")
+        if not rec_id:
+            return None, "missing_record_id"
+        out["record_id"] = str(rec_id)
+    else:
+        # Snapshot datasets (PLUTO today) synthesize their
+        # record_id from a `natural_key` field. The legacy
+        # implicit "bin → bbl" fallback from V2.2.2 is replaced
+        # by an explicit `natural_key` attribute on the dataset
+        # spec, which removes the ambiguity that hid the BUG 4
+        # / BUG 7 root cause.
+        nk_field = dataset_spec.get("natural_key") or "bbl"
+        nk_value = _normalize_natural_key(
+            out.get(nk_field) or raw_row.get(nk_field),
+        )
+        if not nk_value:
+            return None, f"missing_natural_key:{nk_field}"
+        dataset_name = next(
+            k for k, v in DATASETS.items() if v is dataset_spec
+        )
+        out["record_id"] = f"{dataset_name}_{nk_value}"
+
     # Parse occurred_date if present.
     if "occurred_date" in fm and out.get("occurred_date"):
         parsed = _parse_socrata_datetime(out["occurred_date"])
@@ -250,7 +335,19 @@ def _to_canonical_record(
     out["dataset"] = next(
         k for k, v in DATASETS.items() if v is dataset_spec
     )
-    return out
+    return out, None
+
+
+def _to_canonical_record(
+    raw_row: Dict[str, Any], dataset_spec: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Backwards-compat wrapper. New callers should use
+    `_canonicalize_with_reason` to get the drop reason. This
+    function is kept so the existing test suite and the
+    `forward_to_v22` hook can continue to use the
+    `Optional[Dict]` return shape without churn."""
+    rec, _reason = _canonicalize_with_reason(raw_row, dataset_spec)
+    return rec
 
 
 def _parse_socrata_datetime(value: Any) -> Optional[datetime]:
@@ -462,6 +559,13 @@ async def backfill_dataset(
     socrata_id = spec["socrata_id"]
     coll_name = spec["collection"]
     date_field = spec.get("date_field")
+    # V2.2.3 BUG 6 fix — datasets whose `date_field` is not a
+    # typed Socrata date column (e.g. dob_permits.filing_date is
+    # text with mixed MM/DD/YYYY + YYYY-MM-DD values) can declare
+    # a separate `where_field` to drive the WHERE/ORDER clauses.
+    # `:updated_at` is Socrata's system timestamp column,
+    # available on every dataset and always properly typed.
+    where_field = spec.get("where_field") or date_field
 
     state = await get_ingestion_state(db, dataset)
     offset = int(state.get("backfill_offset", 0) or 0)
@@ -481,11 +585,11 @@ async def backfill_dataset(
 
     where = None
     order = None
-    if date_field:
+    if where_field:
         cutoff_dt = datetime.now(timezone.utc) - timedelta(days=365 * years)
         cutoff_iso = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S")
-        where = f"{date_field} >= '{cutoff_iso}'"
-        order = f"{date_field} ASC"
+        where = f"{where_field} >= '{cutoff_iso}'"
+        order = f"{where_field} ASC"
 
     # Use the caller-supplied client if any (tests inject a stub),
     # else open a new one.
@@ -537,13 +641,14 @@ async def backfill_dataset(
             page_upserted = 0
             for raw in page:
                 rows_seen += 1
-                rec = _to_canonical_record(raw, spec)
+                # V2.2.3 BUG 7 Part B — use the (record, reason)
+                # canonicalizer so the dropped-row log identifies
+                # the SPECIFIC contract failure (missing record_id
+                # vs missing natural_key:bbl, etc.) instead of the
+                # generic "canonicalization returned None" the
+                # V2.2.2 visibility fix produced.
+                rec, drop_reason = _canonicalize_with_reason(raw, spec)
                 if rec is None:
-                    # V2.2.2 BUG 4 visibility fix: every silent
-                    # row-drop becomes a visible error +
-                    # one-time example log. Pre-V2.2.2 the PLUTO
-                    # bug went undetected because every dropped
-                    # row was a `continue`.
                     errors += 1
                     page_dropped += 1
                     if dropped_examples_logged < 3:
@@ -553,8 +658,8 @@ async def backfill_dataset(
                             payload = repr(raw)[:500]
                         logger.error(
                             f"[ingestion] dataset={dataset} "
-                            f"dropped row (canonicalization "
-                            f"returned None): {payload}",
+                            f"dropped row "
+                            f"(reason={drop_reason}): {payload}",
                         )
                         dropped_examples_logged += 1
                     continue
@@ -685,20 +790,24 @@ async def weekly_delta_dataset(
     spec = DATASETS.get(dataset)
     if spec is None:
         raise ValueError(f"unknown dataset: {dataset}")
+    # V2.2.3: snapshot datasets (PLUTO) skip the weekly delta.
+    # The check uses date_field — a snapshot has date_field=None.
+    # `where_field` (V2.2.3 BUG 6 attribute) only matters for
+    # event datasets, which by definition have a date_field too.
     if spec.get("date_field") is None:
-        # PLUTO has no date — weekly-delta degenerates to a no-op.
-        # Operator triggers the PLUTO refresh on a separate
-        # cadence (quarterly).
+        # PLUTO has no occurred_date — weekly-delta degenerates
+        # to a no-op. Operator triggers the PLUTO refresh on a
+        # separate cadence (quarterly).
         return {"dataset": dataset, "skipped": "no date_field"}
 
     cur_now = now or datetime.now(timezone.utc)
     since = cur_now - timedelta(days=days)
     socrata_id = spec["socrata_id"]
     coll_name = spec["collection"]
-    date_field = spec["date_field"]
+    where_field = spec.get("where_field") or spec["date_field"]
     cutoff_iso = since.strftime("%Y-%m-%dT%H:%M:%S")
-    where = f"{date_field} >= '{cutoff_iso}'"
-    order = f"{date_field} ASC"
+    where = f"{where_field} >= '{cutoff_iso}'"
+    order = f"{where_field} ASC"
 
     own_client = http_client is None
     client = http_client or ServerHttpClient(timeout=60.0)
@@ -710,6 +819,7 @@ async def weekly_delta_dataset(
     rows_upserted = 0
     errors = 0
     offset = 0
+    dropped_examples_logged = 0
     try:
         while True:
             # Same (rows, error) shape as backfill_dataset — see
@@ -732,9 +842,22 @@ async def weekly_delta_dataset(
                 break
             for raw in page:
                 rows_seen += 1
-                rec = _to_canonical_record(raw, spec)
+                # V2.2.3 BUG 7 Part B — same dropped-row
+                # visibility as backfill_dataset.
+                rec, drop_reason = _canonicalize_with_reason(raw, spec)
                 if rec is None:
                     errors += 1
+                    if dropped_examples_logged < 3:
+                        try:
+                            payload = json.dumps(raw)[:500]
+                        except Exception:
+                            payload = repr(raw)[:500]
+                        logger.error(
+                            f"[ingestion] weekly delta "
+                            f"dataset={dataset} dropped row "
+                            f"(reason={drop_reason}): {payload}",
+                        )
+                        dropped_examples_logged += 1
                     continue
                 ok = await upsert_record(db, coll_name, rec)
                 if ok:
@@ -798,11 +921,31 @@ async def forward_to_v22(
     V2.2 collections in addition to dob_logs.
 
     Returns True if a new V2.2 record was upserted, False if
-    duplicate or invalid."""
+    duplicate or invalid.
+
+    V2.2.3 BUG 7 Part B — pre-V2.2.3 this hook returned False
+    silently on three different failure modes (unknown dataset,
+    canonicalization drop, duplicate). The first two are
+    operationally distinct from the third; mask all three under
+    a single bool and any future poller bug becomes invisible.
+    Now logs the dataset name + drop reason for the first two
+    and stays silent for the duplicate case (which is the normal
+    no-op path for an already-ingested row)."""
     spec = DATASETS.get(dataset)
     if spec is None:
+        logger.warning(
+            f"[ingestion] forward_to_v22 unknown dataset={dataset}",
+        )
         return False
-    rec = _to_canonical_record(raw_row, spec)
+    rec, drop_reason = _canonicalize_with_reason(raw_row, spec)
     if rec is None:
+        try:
+            payload = json.dumps(raw_row)[:500]
+        except Exception:
+            payload = repr(raw_row)[:500]
+        logger.error(
+            f"[ingestion] forward_to_v22 dataset={dataset} "
+            f"dropped row (reason={drop_reason}): {payload}",
+        )
         return False
     return await upsert_record(db, spec["collection"], rec)
