@@ -29,6 +29,18 @@ collections so the score reflects the freshest data without
 waiting for the weekly cron.
 """
 
+from lib.statistical_engine.ingestion import (  # noqa: F401
+    DATASETS,
+    BACKFILL_YEARS,
+    WEEKLY_DELTA_DAYS,
+    SOCRATA_PAGE_LIMIT,
+    backfill_dataset,
+    backfill_all_datasets,
+    weekly_delta_dataset,
+    weekly_delta_all_datasets,
+    forward_to_v22,
+    upsert_record,
+)
 from lib.statistical_engine.schema import (  # noqa: F401
     # Collection names
     NYC_VIOLATIONS_COLLECTION,

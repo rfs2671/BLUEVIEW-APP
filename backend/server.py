@@ -24093,12 +24093,39 @@ async def startup_event():
     )
 
     # Phase V2.2 — the V2.1 daily risk-score tick was removed in
-    # Commit 1 of V2.2. The new statistical-engine scheduling
-    # (weekly NYC Open Data ingest, nightly baseline aggregator,
-    # daily calibration outcome-attribution) is wired in
-    # Commits 2 / 3 / 6 respectively. No tick lives here in
-    # Commit 1 — the score endpoints return placeholder data
-    # until the backfill + scoring pipeline is in place.
+    # Commit 1 of V2.2. The statistical-engine scheduling lands
+    # in Commits 2 / 3 / 6:
+    #   - Commit 2 (this commit): weekly NYC Open Data delta cron.
+    #   - Commit 3: nightly baseline aggregator.
+    #   - Commit 6: daily calibration outcome-attribution.
+    #
+    # Weekly NYC Open Data ingest. Sunday 2 AM ET. Pulls the past
+    # 7 days of new records from each of the 6 BIN-keyed event
+    # datasets + PLUTO. Idempotent — record_id unique index
+    # dedupes overlap with the initial 2-year backfill.
+    # max_instances=1 + coalesce=True so a slow run skips its
+    # successor instead of stacking. The initial 2-year backfill
+    # is operator-triggered via an admin endpoint (lands in
+    # Commit 6); this cron only handles the steady-state delta.
+    async def _v22_weekly_ingest_tick():
+        try:
+            await _stat_engine.weekly_delta_all_datasets(db)
+        except Exception as e:
+            logger.error(
+                f"[v2.2 ingestion] weekly tick failed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _v22_weekly_ingest_tick,
+        CronTrigger(
+            day_of_week='sun', hour=2, minute=0,
+            timezone="America/New_York",
+        ),
+        id='v2_2_weekly_ingest',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
