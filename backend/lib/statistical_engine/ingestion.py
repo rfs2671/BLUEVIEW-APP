@@ -84,7 +84,12 @@ DATASETS = {
     },
     "dob_inspections": {
         "collection": NYC_INSPECTIONS_COLLECTION,
-        "socrata_id": "ic3t-wcy2",
+        # V2.2.2 BUG 1 fix: was "ic3t-wcy2" (returned HTTP 400 —
+        # wrong dataset). Correct DOB Inspections dataset is
+        # p937-wjvj, confirmed against the legacy DOB sync in
+        # server.py which orders by inspection_date DESC on this
+        # exact id.
+        "socrata_id": "p937-wjvj",
         "date_field": "inspection_date",
         "field_map": {
             "record_id":       "id",
@@ -99,13 +104,19 @@ DATASETS = {
     "dob_permits": {
         "collection": NYC_PERMITS_COLLECTION,
         "socrata_id": "ipu4-2q9a",
-        "date_field": "issuance_date",
+        # V2.2.2 BUG 2 fix: was "issuance_date" — that column does
+        # not exist on this Socrata dataset, so the WHERE silently
+        # matched 0 rows. The legacy DOB sync uses `filing_date` on
+        # ipu4-2q9a; same fix applied here. The field_map's
+        # occurred_date source is updated to match so we actually
+        # capture a populated value.
+        "date_field": "filing_date",
         "field_map": {
             "record_id":       "job__",
             "bin":             "bin__",
             "bbl":             "bbl",
             "borough":         "borough",
-            "occurred_date":   "issuance_date",
+            "occurred_date":   "filing_date",
             "permit_status":   "permit_status",
             "permit_type":     "permit_type",
             "expiration_date": "expiration_date",
@@ -199,7 +210,17 @@ def _to_canonical_record(
     """Map a raw Socrata row to our canonical record shape using
     the dataset's field_map. Returns None if the record_id is
     missing or empty (degenerate row — skip rather than upsert
-    a record without a dedupe key)."""
+    a record without a dedupe key).
+
+    PLUTO record_id synthesis (V2.2.2 BUG 4 fix): PLUTO is
+    BBL-keyed in reality (a single lot can have multiple BINs),
+    and the live Socrata payload doesn't always expose `bin` at
+    the lowercase column name we expect. Synthesis prefers BIN
+    when present, falls back to BBL — BBL is on every PLUTO row
+    and is PLUTO's natural primary key. A row with neither
+    returns None and is counted as a row-drop error by the
+    backfill loop.
+    """
     out: Dict[str, Any] = {}
     fm = dataset_spec["field_map"]
     for canonical, source in fm.items():
@@ -209,12 +230,17 @@ def _to_canonical_record(
     if "record_id" in fm and not rec_id:
         return None
     if "record_id" not in fm:
-        # PLUTO: synthesize a stable record_id from bin so the
-        # generic upsert path works for both event and snapshot
-        # collections.
-        if not out.get("bin"):
+        # PLUTO: synthesize a stable record_id, preferring BIN if
+        # present, falling back to BBL. Either uniquely identifies
+        # a PLUTO row and both are stable across PLUTO releases.
+        bin_val = out.get("bin")
+        bbl_val = out.get("bbl")
+        if bin_val:
+            out["record_id"] = f"pluto_{bin_val}"
+        elif bbl_val:
+            out["record_id"] = f"pluto_{bbl_val}"
+        else:
             return None
-        out["record_id"] = f"pluto_{out['bin']}"
     # Parse occurred_date if present.
     if "occurred_date" in fm and out.get("occurred_date"):
         parsed = _parse_socrata_datetime(out["occurred_date"])
@@ -264,11 +290,27 @@ async def _fetch_socrata_page(
     order_by: Optional[str],
     limit: int,
     offset: int,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """One page of a Socrata dataset. Builds the SoQL params,
     issues the GET, retries on 429/5xx with exponential backoff.
 
-    Returns the list of raw rows or [] on terminal failure."""
+    Returns ``(rows, error)``:
+      • On HTTP 200: ``(rows, None)``. ``rows`` may legitimately be
+        empty (caller decides whether that means end-of-data or a
+        zero-result query).
+      • On a non-2xx response that exhausted retries (e.g. 400, or
+        429/5xx after MAX_RETRIES): ``([], "<status_code>")``.
+      • On a transport exception that exhausted retries:
+        ``([], "exception:<repr>")``.
+
+    V2.2.2 BUG 3 fix: pre-V2.2.2 this function returned only the
+    rows list, conflating "page successfully empty" with "page
+    failed and returned []". The caller marked the dataset
+    finished on either, which silently hid the BUG-1 (400 status)
+    and BUG-2 (zero-row schema mismatch) failures. The error
+    channel surfaces those distinctly so the caller can refuse to
+    advance the cursor.
+    """
     url = f"{SOCRATA_BASE_URL}/{socrata_id}.json"
     params: Dict[str, Any] = {
         "$limit": limit,
@@ -280,11 +322,14 @@ async def _fetch_socrata_page(
         params["$order"] = order_by
 
     backoff = INITIAL_BACKOFF_SECONDS
+    last_status: Optional[int] = None
+    last_exc: Optional[str] = None
     for attempt in range(MAX_RETRIES):
         try:
             r = await client.get(url, params=params)
+            last_status = r.status_code
             if r.status_code == 200:
-                return r.json() or []
+                return (r.json() or []), None
             if r.status_code == 429 or r.status_code >= 500:
                 # Honor Retry-After if present, else exponential
                 # backoff with jitter.
@@ -302,13 +347,17 @@ async def _fetch_socrata_page(
                 await asyncio.sleep(wait)
                 backoff = min(MAX_BACKOFF_SECONDS, backoff * 2)
                 continue
-            # Other non-200 — don't loop; surface a warning.
+            # Other non-200 (4xx other than 429) — don't loop;
+            # surface as an error to the caller so the backfill
+            # doesn't mark the dataset finished on a schema /
+            # config mismatch.
             logger.warning(
                 f"[ingestion] socrata {socrata_id} returned "
                 f"{r.status_code}; aborting page",
             )
-            return []
+            return [], str(r.status_code)
         except Exception as e:
+            last_exc = repr(e)
             wait = min(MAX_BACKOFF_SECONDS, backoff)
             logger.warning(
                 f"[ingestion] socrata {socrata_id} raised: {e!r}; "
@@ -316,7 +365,14 @@ async def _fetch_socrata_page(
             )
             await asyncio.sleep(wait)
             backoff = min(MAX_BACKOFF_SECONDS, backoff * 2)
-    return []
+    # Exhausted retries. Distinguish between transport-level
+    # failure and a sticky 4xx/5xx so the caller can log
+    # meaningfully.
+    if last_exc:
+        return [], f"exception:{last_exc}"
+    if last_status is not None:
+        return [], str(last_status)
+    return [], "unknown"
 
 
 # ── Upsert ────────────────────────────────────────────────────────
@@ -409,10 +465,19 @@ async def backfill_dataset(
 
     state = await get_ingestion_state(db, dataset)
     offset = int(state.get("backfill_offset", 0) or 0)
+    # Persisted state: True iff some prior run on this dataset
+    # observed a >= page_limit page. Required for the
+    # "finished iff partial-page-after-full-page" gate so a
+    # legitimate re-run after a partial first page can still
+    # finish.
+    had_full_page = bool(state.get("had_full_page", False))
     pages = 0
     rows_seen = 0
     rows_upserted = 0
     errors = 0
+    last_page_size = -1
+    dropped_examples_logged = 0
+    last_error: Optional[str] = None
 
     where = None
     order = None
@@ -431,34 +496,108 @@ async def backfill_dataset(
 
     try:
         while True:
-            page = await _fetch_socrata_page(
+            page, page_error = await _fetch_socrata_page(
                 client, socrata_id,
                 where=where, order_by=order,
                 limit=page_limit, offset=offset,
             )
             pages += 1
-            if not page:
-                # Either end-of-data or terminal error. End the
-                # backfill — operator can re-run if it was an
-                # error (the offset stays put so we resume).
+
+            # V2.2.2 BUG 3 fix — three exit gates that all leave
+            # the cursor untouched so the next operator-triggered
+            # run re-attempts the same page.
+            if page_error is not None:
+                errors += 1
+                last_error = page_error
+                logger.warning(
+                    f"[ingestion] dataset={dataset} page error "
+                    f"{page_error} at offset={offset}; not "
+                    f"advancing cursor, not marking finished",
+                )
                 break
+            if pages == 1 and not page:
+                # Page 1 returned 0 rows on a clean 200 — almost
+                # always a schema mismatch (wrong WHERE column,
+                # wrong dataset, etc.). BUG 2 looked exactly like
+                # this. Refuse to mark finished so the operator
+                # can fix the config and re-run.
+                logger.warning(
+                    f"[ingestion] dataset={dataset} suspected "
+                    f"schema mismatch (page 1 returned 0 rows); "
+                    f"not marking finished",
+                )
+                break
+            if not page:
+                # Pages_so_far > 1 with empty: this is the
+                # natural end-of-stream after at least one
+                # successful page. Don't increment errors.
+                break
+
+            page_dropped = 0
+            page_upserted = 0
             for raw in page:
                 rows_seen += 1
                 rec = _to_canonical_record(raw, spec)
                 if rec is None:
+                    # V2.2.2 BUG 4 visibility fix: every silent
+                    # row-drop becomes a visible error +
+                    # one-time example log. Pre-V2.2.2 the PLUTO
+                    # bug went undetected because every dropped
+                    # row was a `continue`.
+                    errors += 1
+                    page_dropped += 1
+                    if dropped_examples_logged < 3:
+                        try:
+                            payload = json.dumps(raw)[:500]
+                        except Exception:
+                            payload = repr(raw)[:500]
+                        logger.error(
+                            f"[ingestion] dataset={dataset} "
+                            f"dropped row (canonicalization "
+                            f"returned None): {payload}",
+                        )
+                        dropped_examples_logged += 1
                     continue
                 ok = await upsert_record(db, coll_name, rec)
                 if ok:
                     rows_upserted += 1
+                    page_upserted += 1
 
-            offset += len(page)
+            # Page-level "many rows seen, none upserted" sanity
+            # check. Even if individual rows didn't drop (i.e.
+            # _to_canonical_record returned a record but
+            # upsert_record returned False because the row was a
+            # duplicate), zero new docs out of a full page on
+            # what's supposed to be a fresh backfill is suspicious.
+            # The check fires when the page produced ZERO new
+            # docs AND none were even attempted (page_dropped
+            # covers both halves: dropped at canonicalization or
+            # silently no-op-upserted). We log ERROR rather than
+            # increment errors a second time (the per-row
+            # increment above already covered it).
+            if len(page) > 0 and page_upserted == 0 and page_dropped == 0:
+                # All rows produced records but no upserts were
+                # new — could legitimately mean the backfill is
+                # being re-run and every row is a duplicate.
+                # Log INFO, not ERROR.
+                logger.info(
+                    f"[ingestion] dataset={dataset} page produced "
+                    f"{len(page)} records but 0 new upserts "
+                    f"(likely a re-run; all rows already present)",
+                )
+
+            last_page_size = len(page)
+            if last_page_size >= page_limit:
+                had_full_page = True
+            offset += last_page_size
             await set_ingestion_state(
                 db, dataset,
                 backfill_offset=offset,
                 last_page_pulled_at=datetime.now(timezone.utc),
-                last_page_size=len(page),
+                last_page_size=last_page_size,
+                had_full_page=had_full_page,
             )
-            if len(page) < page_limit:
+            if last_page_size < page_limit:
                 # Final page (Socrata returns fewer than
                 # `$limit` when the result set is exhausted).
                 break
@@ -468,9 +607,20 @@ async def backfill_dataset(
         if own_client:
             await client.__aexit__(None, None, None)
 
-    # Mark backfill complete iff we drained naturally (last page
-    # was short OR returned nothing).
-    finished = pages > 0 and rows_seen < pages * page_limit
+    # V2.2.2 BUG 3 finished gate — strict by design. Three
+    # required conditions:
+    #   1. zero errors during this run
+    #   2. at least one page returned >= page_limit rows
+    #      (either this run or a prior one — `had_full_page`
+    #      persists in ingestion_state so a partial first run
+    #      followed by a clean second run can still finalize)
+    #   3. the most recent page returned < page_limit
+    #      (natural exhaustion signal)
+    finished = (
+        errors == 0
+        and had_full_page
+        and 0 <= last_page_size < page_limit
+    )
     await set_ingestion_state(
         db, dataset,
         backfill_finished=finished,
@@ -485,6 +635,8 @@ async def backfill_dataset(
         "final_offset": offset,
         "finished": finished,
     }
+    if last_error:
+        summary["last_error"] = last_error
     logger.info(f"[ingestion] backfill complete: {summary}")
     return summary
 
@@ -556,21 +708,33 @@ async def weekly_delta_dataset(
     pages = 0
     rows_seen = 0
     rows_upserted = 0
+    errors = 0
     offset = 0
     try:
         while True:
-            page = await _fetch_socrata_page(
+            # Same (rows, error) shape as backfill_dataset — see
+            # the V2.2.2 BUG 3 fix in _fetch_socrata_page.
+            page, page_error = await _fetch_socrata_page(
                 client, socrata_id,
                 where=where, order_by=order,
                 limit=page_limit, offset=offset,
             )
             pages += 1
+            if page_error is not None:
+                errors += 1
+                logger.warning(
+                    f"[ingestion] weekly delta dataset={dataset} "
+                    f"page error {page_error} at offset={offset}; "
+                    f"aborting this delta",
+                )
+                break
             if not page:
                 break
             for raw in page:
                 rows_seen += 1
                 rec = _to_canonical_record(raw, spec)
                 if rec is None:
+                    errors += 1
                     continue
                 ok = await upsert_record(db, coll_name, rec)
                 if ok:
@@ -592,6 +756,7 @@ async def weekly_delta_dataset(
         "pages": pages,
         "rows_seen": rows_seen,
         "rows_upserted": rows_upserted,
+        "errors": errors,
     }
 
 
