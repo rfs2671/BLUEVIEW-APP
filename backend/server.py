@@ -3360,7 +3360,9 @@ async def admin_delete_feature_flag(
 # startup block that registers other crons (~line 23800).
 
 import lib.logbook as _logbook  # local import; see lib/logbook/__init__.py
-import lib.risk_score as _risk_score  # Phase V2.1; see lib/risk_score/__init__.py
+# Phase V2.2 — statistical risk engine. Replaces V2.1's heuristic
+# risk score entirely (V2.1 module deleted in Commit 1 of V2.2).
+import lib.statistical_engine as _stat_engine
 
 
 async def _logbook_flag_enabled_for(current_user) -> bool:
@@ -3610,30 +3612,21 @@ async def export_logbook(
     )
 
 
-# ==================== V2.1 RISK SCORE ENDPOINTS =================
+# ==================== V2.2 RISK SCORE ENDPOINTS =================
 #
-# Phase V2.1 — NYC DOB Risk Score. Heuristic v1 with bootstrap CI.
-# Every endpoint is gated by the `v2_risk_score` feature flag and
-# returns 404 (not 403) when the flag is off — same security
-# parity as the V2.0 logbook endpoints. The flag default is OFF;
-# v1 customers see no v2 surface.
-
-async def _risk_score_flag_enabled_for(current_user) -> bool:
-    """Feature-flag gate used by every risk-score endpoint."""
-    user_id = str(current_user.get("id") or current_user.get("_id") or "")
-    company_id = current_user.get("company_id")
-    return await feature_flags.is_feature_enabled(
-        db, "v2_risk_score",
-        user_id=user_id or None,
-        company_id=str(company_id) if company_id else None,
-    )
-
-
-def _risk_score_404():
-    """Hide the surface from flag-off callers — 404, not 403,
-    so flag-off probes can't even confirm the endpoint exists."""
-    raise HTTPException(status_code=404, detail="Not Found")
-
+# Phase V2.2 — Statistical Risk Engine + Event Predictor.
+# Replaces V2.1's heuristic risk score entirely. NO feature flag —
+# V2.2 is the only risk-score code path. The endpoints below
+# preserve the V2.1 URL paths so the existing FE
+# (RiskScoreCircle / RiskScoreDrawer) keeps working unchanged
+# from the network perspective.
+#
+# In Commit 1 (V2.2 scaffolding) the endpoints exist but return
+# minimal data — the new collections are empty until the operator
+# triggers the initial 2-year backfill via the admin endpoint
+# that lands in Commit 6. Commits 2–5 fill out the scoring
+# pipeline; this commit just gets the URL surface in place so
+# the FE doesn't 404.
 
 @api_router.get("/projects/{project_id}/risk-score")
 async def get_project_risk_score(
@@ -3641,10 +3634,9 @@ async def get_project_risk_score(
     current_user = Depends(get_current_user),
 ):
     """Return the latest risk score for a project. 404 if no
-    score has been calculated yet."""
-    if not await _risk_score_flag_enabled_for(current_user):
-        _risk_score_404()
-    cur = db[_risk_score.RISK_SCORES_COLLECTION].find({
+    score has been calculated yet — frontend renders the
+    "PENDING" state (V2.1.4 design) until then."""
+    cur = db.risk_scores.find({
         "project_id": project_id,
     }).sort("calculated_at", -1).limit(1)
     latest = None
@@ -3663,10 +3655,8 @@ async def get_project_risk_score_history(
 ):
     """Return the time series of risk scores for charting. Capped
     at 365 days of history; default 30."""
-    if not await _risk_score_flag_enabled_for(current_user):
-        _risk_score_404()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    docs = await db[_risk_score.RISK_SCORES_COLLECTION].find({
+    docs = await db.risk_scores.find({
         "project_id": project_id,
         "calculated_at": {"$gte": cutoff},
     }).sort("calculated_at", -1).limit(500).to_list(500)
@@ -3678,78 +3668,19 @@ async def calculate_project_risk_score(
     project_id: str,
     current_user = Depends(get_current_user),
 ):
-    """On-demand recalculation. `force=True` so the freshness
-    check doesn't skip — the operator clicked Recalculate for a
-    reason."""
-    if not await _risk_score_flag_enabled_for(current_user):
-        _risk_score_404()
+    """On-demand recalculation. The full V2.2 scoring pipeline
+    lands in Commit 5; for now this endpoint validates the
+    project and returns a 202 placeholder so the FE
+    "Recalculate now" button doesn't error."""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    from lib.risk_score.orchestrator import run_risk_score_for_project
-    doc = await run_risk_score_for_project(
-        db, project=project, force=True,
-    )
-    if doc is None:
-        # `force=True` skips the freshness check, so a None result
-        # here means the project was missing identifiers — bubble
-        # up as 422.
-        raise HTTPException(status_code=422, detail="Score not produced")
-    return {"score": serialize_id(doc)}
-
-
-class RiskScoreCalibrationRequest(BaseModel):
-    score_id: str
-    was_high_risk_correct: bool
-    notes: Optional[str] = None
-
-
-@api_router.post("/projects/{project_id}/risk-score/calibration")
-async def submit_risk_score_calibration(
-    project_id: str,
-    body: RiskScoreCalibrationRequest,
-    current_user = Depends(get_current_user),
-):
-    """Log an inspector review. Body:
-        score_id: ObjectId-as-string of the risk_scores doc
-        was_high_risk_correct: bool — was the model right?
-        notes: optional free text
-
-    The review feeds the calibration aggregator
-    (`compute_calibration_stats`). Weight changes are MANUAL —
-    never auto-applied from this endpoint."""
-    if not await _risk_score_flag_enabled_for(current_user):
-        _risk_score_404()
-    if not body.score_id:
-        raise HTTPException(status_code=422, detail="score_id required")
-    from lib.risk_score.calibration import log_inspector_review
-    record = await log_inspector_review(
-        db,
-        score_id=body.score_id,
-        project_id=project_id,
-        was_high_risk_correct=body.was_high_risk_correct,
-        notes=body.notes,
-        reviewed_by_user_id=str(current_user.get("id") or ""),
-    )
-    return {"review": serialize_id(record)}
-
-
-@api_router.get("/admin/risk-score/calibration")
-async def get_admin_risk_score_calibration(
-    model_version: Optional[str] = None,
-    current_user = Depends(get_admin_user),
-):
-    """Aggregate calibration stats across all reviews. Admin-only
-    (the `get_admin_user` dependency enforces role). Computed on
-    demand from `risk_score_reviews` + `risk_scores`; not
-    persisted unless the operator explicitly snapshots it."""
-    if not await _risk_score_flag_enabled_for(current_user):
-        _risk_score_404()
-    from lib.risk_score.calibration import compute_calibration_stats
-    stats = await compute_calibration_stats(
-        db, model_version=model_version,
-    )
-    return {"calibration": stats}
+    # Placeholder — Commit 5 wires the real recompute call.
+    return {
+        "status": "queued",
+        "model_version": _stat_engine.MODEL_VERSION,
+        "project_id": project_id,
+    }
 
 
 # ==================== ADMIN USER MANAGEMENT ====================
@@ -24161,43 +24092,13 @@ async def startup_event():
         coalesce=True,
     )
 
-    # Phase V2.1 — risk-score daily tick. 4 AM ET, one hour after
-    # the V2.0 logbook tick so it sees the freshest missing /
-    # deficiency entries on every run. Flag-gated globally — if
-    # the flag is absent OR explicitly disabled globally, the
-    # tick is a no-op (still iterates one cheap is_feature_enabled
-    # call but doesn't touch any project). Idempotent via the 12h
-    # freshness check inside run_risk_score_for_project, so
-    # overlapping ticks (manual rerun + cron tick) don't double-
-    # write.
-    async def _risk_score_daily_tick():
-        try:
-            # Probe the flag once with a synthetic admin context —
-            # if it's globally off, do nothing. We don't want to
-            # walk every project just to find out the flag's off.
-            globally_enabled = await feature_flags.is_feature_enabled(
-                db, "v2_risk_score",
-                user_id=None, company_id=None,
-            )
-            if not globally_enabled:
-                return
-            from lib.risk_score.orchestrator import (
-                run_risk_score_for_all_projects,
-            )
-            await run_risk_score_for_all_projects(db)
-        except Exception as e:
-            logger.error(
-                f"[v2_risk_score] daily tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _risk_score_daily_tick,
-        CronTrigger(hour=4, minute=0, timezone="America/New_York"),
-        id='v2_risk_score_daily_tick',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    # Phase V2.2 — the V2.1 daily risk-score tick was removed in
+    # Commit 1 of V2.2. The new statistical-engine scheduling
+    # (weekly NYC Open Data ingest, nightly baseline aggregator,
+    # daily calibration outcome-attribution) is wired in
+    # Commits 2 / 3 / 6 respectively. No tick lives here in
+    # Commit 1 — the score endpoints return placeholder data
+    # until the backfill + scoring pipeline is in place.
 
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
@@ -24460,30 +24361,43 @@ async def startup_event():
             **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
         )
 
-    # Phase V2.1 — risk-score indexes. Three additive collections,
-    # specs sourced from lib/risk_score/schema.py so the indexes
-    # follow the model definition.
-    for _idx_spec in _risk_score.RISK_SCORES_INDEXES:
-        await _ensure_index_resilient(
-            db[_risk_score.RISK_SCORES_COLLECTION],
-            keys=_idx_spec["keys"],
-            name=_idx_spec["name"],
-            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
-        )
-    for _idx_spec in _risk_score.RISK_SCORE_REVIEWS_INDEXES:
-        await _ensure_index_resilient(
-            db[_risk_score.RISK_SCORE_REVIEWS_COLLECTION],
-            keys=_idx_spec["keys"],
-            name=_idx_spec["name"],
-            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
-        )
-    for _idx_spec in _risk_score.RISK_SCORE_CALIBRATION_INDEXES:
-        await _ensure_index_resilient(
-            db[_risk_score.RISK_SCORE_CALIBRATION_COLLECTION],
-            keys=_idx_spec["keys"],
-            name=_idx_spec["name"],
-            **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
-        )
+    # Phase V2.2 — statistical risk engine indexes. Eleven new
+    # collections (NYC source datasets + peer-aggregation +
+    # prediction tracking + ingestion-state cursor). Specs
+    # sourced from lib/statistical_engine/schema.py;
+    # ALL_V22_INDEX_SPECS lets us iterate the whole set in one
+    # walk so adding a new collection is one line in the spec
+    # site, no startup-hook coordination needed.
+    for _coll_name, _idx_specs in _stat_engine.ALL_V22_INDEX_SPECS:
+        _coll = db[_coll_name]
+        for _idx_spec in _idx_specs:
+            await _ensure_index_resilient(
+                _coll,
+                keys=_idx_spec["keys"],
+                name=_idx_spec["name"],
+                **{
+                    k: v for k, v in _idx_spec.items()
+                    if k not in ("keys", "name")
+                },
+            )
+
+    # risk_scores collection retains its index from V2.1 — V2.2
+    # produces fresh rows in the same shape so the FE
+    # (RiskScoreCircle / RiskScoreDrawer) reads via the same
+    # query pattern. Old V2.1 risk_score_reviews and
+    # risk_score_calibration collections are no longer indexed
+    # here; existing rows on production are inert (V2.2 doesn't
+    # write to or read from them).
+    await _ensure_index_resilient(
+        db.risk_scores,
+        keys=[("project_id", 1), ("calculated_at", -1)],
+        name="risk_scores_project_calculated_desc",
+    )
+    await _ensure_index_resilient(
+        db.risk_scores,
+        keys=[("company_id", 1), ("project_id", 1), ("calculated_at", -1)],
+        name="risk_scores_company_project_calculated",
+    )
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
     # interval as the DOB nightly_dob_scan so digest-eligible items
