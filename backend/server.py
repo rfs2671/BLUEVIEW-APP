@@ -3662,10 +3662,18 @@ async def get_project_risk_score_history(
     current_user = Depends(get_current_user),
 ):
     """Return the time series of risk scores for charting. Capped
-    at 365 days of history; default 30."""
+    at 365 days of history; default 30.
+
+    V2.2.1.1 fix: same `model_version` filter applied as the
+    GET-latest endpoint (V2.2.1). Without it, the trend chart
+    on a long-lived project would mix V2.1 heuristic-v1 points
+    with V2.2 statistical-v1 points — visually continuous but
+    semantically apples-and-oranges since the two models have
+    different scoring distributions."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     docs = await db.risk_scores.find({
         "project_id": project_id,
+        "model_version": _stat_engine.MODEL_VERSION,
         "calculated_at": {"$gte": cutoff},
     }).sort("calculated_at", -1).limit(500).to_list(500)
     return {"history": [serialize_id(d) for d in docs]}
