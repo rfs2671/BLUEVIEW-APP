@@ -415,6 +415,149 @@ class TestRecomputeAndPersist(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.2.1 — GET /risk-score must filter by model_version
+# ──────────────────────────────────────────────────────────────────
+#
+# The risk_scores collection on production carries BOTH V2.1
+# heuristic-v1 rows (left over from V2.1) and V2.2 statistical-v1
+# rows. Without a model_version filter the GET handler returns
+# whichever has the newest calculated_at, which after deploy
+# was always the V2.1 row (V2.2 hadn't run a backfill yet).
+# Operator saw stale heuristic-v1 scores in the FE.
+
+
+class _SortLimitCursor:
+    """Cursor stub that supports the .find().sort().limit() chain
+    + async iteration the V2.2 risk-score endpoint uses."""
+
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    def sort(self, key, direction=-1):
+        # Only -1 desc on `calculated_at` is exercised by the
+        # endpoint; supporting that one shape is enough.
+        reverse = (direction == -1)
+        self._docs.sort(
+            key=lambda d: d.get(key) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=reverse,
+        )
+        return self
+
+    def limit(self, n):
+        if n is not None and n >= 0:
+            self._docs = self._docs[:n]
+        return self
+
+    def __aiter__(self):
+        async def _gen():
+            for it in self._docs:
+                yield it
+        return _gen()
+
+
+class _ModelVersionStubColl:
+    """Stub that emulates the find/sort/limit/__aiter__ chain
+    AND honors equality filters on (project_id, model_version)."""
+
+    def __init__(self):
+        self.docs: list = []
+
+    def find(self, query=None):
+        q = query or {}
+        out = []
+        for d in self.docs:
+            ok = True
+            for k, v in q.items():
+                if d.get(k) != v:
+                    ok = False
+                    break
+            if ok:
+                out.append(d)
+        return _SortLimitCursor(out)
+
+
+def _setup_authed_client(*, role="admin", user_id="u_x", company_id="co_a"):
+    """Mirrors test_v2_0_logbook.py's helper. Returns
+    (client, restore) — call restore() to clear dependency
+    overrides."""
+    from fastapi.testclient import TestClient
+    import server
+    user = {"id": user_id, "_id": user_id,
+            "role": role, "company_id": company_id}
+    async def _fake_user():
+        return user
+    server.app.dependency_overrides[server.get_current_user] = _fake_user
+    return TestClient(server.app, raise_server_exceptions=False), \
+        lambda: server.app.dependency_overrides.clear()
+
+
+class TestGetRiskScoreFiltersModelVersion(unittest.TestCase):
+    """V2.2.1 regression test for the
+    "GET returns stale V2.1 heuristic-v1 row" bug.
+
+    Sequence:
+      1. Insert a heuristic-v1 row from yesterday. NO statistical-
+         v1 row. GET → 404 "No score yet".
+      2. Insert a statistical-v1 row (calculated today). GET →
+         200, body.score.model_version == "statistical-v1".
+    The handler MUST NOT return the heuristic-v1 row even when
+    it's the newest by calculated_at.
+    """
+
+    def test_filters_by_statistical_v1_model_version(self):
+        from unittest.mock import patch
+        import server
+
+        yesterday = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+        today = datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc)
+
+        risk_scores = _ModelVersionStubColl()
+        risk_scores.docs.append({
+            "_id": "v21_row",
+            "project_id": "P1",
+            "model_version": "heuristic-v1",
+            "score": 12.5,
+            "calculated_at": yesterday,
+        })
+
+        # Stub db: only need risk_scores. The endpoint reads
+        # exactly db.risk_scores.find(...).sort(...).limit(...).
+        stub_db = MagicMock()
+        stub_db.risk_scores = risk_scores
+
+        client, restore = _setup_authed_client()
+        try:
+            with patch.object(server, "db", stub_db):
+                # Phase 1: only V2.1 row → 404.
+                r = client.get("/api/projects/P1/risk-score")
+                self.assertEqual(r.status_code, 404, r.text)
+                self.assertEqual(r.json().get("detail"), "No score yet")
+
+                # Phase 2: insert a V2.2 row, GET should return it
+                # (NOT the V2.1 row).
+                risk_scores.docs.append({
+                    "_id": "v22_row",
+                    "project_id": "P1",
+                    "model_version": "statistical-v1",
+                    "score": 47.0,
+                    "calculated_at": today,
+                })
+                r = client.get("/api/projects/P1/risk-score")
+                self.assertEqual(r.status_code, 200, r.text)
+                body = r.json()
+                self.assertIn("score", body)
+                self.assertEqual(
+                    body["score"]["model_version"], "statistical-v1",
+                )
+                # And critically, NOT the heuristic-v1 row.
+                self.assertNotEqual(
+                    body["score"].get("id"), "v21_row",
+                )
+        finally:
+            restore()
+
+
+# ──────────────────────────────────────────────────────────────────
 # Package re-exports
 # ──────────────────────────────────────────────────────────────────
 
