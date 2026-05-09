@@ -29,6 +29,23 @@ collections so the score reflects the freshest data without
 waiting for the weekly cron.
 """
 
+from lib.statistical_engine.triggers import (  # noqa: F401
+    ALL_TRIGGER_KINDS,
+    TRIGGER_311_AT_BIN,
+    TRIGGER_311_NEIGHBOR,
+    TRIGGER_CSC_PERIODIC,
+    TRIGGER_BOROUGH_SWEEP,
+    TRIGGER_NEIGHBOR_SWO,
+    TRIGGER_CSE_FOLLOWUP,
+    TRIGGER_CURE_DEADLINE_REINSPECT,
+    TRIGGER_SSMR_SHED_AGING,
+    DEFAULT_WINDOWS,
+    passes_publication_gate,
+    upsert_prediction,
+    expire_stale_predictions,
+    active_predictions_for_project,
+    run_triggers_for_project,
+)
 from lib.statistical_engine.baselines import (  # noqa: F401
     peer_bins,
     compute_baseline_for_peer_set,
