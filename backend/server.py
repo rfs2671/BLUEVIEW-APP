@@ -3635,9 +3635,17 @@ async def get_project_risk_score(
 ):
     """Return the latest risk score for a project. 404 if no
     score has been calculated yet — frontend renders the
-    "PENDING" state (V2.1.4 design) until then."""
+    "PENDING" state (V2.1.4 design) until then.
+
+    V2.2.1 fix: filter by `model_version: "statistical-v1"`
+    so we don't return stale V2.1 heuristic-v1 rows. The
+    `risk_scores` collection has both V2.1 and V2.2 documents
+    on production (V2.2 didn't migrate or delete V2.1 rows).
+    Without this filter the FE saw V2.1's old heuristic score
+    instead of V2.2's statistical score."""
     cur = db.risk_scores.find({
         "project_id": project_id,
+        "model_version": _stat_engine.MODEL_VERSION,
     }).sort("calculated_at", -1).limit(1)
     latest = None
     async for doc in cur:
