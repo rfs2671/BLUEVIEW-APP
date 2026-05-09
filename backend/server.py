@@ -3680,6 +3680,87 @@ async def calculate_project_risk_score(
     return {"score": serialize_id(doc)}
 
 
+# ──────────────── V2.2 admin endpoints ────────────────────────────
+#
+# Three admin-only endpoints landed in Commit 6:
+#   GET  /api/admin/risk-score/calibration  — calibration breakdown
+#   POST /api/admin/risk-score/weights      — manual prior tuning
+#   POST /api/admin/risk-score/backfill     — operator-triggered
+#                                              2-year initial backfill
+
+@api_router.get("/admin/risk-score/calibration")
+async def get_admin_risk_score_calibration(
+    model_version: Optional[str] = None,
+    current_user = Depends(get_admin_user),
+):
+    """Per-trigger calibration stats. Counts of hit / miss /
+    expired_no_data, accuracy, false_positive_rate. Computed on
+    demand from prediction_outcomes."""
+    stats = await _stat_engine.compute_calibration_stats(
+        db, model_version=model_version,
+    )
+    return {"calibration": stats}
+
+
+class V22WeightTuneRequest(BaseModel):
+    trigger_kind: str
+    prior: float
+    note: Optional[str] = None
+
+
+@api_router.post("/admin/risk-score/weights")
+async def post_admin_risk_score_weights(
+    body: V22WeightTuneRequest,
+    current_user = Depends(get_admin_user),
+):
+    """Manual per-trigger prior tuning. Operator reads
+    calibration stats, decides, edits. NO auto-update — the
+    statistical model never adjusts its own priors."""
+    try:
+        doc = await _stat_engine.set_trigger_prior(
+            db,
+            trigger_kind=body.trigger_kind,
+            prior=body.prior,
+            set_by_user_id=str(current_user.get("id") or ""),
+            note=body.note,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"prior": doc}
+
+
+class V22BackfillRequest(BaseModel):
+    years: Optional[int] = None
+    max_pages_per_dataset: Optional[int] = None
+
+
+@api_router.post("/admin/risk-score/backfill")
+async def post_admin_risk_score_backfill(
+    body: Optional[V22BackfillRequest] = None,
+    current_user = Depends(get_admin_user),
+):
+    """Operator-triggered initial 2-year backfill. Long-running
+    — the operator should run this from a long-lived REPL or
+    background process; this endpoint kicks it off and returns
+    after the FIRST page so the request doesn't time out.
+
+    Subsequent calls resume from the last cursor in
+    ingestion_state, so this is safe to invoke multiple times.
+    """
+    body = body or V22BackfillRequest()
+    years = body.years or _stat_engine.BACKFILL_YEARS
+    # Run only one page per dataset per HTTP request so we don't
+    # block the server thread for 30+ minutes. Operator runs
+    # this repeatedly (or via a long-running script) until
+    # ingestion_state.backfill_finished flips to True for every
+    # dataset.
+    max_pages = body.max_pages_per_dataset or 1
+    summaries = await _stat_engine.backfill_all_datasets(
+        db, years=years, max_pages_per_dataset=max_pages,
+    )
+    return {"backfill": summaries}
+
+
 # ==================== ADMIN USER MANAGEMENT ====================
 
 @api_router.get("/admin/users")
@@ -24143,6 +24224,31 @@ async def startup_event():
         _v22_baseline_aggregator_tick,
         CronTrigger(hour=3, minute=30, timezone="America/New_York"),
         id='v2_2_baseline_aggregator',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Phase V2.2 Commit 6 — daily calibration outcome attribution.
+    # 5 AM ET so it runs after the V2.0 logbook (3 AM), V2.2
+    # baselines (3:30 AM), V2.2 risk-score recomputes triggered by
+    # those, and well before the operator typically looks at the
+    # admin calibration view. Walks every prediction whose
+    # expires_at <= now and outcome_status == 'active', attributes
+    # hit/miss based on whether a matching event landed in the
+    # window. Soft-fails per prediction.
+    async def _v22_calibration_tick():
+        try:
+            await _stat_engine.attribute_outcomes_for_expired_predictions(db)
+        except Exception as e:
+            logger.error(
+                f"[v2.2 calibration] daily tick failed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _v22_calibration_tick,
+        CronTrigger(hour=5, minute=0, timezone="America/New_York"),
+        id='v2_2_calibration_attribution',
         replace_existing=True,
         max_instances=1,
         coalesce=True,

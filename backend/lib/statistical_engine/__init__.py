@@ -29,6 +29,17 @@ collections so the score reflects the freshest data without
 waiting for the weekly cron.
 """
 
+from lib.statistical_engine.calibration import (  # noqa: F401
+    OUTCOME_HIT,
+    OUTCOME_MISS,
+    OUTCOME_EXPIRED_NO_DATA,
+    TRIGGER_PRIORS_COLLECTION,
+    attribute_outcome_for_prediction,
+    attribute_outcomes_for_expired_predictions,
+    compute_calibration_stats,
+    set_trigger_prior,
+    get_trigger_prior,
+)
 from lib.statistical_engine.score import (  # noqa: F401
     GROUP_WEIGHTS,
     ALL_GROUPS,
