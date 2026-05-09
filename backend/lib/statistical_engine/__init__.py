@@ -29,6 +29,13 @@ collections so the score reflects the freshest data without
 waiting for the weekly cron.
 """
 
+from lib.statistical_engine.baselines import (  # noqa: F401
+    peer_bins,
+    compute_baseline_for_peer_set,
+    upsert_baseline,
+    run_baseline_aggregator,
+    compare_project_to_peers,
+)
 from lib.statistical_engine.ingestion import (  # noqa: F401
     DATASETS,
     BACKFILL_YEARS,

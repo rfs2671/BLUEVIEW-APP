@@ -24127,6 +24127,30 @@ async def startup_event():
         coalesce=True,
     )
 
+    # Phase V2.2 Commit 3 — nightly baseline aggregator. 3:30 AM
+    # ET so it runs after the V2.0 logbook tick (3 AM) and well
+    # before the per-project re-stat needs the data. Walks every
+    # distinct (borough, bldgclass, landuse) tuple in PLUTO,
+    # computes summary stats over the past 2 years of NYC source
+    # data, upserts into statistical_baselines. Idempotent —
+    # peer-set + year_month is the upsert key.
+    async def _v22_baseline_aggregator_tick():
+        try:
+            await _stat_engine.run_baseline_aggregator(db)
+        except Exception as e:
+            logger.error(
+                f"[v2.2 baselines] nightly tick failed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _v22_baseline_aggregator_tick,
+        CronTrigger(hour=3, minute=30, timezone="America/New_York"),
+        id='v2_2_baseline_aggregator',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
     # 311 stays at 30 min."
