@@ -355,12 +355,19 @@ class TestIngestionState(unittest.TestCase):
 
 
 class _StubHttpClient:
-    """Mimics ServerHttpClient — ServerHttpClient supports `async
-    with`, .get(url, params=...). We feed it a list-of-pages and
-    each .get pops the next page."""
+    """Mimics ServerHttpClient — supports `async with` and
+    `.get(url, params=...)`. We feed it a list-of-pages and each
+    `.get` pops the next page.
+
+    For V2.2.2 BUG 3 regression coverage, list entries can be
+    either:
+      • a list of rows  → returned as a 200 with that body
+      • a tuple ``(status_code, body)`` → returned with that
+        status (e.g. ``(400, [])`` to reproduce the
+        dob_inspections wrong-dataset bug)
+    """
 
     def __init__(self, pages):
-        # pages: list of list-of-rows (raw Socrata shape).
         self._pages = list(pages)
         self.get_calls = 0
 
@@ -372,10 +379,24 @@ class _StubHttpClient:
 
     async def get(self, url, params=None):
         self.get_calls += 1
-        page = self._pages.pop(0) if self._pages else []
+        if not self._pages:
+            r = MagicMock()
+            r.status_code = 200
+            r.json = lambda: []
+            r.headers = {}
+            return r
+        nxt = self._pages.pop(0)
+        if isinstance(nxt, tuple) and len(nxt) == 2:
+            status, body = nxt
+            r = MagicMock()
+            r.status_code = status
+            r.json = lambda body=body: body
+            r.headers = {}
+            return r
+        # Plain list → 200.
         r = MagicMock()
         r.status_code = 200
-        r.json = lambda: page
+        r.json = lambda body=nxt: body
         r.headers = {}
         return r
 
@@ -453,26 +474,191 @@ class TestBackfillResumability(unittest.TestCase):
         state = db.docs.get("dob_violations", {})
         self.assertEqual(state.get("backfill_offset"), 10)
 
-    def test_short_page_marks_finished(self):
-        # One page with fewer rows than page_limit triggers
-        # finished=True.
+    def test_first_page_full_then_partial_marks_finished(self):
+        """V2.2.2 BUG 3 positive regression: the new finished
+        gate requires evidence of a full page (>= page_limit)
+        before a partial page is allowed to mark the dataset
+        finished. Replaces the pre-V2.2.2
+        ``test_short_page_marks_finished`` whose single-short-
+        page fixture encoded the buggy gate."""
         pages = [
+            # Page 1: exactly page_limit rows → had_full_page=True.
             [
-                {"isn_dob_bis_viol": "V1", "bin": "1234567",
+                {"isn_dob_bis_viol": f"V_full_{i}", "bin": "1234567",
                  "bbl": "1001234567", "boro": "M",
                  "issue_date": "2026-04-15"}
+                for i in range(3)
+            ],
+            # Page 2: short (< page_limit) → natural exhaustion.
+            [
+                {"isn_dob_bis_viol": "V_short_1", "bin": "1234567",
+                 "bbl": "1001234567", "boro": "M",
+                 "issue_date": "2026-04-16"},
             ],
         ]
         db = _BackfillDb()
         client = _StubHttpClient(pages)
         summary = _run(ing.backfill_dataset(
             db, "dob_violations",
+            page_limit=3,
+            http_client=client,
+            max_pages=10,
+        ))
+        self.assertTrue(
+            summary["finished"],
+            f"finished should be True after full→partial: {summary}",
+        )
+        self.assertEqual(summary["errors"], 0)
+        # had_full_page persisted in ingestion_state for the
+        # next-run-resume scenario.
+        state = db.docs.get("dob_violations", {})
+        self.assertTrue(state.get("had_full_page"))
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.2.2 BUG 3 — finished gating must reject error / zero-row pages
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestBackfillFinishedGate(unittest.TestCase):
+    """Pre-V2.2.2 the backfill marked a dataset finished=True any
+    time a page returned < page_limit rows — including a 400-error
+    page (which made the wrong-dataset BUG 1 self-camouflaging)
+    and a clean-200-empty-page (which made the wrong-WHERE-column
+    BUG 2 self-camouflaging). The new gate requires zero errors
+    AND a prior full page AND a partial last page."""
+
+    def test_400_response_does_not_mark_finished(self):
+        """Reproducer for BUG 1: a 400 response on page 1 must
+        leave the dataset NOT finished, errors > 0, and the
+        cursor untouched at offset 0."""
+        db = _BackfillDb()
+        # Single page result: a 400 with empty body.
+        client = _StubHttpClient([(400, [])])
+        summary = _run(ing.backfill_dataset(
+            db, "dob_inspections",
             page_limit=100,
             http_client=client,
             max_pages=10,
         ))
-        # rows_seen < pages * page_limit  →  finished = True.
-        self.assertTrue(summary["finished"])
+        self.assertFalse(
+            summary["finished"],
+            f"a 400 page must NOT mark finished: {summary}",
+        )
+        self.assertGreater(
+            summary["errors"], 0,
+            "a 400 page must increment errors so the operator "
+            "can see the failure in the response body",
+        )
+        # Cursor untouched: the next operator-triggered run will
+        # re-attempt the same page.
+        state = db.docs.get("dob_inspections", {})
+        self.assertEqual(
+            int(state.get("backfill_offset", 0) or 0), 0,
+            "cursor must NOT advance past a 400 page",
+        )
+
+    def test_zero_rows_first_page_does_not_mark_finished(self):
+        """Reproducer for BUG 2: a 200 OK with an empty body on
+        page 1 (the wrong-WHERE-column case) must leave the
+        dataset NOT finished — zero rows on page 1 with no error
+        is a strong schema-mismatch signal."""
+        db = _BackfillDb()
+        # Single page: 200 OK, empty body.
+        client = _StubHttpClient([[]])
+        summary = _run(ing.backfill_dataset(
+            db, "dob_permits",
+            page_limit=100,
+            http_client=client,
+            max_pages=10,
+        ))
+        self.assertFalse(
+            summary["finished"],
+            f"page 1 returning 0 rows must NOT mark finished: {summary}",
+        )
+        # Cursor untouched.
+        state = db.docs.get("dob_permits", {})
+        self.assertEqual(
+            int(state.get("backfill_offset", 0) or 0), 0,
+            "cursor must NOT advance past a zero-rows page 1",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.2.2 BUG 4 — silent row-drop visibility
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestPlutoUpsertKeyMismatch(unittest.TestCase):
+    """Pre-V2.2.2 PLUTO returned 5000 rows from Socrata that all
+    silently produced 0 upserts because _to_canonical_record
+    returned None on every row (the actual Socrata field name
+    differed from what the field_map expected). errors=0 in the
+    response made the operator think the run was clean. V2.2.2
+    counts each canonicalization-drop as an error and emits an
+    ERROR-level log with one truncated example payload."""
+
+    def test_pluto_upsert_key_mismatch_logs_error(self):
+        # Mock Socrata returns 5 rows whose key field is `BBL`
+        # (uppercase) instead of `bbl` / `bin`. After the V2.2.2
+        # fix, _to_canonical_record falls back from bin to bbl;
+        # since neither lowercase field is present, the row drops
+        # AND the loop counts an error AND logs an ERROR.
+        rows = [
+            {"BBL": f"100000000{i}", "BORO": "MN", "BLDGCLASS": "R6"}
+            for i in range(5)
+        ]
+        db = _BackfillDb()
+        client = _StubHttpClient([rows])
+        # Capture log output from the ingestion logger to verify
+        # the ERROR log fires with the expected dropped-row
+        # diagnostic shape.
+        import logging
+        log_records: list = []
+        handler = logging.Handler()
+        handler.emit = lambda r: log_records.append(r)
+        ing_logger = logging.getLogger("lib.statistical_engine.ingestion")
+        ing_logger.addHandler(handler)
+        prev_level = ing_logger.level
+        ing_logger.setLevel(logging.DEBUG)
+        try:
+            summary = _run(ing.backfill_dataset(
+                db, "pluto",
+                page_limit=100,
+                http_client=client,
+                max_pages=10,
+            ))
+        finally:
+            ing_logger.removeHandler(handler)
+            ing_logger.setLevel(prev_level)
+
+        # Each of the 5 rows was dropped at canonicalization;
+        # errors must reflect that count.
+        self.assertEqual(
+            summary["rows_seen"], 5,
+            f"all 5 rows should have been seen: {summary}",
+        )
+        self.assertEqual(
+            summary["rows_upserted"], 0,
+            f"no rows should have been upserted: {summary}",
+        )
+        self.assertGreaterEqual(
+            summary["errors"], 5,
+            f"each dropped row should count as an error: {summary}",
+        )
+        # And the ERROR log fired at least once with a dropped-
+        # row example payload, with the dataset name embedded.
+        error_lines = [
+            r for r in log_records
+            if r.levelno >= logging.ERROR
+            and "dropped row" in r.getMessage()
+            and "dataset=pluto" in r.getMessage()
+        ]
+        self.assertGreaterEqual(
+            len(error_lines), 1,
+            "expected at least one ERROR log with a dropped-row "
+            "example payload from the pluto dataset",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────
