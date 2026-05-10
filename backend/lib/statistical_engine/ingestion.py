@@ -506,6 +506,7 @@ async def upsert_record(
         logger.warning(
             f"[ingestion] upsert failed coll={collection_name} "
             f"record_id={record.get('record_id')}: {e!r}",
+            exc_info=True,
         )
         return False
 
@@ -655,6 +656,12 @@ async def backfill_dataset(
                         try:
                             payload = json.dumps(raw)[:500]
                         except Exception:
+                            logger.exception(
+                                "[ingestion] swallowed exception at %s coll=%s record_id=%s",
+                                "backfill_dataset.json_dumps_fallback",
+                                coll_name,
+                                "unknown",
+                            )
                             payload = repr(raw)[:500]
                         logger.error(
                             f"[ingestion] dataset={dataset} "
@@ -851,6 +858,12 @@ async def weekly_delta_dataset(
                         try:
                             payload = json.dumps(raw)[:500]
                         except Exception:
+                            logger.exception(
+                                "[ingestion] swallowed exception at %s coll=%s record_id=%s",
+                                "weekly_delta_dataset.json_dumps_fallback",
+                                coll_name,
+                                "unknown",
+                            )
                             payload = repr(raw)[:500]
                         logger.error(
                             f"[ingestion] weekly delta "
@@ -942,6 +955,12 @@ async def forward_to_v22(
         try:
             payload = json.dumps(raw_row)[:500]
         except Exception:
+            logger.exception(
+                "[ingestion] swallowed exception at %s coll=%s record_id=%s",
+                "forward_to_v22.json_dumps_fallback",
+                spec.get("collection", "unknown"),
+                "unknown",
+            )
             payload = repr(raw_row)[:500]
         logger.error(
             f"[ingestion] forward_to_v22 dataset={dataset} "
