@@ -48,6 +48,11 @@ from lib.statistical_engine.baselines import (
 )
 from lib.statistical_engine.schema import (
     MODEL_VERSION,
+)
+# V2.3 Commit 1: collection-name constants moved to utils.py.
+# Score logic is left untouched per Commit 1 spec; Commit 3
+# rewrites the own-building event-count queries to lazy Socrata.
+from lib.statistical_engine.utils import (
     NYC_COMPLAINTS_311_COLLECTION,
     NYC_INSPECTIONS_COLLECTION,
     NYC_VIOLATIONS_COLLECTION,

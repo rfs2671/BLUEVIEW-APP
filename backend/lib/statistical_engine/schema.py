@@ -49,32 +49,20 @@ Schema notes
 from __future__ import annotations
 
 # ── Collection names ──────────────────────────────────────────────
+#
+# V2.3 Commit 1: the NYC_* mirror collection constants and
+# STATISTICAL_BASELINES_COLLECTION + INGESTION_STATE_COLLECTION
+# were removed from this file because the V2.2 local-mirror
+# architecture is being replaced by lazy Socrata queries.
+#
+# Transitional placement of the deleted names: see
+# lib/statistical_engine/utils.py. Consumer files
+# (baselines.py, triggers.py, score.py, calibration.py) import
+# from there for Commits 1–2; Commit 3 rewrites them to lazy
+# queries and removes those names entirely.
 
-NYC_VIOLATIONS_COLLECTION         = "nyc_violations"
-NYC_INSPECTIONS_COLLECTION        = "nyc_inspections"
-NYC_PERMITS_COLLECTION            = "nyc_permits"
-NYC_COMPLAINTS_311_COLLECTION     = "nyc_complaints_311"
-NYC_ECB_VIOLATIONS_COLLECTION     = "nyc_ecb_violations"
-NYC_HPD_VIOLATIONS_COLLECTION     = "nyc_hpd_violations"
-NYC_PLUTO_COLLECTION              = "nyc_pluto"
-STATISTICAL_BASELINES_COLLECTION  = "statistical_baselines"
 PREDICTED_EVENTS_COLLECTION       = "predicted_events"
 PREDICTION_OUTCOMES_COLLECTION    = "prediction_outcomes"
-INGESTION_STATE_COLLECTION        = "ingestion_state"
-
-ALL_V22_COLLECTIONS = (
-    NYC_VIOLATIONS_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_PERMITS_COLLECTION,
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_ECB_VIOLATIONS_COLLECTION,
-    NYC_HPD_VIOLATIONS_COLLECTION,
-    NYC_PLUTO_COLLECTION,
-    STATISTICAL_BASELINES_COLLECTION,
-    PREDICTED_EVENTS_COLLECTION,
-    PREDICTION_OUTCOMES_COLLECTION,
-    INGESTION_STATE_COLLECTION,
-)
 
 
 # ── Model version + band thresholds ───────────────────────────────
@@ -122,100 +110,21 @@ MIN_CONFIDENCE_THRESHOLD = 0.70
 
 # ── NYC-source dataset indexes ────────────────────────────────────
 #
-# Format mirrors the existing _ensure_index_resilient call sites:
-# (keys, name, **opts). Every NYC-source collection has the same
-# four-index baseline:
-#   • record_id UNIQUE    — dedupe key for upsert ingestion
-#   • (bin, occurred_date) — primary read path (per-project lookup)
-#   • (borough, occurred_date) — peer aggregation walk
-#   • (occurred_date)      — sweep-detection / time-window queries
-
-def _nyc_source_indexes(prefix):
-    """Build the standard 5 indexes for a BIN-and-BBL-keyed NYC
-    source collection. Index names are uniquified by the
-    `prefix` argument so two collections can have logically-
-    equivalent indexes without colliding on names.
-
-    V2.2.4 Path A: every event collection now gets a
-    ``(bbl, occurred_date)`` index alongside the legacy
-    ``(bin, occurred_date)`` one. Peer-comparison queries
-    ($in on bbl) hit the new index; per-BIN lookups still hit
-    the old one. Both stay non-unique."""
-    return (
-        {
-            "keys": [("record_id", 1)],
-            "name": f"{prefix}_record_id_unique",
-            "unique": True,
-        },
-        {
-            "keys": [("bin", 1), ("occurred_date", -1)],
-            "name": f"{prefix}_bin_date",
-        },
-        {
-            "keys": [("bbl", 1), ("occurred_date", -1)],
-            "name": f"{prefix}_bbl_date",
-        },
-        {
-            "keys": [("borough", 1), ("occurred_date", -1)],
-            "name": f"{prefix}_borough_date",
-        },
-        {
-            "keys": [("occurred_date", -1)],
-            "name": f"{prefix}_date",
-        },
-    )
-
-
-NYC_VIOLATIONS_INDEXES     = _nyc_source_indexes("nyc_violations")
-NYC_INSPECTIONS_INDEXES    = _nyc_source_indexes("nyc_inspections")
-NYC_PERMITS_INDEXES        = _nyc_source_indexes("nyc_permits")
-# nyc_complaints_311 already gets its (bbl, occurred_date) index
-# from the standard _nyc_source_indexes() build (post-V2.2.4).
-# The duplicate explicit entry that previously lived here is
-# folded into the standard build.
-NYC_COMPLAINTS_311_INDEXES = _nyc_source_indexes("nyc_complaints_311")
-NYC_ECB_VIOLATIONS_INDEXES = _nyc_source_indexes("nyc_ecb_violations")
-NYC_HPD_VIOLATIONS_INDEXES = _nyc_source_indexes("nyc_hpd_violations")
-
-# PLUTO is a snapshot, not a stream of events. V2.2.4 Path A:
-# the unique key flipped from `bin` to `bbl` because PLUTO's
-# Socrata payload (64uk-42ks) has no `bin` column. The legacy
-# `nyc_pluto_bin_unique` unique-on-null-bin index was the cause
-# of the PLUTO DKE storm — the V2.2.4 migration script drops it
-# before the new index lands.
-NYC_PLUTO_INDEXES = (
-    {
-        "keys": [("bbl", 1)],
-        "name": "nyc_pluto_bbl_unique",
-        "unique": True,
-    },
-    {
-        "keys": [("borough", 1), ("bldgclass", 1)],
-        "name": "nyc_pluto_borough_class",
-    },
-)
+# V2.3 Commit 1: removed.
+#   • _nyc_source_indexes() helper
+#   • NYC_VIOLATIONS_INDEXES, NYC_INSPECTIONS_INDEXES,
+#     NYC_PERMITS_INDEXES, NYC_COMPLAINTS_311_INDEXES,
+#     NYC_ECB_VIOLATIONS_INDEXES, NYC_HPD_VIOLATIONS_INDEXES,
+#     NYC_PLUTO_INDEXES — local-mirror is being deprecated.
+#   • STATISTICAL_BASELINES_INDEXES — baselines collection deleted.
+#   • INGESTION_STATE_INDEXES — ingestion_state collection deleted.
+#
+# Mongo collections behind those names get dropped by the
+# operator post-deploy. Surviving index specs below cover the
+# predicted_events + prediction_outcomes collections only.
 
 
 # ── Aggregation + prediction collections ──────────────────────────
-
-STATISTICAL_BASELINES_INDEXES = (
-    # Primary read path: peer-set lookup keyed by the four-tuple.
-    {
-        "keys": [
-            ("borough", 1),
-            ("project_class", 1),
-            ("use_type", 1),
-            ("year_month", -1),
-        ],
-        "name": "statistical_baselines_peer_key",
-    },
-    # Calibration sweep: read every baseline for a given month
-    # (used by the per-month re-aggregation cron).
-    {
-        "keys": [("year_month", -1)],
-        "name": "statistical_baselines_year_month",
-    },
-)
 
 PREDICTED_EVENTS_INDEXES = (
     # Active predictions per project — drawer + score recomputation
@@ -250,33 +159,18 @@ PREDICTION_OUTCOMES_INDEXES = (
     },
 )
 
-INGESTION_STATE_INDEXES = (
-    # One row per dataset. The dataset name is the natural key.
-    {
-        "keys": [("dataset", 1)],
-        "name": "ingestion_state_dataset_unique",
-        "unique": True,
-    },
-)
-
 
 # ── Combined index walk for the startup hook ──────────────────────
 #
 # server.py iterates this list at startup and calls
-# _ensure_index_resilient for each entry. Adding a new collection
-# here is a one-line change at the spec site (above) plus an entry
-# in this tuple — no coordination with the startup hook needed.
+# _ensure_index_resilient for each entry. V2.3 Commit 1: the
+# nyc_* mirror + statistical_baselines + ingestion_state index
+# specs were removed alongside their collection-name constants
+# (see top of file). Only predicted_events + prediction_outcomes
+# survive the V2.3 commit chain — they're written by the trigger
+# detector (Commit 6) and calibration (untouched).
 
 ALL_V22_INDEX_SPECS = (
-    (NYC_VIOLATIONS_COLLECTION,        NYC_VIOLATIONS_INDEXES),
-    (NYC_INSPECTIONS_COLLECTION,       NYC_INSPECTIONS_INDEXES),
-    (NYC_PERMITS_COLLECTION,           NYC_PERMITS_INDEXES),
-    (NYC_COMPLAINTS_311_COLLECTION,    NYC_COMPLAINTS_311_INDEXES),
-    (NYC_ECB_VIOLATIONS_COLLECTION,    NYC_ECB_VIOLATIONS_INDEXES),
-    (NYC_HPD_VIOLATIONS_COLLECTION,    NYC_HPD_VIOLATIONS_INDEXES),
-    (NYC_PLUTO_COLLECTION,             NYC_PLUTO_INDEXES),
-    (STATISTICAL_BASELINES_COLLECTION, STATISTICAL_BASELINES_INDEXES),
     (PREDICTED_EVENTS_COLLECTION,      PREDICTED_EVENTS_INDEXES),
     (PREDICTION_OUTCOMES_COLLECTION,   PREDICTION_OUTCOMES_INDEXES),
-    (INGESTION_STATE_COLLECTION,       INGESTION_STATE_INDEXES),
 )

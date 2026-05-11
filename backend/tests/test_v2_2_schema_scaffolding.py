@@ -1,22 +1,26 @@
 """Phase V2.2 — Commit 1 schema scaffolding tests.
 
-Pin every contract that V2.2 Commit 1 promises:
+V2.3 Commit 1 trim: the V2.2 local-mirror collections
+(nyc_violations / nyc_inspections / nyc_permits / nyc_complaints_311
+/ nyc_ecb_violations / nyc_hpd_violations / nyc_pluto /
+statistical_baselines / ingestion_state) are being replaced by
+lazy Socrata queries. The constants + index specs that pinned
+those collections are gone from schema.py — assertions about
+them have been dropped here.
 
-  • The 11 V2.2 collections exist in lib.statistical_engine.schema
-    with the documented constants.
-  • Every NYC-source collection has the four-index baseline
-    (record_id unique, bin/date, borough/date, date) plus a
-    dedicated bbl/date index for nyc_complaints_311.
-  • PLUTO has bin-unique + bbl + borough/class indexes
-    (PLUTO is a snapshot, not an event stream).
-  • statistical_baselines, predicted_events, prediction_outcomes,
-    ingestion_state all have their documented indexes.
-  • ALL_V22_INDEX_SPECS covers every V2.2 collection.
+What survives in this file:
+
+  • predicted_events + prediction_outcomes collection names
+    (these are written by the trigger detector + calibration,
+    which keep their MongoDB state).
   • MODEL_VERSION pinned to "statistical-v1".
   • score_band cutoffs match V2.1.2 backend (≤30 / ≤60 / ≤80 / >80)
     so the FE bandFor helper in RiskScoreCircle.jsx stays in sync.
   • Sample-size + confidence thresholds (20+, 0.70+) pinned per
     spec.
+  • predicted_events + prediction_outcomes indexes.
+  • ALL_V22_INDEX_SPECS covers the surviving 2 collections + no
+    duplicate index names.
   • V2.1 lib path (lib/risk_score/*) is GONE — importing it fails.
   • V2.1 server.py surfaces (v2_risk_score flag, helper, scheduler
     tick) are GONE.
@@ -24,7 +28,7 @@ Pin every contract that V2.2 Commit 1 promises:
     registered at startup, _stat_engine import line present.
   • Frontend RiskScoreCircle + RiskScoreDrawer files still exist
     with first-hook + band-threshold pins (carrying the V2.1.2 +
-    V2.1.4 invariants forward against the V2.2 backend).
+    V2.1.4 invariants forward against the V2.2/V2.3 backend).
 """
 
 from __future__ import annotations
@@ -51,45 +55,12 @@ from lib.statistical_engine import schema as se_schema  # noqa: E402
 
 
 # ──────────────────────────────────────────────────────────────────
-# Collection names + counts
+# Surviving collection names (V2.3 Commit 1: only the two
+# prediction-state collections remain in schema.py)
 # ──────────────────────────────────────────────────────────────────
 
 
 class TestCollectionNames(unittest.TestCase):
-
-    def test_eleven_collections(self):
-        self.assertEqual(len(se_schema.ALL_V22_COLLECTIONS), 11)
-
-    def test_nyc_violations_name(self):
-        self.assertEqual(se_schema.NYC_VIOLATIONS_COLLECTION, "nyc_violations")
-
-    def test_nyc_inspections_name(self):
-        self.assertEqual(
-            se_schema.NYC_INSPECTIONS_COLLECTION, "nyc_inspections")
-
-    def test_nyc_permits_name(self):
-        self.assertEqual(se_schema.NYC_PERMITS_COLLECTION, "nyc_permits")
-
-    def test_nyc_complaints_311_name(self):
-        self.assertEqual(
-            se_schema.NYC_COMPLAINTS_311_COLLECTION, "nyc_complaints_311")
-
-    def test_nyc_ecb_violations_name(self):
-        self.assertEqual(
-            se_schema.NYC_ECB_VIOLATIONS_COLLECTION, "nyc_ecb_violations")
-
-    def test_nyc_hpd_violations_name(self):
-        self.assertEqual(
-            se_schema.NYC_HPD_VIOLATIONS_COLLECTION, "nyc_hpd_violations")
-
-    def test_nyc_pluto_name(self):
-        self.assertEqual(se_schema.NYC_PLUTO_COLLECTION, "nyc_pluto")
-
-    def test_statistical_baselines_name(self):
-        self.assertEqual(
-            se_schema.STATISTICAL_BASELINES_COLLECTION,
-            "statistical_baselines",
-        )
 
     def test_predicted_events_name(self):
         self.assertEqual(
@@ -98,10 +69,6 @@ class TestCollectionNames(unittest.TestCase):
     def test_prediction_outcomes_name(self):
         self.assertEqual(
             se_schema.PREDICTION_OUTCOMES_COLLECTION, "prediction_outcomes")
-
-    def test_ingestion_state_name(self):
-        self.assertEqual(
-            se_schema.INGESTION_STATE_COLLECTION, "ingestion_state")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -142,7 +109,7 @@ class TestVersionAndThresholds(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Index specs — NYC source datasets
+# Index specs — surviving aggregation + prediction collections
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -160,100 +127,7 @@ def _has_unique_index_on(specs, *fields):
     return False
 
 
-class TestNycSourceIndexes(unittest.TestCase):
-    """Every NYC-source collection has the standard 5-index
-    baseline (V2.2.4 Path A added the bbl index): record_id
-    unique + (bin, date) + (bbl, date) + (borough, date) +
-    (date)."""
-
-    def _check_baseline(self, specs, prefix):
-        names = _index_names(specs)
-        # record_id unique
-        self.assertIn(f"{prefix}_record_id_unique", names)
-        self.assertTrue(_has_unique_index_on(specs, "record_id"))
-        # (bin, occurred_date)
-        self.assertIn(f"{prefix}_bin_date", names)
-        # (bbl, occurred_date) — V2.2.4 Path A
-        self.assertIn(f"{prefix}_bbl_date", names)
-        # (borough, occurred_date)
-        self.assertIn(f"{prefix}_borough_date", names)
-        # (occurred_date)
-        self.assertIn(f"{prefix}_date", names)
-
-    def test_nyc_violations(self):
-        self._check_baseline(
-            se_schema.NYC_VIOLATIONS_INDEXES, "nyc_violations")
-
-    def test_nyc_inspections(self):
-        self._check_baseline(
-            se_schema.NYC_INSPECTIONS_INDEXES, "nyc_inspections")
-
-    def test_nyc_permits(self):
-        self._check_baseline(
-            se_schema.NYC_PERMITS_INDEXES, "nyc_permits")
-
-    def test_nyc_complaints_311_baseline(self):
-        self._check_baseline(
-            se_schema.NYC_COMPLAINTS_311_INDEXES, "nyc_complaints_311")
-
-    def test_nyc_complaints_311_has_bbl_index(self):
-        # 311 has an extra (bbl, date) index for the
-        # neighbor-trigger (proximity via BBL block component).
-        names = _index_names(se_schema.NYC_COMPLAINTS_311_INDEXES)
-        self.assertIn("nyc_complaints_311_bbl_date", names)
-
-    def test_nyc_ecb_violations(self):
-        self._check_baseline(
-            se_schema.NYC_ECB_VIOLATIONS_INDEXES, "nyc_ecb_violations")
-
-    def test_nyc_hpd_violations(self):
-        self._check_baseline(
-            se_schema.NYC_HPD_VIOLATIONS_INDEXES, "nyc_hpd_violations")
-
-
-class TestPlutoIndexes(unittest.TestCase):
-    """PLUTO is a snapshot. V2.2.4 Path A: the unique key flipped
-    from `bin` (V2.2-era) to `bbl` (current). PLUTO's Socrata
-    payload has no `bin` column, so the previous unique-on-bin
-    index produced a DKE storm — every insert collided on bin:null.
-    """
-
-    def test_bbl_unique(self):
-        self.assertTrue(_has_unique_index_on(
-            se_schema.NYC_PLUTO_INDEXES, "bbl"))
-
-    def test_bbl_unique_index_name(self):
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertIn("nyc_pluto_bbl_unique", names)
-
-    def test_legacy_bin_unique_removed(self):
-        # Hard pin: the pre-V2.2.4 unique-on-bin index must NOT
-        # be in the spec. If it is, the migration script that
-        # drops it has to re-run before peer-comparison heals.
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertNotIn("nyc_pluto_bin_unique", names)
-        self.assertFalse(_has_unique_index_on(
-            se_schema.NYC_PLUTO_INDEXES, "bin"))
-
-    def test_borough_class_index(self):
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertIn("nyc_pluto_borough_class", names)
-
-
-# ──────────────────────────────────────────────────────────────────
-# Index specs — aggregation + prediction collections
-# ──────────────────────────────────────────────────────────────────
-
-
 class TestAggregationIndexes(unittest.TestCase):
-
-    def test_baselines_peer_key_index(self):
-        names = _index_names(se_schema.STATISTICAL_BASELINES_INDEXES)
-        self.assertIn("statistical_baselines_peer_key", names)
-
-    def test_baselines_year_month_index(self):
-        names = _index_names(se_schema.STATISTICAL_BASELINES_INDEXES)
-        self.assertIn("statistical_baselines_year_month", names)
 
     def test_predicted_events_project_expires_index(self):
         names = _index_names(se_schema.PREDICTED_EVENTS_INDEXES)
@@ -277,22 +151,21 @@ class TestAggregationIndexes(unittest.TestCase):
         names = _index_names(se_schema.PREDICTION_OUTCOMES_INDEXES)
         self.assertIn("prediction_outcomes_project_expired", names)
 
-    def test_ingestion_state_dataset_unique(self):
-        self.assertTrue(_has_unique_index_on(
-            se_schema.INGESTION_STATE_INDEXES, "dataset"))
-
 
 class TestAllV22IndexSpecs(unittest.TestCase):
     """ALL_V22_INDEX_SPECS is the iterable used by server.py at
-    startup. It must cover every V2.2 collection — adding a new
-    collection means adding a new entry here AND in ALL_V22_COLLECTIONS,
-    and these tests catch a forgotten ALL_V22_INDEX_SPECS entry."""
+    startup. V2.3 Commit 1: it now covers only the two surviving
+    collections (predicted_events + prediction_outcomes)."""
 
-    def test_covers_every_collection(self):
+    def test_only_surviving_collections(self):
         covered = set(name for name, _ in se_schema.ALL_V22_INDEX_SPECS)
-        all_collections = set(se_schema.ALL_V22_COLLECTIONS)
-        self.assertEqual(covered, all_collections,
-                         "ALL_V22_INDEX_SPECS doesn't match collection set")
+        self.assertEqual(
+            covered,
+            {
+                se_schema.PREDICTED_EVENTS_COLLECTION,
+                se_schema.PREDICTION_OUTCOMES_COLLECTION,
+            },
+        )
 
     def test_no_duplicate_index_names_across_collections(self):
         # Index names are globally unique within the codebase to
@@ -315,15 +188,17 @@ class TestPackageReExports(unittest.TestCase):
     re-exports."""
 
     def test_collection_names_reexported(self):
-        self.assertEqual(stat_engine.NYC_VIOLATIONS_COLLECTION,
-                         "nyc_violations")
         self.assertEqual(stat_engine.PREDICTED_EVENTS_COLLECTION,
                          "predicted_events")
+        self.assertEqual(stat_engine.PREDICTION_OUTCOMES_COLLECTION,
+                         "prediction_outcomes")
 
     def test_indexes_reexported(self):
         # Server.py needs ALL_V22_INDEX_SPECS to wire startup.
+        # V2.3 Commit 1: shrank from 11 to 2 (the prediction
+        # state collections only).
         self.assertTrue(hasattr(stat_engine, "ALL_V22_INDEX_SPECS"))
-        self.assertEqual(len(stat_engine.ALL_V22_INDEX_SPECS), 11)
+        self.assertEqual(len(stat_engine.ALL_V22_INDEX_SPECS), 2)
 
     def test_model_version_reexported(self):
         self.assertEqual(stat_engine.MODEL_VERSION, "statistical-v1")
@@ -336,6 +211,57 @@ class TestPackageReExports(unittest.TestCase):
     def test_threshold_constants_reexported(self):
         self.assertEqual(stat_engine.MIN_PEER_SAMPLE_SIZE, 20)
         self.assertAlmostEqual(stat_engine.MIN_CONFIDENCE_THRESHOLD, 0.70)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 1: removed schema surfaces are actually gone
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestV22MirrorSurfacesRemoved(unittest.TestCase):
+    """The V2.2 local-mirror constants and their index specs
+    must NOT be on the schema module anymore. They live
+    transitionally in lib.statistical_engine.utils (consumed by
+    baselines.py / triggers.py / score.py / calibration.py until
+    Commit 3), but schema.py is no longer the source."""
+
+    def test_nyc_collection_constants_gone(self):
+        for name in (
+            "NYC_VIOLATIONS_COLLECTION",
+            "NYC_INSPECTIONS_COLLECTION",
+            "NYC_PERMITS_COLLECTION",
+            "NYC_COMPLAINTS_311_COLLECTION",
+            "NYC_ECB_VIOLATIONS_COLLECTION",
+            "NYC_HPD_VIOLATIONS_COLLECTION",
+            "NYC_PLUTO_COLLECTION",
+            "STATISTICAL_BASELINES_COLLECTION",
+            "INGESTION_STATE_COLLECTION",
+            "ALL_V22_COLLECTIONS",
+        ):
+            self.assertFalse(
+                hasattr(se_schema, name),
+                f"schema.py still exposes {name}; should have been removed",
+            )
+
+    def test_nyc_index_specs_gone(self):
+        for name in (
+            "NYC_VIOLATIONS_INDEXES",
+            "NYC_INSPECTIONS_INDEXES",
+            "NYC_PERMITS_INDEXES",
+            "NYC_COMPLAINTS_311_INDEXES",
+            "NYC_ECB_VIOLATIONS_INDEXES",
+            "NYC_HPD_VIOLATIONS_INDEXES",
+            "NYC_PLUTO_INDEXES",
+            "STATISTICAL_BASELINES_INDEXES",
+            "INGESTION_STATE_INDEXES",
+        ):
+            self.assertFalse(
+                hasattr(se_schema, name),
+                f"schema.py still exposes {name}; should have been removed",
+            )
+
+    def test_nyc_source_indexes_helper_gone(self):
+        self.assertFalse(hasattr(se_schema, "_nyc_source_indexes"))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -406,6 +332,39 @@ class TestServerPyV21Removed(unittest.TestCase):
         # The "hide endpoint behind 404 if flag off" helper went
         # away with the flag.
         self.assertNotIn("_risk_score_404", self.text)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 1: server.py V2.2 cron + backfill removal
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV22CronTicksRemoved(unittest.TestCase):
+    """V2.3 Commit 1 stripped the three V2.2 scheduler ticks +
+    the V22 backfill endpoint + the V22BackfillRequest model.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def test_no_weekly_ingest_tick(self):
+        self.assertNotIn("_v22_weekly_ingest_tick", self.text)
+        self.assertNotIn("v2_2_weekly_ingest", self.text)
+
+    def test_no_baseline_aggregator_tick(self):
+        self.assertNotIn("_v22_baseline_aggregator_tick", self.text)
+        self.assertNotIn("v2_2_baseline_aggregator", self.text)
+
+    def test_no_calibration_tick(self):
+        self.assertNotIn("_v22_calibration_tick", self.text)
+        self.assertNotIn("v2_2_calibration_attribution", self.text)
+
+    def test_no_backfill_endpoint(self):
+        self.assertNotIn("V22BackfillRequest", self.text)
+        self.assertNotIn(
+            "/admin/risk-score/backfill", self.text,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -47,6 +47,15 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from lib.statistical_engine.schema import (
     MIN_PEER_SAMPLE_SIZE,
+)
+# V2.3 Commit 1: collection-name constants moved from schema.py
+# to utils.py as a transitional placement. This file's query
+# logic is left untouched per the Commit 1 spec — queries hit
+# the (about-to-be-dropped) local mirror collections and return
+# empty. Commit 3 rewrites every db[NYC_*_COLLECTION].find(...)
+# call site to a lazy Socrata GET; at that point the import line
+# below is deleted entirely.
+from lib.statistical_engine.utils import (
     NYC_COMPLAINTS_311_COLLECTION,
     NYC_INSPECTIONS_COLLECTION,
     NYC_PLUTO_COLLECTION,

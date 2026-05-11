@@ -52,10 +52,15 @@ from typing import Any, Dict, List, Optional, Sequence
 from lib.statistical_engine.schema import (
     MIN_CONFIDENCE_THRESHOLD,
     MIN_PEER_SAMPLE_SIZE,
+    PREDICTED_EVENTS_COLLECTION,
+)
+# V2.3 Commit 1: collection-name constants moved to utils.py.
+# Commit 3 rewrites every db[NYC_*_COLLECTION].find(...) here
+# to a lazy Socrata GET and deletes this import.
+from lib.statistical_engine.utils import (
     NYC_COMPLAINTS_311_COLLECTION,
     NYC_INSPECTIONS_COLLECTION,
     NYC_VIOLATIONS_COLLECTION,
-    PREDICTED_EVENTS_COLLECTION,
 )
 
 logger = logging.getLogger(__name__)

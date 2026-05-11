@@ -1,32 +1,27 @@
-"""Phase V2.2 — Statistical Risk Engine + Event Predictor.
+"""Phase V2.3 — Statistical Risk Engine + Event Predictor.
 
-Replaces the V2.1 heuristic risk score with a statistical model
-driven by NYC Open Data + project peer comparison + active
-trigger detection. NO feature flag — V2.2 ships as the only
-risk-score code path.
+V2.3 architecture: lazy Socrata queries replace the V2.2 local
+nyc_* mirror. No backfill cron, no weekly ingest, no
+statistical_baselines pre-aggregation cache. Per-project peer
+stats are computed once at creation, cached on the project doc,
+and incrementally refreshed every 14 days.
 
-  • schema.py        — collection names, indexes spec, model
-                       version constant, score_band helper.
-  • ingestion.py     — NYC Open Data Socrata client + 6 dataset
-                       fetchers + PLUTO + backfill + weekly delta.
-                       (Commit 2)
-  • baselines.py     — peer-set query, sample-size fallback,
-                       compare-to-peer aggregation.
-                       (Commit 3)
-  • triggers.py      — 8 trigger detectors + event predictor
-                       (Commit 4).
-  • score.py         — risk score recomputation using statistical
-                       inputs (Commit 5).
-  • calibration.py   — outcome tracking + calibration math
-                       + admin tunable weights (Commit 6).
+This is the post-Commit-1 surface. baselines.py and triggers.py
+are still V2.2-shaped internally (they query local mirror
+collections that no longer have data); Commit 3 rewrites them
+to lazy queries.
 
-Every NYC dataset is BIN-keyed where possible. PLUTO and the
-peer-baseline pre-aggregations live in their own collections.
-Event-driven re-stat is wired through the existing pollers
-(nightly_dob_scan, _poll_311_fast_complaints) — they upsert into
-both the v1 dob_logs collection AND the V2.2 statistical
-collections so the score reflects the freshest data without
-waiting for the weekly cron.
+  • schema.py        — model version + score bands + predicted_events /
+                       prediction_outcomes index specs (only).
+                       The nyc_* mirror constants moved to utils.py
+                       transitionally; deleted entirely in Commit 3.
+  • utils.py         — BBL synthesis + normalization. Holds the
+                       transitional collection-name constants.
+  • baselines.py     — peer-comparison (V2.2-shaped, rewritten Commit 3).
+  • triggers.py      — 8 trigger detectors (V2.2-shaped,
+                       rewritten Commit 3).
+  • score.py         — risk-score recomputation. Untouched in Commit 1.
+  • calibration.py   — outcome attribution. Untouched in Commit 1.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -78,44 +73,17 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     run_baseline_aggregator,
     compare_project_to_peers,
 )
-from lib.statistical_engine.ingestion import (  # noqa: F401
-    DATASETS,
-    BACKFILL_YEARS,
-    WEEKLY_DELTA_DAYS,
-    SOCRATA_PAGE_LIMIT,
-    backfill_dataset,
-    backfill_all_datasets,
-    weekly_delta_dataset,
-    weekly_delta_all_datasets,
-    forward_to_v22,
-    upsert_record,
+from lib.statistical_engine.utils import (  # noqa: F401
+    _construct_bbl_from_components,
+    normalize_bbl,
 )
 from lib.statistical_engine.schema import (  # noqa: F401
-    # Collection names
-    NYC_VIOLATIONS_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_PERMITS_COLLECTION,
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_ECB_VIOLATIONS_COLLECTION,
-    NYC_HPD_VIOLATIONS_COLLECTION,
-    NYC_PLUTO_COLLECTION,
-    STATISTICAL_BASELINES_COLLECTION,
+    # Surviving collection constants
     PREDICTED_EVENTS_COLLECTION,
     PREDICTION_OUTCOMES_COLLECTION,
-    INGESTION_STATE_COLLECTION,
-    ALL_V22_COLLECTIONS,
-    # Index specs (consumed by server.py startup)
-    NYC_VIOLATIONS_INDEXES,
-    NYC_INSPECTIONS_INDEXES,
-    NYC_PERMITS_INDEXES,
-    NYC_COMPLAINTS_311_INDEXES,
-    NYC_ECB_VIOLATIONS_INDEXES,
-    NYC_HPD_VIOLATIONS_INDEXES,
-    NYC_PLUTO_INDEXES,
-    STATISTICAL_BASELINES_INDEXES,
+    # Surviving index specs (consumed by server.py startup)
     PREDICTED_EVENTS_INDEXES,
     PREDICTION_OUTCOMES_INDEXES,
-    INGESTION_STATE_INDEXES,
     ALL_V22_INDEX_SPECS,
     # Model + bands
     MODEL_VERSION,

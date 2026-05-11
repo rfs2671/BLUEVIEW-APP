@@ -39,12 +39,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from lib.statistical_engine.schema import (
-    NYC_VIOLATIONS_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_COMPLAINTS_311_COLLECTION,
     PREDICTED_EVENTS_COLLECTION,
     PREDICTION_OUTCOMES_COLLECTION,
     MODEL_VERSION,
+)
+# V2.3 Commit 1: collection-name constants moved to utils.py.
+# The TRIGGER_TO_COLL dict below still references these names —
+# Commit 3 rewrites the outcome-attribution path to lazy Socrata
+# queries at which point this import goes away.
+from lib.statistical_engine.utils import (
+    NYC_VIOLATIONS_COLLECTION,
+    NYC_INSPECTIONS_COLLECTION,
+    NYC_COMPLAINTS_311_COLLECTION,
 )
 from lib.statistical_engine.triggers import (
     ALL_TRIGGER_KINDS,

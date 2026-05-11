@@ -3698,11 +3698,11 @@ async def calculate_project_risk_score(
 
 # ──────────────── V2.2 admin endpoints ────────────────────────────
 #
-# Three admin-only endpoints landed in Commit 6:
+# V2.3 Commit 1: the admin backfill endpoint was removed (it served
+# the V2.2 local-mirror architecture, which is being replaced by
+# lazy Socrata queries). Two admin-only endpoints survive:
 #   GET  /api/admin/risk-score/calibration  — calibration breakdown
 #   POST /api/admin/risk-score/weights      — manual prior tuning
-#   POST /api/admin/risk-score/backfill     — operator-triggered
-#                                              2-year initial backfill
 
 @api_router.get("/admin/risk-score/calibration")
 async def get_admin_risk_score_calibration(
@@ -3745,36 +3745,11 @@ async def post_admin_risk_score_weights(
     return {"prior": doc}
 
 
-class V22BackfillRequest(BaseModel):
-    years: Optional[int] = None
-    max_pages_per_dataset: Optional[int] = None
-
-
-@api_router.post("/admin/risk-score/backfill")
-async def post_admin_risk_score_backfill(
-    body: Optional[V22BackfillRequest] = None,
-    current_user = Depends(get_admin_user),
-):
-    """Operator-triggered initial 2-year backfill. Long-running
-    — the operator should run this from a long-lived REPL or
-    background process; this endpoint kicks it off and returns
-    after the FIRST page so the request doesn't time out.
-
-    Subsequent calls resume from the last cursor in
-    ingestion_state, so this is safe to invoke multiple times.
-    """
-    body = body or V22BackfillRequest()
-    years = body.years or _stat_engine.BACKFILL_YEARS
-    # Run only one page per dataset per HTTP request so we don't
-    # block the server thread for 30+ minutes. Operator runs
-    # this repeatedly (or via a long-running script) until
-    # ingestion_state.backfill_finished flips to True for every
-    # dataset.
-    max_pages = body.max_pages_per_dataset or 1
-    summaries = await _stat_engine.backfill_all_datasets(
-        db, years=years, max_pages_per_dataset=max_pages,
-    )
-    return {"backfill": summaries}
+# V2.3 Commit 1: the V2.2 backfill request model and endpoint
+# handler were removed. The handler drove the V2.2 local-mirror
+# backfill which is deprecated. Lazy-Socrata queries (Commits 2-3)
+# need no backfill endpoint; peer stats are computed at project
+# creation.
 
 
 # ==================== ADMIN USER MANAGEMENT ====================
@@ -24186,89 +24161,17 @@ async def startup_event():
         coalesce=True,
     )
 
-    # Phase V2.2 — the V2.1 daily risk-score tick was removed in
-    # Commit 1 of V2.2. The statistical-engine scheduling lands
-    # in Commits 2 / 3 / 6:
-    #   - Commit 2 (this commit): weekly NYC Open Data delta cron.
-    #   - Commit 3: nightly baseline aggregator.
-    #   - Commit 6: daily calibration outcome-attribution.
-    #
-    # Weekly NYC Open Data ingest. Sunday 2 AM ET. Pulls the past
-    # 7 days of new records from each of the 6 BIN-keyed event
-    # datasets + PLUTO. Idempotent — record_id unique index
-    # dedupes overlap with the initial 2-year backfill.
-    # max_instances=1 + coalesce=True so a slow run skips its
-    # successor instead of stacking. The initial 2-year backfill
-    # is operator-triggered via an admin endpoint (lands in
-    # Commit 6); this cron only handles the steady-state delta.
-    async def _v22_weekly_ingest_tick():
-        try:
-            await _stat_engine.weekly_delta_all_datasets(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 ingestion] weekly tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_weekly_ingest_tick,
-        CronTrigger(
-            day_of_week='sun', hour=2, minute=0,
-            timezone="America/New_York",
-        ),
-        id='v2_2_weekly_ingest',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Phase V2.2 Commit 3 — nightly baseline aggregator. 3:30 AM
-    # ET so it runs after the V2.0 logbook tick (3 AM) and well
-    # before the per-project re-stat needs the data. Walks every
-    # distinct (borough, bldgclass, landuse) tuple in PLUTO,
-    # computes summary stats over the past 2 years of NYC source
-    # data, upserts into statistical_baselines. Idempotent —
-    # peer-set + year_month is the upsert key.
-    async def _v22_baseline_aggregator_tick():
-        try:
-            await _stat_engine.run_baseline_aggregator(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 baselines] nightly tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_baseline_aggregator_tick,
-        CronTrigger(hour=3, minute=30, timezone="America/New_York"),
-        id='v2_2_baseline_aggregator',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Phase V2.2 Commit 6 — daily calibration outcome attribution.
-    # 5 AM ET so it runs after the V2.0 logbook (3 AM), V2.2
-    # baselines (3:30 AM), V2.2 risk-score recomputes triggered by
-    # those, and well before the operator typically looks at the
-    # admin calibration view. Walks every prediction whose
-    # expires_at <= now and outcome_status == 'active', attributes
-    # hit/miss based on whether a matching event landed in the
-    # window. Soft-fails per prediction.
-    async def _v22_calibration_tick():
-        try:
-            await _stat_engine.attribute_outcomes_for_expired_predictions(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 calibration] daily tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_calibration_tick,
-        CronTrigger(hour=5, minute=0, timezone="America/New_York"),
-        id='v2_2_calibration_attribution',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    # V2.3 Commit 1: three V2.2 scheduler ticks removed (weekly
+    # mirror ingest, nightly baseline aggregator, daily calibration
+    # attribution). All three drove the V2.2 local-mirror
+    # infrastructure that's being deprecated:
+    #   - the weekly ingest fed the nyc_* mirror collections (deleted).
+    #   - the baseline aggregator pre-computed the baselines collection
+    #     (deleted; lazy queries replace it in Commit 3).
+    #   - the calibration attribution job will return in a later V2.3
+    #     commit once the lazy-query replacement for the trigger
+    #     detection path is in place. Removing it now to keep the
+    #     surface coherent during the V2.3 commit chain.
 
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
@@ -24531,13 +24434,12 @@ async def startup_event():
             **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
         )
 
-    # Phase V2.2 — statistical risk engine indexes. Eleven new
-    # collections (NYC source datasets + peer-aggregation +
-    # prediction tracking + ingestion-state cursor). Specs
-    # sourced from lib/statistical_engine/schema.py;
-    # ALL_V22_INDEX_SPECS lets us iterate the whole set in one
-    # walk so adding a new collection is one line in the spec
-    # site, no startup-hook coordination needed.
+    # V2.3 Commit 1: ALL_V22_INDEX_SPECS shrank from 11 collections
+    # to 2. The nyc_* mirror collections + statistical_baselines +
+    # ingestion_state index specs were removed alongside their
+    # deletion in lib/statistical_engine/schema.py. Surviving
+    # entries: predicted_events + prediction_outcomes (both
+    # untouched in Commit 1; rewritten consumers come in Commit 3).
     for _coll_name, _idx_specs in _stat_engine.ALL_V22_INDEX_SPECS:
         _coll = db[_coll_name]
         for _idx_spec in _idx_specs:
