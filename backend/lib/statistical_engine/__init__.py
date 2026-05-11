@@ -39,6 +39,11 @@ document with a 14-day staleness window.
                        project creation. compare_project_to_peers
                        grew pending/failed/24h-TTL state guards
                        in the same commit.
+  • refresh_cron.py  — V2.3 Commit 5: stagger-paced refresh sweep
+                       run every 15 min by APScheduler. Three
+                       eligibility classes (stale-ready,
+                       failed-past-24h, orphan-pending-past-15min)
+                       with explicit per-status routing.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -100,6 +105,13 @@ from lib.statistical_engine.prewarm import (  # noqa: F401
     ERROR_KIND_TIMEOUT,
     ERROR_KIND_SOCRATA,
     ERROR_KIND_UNEXPECTED,
+)
+from lib.statistical_engine.refresh_cron import (  # noqa: F401
+    refresh_stale_peer_stats_caches,
+    REFRESH_BATCH_SIZE,
+    REFRESH_TICK_MINUTES,
+    REFRESH_COMPUTE_TIMEOUT_SECONDS,
+    ORPHAN_PENDING_THRESHOLD_MINUTES,
 )
 from lib.statistical_engine.utils import (  # noqa: F401
     _construct_bbl_from_components,

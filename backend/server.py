@@ -24335,6 +24335,37 @@ async def startup_event():
         except Exception as _e:
             logger.error(f"eligibility_shadow_sweep scheduler wire failed: {_e!r}")
 
+    # V2.3 Commit 5 — peer_stats refresh cron. Sweeps stale
+    # (>14 day) ready caches, failed caches outside the 24h
+    # retry-escape window, and orphaned pending caches (>15 min
+    # without progress, indicating a crashed prewarm). Batches
+    # of REFRESH_BATCH_SIZE per tick at REFRESH_TICK_MINUTES
+    # cadence; sequential per-project processing within the
+    # tick keeps Socrata throughput bounded. max_instances=1 +
+    # coalesce=True mean an overrunning tick has its successor
+    # skipped instead of stacking. Wrapper-tick try/except
+    # follows the _logbook_nightly_tick precedent so a sweep
+    # crash is logged but doesn't kill the scheduler.
+    async def _peer_stats_refresh_tick():
+        try:
+            stats = await _stat_engine.refresh_stale_peer_stats_caches(db)
+            logger.info(
+                f"[peer_stats_refresh] tick complete: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[peer_stats_refresh] tick crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _peer_stats_refresh_tick,
+        IntervalTrigger(minutes=_stat_engine.REFRESH_TICK_MINUTES),
+        id='peer_stats_refresh',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # ── Resend domain health check ──
     # Probe before the digest cron is registered so a verification
     # failure surfaces at deploy time, not at the next 7am ET tick.
@@ -24486,6 +24517,24 @@ async def startup_event():
                     if k not in ("keys", "name")
                 },
             )
+
+    # V2.3 Commit 5 — compound index on peer_stats_cache for the
+    # refresh cron's eligibility query. Status has small cardinality
+    # (~4 values: ready / pending / failed / absent), so the
+    # status-key prefix narrows the scan tightly; the
+    # last_refreshed_at second key directly covers the stale-ready
+    # clause's sort. Failed and orphan-pending clauses still scan
+    # within their status bucket but the bucket is small.
+    # _ensure_index_resilient is idempotent — survives both an
+    # already-existing index and a spec change.
+    await _ensure_index_resilient(
+        db.projects,
+        keys=[
+            ("peer_stats_cache.status", 1),
+            ("peer_stats_cache.last_refreshed_at", 1),
+        ],
+        name="projects_peer_stats_status_refreshed_at",
+    )
 
     # risk_scores collection retains its index from V2.1 — V2.2
     # produces fresh rows in the same shape so the FE

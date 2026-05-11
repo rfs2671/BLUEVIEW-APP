@@ -486,6 +486,84 @@ class TestServerPyV23PrewarmWiring(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 5: peer_stats refresh cron + index wiring
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23RefreshCronWiring(unittest.TestCase):
+    """Commit 5 wired three things in server.py:
+
+      1. ``_peer_stats_refresh_tick`` wrapper-tick function
+         (matches the ``_logbook_nightly_tick`` precedent —
+         try/except + logger.error with exc_info=True).
+      2. ``scheduler.add_job(_peer_stats_refresh_tick, ...)``
+         registration with IntervalTrigger, max_instances=1,
+         coalesce=True (cron-lock).
+      3. ``_ensure_index_resilient`` for the compound index on
+         peer_stats_cache.{status, last_refreshed_at} so the
+         sweep query is index-backed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def test_refresh_tick_function_defined(self):
+        self.assertIn(
+            "async def _peer_stats_refresh_tick():",
+            self.text,
+        )
+
+    def test_refresh_tick_wraps_call_in_try_except(self):
+        """Wrapper pattern from _logbook_nightly_tick — sweep
+        crashes must be logged at ERROR with exc_info=True, not
+        crash the scheduler."""
+        s = self.text.find("async def _peer_stats_refresh_tick():")
+        self.assertGreater(s, 0)
+        # Walk forward to the end of the tick body (next
+        # scheduler.add_job marks it).
+        e = self.text.find("scheduler.add_job(", s)
+        self.assertGreater(e, s)
+        body = self.text[s:e]
+        self.assertIn("try:", body)
+        self.assertIn("refresh_stale_peer_stats_caches", body)
+        self.assertIn("except Exception", body)
+        self.assertIn("exc_info=True", body)
+
+    def test_refresh_tick_registered_with_interval_trigger(self):
+        """IntervalTrigger every REFRESH_TICK_MINUTES, id +
+        replace_existing + max_instances=1 + coalesce=True."""
+        s = self.text.find("id='peer_stats_refresh'")
+        self.assertGreater(s, 0, "peer_stats_refresh job id missing")
+        # Take a generous slice around the registration call.
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("scheduler.add_job(", slice_)
+        self.assertIn("_peer_stats_refresh_tick,", slice_)
+        self.assertIn("IntervalTrigger(minutes=", slice_)
+        self.assertIn("_stat_engine.REFRESH_TICK_MINUTES", slice_)
+        self.assertIn("replace_existing=True", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    def test_peer_stats_index_ensured_at_startup(self):
+        """Compound index on peer_stats_cache.{status,
+        last_refreshed_at} ensured via _ensure_index_resilient."""
+        s = self.text.find("projects_peer_stats_status_refreshed_at")
+        self.assertGreater(s, 0, "peer_stats index name missing")
+        # The call should be inside an _ensure_index_resilient
+        # invocation against db.projects.
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("_ensure_index_resilient(", slice_)
+        self.assertIn("db.projects,", slice_)
+        self.assertIn("peer_stats_cache.status", slice_)
+        self.assertIn("peer_stats_cache.last_refreshed_at", slice_)
+
+
+# ──────────────────────────────────────────────────────────────────
 # V2.2 server.py wiring
 # ──────────────────────────────────────────────────────────────────
 
