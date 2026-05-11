@@ -5523,6 +5523,134 @@ def _empty_preview_response(days: int) -> Dict[str, Any]:
 # host the key material, not the operator's laptop).
 
 
+# ── V2.3 Commit 7 — In-app notifications inbox endpoints ──────────
+#
+# Backs the project-page notifications surface. The Mongo
+# collection is ``notifications`` (distinct from the email-audit
+# ``notification_log`` and the per-user ``notification_preferences``).
+# Schema + dispatch logic live in lib/notifications_inbox.py;
+# these endpoints are thin read/write wrappers.
+#
+# All four endpoints scope every Mongo operation to the current
+# user's ``user_id``. No cross-user reads or writes are possible
+# even by passing crafted notification ids — the (_id, user_id)
+# filter pair on update_one ensures a 404 instead of a write
+# against someone else's notification.
+
+import lib.notifications_inbox as _notifications_inbox  # noqa: E402
+
+
+@api_router.get("/notifications", tags=["Notifications"])
+async def list_notifications(
+    unread_only: bool = False,
+    project_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user = Depends(get_current_user),
+):
+    """List the current user's notifications, newest first.
+
+    Default filter: ``status="active"`` (hides dismissed entries).
+    Optional ``unread_only=True`` adds ``read_at IS NULL``.
+    Optional ``project_id`` scopes to one project.
+
+    Pagination: same envelope as paginated_query
+    ({items, total, limit, skip, has_more}). offset is mapped to
+    skip for consistency.
+    """
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+    }
+    if unread_only:
+        query["read_at"] = None
+    if project_id:
+        query["project_id"] = project_id
+    return await paginated_query(
+        db[_notifications_inbox.NOTIFICATIONS_COLLECTION],
+        query,
+        sort_field="created_at",
+        sort_dir=-1,
+        limit=limit,
+        skip=offset,
+    )
+
+
+@api_router.get("/notifications/unread-count", tags=["Notifications"])
+async def get_notifications_unread_count(
+    project_id: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Return the current user's unread-active notification count.
+    FE polls this on a 60-second interval for the per-project
+    badge. Cheap: indexed query on (user_id, read_at)."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+        "read_at": None,
+    }
+    if project_id:
+        query["project_id"] = project_id
+    count = await db[_notifications_inbox.NOTIFICATIONS_COLLECTION].count_documents(query)
+    return {"count": count}
+
+
+@api_router.post(
+    "/notifications/{notification_id}/mark-read",
+    tags=["Notifications"],
+)
+async def mark_notification_read(
+    notification_id: str,
+    current_user = Depends(get_current_user),
+):
+    """Mark one notification as read. Ownership enforced by the
+    (_id, user_id) compound filter — 404 on cross-user access."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    now = datetime.now(timezone.utc)
+    coll = db[_notifications_inbox.NOTIFICATIONS_COLLECTION]
+    result = await coll.update_one(
+        {"_id": to_query_id(notification_id), "user_id": user_id},
+        {"$set": {"read_at": now}},
+    )
+    if getattr(result, "matched_count", 0) == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    updated = await coll.find_one(
+        {"_id": to_query_id(notification_id), "user_id": user_id},
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return serialize_id(dict(updated))
+
+
+@api_router.post(
+    "/notifications/mark-all-read",
+    tags=["Notifications"],
+)
+async def mark_all_notifications_read(
+    project_id: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Bulk mark all unread-active notifications for the current
+    user as read. Optional ``project_id`` scopes to one project's
+    inbox."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    now = datetime.now(timezone.utc)
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+        "read_at": None,
+    }
+    if project_id:
+        query["project_id"] = project_id
+    result = await db[_notifications_inbox.NOTIFICATIONS_COLLECTION].update_many(
+        query,
+        {"$set": {"read_at": now}},
+    )
+    return {"marked_count": getattr(result, "modified_count", 0) or 0}
+
+
 # ── Authorization document ─────────────────────────────────────────
 # Historical MR.10 surface. The frontend credential-entry UI used to
 # require the operator to accept this text + type the licensee name
@@ -24487,6 +24615,39 @@ async def startup_event():
         coalesce=True,
     )
 
+    # V2.3 Commit 7 — in-app notifications inbox daily cleanup.
+    # Two operations:
+    #   (A) Delete notifications with non-null read_at older than
+    #       READ_RETENTION_DAYS (90 days) — bounds long-term
+    #       collection growth without losing recent context.
+    #   (B) Auto-dismiss notifications whose status="active" AND
+    #       expires_at is in the past — cleans expired predictions
+    #       from the FE's default status="active" filter without
+    #       deleting the audit trail.
+    # 03:55 ET sits after the prediction-cleanup tick (03:45 ET)
+    # so a prediction that expired overnight is first surfaced as
+    # such on the prediction side, then dismissed on the
+    # notifications side — predictable order for log archaeology.
+    async def _notifications_cleanup_tick():
+        try:
+            stats = await _notifications_inbox.cleanup_inbox(db)
+            logger.info(
+                f"[notifications_cleanup] daily: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[notifications_cleanup] crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _notifications_cleanup_tick,
+        CronTrigger(hour=3, minute=55, timezone="America/New_York"),
+        id='notifications_cleanup',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     # ── Resend domain health check ──
     # Probe before the digest cron is registered so a verification
     # failure surfaces at deploy time, not at the next 7am ET tick.
@@ -24655,6 +24816,46 @@ async def startup_event():
             ("peer_stats_cache.last_refreshed_at", 1),
         ],
         name="projects_peer_stats_status_refreshed_at",
+    )
+
+    # V2.3 Commit 7 — notifications inbox indexes. Five compound
+    # indexes covering the four FE-facing query shapes + the
+    # cleanup cron's sweep:
+    #   • (user_id, created_at DESC) — primary list view
+    #   • (user_id, read_at, created_at DESC) — unread-only filter
+    #   • (project_id, created_at DESC) — per-project audit
+    #   • (expires_at) — cleanup cron's expired-active scan
+    #   • (source_kind, source_id) — dedup lookup at dispatch time
+    # Read-heavy collection so the write-amplification of 5 indexes
+    # is acceptable. Cleanup cron + 90-day read retention bound
+    # collection size; with ~1000 active projects × maybe 5
+    # predictions/month × maybe 10 recipients each, expected
+    # steady-state is ~50K rows — trivial for indexed reads.
+    _notif_coll = db[_notifications_inbox.NOTIFICATIONS_COLLECTION]
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("user_id", 1), ("created_at", -1)],
+        name="notifications_user_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("user_id", 1), ("read_at", 1), ("created_at", -1)],
+        name="notifications_user_read_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("project_id", 1), ("created_at", -1)],
+        name="notifications_project_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("expires_at", 1)],
+        name="notifications_expires",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("source_kind", 1), ("source_id", 1)],
+        name="notifications_source_lookup",
     )
 
     # risk_scores collection retains its index from V2.1 — V2.2

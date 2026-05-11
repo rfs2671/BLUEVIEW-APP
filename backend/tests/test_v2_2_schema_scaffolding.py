@@ -701,6 +701,233 @@ class TestServerPyV23PredictionsHookWiring(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 7: notifications inbox endpoints + indexes + cron
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23NotificationsInboxWiring(unittest.TestCase):
+    """Commit 7 wires:
+
+      1. ``lib/notifications_inbox.py`` import (under
+         ``_notifications_inbox``).
+      2. Four FE-facing endpoints:
+           GET  /api/notifications
+           GET  /api/notifications/unread-count
+           POST /api/notifications/{notification_id}/mark-read
+           POST /api/notifications/mark-all-read
+         Each scoped to ``current_user`` via ``Depends(get_current_user)``
+         and per-query ``user_id`` filter (no cross-user leakage).
+      3. Five compound indexes on the ``notifications`` collection
+         via ``_ensure_index_resilient``.
+      4. ``_notifications_cleanup_tick`` cron at 03:55 ET
+         (post Commit 6's 03:45 prediction cleanup).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    # ── Import ─────────────────────────────────────────────────
+
+    def test_notifications_inbox_module_imported(self):
+        self.assertIn(
+            "import lib.notifications_inbox as _notifications_inbox",
+            self.text,
+        )
+
+    # ── Four endpoints exist ───────────────────────────────────
+
+    def test_list_endpoint_present(self):
+        self.assertIn(
+            '@api_router.get("/notifications", tags=["Notifications"])',
+            self.text,
+        )
+
+    def test_unread_count_endpoint_present(self):
+        self.assertIn(
+            '@api_router.get("/notifications/unread-count", tags=["Notifications"])',
+            self.text,
+        )
+
+    def test_mark_read_endpoint_present(self):
+        # The decorator wraps over multiple lines, so anchor on
+        # the path + tags pair separately.
+        self.assertIn(
+            '"/notifications/{notification_id}/mark-read"', self.text,
+        )
+
+    def test_mark_all_read_endpoint_present(self):
+        self.assertIn('"/notifications/mark-all-read"', self.text)
+
+    # ── Auth dependency on every endpoint ──────────────────────
+
+    def test_all_endpoints_gated_by_get_current_user(self):
+        """Each of the 4 endpoint handlers must take
+        ``current_user = Depends(get_current_user)``. Pin via
+        per-handler search."""
+        for handler in (
+            "async def list_notifications(",
+            "async def get_notifications_unread_count(",
+            "async def mark_notification_read(",
+            "async def mark_all_notifications_read(",
+        ):
+            s = self.text.find(handler)
+            self.assertGreater(s, 0, f"{handler} not found")
+            # Walk to the next handler-bodied decorator (or +800 chars).
+            slice_ = self.text[s:s + 800]
+            self.assertIn(
+                "Depends(get_current_user)", slice_,
+                f"{handler} missing auth dependency",
+            )
+
+    # ── User-scope filter on every endpoint ────────────────────
+
+    def test_list_endpoint_scopes_query_to_user_id(self):
+        s = self.text.find("async def list_notifications(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        # The query dict must include user_id derived from current_user.
+        self.assertIn('"user_id": user_id', slice_)
+        # And status="active" as the default visibility filter.
+        self.assertIn('"status":  "active"', slice_)
+
+    def test_unread_count_scopes_query_to_user_id(self):
+        s = self.text.find("async def get_notifications_unread_count(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn('"user_id": user_id', slice_)
+        self.assertIn('"read_at": None', slice_)
+
+    def test_mark_read_uses_ownership_compound_filter(self):
+        """The (_id, user_id) compound filter ensures cross-user
+        mark-read attempts return 404 instead of writing to
+        someone else's notification."""
+        s = self.text.find("async def mark_notification_read(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn(
+            'to_query_id(notification_id), "user_id": user_id',
+            slice_,
+        )
+
+    def test_mark_all_read_scopes_to_user_and_status(self):
+        s = self.text.find("async def mark_all_notifications_read(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn('"user_id": user_id', slice_)
+        self.assertIn('"status":  "active"', slice_)
+        self.assertIn('"read_at": None', slice_)
+
+    # ── Indexes ────────────────────────────────────────────────
+
+    def test_five_notifications_indexes_ensured(self):
+        for name in (
+            "notifications_user_created",
+            "notifications_user_read_created",
+            "notifications_project_created",
+            "notifications_expires",
+            "notifications_source_lookup",
+        ):
+            self.assertIn(
+                f'name="{name}"', self.text,
+                f"index {name} not ensured at startup",
+            )
+
+    # ── Cleanup cron ────────────────────────────────────────────
+
+    def test_cleanup_tick_function_defined(self):
+        self.assertIn(
+            "async def _notifications_cleanup_tick():",
+            self.text,
+        )
+
+    def test_cleanup_cron_registered_at_03_55_ET(self):
+        s = self.text.find("id='notifications_cleanup'")
+        self.assertGreater(s, 0, "cleanup cron job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn(
+            'CronTrigger(hour=3, minute=55, timezone="America/New_York")',
+            slice_,
+        )
+        self.assertIn("_notifications_cleanup_tick,", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+
+class TestPredictionsModuleCommit7Wiring(unittest.TestCase):
+    """The WOULD-NOTIFY log line in predictions.py is replaced
+    with a real ``dispatch_notification`` call wrapped in
+    try/except so prediction storage success is not undone by a
+    dispatch failure."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (
+            _BACKEND / "lib" / "statistical_engine" / "predictions.py"
+        ).read_text(encoding="utf-8")
+
+    def test_would_notify_log_replaced(self):
+        """The placeholder log string must be GONE from the
+        module (verifies the WOULD-NOTIFY removal didn't get
+        accidentally left behind)."""
+        self.assertNotIn("WOULD NOTIFY", self.text)
+
+    def test_dispatch_notification_imported(self):
+        self.assertIn(
+            "from lib.notifications_inbox import dispatch_notification",
+            self.text,
+        )
+
+    def test_dispatch_called_with_documented_kwargs(self):
+        """All the spec-documented kwargs appear in the dispatch
+        call site."""
+        # Anchor on the await dispatch_notification call. The
+        # call spans many lines with nested expressions; take a
+        # generous slice that comfortably covers the full call
+        # site (~1500 chars).
+        s = self.text.find("await dispatch_notification(")
+        self.assertGreater(s, 0, "dispatch_notification call site missing")
+        slice_ = self.text[s:s + 1500]
+        for kwarg in (
+            "project=project",
+            'kind="inspection_prediction"',
+            "severity=_severity",
+            'title="Inspection Prediction"',
+            'source_kind="prediction"',
+            "source_id=",
+            "metadata=",
+            "expires_at=",
+            'deeplink_anchor="predictions"',
+        ):
+            self.assertIn(
+                kwarg, slice_,
+                f"dispatch_notification missing kwarg: {kwarg}",
+            )
+
+    def test_dispatch_wrapped_in_try_except(self):
+        """Dispatch failure must NOT undo the prediction storage
+        that already succeeded above."""
+        s = self.text.find("await dispatch_notification(")
+        self.assertGreater(s, 0)
+        # Walk back to find the enclosing try.
+        preceding = self.text[:s]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "dispatch_notification not wrapped in try block")
+        # And the except must mention the prediction-stored
+        # invariant for log archaeology.
+        slice_ = self.text[s:s + 1000]
+        self.assertIn("except Exception", slice_)
+        self.assertIn("prediction stored", slice_)
+
+
+# ──────────────────────────────────────────────────────────────────
 # V2.2 server.py wiring
 # ──────────────────────────────────────────────────────────────────
 

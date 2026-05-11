@@ -54,6 +54,7 @@ import RenewalAlertCard from '../../src/components/RenewalAlertCard';
 // RiskScoreCard.jsx is kept as a deprecated reference until the
 // redesign is verified, then deleted in a follow-up.
 import RiskScoreCircle from '../../src/components/RiskScoreCircle';
+import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { useToast } from '../../src/components/Toast';
@@ -153,6 +154,13 @@ export default function ProjectDetailScreen() {
   const [loadingChecklists, setLoadingChecklists] = useState(false);
   const [whatsappActive, setWhatsappActive] = useState(false);
   const [whatsappGroups, setWhatsappGroups] = useState([]);
+
+  // V2.3 Commit 7 — inline notifications unread count. The
+  // NotificationsList child reports unread count up via the
+  // onUnreadCountChange callback so we can decorate the section
+  // heading with a badge. (Global badge across all projects is
+  // deferred to a future commit — see Q7 in inventory.)
+  const [notificationsUnreadCount, setNotificationsUnreadCount] = useState(0);
 
   const isAdmin = user?.role === 'admin';
 
@@ -662,6 +670,29 @@ export default function ProjectDetailScreen() {
               );
             })}
           </View>
+
+          {/* V2.3 Commit 7 — Notifications inbox inline preview.
+              Up to 3 most-recent unread items + a "See all →" link
+              to the standalone route at /project/{id}/notifications.
+              Per Q2 in inventory: Option 4C — inline section here +
+              standalone route page. The unread count flows up via
+              onUnreadCountChange for the section heading badge. */}
+          <View style={s.sectionHeader}>
+            <Text style={s.sectionLabel}>NOTIFICATIONS</Text>
+            {notificationsUnreadCount > 0 && (
+              <View style={s.notificationsBadge}>
+                <Text style={s.notificationsBadgeText}>
+                  {notificationsUnreadCount > 99 ? '99+' : notificationsUnreadCount}
+                </Text>
+              </View>
+            )}
+          </View>
+          <NotificationsList
+            projectId={projectId}
+            mode="inline"
+            onUnreadCountChange={setNotificationsUnreadCount}
+            onSeeAll={() => router.push(`/project/${projectId}/notifications`)}
+          />
 
           {/* WhatsApp Status — auto-detect linked groups */}
           {whatsappActive && (
@@ -1431,6 +1462,22 @@ function buildStyles(colors, isDark) {
     justifyContent: 'space-between',
     marginBottom: spacing.md,
     paddingHorizontal: spacing.xs,
+  },
+  notificationsBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(96, 165, 250, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  notificationsBadgeText: {
+    color: '#60a5fa',
+    fontSize: 11,
+    fontWeight: '700',
   },
   actionsGrid: {
     flexDirection: 'row',

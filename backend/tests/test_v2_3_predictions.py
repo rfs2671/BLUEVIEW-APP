@@ -509,10 +509,14 @@ class TestTryPredictWrapper(unittest.TestCase):
             len(db[PREDICTED_EVENTS_COLLECTION].insert_one_calls), 0,
         )
 
-    def test_logs_would_notify_marker_on_success(self):
-        """The TODO-shaped log marker is what an operator greps
-        for to see which predictions WOULD have fired before
-        Commit 7's notifications collection lands."""
+    def test_dispatches_notification_on_success(self):
+        """V2.3 Commit 7: successful prediction storage triggers
+        dispatch_notification with the documented kwargs shape
+        (project, kind="inspection_prediction", title, message
+        from display_message, source_kind="prediction",
+        source_id=str(prediction._id), metadata with confidence
+        + trigger_complaint_id, expires_at, deeplink_anchor="
+        predictions")."""
         db = _StubDb()
         fake_pred = {
             "project_id": "P_WRAP",
@@ -521,20 +525,129 @@ class TestTryPredictWrapper(unittest.TestCase):
             "display_message": "Inspection likely tomorrow between 3-5 PM.",
             "outcome_status": "active",
             "method": PREDICTION_METHOD,
+            "expires_at": datetime(2026, 5, 20, tzinfo=timezone.utc),
+            "trigger_complaint_id": "311_TRIGGER_1",
         }
 
         async def _fake_predict(*_a, **_kw):
             return fake_pred
 
+        captured: List[Dict[str, Any]] = []
+        async def _fake_dispatch(_db, **kwargs):
+            captured.append(kwargs)
+            return ["nid_1"]
+
         with patch.object(pred, "predict_inspection_from_complaint",
                           new=_fake_predict), \
-             self.assertLogs(pred.logger, level="INFO") as logs:
+             patch.object(pred, "dispatch_notification",
+                          new=_fake_dispatch):
             _run(try_predict_inspection_from_complaint(
                 db, self._project(), self._complaint(),
             ))
 
-        self.assertIn("WOULD NOTIFY", "\n".join(logs.output))
-        self.assertIn("Commit 7", "\n".join(logs.output))
+        self.assertEqual(len(captured), 1)
+        call = captured[0]
+        # Pin the dispatch_notification kwargs.
+        self.assertEqual(call["kind"], "inspection_prediction")
+        self.assertEqual(call["title"], "Inspection Prediction")
+        self.assertEqual(
+            call["message"], "Inspection likely tomorrow between 3-5 PM.",
+        )
+        self.assertEqual(call["source_kind"], "prediction")
+        # source_id is str(prediction._id); the stub assigns
+        # inserted_id="pid_0" from _StubPredColl.
+        self.assertTrue(call["source_id"].startswith("pid_"))
+        self.assertEqual(call["deeplink_anchor"], "predictions")
+        # confidence ≥ 0.85 → severity = "warning"
+        self.assertEqual(call["severity"], "warning")
+        # metadata carries confidence + complaint_id.
+        self.assertEqual(call["metadata"]["confidence"], 0.88)
+        self.assertEqual(
+            call["metadata"]["trigger_complaint_id"], "311_TRIGGER_1",
+        )
+        # expires_at preserved end-to-end.
+        self.assertEqual(
+            call["expires_at"],
+            datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+
+    def test_severity_info_for_lower_confidence(self):
+        """confidence < 0.85 should produce severity=info, not
+        warning. Pin the threshold so a regression doesn't
+        silently downgrade urgent predictions."""
+        db = _StubDb()
+        fake_pred = {
+            "project_id": "P_WRAP",
+            "confidence": 0.75,  # ≥ threshold but < 0.85
+            "display_message": "Inspection likely tomorrow between 3-5 PM.",
+            "outcome_status": "active",
+            "method": PREDICTION_METHOD,
+            "expires_at": datetime(2026, 5, 20, tzinfo=timezone.utc),
+            "trigger_complaint_id": "311_LOW",
+        }
+
+        async def _fake_predict(*_a, **_kw):
+            return fake_pred
+
+        captured = []
+        async def _fake_dispatch(_db, **kwargs):
+            captured.append(kwargs)
+            return []
+
+        with patch.object(pred, "predict_inspection_from_complaint",
+                          new=_fake_predict), \
+             patch.object(pred, "dispatch_notification",
+                          new=_fake_dispatch):
+            _run(try_predict_inspection_from_complaint(
+                db, self._project(), self._complaint(),
+            ))
+
+        self.assertEqual(captured[0]["severity"], "info")
+
+    def test_prediction_storage_succeeds_even_if_dispatch_fails(self):
+        """Critical Commit 7 invariant: dispatch_notification
+        failure (Mongo blip, fan-out cap violation, malformed
+        users collection, anything) MUST NOT roll back the
+        prediction storage that already succeeded above. The
+        prediction is the source-of-truth write; the dispatch is
+        a downstream projection."""
+        db = _StubDb()
+        fake_pred = {
+            "project_id": "P_WRAP",
+            "confidence": 0.90,
+            "display_message": "Inspection likely tomorrow between 3-5 PM.",
+            "outcome_status": "active",
+            "method": PREDICTION_METHOD,
+            "expires_at": datetime(2026, 5, 20, tzinfo=timezone.utc),
+            "trigger_complaint_id": "311_FAIL",
+        }
+
+        async def _fake_predict(*_a, **_kw):
+            return fake_pred
+
+        async def _dispatch_raises(*_a, **_kw):
+            raise RuntimeError("simulated dispatch failure")
+
+        with patch.object(pred, "predict_inspection_from_complaint",
+                          new=_fake_predict), \
+             patch.object(pred, "dispatch_notification",
+                          new=_dispatch_raises), \
+             self.assertLogs(pred.logger, level="ERROR") as logs:
+            # Must NOT raise.
+            _run(try_predict_inspection_from_complaint(
+                db, self._project(), self._complaint(),
+            ))
+
+        # Prediction insert succeeded — the predicted_events doc
+        # is in the DB.
+        self.assertEqual(
+            len(db[PREDICTED_EVENTS_COLLECTION].insert_one_calls), 1,
+        )
+        # Dispatch failure logged at ERROR (via logger.exception)
+        # with the documented context phrase.
+        msg = "\n".join(logs.output)
+        self.assertIn("dispatch_notification failed", msg)
+        self.assertIn("prediction stored", msg)
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -74,6 +74,7 @@ try:
 except ImportError:  # pragma: no cover
     ObjectId = None  # type: ignore
 
+from lib.notifications_inbox import dispatch_notification
 from lib.server_http import ServerHttpClient
 from lib.statistical_engine.schema import PREDICTED_EVENTS_COLLECTION
 from lib.statistical_engine.socrata_client import (
@@ -527,18 +528,47 @@ async def try_predict_inspection_from_complaint(
             )
             return
 
-        # TODO (Commit 7): wire to in-app notifications collection.
-        # The display_message + project name + project page
-        # deeplink should populate a notification row that the
-        # operator's bell sees. Until Commit 7 ships that
-        # collection, we log here so an operator inspecting the
-        # logs can see which predictions would have fired.
-        logger.info(
-            "[predict] %s WOULD NOTIFY: confidence=%.2f msg=%r "
-            "(Commit 7 notifications surface TBD)",
-            log_tag, prediction["confidence"],
-            prediction["display_message"],
-        )
+        # V2.3 Commit 7 — dispatch to the in-app notifications
+        # inbox. The prediction is already persisted above; the
+        # dispatch is a read-side projection of it, NOT a
+        # source-of-truth write. So this call is wrapped in its
+        # own try/except — a dispatch failure (Mongo blip in the
+        # users collection, fan-out exceeds cap, etc.) MUST NOT
+        # roll back the prediction storage that already succeeded.
+        # The operator can still see the prediction via the
+        # admin diagnostics; only the inbox surface is affected.
+        try:
+            # Severity tier: predictions ≥85% confidence surface
+            # as "warning" (more visually prominent in the FE),
+            # 70-85% as plain "info". The threshold is tunable —
+            # holds at 0.85 for V2.3 ship.
+            _severity = (
+                "warning" if prediction["confidence"] >= 0.85 else "info"
+            )
+            await dispatch_notification(
+                db,
+                project=project,
+                kind="inspection_prediction",
+                severity=_severity,
+                title="Inspection Prediction",
+                message=prediction["display_message"],
+                source_kind="prediction",
+                source_id=str(prediction["_id"]),
+                metadata={
+                    "confidence": prediction["confidence"],
+                    "trigger_complaint_id": prediction.get(
+                        "trigger_complaint_id",
+                    ),
+                },
+                expires_at=prediction["expires_at"],
+                deeplink_anchor="predictions",
+            )
+        except Exception as e:
+            logger.exception(
+                "[predict] %s dispatch_notification failed "
+                "(prediction stored, inbox dispatch did not): %r",
+                log_tag, e,
+            )
     except Exception as e:  # pragma: no cover — defensive outer
         logger.exception(
             "[predict] %s top-level exception swallowed: %r",

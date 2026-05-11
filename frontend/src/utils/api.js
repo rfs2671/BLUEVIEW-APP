@@ -1175,4 +1175,54 @@ export const checklistAPI = {
   },
 };
 
+// V2.3 Commit 7 — In-app notifications inbox.
+// Backs the project-page notifications surface. Each endpoint
+// is server-scoped to current_user (no cross-user leakage).
+export const notificationsAPI = {
+  // GET /api/notifications — paginated list. Default
+  // status="active" filter (hides dismissed). Optional
+  // unread_only and project_id filters.
+  list: async ({ projectId, unreadOnly = false, limit = 50, offset = 0 } = {}) => {
+    const params = { limit, offset };
+    if (unreadOnly) params.unread_only = true;
+    if (projectId) params.project_id = projectId;
+    const response = await apiClient.get('/api/notifications', { params });
+    return response.data;
+  },
+
+  // GET /api/notifications/unread-count — single integer count.
+  // FE polls this on a 60-second interval for the per-project
+  // badge. Optional project_id scope.
+  unreadCount: async ({ projectId } = {}) => {
+    const params = {};
+    if (projectId) params.project_id = projectId;
+    const response = await apiClient.get(
+      '/api/notifications/unread-count', { params },
+    );
+    return response.data;
+  },
+
+  // POST /api/notifications/{id}/mark-read — sets read_at=now
+  // for one notification. Ownership enforced server-side; 404
+  // on cross-user access.
+  markRead: async (notificationId) => {
+    const response = await apiClient.post(
+      `/api/notifications/${notificationId}/mark-read`,
+    );
+    return response.data;
+  },
+
+  // POST /api/notifications/mark-all-read — bulk update for
+  // the current user's unread-active notifications. Optional
+  // project_id scopes to one project's inbox.
+  markAllRead: async ({ projectId } = {}) => {
+    const params = {};
+    if (projectId) params.project_id = projectId;
+    const response = await apiClient.post(
+      '/api/notifications/mark-all-read', null, { params },
+    );
+    return response.data;
+  },
+};
+
 export default apiClient;
