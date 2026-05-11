@@ -161,8 +161,9 @@ def _has_unique_index_on(specs, *fields):
 
 
 class TestNycSourceIndexes(unittest.TestCase):
-    """Every NYC-source collection has the standard 4-index
-    baseline: record_id unique + (bin, date) + (borough, date) +
+    """Every NYC-source collection has the standard 5-index
+    baseline (V2.2.4 Path A added the bbl index): record_id
+    unique + (bin, date) + (bbl, date) + (borough, date) +
     (date)."""
 
     def _check_baseline(self, specs, prefix):
@@ -172,6 +173,8 @@ class TestNycSourceIndexes(unittest.TestCase):
         self.assertTrue(_has_unique_index_on(specs, "record_id"))
         # (bin, occurred_date)
         self.assertIn(f"{prefix}_bin_date", names)
+        # (bbl, occurred_date) — V2.2.4 Path A
+        self.assertIn(f"{prefix}_bbl_date", names)
         # (borough, occurred_date)
         self.assertIn(f"{prefix}_borough_date", names)
         # (occurred_date)
@@ -209,15 +212,28 @@ class TestNycSourceIndexes(unittest.TestCase):
 
 
 class TestPlutoIndexes(unittest.TestCase):
-    """PLUTO is a snapshot keyed by BIN (not an event stream)."""
+    """PLUTO is a snapshot. V2.2.4 Path A: the unique key flipped
+    from `bin` (V2.2-era) to `bbl` (current). PLUTO's Socrata
+    payload has no `bin` column, so the previous unique-on-bin
+    index produced a DKE storm — every insert collided on bin:null.
+    """
 
-    def test_bin_unique(self):
+    def test_bbl_unique(self):
         self.assertTrue(_has_unique_index_on(
-            se_schema.NYC_PLUTO_INDEXES, "bin"))
+            se_schema.NYC_PLUTO_INDEXES, "bbl"))
 
-    def test_bbl_index(self):
+    def test_bbl_unique_index_name(self):
         names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertIn("nyc_pluto_bbl", names)
+        self.assertIn("nyc_pluto_bbl_unique", names)
+
+    def test_legacy_bin_unique_removed(self):
+        # Hard pin: the pre-V2.2.4 unique-on-bin index must NOT
+        # be in the spec. If it is, the migration script that
+        # drops it has to re-run before peer-comparison heals.
+        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
+        self.assertNotIn("nyc_pluto_bin_unique", names)
+        self.assertFalse(_has_unique_index_on(
+            se_schema.NYC_PLUTO_INDEXES, "bin"))
 
     def test_borough_class_index(self):
         names = _index_names(se_schema.NYC_PLUTO_INDEXES)

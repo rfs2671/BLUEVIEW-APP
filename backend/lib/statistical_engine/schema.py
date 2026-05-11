@@ -131,10 +131,16 @@ MIN_CONFIDENCE_THRESHOLD = 0.70
 #   • (occurred_date)      — sweep-detection / time-window queries
 
 def _nyc_source_indexes(prefix):
-    """Build the standard 4 indexes for a BIN-keyed NYC source
-    collection. Index names are uniquified by the `prefix`
-    argument so two collections can have logically-equivalent
-    indexes without colliding on names."""
+    """Build the standard 5 indexes for a BIN-and-BBL-keyed NYC
+    source collection. Index names are uniquified by the
+    `prefix` argument so two collections can have logically-
+    equivalent indexes without colliding on names.
+
+    V2.2.4 Path A: every event collection now gets a
+    ``(bbl, occurred_date)`` index alongside the legacy
+    ``(bin, occurred_date)`` one. Peer-comparison queries
+    ($in on bbl) hit the new index; per-BIN lookups still hit
+    the old one. Both stay non-unique."""
     return (
         {
             "keys": [("record_id", 1)],
@@ -144,6 +150,10 @@ def _nyc_source_indexes(prefix):
         {
             "keys": [("bin", 1), ("occurred_date", -1)],
             "name": f"{prefix}_bin_date",
+        },
+        {
+            "keys": [("bbl", 1), ("occurred_date", -1)],
+            "name": f"{prefix}_bbl_date",
         },
         {
             "keys": [("borough", 1), ("occurred_date", -1)],
@@ -159,29 +169,25 @@ def _nyc_source_indexes(prefix):
 NYC_VIOLATIONS_INDEXES     = _nyc_source_indexes("nyc_violations")
 NYC_INSPECTIONS_INDEXES    = _nyc_source_indexes("nyc_inspections")
 NYC_PERMITS_INDEXES        = _nyc_source_indexes("nyc_permits")
-NYC_COMPLAINTS_311_INDEXES = (
-    *_nyc_source_indexes("nyc_complaints_311"),
-    # 311 also queried by BBL block component for "neighbor"
-    # trigger; 10-char BBL → first 7 chars = borough+block.
-    {
-        "keys": [("bbl", 1), ("occurred_date", -1)],
-        "name": "nyc_complaints_311_bbl_date",
-    },
-)
+# nyc_complaints_311 already gets its (bbl, occurred_date) index
+# from the standard _nyc_source_indexes() build (post-V2.2.4).
+# The duplicate explicit entry that previously lived here is
+# folded into the standard build.
+NYC_COMPLAINTS_311_INDEXES = _nyc_source_indexes("nyc_complaints_311")
 NYC_ECB_VIOLATIONS_INDEXES = _nyc_source_indexes("nyc_ecb_violations")
 NYC_HPD_VIOLATIONS_INDEXES = _nyc_source_indexes("nyc_hpd_violations")
 
-# PLUTO is a snapshot, not a stream of events. Different schema:
-# one row per BIN, refreshed on PLUTO release cadence (~quarterly).
+# PLUTO is a snapshot, not a stream of events. V2.2.4 Path A:
+# the unique key flipped from `bin` to `bbl` because PLUTO's
+# Socrata payload (64uk-42ks) has no `bin` column. The legacy
+# `nyc_pluto_bin_unique` unique-on-null-bin index was the cause
+# of the PLUTO DKE storm — the V2.2.4 migration script drops it
+# before the new index lands.
 NYC_PLUTO_INDEXES = (
     {
-        "keys": [("bin", 1)],
-        "name": "nyc_pluto_bin_unique",
-        "unique": True,
-    },
-    {
         "keys": [("bbl", 1)],
-        "name": "nyc_pluto_bbl",
+        "name": "nyc_pluto_bbl_unique",
+        "unique": True,
     },
     {
         "keys": [("borough", 1), ("bldgclass", 1)],

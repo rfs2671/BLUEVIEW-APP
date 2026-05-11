@@ -181,8 +181,10 @@ class TestPeerKey(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────
 
 
-def _pluto_doc(bin_, borough, bldgclass=None, landuse=None):
-    d = {"bin": bin_, "borough": borough}
+def _pluto_doc(bbl_, borough, bldgclass=None, landuse=None):
+    """V2.2.4 Path A: PLUTO docs are BBL-keyed. Helper signature
+    flipped from bin_ → bbl_ to match the production schema."""
+    d = {"bbl": bbl_, "borough": borough}
     if bldgclass: d["bldgclass"] = bldgclass
     if landuse:   d["landuse"] = landuse
     return d
@@ -191,94 +193,103 @@ def _pluto_doc(bin_, borough, bldgclass=None, landuse=None):
 class TestFallbackLadder(unittest.TestCase):
 
     def test_tier_1_full_match(self):
-        # 25 BINs all matching borough+class+use → no fallback.
+        # 25 BBLs all matching borough+class+use → no fallback.
+        # 10-char canonical BBLs (boro=1 + block=00000 + lot=NNNN).
         pluto = [
-            _pluto_doc(f"{i:07d}", "MANHATTAN", "major_b", "residential")
+            _pluto_doc(f"100000{i:04d}", "MANHATTAN", "major_b", "residential")
             for i in range(1, 26)
         ]
         db = _StubDb(nyc_pluto=pluto)
         proj = {"borough": "MANHATTAN", "project_class": "major_b",
                 "use_type": "residential"}
-        bins, meta = _run(bl.peer_bins(db, proj))
-        self.assertEqual(len(bins), 25)
+        bbls, meta = _run(bl.peer_bbls(db, proj))
+        self.assertEqual(len(bbls), 25)
         self.assertEqual(meta["tier"], "borough_class_use")
         self.assertEqual(meta["sample_size"], 25)
 
     def test_tier_2_drop_use_type(self):
         # 5 with full match (< 20), 25 with class but different use.
         pluto = [
-            _pluto_doc(f"A{i:06d}", "MANHATTAN", "major_b", "residential")
+            _pluto_doc(f"100001{i:04d}", "MANHATTAN", "major_b", "residential")
             for i in range(5)
         ] + [
-            _pluto_doc(f"B{i:06d}", "MANHATTAN", "major_b", "commercial")
+            _pluto_doc(f"100002{i:04d}", "MANHATTAN", "major_b", "commercial")
             for i in range(25)
         ]
         db = _StubDb(nyc_pluto=pluto)
         proj = {"borough": "MANHATTAN", "project_class": "major_b",
                 "use_type": "residential"}
-        bins, meta = _run(bl.peer_bins(db, proj))
+        bbls, meta = _run(bl.peer_bbls(db, proj))
         self.assertEqual(meta["tier"], "borough_class")
         self.assertEqual(meta["sample_size"], 30)
 
     def test_tier_3_drop_class(self):
         # Few projects share class; many share borough.
         pluto = [
-            _pluto_doc(f"X{i:06d}", "QUEENS", "regular", "residential")
+            _pluto_doc(f"400003{i:04d}", "QUEENS", "regular", "residential")
             for i in range(2)
         ] + [
-            _pluto_doc(f"Y{i:06d}", "QUEENS", "major_a", "industrial")
+            _pluto_doc(f"400004{i:04d}", "QUEENS", "major_a", "industrial")
             for i in range(2)
         ] + [
-            _pluto_doc(f"Z{i:06d}", "QUEENS", "regular", "office")
+            _pluto_doc(f"400005{i:04d}", "QUEENS", "regular", "office")
             for i in range(25)
         ]
         db = _StubDb(nyc_pluto=pluto)
         proj = {"borough": "QUEENS", "project_class": "major_b",
                 "use_type": "school"}
-        bins, meta = _run(bl.peer_bins(db, proj))
+        bbls, meta = _run(bl.peer_bbls(db, proj))
         self.assertEqual(meta["tier"], "borough")
         self.assertGreaterEqual(meta["sample_size"], 20)
 
     def test_tier_4_citywide(self):
         # Few in any single borough.
         pluto = [
-            _pluto_doc(f"S{i:06d}", "STATEN ISLAND")
+            _pluto_doc(f"500006{i:04d}", "STATEN ISLAND")
             for i in range(5)
         ] + [
-            _pluto_doc(f"M{i:06d}", "MANHATTAN")
+            _pluto_doc(f"100007{i:04d}", "MANHATTAN")
             for i in range(15)
         ]
         db = _StubDb(nyc_pluto=pluto)
         proj = {"borough": "BRONX"}  # zero peers in Bronx
-        bins, meta = _run(bl.peer_bins(db, proj))
+        bbls, meta = _run(bl.peer_bbls(db, proj))
         self.assertEqual(meta["tier"], "citywide")
         self.assertEqual(meta["sample_size"], 20)
 
 
 # ──────────────────────────────────────────────────────────────────
-# Per-BIN event counts (zero-count BINs included)
+# Per-BBL event counts (zero-count BBLs included)
+# V2.2.4 Path A: was per-BIN before the BBL-keyed migration.
 # ──────────────────────────────────────────────────────────────────
 
 
-class TestCountEventsForBins(unittest.TestCase):
+class TestCountEventsForBbls(unittest.TestCase):
 
-    def test_includes_zero_count_bins(self):
-        # 4 BINs, only 2 with violations.
+    def test_includes_zero_count_bbls(self):
+        # 4 BBLs, only 2 with violations. Use canonical 10-char form
+        # to mirror what production stores post-V2.2.4.
         violations = [
-            {"bin": "B1", "occurred_date": datetime(2026, 4, 1, tzinfo=timezone.utc)},
-            {"bin": "B1", "occurred_date": datetime(2026, 4, 2, tzinfo=timezone.utc)},
-            {"bin": "B2", "occurred_date": datetime(2026, 4, 3, tzinfo=timezone.utc)},
+            {"bbl": "1008470001", "occurred_date": datetime(2026, 4, 1, tzinfo=timezone.utc)},
+            {"bbl": "1008470001", "occurred_date": datetime(2026, 4, 2, tzinfo=timezone.utc)},
+            {"bbl": "1008470002", "occurred_date": datetime(2026, 4, 3, tzinfo=timezone.utc)},
         ]
         db = _StubDb(nyc_violations=violations)
-        counts = _run(bl._count_events_for_bins(
-            db, "nyc_violations", ["B1", "B2", "B3", "B4"],
+        counts = _run(bl._count_events_for_bbls(
+            db, "nyc_violations",
+            ["1008470001", "1008470002", "1008470003", "1008470004"],
             since=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ))
-        self.assertEqual(counts, {"B1": 2, "B2": 1, "B3": 0, "B4": 0})
+        self.assertEqual(counts, {
+            "1008470001": 2,
+            "1008470002": 1,
+            "1008470003": 0,
+            "1008470004": 0,
+        })
 
-    def test_empty_bin_list(self):
+    def test_empty_bbl_list(self):
         db = _StubDb()
-        counts = _run(bl._count_events_for_bins(
+        counts = _run(bl._count_events_for_bbls(
             db, "nyc_violations", [],
             since=datetime(2020, 1, 1, tzinfo=timezone.utc),
         ))
@@ -361,15 +372,15 @@ class TestBaselineUpsert(unittest.TestCase):
 class TestComputeBaseline(unittest.TestCase):
 
     def test_returns_documented_shape(self):
-        # 3 BINs in PLUTO with shared key.
+        # 3 BBLs in PLUTO with shared key.
         pluto = [
-            _pluto_doc(f"P{i}", "MANHATTAN", "major_b", "residential")
+            _pluto_doc(f"100847000{i}", "MANHATTAN", "major_b", "residential")
             for i in range(3)
         ]
         # Some events on B0, none on B1, 5 on B2.
         violations = (
-            [{"bin": "P0", "occurred_date": datetime(2025, 5, 1, tzinfo=timezone.utc)}]
-            + [{"bin": "P2", "occurred_date": datetime(2025, 5, i, tzinfo=timezone.utc)}
+            [{"bbl": "1008470000", "occurred_date": datetime(2025, 5, 1, tzinfo=timezone.utc)}]
+            + [{"bbl": "1008470002", "occurred_date": datetime(2025, 5, i, tzinfo=timezone.utc)}
                for i in range(1, 6)]
         )
         db = _StubDb(
@@ -401,24 +412,25 @@ class TestComputeBaseline(unittest.TestCase):
 
 class TestCompareToPeers(unittest.TestCase):
 
-    def test_excludes_project_own_bin_from_peers(self):
+    def test_excludes_project_own_bbl_from_peers(self):
+        # V2.2.4 Path A: peer-comparison is BBL-keyed. Project's
+        # own BBL must be excluded so the comparison is "us vs.
+        # peers", not "us vs. (peers + us)".
         pluto = [
-            _pluto_doc(f"P{i}", "MANHATTAN", "major_b", "residential")
+            _pluto_doc(f"100848{i:04d}", "MANHATTAN", "major_b", "residential")
             for i in range(25)
         ]
-        # Project's own BIN gets a TON of violations; peers get
-        # roughly 1 each. If the comparator counted the project's
-        # own BIN among peers, the median would shift.
+        # Project's own BBL gets 50 violations; peers get 1 each.
         violations = [
-            {"bin": "P0", "occurred_date": datetime(2025, 5, i % 28 + 1, tzinfo=timezone.utc)}
+            {"bbl": "1008480000", "occurred_date": datetime(2025, 5, i % 28 + 1, tzinfo=timezone.utc)}
             for i in range(50)
         ] + [
-            {"bin": f"P{i}", "occurred_date": datetime(2025, 5, 1, tzinfo=timezone.utc)}
+            {"bbl": f"100848{i:04d}", "occurred_date": datetime(2025, 5, 1, tzinfo=timezone.utc)}
             for i in range(1, 25)
         ]
         db = _StubDb(nyc_pluto=pluto, nyc_violations=violations)
         proj = {
-            "nyc_bin": "P0", "borough": "MANHATTAN",
+            "bbl": "1008480000", "borough": "MANHATTAN",
             "project_class": "major_b", "use_type": "residential",
         }
         result = _run(bl.compare_project_to_peers(
@@ -436,11 +448,11 @@ class TestCompareToPeers(unittest.TestCase):
 
     def test_returns_peer_set_metadata(self):
         pluto = [
-            _pluto_doc(f"Q{i}", "QUEENS", "regular", "office")
+            _pluto_doc(f"400849{i:04d}", "QUEENS", "regular", "office")
             for i in range(25)
         ]
         db = _StubDb(nyc_pluto=pluto)
-        proj = {"nyc_bin": "Q0", "borough": "QUEENS",
+        proj = {"bbl": "4008490000", "borough": "QUEENS",
                 "project_class": "regular", "use_type": "office"}
         result = _run(bl.compare_project_to_peers(
             db, proj,
@@ -452,11 +464,11 @@ class TestCompareToPeers(unittest.TestCase):
 
     def test_includes_all_three_event_types(self):
         pluto = [
-            _pluto_doc(f"R{i}", "BRONX", "major_a", "school")
+            _pluto_doc(f"200850{i:04d}", "BRONX", "major_a", "school")
             for i in range(25)
         ]
         db = _StubDb(nyc_pluto=pluto)
-        proj = {"nyc_bin": "R0", "borough": "BRONX",
+        proj = {"bbl": "2008500000", "borough": "BRONX",
                 "project_class": "major_a", "use_type": "school"}
         result = _run(bl.compare_project_to_peers(
             db, proj,
@@ -475,14 +487,14 @@ class TestCompareToPeers(unittest.TestCase):
 class TestAggregator(unittest.TestCase):
 
     def test_walks_distinct_pluto_tuples(self):
-        # 5 BINs spread across 3 distinct (borough, class, use)
-        # tuples → 3 baselines written.
+        # 5 BBLs spread across 3 distinct (borough, class, use)
+        # tuples → 3 baselines written. V2.2.4 Path A: BBL-keyed.
         pluto = [
-            _pluto_doc("P1", "MANHATTAN", "major_b", "residential"),
-            _pluto_doc("P2", "MANHATTAN", "major_b", "residential"),
-            _pluto_doc("P3", "QUEENS", "regular", "office"),
-            _pluto_doc("P4", "BROOKLYN", "regular", "residential"),
-            _pluto_doc("P5", "BROOKLYN", "regular", "residential"),
+            _pluto_doc("1008510001", "MANHATTAN", "major_b", "residential"),
+            _pluto_doc("1008510002", "MANHATTAN", "major_b", "residential"),
+            _pluto_doc("4008510003", "QUEENS",    "regular", "office"),
+            _pluto_doc("3008510004", "BROOKLYN",  "regular", "residential"),
+            _pluto_doc("3008510005", "BROOKLYN",  "regular", "residential"),
         ]
         db = _StubDb(nyc_pluto=pluto)
         summary = _run(bl.run_baseline_aggregator(
@@ -532,7 +544,8 @@ class TestPackageReExportsCommit3(unittest.TestCase):
 
     def test_baselines_api_reexported(self):
         from lib import statistical_engine as stat_engine
-        self.assertTrue(hasattr(stat_engine, "peer_bins"))
+        # V2.2.4 Path A: was `peer_bins`; renamed to `peer_bbls`.
+        self.assertTrue(hasattr(stat_engine, "peer_bbls"))
         self.assertTrue(hasattr(stat_engine, "compute_baseline_for_peer_set"))
         self.assertTrue(hasattr(stat_engine, "run_baseline_aggregator"))
         self.assertTrue(hasattr(stat_engine, "compare_project_to_peers"))

@@ -71,10 +71,20 @@ DATASETS = {
         "collection": NYC_VIOLATIONS_COLLECTION,
         "socrata_id": "3h2n-5cm9",
         "date_field": "issue_date",
+        # V2.2.4 Path A: BBL is not a top-level Socrata column on
+        # 3h2n-5cm9 (verified by curling the dataset metadata
+        # endpoint 2026-05-10 — the 18-column schema has boro,
+        # block, lot as separate text fields but no `bbl`). The
+        # pre-V2.2.4 mapping `"bbl": "bbl"` resolved to None on
+        # every row, leaving nyc_violations.bbl 0/100 populated.
+        # `__derive_bbl__` is a sentinel recognized by
+        # `_canonicalize_with_reason` that invokes
+        # `_construct_bbl_from_components(raw_row)` to synthesize
+        # the canonical 10-digit BBL.
         "field_map": {
             "record_id":      "isn_dob_bis_viol",
             "bin":            "bin",
-            "bbl":            "bbl",
+            "bbl":            "__derive_bbl__",
             "borough":        "boro",
             "occurred_date":  "issue_date",
             "violation_type": "violation_type",
@@ -246,6 +256,77 @@ MAX_BACKOFF_SECONDS = 60.0
 # ── Field normalization ───────────────────────────────────────────
 
 
+def _construct_bbl_from_components(row: Dict[str, Any]) -> Optional[str]:
+    """Construct NYC's canonical 10-digit BBL from a Socrata row's
+    boro/block/lot triple. Returns None if any component is
+    missing, non-numeric, or out of expected shape.
+
+    BBL formula (canonical NYC convention):
+      ``boro_digit + block.zfill(5) + lot.zfill(4)`` → 10 chars.
+
+    Where boro_digit is 1–5 (1=Manhattan, 2=Bronx, 3=Brooklyn,
+    4=Queens, 5=Staten Island), block fits in 5 digits, and lot
+    fits in 4 digits. Some Socrata datasets (including
+    3h2n-5cm9, dob_violations) over-pad the `lot` text field to
+    5 chars with a leading zero — we strip and re-pad to 4 to
+    produce the canonical 10-char form that matches BBLs stored
+    on the other event collections (verified by Verification 1:
+    nyc_inspections sample bbl="3018610047" = 3+01861+0047).
+
+    Used by the V2.2.4 Path A canonicalizer for
+    ``dob_violations``, whose Socrata dataset (3h2n-5cm9) ships
+    boro/block/lot as separate text columns but does NOT ship a
+    pre-joined BBL. Verified empirically by curl probe 2026-05-10
+    against https://data.cityofnewyork.us/api/views/3h2n-5cm9.json.
+    """
+    boro = row.get("boro")
+    block = row.get("block")
+    lot = row.get("lot")
+    if not (boro and block and lot):
+        return None
+    boro_str = str(boro).strip()
+    block_str = str(block).strip()
+    lot_str = str(lot).strip()
+    if not (boro_str.isdigit() and block_str.isdigit() and lot_str.isdigit()):
+        return None
+    if len(boro_str) != 1 or boro_str not in "12345":
+        return None
+    # Normalize over-padding (Socrata sometimes ships "00038") by
+    # stripping leading zeros, then re-padding to the canonical
+    # width. A pure-zero component (e.g. block="0", lot="00")
+    # collapses to "" after lstrip — that's a semantically
+    # invalid BBL (lot 0 doesn't exist in NYC's tax-lot scheme),
+    # so return None instead of producing "boro+00000+0000" which
+    # would falsely match other invalid rows.
+    block_normalized = block_str.lstrip("0")
+    lot_normalized = lot_str.lstrip("0")
+    if not block_normalized or not lot_normalized:
+        return None
+    if len(block_normalized) > 5 or len(lot_normalized) > 4:
+        return None
+    return f"{boro_str}{block_normalized.zfill(5)}{lot_normalized.zfill(4)}"
+
+
+def _normalize_bbl_for_storage(bbl: Optional[str]) -> Optional[str]:
+    """Strip the trailing ``.0+`` decimal suffix PLUTO's Socrata
+    payload uses on numeric columns
+    (``"4061730023.00000000"`` → ``"4061730023"``). Called from
+    ``upsert_record`` on every record's ``bbl`` field before write
+    so the stored value matches the clean 10-digit format that
+    event collections (nyc_violations, nyc_inspections,
+    nyc_complaints_311) use. Defensive — pass-through for any
+    value that's already clean.
+    """
+    if not bbl:
+        return bbl
+    s = str(bbl).strip()
+    if "." in s:
+        head, _, tail = s.partition(".")
+        if tail and head.isdigit() and set(tail) <= {"0"}:
+            return head
+    return s
+
+
 def _normalize_natural_key(value: Any) -> Optional[str]:
     """Coerce a natural-key value (typically PLUTO's BBL) to a
     canonical string. Strips trailing decimal-zero suffix that
@@ -299,7 +380,18 @@ def _canonicalize_with_reason(
     out: Dict[str, Any] = {}
     fm = dataset_spec["field_map"]
     for canonical, source in fm.items():
-        out[canonical] = raw_row.get(source) if source else None
+        # V2.2.4 Path A: support sentinel-driven derived fields.
+        # `__derive_bbl__` reconstructs the canonical 10-digit BBL
+        # from boro/block/lot components when the Socrata dataset
+        # ships them separately (dob_violations / 3h2n-5cm9).
+        # Unknown sentinels fall through to the lookup path — they
+        # resolve to None via raw_row.get, which is harmless.
+        if source == "__derive_bbl__":
+            out[canonical] = _construct_bbl_from_components(raw_row)
+        elif source:
+            out[canonical] = raw_row.get(source)
+        else:
+            out[canonical] = None
 
     # Event datasets: record_id is required and must be in the
     # field_map.
@@ -485,6 +577,14 @@ async def upsert_record(
     no-op (already present)."""
     if not record or not record.get("record_id"):
         return False
+    # V2.2.4 Path A: defensive BBL normalization at write time.
+    # PLUTO ships BBL as "<digits>.00000000"; event collections
+    # use the clean 10-digit form. Strip the decimal-zero suffix
+    # before storage so peer-comparison $in-queries match across
+    # collections without read-side normalization. Pass-through
+    # for already-clean values.
+    if record.get("bbl"):
+        record["bbl"] = _normalize_bbl_for_storage(record["bbl"])
     try:
         res = await db[collection_name].update_one(
             {"record_id": record["record_id"]},

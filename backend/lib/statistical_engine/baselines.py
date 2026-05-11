@@ -6,9 +6,17 @@ spec as `(borough, project_class, use_type)` over the past 2
 years. Sample-size fallback ladder: drop use_type → drop class
 → citywide.
 
+V2.2.4 Path A: peer-comparison is BBL-keyed throughout, not
+BIN-keyed. PLUTO's Socrata payload has no `bin` column, and
+nyc_violations' Socrata payload has no `bbl` column (we derive
+it from boro/block/lot in the canonicalizer). Switching the
+join key to BBL aligns all four collections —
+nyc_pluto / nyc_violations / nyc_inspections / nyc_complaints_311
+— on a field they ALL populate.
+
 Three public surfaces:
 
-  • `peer_bins(db, project)` — async iterator yielding the BINs
+  • `peer_bbls(db, project)` — async iterator yielding the BBLs
     of projects in the same peer set. Walks PLUTO when
     available; falls back to broader peer sets if sample < 20
     (per spec).
@@ -95,12 +103,17 @@ def _bin_borough_fallback(project: Dict[str, Any]) -> Optional[str]:
 # borough being NYC).
 
 
-async def _bins_matching(
+async def _bbls_matching(
     db, *, borough=None, bldgclass=None, landuse=None,
 ) -> List[str]:
-    """Return BIN list from PLUTO matching the supplied filters.
+    """Return BBL list from PLUTO matching the supplied filters.
     None = unconstrained on that axis. Empty result is fine; the
-    caller decides whether to fall back."""
+    caller decides whether to fall back.
+
+    V2.2.4 Path A: projects PLUTO's `bbl` (not the V2.2-era
+    `bin` which the field_map doesn't populate). Returned BBLs
+    are the 10-char canonical form because `upsert_record`
+    normalizes PLUTO's `.00000000` suffix at write time."""
     q: Dict[str, Any] = {}
     if borough is not None:
         q["borough"] = borough
@@ -108,23 +121,23 @@ async def _bins_matching(
         q["bldgclass"] = bldgclass
     if landuse is not None:
         q["landuse"] = landuse
-    bins: List[str] = []
-    cursor = db[NYC_PLUTO_COLLECTION].find(q, {"bin": 1})
+    bbls: List[str] = []
+    cursor = db[NYC_PLUTO_COLLECTION].find(q, {"bbl": 1})
     async for doc in cursor:
-        b = doc.get("bin")
+        b = doc.get("bbl")
         if b:
-            bins.append(b)
-    return bins
+            bbls.append(b)
+    return bbls
 
 
-async def peer_bins(
+async def peer_bbls(
     db, project: Dict[str, Any],
 ) -> Tuple[List[str], Dict[str, Any]]:
-    """Resolve the peer BIN list for a project, applying the
+    """Resolve the peer BBL list for a project, applying the
     fallback ladder if the most-specific peer set is below
     `MIN_PEER_SAMPLE_SIZE` (20).
 
-    Returns (bins, metadata). metadata describes which peer set
+    Returns (bbls, metadata). metadata describes which peer set
     was used and the sample size — surfaced by
     `compare_project_to_peers` so the FE drawer can disclose
     "Compared against N projects in [borough]".
@@ -135,73 +148,75 @@ async def peer_bins(
     use_type = key.get("use_type")
 
     # Tier 1: borough × class × use_type.
-    bins = await _bins_matching(
+    bbls = await _bbls_matching(
         db, borough=borough, bldgclass=project_class, landuse=use_type,
     )
-    if len(bins) >= MIN_PEER_SAMPLE_SIZE:
-        return bins, {
+    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+        return bbls, {
             "tier": "borough_class_use",
             "borough": borough,
             "project_class": project_class,
             "use_type": use_type,
-            "sample_size": len(bins),
+            "sample_size": len(bbls),
         }
 
     # Tier 2: borough × class (drop use_type).
-    bins = await _bins_matching(
+    bbls = await _bbls_matching(
         db, borough=borough, bldgclass=project_class,
     )
-    if len(bins) >= MIN_PEER_SAMPLE_SIZE:
-        return bins, {
+    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+        return bbls, {
             "tier": "borough_class",
             "borough": borough,
             "project_class": project_class,
-            "sample_size": len(bins),
+            "sample_size": len(bbls),
         }
 
     # Tier 3: borough (drop class).
-    bins = await _bins_matching(db, borough=borough)
-    if len(bins) >= MIN_PEER_SAMPLE_SIZE:
-        return bins, {
+    bbls = await _bbls_matching(db, borough=borough)
+    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+        return bbls, {
             "tier": "borough",
             "borough": borough,
-            "sample_size": len(bins),
+            "sample_size": len(bbls),
         }
 
     # Tier 4: citywide (no filters).
-    bins = await _bins_matching(db)
-    return bins, {
+    bbls = await _bbls_matching(db)
+    return bbls, {
         "tier": "citywide",
-        "sample_size": len(bins),
+        "sample_size": len(bbls),
     }
 
 
-# ── Per-BIN event counts ──────────────────────────────────────────
+# ── Per-BBL event counts ──────────────────────────────────────────
 
 
-async def _count_events_for_bins(
+async def _count_events_for_bbls(
     db,
     collection_name: str,
-    bins: List[str],
+    bbls: List[str],
     *,
     since: datetime,
     until: Optional[datetime] = None,
 ) -> Dict[str, int]:
-    """Return {bin: count} for every BIN in `bins` over the
-    [since, until) window. BINs with zero matching events are
-    included (count=0) so percentile math is correct."""
-    if not bins:
+    """Return {bbl: count} for every BBL in `bbls` over the
+    [since, until) window. BBLs with zero matching events are
+    included (count=0) so percentile math is correct.
+
+    V2.2.4 Path A: keyed on `bbl` (10-char canonical) not `bin`."""
+    if not bbls:
         return {}
     q: Dict[str, Any] = {
-        "bin": {"$in": bins},
+        "bbl": {"$in": bbls},
         "occurred_date": {"$gte": since},
     }
     if until is not None:
         q["occurred_date"]["$lt"] = until
-    counts: Dict[str, int] = {b: 0 for b in bins}
-    cursor = db[collection_name].find(q, {"bin": 1})
+    counts: Dict[str, int] = {b: 0 for b in bbls}
+    cursor = db[collection_name].find(q, {"bbl": 1})
     async for doc in cursor:
-        b = doc.get("bin")
+        b = doc.get("bbl")
         if b in counts:
             counts[b] += 1
     return counts
@@ -224,11 +239,13 @@ def _percentile(sorted_values: List[float], pct: float) -> float:
     return float(sorted_values[k])
 
 
-def _summarize_counts(counts_by_bin: Dict[str, int]) -> Dict[str, float]:
-    """Reduce a {bin: count} map to summary stats (n, mean,
+def _summarize_counts(counts_by_key: Dict[str, int]) -> Dict[str, float]:
+    """Reduce a ``{key: count}`` map to summary stats (n, mean,
     median, p75, p90, p95, max). Used by both the per-peer-set
-    aggregator and the project-vs-peer comparator."""
-    values = sorted(counts_by_bin.values())
+    aggregator and the project-vs-peer comparator. Key is BBL
+    after the V2.2.4 Path A rename — function logic is key-shape-
+    agnostic so the parameter is generically named."""
+    values = sorted(counts_by_key.values())
     n = len(values)
     if n == 0:
         return {"n": 0, "mean": 0.0, "median": 0.0,
@@ -268,21 +285,21 @@ async def compute_baseline_for_peer_set(
     cur_now = now or datetime.now(timezone.utc)
     since = cur_now - timedelta(days=lookback_days)
 
-    bins = await _bins_matching(
+    bbls = await _bbls_matching(
         db,
         borough=borough,
         bldgclass=project_class,
         landuse=use_type,
     )
 
-    violations = await _count_events_for_bins(
-        db, NYC_VIOLATIONS_COLLECTION, bins, since=since,
+    violations = await _count_events_for_bbls(
+        db, NYC_VIOLATIONS_COLLECTION, bbls, since=since,
     )
-    inspections = await _count_events_for_bins(
-        db, NYC_INSPECTIONS_COLLECTION, bins, since=since,
+    inspections = await _count_events_for_bbls(
+        db, NYC_INSPECTIONS_COLLECTION, bbls, since=since,
     )
-    complaints = await _count_events_for_bins(
-        db, NYC_COMPLAINTS_311_COLLECTION, bins, since=since,
+    complaints = await _count_events_for_bbls(
+        db, NYC_COMPLAINTS_311_COLLECTION, bbls, since=since,
     )
 
     return {
@@ -291,7 +308,7 @@ async def compute_baseline_for_peer_set(
         "use_type":      use_type,
         "year_month":    year_month,
         "computed_at":   cur_now,
-        "peer_sample_size": len(bins),
+        "peer_sample_size": len(bbls),
         "violations":  _summarize_counts(violations),
         "inspections": _summarize_counts(inspections),
         "complaints":  _summarize_counts(complaints),
@@ -408,8 +425,12 @@ async def compare_project_to_peers(
     """
     cur_now = now or datetime.now(timezone.utc)
     since = cur_now - timedelta(days=lookback_days)
-    bins, peer_meta = await peer_bins(db, project)
-    project_bin = project.get("nyc_bin") or project.get("bin")
+    # V2.2.4 Path A: BBL-keyed throughout. The project's own BBL
+    # comes from `bbl` / `nyc_bbl` (existing canonical fields on
+    # the project doc) — same fallback chain used elsewhere in
+    # the codebase.
+    bbls, peer_meta = await peer_bbls(db, project)
+    project_bbl = project.get("bbl") or project.get("nyc_bbl")
 
     out: Dict[str, Any] = {"peer_set": peer_meta}
     for label, coll in (
@@ -417,20 +438,20 @@ async def compare_project_to_peers(
         ("inspections", NYC_INSPECTIONS_COLLECTION),
         ("complaints",  NYC_COMPLAINTS_311_COLLECTION),
     ):
-        # Peer counts (excluding the project's own BIN so the
+        # Peer counts (excluding the project's own BBL so the
         # comparison is "us vs. peers", not "us vs. (peers + us)").
-        peer_bin_list = [b for b in bins if b != project_bin]
-        peer_counts = await _count_events_for_bins(
-            db, coll, peer_bin_list, since=since,
+        peer_bbl_list = [b for b in bbls if b != project_bbl]
+        peer_counts = await _count_events_for_bbls(
+            db, coll, peer_bbl_list, since=since,
         )
         peer_summary = _summarize_counts(peer_counts)
         # Project's own count.
         proj_count = 0
-        if project_bin:
+        if project_bbl:
             cursor = db[coll].find({
-                "bin": project_bin,
+                "bbl": project_bbl,
                 "occurred_date": {"$gte": since},
-            }, {"bin": 1})
+            }, {"bbl": 1})
             async for _doc in cursor:
                 proj_count += 1
         # Percentile rank of project among peers.

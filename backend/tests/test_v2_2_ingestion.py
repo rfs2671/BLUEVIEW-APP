@@ -132,12 +132,19 @@ class TestDatasetsRegistry(unittest.TestCase):
 class TestCanonicalRecord(unittest.TestCase):
 
     def test_dob_violation_row_normalized(self):
+        # V2.2.4 Path A: dob_violations field_map now uses
+        # `__derive_bbl__` sentinel — bbl is reconstructed from
+        # boro/block/lot at canonicalization time because the
+        # Socrata 3h2n-5cm9 dataset has no bbl column. Fixture
+        # mirrors a real Socrata row shape (verified by curl
+        # probe — see commit message).
         spec = ing.DATASETS["dob_violations"]
         raw = {
             "isn_dob_bis_viol": "VIOL_001",
             "bin": "1234567",
-            "bbl": "1001234567",
-            "boro": "M",
+            "boro": "1",
+            "block": "00847",
+            "lot": "00038",
             "issue_date": "2026-04-15T00:00:00.000",
             "violation_type": "C",
             "description": "Failure to maintain",
@@ -147,12 +154,13 @@ class TestCanonicalRecord(unittest.TestCase):
         self.assertIsNotNone(rec)
         self.assertEqual(rec["record_id"], "VIOL_001")
         self.assertEqual(rec["bin"], "1234567")
-        self.assertEqual(rec["bbl"], "1001234567")
-        self.assertEqual(rec["borough"], "M")
+        # Derived from boro/block/lot via canonical NYC BBL formula
+        # (1 + block.zfill(5) + lot.zfill(4) → 10 chars).
+        self.assertEqual(rec["bbl"], "1008470038")
+        self.assertEqual(rec["borough"], "1")
         self.assertIsInstance(rec["occurred_date"], datetime)
         self.assertEqual(rec["dataset"], "dob_violations")
         self.assertIn("ingested_at", rec)
-
     def test_missing_record_id_returns_none(self):
         spec = ing.DATASETS["dob_violations"]
         raw = {"bin": "1234567", "issue_date": "2026-04-15"}
@@ -219,6 +227,96 @@ class TestCanonicalRecord(unittest.TestCase):
         self.assertEqual(rec["record_id"], "311_42")
         self.assertEqual(rec["agency"], "DOB")
         self.assertEqual(rec["status"], "Open")
+
+
+class TestConstructBblFromComponents(unittest.TestCase):
+    """V2.2.4 Path A: dob_violations BBL is derived from
+    boro/block/lot since Socrata 3h2n-5cm9 has no top-level bbl
+    column. The cases below pin every padding shape and
+    invalid-input branch the helper must handle.
+    """
+
+    def test_under_padded_normal_case(self):
+        # Hypothetical row that wasn't over-padded by Socrata.
+        rec = ing._construct_bbl_from_components(
+            {"boro": "1", "block": "847", "lot": "38"},
+        )
+        self.assertEqual(rec, "1008470038")
+        self.assertEqual(len(rec), 10)
+
+    def test_socrata_row_2_actual_padding(self):
+        # Verbatim shape from Socrata 3h2n-5cm9 row 2 (curl
+        # probe 2026-05-10). Both block and lot zero-padded to
+        # 5 chars; lot's 5th char is the over-pad we strip.
+        rec = ing._construct_bbl_from_components(
+            {"boro": "1", "block": "00847", "lot": "00038"},
+        )
+        self.assertEqual(rec, "1008470038")
+        self.assertEqual(len(rec), 10)
+
+    def test_further_over_padded(self):
+        # Hypothetical 6-char inputs. lstrip + zfill normalizes
+        # to canonical width without producing 11+ char BBLs.
+        rec = ing._construct_bbl_from_components(
+            {"boro": "1", "block": "000847", "lot": "000038"},
+        )
+        self.assertEqual(rec, "1008470038")
+        self.assertEqual(len(rec), 10)
+
+    def test_all_zeros_returns_none(self):
+        # block=0 and lot=0 are semantically invalid (no real
+        # NYC tax lot has block 0 OR lot 0). Pre-patch the
+        # helper produced "1000000000" which is a fake-but-real-
+        # looking 10-char BBL — that would falsely collapse every
+        # invalid row onto the same record_id. Post-patch the
+        # lstrip+zfill pattern strips both components to "" then
+        # rejects.
+        rec = ing._construct_bbl_from_components(
+            {"boro": "1", "block": "0", "lot": "00"},
+        )
+        self.assertIsNone(rec)
+
+    def test_invalid_boro_returns_none(self):
+        # NYC boroughs are 1-5 only. Anything else is a data
+        # error or a misclassified borough column.
+        rec = ing._construct_bbl_from_components(
+            {"boro": "6", "block": "847", "lot": "38"},
+        )
+        self.assertIsNone(rec)
+
+    def test_non_numeric_components_return_none(self):
+        # Defensive: Socrata occasionally serves text values in
+        # numeric-typed columns. The helper rejects.
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "MANHATTAN", "block": "847", "lot": "38"},
+        ))
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "1", "block": "ABC", "lot": "38"},
+        ))
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "1", "block": "847", "lot": "X"},
+        ))
+
+    def test_missing_component_returns_none(self):
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "1", "block": "847"},  # no lot
+        ))
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"block": "847", "lot": "38"},  # no boro
+        ))
+        self.assertIsNone(ing._construct_bbl_from_components({}))
+
+    def test_block_too_large_returns_none(self):
+        # Block can't exceed 5 significant digits.
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "1", "block": "100000", "lot": "38"},
+        ))
+
+    def test_lot_too_large_returns_none(self):
+        # Lot can't exceed 4 significant digits.
+        self.assertIsNone(ing._construct_bbl_from_components(
+            {"boro": "1", "block": "847", "lot": "10000"},
+        ))
 
 
 class TestDatetimeParsing(unittest.TestCase):

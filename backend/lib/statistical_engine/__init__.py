@@ -72,7 +72,7 @@ from lib.statistical_engine.triggers import (  # noqa: F401
     run_triggers_for_project,
 )
 from lib.statistical_engine.baselines import (  # noqa: F401
-    peer_bins,
+    peer_bbls,
     compute_baseline_for_peer_set,
     upsert_baseline,
     run_baseline_aggregator,
