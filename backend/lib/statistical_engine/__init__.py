@@ -6,10 +6,10 @@ statistical_baselines pre-aggregation cache. Per-project peer
 stats are computed once at creation, cached on the project doc,
 and incrementally refreshed every 14 days.
 
-This is the post-Commit-1 surface. baselines.py and triggers.py
+This is the post-Commit-2 surface. baselines.py and triggers.py
 are still V2.2-shaped internally (they query local mirror
 collections that no longer have data); Commit 3 rewrites them
-to lazy queries.
+to use socrata_client.SocrataClient.
 
   • schema.py        — model version + score bands + predicted_events /
                        prediction_outcomes index specs (only).
@@ -17,11 +17,16 @@ to lazy queries.
                        transitionally; deleted entirely in Commit 3.
   • utils.py         — BBL synthesis + normalization. Holds the
                        transitional collection-name constants.
+  • socrata_client.py — V2.3 Commit 2: async Socrata query wrapper
+                       over ServerHttpClient with retry/backoff +
+                       SoQL construction + pagination. Built but
+                       NOT yet wired into production code — Commit
+                       3 integrates it.
   • baselines.py     — peer-comparison (V2.2-shaped, rewritten Commit 3).
   • triggers.py      — 8 trigger detectors (V2.2-shaped,
                        rewritten Commit 3).
-  • score.py         — risk-score recomputation. Untouched in Commit 1.
-  • calibration.py   — outcome attribution. Untouched in Commit 1.
+  • score.py         — risk-score recomputation. Untouched in Commit 1+2.
+  • calibration.py   — outcome attribution. Untouched in Commit 1+2.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -76,6 +81,18 @@ from lib.statistical_engine.baselines import (  # noqa: F401
 from lib.statistical_engine.utils import (  # noqa: F401
     _construct_bbl_from_components,
     normalize_bbl,
+)
+from lib.statistical_engine.socrata_client import (  # noqa: F401
+    SocrataClient,
+    SocrataQueryError,
+    ALL_DATASET_IDS,
+    DATASET_DOB_VIOLATIONS,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_PERMITS,
+    DATASET_COMPLAINTS_311,
+    DATASET_ECB_VIOLATIONS,
+    DATASET_HPD_VIOLATIONS,
+    DATASET_PLUTO,
 )
 from lib.statistical_engine.schema import (  # noqa: F401
     # Surviving collection constants
