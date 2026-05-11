@@ -3669,6 +3669,26 @@ async def get_project_risk_score(
         latest = doc
     if latest is None:
         raise HTTPException(status_code=404, detail="No score yet")
+
+    # V2.3 Commit 6 — opportunistic prediction-resolution check.
+    # Fire-and-forget: while the operator is viewing this
+    # project's score, refresh any active 311-inspection
+    # predictions for the same project. Picks up actual DOB
+    # inspections that landed in the window between the last
+    # 30-min sweep and now, so the FE sees current resolution
+    # status without waiting for the scheduled tick. Wrapped in
+    # try/except so a spawn-side bug never breaks the GET.
+    try:
+        asyncio.create_task(
+            _stat_engine.opportunistic_resolution_check(db, project_id),
+            name=f"prediction_resolution_check:{project_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[prediction_resolution] opportunistic spawn failed for "
+            f"{project_id}: {_e!r}",
+        )
+
     return {"score": serialize_id(latest)}
 
 
@@ -13965,6 +13985,51 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # poll for a project quietly backfills the historical
                 # complaints without spamming the owner.
                 await _send_critical_dob_alert_throttled(project, doc, source="311")
+
+            # V2.3 Commit 6 — predictive inspection surfacing.
+            # Spawn a fire-and-forget similar-case correlation
+            # only when ALL four suppression conditions are met:
+            #
+            #   1. existing is None       — truly NEW complaint.
+            #      Status transitions (e.g., Open → Closed) also
+            #      reach this path via the insert above, but the
+            #      complaint itself was seen earlier; any
+            #      inspection it triggered may have already
+            #      happened, and a status-change prediction would
+            #      have lower signal value.
+            #   2. not is_seed_transition_311 — synthetic seed
+            #      rows (from the V2.2 schema migration) must not
+            #      fire predictions.
+            #   3. _initial_scan_done — same gate the email
+            #      throttler uses. First poll for a project is
+            #      historical backfill; predictions on backfill
+            #      would surface stale "inspection likely
+            #      tomorrow" alerts for complaints from months
+            #      ago.
+            #   4. severity == "Action" — non-Action 311 categories
+            #      (noise, parking) don't correlate with DOB
+            #      inspections.
+            #
+            # Spawn wrapped in try/except so a prediction-side bug
+            # never breaks the 311 poll's existing dedup + Mongo
+            # write path. The wrapper itself (try_predict_inspection_
+            # from_complaint) has its own outer catch-all.
+            if (existing is None
+                    and not is_seed_transition_311
+                    and severity == "Action"
+                    and await _initial_scan_done(project_id, "311")):
+                try:
+                    asyncio.create_task(
+                        _stat_engine.try_predict_inspection_from_complaint(
+                            db, project, rec,
+                        ),
+                        name=f"predict_inspection:{project_id}:{unique_key}",
+                    )
+                except Exception as _e:
+                    logger.warning(
+                        f"[predict_inspection] task spawn failed for "
+                        f"{project_id}:{unique_key}: {_e!r}",
+                    )
         except Exception as e:
             # MR.14 (commit 2a) — the legacy unique index on
             # raw_dob_id is being dropped in this commit, so duplicate-
@@ -24361,6 +24426,62 @@ async def startup_event():
         _peer_stats_refresh_tick,
         IntervalTrigger(minutes=_stat_engine.REFRESH_TICK_MINUTES),
         id='peer_stats_refresh',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # V2.3 Commit 6 — prediction resolution sweep. Walks active
+    # 311-inspection predictions every 30 minutes (matches the
+    # 311-poll cadence so resolutions are observed close to
+    # when new inspections actually appear in Socrata). Per-
+    # project Socrata roundtrip is small (limit=1 inspections
+    # query). max_instances=1 + coalesce=True prevent overlap;
+    # an unusually slow sweep skips the next tick instead of
+    # stacking.
+    async def _prediction_resolution_sweep_tick():
+        try:
+            stats = await _stat_engine.sweep_prediction_resolutions(db)
+            logger.info(
+                f"[prediction_resolution] sweep complete: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[prediction_resolution] sweep crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _prediction_resolution_sweep_tick,
+        IntervalTrigger(minutes=30),
+        id='prediction_resolution_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # V2.3 Commit 6 — daily resolved-prediction cleanup. Deletes
+    # resolved (hit / miss / expired_no_data) prediction rows
+    # older than RESOLVED_PREDICTION_RETENTION_DAYS (30) to
+    # bound predicted_events collection size. Scoped via
+    # method == PREDICTION_METHOD so V2.2-trigger predictions on
+    # the same collection aren't touched. 03:45 ET sits after
+    # the V2.0 logbook tick (3 AM) and the operator's typical
+    # quiet hours, before any morning email crons.
+    async def _prediction_cleanup_tick():
+        try:
+            stats = await _stat_engine.cleanup_resolved_predictions(db)
+            logger.info(
+                f"[prediction_cleanup] daily cleanup: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[prediction_cleanup] crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _prediction_cleanup_tick,
+        CronTrigger(hour=3, minute=45, timezone="America/New_York"),
+        id='prediction_cleanup',
         replace_existing=True,
         max_instances=1,
         coalesce=True,

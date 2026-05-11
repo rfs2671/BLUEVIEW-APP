@@ -63,8 +63,11 @@ def _run(coro):
 
 class TestTriggerKinds(unittest.TestCase):
 
-    def test_eight_triggers(self):
-        self.assertEqual(len(tr.ALL_TRIGGER_KINDS), 8)
+    def test_nine_triggers(self):
+        # V2.3 Commit 6 added TRIGGER_311_INSPECTION_PREDICTION as
+        # a distinct kind from the existing TRIGGER_311_AT_BIN
+        # (score-driven). Total moves from 8 → 9.
+        self.assertEqual(len(tr.ALL_TRIGGER_KINDS), 9)
 
     def test_kind_names_pinned(self):
         self.assertEqual(tr.TRIGGER_311_AT_BIN, "311_at_bin")
@@ -76,6 +79,9 @@ class TestTriggerKinds(unittest.TestCase):
         self.assertEqual(tr.TRIGGER_CURE_DEADLINE_REINSPECT,
                          "cure_deadline_reinspection")
         self.assertEqual(tr.TRIGGER_SSMR_SHED_AGING, "ssmr_shed_aging")
+        # V2.3 Commit 6 addition.
+        self.assertEqual(tr.TRIGGER_311_INSPECTION_PREDICTION,
+                         "311_inspection_prediction")
 
     def test_default_windows_present_for_each(self):
         for kind in tr.ALL_TRIGGER_KINDS:

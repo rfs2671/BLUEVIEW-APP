@@ -44,6 +44,14 @@ document with a 14-day staleness window.
                        eligibility classes (stale-ready,
                        failed-past-24h, orphan-pending-past-15min)
                        with explicit per-status routing.
+  • predictions.py   — V2.3 Commit 6: event-driven predictive
+                       inspection surfacing. Hooked from the
+                       311 poll on truly-new + action-severity
+                       complaints. Similar-case correlation
+                       against historical 311 + DOB inspections
+                       → display message + ≥70% confidence
+                       store. Plus a 30-min resolution sweep
+                       and a daily cleanup at 03:45 ET.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -112,6 +120,21 @@ from lib.statistical_engine.refresh_cron import (  # noqa: F401
     REFRESH_TICK_MINUTES,
     REFRESH_COMPUTE_TIMEOUT_SECONDS,
     ORPHAN_PENDING_THRESHOLD_MINUTES,
+)
+from lib.statistical_engine.predictions import (  # noqa: F401
+    predict_inspection_from_complaint,
+    try_predict_inspection_from_complaint,
+    sweep_prediction_resolutions,
+    opportunistic_resolution_check,
+    cleanup_resolved_predictions,
+    PREDICTION_CONFIDENCE_THRESHOLD,
+    PREDICTION_LOOKBACK_YEARS,
+    PREDICTION_INSPECTION_WINDOW_DAYS,
+    PREDICTION_MIN_SAMPLE_SIZE,
+    PREDICTION_MIN_INSPECTION_RATE,
+    PREDICTION_COMPUTE_TIMEOUT_SECONDS,
+    RESOLVED_PREDICTION_RETENTION_DAYS,
+    PREDICTION_METHOD,
 )
 from lib.statistical_engine.utils import (  # noqa: F401
     _construct_bbl_from_components,

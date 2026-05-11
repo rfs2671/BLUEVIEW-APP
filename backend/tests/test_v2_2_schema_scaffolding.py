@@ -564,6 +564,143 @@ class TestServerPyV23RefreshCronWiring(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 6: predictive inspection hook + 2 crons + opportunistic
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23PredictionsHookWiring(unittest.TestCase):
+    """Commit 6 wires four things in server.py:
+
+      1. Prediction-spawn hook inside ``_ingest_311_for_project``
+         immediately after the existing ``db.dob_logs.insert_one``
+         + ``_send_critical_dob_alert_throttled`` block, gated by
+         ALL FOUR suppression conditions (existing is None +
+         not is_seed_transition_311 + severity == "Action" +
+         _initial_scan_done).
+      2. ``_prediction_resolution_sweep_tick`` — 30-min interval
+         APScheduler tick with max_instances=1 + coalesce=True.
+      3. ``_prediction_cleanup_tick`` — daily cron at 03:45 ET
+         (NOT 03:15) with max_instances=1 + coalesce=True.
+      4. Opportunistic resolution check fire-and-forget from
+         GET ``/projects/{project_id}/risk-score``.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    # ── Hook predicate ──────────────────────────────────────────
+
+    def _hook_slice(self) -> str:
+        # The hook lives inside _ingest_311_for_project right
+        # after db.dob_logs.insert_one. Anchor on the unique
+        # task-name template.
+        s = self.text.find('name=f"predict_inspection:')
+        self.assertGreater(s, 0, "predict_inspection task spawn missing")
+        start = max(0, s - 2000)
+        end = min(len(self.text), s + 500)
+        return self.text[start:end]
+
+    def test_hook_predicate_checks_existing_is_None(self):
+        slice_ = self._hook_slice()
+        self.assertIn("existing is None", slice_)
+
+    def test_hook_predicate_checks_not_seed_transition(self):
+        slice_ = self._hook_slice()
+        self.assertIn("not is_seed_transition_311", slice_)
+
+    def test_hook_predicate_checks_severity_action(self):
+        slice_ = self._hook_slice()
+        self.assertIn('severity == "Action"', slice_)
+
+    def test_hook_predicate_checks_initial_scan_done(self):
+        slice_ = self._hook_slice()
+        self.assertIn('_initial_scan_done(project_id, "311")', slice_)
+
+    def test_hook_calls_stat_engine_try_predict(self):
+        slice_ = self._hook_slice()
+        self.assertIn(
+            "_stat_engine.try_predict_inspection_from_complaint",
+            slice_,
+        )
+
+    def test_hook_wraps_spawn_in_try_except(self):
+        slice_ = self._hook_slice()
+        # Walk back from the create_task to find the enclosing try.
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "predict-spawn not wrapped in try block")
+        self.assertIn("except Exception", slice_[spawn_idx:])
+
+    # ── Resolution sweep cron ──────────────────────────────────
+
+    def test_resolution_sweep_tick_function_defined(self):
+        self.assertIn(
+            "async def _prediction_resolution_sweep_tick():",
+            self.text,
+        )
+
+    def test_resolution_sweep_registered_30min_interval(self):
+        s = self.text.find("id='prediction_resolution_sweep'")
+        self.assertGreater(s, 0, "resolution sweep job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("scheduler.add_job(", slice_)
+        self.assertIn("_prediction_resolution_sweep_tick,", slice_)
+        self.assertIn("IntervalTrigger(minutes=30)", slice_)
+        self.assertIn("replace_existing=True", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    # ── Daily cleanup cron ─────────────────────────────────────
+
+    def test_cleanup_tick_function_defined(self):
+        self.assertIn(
+            "async def _prediction_cleanup_tick():",
+            self.text,
+        )
+
+    def test_cleanup_registered_at_03_45_ET(self):
+        """Q8 refinement: cleanup at 03:45 ET, NOT 03:15."""
+        s = self.text.find("id='prediction_cleanup'")
+        self.assertGreater(s, 0, "cleanup job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn(
+            'CronTrigger(hour=3, minute=45, timezone="America/New_York")',
+            slice_,
+        )
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    # ── Opportunistic resolution check wire ────────────────────
+
+    def test_opportunistic_resolution_check_wired_on_get_risk_score(self):
+        # Anchor on the GET endpoint decorator + walk to the
+        # next @api_router. The opportunistic spawn must appear
+        # inside the handler body.
+        s = self.text.find(
+            '@api_router.get("/projects/{project_id}/risk-score")',
+        )
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn(
+            "_stat_engine.opportunistic_resolution_check(db, project_id)",
+            slice_,
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        # Must be wrapped in try/except so a spawn-side bug
+        # never breaks the GET.
+        self.assertIn("except Exception", slice_)
+
+
+# ──────────────────────────────────────────────────────────────────
 # V2.2 server.py wiring
 # ──────────────────────────────────────────────────────────────────
 

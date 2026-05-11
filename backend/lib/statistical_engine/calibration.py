@@ -54,6 +54,7 @@ from lib.statistical_engine.socrata_client import (
 from lib.statistical_engine.triggers import (
     ALL_TRIGGER_KINDS,
     TRIGGER_311_AT_BIN,
+    TRIGGER_311_INSPECTION_PREDICTION,
     TRIGGER_311_NEIGHBOR,
     TRIGGER_BOROUGH_SWEEP,
     TRIGGER_CSC_PERIODIC,
@@ -91,6 +92,13 @@ TRIGGER_EVIDENCE_DATASET = {
     TRIGGER_CURE_DEADLINE_REINSPECT: (DATASET_DOB_INSPECTIONS, "inspection_date"),
     TRIGGER_NEIGHBOR_SWO:            (DATASET_DOB_VIOLATIONS,  "issue_date"),
     TRIGGER_SSMR_SHED_AGING:         (DATASET_DOB_INSPECTIONS, "inspection_date"),
+    # V2.3 Commit 6 — event-driven 311 inspection prediction.
+    # Evidence is a DOB inspection at the project's BIN within
+    # the prediction window. Predictions module has its own
+    # resolution sweep (sweep_prediction_resolutions); this
+    # entry exists so the calibration framework can also see
+    # this trigger kind if it's later re-wired to a daily cron.
+    TRIGGER_311_INSPECTION_PREDICTION: (DATASET_DOB_INSPECTIONS, "inspection_date"),
 }
 
 

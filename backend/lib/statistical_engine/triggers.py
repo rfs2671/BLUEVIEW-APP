@@ -77,6 +77,12 @@ TRIGGER_NEIGHBOR_SWO            = "neighbor_swo"
 TRIGGER_CSE_FOLLOWUP            = "cse_followup"
 TRIGGER_CURE_DEADLINE_REINSPECT = "cure_deadline_reinspection"
 TRIGGER_SSMR_SHED_AGING         = "ssmr_shed_aging"
+# V2.3 Commit 6 — event-driven predictive surfacing. Distinct
+# from TRIGGER_311_AT_BIN (which is score-driven, fires inside
+# recompute_and_persist). This one fires from the 311 poll
+# hook when a fresh complaint lands on a tracked BIN and the
+# similar-case correlation passes the confidence threshold.
+TRIGGER_311_INSPECTION_PREDICTION = "311_inspection_prediction"
 
 ALL_TRIGGER_KINDS = (
     TRIGGER_311_AT_BIN,
@@ -87,6 +93,7 @@ ALL_TRIGGER_KINDS = (
     TRIGGER_CSE_FOLLOWUP,
     TRIGGER_CURE_DEADLINE_REINSPECT,
     TRIGGER_SSMR_SHED_AGING,
+    TRIGGER_311_INSPECTION_PREDICTION,
 )
 
 
@@ -106,6 +113,11 @@ DEFAULT_WINDOWS = {
     TRIGGER_CSE_FOLLOWUP:            (3,  30),
     TRIGGER_CURE_DEADLINE_REINSPECT: (0,   7),
     TRIGGER_SSMR_SHED_AGING:         (1,  21),
+    # V2.3 Commit 6 — predictions ship with a fixed 7-day window
+    # (matches PREDICTION_INSPECTION_WINDOW_DAYS in predictions.py).
+    # days_window_min=0 because the predicted inspection might
+    # land same-day if the complaint was registered overnight.
+    TRIGGER_311_INSPECTION_PREDICTION: (0,   7),
 }
 
 
