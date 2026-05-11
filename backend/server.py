@@ -2840,6 +2840,23 @@ async def onboarding_create_project(
     project_doc["id"] = str(result.inserted_id)
     project_doc.pop("_id", None)
 
+    # V2.3 Commit 4 — async pre-warm of peer_stats_cache. Fire-and-
+    # forget; the HTTP response returns immediately while the
+    # compute runs in the background. First risk-score recompute
+    # on this project becomes a cache-hit instead of paying the
+    # 500ms-2s synchronous compute cost. Spawn is wrapped in
+    # try/except so a bug here can never fail project creation.
+    try:
+        asyncio.create_task(
+            _stat_engine.prewarm_peer_stats(db, result.inserted_id),
+            name=f"prewarm_peer_stats:{result.inserted_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[create_project] prewarm task spawn failed for "
+            f"{result.inserted_id}: {_e!r}",
+        )
+
     return project_doc
 
 
@@ -6730,6 +6747,23 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
         "name": project_dict.get("name"), "address": project_dict.get("address"),
         "project_class": project_dict.get("project_class"), "suggested_class": suggested,
     })
+
+    # V2.3 Commit 4 — async pre-warm of peer_stats_cache. Fire-and-
+    # forget; the HTTP response returns immediately while the
+    # compute runs in the background. First risk-score recompute
+    # on this project becomes a cache-hit instead of paying the
+    # 500ms-2s synchronous compute cost. Spawn is wrapped in
+    # try/except so a bug here can never fail project creation.
+    try:
+        asyncio.create_task(
+            _stat_engine.prewarm_peer_stats(db, result.inserted_id),
+            name=f"prewarm_peer_stats:{result.inserted_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[create_project] prewarm task spawn failed for "
+            f"{result.inserted_id}: {_e!r}",
+        )
 
     # Defense in depth — the lift above already covered model_dump's
     # None values, but if any code path between then and now wrote

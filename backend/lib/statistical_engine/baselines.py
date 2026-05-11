@@ -98,6 +98,15 @@ logger = logging.getLogger(__name__)
 # Commit 5 scheduler will fire an incremental refresh.
 PEER_STATS_FRESH_DAYS = 14
 
+# How long a ``status="failed"`` marker suppresses retry attempts
+# from the synchronous compute path in ``compare_project_to_peers``.
+# Within this window, returning the zero-peer marker avoids burning
+# Socrata quota retrying a query that just failed. After the
+# window elapses, the next sync compute call attempts a retry —
+# this is the V2.3 Commit 4 "24h retry escape hatch" so permanently-
+# stuck projects aren't permanently broken.
+PEER_STATS_FAILED_RETRY_TTL_HOURS = 24
+
 # Lookback window for the event datasets. Same 2-year span the V2.2
 # aggregator used so percentile distributions are comparable.
 PEER_STATS_LOOKBACK_DAYS = 365 * 2
@@ -971,14 +980,29 @@ async def compare_project_to_peers(
     """V2.3 cache-aware peer comparison.
 
     Decision tree:
-      1. Cache present + ``status == "ready"`` + not stale →
-         return cached values immediately. Hot path: zero Socrata
-         calls.
-      2. Cache present + stale → return cached values immediately
-         (don't block the user on a refresh). Commit 5 will fire
-         a background refresh here; for now the next score
-         recompute will trigger the refresh path explicitly.
-      3. Cache absent → synchronous on-demand compute, wrapped
+      1. Cache + ``status == "ready"`` → return cached values
+         immediately. Hot path: zero Socrata calls. (Staleness
+         beyond 14 days is currently still served from cache;
+         Commit 5 wires a background refresh.)
+      2. Cache + ``status == "pending"`` → V2.3 Commit 4: a
+         ``prewarm_peer_stats`` task is in flight. Return the
+         zero-peer marker with ``reason="pending"`` to avoid
+         racing the background task with a synchronous compute
+         that would write the same data twice.
+      3. Cache + ``status == "failed"`` → V2.3 Commit 4:
+            - if ``failed_at`` is within the last 24 hours,
+              return the zero-peer marker with
+              ``reason="failed"`` (don't burn Socrata quota
+              re-running the same failing query).
+            - if ``failed_at`` is older than 24 hours (the retry
+              escape hatch), fall through to the synchronous
+              compute path for a retry. Prevents permanently-
+              stuck projects from being permanently broken.
+            - if ``failed_at`` is missing (defensive — a
+              malformed cache or pre-Commit-4 failed marker),
+              return the zero-peer marker (better safe than
+              quota-burning).
+      4. Cache absent → synchronous on-demand compute, wrapped
          in ``asyncio.wait_for(..., 5s)``. Persist the result to
          ``db.projects``. On timeout or Socrata failure, return
          a zero-peer marker with a ``reason``.
@@ -989,11 +1013,42 @@ async def compare_project_to_peers(
     cur_now = now or datetime.now(timezone.utc)
     cache = project.get("peer_stats_cache")
 
-    if cache and cache.get("status") == "ready":
-        # Cache hit — fresh or stale, we still serve from it.
-        return _v22_shape_from_cache(cache)
+    if cache:
+        status = cache.get("status")
+        if status == "ready":
+            # Cache hit — fresh or stale, we still serve from it.
+            return _v22_shape_from_cache(cache)
+        if status == "pending":
+            # V2.3 Commit 4: background prewarm in flight. Don't
+            # race it — return zero-peer marker; the next score
+            # recompute (after prewarm completes) will hit the
+            # ready branch above.
+            return _zero_peer_marker("pending")
+        if status == "failed":
+            # V2.3 Commit 4: 24-hour retry escape hatch. Within
+            # the window, surface the failed state without
+            # retrying. Past the window, fall through to sync
+            # compute as a retry attempt.
+            failed_at = cache.get("failed_at")
+            if isinstance(failed_at, datetime):
+                if failed_at.tzinfo is None:
+                    failed_at = failed_at.replace(tzinfo=timezone.utc)
+                age = cur_now - failed_at
+                if age < timedelta(hours=PEER_STATS_FAILED_RETRY_TTL_HOURS):
+                    return _zero_peer_marker("failed")
+                # else: past the TTL → fall through to sync retry
+                logger.info(
+                    "[baselines] peer_stats for %s failed %.1fh "
+                    "ago; retrying via sync compute",
+                    project.get("_id"), age.total_seconds() / 3600,
+                )
+            else:
+                # No failed_at timestamp — defensive: don't retry
+                # without knowing when the failure happened.
+                return _zero_peer_marker("failed")
 
-    # Cache miss (or non-ready cache) — do the synchronous compute.
+    # Cache absent OR (status=="failed" past the 24h TTL) → do
+    # the synchronous compute.
     inline_http: Optional[ServerHttpClient] = None
     try:
         if socrata is None:

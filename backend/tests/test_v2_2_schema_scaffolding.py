@@ -368,6 +368,124 @@ class TestServerPyV22CronTicksRemoved(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 4: project-creation endpoints spawn prewarm_peer_stats
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23PrewarmWiring(unittest.TestCase):
+    """Commit 4 added a fire-and-forget ``prewarm_peer_stats``
+    spawn to BOTH project creation endpoints:
+
+        POST /api/projects                  (line ~6726)
+        POST /api/onboarding/project        (line ~2839)
+
+    The third site (test-data seed at startup, ~24107) is
+    intentionally NOT wired per the Commit 4 spec.
+
+    Each wiring must:
+      • spawn via ``asyncio.create_task``
+      • call ``_stat_engine.prewarm_peer_stats(db, result.inserted_id)``
+      • include a ``name=`` tag for asyncio task debugging
+      • wrap the spawn in try/except so project creation never
+        fails because of pre-warm code
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def _slice_endpoint(self, anchor: str) -> str:
+        """Return the text from ``anchor`` to the next
+        ``@api_router`` decorator (i.e. the full handler body).
+        Falls back to a generous span if the anchor is the last
+        endpoint in the file."""
+        s = self.text.find(anchor)
+        self.assertGreater(s, 0, f"endpoint anchor not found: {anchor}")
+        e = self.text.find("@api_router", s + len(anchor))
+        if e < 0:
+            # Last endpoint in file — take a wide window.
+            e = min(len(self.text), s + 20000)
+        return self.text[s:e]
+
+    def test_create_project_endpoint_spawns_prewarm(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/projects", response_model=ProjectResponse)',
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        self.assertIn("_stat_engine.prewarm_peer_stats(db, result.inserted_id)",
+                      slice_)
+        self.assertIn(
+            'name=f"prewarm_peer_stats:{result.inserted_id}"',
+            slice_,
+        )
+
+    def test_create_project_endpoint_wraps_spawn_in_try_except(self):
+        """A bug in the prewarm spawn must never fail project
+        creation. Pin the try/except wrapper."""
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/projects", response_model=ProjectResponse)',
+        )
+        # The spawn must be inside a try block whose except logs.
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        # Look back from the spawn for the nearest "try:" — must
+        # exist before the next handler-level statement.
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "prewarm spawn not wrapped in try block")
+        # The catch must mention the prewarm task spawn so
+        # operators can grep logs.
+        following = slice_[spawn_idx:]
+        self.assertIn("except Exception", following)
+        self.assertIn("prewarm task spawn failed", following)
+
+    def test_onboarding_create_project_endpoint_spawns_prewarm(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/onboarding/project")',
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        self.assertIn("_stat_engine.prewarm_peer_stats(db, result.inserted_id)",
+                      slice_)
+        self.assertIn(
+            'name=f"prewarm_peer_stats:{result.inserted_id}"',
+            slice_,
+        )
+
+    def test_onboarding_create_project_endpoint_wraps_spawn_in_try_except(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/onboarding/project")',
+        )
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "prewarm spawn not wrapped in try block")
+        following = slice_[spawn_idx:]
+        self.assertIn("except Exception", following)
+        self.assertIn("prewarm task spawn failed", following)
+
+    def test_prewarm_NOT_wired_to_test_data_seed(self):
+        """Site C — the test-data seeding block at line ~24107 —
+        is intentionally NOT wired. Per Commit 4 spec Q1: skip
+        test-data seed. Pin via a targeted search: the seed block
+        creates an ESB test project; that block must not contain
+        a prewarm spawn."""
+        # Locate the test-project seed insert by its unique
+        # marker.
+        s = self.text.find("Test Project - ESB")
+        self.assertGreater(s, 0, "test-data seed marker missing")
+        # Walk forward to the end of the seed block (logger.info
+        # is the closing marker).
+        e = self.text.find("Test data seeding complete", s)
+        self.assertGreater(e, s, "seed block end-marker missing")
+        seed_slice = self.text[s:e]
+        # No prewarm_peer_stats call within the seed block.
+        self.assertNotIn("prewarm_peer_stats", seed_slice)
+
+
+# ──────────────────────────────────────────────────────────────────
 # V2.2 server.py wiring
 # ──────────────────────────────────────────────────────────────────
 

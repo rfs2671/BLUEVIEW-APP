@@ -826,6 +826,177 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 4 — status guards on compare_project_to_peers
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestCompareProjectStatusGuards(unittest.TestCase):
+    """Pin the pending/failed handling that Commit 4 adds to
+    compare_project_to_peers. These guards close a race + a
+    quota-burn regression introduced when the async pre-warm
+    task started writing status="pending" and status="failed"
+    markers to the cache.
+    """
+
+    def _make_cache(self, **overrides) -> Dict[str, Any]:
+        base = {
+            "status": "ready",
+            "computed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
+            "peer_criteria": {
+                "borough": "MANHATTAN",
+                "project_class": "O",
+                "use_type": "office",
+                "tier": "borough_class_use",
+                "sample_size": 24,
+                "fallback_level": 1,
+            },
+            "violations":  {"n": 24, "median": 1.0, "p75": 2.0, "p90": 3.0,
+                            "project_count": 5, "percentile_rank": 80.0},
+            "inspections": {"n": 24, "median": 0.5, "p75": 1.0, "p90": 2.0,
+                            "project_count": 2, "percentile_rank": 70.0},
+            "complaints":  {"n": 24, "median": 0.0, "p75": 0.5, "p90": 1.0,
+                            "project_count": 0, "percentile_rank": 50.0},
+        }
+        base.update(overrides)
+        return base
+
+    def test_pending_status_returns_zero_marker_no_socrata_calls(self):
+        """status=pending → background prewarm in flight. Don't
+        race it with a sync compute. Return the zero-peer marker
+        with reason='pending' and emit zero Socrata calls."""
+        socrata = MockSocrataClient()
+        cache = self._make_cache(status="pending")
+        project = {"_id": "PG1", "peer_stats_cache": cache}
+        db = _StubDb(projects=[project])
+
+        result = _run(bl.compare_project_to_peers(
+            db, project, socrata=socrata,
+            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        ))
+        self.assertEqual(result["peer_set"]["sample_size"], 0)
+        self.assertEqual(result["peer_set"]["reason"], "pending")
+        self.assertEqual(result["violations"]["project_count"], 0)
+        # Critical: no Socrata calls. A regression here would
+        # mean we race the in-flight prewarm task.
+        self.assertEqual(len(socrata.calls), 0)
+        # No cache write — we observed pending, didn't compute.
+        self.assertEqual(len(db.projects.update_one_calls), 0)
+
+    def test_failed_status_under_24h_returns_zero_marker(self):
+        """status=failed + failed_at within 24h → return zero
+        marker without retrying. Don't burn Socrata quota on a
+        query that just failed."""
+        socrata = MockSocrataClient()
+        now = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        # Failed 2 hours ago — well within the 24h TTL.
+        failed_at = now - timedelta(hours=2)
+        cache = self._make_cache(
+            status="failed",
+            failed_at=failed_at,
+            error_kind="socrata_error",
+            error_message="rate limited",
+        )
+        project = {"_id": "PG2", "peer_stats_cache": cache}
+        db = _StubDb(projects=[project])
+
+        result = _run(bl.compare_project_to_peers(
+            db, project, socrata=socrata, now=now,
+        ))
+        self.assertEqual(result["peer_set"]["reason"], "failed")
+        self.assertEqual(len(socrata.calls), 0)
+        self.assertEqual(len(db.projects.update_one_calls), 0)
+
+    def test_failed_status_over_24h_falls_through_to_sync_compute(self):
+        """status=failed + failed_at > 24h ago → retry escape
+        hatch fires. Permanently-stuck projects shouldn't stay
+        broken forever. Verify sync compute runs and writes a
+        fresh cache."""
+        socrata = MockSocrataClient()
+        # Seed a tier-1 PLUTO peer set so compute can complete.
+        socrata.seed(DATASET_PLUTO, [
+            {"bbl": f"100250{i:04d}", "borough": "MANHATTAN",
+             "bldgclass": "O", "landuse": "office"}
+            for i in range(25)
+        ])
+        socrata.seed(DATASET_DOB_VIOLATIONS, [])
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        now = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        # Failed 25 hours ago — past the 24h TTL.
+        failed_at = now - timedelta(hours=25)
+        cache = self._make_cache(
+            status="failed",
+            failed_at=failed_at,
+            error_kind="socrata_error",
+        )
+        project = {
+            "_id": "PG3", "peer_stats_cache": cache,
+            "bbl": "1002500000", "borough": "MANHATTAN",
+            "project_class": "O", "use_type": "office",
+        }
+        db = _StubDb(projects=[project])
+
+        result = _run(bl.compare_project_to_peers(
+            db, project, socrata=socrata, now=now,
+        ))
+        # Compute ran → not the failed/zero marker; full result.
+        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
+        # At least one Socrata call fired (PLUTO peer-discovery
+        # alone makes one).
+        self.assertGreater(len(socrata.calls), 0)
+        # Fresh cache persisted.
+        self.assertEqual(len(db.projects.update_one_calls), 1)
+        persisted_set = db.projects.update_one_calls[0]["update"]["$set"]
+        self.assertEqual(
+            persisted_set["peer_stats_cache"]["status"], "ready",
+        )
+
+    def test_failed_status_with_naive_datetime_normalized_to_utc(self):
+        """Defensive: if failed_at is a naive datetime (no
+        tzinfo), the guard must still compare correctly by
+        normalizing to UTC. Mongo bson sometimes returns naive
+        datetimes depending on client config."""
+        socrata = MockSocrataClient()
+        now = datetime(2026, 5, 10, 12, 0, tzinfo=timezone.utc)
+        # Naive datetime 2h ago — equivalent UTC; should be
+        # within the 24h TTL.
+        failed_at_naive = datetime(2026, 5, 10, 10, 0)  # no tzinfo
+        cache = self._make_cache(
+            status="failed", failed_at=failed_at_naive,
+        )
+        project = {"_id": "PG4", "peer_stats_cache": cache}
+        db = _StubDb(projects=[project])
+
+        result = _run(bl.compare_project_to_peers(
+            db, project, socrata=socrata, now=now,
+        ))
+        # Within TTL → zero marker.
+        self.assertEqual(result["peer_set"]["reason"], "failed")
+        self.assertEqual(len(socrata.calls), 0)
+
+    def test_failed_status_no_failed_at_returns_zero_marker_defensive(self):
+        """Malformed cache (status=failed but no failed_at field
+        — e.g. a pre-Commit-4 failed marker) → return zero
+        marker. Without a timestamp we can't decide whether to
+        retry, and the safer default is "don't burn quota until
+        an operator looks at it"."""
+        socrata = MockSocrataClient()
+        cache = self._make_cache(status="failed")  # no failed_at
+        cache.pop("failed_at", None)
+        project = {"_id": "PG5", "peer_stats_cache": cache}
+        db = _StubDb(projects=[project])
+
+        result = _run(bl.compare_project_to_peers(
+            db, project, socrata=socrata,
+            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        ))
+        self.assertEqual(result["peer_set"]["reason"], "failed")
+        self.assertEqual(len(socrata.calls), 0)
+
+
+# ──────────────────────────────────────────────────────────────────
 # Cache staleness boundary
 # ──────────────────────────────────────────────────────────────────
 

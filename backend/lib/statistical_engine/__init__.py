@@ -34,6 +34,11 @@ document with a 14-day staleness window.
   • calibration.py   — V2.3: outcome attribution via lazy Socrata
                        queries keyed on the new TRIGGER_EVIDENCE_DATASET
                        mapping.
+  • prewarm.py       — V2.3 Commit 4: background pre-warm of
+                       peer_stats_cache fired by server.py on
+                       project creation. compare_project_to_peers
+                       grew pending/failed/24h-TTL state guards
+                       in the same commit.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -87,6 +92,14 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     PEER_STATS_FRESH_DAYS,
     PEER_STATS_LOOKBACK_DAYS,
     PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
+    PEER_STATS_FAILED_RETRY_TTL_HOURS,
+)
+from lib.statistical_engine.prewarm import (  # noqa: F401
+    prewarm_peer_stats,
+    PREWARM_TIMEOUT_SECONDS,
+    ERROR_KIND_TIMEOUT,
+    ERROR_KIND_SOCRATA,
+    ERROR_KIND_UNEXPECTED,
 )
 from lib.statistical_engine.utils import (  # noqa: F401
     _construct_bbl_from_components,
