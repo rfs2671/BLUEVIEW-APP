@@ -38,19 +38,18 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from lib.server_http import ServerHttpClient
 from lib.statistical_engine.schema import (
     PREDICTED_EVENTS_COLLECTION,
     PREDICTION_OUTCOMES_COLLECTION,
     MODEL_VERSION,
 )
-# V2.3 Commit 1: collection-name constants moved to utils.py.
-# The TRIGGER_TO_COLL dict below still references these names —
-# Commit 3 rewrites the outcome-attribution path to lazy Socrata
-# queries at which point this import goes away.
-from lib.statistical_engine.utils import (
-    NYC_VIOLATIONS_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_COMPLAINTS_311_COLLECTION,
+from lib.statistical_engine.socrata_client import (
+    DATASET_COMPLAINTS_311,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_VIOLATIONS,
+    SocrataClient,
+    SocrataQueryError,
 )
 from lib.statistical_engine.triggers import (
     ALL_TRIGGER_KINDS,
@@ -74,46 +73,72 @@ OUTCOME_MISS = "miss"
 OUTCOME_EXPIRED_NO_DATA = "expired_no_data"
 
 # Per-trigger expected event mapping. When a prediction expires,
-# we look in this collection for any matching event in the
-# window. If we find one, the prediction is a "hit"; if not,
-# "miss".
+# we query the configured Socrata dataset for any matching event
+# in the [predicted_at, expires_at] window for the project's BIN.
+# Hit → at least one event found; miss → none.
+#
+# Each entry is (dataset_id, date_column_name). The date column
+# differs per dataset because Socrata's source columns aren't
+# normalized — V2.2 canonicalized them to ``occurred_date`` at
+# ingest time, V2.3 references each source's actual column.
 
-TRIGGER_EVIDENCE_COLLECTION = {
-    TRIGGER_311_AT_BIN:              NYC_COMPLAINTS_311_COLLECTION,
-    TRIGGER_311_NEIGHBOR:            NYC_COMPLAINTS_311_COLLECTION,
-    TRIGGER_BOROUGH_SWEEP:           NYC_INSPECTIONS_COLLECTION,
-    TRIGGER_CSC_PERIODIC:            NYC_INSPECTIONS_COLLECTION,
-    TRIGGER_CSE_FOLLOWUP:            NYC_VIOLATIONS_COLLECTION,
-    TRIGGER_CURE_DEADLINE_REINSPECT: NYC_INSPECTIONS_COLLECTION,
-    TRIGGER_NEIGHBOR_SWO:            NYC_VIOLATIONS_COLLECTION,
-    TRIGGER_SSMR_SHED_AGING:         NYC_INSPECTIONS_COLLECTION,
+TRIGGER_EVIDENCE_DATASET = {
+    TRIGGER_311_AT_BIN:              (DATASET_COMPLAINTS_311,  "created_date"),
+    TRIGGER_311_NEIGHBOR:            (DATASET_COMPLAINTS_311,  "created_date"),
+    TRIGGER_BOROUGH_SWEEP:           (DATASET_DOB_INSPECTIONS, "inspection_date"),
+    TRIGGER_CSC_PERIODIC:            (DATASET_DOB_INSPECTIONS, "inspection_date"),
+    TRIGGER_CSE_FOLLOWUP:            (DATASET_DOB_VIOLATIONS,  "issue_date"),
+    TRIGGER_CURE_DEADLINE_REINSPECT: (DATASET_DOB_INSPECTIONS, "inspection_date"),
+    TRIGGER_NEIGHBOR_SWO:            (DATASET_DOB_VIOLATIONS,  "issue_date"),
+    TRIGGER_SSMR_SHED_AGING:         (DATASET_DOB_INSPECTIONS, "inspection_date"),
 }
 
 
 # ── Outcome attribution ───────────────────────────────────────────
 
 
-async def _has_event_in_window(
-    db,
+def _soql_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _iso_z(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+async def _first_event_in_window(
+    socrata: SocrataClient,
     *,
-    collection_name: str,
+    dataset_id: str,
+    date_field: str,
     bin_: Optional[str],
     since: datetime,
     until: datetime,
-) -> bool:
-    """Return True iff at least one event for the BIN exists in
-    [since, until)."""
+) -> Optional[Dict[str, Any]]:
+    """Return the first matching event for the BIN in [since, until]
+    via Socrata, or None. Used by outcome attribution to find a
+    matching enforcement event after a prediction expires."""
     if not bin_:
-        return False
-    cursor = db[collection_name].find({
-        "bin": bin_,
-        "occurred_date": {"$gte": since, "$lte": until},
-    }).limit(1) if hasattr(db[collection_name], "find") else None
-    if cursor is None:
-        return False
-    async for _doc in cursor:
-        return True
-    return False
+        return None
+    try:
+        rows = await socrata.query(
+            dataset_id,
+            where=(
+                f"bin = {_soql_quote(bin_)} AND "
+                f"{date_field} >= {_soql_quote(_iso_z(since))} AND "
+                f"{date_field} <= {_soql_quote(_iso_z(until))}"
+            ),
+            order=f"{date_field} ASC",
+            limit=1,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[calibration] event search for %s failed: %r",
+            dataset_id, e,
+        )
+        return None
+    if not rows:
+        return None
+    return rows[0]
 
 
 async def _resolve_project_bin(db, project_id: str) -> Optional[str]:
@@ -130,15 +155,37 @@ async def _resolve_project_bin(db, project_id: str) -> Optional[str]:
     return proj.get("nyc_bin") or proj.get("bin")
 
 
+def _parse_socrata_dt(value: Any) -> Optional[datetime]:
+    """Parse a Socrata floating-timestamp into a UTC datetime."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    try:
+        s = value.rstrip("Z")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
 async def attribute_outcome_for_prediction(
     db,
     prediction: Dict[str, Any],
     *,
+    socrata: SocrataClient,
     now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
     """Decide whether a single prediction was a hit or miss.
     Writes one row to prediction_outcomes and flips
     outcome_status on the original prediction.
+
+    V2.3 signature change: ``socrata`` is a REQUIRED keyword arg
+    here (inner function). The outermost batch entrypoint
+    ``attribute_outcomes_for_expired_predictions`` accepts an
+    optional ``socrata`` and constructs one inline if absent.
 
     Returns the outcome row (or None on degenerate input)."""
     if not prediction:
@@ -152,32 +199,32 @@ async def attribute_outcome_for_prediction(
             or not expires_at:
         return None
     bin_ = await _resolve_project_bin(db, project_id)
-    coll_for_evidence = TRIGGER_EVIDENCE_COLLECTION.get(trigger_kind)
-    if coll_for_evidence is None:
+    dataset_spec = TRIGGER_EVIDENCE_DATASET.get(trigger_kind)
+    if dataset_spec is None:
         return None
+    dataset_id, date_field = dataset_spec
 
     if bin_ is None:
         outcome_status = OUTCOME_EXPIRED_NO_DATA
         actual_at = None
     else:
-        # Search for an event in [predicted_at, expires_at).
-        cursor = db[coll_for_evidence].find({
-            "bin": bin_,
-            "occurred_date": {
-                "$gte": predicted_at,
-                "$lte": expires_at,
-            },
-        })
-        first_match = None
-        async for doc in cursor:
-            first_match = doc
-            break
+        first_match = await _first_event_in_window(
+            socrata,
+            dataset_id=dataset_id,
+            date_field=date_field,
+            bin_=bin_,
+            since=predicted_at,
+            until=expires_at,
+        )
         if first_match is None:
             outcome_status = OUTCOME_MISS
             actual_at = None
         else:
             outcome_status = OUTCOME_HIT
-            actual_at = first_match.get("occurred_date")
+            actual_at = (
+                _parse_socrata_dt(first_match.get(date_field))
+                or _parse_socrata_dt(first_match.get("occurred_date"))
+            )
 
     outcome_doc = {
         "prediction_id":   prediction.get("_id"),
@@ -209,36 +256,62 @@ async def attribute_outcome_for_prediction(
 
 
 async def attribute_outcomes_for_expired_predictions(
-    db, *, now: Optional[datetime] = None,
+    db,
+    *,
+    socrata: Optional[SocrataClient] = None,
+    now: Optional[datetime] = None,
 ) -> Dict[str, int]:
     """Daily cron entry point. Walks every prediction whose
     expires_at <= now and outcome_status == 'active', attributes
-    each, returns a summary."""
+    each, returns a summary.
+
+    V2.3 signature change: accepts an optional ``socrata``
+    SocrataClient. When None, constructs one inline backed by a
+    fresh ServerHttpClient for the duration of the sweep. The
+    same client is reused across every prediction's evidence
+    lookup so the connection pool warms once per sweep.
+
+    NOTE: V2.3 Commit 1 removed the APScheduler tick that
+    invoked this. A future commit will rewire a daily cron once
+    the surrounding lazy-query infrastructure is settled. The
+    function itself is otherwise ready to call.
+    """
     cur_now = now or datetime.now(timezone.utc)
     summary = {"processed": 0, "hits": 0, "misses": 0, "expired_no_data": 0,
                "errors": 0}
-    cursor = db[PREDICTED_EVENTS_COLLECTION].find({
-        "expires_at": {"$lte": cur_now},
-        "outcome_status": "active",
-    })
-    async for prediction in cursor:
-        summary["processed"] += 1
-        try:
-            outcome = await attribute_outcome_for_prediction(
-                db, prediction, now=cur_now,
-            )
-            if outcome is None:
+
+    inline_http: Optional[ServerHttpClient] = None
+    if socrata is None:
+        inline_http = ServerHttpClient(timeout=10.0)
+        await inline_http.__aenter__()
+        socrata = SocrataClient(inline_http)
+    try:
+        cursor = db[PREDICTED_EVENTS_COLLECTION].find({
+            "expires_at": {"$lte": cur_now},
+            "outcome_status": "active",
+        })
+        async for prediction in cursor:
+            summary["processed"] += 1
+            try:
+                outcome = await attribute_outcome_for_prediction(
+                    db, prediction, socrata=socrata, now=cur_now,
+                )
+                if outcome is None:
+                    summary["errors"] += 1
+                    continue
+                if outcome["outcome"] == OUTCOME_HIT:
+                    summary["hits"] += 1
+                elif outcome["outcome"] == OUTCOME_MISS:
+                    summary["misses"] += 1
+                else:
+                    summary["expired_no_data"] += 1
+            except Exception as e:
                 summary["errors"] += 1
-                continue
-            if outcome["outcome"] == OUTCOME_HIT:
-                summary["hits"] += 1
-            elif outcome["outcome"] == OUTCOME_MISS:
-                summary["misses"] += 1
-            else:
-                summary["expired_no_data"] += 1
-        except Exception as e:
-            summary["errors"] += 1
-            logger.warning(f"[calibration] attribute failed: {e!r}")
+                logger.warning(f"[calibration] attribute failed: {e!r}")
+    finally:
+        if inline_http is not None:
+            await inline_http.__aexit__(None, None, None)
+
     logger.info(f"[calibration] daily attribution: {summary}")
     return summary
 

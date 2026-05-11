@@ -49,19 +49,20 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
+from lib.server_http import ServerHttpClient
 from lib.statistical_engine.schema import (
     MIN_CONFIDENCE_THRESHOLD,
     MIN_PEER_SAMPLE_SIZE,
     PREDICTED_EVENTS_COLLECTION,
 )
-# V2.3 Commit 1: collection-name constants moved to utils.py.
-# Commit 3 rewrites every db[NYC_*_COLLECTION].find(...) here
-# to a lazy Socrata GET and deletes this import.
-from lib.statistical_engine.utils import (
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_VIOLATIONS_COLLECTION,
+from lib.statistical_engine.socrata_client import (
+    DATASET_COMPLAINTS_311,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_VIOLATIONS,
+    SocrataClient,
+    SocrataQueryError,
 )
+from lib.statistical_engine.utils import normalize_bbl
 
 logger = logging.getLogger(__name__)
 
@@ -536,20 +537,64 @@ async def _historical_match_rate_for_trigger(
     return PRIORS.get(trigger_kind, 0.70)
 
 
+# ── Socrata helpers (V2.3 Commit 3 — lazy event fetches) ──────────
+
+
+def _soql_quote(value: str) -> str:
+    """Wrap a value in single quotes and escape internal quotes for
+    SoQL inclusion."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _iso_z(dt: datetime) -> str:
+    """Format a datetime in ISO-8601 form Socrata accepts as a
+    floating-timestamp comparator RHS."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _parse_socrata_dt(value: Any) -> Optional[datetime]:
+    """Best-effort parse of Socrata floating-timestamp strings into
+    tz-aware UTC datetimes. Robust to None / non-strings."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    try:
+        s = value.rstrip("Z")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
 async def gather_trigger_inputs(
-    db,
+    socrata: SocrataClient,
     project: Dict[str, Any],
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Pre-fetch the data each trigger needs in one pass so we
-    don't hammer Mongo with 8 sequential per-trigger queries.
+    don't fire 8 sequential per-trigger Socrata calls.
 
-    Returns a dict the orchestrator hands to each trigger
-    function as kwargs."""
+    V2.3 signature change: takes ``SocrataClient`` in place of
+    ``db`` (the V2.2 nyc_* mirror is gone). All five reads switch
+    from local Mongo cursors to lazy Socrata GETs. Block-prefix
+    filters (``bbl LIKE '<block>%'``) are pushed down to SoQL via
+    ``starts_with(bbl, '<block>')`` so we don't pull the borough's
+    full daily 311 / violations feed just to post-filter in
+    Python.
+
+    Soft-fail per-dataset: a SocrataQueryError on one source
+    leaves the corresponding output list/count empty but lets
+    the other triggers' inputs populate normally. This preserves
+    the V2.2 behavior of degrading gracefully when one source
+    times out.
+    """
     cur_now = now or datetime.now(timezone.utc)
     bin_ = project.get("nyc_bin") or project.get("bin")
-    bbl = project.get("bbl") or project.get("nyc_bbl")
+    bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
     block = _bbl_block(bbl)
 
     out: Dict[str, Any] = {
@@ -565,82 +610,131 @@ async def gather_trigger_inputs(
         "days_since_last_csc": project.get("days_since_last_csc"),
     }
 
-    # 311 at BIN — past 24h.
-    if bin_:
-        cutoff_24h = cur_now - timedelta(days=1)
-        cursor = db[NYC_COMPLAINTS_311_COLLECTION].find({
-            "bin": bin_,
-            "occurred_date": {"$gte": cutoff_24h},
-        })
-        async for doc in cursor:
-            out["recent_311_at_bin"].append(doc)
+    cutoff_24h = cur_now - timedelta(days=1)
+    cutoff_30d = cur_now - timedelta(days=30)
+    cutoff_60d = cur_now - timedelta(days=60)
+    cutoff_90d = cur_now - timedelta(days=90)
+    last7_cutoff = cur_now - timedelta(days=7)
 
-    # 311 neighbor — past 24h, same block, NOT same BIN.
+    # 311 at BIN — past 24h. ~erm2-nwe9.
+    if bin_:
+        try:
+            rows = await socrata.query_all(
+                DATASET_COMPLAINTS_311,
+                where=(
+                    f"bin = {_soql_quote(bin_)} AND created_date > "
+                    f"{_soql_quote(_iso_z(cutoff_24h))}"
+                ),
+                page_size=1000,
+            )
+            out["recent_311_at_bin"] = list(rows)
+        except SocrataQueryError as e:
+            logger.warning("[triggers] recent_311_at_bin failed: %r", e)
+
+    # 311 neighbor — past 24h, same block, NOT same BIN. We push
+    # the block-prefix filter down to SoQL via starts_with() —
+    # smaller wire size than V2.2's "fetch whole day, filter in
+    # Python" pattern.
     if block:
-        cutoff_24h = cur_now - timedelta(days=1)
-        cursor = db[NYC_COMPLAINTS_311_COLLECTION].find({
-            "occurred_date": {"$gte": cutoff_24h},
-        })
-        async for doc in cursor:
-            doc_bbl = doc.get("bbl") or ""
-            if isinstance(doc_bbl, str) and doc_bbl.startswith(block):
+        try:
+            rows = await socrata.query_all(
+                DATASET_COMPLAINTS_311,
+                where=(
+                    f"starts_with(bbl, {_soql_quote(block)}) AND "
+                    f"created_date > {_soql_quote(_iso_z(cutoff_24h))}"
+                ),
+                page_size=1000,
+            )
+            for doc in rows:
                 if doc.get("bin") != bin_:
                     out["recent_311_neighbor"].append(doc)
+        except SocrataQueryError as e:
+            logger.warning("[triggers] recent_311_neighbor failed: %r", e)
 
     # Borough inspection rolling 90-day counts (per-day list).
     borough = project.get("borough")
     if borough:
-        cutoff_90d = cur_now - timedelta(days=90)
-        cursor = db[NYC_INSPECTIONS_COLLECTION].find({
-            "borough": borough,
-            "occurred_date": {"$gte": cutoff_90d},
-        })
-        per_day: Dict[str, int] = {}
-        last7_cutoff = cur_now - timedelta(days=7)
-        last7 = 0
-        async for doc in cursor:
-            occ = doc.get("occurred_date")
-            if isinstance(occ, datetime):
+        try:
+            rows = await socrata.query_all(
+                DATASET_DOB_INSPECTIONS,
+                where=(
+                    f"borough = {_soql_quote(borough)} AND "
+                    f"inspection_date > {_soql_quote(_iso_z(cutoff_90d))}"
+                ),
+                select=["inspection_date"],
+                page_size=5000,
+            )
+            per_day: Dict[str, int] = {}
+            last7 = 0
+            for doc in rows:
+                occ = _parse_socrata_dt(doc.get("inspection_date"))
+                if occ is None:
+                    continue
                 day_key = occ.strftime("%Y-%m-%d")
                 per_day[day_key] = per_day.get(day_key, 0) + 1
                 if occ >= last7_cutoff:
                     last7 += 1
-        out["borough_inspection_counts_90d"] = list(per_day.values())
-        out["last_7d_count"] = last7
+            out["borough_inspection_counts_90d"] = list(per_day.values())
+            out["last_7d_count"] = last7
+        except SocrataQueryError as e:
+            logger.warning("[triggers] borough inspections failed: %r", e)
 
     # Neighbor SWO + nearby violations (BBL block proximity).
     if block:
-        cutoff_30d = cur_now - timedelta(days=30)
-        cutoff_60d = cur_now - timedelta(days=60)
-        cursor = db[NYC_VIOLATIONS_COLLECTION].find({
-            "occurred_date": {"$gte": cutoff_60d},
-        })
-        async for doc in cursor:
-            doc_bbl = doc.get("bbl") or ""
-            if not isinstance(doc_bbl, str):
-                continue
-            if not doc_bbl.startswith(block):
-                continue
-            if doc.get("bin") == bin_:
-                # Same BIN — would feed a different trigger
-                # (cure deadline). Skip here.
-                continue
-            occ = doc.get("occurred_date")
-            if isinstance(occ, datetime):
+        try:
+            rows = await socrata.query_all(
+                DATASET_DOB_VIOLATIONS,
+                where=(
+                    f"starts_with(bbl, {_soql_quote(block)}) AND "
+                    f"issue_date > {_soql_quote(_iso_z(cutoff_60d))}"
+                ),
+                page_size=5000,
+            )
+            for doc in rows:
+                # Skip same-BIN — that feeds the cure_deadline
+                # trigger via the own-BIN query below.
+                if doc.get("bin") == bin_:
+                    continue
+                occ = _parse_socrata_dt(doc.get("issue_date"))
+                if occ is None:
+                    continue
                 if occ >= cutoff_60d:
                     out["nearby_violations_60d"] += 1
                 if occ >= cutoff_30d:
                     desc = (doc.get("description") or "").lower()
                     if "stop work" in desc or doc.get("violation_type") == "SWO":
                         out["neighbor_swo_count_30d"] += 1
+        except SocrataQueryError as e:
+            logger.warning("[triggers] neighbor violations failed: %r", e)
 
     # Open violations with cure deadline on the project's own BIN.
+    # Socrata dataset 3h2n-5cm9 doesn't ship a typed cure_deadline
+    # column on the public schema (V2.2 sourced it from a
+    # synthetic field populated by the ingestion canonicalizer).
+    # For Commit 3 we look at every row for the BIN and surface
+    # any whose cure_deadline is parseable in the future; this
+    # preserves V2.2 behavior with the limited data Socrata
+    # exposes. If a future commit needs richer cure-deadline
+    # detection it can pull from the DOB NOW endpoint via the
+    # worker queue.
     if bin_:
-        cursor = db[NYC_VIOLATIONS_COLLECTION].find({"bin": bin_})
-        async for doc in cursor:
-            cure = doc.get("cure_deadline")
-            if cure is not None:
-                out["open_violations_with_cure"].append(doc)
+        try:
+            rows = await socrata.query_all(
+                DATASET_DOB_VIOLATIONS,
+                where=f"bin = {_soql_quote(bin_)}",
+                page_size=1000,
+            )
+            for doc in rows:
+                cure_raw = doc.get("cure_deadline")
+                cure = _parse_socrata_dt(cure_raw) if cure_raw else None
+                if cure is not None:
+                    # Materialize the parsed datetime so downstream
+                    # trigger logic (which expects a datetime) works.
+                    doc = dict(doc)
+                    doc["cure_deadline"] = cure
+                    out["open_violations_with_cure"].append(doc)
+        except SocrataQueryError as e:
+            logger.warning("[triggers] own-BIN violations failed: %r", e)
 
     return out
 
@@ -649,15 +743,49 @@ async def run_triggers_for_project(
     db,
     project: Dict[str, Any],
     *,
+    socrata: Optional[SocrataClient] = None,
     now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     """Walk all 8 triggers for one project. Returns the list of
     persisted predictions (those that passed the publication
     gate). Predictions that fired but failed the gate are NOT
     persisted (saves storage + avoids low-quality noise).
+
+    V2.3 signature change: accepts an optional ``socrata``
+    SocrataClient. When None (the default), constructs one
+    inline backed by a fresh ServerHttpClient for the duration
+    of the call. Score.py's ``recompute_and_persist`` passes a
+    shared client through so the same connection pool is reused
+    across triggers + peer comparison + own-building counts.
     """
     cur_now = now or datetime.now(timezone.utc)
-    inputs = await gather_trigger_inputs(db, project, now=cur_now)
+
+    inline_http: Optional[ServerHttpClient] = None
+    if socrata is None:
+        inline_http = ServerHttpClient(timeout=10.0)
+        await inline_http.__aenter__()
+        socrata = SocrataClient(inline_http)
+    try:
+        inputs = await gather_trigger_inputs(socrata, project, now=cur_now)
+        return await _run_triggers_with_inputs(
+            db, project, inputs, now=cur_now,
+        )
+    finally:
+        if inline_http is not None:
+            await inline_http.__aexit__(None, None, None)
+
+
+async def _run_triggers_with_inputs(
+    db,
+    project: Dict[str, Any],
+    inputs: Dict[str, Any],
+    *,
+    now: datetime,
+) -> List[Dict[str, Any]]:
+    """Dispatch + persist step, split out of run_triggers_for_project
+    so the orchestrator's I/O setup is separated from the
+    dispatch logic."""
+    cur_now = now
 
     # Peer sample size — for now we use a placeholder pulled from
     # the project's recently-cached compare doc; Commit 5 wires

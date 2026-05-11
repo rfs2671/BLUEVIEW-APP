@@ -1,82 +1,136 @@
-"""Phase V2.2 — Statistical baseline computation.
+"""Phase V2.3 — Lazy peer-comparison engine.
 
-Pre-aggregates peer-set statistics so the per-project re-stat
-hot path stays fast (<500 ms target). Peer set is defined by the
-spec as `(borough, project_class, use_type)` over the past 2
-years. Sample-size fallback ladder: drop use_type → drop class
-→ citywide.
+V2.2 used a local Mongo mirror (``nyc_pluto`` + ``nyc_violations``
++ ``nyc_inspections`` + ``nyc_complaints_311``) with a nightly
+``statistical_baselines`` pre-aggregation cron. V2.3 throws away
+both: peer stats are now computed lazily against the live Socrata
+API at score-recompute time, then cached on the project document
+itself with a 14-day staleness window.
 
-V2.2.4 Path A: peer-comparison is BBL-keyed throughout, not
-BIN-keyed. PLUTO's Socrata payload has no `bin` column, and
-nyc_violations' Socrata payload has no `bbl` column (we derive
-it from boro/block/lot in the canonicalizer). Switching the
-join key to BBL aligns all four collections —
-nyc_pluto / nyc_violations / nyc_inspections / nyc_complaints_311
-— on a field they ALL populate.
+Per-project lifecycle:
 
-Three public surfaces:
+  1. New project — ``peer_stats_cache`` field is absent.
+  2. First risk-score compute calls ``compare_project_to_peers``
+     which detects the missing cache, runs
+     ``compute_peer_stats_full`` (PLUTO peer-set discovery + 3
+     event-dataset queries with the project's peer BBLs), persists
+     the resulting cache back to ``db.projects``, and returns the
+     comparison.
+  3. Subsequent computes within 14 days read the cache directly —
+     no Socrata roundtrips.
+  4. After 14 days, the cache is stale. ``compare_project_to_peers``
+     returns the cached values immediately and (in Commit 5) fires
+     a background ``refresh_peer_stats_incremental``. Commit 3
+     ships the refresh function but does NOT schedule it — Commit
+     5 wires the staleness-driven scheduler.
 
-  • `peer_bbls(db, project)` — async iterator yielding the BBLs
-    of projects in the same peer set. Walks PLUTO when
-    available; falls back to broader peer sets if sample < 20
-    (per spec).
+Critical fall-back: the synchronous on-demand compute is wrapped
+in ``asyncio.wait_for(..., 5s)``. On timeout OR ``SocrataQueryError``
+the function returns a zero-peer marker with a ``reason`` field so
+the score doesn't bomb. The next recompute will retry.
 
-  • `compute_baseline_for_peer_set(db, peer_set, year_month)` —
-    computes the aggregated stats for one peer-set key over a
-    given month. Returns a dict suitable for upsert into
-    `statistical_baselines`.
+PUBLIC SURFACE PRESERVED FROM V2.2:
 
-  • `compare_project_to_peers(db, project, *, now)` — given a
-    project, look up its peer-set baseline and the project's
-    own stats over the same window, return percentile ranking,
-    peer-median, and metadata (which peer set was used and
-    sample size).
+  • ``peer_bbls(socrata, project)`` — fallback ladder PLUTO query.
+    Now lazy-Socrata-backed. Signature added ``socrata`` first arg
+    in place of ``db`` (PLUTO is no longer mirrored locally).
 
-Plus a nightly aggregator entry point (`run_baseline_aggregator`)
-that pre-computes baselines for the current month across every
-distinct peer-set key seen in PLUTO. Wired in server.py at
-3:30 AM ET (between the V2.0 logbook 3 AM tick and the V2.2
-weekly Sunday-morning ingest).
+  • ``compare_project_to_peers(db, project, *, socrata=None, ...)``
+    — same return shape as V2.2. ``db`` is preserved as first
+    arg because the function still reads + writes ``db.projects``
+    for cache persistence. ``socrata`` is keyword-optional so
+    callers that don't have a SocrataClient handy can pass None
+    and the function constructs one inline.
+
+NEW IN V2.3:
+
+  • ``compute_peer_stats_full`` — first-compute aggregation.
+    Returns a ``peer_stats_cache`` dict ready to persist on the
+    project doc.
+
+  • ``refresh_peer_stats_incremental`` — 14-day delta refresh.
+    Same peer BBL list (no PLUTO re-query); pulls only events
+    in [last_refreshed_at, now], adds to cached per-BBL counts,
+    drops events older than the 2-year window, recomputes
+    summary stats.
+
+  • ``count_own_building_events(socrata, *, bin_, since, until=None)``
+    — project-specific own-building counts (violations, failed
+    inspections, open complaints). Used by ``score.gather_score_inputs``.
+
+DELETED in V2.3 Commit 3 (the V2.2 baseline-aggregator cron was
+removed in Commit 1; these helpers wrote to the now-dropped
+``statistical_baselines`` collection):
+
+  • ``compute_baseline_for_peer_set``
+  • ``upsert_baseline``
+  • ``run_baseline_aggregator``
+  • ``_year_month``
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from lib.statistical_engine.schema import (
-    MIN_PEER_SAMPLE_SIZE,
+from lib.server_http import ServerHttpClient
+from lib.statistical_engine.schema import MIN_PEER_SAMPLE_SIZE
+from lib.statistical_engine.socrata_client import (
+    DATASET_COMPLAINTS_311,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_VIOLATIONS,
+    DATASET_PLUTO,
+    SocrataClient,
+    SocrataQueryError,
 )
-# V2.3 Commit 1: collection-name constants moved from schema.py
-# to utils.py as a transitional placement. This file's query
-# logic is left untouched per the Commit 1 spec — queries hit
-# the (about-to-be-dropped) local mirror collections and return
-# empty. Commit 3 rewrites every db[NYC_*_COLLECTION].find(...)
-# call site to a lazy Socrata GET; at that point the import line
-# below is deleted entirely.
-from lib.statistical_engine.utils import (
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_PLUTO_COLLECTION,
-    NYC_VIOLATIONS_COLLECTION,
-    STATISTICAL_BASELINES_COLLECTION,
-)
+from lib.statistical_engine.utils import normalize_bbl
 
 logger = logging.getLogger(__name__)
 
 
-# ── Peer-set key construction ─────────────────────────────────────
+# ── Cache tuning constants ────────────────────────────────────────
+
+# How many days a fully-computed cache stays "fresh" before
+# compare_project_to_peers treats it as stale. After this the cache
+# is still returned (we don't block the user on a refresh) but the
+# Commit 5 scheduler will fire an incremental refresh.
+PEER_STATS_FRESH_DAYS = 14
+
+# Lookback window for the event datasets. Same 2-year span the V2.2
+# aggregator used so percentile distributions are comparable.
+PEER_STATS_LOOKBACK_DAYS = 365 * 2
+
+# Hard wall-clock cap on the on-demand-compute fallback. If
+# Socrata is misbehaving we'd rather return a zero-peer marker
+# than freeze the score endpoint.
+PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 5.0
+
+# Socrata page size used by peer-event queries. Tuned to one round
+# trip for typical Manhattan peer sets (~500 BBLs × ~5 events/BBL
+# over 2 years = ~2500 rows, well under page_size).
+PEER_STATS_PAGE_SIZE = 5000
+
+# Maximum peer-BBL list size we shove into a single
+# ``bbl IN (...)`` clause. Socrata's URL-length limit truncates
+# requests at ~2000 chars; ~250 11-char BBLs + delimiters keeps us
+# safely under that. Larger peer sets are chunked across multiple
+# queries and unioned.
+SOQL_IN_CHUNK_SIZE = 250
+
+
+# ── Peer-set key construction (pure logic, untouched from V2.2) ───
 
 
 def _project_peer_key(project: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """Extract the canonical peer-set key from a project doc.
 
-    Borough comes from project.borough or PLUTO lookup at score
-    time. project_class is the operator-set classification
+    Borough comes from project.borough or PLUTO-fallback via BBL.
+    project_class is the operator-set classification
     (regular / major_a / major_b). use_type is the PLUTO
-    `landuse` or `bldgclass` field — for now we use whichever
-    is present; a future cleanup may normalize this.
+    ``landuse`` or ``bldgclass`` field — for now we use whichever
+    is present.
     """
     return {
         "borough":       project.get("borough") or _bin_borough_fallback(project),
@@ -86,9 +140,9 @@ def _project_peer_key(project: Dict[str, Any]) -> Dict[str, Optional[str]]:
 
 
 def _bin_borough_fallback(project: Dict[str, Any]) -> Optional[str]:
-    """Derive borough from BBL when the project doc doesn't
-    carry an explicit borough. BBL is 10 chars: first char is
-    borough (1-5)."""
+    """Derive borough from BBL when the project doc doesn't carry
+    an explicit borough. BBL is 10 chars: first char is borough
+    (1-5)."""
     bbl = project.get("bbl") or project.get("nyc_bbl")
     if not bbl or not isinstance(bbl, str):
         return None
@@ -102,53 +156,109 @@ def _bin_borough_fallback(project: Dict[str, Any]) -> Optional[str]:
     }.get(boro_code)
 
 
-# ── Peer set fallback ladder ──────────────────────────────────────
-#
-# Spec: "Fallback only if sample < 20." If the most-specific
-# peer set (borough × class × use_type) has fewer than 20 BINs,
-# drop use_type and try (borough × class). If that's still under
-# 20, drop class and try (borough). If even citywide-by-class
-# is short, fall back to citywide (no constraint other than
-# borough being NYC).
+# ── SoQL helpers ──────────────────────────────────────────────────
 
 
-async def _bbls_matching(
-    db, *, borough=None, bldgclass=None, landuse=None,
+def _soql_quote(value: str) -> str:
+    """Wrap a value in single quotes and escape internal quotes for
+    SoQL inclusion. The Socrata datasets we query don't contain
+    single quotes in any of our peer-key fields (borough names are
+    uppercase, project_class is an enum, landuse codes are short
+    strings), but defensive escaping costs nothing and prevents a
+    future field from breaking the WHERE clause."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _soql_in(field: str, values: List[str]) -> str:
+    """Build ``field IN ('v1','v2',...)`` from a Python list."""
+    if not values:
+        # Socrata rejects ``IN ()`` as a syntax error. Caller should
+        # short-circuit before invoking this, but guard anyway.
+        return f"{field} IN ('')"
+    quoted = ",".join(_soql_quote(v) for v in values)
+    return f"{field} IN ({quoted})"
+
+
+def _chunk(seq: List[str], n: int) -> List[List[str]]:
+    """Split a list into chunks of up to n items."""
+    return [seq[i:i + n] for i in range(0, len(seq), n)]
+
+
+def _iso_z(dt: datetime) -> str:
+    """Format a datetime in the ISO-8601-Z form Socrata's floating-
+    timestamp columns accept on the right-hand side of a comparator
+    (e.g. ``occurred_date > '2024-05-08T00:00:00'``).
+    """
+    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+# ── Peer set fallback ladder (rewritten — lazy PLUTO via Socrata) ─
+
+
+async def _bbls_matching_socrata(
+    socrata: SocrataClient,
+    *,
+    borough: Optional[str] = None,
+    bldgclass: Optional[str] = None,
+    landuse: Optional[str] = None,
 ) -> List[str]:
-    """Return BBL list from PLUTO matching the supplied filters.
-    None = unconstrained on that axis. Empty result is fine; the
-    caller decides whether to fall back.
+    """Query Socrata PLUTO (64uk-42ks) for BBLs matching the
+    supplied filters. None = unconstrained on that axis.
 
-    V2.2.4 Path A: projects PLUTO's `bbl` (not the V2.2-era
-    `bin` which the field_map doesn't populate). Returned BBLs
-    are the 10-char canonical form because `upsert_record`
-    normalizes PLUTO's `.00000000` suffix at write time."""
-    q: Dict[str, Any] = {}
+    PLUTO is a snapshot dataset (re-released quarterly); a single
+    Socrata query returns the current full set for our peer-key
+    filters. We page just in case the borough-only fallback tier
+    returns >5000 BBLs.
+
+    Returns the normalized 10-char canonical BBL list. PLUTO's
+    Socrata payload ships ``bbl`` values with a ``.00000000``
+    decimal suffix (e.g. ``"4061730023.00000000"``); the
+    canonicalizer strips that via ``normalize_bbl``.
+    """
+    where_parts: List[str] = []
     if borough is not None:
-        q["borough"] = borough
+        where_parts.append(f"borough = {_soql_quote(borough)}")
     if bldgclass is not None:
-        q["bldgclass"] = bldgclass
+        where_parts.append(f"bldgclass = {_soql_quote(bldgclass)}")
     if landuse is not None:
-        q["landuse"] = landuse
-    bbls: List[str] = []
-    cursor = db[NYC_PLUTO_COLLECTION].find(q, {"bbl": 1})
-    async for doc in cursor:
-        b = doc.get("bbl")
-        if b:
-            bbls.append(b)
-    return bbls
+        where_parts.append(f"landuse = {_soql_quote(landuse)}")
+    where = " AND ".join(where_parts) if where_parts else None
+
+    try:
+        rows = await socrata.query_all(
+            DATASET_PLUTO,
+            where=where,
+            select=["bbl"],
+            page_size=PEER_STATS_PAGE_SIZE,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] PLUTO peer fetch failed: %r", e,
+        )
+        return []
+
+    out: List[str] = []
+    for r in rows:
+        normalized = normalize_bbl(r.get("bbl"))
+        if normalized:
+            out.append(normalized)
+    return out
 
 
 async def peer_bbls(
-    db, project: Dict[str, Any],
+    socrata: SocrataClient,
+    project: Dict[str, Any],
 ) -> Tuple[List[str], Dict[str, Any]]:
     """Resolve the peer BBL list for a project, applying the
     fallback ladder if the most-specific peer set is below
-    `MIN_PEER_SAMPLE_SIZE` (20).
+    ``MIN_PEER_SAMPLE_SIZE`` (20).
 
-    Returns (bbls, metadata). metadata describes which peer set
-    was used and the sample size — surfaced by
-    `compare_project_to_peers` so the FE drawer can disclose
+    V2.3 signature change: takes ``SocrataClient`` instead of
+    ``db`` (PLUTO is no longer mirrored locally).
+
+    Returns (bbls, metadata). metadata describes which tier was
+    used and the sample size — surfaced by
+    ``compare_project_to_peers`` so the FE drawer can disclose
     "Compared against N projects in [borough]".
     """
     key = _project_peer_key(project)
@@ -157,8 +267,9 @@ async def peer_bbls(
     use_type = key.get("use_type")
 
     # Tier 1: borough × class × use_type.
-    bbls = await _bbls_matching(
-        db, borough=borough, bldgclass=project_class, landuse=use_type,
+    bbls = await _bbls_matching_socrata(
+        socrata,
+        borough=borough, bldgclass=project_class, landuse=use_type,
     )
     if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
         return bbls, {
@@ -170,8 +281,8 @@ async def peer_bbls(
         }
 
     # Tier 2: borough × class (drop use_type).
-    bbls = await _bbls_matching(
-        db, borough=borough, bldgclass=project_class,
+    bbls = await _bbls_matching_socrata(
+        socrata, borough=borough, bldgclass=project_class,
     )
     if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
         return bbls, {
@@ -182,7 +293,7 @@ async def peer_bbls(
         }
 
     # Tier 3: borough (drop class).
-    bbls = await _bbls_matching(db, borough=borough)
+    bbls = await _bbls_matching_socrata(socrata, borough=borough)
     if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
         return bbls, {
             "tier": "borough",
@@ -191,47 +302,88 @@ async def peer_bbls(
         }
 
     # Tier 4: citywide (no filters).
-    bbls = await _bbls_matching(db)
+    bbls = await _bbls_matching_socrata(socrata)
     return bbls, {
         "tier": "citywide",
         "sample_size": len(bbls),
     }
 
 
-# ── Per-BBL event counts ──────────────────────────────────────────
+# ── Per-BBL event counts (rewritten — lazy Socrata, chunked IN) ───
 
 
-async def _count_events_for_bbls(
-    db,
-    collection_name: str,
+# Per-dataset SoQL column name for the canonical event date.
+# Socrata column names are not consistent across the 3 datasets
+# we query for peer/own-building events — pre-V2.3 the local
+# mirror canonicalized them to ``occurred_date`` at write time;
+# without the mirror we now reference each source's actual column.
+_DATE_FIELDS = {
+    DATASET_DOB_VIOLATIONS:  "issue_date",
+    DATASET_DOB_INSPECTIONS: "inspection_date",
+    DATASET_COMPLAINTS_311:  "created_date",
+}
+
+
+async def _count_events_for_bbls_socrata(
+    socrata: SocrataClient,
+    dataset_id: str,
     bbls: List[str],
     *,
     since: datetime,
     until: Optional[datetime] = None,
 ) -> Dict[str, int]:
-    """Return {bbl: count} for every BBL in `bbls` over the
-    [since, until) window. BBLs with zero matching events are
-    included (count=0) so percentile math is correct.
+    """Return ``{bbl: count}`` for every BBL in ``bbls`` over the
+    ``[since, until)`` window. BBLs with zero matching events are
+    included (count=0) so percentile math stays correct.
 
-    V2.2.4 Path A: keyed on `bbl` (10-char canonical) not `bin`."""
+    Implementation: ``$select=bbl,count(*) $group=bbl`` per chunk.
+    BBLs that don't appear in the response have count=0 (Socrata
+    omits empty groups). Chunked across the IN-list because
+    Socrata URL length tops out around 2KB; we batch ~250 BBLs
+    per call.
+    """
     if not bbls:
         return {}
-    q: Dict[str, Any] = {
-        "bbl": {"$in": bbls},
-        "occurred_date": {"$gte": since},
-    }
+    date_col = _DATE_FIELDS.get(dataset_id, "occurred_date")
+    where_date = f"{date_col} > {_soql_quote(_iso_z(since))}"
     if until is not None:
-        q["occurred_date"]["$lt"] = until
+        where_date += f" AND {date_col} < {_soql_quote(_iso_z(until))}"
+
     counts: Dict[str, int] = {b: 0 for b in bbls}
-    cursor = db[collection_name].find(q, {"bbl": 1})
-    async for doc in cursor:
-        b = doc.get("bbl")
-        if b in counts:
-            counts[b] += 1
+
+    for chunk in _chunk(bbls, SOQL_IN_CHUNK_SIZE):
+        where = f"{_soql_in('bbl', chunk)} AND {where_date}"
+        try:
+            rows = await socrata.query_all(
+                dataset_id,
+                where=where,
+                select=["bbl", "count(*) AS n"],
+                group="bbl",
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
+        except SocrataQueryError as e:
+            logger.warning(
+                "[baselines] event count for %s failed: %r", dataset_id, e,
+            )
+            # Partial-failure tolerance: zero-fill the chunk, keep
+            # going on the next. Better to under-report one chunk
+            # than blank the whole peer summary.
+            continue
+        for r in rows:
+            b = normalize_bbl(r.get("bbl"))
+            if not b or b not in counts:
+                continue
+            # Socrata returns count() as a string. Be defensive
+            # against future format changes (e.g. typed JSON).
+            n_raw = r.get("n") or r.get("count_bbl") or r.get("count")
+            try:
+                counts[b] = int(float(n_raw))
+            except (TypeError, ValueError):
+                counts[b] = 0
     return counts
 
 
-# ── Aggregation helpers ───────────────────────────────────────────
+# ── Summary stat helpers (pure math, untouched from V2.2) ─────────
 
 
 def _percentile(sorted_values: List[float], pct: float) -> float:
@@ -242,7 +394,6 @@ def _percentile(sorted_values: List[float], pct: float) -> float:
         return float(sorted_values[0])
     if pct >= 100:
         return float(sorted_values[-1])
-    # Nearest-rank index, 1-indexed convention.
     k = max(0, min(len(sorted_values) - 1,
                    int(round((pct / 100.0) * (len(sorted_values) - 1)))))
     return float(sorted_values[k])
@@ -250,10 +401,7 @@ def _percentile(sorted_values: List[float], pct: float) -> float:
 
 def _summarize_counts(counts_by_key: Dict[str, int]) -> Dict[str, float]:
     """Reduce a ``{key: count}`` map to summary stats (n, mean,
-    median, p75, p90, p95, max). Used by both the per-peer-set
-    aggregator and the project-vs-peer comparator. Key is BBL
-    after the V2.2.4 Path A rename — function logic is key-shape-
-    agnostic so the parameter is generically named."""
+    median, p75, p90, p95, max)."""
     values = sorted(counts_by_key.values())
     n = len(values)
     if n == 0:
@@ -270,215 +418,613 @@ def _summarize_counts(counts_by_key: Dict[str, int]) -> Dict[str, float]:
     }
 
 
-# ── Per-peer-set baseline computation ─────────────────────────────
+def _percentile_rank(sorted_peer_counts: List[int], project_count: int) -> float:
+    """Project's percentile rank among sorted peer counts. Standard
+    "≤-rank" definition: fraction of peers whose count is ≤ the
+    project's count, scaled to 0-100."""
+    if not sorted_peer_counts:
+        return 0.0
+    rank = sum(1 for v in sorted_peer_counts if v <= project_count)
+    return (rank / len(sorted_peer_counts)) * 100.0
 
 
-def _year_month(dt: datetime) -> str:
-    return dt.strftime("%Y-%m")
+# ── Full peer-stats compute (first-time aggregation) ──────────────
 
 
-async def compute_baseline_for_peer_set(
-    db,
+async def compute_peer_stats_full(
+    socrata: SocrataClient,
+    project: Dict[str, Any],
     *,
-    borough: Optional[str],
-    project_class: Optional[str],
-    use_type: Optional[str],
-    year_month: str,
-    lookback_days: int = 365 * 2,
+    lookback_days: int = PEER_STATS_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Compute aggregated stats (per-BIN event counts) for one
-    peer-set key over a 2-year lookback window. Returns the doc
-    suitable for upsert into `statistical_baselines`.
+    """First-time peer-stats aggregation for a project. Returns a
+    fully-populated ``peer_stats_cache`` dict ready to persist on
+    the project doc.
+
+    Cost: 1 PLUTO query for peer-BBL discovery (with up to 3 more
+    if the fallback ladder kicks in) + 3 event-dataset queries
+    (chunked for large peer sets). Expected wall-clock for a
+    typical Manhattan peer set: 500ms-2s.
+
+    Raises ``SocrataQueryError`` only if a query exhausts retries
+    AND the caller didn't already wrap us in a timeout — most
+    failure modes are tolerated internally (returning zero counts
+    for the affected dataset) so a single bad shard doesn't blank
+    the whole cache.
     """
     cur_now = now or datetime.now(timezone.utc)
-    since = cur_now - timedelta(days=lookback_days)
+    window_start = cur_now - timedelta(days=lookback_days)
 
-    bbls = await _bbls_matching(
-        db,
-        borough=borough,
-        bldgclass=project_class,
-        landuse=use_type,
+    bbls, peer_meta = await peer_bbls(socrata, project)
+    project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
+
+    # Exclude the project's own BBL from the peer count so the
+    # comparison is "us vs. peers", not "us vs. (peers + us)".
+    peer_bbl_list = [b for b in bbls if b and b != project_bbl]
+
+    # Pull the three event counts in parallel — independent
+    # Socrata calls, no need to serialize.
+    v_task = _count_events_for_bbls_socrata(
+        socrata, DATASET_DOB_VIOLATIONS, peer_bbl_list,
+        since=window_start, until=cur_now,
+    )
+    i_task = _count_events_for_bbls_socrata(
+        socrata, DATASET_DOB_INSPECTIONS, peer_bbl_list,
+        since=window_start, until=cur_now,
+    )
+    c_task = _count_events_for_bbls_socrata(
+        socrata, DATASET_COMPLAINTS_311, peer_bbl_list,
+        since=window_start, until=cur_now,
+    )
+    v_counts, i_counts, c_counts = await asyncio.gather(
+        v_task, i_task, c_task,
     )
 
-    violations = await _count_events_for_bbls(
-        db, NYC_VIOLATIONS_COLLECTION, bbls, since=since,
+    # Project's own counts in the same window (1 query per dataset,
+    # filtered by BBL = own).
+    proj_v, proj_i, proj_c = 0, 0, 0
+    if project_bbl:
+        own_counts = await asyncio.gather(
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_VIOLATIONS, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_INSPECTIONS, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_COMPLAINTS_311, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+        )
+        proj_v = own_counts[0].get(project_bbl, 0)
+        proj_i = own_counts[1].get(project_bbl, 0)
+        proj_c = own_counts[2].get(project_bbl, 0)
+
+    return _assemble_cache(
+        peer_meta=peer_meta,
+        project_bbl=project_bbl,
+        peer_bbl_list=peer_bbl_list,
+        v_counts=v_counts, i_counts=i_counts, c_counts=c_counts,
+        project_counts=(proj_v, proj_i, proj_c),
+        window_start=window_start,
+        window_end=cur_now,
+        computed_at=cur_now,
+        last_refreshed_at=cur_now,
     )
-    inspections = await _count_events_for_bbls(
-        db, NYC_INSPECTIONS_COLLECTION, bbls, since=since,
-    )
-    complaints = await _count_events_for_bbls(
-        db, NYC_COMPLAINTS_311_COLLECTION, bbls, since=since,
-    )
+
+
+def _assemble_cache(
+    *,
+    peer_meta: Dict[str, Any],
+    project_bbl: Optional[str],
+    peer_bbl_list: List[str],
+    v_counts: Dict[str, int],
+    i_counts: Dict[str, int],
+    c_counts: Dict[str, int],
+    project_counts: Tuple[int, int, int],
+    window_start: datetime,
+    window_end: datetime,
+    computed_at: datetime,
+    last_refreshed_at: datetime,
+) -> Dict[str, Any]:
+    """Build the ``peer_stats_cache`` dict from raw counts. Shared
+    by full-compute and incremental-refresh so the persisted shape
+    stays identical."""
+    proj_v, proj_i, proj_c = project_counts
+
+    def _one(counts: Dict[str, int], project_count: int) -> Dict[str, Any]:
+        summary = _summarize_counts(counts)
+        sorted_vals = sorted(counts.values())
+        return {
+            **summary,
+            "project_count":    int(project_count),
+            "percentile_rank":  _percentile_rank(sorted_vals, project_count),
+        }
+
+    tier_to_fallback_level = {
+        "borough_class_use": 1,
+        "borough_class":     2,
+        "borough":           3,
+        "citywide":          4,
+    }
 
     return {
-        "borough":       borough,
-        "project_class": project_class,
-        "use_type":      use_type,
-        "year_month":    year_month,
-        "computed_at":   cur_now,
-        "peer_sample_size": len(bbls),
-        "violations":  _summarize_counts(violations),
-        "inspections": _summarize_counts(inspections),
-        "complaints":  _summarize_counts(complaints),
+        "computed_at":       computed_at,
+        "last_refreshed_at": last_refreshed_at,
+        "peer_criteria": {
+            "borough":         peer_meta.get("borough"),
+            "project_class":   peer_meta.get("project_class"),
+            "use_type":        peer_meta.get("use_type"),
+            "bbl":             project_bbl,
+            "sample_size":     len(peer_bbl_list),
+            "fallback_level":  tier_to_fallback_level.get(
+                peer_meta.get("tier"), 4,
+            ),
+            "tier":            peer_meta.get("tier"),
+            # Persist the BBL list so incremental refresh can reuse
+            # it without re-running the PLUTO peer-discovery query.
+            "peer_bbl_list":   peer_bbl_list,
+            # Persist per-BBL counts so incremental refresh can
+            # add-then-evict events in the sliding window without
+            # re-fetching the full lookback.
+            "_peer_counts_by_dataset": {
+                DATASET_DOB_VIOLATIONS:  dict(v_counts),
+                DATASET_DOB_INSPECTIONS: dict(i_counts),
+                DATASET_COMPLAINTS_311:  dict(c_counts),
+            },
+        },
+        "events_window_start": window_start,
+        "events_window_end":   window_end,
+        "violations":          _one(v_counts, proj_v),
+        "inspections":         _one(i_counts, proj_i),
+        "complaints":          _one(c_counts, proj_c),
+        "status":              "ready",
+        "error_message":       None,
     }
 
 
-async def upsert_baseline(db, baseline: Dict[str, Any]) -> bool:
-    """Upsert one baseline doc into statistical_baselines keyed
-    on the peer-set tuple + year_month. Idempotent re-runs."""
-    if not baseline:
-        return False
-    key = {
-        "borough":       baseline.get("borough"),
-        "project_class": baseline.get("project_class"),
-        "use_type":      baseline.get("use_type"),
-        "year_month":    baseline.get("year_month"),
-    }
-    res = await db[STATISTICAL_BASELINES_COLLECTION].update_one(
-        key,
-        {"$set": baseline},
-        upsert=True,
-    )
-    return bool(res.upserted_id)
+# ── Incremental refresh (14-day delta) ────────────────────────────
 
 
-# ── Nightly aggregator ────────────────────────────────────────────
-
-
-async def run_baseline_aggregator(
-    db,
+async def refresh_peer_stats_incremental(
+    socrata: SocrataClient,
+    project: Dict[str, Any],
     *,
+    lookback_days: int = PEER_STATS_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
-    max_peer_sets: Optional[int] = None,
-) -> Dict[str, int]:
-    """Walk every distinct (borough, bldgclass, landuse) tuple
-    in PLUTO and compute a baseline for the current year_month.
-    Soft-fails per peer set so one bad combination doesn't kill
-    the run.
+) -> Dict[str, Any]:
+    """Incrementally refresh a project's ``peer_stats_cache``.
 
-    Returns a summary (peer_sets_seen, baselines_written,
-    errors).
+    Strategy:
+      1. Reuse the cached peer BBL list — peer set is stable
+         enough over 14 days that re-running PLUTO would be wasted
+         work. (Annual PLUTO releases + this refresh's call site
+         being driven by a 14-day stagger means the worst-case
+         drift is small.)
+      2. Pull new events in ``[last_refreshed_at, now]`` for each
+         dataset matching the cached peer BBLs.
+      3. Add those counts to the cached per-BBL counts.
+      4. Drop events older than (now - lookback_days). Since the
+         cache only persists counts, not individual events, we
+         can't precisely evict old events — instead we re-pull
+         counts for the FULL lookback for any BBL whose count
+         changed. (Cheap because we're only re-querying the small
+         set of BBLs that gained new events.) See
+         ``_evict_aged_out_for_changed_bbls`` for the math.
+      5. Recompute summary stats from updated counts.
+      6. Bump ``last_refreshed_at``; ``computed_at`` is preserved
+         so the FE can show "first computed N days ago".
+
+    If the cached peer-BBL list is missing or empty (cache was
+    written by a non-V2.3 code path), this function falls back to
+    a full recompute via ``compute_peer_stats_full``.
     """
     cur_now = now or datetime.now(timezone.utc)
-    ym = _year_month(cur_now)
+    cache = project.get("peer_stats_cache") or {}
+    criteria = cache.get("peer_criteria") or {}
+    cached_bbls = criteria.get("peer_bbl_list") or []
+    cached_counts = criteria.get("_peer_counts_by_dataset") or {}
+    last_refreshed_at = cache.get("last_refreshed_at")
 
-    # Distinct peer-set tuples from PLUTO. We don't use
-    # aggregate() so the test stub stays simple — distinct() is
-    # supported by motor and works fine.
-    cursor = db[NYC_PLUTO_COLLECTION].find(
-        {}, {"borough": 1, "bldgclass": 1, "landuse": 1},
-    )
-    seen_keys = set()
-    summary = {
-        "peer_sets_seen": 0,
-        "baselines_written": 0,
-        "errors": 0,
-    }
-    async for doc in cursor:
-        key = (
-            doc.get("borough"),
-            doc.get("bldgclass"),
-            doc.get("landuse"),
+    if not cached_bbls or not last_refreshed_at or not cached_counts:
+        # Cache doesn't carry the data we need to do a delta
+        # refresh — fall back to a full recompute.
+        return await compute_peer_stats_full(
+            socrata, project, lookback_days=lookback_days, now=cur_now,
         )
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        summary["peer_sets_seen"] += 1
-        try:
-            baseline = await compute_baseline_for_peer_set(
-                db,
-                borough=key[0],
-                project_class=key[1],
-                use_type=key[2],
-                year_month=ym,
-                now=cur_now,
+
+    window_start = cur_now - timedelta(days=lookback_days)
+    project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
+
+    async def _delta_for(dataset_id: str) -> Dict[str, int]:
+        """Add new events since last refresh, then re-pull full
+        counts for any BBL whose count changed (so events that
+        aged out of the lookback window get evicted)."""
+        current = dict(cached_counts.get(dataset_id, {}))
+
+        # Step A: pull new events since last_refreshed_at.
+        new_counts = await _count_events_for_bbls_socrata(
+            socrata, dataset_id, cached_bbls,
+            since=last_refreshed_at, until=cur_now,
+        )
+        changed_bbls = [b for b, n in new_counts.items() if n > 0]
+
+        # Step B: for BBLs that gained new events, re-pull their
+        # full lookback count so we naturally drop events that
+        # aged out the other end of the window.
+        if changed_bbls:
+            refreshed = await _count_events_for_bbls_socrata(
+                socrata, dataset_id, changed_bbls,
+                since=window_start, until=cur_now,
             )
-            if await upsert_baseline(db, baseline):
-                summary["baselines_written"] += 1
-        except Exception as e:
-            summary["errors"] += 1
-            logger.warning(
-                f"[baselines] peer set {key} failed: {e!r}",
-            )
-        if max_peer_sets is not None and \
-                summary["peer_sets_seen"] >= max_peer_sets:
-            break
-    logger.info(f"[baselines] aggregator complete: {summary}")
-    return summary
+            for b in changed_bbls:
+                # refreshed already reflects [window_start, now] so
+                # it replaces (not adds-to) the stored count.
+                current[b] = refreshed.get(b, 0)
+
+        # Ensure every cached BBL has a key (zero-fill is required
+        # for correct percentile math).
+        for b in cached_bbls:
+            current.setdefault(b, 0)
+        return current
+
+    v_counts, i_counts, c_counts = await asyncio.gather(
+        _delta_for(DATASET_DOB_VIOLATIONS),
+        _delta_for(DATASET_DOB_INSPECTIONS),
+        _delta_for(DATASET_COMPLAINTS_311),
+    )
+
+    # Project's own counts — re-pull the full lookback since the
+    # window slid.
+    proj_v, proj_i, proj_c = 0, 0, 0
+    if project_bbl:
+        own = await asyncio.gather(
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_VIOLATIONS, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_INSPECTIONS, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+            _count_events_for_bbls_socrata(
+                socrata, DATASET_COMPLAINTS_311, [project_bbl],
+                since=window_start, until=cur_now,
+            ),
+        )
+        proj_v = own[0].get(project_bbl, 0)
+        proj_i = own[1].get(project_bbl, 0)
+        proj_c = own[2].get(project_bbl, 0)
+
+    # Reuse the existing peer_meta + criteria.tier + sample_size
+    # — the peer set didn't change, only the events did.
+    peer_meta = {
+        "tier":           criteria.get("tier"),
+        "borough":        criteria.get("borough"),
+        "project_class":  criteria.get("project_class"),
+        "use_type":       criteria.get("use_type"),
+        "sample_size":    criteria.get("sample_size") or len(cached_bbls),
+    }
+
+    return _assemble_cache(
+        peer_meta=peer_meta,
+        project_bbl=project_bbl,
+        peer_bbl_list=cached_bbls,
+        v_counts=v_counts, i_counts=i_counts, c_counts=c_counts,
+        project_counts=(proj_v, proj_i, proj_c),
+        window_start=window_start,
+        window_end=cur_now,
+        computed_at=cache.get("computed_at") or cur_now,
+        last_refreshed_at=cur_now,
+    )
 
 
-# ── Compare-to-peer ───────────────────────────────────────────────
+# ── Own-building event counter (used by score.py) ─────────────────
+
+
+async def count_own_building_events(
+    socrata: SocrataClient,
+    *,
+    bin_: Optional[str],
+    now: Optional[datetime] = None,
+) -> Dict[str, int]:
+    """Project-specific own-building counts. Replaces the three
+    direct ``db[NYC_*_COLLECTION].find()`` calls score.py made in
+    V2.2.
+
+    Returns the same shape ``score.gather_score_inputs`` builds
+    today:
+
+      {
+        "violations_30d":         int,
+        "violations_90d":         int,
+        "inspections_failed_60d": int,
+        "open_complaints_30d":    int,
+      }
+
+    Empty ``bin_`` → all zeros. Socrata query failures soft-fail
+    per-dataset (zero for the affected key, others still
+    populated). This preserves the V2.2 behavior of degrading
+    gracefully on partial-data outages.
+    """
+    out = {
+        "violations_30d":         0,
+        "violations_90d":         0,
+        "inspections_failed_60d": 0,
+        "open_complaints_30d":    0,
+    }
+    if not bin_:
+        return out
+    cur_now = now or datetime.now(timezone.utc)
+    c30 = cur_now - timedelta(days=30)
+    c60 = cur_now - timedelta(days=60)
+    c90 = cur_now - timedelta(days=90)
+
+    bin_q = _soql_quote(str(bin_))
+
+    # Violations — last 90 days, then split into 30d / 90d.
+    try:
+        rows = await socrata.query_all(
+            DATASET_DOB_VIOLATIONS,
+            where=(
+                f"bin = {bin_q} AND issue_date > "
+                f"{_soql_quote(_iso_z(c90))}"
+            ),
+            select=["issue_date"],
+            page_size=PEER_STATS_PAGE_SIZE,
+        )
+        for r in rows:
+            occ_raw = r.get("issue_date")
+            occ = _parse_socrata_dt(occ_raw)
+            if occ is None:
+                continue
+            if occ >= c30:
+                out["violations_30d"] += 1
+            if occ >= c90:
+                out["violations_90d"] += 1
+    except SocrataQueryError as e:
+        logger.warning("[baselines] own violations failed: %r", e)
+
+    # Failed inspections — last 60 days. Socrata column is `result`
+    # on p937-wjvj; we substring-match "fail" or "violation" to
+    # preserve V2.2 semantics.
+    try:
+        rows = await socrata.query_all(
+            DATASET_DOB_INSPECTIONS,
+            where=(
+                f"bin = {bin_q} AND inspection_date > "
+                f"{_soql_quote(_iso_z(c60))}"
+            ),
+            select=["result"],
+            page_size=PEER_STATS_PAGE_SIZE,
+        )
+        for r in rows:
+            res = (r.get("result") or "").lower()
+            if "fail" in res or "violation" in res:
+                out["inspections_failed_60d"] += 1
+    except SocrataQueryError as e:
+        logger.warning("[baselines] own inspections failed: %r", e)
+
+    # Open 311 — last 30 days, status != "closed".
+    try:
+        rows = await socrata.query_all(
+            DATASET_COMPLAINTS_311,
+            where=(
+                f"bin = {bin_q} AND created_date > "
+                f"{_soql_quote(_iso_z(c30))}"
+            ),
+            select=["status"],
+            page_size=PEER_STATS_PAGE_SIZE,
+        )
+        for r in rows:
+            status = (r.get("status") or "").lower()
+            if status != "closed":
+                out["open_complaints_30d"] += 1
+    except SocrataQueryError as e:
+        logger.warning("[baselines] own 311 failed: %r", e)
+
+    return out
+
+
+def _parse_socrata_dt(value: Any) -> Optional[datetime]:
+    """Parse a Socrata floating-timestamp value into a tz-aware
+    UTC datetime. Handles both string ISO-8601 (the default JSON
+    serialization) and pre-parsed datetime objects (in case the
+    httpx layer ever auto-converts)."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    try:
+        # Socrata floating timestamps look like "2024-05-08T00:00:00.000"
+        # (no offset). Treat as UTC for our windowing purposes.
+        s = value.rstrip("Z")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+# ── Compare-to-peer (cache-aware) ─────────────────────────────────
+
+
+def _is_cache_stale(
+    cache: Dict[str, Any],
+    *,
+    now: datetime,
+    fresh_days: int = PEER_STATS_FRESH_DAYS,
+) -> bool:
+    """True if ``last_refreshed_at`` is more than ``fresh_days``
+    in the past. Cache without a ``last_refreshed_at`` is treated
+    as stale (defensive)."""
+    ts = cache.get("last_refreshed_at")
+    if not isinstance(ts, datetime):
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts) > timedelta(days=fresh_days)
+
+
+def _zero_peer_marker(reason: str) -> Dict[str, Any]:
+    """Return shape compatible with V2.2 ``compare_project_to_peers``
+    that produces 0 for the peer subscore. ``reason`` is surfaced
+    to logs + (eventually) the admin diagnostics endpoint."""
+    zero = {
+        "project_count":     0,
+        "peer_median":       0.0,
+        "peer_p75":          0.0,
+        "peer_p90":          0.0,
+        "percentile_rank":   0.0,
+        "peer_sample_size":  0,
+    }
+    return {
+        "peer_set":      {"sample_size": 0, "reason": reason},
+        "violations":    dict(zero),
+        "inspections":   dict(zero),
+        "complaints":    dict(zero),
+    }
+
+
+def _v22_shape_from_cache(cache: Dict[str, Any]) -> Dict[str, Any]:
+    """Project the V2.3 cache shape onto the V2.2
+    ``compare_project_to_peers`` return shape so score.py reads
+    the same keys. The internal cache carries extras (per-BBL
+    counts, peer_bbl_list, etc.) that the score consumer doesn't
+    need; we strip them here.
+
+    Tier-conditional ``peer_set`` emission for byte-for-byte
+    parity with V2.2: ``peer_bbls()`` historically omitted keys
+    that didn't apply at the resolved tier (tier-3 emits no
+    ``project_class`` / ``use_type``; tier-4 emits only ``tier``
+    + ``sample_size``). Mirroring that here so existing
+    consumers — including any FE drawer that walks the dict —
+    don't see phantom ``None``-valued fields they wouldn't have
+    seen pre-V2.3.
+
+    The integer ``fallback_level`` (1-4, populated by
+    ``_assemble_cache``) drives the conditional. The output
+    ``peer_set["tier"]`` is the V2.2 string (``"borough_class_use"``
+    etc.) for value parity.
+    """
+    criteria = cache.get("peer_criteria") or {}
+    level = criteria.get("fallback_level") or 4
+
+    peer_set: Dict[str, Any] = {
+        "tier":        criteria.get("tier"),
+        "sample_size": criteria.get("sample_size") or 0,
+    }
+    if level in (1, 2, 3):  # tiers 1-3 are borough-scoped
+        peer_set["borough"] = criteria.get("borough")
+    if level in (1, 2):  # tiers 1-2 carry project_class
+        peer_set["project_class"] = criteria.get("project_class")
+    if level == 1:  # only tier 1 carries use_type
+        peer_set["use_type"] = criteria.get("use_type")
+
+    out: Dict[str, Any] = {"peer_set": peer_set}
+    for key in ("violations", "inspections", "complaints"):
+        dataset_summary = cache.get(key) or {}
+        out[key] = {
+            "project_count":    int(dataset_summary.get("project_count") or 0),
+            "peer_median":      float(dataset_summary.get("median") or 0.0),
+            "peer_p75":         float(dataset_summary.get("p75") or 0.0),
+            "peer_p90":         float(dataset_summary.get("p90") or 0.0),
+            "percentile_rank":  float(dataset_summary.get("percentile_rank") or 0.0),
+            "peer_sample_size": int(dataset_summary.get("n") or 0),
+        }
+    return out
+
+
+async def _persist_cache(db, project: Dict[str, Any], cache: Dict[str, Any]) -> None:
+    """Write ``peer_stats_cache`` back to ``db.projects``. Tolerant
+    of missing _id (defensive — a project without _id won't show up
+    in the projects collection anyway). Errors are logged but
+    don't fail the caller — the cache will be recomputed next
+    time."""
+    project_id = project.get("_id") or project.get("id")
+    if not project_id:
+        return
+    try:
+        await db.projects.update_one(
+            {"_id": project_id},
+            {"$set": {"peer_stats_cache": cache}},
+        )
+    except Exception as e:
+        logger.warning(
+            "[baselines] persist peer_stats_cache failed for %s: %r",
+            project_id, e,
+        )
 
 
 async def compare_project_to_peers(
     db,
     project: Dict[str, Any],
     *,
-    lookback_days: int = 365 * 2,
+    socrata: Optional[SocrataClient] = None,
+    lookback_days: int = PEER_STATS_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """For a given project, compute its peer-set, count the
-    project's own events over the lookback window, and report
-    where the project sits relative to peer median / percentiles.
+    """V2.3 cache-aware peer comparison.
 
-    Returns:
-      {
-        "peer_set":     {tier, borough, project_class, use_type,
-                         sample_size},
-        "violations":  {project_count, peer_median, peer_p75,
-                        percentile_rank},
-        "inspections": same shape,
-        "complaints":  same shape,
-      }
+    Decision tree:
+      1. Cache present + ``status == "ready"`` + not stale →
+         return cached values immediately. Hot path: zero Socrata
+         calls.
+      2. Cache present + stale → return cached values immediately
+         (don't block the user on a refresh). Commit 5 will fire
+         a background refresh here; for now the next score
+         recompute will trigger the refresh path explicitly.
+      3. Cache absent → synchronous on-demand compute, wrapped
+         in ``asyncio.wait_for(..., 5s)``. Persist the result to
+         ``db.projects``. On timeout or Socrata failure, return
+         a zero-peer marker with a ``reason``.
+
+    Return shape is the same as V2.2 ``compare_project_to_peers``
+    so ``score.py`` consumes it unchanged.
     """
     cur_now = now or datetime.now(timezone.utc)
-    since = cur_now - timedelta(days=lookback_days)
-    # V2.2.4 Path A: BBL-keyed throughout. The project's own BBL
-    # comes from `bbl` / `nyc_bbl` (existing canonical fields on
-    # the project doc) — same fallback chain used elsewhere in
-    # the codebase.
-    bbls, peer_meta = await peer_bbls(db, project)
-    project_bbl = project.get("bbl") or project.get("nyc_bbl")
+    cache = project.get("peer_stats_cache")
 
-    out: Dict[str, Any] = {"peer_set": peer_meta}
-    for label, coll in (
-        ("violations",  NYC_VIOLATIONS_COLLECTION),
-        ("inspections", NYC_INSPECTIONS_COLLECTION),
-        ("complaints",  NYC_COMPLAINTS_311_COLLECTION),
-    ):
-        # Peer counts (excluding the project's own BBL so the
-        # comparison is "us vs. peers", not "us vs. (peers + us)").
-        peer_bbl_list = [b for b in bbls if b != project_bbl]
-        peer_counts = await _count_events_for_bbls(
-            db, coll, peer_bbl_list, since=since,
-        )
-        peer_summary = _summarize_counts(peer_counts)
-        # Project's own count.
-        proj_count = 0
-        if project_bbl:
-            cursor = db[coll].find({
-                "bbl": project_bbl,
-                "occurred_date": {"$gte": since},
-            }, {"bbl": 1})
-            async for _doc in cursor:
-                proj_count += 1
-        # Percentile rank of project among peers.
-        sorted_peers = sorted(peer_counts.values())
-        rank = 0
-        for v in sorted_peers:
-            if v <= proj_count:
-                rank += 1
-        percentile = (
-            (rank / len(sorted_peers)) * 100
-            if sorted_peers else 0.0
-        )
-        out[label] = {
-            "project_count":    proj_count,
-            "peer_median":      peer_summary["median"],
-            "peer_p75":         peer_summary["p75"],
-            "peer_p90":         peer_summary["p90"],
-            "percentile_rank":  percentile,
-            "peer_sample_size": int(peer_summary["n"]),
-        }
-    return out
+    if cache and cache.get("status") == "ready":
+        # Cache hit — fresh or stale, we still serve from it.
+        return _v22_shape_from_cache(cache)
+
+    # Cache miss (or non-ready cache) — do the synchronous compute.
+    inline_http: Optional[ServerHttpClient] = None
+    try:
+        if socrata is None:
+            inline_http = ServerHttpClient(timeout=10.0)
+            await inline_http.__aenter__()
+            socrata = SocrataClient(inline_http)
+
+        try:
+            new_cache = await asyncio.wait_for(
+                compute_peer_stats_full(
+                    socrata, project,
+                    lookback_days=lookback_days, now=cur_now,
+                ),
+                timeout=PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[baselines] peer_stats compute timed out for %s",
+                project.get("_id"),
+            )
+            return _zero_peer_marker("timeout")
+        except SocrataQueryError as e:
+            logger.warning(
+                "[baselines] peer_stats compute failed for %s: %r",
+                project.get("_id"), e,
+            )
+            return _zero_peer_marker("socrata_error")
+
+        # Persist back to db.projects so next call hits the cache.
+        await _persist_cache(db, project, new_cache)
+        return _v22_shape_from_cache(new_cache)
+    finally:
+        if inline_http is not None:
+            await inline_http.__aexit__(None, None, None)

@@ -1,4 +1,4 @@
-"""Phase V2.3 Commit 1 — tests for the migrated utility functions.
+"""Phase V2.3 — tests for the surviving utility functions.
 
 These tests were originally in ``test_v2_2_ingestion.py`` (the
 file deleted by Commit 1). Migrated verbatim except for:
@@ -8,12 +8,11 @@ file deleted by Commit 1). Migrated verbatim except for:
   • Function name: ``normalize_bbl`` instead of
     ``_normalize_bbl_for_storage`` (renamed in the migration).
 
-The constants test (``test_collection_name_constants_present``)
-is V2.3-new — it pins the transitional collection-name constants
-that V2.3 Commit 1 moved from ``schema.py`` to ``utils.py``.
-That test class will be deleted alongside the constants in
-Commit 3 when the lazy-query rewrite removes the last need for
-those names.
+V2.3 Commit 3: the transitional ``TestTransitionalCollectionConstants``
+class was removed alongside the 9 NYC_* / STATISTICAL_BASELINES
+/ INGESTION_STATE constants it pinned. Those constants no
+longer exist on utils.py — the lazy-query rewrite in Commit 3
+removed every consumer of them.
 """
 
 from __future__ import annotations
@@ -155,39 +154,33 @@ class TestNormalizeBbl(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Transitional collection-name constants
+# V2.3 Commit 3: removed surfaces
 # ──────────────────────────────────────────────────────────────────
 
 
-class TestTransitionalCollectionConstants(unittest.TestCase):
-    """V2.3 Commit 1: the nyc_* collection-name constants moved
-    from schema.py to utils.py to keep the four consumer files
-    (baselines.py, triggers.py, score.py, calibration.py)
-    importable until Commit 3 rewrites them to lazy queries.
-    Pin the names so a follow-up commit can't silently rename
-    them mid-stream."""
+class TestRemovedTransitionalConstants(unittest.TestCase):
+    """V2.3 Commit 3 deleted the 9 NYC_* /
+    STATISTICAL_BASELINES / INGESTION_STATE collection-name
+    constants from utils.py once all consumers were rewritten
+    to lazy SocrataClient queries. Pin the removal so a stray
+    re-introduction surfaces immediately."""
 
-    def test_all_nine_constants_present_and_match_legacy_values(self):
-        # Same string literals as pre-V2.3 schema.py.
-        self.assertEqual(se_utils.NYC_VIOLATIONS_COLLECTION, "nyc_violations")
-        self.assertEqual(se_utils.NYC_INSPECTIONS_COLLECTION, "nyc_inspections")
-        self.assertEqual(se_utils.NYC_PERMITS_COLLECTION, "nyc_permits")
-        self.assertEqual(
-            se_utils.NYC_COMPLAINTS_311_COLLECTION, "nyc_complaints_311",
-        )
-        self.assertEqual(
-            se_utils.NYC_ECB_VIOLATIONS_COLLECTION, "nyc_ecb_violations",
-        )
-        self.assertEqual(
-            se_utils.NYC_HPD_VIOLATIONS_COLLECTION, "nyc_hpd_violations",
-        )
-        self.assertEqual(se_utils.NYC_PLUTO_COLLECTION, "nyc_pluto")
-        self.assertEqual(
-            se_utils.STATISTICAL_BASELINES_COLLECTION, "statistical_baselines",
-        )
-        self.assertEqual(
-            se_utils.INGESTION_STATE_COLLECTION, "ingestion_state",
-        )
+    def test_constants_removed(self):
+        for name in (
+            "NYC_VIOLATIONS_COLLECTION",
+            "NYC_INSPECTIONS_COLLECTION",
+            "NYC_PERMITS_COLLECTION",
+            "NYC_COMPLAINTS_311_COLLECTION",
+            "NYC_ECB_VIOLATIONS_COLLECTION",
+            "NYC_HPD_VIOLATIONS_COLLECTION",
+            "NYC_PLUTO_COLLECTION",
+            "STATISTICAL_BASELINES_COLLECTION",
+            "INGESTION_STATE_COLLECTION",
+        ):
+            self.assertFalse(
+                hasattr(se_utils, name),
+                f"utils.py still exposes {name}; should have been removed",
+            )
 
 
 if __name__ == "__main__":

@@ -6,27 +6,34 @@ statistical_baselines pre-aggregation cache. Per-project peer
 stats are computed once at creation, cached on the project doc,
 and incrementally refreshed every 14 days.
 
-This is the post-Commit-2 surface. baselines.py and triggers.py
-are still V2.2-shaped internally (they query local mirror
-collections that no longer have data); Commit 3 rewrites them
-to use socrata_client.SocrataClient.
+This is the post-Commit-3 surface. All four consumer modules
+(baselines / triggers / score / calibration) now query Socrata
+lazily via the shared ``SocrataClient`` instead of reading from
+the V2.2 local mirror. ``peer_stats_cache`` lives on each project
+document with a 14-day staleness window.
 
   • schema.py        — model version + score bands + predicted_events /
                        prediction_outcomes index specs (only).
-                       The nyc_* mirror constants moved to utils.py
-                       transitionally; deleted entirely in Commit 3.
-  • utils.py         — BBL synthesis + normalization. Holds the
-                       transitional collection-name constants.
-  • socrata_client.py — V2.3 Commit 2: async Socrata query wrapper
-                       over ServerHttpClient with retry/backoff +
-                       SoQL construction + pagination. Built but
-                       NOT yet wired into production code — Commit
-                       3 integrates it.
-  • baselines.py     — peer-comparison (V2.2-shaped, rewritten Commit 3).
-  • triggers.py      — 8 trigger detectors (V2.2-shaped,
-                       rewritten Commit 3).
-  • score.py         — risk-score recomputation. Untouched in Commit 1+2.
-  • calibration.py   — outcome attribution. Untouched in Commit 1+2.
+  • utils.py         — BBL synthesis + normalization (only).
+                       Transitional NYC_* collection-name constants
+                       deleted in Commit 3.
+  • socrata_client.py — async Socrata query wrapper over
+                       ServerHttpClient (retry/backoff + SoQL
+                       construction + pagination + dataset-id
+                       constants).
+  • baselines.py     — V2.3: lazy peer-comparison + 14-day cache
+                       lifecycle. compute_peer_stats_full,
+                       refresh_peer_stats_incremental,
+                       count_own_building_events, and the
+                       cache-aware compare_project_to_peers.
+  • triggers.py      — V2.3: 8 trigger detectors. gather_trigger_inputs
+                       now takes a SocrataClient.
+  • score.py         — V2.3: recompute_and_persist takes an
+                       optional SocrataClient (defaults to inline
+                       construction so server.py doesn't change).
+  • calibration.py   — V2.3: outcome attribution via lazy Socrata
+                       queries keyed on the new TRIGGER_EVIDENCE_DATASET
+                       mapping.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -73,10 +80,13 @@ from lib.statistical_engine.triggers import (  # noqa: F401
 )
 from lib.statistical_engine.baselines import (  # noqa: F401
     peer_bbls,
-    compute_baseline_for_peer_set,
-    upsert_baseline,
-    run_baseline_aggregator,
     compare_project_to_peers,
+    compute_peer_stats_full,
+    refresh_peer_stats_incremental,
+    count_own_building_events,
+    PEER_STATS_FRESH_DAYS,
+    PEER_STATS_LOOKBACK_DAYS,
+    PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
 )
 from lib.statistical_engine.utils import (  # noqa: F401
     _construct_bbl_from_components,

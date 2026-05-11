@@ -1,4 +1,4 @@
-"""Phase V2.3 Commit 1 — Statistical-engine utility module.
+"""Phase V2.3 — Statistical-engine utility module.
 
 Holds the small set of helpers that survived the V2.2 local-mirror
 removal:
@@ -18,15 +18,12 @@ removal:
     "for_storage" qualifier no longer applies — V2.3 normalizes
     at query time, not write time.
 
-Plus, **transitionally**, the collection-name constants for the
-nyc_* mirror tables. V2.3 Commit 1 removed these from
-``schema.py`` per spec, but the four consumer files (baselines.py,
-triggers.py, score.py, calibration.py) still reference them by
-name. Commit 3 rewrites those consumers to lazy Socrata queries,
-at which point these constants are deleted entirely. Until then
-they live here as orphans — the Mongo collections behind them
-are dropped post-deploy by the operator and queries return empty,
-which is the spec-acknowledged failure mode pending Commit 3.
+V2.3 Commit 3: the transitional collection-name constants
+(NYC_VIOLATIONS_COLLECTION etc.) that lived here as orphans
+between Commits 1-2 have been deleted. The four consumer modules
+(baselines.py, triggers.py, score.py, calibration.py) were
+rewritten in Commit 3 to use lazy SocrataClient queries and no
+longer need any local-mirror collection names.
 """
 
 from __future__ import annotations
@@ -105,25 +102,8 @@ def normalize_bbl(bbl: Optional[str]) -> Optional[str]:
     return s
 
 
-# ── Transitional: nyc_* collection-name constants ────────────────
-#
-# Pre-V2.3 these lived in lib/statistical_engine/schema.py. V2.3
-# Commit 1's spec removed them from schema.py because the local
-# mirror is being deprecated. But the consumers (baselines.py,
-# triggers.py, score.py, calibration.py) still reference these
-# names — they're untouched by Commit 1 per spec, and rewritten
-# to lazy Socrata queries by Commit 3.
-#
-# Holding the names here keeps the consumer imports valid. After
-# Commit 3 lands, these constants get deleted entirely (the
-# rewritten consumers don't reference local-mirror names at all).
-
-NYC_VIOLATIONS_COLLECTION       = "nyc_violations"
-NYC_INSPECTIONS_COLLECTION      = "nyc_inspections"
-NYC_PERMITS_COLLECTION          = "nyc_permits"
-NYC_COMPLAINTS_311_COLLECTION   = "nyc_complaints_311"
-NYC_ECB_VIOLATIONS_COLLECTION   = "nyc_ecb_violations"
-NYC_HPD_VIOLATIONS_COLLECTION   = "nyc_hpd_violations"
-NYC_PLUTO_COLLECTION            = "nyc_pluto"
-STATISTICAL_BASELINES_COLLECTION = "statistical_baselines"
-INGESTION_STATE_COLLECTION       = "ingestion_state"
+# V2.3 Commit 3 deleted the 9 transitional NYC_* /
+# STATISTICAL_BASELINES / INGESTION_STATE collection-name
+# constants. The four consumer modules now query Socrata
+# directly via lib.statistical_engine.socrata_client, so the
+# constants have no remaining callers.
