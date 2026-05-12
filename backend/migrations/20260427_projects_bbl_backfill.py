@@ -51,8 +51,9 @@ _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 sys.path.insert(0, str(_BACKEND))
 
-import httpx  # noqa: E402
 from motor.motor_asyncio import AsyncIOMotorClient  # noqa: E402
+
+from lib.server_http import ServerHttpClient  # noqa: E402
 
 
 PLUTO_URL = "https://data.cityofnewyork.us/resource/64uk-42ks.json"
@@ -127,7 +128,7 @@ def disambiguate_pluto_rows(
 
 
 async def query_pluto(
-    client: httpx.AsyncClient,
+    client: ServerHttpClient,
     parsed: Dict[str, str],
 ) -> List[Dict[str, Any]]:
     """Run the PLUTO query for the parsed address. Returns the raw
@@ -202,7 +203,7 @@ async def main(dry_run: bool) -> int:
 
     now = datetime.now(timezone.utc)
 
-    async with httpx.AsyncClient(timeout=15.0) as http:
+    async with ServerHttpClient(timeout=15.0) as http:
         for p in projects:
             pid = str(p["_id"])
             name = p.get("name") or pid
