@@ -18,6 +18,7 @@ public functions (`fetch_latest_snapshot`, `evaluate_freshness`,
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import unittest
@@ -57,13 +58,16 @@ class _StubResponse:
 
 
 class _StubClient:
-    """Mimics enough of httpx.Client for a single .get(...) call."""
+    """Async stub mimicking enough of httpx.AsyncClient / ServerHttpClient
+    for a single ``await client.get(...)`` call. ``fetch_latest_snapshot``
+    awaits the stub's ``.get`` exactly like it awaits the real
+    ServerHttpClient in production."""
 
     def __init__(self, response):
         self.response = response
         self.calls = []
 
-    def get(self, url, headers=None, auth=None, timeout=None):
+    async def get(self, url, headers=None, auth=None, timeout=None):
         self.calls.append({"url": url, "headers": headers, "auth": auth})
         return self.response
 
@@ -97,11 +101,11 @@ class TestFetchLatestSnapshot(unittest.TestCase):
             _snap(id_="new", created_at="2026-05-05T11:00:00Z"),
             _snap(id_="middle", created_at="2026-04-15T00:00:00Z"),
         ])))
-        snap = vbf.fetch_latest_snapshot(
+        snap = asyncio.run(vbf.fetch_latest_snapshot(
             public_key="pk", private_key="sk",
             group_id="g", cluster="c",
             http_client=client,
-        )
+        ))
         self.assertIsNotNone(snap)
         self.assertEqual(snap.id, "new")
 
@@ -116,11 +120,11 @@ class TestFetchLatestSnapshot(unittest.TestCase):
             _snap(id_="in-progress",   created_at="2026-05-05T12:00:00Z",
                   status="inProgress"),
         ])))
-        snap = vbf.fetch_latest_snapshot(
+        snap = asyncio.run(vbf.fetch_latest_snapshot(
             public_key="pk", private_key="sk",
             group_id="g", cluster="c",
             http_client=client,
-        )
+        ))
         self.assertEqual(snap.id, "completed-old")
 
     def test_falls_back_to_any_when_no_completed(self):
@@ -134,20 +138,20 @@ class TestFetchLatestSnapshot(unittest.TestCase):
             _snap(id_="ip-2", created_at="2026-05-05T12:00:00Z",
                   status="inProgress"),
         ])))
-        snap = vbf.fetch_latest_snapshot(
+        snap = asyncio.run(vbf.fetch_latest_snapshot(
             public_key="pk", private_key="sk",
             group_id="g", cluster="c",
             http_client=client,
-        )
+        ))
         self.assertEqual(snap.id, "ip-2")
 
     def test_returns_none_when_no_snapshots(self):
         client = _StubClient(_StubResponse(payload=_make_atlas_payload([])))
-        snap = vbf.fetch_latest_snapshot(
+        snap = asyncio.run(vbf.fetch_latest_snapshot(
             public_key="pk", private_key="sk",
             group_id="g", cluster="c",
             http_client=client,
-        )
+        ))
         self.assertIsNone(snap)
 
     def test_raises_on_http_error(self):
@@ -155,20 +159,20 @@ class TestFetchLatestSnapshot(unittest.TestCase):
             raise_exc=RuntimeError("Atlas API 500"),
         ))
         with self.assertRaises(RuntimeError):
-            vbf.fetch_latest_snapshot(
+            asyncio.run(vbf.fetch_latest_snapshot(
                 public_key="pk", private_key="sk",
                 group_id="g", cluster="c",
                 http_client=client,
-            )
+            ))
 
     def test_passes_correct_url_and_headers(self):
         client = _StubClient(_StubResponse(payload=_make_atlas_payload([])))
-        vbf.fetch_latest_snapshot(
+        asyncio.run(vbf.fetch_latest_snapshot(
             public_key="pk", private_key="sk",
             group_id="abc123def456",
             cluster="prod-cluster",
             http_client=client,
-        )
+        ))
         self.assertEqual(len(client.calls), 1)
         call = client.calls[0]
         self.assertIn("/groups/abc123def456/clusters/prod-cluster/backup/snapshots",
@@ -296,14 +300,14 @@ class TestMain(unittest.TestCase):
         client = _StubClient(_StubResponse(payload=_make_atlas_payload([
             _snap(id_="ok", created_at=recent),
         ])))
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             http_client=client,
             sentry_capture=self._capture_sentry,
             env=self.full_env,
             exit_fn=self._capture_exit,
             now=now,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         self.assertEqual(rc, 0)
         self.assertEqual(self.exit_code, 0)
         self.assertEqual(self.sentry_calls, [])
@@ -314,14 +318,14 @@ class TestMain(unittest.TestCase):
         client = _StubClient(_StubResponse(payload=_make_atlas_payload([
             _snap(id_="too-old", created_at=old),
         ])))
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             http_client=client,
             sentry_capture=self._capture_sentry,
             env=self.full_env,
             exit_fn=self._capture_exit,
             now=now,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         self.assertEqual(rc, 1)
         self.assertEqual(self.exit_code, 1)
         self.assertEqual(len(self.sentry_calls), 1)
@@ -331,13 +335,13 @@ class TestMain(unittest.TestCase):
 
     def test_no_snapshots_exits_one_with_sentry(self):
         client = _StubClient(_StubResponse(payload=_make_atlas_payload([])))
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             http_client=client,
             sentry_capture=self._capture_sentry,
             env=self.full_env,
             exit_fn=self._capture_exit,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         self.assertEqual(rc, 1)
         self.assertEqual(len(self.sentry_calls), 1)
         self.assertIn("no snapshots", self.sentry_calls[0]["args"][0])
@@ -349,13 +353,13 @@ class TestMain(unittest.TestCase):
         client = _StubClient(_StubResponse(
             raise_exc=RuntimeError("Atlas API 500: read timeout"),
         ))
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             http_client=client,
             sentry_capture=self._capture_sentry,
             env=self.full_env,
             exit_fn=self._capture_exit,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         self.assertEqual(rc, 1)
         self.assertEqual(len(self.sentry_calls), 1)
         msg = self.sentry_calls[0]["args"][0]
@@ -375,12 +379,12 @@ class TestMain(unittest.TestCase):
                 env.pop(missing_key)
                 self.sentry_calls = []
                 self.exit_code = None
-                rc = vbf.main(
+                rc = asyncio.run(vbf.main(
                     sentry_capture=self._capture_sentry,
                     env=env,
                     exit_fn=self._capture_exit,
                     stdout=open(os.devnull, "w"),
-                )
+                ))
                 self.assertEqual(rc, 2, f"missing {missing_key}")
                 self.assertEqual(self.exit_code, 2)
                 self.assertEqual(self.sentry_calls, [])
@@ -391,12 +395,12 @@ class TestMain(unittest.TestCase):
         make the next call fail with a confusing 401)."""
         env = dict(self.full_env)
         env["ATLAS_PUBLIC_KEY"] = "   "  # whitespace only
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             sentry_capture=self._capture_sentry,
             env=env,
             exit_fn=self._capture_exit,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         self.assertEqual(rc, 2)
 
     def test_invalid_max_age_falls_back_to_default(self):
@@ -410,14 +414,14 @@ class TestMain(unittest.TestCase):
         ])))
         env = dict(self.full_env)
         env["ATLAS_BACKUP_MAX_AGE_HOURS"] = "not-a-number"
-        rc = vbf.main(
+        rc = asyncio.run(vbf.main(
             http_client=client,
             sentry_capture=self._capture_sentry,
             env=env,
             exit_fn=self._capture_exit,
             now=now,
             stdout=open(os.devnull, "w"),
-        )
+        ))
         # 10h old, default 24h threshold → fresh.
         self.assertEqual(rc, 0)
 

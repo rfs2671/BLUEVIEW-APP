@@ -118,7 +118,7 @@ class _Snapshot:
         )
 
 
-def fetch_latest_snapshot(
+async def fetch_latest_snapshot(
     *,
     public_key: str,
     private_key: str,
@@ -129,9 +129,16 @@ def fetch_latest_snapshot(
     """Hit the Atlas snapshots endpoint and return the most-recent
     successful snapshot (or None if there are no snapshots yet).
 
-    `http_client` exists for tests — pass a stub that supports
-    `.get(url, headers=..., auth=..., timeout=...)`. In production,
-    a real `httpx.Client` is constructed.
+    `http_client` exists for tests — pass an async stub that supports
+    ``await client.get(url, headers=..., auth=...)``. In production,
+    a real ``ServerHttpClient`` is constructed.
+
+    ServerHttpClient is the only async HTTP client allowed in
+    backend/ by the architectural-rules CI guard (see
+    .github/workflows/architectural-rules.yml). The Atlas Admin
+    API host (cloud.mongodb.com) is NOT on the Akamai egress
+    blocklist, so the wrapper's runtime guard is a no-op here —
+    but the architectural rule still applies belt-and-suspenders.
 
     Raises any HTTP error or JSON parse error. The caller (main)
     decides how to surface those — we keep this function small
@@ -144,18 +151,25 @@ def fetch_latest_snapshot(
     headers = {"Accept": _ATLAS_ACCEPT}
 
     if http_client is None:
-        # Real Atlas request. httpx is already a project dep —
-        # imported lazily so tests that pass a stub don't pay for
-        # the import (and don't need network).
-        import httpx
+        # Real Atlas request. DigestAuth is httpx-native and works
+        # through ServerHttpClient (which is a thin wrapper around
+        # httpx.AsyncClient). Lazy-imported so tests that pass a
+        # stub don't pay for the import.
         from httpx import DigestAuth
-        with httpx.Client(timeout=30.0) as c:
-            resp = c.get(url, headers=headers, auth=DigestAuth(public_key, private_key))
+        from lib.server_http import ServerHttpClient
+        async with ServerHttpClient(timeout=30.0) as c:
+            resp = await c.get(
+                url, headers=headers,
+                auth=DigestAuth(public_key, private_key),
+            )
             resp.raise_for_status()
             payload = resp.json()
     else:
-        resp = http_client.get(url, headers=headers,
-                               auth=(public_key, private_key))
+        # Tests inject an async stub.
+        resp = await http_client.get(
+            url, headers=headers,
+            auth=(public_key, private_key),
+        )
         # Stub clients in tests should expose .raise_for_status() +
         # .json() to mimic httpx.Response.
         resp.raise_for_status()
@@ -256,7 +270,7 @@ def _default_sentry_capture(message: str, *, level: str = "warning") -> None:
 # ──────────────────────────────────────────────────────────────────
 
 
-def main(
+async def main(
     argv: Optional[List[str]] = None,
     *,
     http_client: Optional[Any] = None,
@@ -312,7 +326,7 @@ def main(
 
     # ── Atlas call ────────────────────────────────────────────────
     try:
-        snapshot = fetch_latest_snapshot(
+        snapshot = await fetch_latest_snapshot(
             public_key=public_key,
             private_key=private_key,
             group_id=group_id,
@@ -353,4 +367,5 @@ def main(
 
 
 if __name__ == "__main__":  # pragma: no cover
-    main()
+    import asyncio
+    asyncio.run(main())

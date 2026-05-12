@@ -75,6 +75,8 @@ import math
 from dataclasses import dataclass, field, asdict
 from typing import Any, Callable, Dict, Optional
 
+from lib.server_http import ServerHttpClient
+
 logger = logging.getLogger(__name__)
 
 
@@ -242,7 +244,11 @@ async def transcribe_whisper(
     `http_client` is for tests — pass a stub that supports
     `.post(url, headers=..., files=..., timeout=...)` returning an
     object with `.status_code`, `.json()`, and `.raise_for_status()`.
-    Production constructs a real httpx.AsyncClient.
+    Production constructs a ServerHttpClient (the only async HTTP
+    client allowed in backend/ by the architectural-rules CI guard).
+    api.openai.com is not on the Akamai blocklist, so the wrapper's
+    runtime guard is a no-op here — architectural rule applies
+    belt-and-suspenders.
 
     Raises on permanent failure (network exhaustion, 4xx that won't
     recover). Caller catches + maps to user-facing error reply.
@@ -268,8 +274,7 @@ async def transcribe_whisper(
     for attempt in range(WHISPER_MAX_RETRIES + 1):
         try:
             if http_client is None:
-                import httpx
-                async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SEC) as c:
+                async with ServerHttpClient(timeout=OPENAI_TIMEOUT_SEC) as c:
                     resp = await c.post(url, headers=headers, files=files)
                     resp.raise_for_status()
                     payload = resp.json()
@@ -328,7 +333,8 @@ async def translate_to_english(
     `fell_back_to_original` flag so telemetry separates "real
     translation" from "translation skipped due to API failure".
 
-    Tests pass `http_client` stubs; production uses httpx.AsyncClient.
+    Tests pass `http_client` stubs; production uses ServerHttpClient
+    (same rationale as transcribe_whisper above).
     """
     if not openai_api_key:
         return TranslateResult(
@@ -356,8 +362,7 @@ async def translate_to_english(
 
     try:
         if http_client is None:
-            import httpx
-            async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT_SEC) as c:
+            async with ServerHttpClient(timeout=OPENAI_TIMEOUT_SEC) as c:
                 resp = await c.post(url, headers=headers, json=body)
                 resp.raise_for_status()
                 payload = resp.json()
