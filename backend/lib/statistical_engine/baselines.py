@@ -25,9 +25,11 @@ Per-project lifecycle:
      5 wires the staleness-driven scheduler.
 
 Critical fall-back: the synchronous on-demand compute is wrapped
-in ``asyncio.wait_for(..., 5s)``. On timeout OR ``SocrataQueryError``
-the function returns a zero-peer marker with a ``reason`` field so
-the score doesn't bomb. The next recompute will retry.
+in ``asyncio.wait_for(..., PEER_STATS_COMPUTE_TIMEOUT_SECONDS)``
+(30s, matching PREWARM_TIMEOUT_SECONDS). On timeout OR
+``SocrataQueryError`` the function returns a zero-peer marker
+with a ``reason`` field so the score doesn't bomb. The next
+recompute will retry.
 
 PUBLIC SURFACE PRESERVED FROM V2.2:
 
@@ -113,8 +115,12 @@ PEER_STATS_LOOKBACK_DAYS = 365 * 2
 
 # Hard wall-clock cap on the on-demand-compute fallback. If
 # Socrata is misbehaving we'd rather return a zero-peer marker
-# than freeze the score endpoint.
-PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 5.0
+# than freeze the score endpoint. Matches PREWARM_TIMEOUT_SECONDS
+# (prewarm.py) so sync + async compute budgets stay aligned —
+# lazy peer-set discovery does 1 PLUTO + 3 event-dataset queries
+# (chunked), realistically 3-10s in prod and occasionally longer
+# under load.
+PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 30.0
 
 # Socrata page size used by peer-event queries. Tuned to one round
 # trip for typical Manhattan peer sets (~500 BBLs × ~5 events/BBL
