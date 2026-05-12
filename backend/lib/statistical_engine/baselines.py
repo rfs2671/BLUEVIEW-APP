@@ -56,9 +56,12 @@ NEW IN V2.3:
     drops events older than the 2-year window, recomputes
     summary stats.
 
-  • ``count_own_building_events(socrata, *, bin_, since, until=None)``
+  • ``count_own_building_events(socrata, *, bin_, bbl=None, now=None)``
     — project-specific own-building counts (violations, failed
     inspections, open complaints). Used by ``score.gather_score_inputs``.
+    Schema-corrections hotfix: ``bbl`` kwarg added because 311
+    (erm2-nwe9) has no bin column — open-complaints filter must
+    use bbl instead.
 
 DELETED in V2.3 Commit 3 (the V2.2 baseline-aggregator cron was
 removed in Commit 1; these helpers wrote to the now-dropped
@@ -127,12 +130,76 @@ PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 30.0
 # over 2 years = ~2500 rows, well under page_size).
 PEER_STATS_PAGE_SIZE = 5000
 
+# Datasets that cannot participate in BBL-keyed peer comparison
+# under the V2.3 schema. dob_violations (3h2n-5cm9) ships no
+# ``bbl`` column on the public Socrata schema; peer-aggregating
+# its events would require N-per-BBL boro+block+lot lookups
+# (deferred to a follow-up). When a dataset is in this set,
+# ``_assemble_cache`` emits a degenerate cache entry of shape
+# ``{"available": False, ...}`` instead of zero-filled
+# percentile data — score.py's peer normalizer skips
+# unavailable dimensions instead of averaging in a pinned
+# value, which would systematically bias the peer subscore.
+UNAVAILABLE_PEER_DATASETS = {DATASET_DOB_VIOLATIONS}
+
+# Marker stored on every unavailable peer-cache entry so future
+# engineers can grep for the PR that introduced the gate.
+_PEER_DATA_DROPPED_TAG = "v2.3-schema-corrections-hotfix"
+_VIOLATIONS_UNAVAILABLE_REASON = (
+    "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset"
+)
+
 # Maximum peer-BBL list size we shove into a single
 # ``bbl IN (...)`` clause. Socrata's URL-length limit truncates
 # requests at ~2000 chars; ~250 11-char BBLs + delimiters keeps us
 # safely under that. Larger peer sets are chunked across multiple
 # queries and unioned.
 SOQL_IN_CHUNK_SIZE = 250
+
+# Hard cap on the tier-4 citywide PLUTO fallback. The full NYC
+# parcel set is ~858k rows; paginating it under the sync 30s
+# timeout always times out (verified in prod). When we reach the
+# citywide tier we take a single 10k-row page and either accept
+# that as the peer set OR return the zero-peer marker — never
+# paginate further.
+CITYWIDE_TIER_MAX_PEERS = 10000
+
+# PLUTO uses 2-letter borough codes, not the upper-case full
+# names Blueview stores on projects. Map at query construction
+# time so the project's stored format (UPPER full name) survives
+# unchanged.
+_PLUTO_BOROUGH_CODE = {
+    "MANHATTAN":     "MN",
+    "BRONX":         "BX",
+    "BROOKLYN":      "BK",
+    "QUEENS":        "QN",
+    "STATEN ISLAND": "SI",
+}
+
+def _pluto_borough(stored: Optional[str]) -> Optional[str]:
+    """Translate Blueview's stored borough ("BROOKLYN") to PLUTO's
+    2-letter code ("BK"). Returns None for unknown inputs so the
+    caller can drop the filter rather than send a malformed query.
+    """
+    if not stored:
+        return None
+    return _PLUTO_BOROUGH_CODE.get(stored.strip().upper())
+
+
+# DOB inspections borough translation lives in triggers.py
+# (_inspection_boro_code) since that's where the borough-sweep
+# query is built. Not used in baselines.py — the peer queries
+# here go through PLUTO + inspections-by-BBL paths that don't
+# need it.
+
+
+def _yyyymmdd(dt: datetime) -> str:
+    """Format a datetime as YYYYMMDD (no separators), the format
+    dob_violations (3h2n-5cm9) uses for ``issue_date``. Distinct
+    from ``_iso_z`` which produces ISO-8601 for the 311 +
+    inspections datasets.
+    """
+    return dt.strftime("%Y%m%d")
 
 
 # ── Peer-set key construction (pure logic, untouched from V2.2) ───
@@ -210,25 +277,79 @@ def _iso_z(dt: datetime) -> str:
 # ── Peer set fallback ladder (rewritten — lazy PLUTO via Socrata) ─
 
 
+async def fetch_project_pluto_snapshot(
+    socrata: SocrataClient,
+    project: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Fetch the project's own row from PLUTO (64uk-42ks) keyed by
+    its BBL. Returns the raw row (with ``bbl`` already normalized
+    to strip the ``.00000000`` suffix), or None if no PLUTO row
+    matches.
+
+    Used by ``peer_bbls`` to discover the project's REAL NYC DOF
+    building-class code (``bldgclass``, e.g. "C1"/"R6"/"S2"/"O4")
+    so tier-1/tier-2 peer queries filter on the same vocabulary
+    PLUTO actually stores. Without this we were passing through
+    Blueview's internal ``project_class`` ("regular"/"major_a"),
+    which PLUTO has no notion of — so every tier-1/tier-2 query
+    returned 0 peers.
+
+    Caller should cache the result on the project doc
+    (``pluto_snapshot`` field) so repeat recomputes don't re-pay
+    the round trip.
+    """
+    project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
+    if not project_bbl:
+        return None
+    try:
+        rows = await socrata.query(
+            DATASET_PLUTO,
+            where=f"bbl = {_soql_quote(project_bbl)}",
+            select=["bbl", "borough", "bldgclass", "landuse",
+                    "block", "lot", "bin"],
+            limit=1,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] PLUTO snapshot fetch for %s failed: %r",
+            project_bbl, e,
+        )
+        return None
+    if not rows:
+        return None
+    row = dict(rows[0])
+    normalized = normalize_bbl(row.get("bbl"))
+    if normalized:
+        row["bbl"] = normalized
+    return row
+
+
 async def _bbls_matching_socrata(
     socrata: SocrataClient,
     *,
-    borough: Optional[str] = None,
+    borough: Optional[str] = None,  # already in PLUTO 2-letter form
     bldgclass: Optional[str] = None,
     landuse: Optional[str] = None,
+    limit: Optional[int] = None,
 ) -> List[str]:
     """Query Socrata PLUTO (64uk-42ks) for BBLs matching the
     supplied filters. None = unconstrained on that axis.
 
-    PLUTO is a snapshot dataset (re-released quarterly); a single
-    Socrata query returns the current full set for our peer-key
-    filters. We page just in case the borough-only fallback tier
-    returns >5000 BBLs.
+    PLUTO column conventions (verified against live Socrata API):
+      • ``borough`` is a 2-letter code (``MN``/``BX``/``BK``/``QN``/
+        ``SI``). The caller must pre-translate Blueview's stored
+        UPPER-case full name via ``_pluto_borough``.
+      • ``bldgclass`` is the NYC DOF building-class code (e.g.
+        ``"C1"``, ``"R6"``, ``"S2"``, ``"O4"``). Callers must pass
+        the project's REAL DOF class (from its PLUTO snapshot),
+        NOT Blueview's internal ``project_class`` enum.
+      • ``bbl`` values ship with a ``.00000000`` decimal suffix
+        that ``normalize_bbl`` strips below.
 
-    Returns the normalized 10-char canonical BBL list. PLUTO's
-    Socrata payload ships ``bbl`` values with a ``.00000000``
-    decimal suffix (e.g. ``"4061730023.00000000"``); the
-    canonicalizer strips that via ``normalize_bbl``.
+    If ``limit`` is provided we issue a single bounded ``query()``
+    instead of paginating — used by the tier-4 citywide fallback
+    to cap at ``CITYWIDE_TIER_MAX_PEERS`` rather than walk the
+    full ~858k-parcel city.
     """
     where_parts: List[str] = []
     if borough is not None:
@@ -240,12 +361,21 @@ async def _bbls_matching_socrata(
     where = " AND ".join(where_parts) if where_parts else None
 
     try:
-        rows = await socrata.query_all(
-            DATASET_PLUTO,
-            where=where,
-            select=["bbl"],
-            page_size=PEER_STATS_PAGE_SIZE,
-        )
+        if limit is not None:
+            # Tier-4 citywide path: one bounded GET, no pagination.
+            rows = await socrata.query(
+                DATASET_PLUTO,
+                where=where,
+                select=["bbl"],
+                limit=limit,
+            )
+        else:
+            rows = await socrata.query_all(
+                DATASET_PLUTO,
+                where=where,
+                select=["bbl"],
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
     except SocrataQueryError as e:
         logger.warning(
             "[baselines] PLUTO peer fetch failed: %r", e,
@@ -271,56 +401,103 @@ async def peer_bbls(
     V2.3 signature change: takes ``SocrataClient`` instead of
     ``db`` (PLUTO is no longer mirrored locally).
 
+    Schema-corrections hotfix:
+      • PLUTO ``borough`` is a 2-letter code (``MN``/``BK``/...).
+        Translate the project's stored UPPER-case full name via
+        ``_pluto_borough`` before filtering.
+      • PLUTO ``bldgclass`` is the NYC DOF building-class code,
+        NOT Blueview's internal ``project_class`` enum. Fetch
+        the project's own PLUTO row to discover its real
+        ``bldgclass`` (cached at ``project["pluto_snapshot"]``
+        if previously fetched) and filter on THAT in tiers 1-2.
+      • Tier 4 (citywide) is capped at
+        ``CITYWIDE_TIER_MAX_PEERS`` — paginating the whole NYC
+        parcel set under the 30s sync timeout always times out.
+
     Returns (bbls, metadata). metadata describes which tier was
     used and the sample size — surfaced by
     ``compare_project_to_peers`` so the FE drawer can disclose
-    "Compared against N projects in [borough]".
+    "Compared against N projects in [borough]". The metadata
+    additionally carries ``pluto_snapshot`` when one was
+    discovered or reused, so the caller can persist it on the
+    project doc and skip the snapshot fetch on next compute.
     """
     key = _project_peer_key(project)
-    borough = key.get("borough")
-    project_class = key.get("project_class")
+    borough_stored = key.get("borough")
+    borough_pluto = _pluto_borough(borough_stored)
     use_type = key.get("use_type")
 
-    # Tier 1: borough × class × use_type.
-    bbls = await _bbls_matching_socrata(
-        socrata,
-        borough=borough, bldgclass=project_class, landuse=use_type,
-    )
-    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-        return bbls, {
-            "tier": "borough_class_use",
-            "borough": borough,
-            "project_class": project_class,
-            "use_type": use_type,
-            "sample_size": len(bbls),
-        }
+    # Discover the project's REAL DOF building class for
+    # tier-1/tier-2 peer queries. Read from cached snapshot if
+    # present (set by a prior recompute); otherwise fetch lazily
+    # and surface it back so the caller can persist.
+    snapshot: Optional[Dict[str, Any]] = project.get("pluto_snapshot")
+    if not snapshot:
+        snapshot = await fetch_project_pluto_snapshot(socrata, project)
+    dof_bldgclass = (snapshot or {}).get("bldgclass")
+    snapshot_landuse = (snapshot or {}).get("landuse")
+    effective_use_type = use_type or snapshot_landuse
+
+    # Tier 1: borough × class × use_type. Requires both a
+    # PLUTO-format borough code AND a real DOF bldgclass; if
+    # either is missing we skip directly to a coarser tier.
+    if borough_pluto and dof_bldgclass:
+        bbls = await _bbls_matching_socrata(
+            socrata,
+            borough=borough_pluto,
+            bldgclass=dof_bldgclass,
+            landuse=effective_use_type,
+        )
+        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+            return bbls, {
+                "tier": "borough_class_use",
+                "borough": borough_stored,
+                "project_class": dof_bldgclass,
+                "use_type": effective_use_type,
+                "sample_size": len(bbls),
+                "pluto_snapshot": snapshot,
+            }
 
     # Tier 2: borough × class (drop use_type).
-    bbls = await _bbls_matching_socrata(
-        socrata, borough=borough, bldgclass=project_class,
-    )
-    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-        return bbls, {
-            "tier": "borough_class",
-            "borough": borough,
-            "project_class": project_class,
-            "sample_size": len(bbls),
-        }
+    if borough_pluto and dof_bldgclass:
+        bbls = await _bbls_matching_socrata(
+            socrata,
+            borough=borough_pluto,
+            bldgclass=dof_bldgclass,
+        )
+        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+            return bbls, {
+                "tier": "borough_class",
+                "borough": borough_stored,
+                "project_class": dof_bldgclass,
+                "sample_size": len(bbls),
+                "pluto_snapshot": snapshot,
+            }
 
     # Tier 3: borough (drop class).
-    bbls = await _bbls_matching_socrata(socrata, borough=borough)
-    if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-        return bbls, {
-            "tier": "borough",
-            "borough": borough,
-            "sample_size": len(bbls),
-        }
+    if borough_pluto:
+        bbls = await _bbls_matching_socrata(
+            socrata, borough=borough_pluto,
+        )
+        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
+            return bbls, {
+                "tier": "borough",
+                "borough": borough_stored,
+                "sample_size": len(bbls),
+                "pluto_snapshot": snapshot,
+            }
 
-    # Tier 4: citywide (no filters).
-    bbls = await _bbls_matching_socrata(socrata)
+    # Tier 4: citywide (no filters), capped at
+    # CITYWIDE_TIER_MAX_PEERS. We never paginate further at this
+    # tier — the full ~858k-parcel scan always exhausts the sync
+    # 30s timeout in prod.
+    bbls = await _bbls_matching_socrata(
+        socrata, limit=CITYWIDE_TIER_MAX_PEERS,
+    )
     return bbls, {
         "tier": "citywide",
         "sample_size": len(bbls),
+        "pluto_snapshot": snapshot,
     }
 
 
@@ -351,6 +528,15 @@ async def _count_events_for_bbls_socrata(
     ``[since, until)`` window. BBLs with zero matching events are
     included (count=0) so percentile math stays correct.
 
+    Schema-corrections hotfix: only datasets that actually carry
+    a ``bbl`` column may be queried here (inspections + 311).
+    DOB violations (3h2n-5cm9) does NOT ship ``bbl`` and is
+    therefore EXCLUDED from peer counts — defensively bail and
+    return zero-fill if a caller accidentally passes it.
+    Violations remain available via own-building queries (which
+    filter by ``bin``); peer-aggregated violations would require
+    N-per-BBL boro+block+lot lookups, deferred to a follow-up.
+
     Implementation: ``$select=bbl,count(*) $group=bbl`` per chunk.
     BBLs that don't appear in the response have count=0 (Socrata
     omits empty groups). Chunked across the IN-list because
@@ -359,6 +545,18 @@ async def _count_events_for_bbls_socrata(
     """
     if not bbls:
         return {}
+    if dataset_id == DATASET_DOB_VIOLATIONS:
+        # DOB violations has no ``bbl`` column on the public
+        # Socrata schema — filtering by bbl returns zero rows
+        # regardless of input. Zero-fill so percentile math
+        # stays correct, and don't burn a quota request.
+        logger.info(
+            "[baselines] skipping peer-violations aggregation "
+            "(3h2n-5cm9 has no bbl column; see schema-corrections "
+            "hotfix Option A)",
+        )
+        return {b: 0 for b in bbls}
+
     date_col = _DATE_FIELDS.get(dataset_id, "occurred_date")
     where_date = f"{date_col} > {_soql_quote(_iso_z(since))}"
     if until is not None:
@@ -547,17 +745,50 @@ def _assemble_cache(
 ) -> Dict[str, Any]:
     """Build the ``peer_stats_cache`` dict from raw counts. Shared
     by full-compute and incremental-refresh so the persisted shape
-    stays identical."""
+    stays identical.
+
+    Schema-corrections hotfix: datasets in ``UNAVAILABLE_PEER_DATASETS``
+    cannot participate in BBL-keyed peer comparison under the V2.3
+    schema. Their per-dataset entry emits a degenerate
+    ``{"available": False, ...}`` shape (no percentile_rank, no
+    project_count) instead of zero-filled stats. score.py's peer
+    normalizer skips entries marked unavailable so the peer
+    subscore isn't biased by a pinned percentile_rank.
+    """
     proj_v, proj_i, proj_c = project_counts
 
-    def _one(counts: Dict[str, int], project_count: int) -> Dict[str, Any]:
+    def _one_available(
+        counts: Dict[str, int], project_count: int,
+    ) -> Dict[str, Any]:
+        """Build the full V2.3 per-dataset entry. Wrapped with
+        ``available: True`` so consumers don't have to default."""
         summary = _summarize_counts(counts)
         sorted_vals = sorted(counts.values())
         return {
+            "available":        True,
             **summary,
             "project_count":    int(project_count),
             "percentile_rank":  _percentile_rank(sorted_vals, project_count),
         }
+
+    def _one_unavailable(reason: str) -> Dict[str, Any]:
+        """Build the degenerate per-dataset entry for a gated
+        dataset. No percentile_rank, no project_count — score.py
+        skips entries flagged unavailable."""
+        return {
+            "available":               False,
+            "unavailable_reason":      reason,
+            "peer_data_dropped_in_pr": _PEER_DATA_DROPPED_TAG,
+        }
+
+    def _one_for(
+        dataset_id: str,
+        counts: Dict[str, int],
+        project_count: int,
+    ) -> Dict[str, Any]:
+        if dataset_id in UNAVAILABLE_PEER_DATASETS:
+            return _one_unavailable(_VIOLATIONS_UNAVAILABLE_REASON)
+        return _one_available(counts, project_count)
 
     tier_to_fallback_level = {
         "borough_class_use": 1,
@@ -582,6 +813,10 @@ def _assemble_cache(
             # Persist the BBL list so incremental refresh can reuse
             # it without re-running the PLUTO peer-discovery query.
             "peer_bbl_list":   peer_bbl_list,
+            # Forward the project's PLUTO row through the cache so
+            # _persist_cache can stamp it on the project doc and
+            # subsequent recomputes skip the snapshot fetch.
+            "pluto_snapshot":  peer_meta.get("pluto_snapshot"),
             # Persist per-BBL counts so incremental refresh can
             # add-then-evict events in the sliding window without
             # re-fetching the full lookback.
@@ -593,9 +828,9 @@ def _assemble_cache(
         },
         "events_window_start": window_start,
         "events_window_end":   window_end,
-        "violations":          _one(v_counts, proj_v),
-        "inspections":         _one(i_counts, proj_i),
-        "complaints":          _one(c_counts, proj_c),
+        "violations":          _one_for(DATASET_DOB_VIOLATIONS,  v_counts, proj_v),
+        "inspections":         _one_for(DATASET_DOB_INSPECTIONS, i_counts, proj_i),
+        "complaints":          _one_for(DATASET_COMPLAINTS_311,  c_counts, proj_c),
         "status":              "ready",
         "error_message":       None,
     }
@@ -744,6 +979,7 @@ async def count_own_building_events(
     socrata: SocrataClient,
     *,
     bin_: Optional[str],
+    bbl: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, int]:
     """Project-specific own-building counts. Replaces the three
@@ -760,10 +996,23 @@ async def count_own_building_events(
         "open_complaints_30d":    int,
       }
 
-    Empty ``bin_`` → all zeros. Socrata query failures soft-fail
-    per-dataset (zero for the affected key, others still
-    populated). This preserves the V2.2 behavior of degrading
-    gracefully on partial-data outages.
+    Schema-corrections hotfix:
+      • DOB violations (3h2n-5cm9) — ``bin`` filter remains
+        correct, but ``issue_date`` is a ``YYYYMMDD`` string
+        column, NOT ISO datetime. Cutoffs are now formatted via
+        ``_yyyymmdd`` for the where clause; parsing of returned
+        rows uses ``_parse_socrata_yyyymmdd`` to recover datetimes
+        for the 30d/90d split.
+      • 311 (erm2-nwe9) — has NO ``bin`` column. Filter by
+        ``bbl`` instead. ``bbl`` kwarg threaded through from
+        ``score.py``; if absent we skip the 311 count and log
+        rather than burn a quota request that would 400.
+
+    Empty ``bin_`` skips violations + inspections (which both key
+    on bin); empty ``bbl`` skips 311. Socrata query failures
+    soft-fail per-dataset (zero for the affected key, others
+    still populated). This preserves the V2.2 behavior of
+    degrading gracefully on partial-data outages.
     """
     out = {
         "violations_30d":         0,
@@ -771,75 +1020,89 @@ async def count_own_building_events(
         "inspections_failed_60d": 0,
         "open_complaints_30d":    0,
     }
-    if not bin_:
+    if not bin_ and not bbl:
         return out
     cur_now = now or datetime.now(timezone.utc)
     c30 = cur_now - timedelta(days=30)
     c60 = cur_now - timedelta(days=60)
     c90 = cur_now - timedelta(days=90)
 
-    bin_q = _soql_quote(str(bin_))
-
     # Violations — last 90 days, then split into 30d / 90d.
-    try:
-        rows = await socrata.query_all(
-            DATASET_DOB_VIOLATIONS,
-            where=(
-                f"bin = {bin_q} AND issue_date > "
-                f"{_soql_quote(_iso_z(c90))}"
-            ),
-            select=["issue_date"],
-            page_size=PEER_STATS_PAGE_SIZE,
-        )
-        for r in rows:
-            occ_raw = r.get("issue_date")
-            occ = _parse_socrata_dt(occ_raw)
-            if occ is None:
-                continue
-            if occ >= c30:
-                out["violations_30d"] += 1
-            if occ >= c90:
-                out["violations_90d"] += 1
-    except SocrataQueryError as e:
-        logger.warning("[baselines] own violations failed: %r", e)
+    # issue_date is YYYYMMDD on 3h2n-5cm9; cutoffs and parsing
+    # must use that format, not ISO datetime.
+    if bin_:
+        bin_q = _soql_quote(str(bin_))
+        try:
+            rows = await socrata.query_all(
+                DATASET_DOB_VIOLATIONS,
+                where=(
+                    f"bin = {bin_q} AND issue_date > "
+                    f"{_soql_quote(_yyyymmdd(c90))}"
+                ),
+                select=["issue_date"],
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
+            for r in rows:
+                occ = _parse_socrata_yyyymmdd(r.get("issue_date"))
+                if occ is None:
+                    continue
+                if occ >= c30:
+                    out["violations_30d"] += 1
+                if occ >= c90:
+                    out["violations_90d"] += 1
+        except SocrataQueryError as e:
+            logger.warning("[baselines] own violations failed: %r", e)
 
     # Failed inspections — last 60 days. Socrata column is `result`
     # on p937-wjvj; we substring-match "fail" or "violation" to
     # preserve V2.2 semantics.
-    try:
-        rows = await socrata.query_all(
-            DATASET_DOB_INSPECTIONS,
-            where=(
-                f"bin = {bin_q} AND inspection_date > "
-                f"{_soql_quote(_iso_z(c60))}"
-            ),
-            select=["result"],
-            page_size=PEER_STATS_PAGE_SIZE,
-        )
-        for r in rows:
-            res = (r.get("result") or "").lower()
-            if "fail" in res or "violation" in res:
-                out["inspections_failed_60d"] += 1
-    except SocrataQueryError as e:
-        logger.warning("[baselines] own inspections failed: %r", e)
+    if bin_:
+        bin_q = _soql_quote(str(bin_))
+        try:
+            rows = await socrata.query_all(
+                DATASET_DOB_INSPECTIONS,
+                where=(
+                    f"bin = {bin_q} AND inspection_date > "
+                    f"{_soql_quote(_iso_z(c60))}"
+                ),
+                select=["result"],
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
+            for r in rows:
+                res = (r.get("result") or "").lower()
+                if "fail" in res or "violation" in res:
+                    out["inspections_failed_60d"] += 1
+        except SocrataQueryError as e:
+            logger.warning("[baselines] own inspections failed: %r", e)
 
-    # Open 311 — last 30 days, status != "closed".
-    try:
-        rows = await socrata.query_all(
-            DATASET_COMPLAINTS_311,
-            where=(
-                f"bin = {bin_q} AND created_date > "
-                f"{_soql_quote(_iso_z(c30))}"
-            ),
-            select=["status"],
-            page_size=PEER_STATS_PAGE_SIZE,
+    # Open 311 — last 30 days, status != "closed". 311 (erm2-nwe9)
+    # has no ``bin`` column; filter by bbl instead.
+    if bbl:
+        bbl_q = _soql_quote(str(bbl))
+        try:
+            rows = await socrata.query_all(
+                DATASET_COMPLAINTS_311,
+                where=(
+                    f"bbl = {bbl_q} AND created_date > "
+                    f"{_soql_quote(_iso_z(c30))}"
+                ),
+                select=["status"],
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
+            for r in rows:
+                status = (r.get("status") or "").lower()
+                if status != "closed":
+                    out["open_complaints_30d"] += 1
+        except SocrataQueryError as e:
+            logger.warning("[baselines] own 311 failed: %r", e)
+    elif bin_:
+        # We have BIN but no BBL — can't filter 311 (no bin column).
+        # Log once at info so operators see the gap without filling
+        # the log with warnings.
+        logger.info(
+            "[baselines] own 311 skipped: no bbl provided (311 "
+            "has no bin column)",
         )
-        for r in rows:
-            status = (r.get("status") or "").lower()
-            if status != "closed":
-                out["open_complaints_30d"] += 1
-    except SocrataQueryError as e:
-        logger.warning("[baselines] own 311 failed: %r", e)
 
     return out
 
@@ -861,6 +1124,31 @@ def _parse_socrata_dt(value: Any) -> Optional[datetime]:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
+    except ValueError:
+        return None
+
+
+def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
+    """Parse the ``issue_date`` text column from dob_violations
+    (3h2n-5cm9), which is a YYYYMMDD string like ``"20171227"``.
+    Returns a tz-aware UTC datetime at midnight on that date.
+
+    Pass-through for already-parsed datetimes. Returns None on any
+    other shape so date-window arithmetic in the caller can skip
+    the row defensively.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if len(s) != 8 or not s.isdigit():
+        return None
+    try:
+        return datetime(
+            int(s[:4]), int(s[4:6]), int(s[6:8]),
+            tzinfo=timezone.utc,
+        )
     except ValueError:
         return None
 
@@ -888,8 +1176,18 @@ def _is_cache_stale(
 def _zero_peer_marker(reason: str) -> Dict[str, Any]:
     """Return shape compatible with V2.2 ``compare_project_to_peers``
     that produces 0 for the peer subscore. ``reason`` is surfaced
-    to logs + (eventually) the admin diagnostics endpoint."""
+    to logs + (eventually) the admin diagnostics endpoint.
+
+    Schema-corrections hotfix: each dataset entry carries
+    ``available: True`` (the zero is from a failed compute, NOT
+    from the dataset being structurally unavailable). score.py's
+    normalizer still includes these in the mean — the all-zero
+    percentile_ranks correctly contribute 0 to the peer subscore,
+    so the timeout/socrata_error path produces peer_subscore=0
+    as intended.
+    """
     zero = {
+        "available":         True,
         "project_count":     0,
         "peer_median":       0.0,
         "peer_p75":          0.0,
@@ -943,30 +1241,61 @@ def _v22_shape_from_cache(cache: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"peer_set": peer_set}
     for key in ("violations", "inspections", "complaints"):
         dataset_summary = cache.get(key) or {}
-        out[key] = {
-            "project_count":    int(dataset_summary.get("project_count") or 0),
-            "peer_median":      float(dataset_summary.get("median") or 0.0),
-            "peer_p75":         float(dataset_summary.get("p75") or 0.0),
-            "peer_p90":         float(dataset_summary.get("p90") or 0.0),
-            "percentile_rank":  float(dataset_summary.get("percentile_rank") or 0.0),
-            "peer_sample_size": int(dataset_summary.get("n") or 0),
-        }
+        # Schema-corrections hotfix: propagate the unavailable
+        # signal so score.py's peer normalizer can skip the
+        # dimension instead of averaging in a pinned 0.
+        # Backward-compat: a missing ``available`` field defaults
+        # to True (caches written by pre-hotfix code paths use
+        # the legacy "all-fields-present" shape).
+        if dataset_summary.get("available", True) is False:
+            out[key] = {
+                "available":               False,
+                "unavailable_reason":      dataset_summary.get(
+                    "unavailable_reason",
+                ),
+                "peer_data_dropped_in_pr": dataset_summary.get(
+                    "peer_data_dropped_in_pr",
+                ),
+            }
+        else:
+            out[key] = {
+                "available":        True,
+                "project_count":    int(dataset_summary.get("project_count") or 0),
+                "peer_median":      float(dataset_summary.get("median") or 0.0),
+                "peer_p75":         float(dataset_summary.get("p75") or 0.0),
+                "peer_p90":         float(dataset_summary.get("p90") or 0.0),
+                "percentile_rank":  float(dataset_summary.get("percentile_rank") or 0.0),
+                "peer_sample_size": int(dataset_summary.get("n") or 0),
+            }
     return out
 
 
 async def _persist_cache(db, project: Dict[str, Any], cache: Dict[str, Any]) -> None:
-    """Write ``peer_stats_cache`` back to ``db.projects``. Tolerant
-    of missing _id (defensive — a project without _id won't show up
+    """Write ``peer_stats_cache`` back to ``db.projects``, and
+    additionally persist ``pluto_snapshot`` if the cache was
+    computed against a freshly-discovered snapshot. Tolerant of
+    missing _id (defensive — a project without _id won't show up
     in the projects collection anyway). Errors are logged but
     don't fail the caller — the cache will be recomputed next
-    time."""
+    time.
+
+    Persisting the PLUTO snapshot back to the project doc avoids
+    re-querying PLUTO on every peer_stats recompute — the
+    project's own ``bldgclass``/``landuse`` are stable across
+    PLUTO releases (quarterly cadence) for any project that hasn't
+    been physically reclassified.
+    """
     project_id = project.get("_id") or project.get("id")
     if not project_id:
         return
+    update: Dict[str, Any] = {"peer_stats_cache": cache}
+    snapshot = (cache.get("peer_criteria") or {}).get("pluto_snapshot")
+    if snapshot and not project.get("pluto_snapshot"):
+        update["pluto_snapshot"] = snapshot
     try:
         await db.projects.update_one(
             {"_id": project_id},
-            {"$set": {"peer_stats_cache": cache}},
+            {"$set": update},
         )
     except Exception as e:
         logger.warning(

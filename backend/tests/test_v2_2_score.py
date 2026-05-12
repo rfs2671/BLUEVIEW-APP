@@ -132,6 +132,65 @@ class TestNormalizers(unittest.TestCase):
         )
         self.assertEqual(v, 0.0)
 
+
+# ──────────────────────────────────────────────────────────────────
+# NEW PIN 2 — schema-corrections hotfix
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestNormalizePeerComparison(unittest.TestCase):
+    """Pin the dynamic-divisor behavior introduced by the
+    schema-corrections hotfix: violations is gated off the peer
+    comparison (no ``bbl`` column on 3h2n-5cm9), and the peer
+    normalizer averages over the AVAILABLE dimensions only — the
+    divisor is the count of non-None inputs, not a hard-coded 3.
+    Without this, a pinned percentile_rank from the gated
+    dimension would bias the peer subscore by ~33%."""
+
+    def test_averages_over_available_dimensions_only(self):
+        # Two available + one None → mean of the two.
+        v = sc._normalize_peer_comparison(
+            violations_percentile=None,
+            inspections_percentile=85.0,
+            complaints_percentile=72.0,
+        )
+        self.assertEqual(v, (85.0 + 72.0) / 2)
+        self.assertEqual(v, 78.5)
+
+        # All three None → 0.0 (theoretical edge case).
+        v = sc._normalize_peer_comparison(
+            violations_percentile=None,
+            inspections_percentile=None,
+            complaints_percentile=None,
+        )
+        self.assertEqual(v, 0.0)
+
+        # Two None + one float → return that float (divisor = 1,
+        # not 3).
+        v = sc._normalize_peer_comparison(
+            violations_percentile=None,
+            inspections_percentile=42.5,
+            complaints_percentile=None,
+        )
+        self.assertEqual(v, 42.5)
+
+        # Clamp invariant: never exceeds 100.0. Each
+        # percentile_rank is mathematically bounded to [0, 100],
+        # but the clamp must hold defensively.
+        v = sc._normalize_peer_comparison(
+            violations_percentile=None,
+            inspections_percentile=100.0,
+            complaints_percentile=100.0,
+        )
+        self.assertEqual(v, 100.0)
+        # Defensive: hypothetical out-of-range input.
+        v = sc._normalize_peer_comparison(
+            violations_percentile=None,
+            inspections_percentile=150.0,
+            complaints_percentile=100.0,
+        )
+        self.assertLessEqual(v, 100.0)
+
     def test_active_triggers_empty_is_zero(self):
         self.assertEqual(sc._normalize_active_triggers([]), 0.0)
 

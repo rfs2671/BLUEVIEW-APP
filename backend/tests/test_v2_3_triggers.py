@@ -560,14 +560,18 @@ class TestGatherTriggerInputs(unittest.TestCase):
         )
 
     def test_borough_inspections_aggregated_into_per_day_counts(self):
+        """Schema-corrections hotfix: inspections (p937-wjvj) ships
+        a numeric ``boro_code`` (1-5). The borough-sweep query
+        filters on that, not the mixed-case ``borough`` text
+        column."""
         now = datetime(2026, 5, 10, tzinfo=timezone.utc)
         socrata = MockSocrataClient()
         socrata.seed(DATASET_DOB_INSPECTIONS, [
-            {"borough": "MANHATTAN", "inspection_date":
+            {"boro_code": "1", "inspection_date":
                 (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")},
-            {"borough": "MANHATTAN", "inspection_date":
+            {"boro_code": "1", "inspection_date":
                 (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")},
-            {"borough": "MANHATTAN", "inspection_date":
+            {"boro_code": "1", "inspection_date":
                 (now - timedelta(days=80)).strftime("%Y-%m-%dT%H:%M:%S")},
         ])
         out = _run(tr.gather_trigger_inputs(
@@ -577,23 +581,28 @@ class TestGatherTriggerInputs(unittest.TestCase):
         self.assertEqual(out["last_7d_count"], 2)
 
     def test_neighbor_swo_and_nearby_violations_counted(self):
+        """Schema-corrections hotfix: dob_violations (3h2n-5cm9)
+        has NO ``bbl`` column; block-proximity goes through
+        ``boro`` + ``block`` instead. ``issue_date`` is a
+        ``YYYYMMDD`` text column, not ISO datetime. Project BBL
+        ``1001234567`` decomposes to boro=1, block=``"123"``
+        (BBL's middle 5 chars ``"00123"`` lstripped of leading
+        zeros — matches the canonical NYC DOF block id format).
+        """
         now = datetime(2026, 5, 10, tzinfo=timezone.utc)
         socrata = MockSocrataClient()
         socrata.seed(DATASET_DOB_VIOLATIONS, [
-            # Same block, different BIN, SWO description, last 30d.
-            {"bbl": "1001234568", "bin": "1111111",
-             "issue_date": (now - timedelta(days=10)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
+            # Same boro+block, different BIN, SWO description, last 30d.
+            {"boro": "1", "block": "123", "bin": "1111111",
+             "issue_date": (now - timedelta(days=10)).strftime("%Y%m%d"),
              "description": "STOP WORK ORDER issued"},
-            # Same block, different BIN, no SWO, last 60d.
-            {"bbl": "1001234569", "bin": "2222222",
-             "issue_date": (now - timedelta(days=40)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
+            # Same boro+block, different BIN, no SWO, last 60d.
+            {"boro": "1", "block": "123", "bin": "2222222",
+             "issue_date": (now - timedelta(days=40)).strftime("%Y%m%d"),
              "description": "Other"},
             # Same BIN as project — should be skipped.
-            {"bbl": "1001234567", "bin": "1234567",
-             "issue_date": (now - timedelta(days=20)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
+            {"boro": "1", "block": "123", "bin": "1234567",
+             "issue_date": (now - timedelta(days=20)).strftime("%Y%m%d"),
              "description": "Stop work"},
         ])
         out = _run(tr.gather_trigger_inputs(

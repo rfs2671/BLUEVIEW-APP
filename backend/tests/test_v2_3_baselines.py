@@ -182,15 +182,26 @@ def _pluto_row(bbl_, borough, bldgclass=None, landuse=None):
 
 
 class TestFallbackLadder(unittest.TestCase):
+    """Schema-corrections hotfix: PLUTO uses 2-letter ``borough``
+    codes (``MN``/``BK``/...) and NYC DOF ``bldgclass`` codes
+    (``O4``/``C1``/...). Projects pre-stamp ``pluto_snapshot`` so
+    ``peer_bbls`` doesn't try to fetch the snapshot for the
+    project's own BBL — keeps these tests focused on the tier
+    ladder logic itself."""
 
     def test_tier_1_full_match(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100000{i:04d}", "MANHATTAN", "major_b", "residential")
+            _pluto_row(f"100000{i:04d}", "MN", "O4", "office")
             for i in range(1, 26)
         ])
-        proj = {"borough": "MANHATTAN", "project_class": "major_b",
-                "use_type": "residential"}
+        proj = {
+            "bbl": "1000009999",  # not in the seeded peer set
+            "borough": "MANHATTAN",
+            "pluto_snapshot": {
+                "bldgclass": "O4", "landuse": "office",
+            },
+        }
         bbls, meta = _run(bl.peer_bbls(socrata, proj))
         self.assertEqual(len(bbls), 25)
         self.assertEqual(meta["tier"], "borough_class_use")
@@ -199,14 +210,20 @@ class TestFallbackLadder(unittest.TestCase):
     def test_tier_2_drop_use_type(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100001{i:04d}", "MANHATTAN", "major_b", "residential")
+            _pluto_row(f"100001{i:04d}", "MN", "O4", "residential")
             for i in range(5)
         ] + [
-            _pluto_row(f"100002{i:04d}", "MANHATTAN", "major_b", "commercial")
+            _pluto_row(f"100002{i:04d}", "MN", "O4", "commercial")
             for i in range(25)
         ])
-        proj = {"borough": "MANHATTAN", "project_class": "major_b",
-                "use_type": "residential"}
+        proj = {
+            "bbl": "1000019999",
+            "borough": "MANHATTAN",
+            "pluto_snapshot": {
+                "bldgclass": "O4", "landuse": "residential",
+            },
+            "use_type": "residential",
+        }
         bbls, meta = _run(bl.peer_bbls(socrata, proj))
         self.assertEqual(meta["tier"], "borough_class")
         self.assertEqual(meta["sample_size"], 30)
@@ -214,17 +231,24 @@ class TestFallbackLadder(unittest.TestCase):
     def test_tier_3_drop_class(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"400003{i:04d}", "QUEENS", "regular", "residential")
+            _pluto_row(f"400003{i:04d}", "QN", "A0", "residential")
             for i in range(2)
         ] + [
-            _pluto_row(f"400004{i:04d}", "QUEENS", "major_a", "industrial")
+            _pluto_row(f"400004{i:04d}", "QN", "M0", "industrial")
             for i in range(2)
         ] + [
-            _pluto_row(f"400005{i:04d}", "QUEENS", "regular", "office")
+            _pluto_row(f"400005{i:04d}", "QN", "A0", "office")
             for i in range(25)
         ])
-        proj = {"borough": "QUEENS", "project_class": "major_b",
-                "use_type": "school"}
+        proj = {
+            "bbl": "4000039999",
+            "borough": "QUEENS",
+            "pluto_snapshot": {
+                "bldgclass": "C1",  # no PLUTO rows match
+                "landuse": "school",
+            },
+            "use_type": "school",
+        }
         bbls, meta = _run(bl.peer_bbls(socrata, proj))
         self.assertEqual(meta["tier"], "borough")
         self.assertGreaterEqual(meta["sample_size"], 20)
@@ -232,24 +256,73 @@ class TestFallbackLadder(unittest.TestCase):
     def test_tier_4_citywide(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"500006{i:04d}", "STATEN ISLAND") for i in range(5)
+            _pluto_row(f"500006{i:04d}", "SI") for i in range(5)
         ] + [
-            _pluto_row(f"100007{i:04d}", "MANHATTAN") for i in range(15)
+            _pluto_row(f"100007{i:04d}", "MN") for i in range(15)
         ])
-        proj = {"borough": "BRONX"}
+        # Borough doesn't match the seeded rows, no snapshot →
+        # tier 1-3 all return 0, tier 4 returns the full set.
+        proj = {"bbl": "2000079999", "borough": "BRONX"}
         bbls, meta = _run(bl.peer_bbls(socrata, proj))
         self.assertEqual(meta["tier"], "citywide")
         self.assertEqual(meta["sample_size"], 20)
 
+    def test_tier_4_citywide_caps_at_max_peers(self):
+        """NEW PIN 3 — schema-corrections hotfix CORRECTION 4.
+
+        Tier-4 citywide fallback MUST cap at
+        ``CITYWIDE_TIER_MAX_PEERS`` (10,000) and MUST NOT
+        paginate. Paginating the full ~858k-parcel NYC city
+        always times out under the 30s sync timeout — verified
+        in prod. This pin catches a future engineer who
+        accidentally re-enables pagination or raises the cap.
+
+        Test contrivance: project has an unrecognized borough so
+        ``_pluto_borough`` returns None and tiers 1-3 are all
+        short-circuited (each requires a 2-letter borough
+        translation). That leaves tier 4 as the ONLY PLUTO call
+        — the assertion below pins that exact call count."""
+        socrata = MockSocrataClient()
+        # Seed 15,000 rows. Tier 4 is unfiltered so they all match.
+        socrata.seed(DATASET_PLUTO, [
+            _pluto_row(f"100008{i:05d}", "MN")
+            for i in range(15000)
+        ])
+        # ``_pluto_borough`` returns None for unknown inputs →
+        # ``borough_pluto`` is None → every tier 1/2/3 branch
+        # (gated by ``if borough_pluto and ...``) is skipped.
+        # Pre-stamping ``pluto_snapshot`` with a truthy value
+        # that lacks ``bldgclass`` skips the snapshot-fetch round
+        # trip AND keeps ``dof_bldgclass`` None (no tier-1/2
+        # match anyway). Only the tier-4 fetch runs.
+        proj = {
+            "bbl": "2000089999",
+            "borough": "ATLANTIS",  # not in _PLUTO_BOROUGH_CODE
+            "pluto_snapshot": {"bbl": "2000089999"},  # no bldgclass
+        }
+        bbls, meta = _run(bl.peer_bbls(socrata, proj))
+        # Cap is applied — exactly the cap, NOT the seeded 15,000.
+        self.assertEqual(meta["tier"], "citywide")
+        self.assertEqual(len(bbls), bl.CITYWIDE_TIER_MAX_PEERS)
+        self.assertEqual(len(bbls), 10000)
+        self.assertNotEqual(len(bbls), 15000)
+        # No pagination + tiers 1-3 short-circuited → exactly ONE
+        # PLUTO call total (the tier-4 single bounded ``query``).
+        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
+        self.assertEqual(len(pluto_calls), 1)
+
     def test_pluto_bbl_decimal_suffix_stripped(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100008{i:04d}.00000000", "borough": "MANHATTAN",
-             "bldgclass": "O", "landuse": "office"}
+            {"bbl": f"100008{i:04d}.00000000", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"}
             for i in range(20)
         ])
-        proj = {"borough": "MANHATTAN", "project_class": "O",
-                "use_type": "office"}
+        proj = {
+            "bbl": "1000089999",
+            "borough": "MANHATTAN",
+            "pluto_snapshot": {"bldgclass": "O4", "landuse": "office"},
+        }
         bbls, _meta = _run(bl.peer_bbls(socrata, proj))
         for b in bbls:
             self.assertNotIn(".", b, f"BBL {b!r} carries .0 suffix")
@@ -263,14 +336,18 @@ class TestFallbackLadder(unittest.TestCase):
 class TestCountEventsForBblsSocrata(unittest.TestCase):
 
     def test_includes_zero_count_bbls(self):
+        """Schema-corrections hotfix: violations is gated off
+        peer counts (no ``bbl`` column on 3h2n-5cm9), so this
+        test now exercises the zero-fill path on the inspections
+        dataset (which still has ``bbl``)."""
         socrata = MockSocrataClient()
-        socrata.seed(DATASET_DOB_VIOLATIONS, [
-            {"bbl": "1008470001", "issue_date": "2026-04-01T00:00:00"},
-            {"bbl": "1008470001", "issue_date": "2026-04-02T00:00:00"},
-            {"bbl": "1008470002", "issue_date": "2026-04-03T00:00:00"},
+        socrata.seed(DATASET_DOB_INSPECTIONS, [
+            {"bbl": "1008470001", "inspection_date": "2026-04-01T00:00:00"},
+            {"bbl": "1008470001", "inspection_date": "2026-04-02T00:00:00"},
+            {"bbl": "1008470002", "inspection_date": "2026-04-03T00:00:00"},
         ])
         counts = _run(bl._count_events_for_bbls_socrata(
-            socrata, DATASET_DOB_VIOLATIONS,
+            socrata, DATASET_DOB_INSPECTIONS,
             ["1008470001", "1008470002", "1008470003", "1008470004"],
             since=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ))
@@ -304,20 +381,23 @@ class TestCountEventsForBblsSocrata(unittest.TestCase):
         self.assertEqual(counts, {"1009000001": 2})
 
     def test_chunking_large_bbl_list(self):
+        """Schema-corrections hotfix: chunking is now exercised
+        on the inspections dataset because violations is gated
+        off peer counts (no ``bbl`` column on 3h2n-5cm9)."""
         n_total = bl.SOQL_IN_CHUNK_SIZE + 50
         bbls = [f"100100{i:04d}" for i in range(n_total)]
         socrata = MockSocrataClient()
-        socrata.seed(DATASET_DOB_VIOLATIONS, [
-            {"bbl": b, "issue_date": "2026-04-01T00:00:00"} for b in bbls
+        socrata.seed(DATASET_DOB_INSPECTIONS, [
+            {"bbl": b, "inspection_date": "2026-04-01T00:00:00"} for b in bbls
         ])
         counts = _run(bl._count_events_for_bbls_socrata(
-            socrata, DATASET_DOB_VIOLATIONS, bbls,
+            socrata, DATASET_DOB_INSPECTIONS, bbls,
             since=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ))
         self.assertEqual(len(counts), n_total)
         self.assertTrue(all(v == 1 for v in counts.values()))
-        v_calls = [c for c in socrata.calls if c[0] == DATASET_DOB_VIOLATIONS]
-        self.assertGreater(len(v_calls), 1)
+        i_calls = [c for c in socrata.calls if c[0] == DATASET_DOB_INSPECTIONS]
+        self.assertGreater(len(i_calls), 1)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -377,27 +457,34 @@ class TestPercentileRank(unittest.TestCase):
 class TestComputePeerStatsFull(unittest.TestCase):
 
     def _seed_full_dataset(self, socrata, *, peer_bbls, project_bbl,
-                           v_per_bbl, project_v):
+                           i_per_bbl, project_i):
+        """Schema-corrections hotfix: peer aggregation rides on
+        the inspections dataset (which has a real ``bbl`` column).
+        Violations is gated off peer comparison and surfaces as
+        ``{"available": False, ...}`` in the cache."""
+        # Schema-correct PLUTO seed: 2-letter borough + DOF
+        # bldgclass code. Project's own BBL also gets a PLUTO
+        # row so fetch_project_pluto_snapshot resolves cleanly.
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": b, "borough": "MANHATTAN", "bldgclass": "O",
+            {"bbl": b, "borough": "MN", "bldgclass": "O4",
              "landuse": "office"}
-            for b in peer_bbls
+            for b in (peer_bbls + [project_bbl])
         ])
-        # Project events.
-        socrata.seed(DATASET_DOB_VIOLATIONS, [
-            {"bbl": project_bbl, "issue_date": "2025-06-01T00:00:00"}
-            for _ in range(project_v)
+        # Project events on inspections (replaces V2.2-era
+        # violations seeding — violations is now gated).
+        socrata.seed(DATASET_DOB_INSPECTIONS, [
+            {"bbl": project_bbl, "inspection_date": "2025-06-01T00:00:00"}
+            for _ in range(project_i)
         ])
-        # Peer events.
+        # Peer events on inspections.
         for b in peer_bbls:
             if b == project_bbl:
                 continue
-            socrata.seed(DATASET_DOB_VIOLATIONS, [
-                {"bbl": b, "issue_date": "2025-06-01T00:00:00"}
-                for _ in range(v_per_bbl)
+            socrata.seed(DATASET_DOB_INSPECTIONS, [
+                {"bbl": b, "inspection_date": "2025-06-01T00:00:00"}
+                for _ in range(i_per_bbl)
             ])
-        # Empty inspections + complaints to satisfy gather pattern.
-        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        # Empty 311 to keep complaints summary clean.
         socrata.seed(DATASET_COMPLAINTS_311, [])
 
     def test_returns_documented_shape(self):
@@ -405,12 +492,12 @@ class TestComputePeerStatsFull(unittest.TestCase):
         peer_set = [f"100010{i:04d}" for i in range(25)]
         self._seed_full_dataset(
             socrata, peer_bbls=peer_set,
-            project_bbl="1000100000", v_per_bbl=1, project_v=10,
+            project_bbl="1000100000", i_per_bbl=1, project_i=10,
         )
         cache = _run(bl.compute_peer_stats_full(
             socrata,
             {"bbl": "1000100000", "borough": "MANHATTAN",
-             "project_class": "O", "use_type": "office"},
+             "use_type": "office"},
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
         self.assertEqual(cache["status"], "ready")
@@ -423,27 +510,81 @@ class TestComputePeerStatsFull(unittest.TestCase):
         self.assertIn("violations", cache)
         self.assertIn("inspections", cache)
         self.assertIn("complaints", cache)
-        self.assertEqual(cache["violations"]["project_count"], 10)
+        # Project counts now ride on inspections; violations is
+        # gated as {"available": False, ...} (no project_count
+        # on that sub-dict).
+        self.assertEqual(cache["inspections"]["project_count"], 10)
 
     def test_excludes_project_own_bbl_from_peer_summary(self):
         socrata = MockSocrataClient()
         peer_set = [f"100011{i:04d}" for i in range(25)]
         self._seed_full_dataset(
             socrata, peer_bbls=peer_set,
-            project_bbl="1000110000", v_per_bbl=1, project_v=50,
+            project_bbl="1000110000", i_per_bbl=1, project_i=50,
         )
         cache = _run(bl.compute_peer_stats_full(
             socrata,
             {"bbl": "1000110000", "borough": "MANHATTAN",
-             "project_class": "O", "use_type": "office"},
+             "use_type": "office"},
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
-        self.assertEqual(cache["violations"]["project_count"], 50)
-        self.assertEqual(cache["violations"]["median"], 1.0)
-        self.assertEqual(cache["violations"]["n"], 24)
+        # Inspections now carries the percentile math (violations
+        # is gated unavailable per the schema-corrections hotfix).
+        self.assertEqual(cache["inspections"]["project_count"], 50)
+        self.assertEqual(cache["inspections"]["median"], 1.0)
+        self.assertEqual(cache["inspections"]["n"], 24)
         self.assertAlmostEqual(
-            cache["violations"]["percentile_rank"], 100.0,
+            cache["inspections"]["percentile_rank"], 100.0,
         )
+
+    def test_violations_gated_as_unavailable_in_peer_cache(self):
+        """NEW PIN 1 — schema-corrections hotfix CORRECTION 3
+        Option A. dob_violations is excluded from BBL-keyed peer
+        comparison (the dataset has no ``bbl`` column), so the
+        cache must surface a degenerate
+        ``{"available": False, ...}`` entry rather than
+        zero-filled stats. score._normalize_peer_comparison
+        relies on this signal to skip the dimension and average
+        only over measurable ones."""
+        socrata = MockSocrataClient()
+        peer_set = [f"100018{i:04d}" for i in range(25)]
+        self._seed_full_dataset(
+            socrata, peer_bbls=peer_set,
+            project_bbl="1000180000", i_per_bbl=2, project_i=5,
+        )
+        cache = _run(bl.compute_peer_stats_full(
+            socrata,
+            {"bbl": "1000180000", "borough": "MANHATTAN",
+             "use_type": "office"},
+            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        ))
+        # violations is unavailable.
+        self.assertEqual(cache["violations"]["available"], False)
+        self.assertEqual(
+            cache["violations"]["unavailable_reason"],
+            "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+        )
+        self.assertIn("peer_data_dropped_in_pr", cache["violations"])
+        # The unavailable shape MUST NOT carry the per-dataset
+        # measurement fields — a future engineer who "fixes" the
+        # gate by zero-filling instead of marking unavailable
+        # would re-introduce the percentile_rank-pinned-to-100
+        # bug; this pin catches that.
+        for forbidden_key in (
+            "percentile_rank", "peer_median", "peer_p75",
+            "peer_p90", "project_count",
+        ):
+            self.assertNotIn(
+                forbidden_key, cache["violations"],
+                f"violations sub-dict carries {forbidden_key!r} "
+                f"while available=False",
+            )
+        # inspections + 311 are available with the full V2.3
+        # internal shape.
+        self.assertEqual(cache["inspections"]["available"], True)
+        self.assertEqual(cache["complaints"]["available"], True)
+        for label in ("inspections", "complaints"):
+            self.assertIn("percentile_rank", cache[label])
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -455,17 +596,21 @@ class TestRefreshPeerStatsIncremental(unittest.TestCase):
 
     def test_falls_back_to_full_compute_on_empty_cache(self):
         socrata = MockSocrataClient()
+        # Schema-correct PLUTO seed (2-letter borough + DOF code).
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100012{i:04d}", "borough": "MANHATTAN",
-             "bldgclass": "O", "landuse": "office"}
+            {"bbl": f"100012{i:04d}", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"}
             for i in range(25)
+        ] + [
+            {"bbl": "1000120000", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"},
         ])
         socrata.seed(DATASET_DOB_VIOLATIONS, [])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [])
         project = {
             "bbl": "1000120000", "borough": "MANHATTAN",
-            "project_class": "O", "use_type": "office",
+            "use_type": "office",
             "peer_stats_cache": {},  # malformed cache
         }
         cache = _run(bl.refresh_peer_stats_incremental(
@@ -538,17 +683,21 @@ class TestCountOwnBuildingEvents(unittest.TestCase):
         })
 
     def test_violations_split_into_30d_and_90d_buckets(self):
+        """Schema-corrections hotfix: ``issue_date`` on
+        dob_violations (3h2n-5cm9) is a YYYYMMDD text column,
+        not ISO-8601. Cutoffs and seed dates both use the
+        no-separator format."""
         now = datetime(2026, 5, 10, tzinfo=timezone.utc)
         socrata = MockSocrataClient()
         socrata.seed(DATASET_DOB_VIOLATIONS, [
-            {"bin": "1234567", "issue_date":
-                (now - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S")},
-            {"bin": "1234567", "issue_date":
-                (now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")},
-            {"bin": "1234567", "issue_date":
-                (now - timedelta(days=45)).strftime("%Y-%m-%dT%H:%M:%S")},
-            {"bin": "1234567", "issue_date":
-                (now - timedelta(days=80)).strftime("%Y-%m-%dT%H:%M:%S")},
+            {"bin": "1234567",
+             "issue_date": (now - timedelta(days=5)).strftime("%Y%m%d")},
+            {"bin": "1234567",
+             "issue_date": (now - timedelta(days=10)).strftime("%Y%m%d")},
+            {"bin": "1234567",
+             "issue_date": (now - timedelta(days=45)).strftime("%Y%m%d")},
+            {"bin": "1234567",
+             "issue_date": (now - timedelta(days=80)).strftime("%Y%m%d")},
         ])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [])
@@ -583,26 +732,30 @@ class TestCountOwnBuildingEvents(unittest.TestCase):
         self.assertEqual(out["inspections_failed_60d"], 2)
 
     def test_open_complaints_excludes_closed(self):
+        """Schema-corrections hotfix: 311 (erm2-nwe9) has NO
+        ``bin`` column — the own-complaints filter must use
+        ``bbl`` instead. Caller threads the project's bbl
+        through to ``count_own_building_events``."""
         now = datetime(2026, 5, 10, tzinfo=timezone.utc)
         socrata = MockSocrataClient()
         socrata.seed(DATASET_DOB_VIOLATIONS, [])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [
-            {"bin": "1234567",
+            {"bbl": "1001234567",
              "created_date": (now - timedelta(days=5)).strftime(
                  "%Y-%m-%dT%H:%M:%S"),
              "status": "Open"},
-            {"bin": "1234567",
+            {"bbl": "1001234567",
              "created_date": (now - timedelta(days=10)).strftime(
                  "%Y-%m-%dT%H:%M:%S"),
              "status": "Closed"},
-            {"bin": "1234567",
+            {"bbl": "1001234567",
              "created_date": (now - timedelta(days=15)).strftime(
                  "%Y-%m-%dT%H:%M:%S"),
              "status": "In Progress"},
         ])
         out = _run(bl.count_own_building_events(
-            socrata, bin_="1234567", now=now,
+            socrata, bin_="1234567", bbl="1001234567", now=now,
         ))
         self.assertEqual(out["open_complaints_30d"], 2)
 
@@ -615,6 +768,12 @@ class TestCountOwnBuildingEvents(unittest.TestCase):
 class TestCompareProjectToPeersCacheAware(unittest.TestCase):
 
     def test_returns_cached_when_ready(self):
+        """Schema-corrections hotfix: per-dataset entries gain
+        an ``available`` flag. ``violations`` is gated unavailable
+        and surfaces only the unavailable-signal keys; the other
+        two carry the V2.3 measurement shape (V2.2 keys +
+        ``available``).
+        """
         socrata = MockSocrataClient()
         cache = {
             "status": "ready",
@@ -622,17 +781,27 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
             "peer_criteria": {
                 "borough": "MANHATTAN",
-                "project_class": "O",
+                "project_class": "O4",
                 "use_type": "office",
                 "tier": "borough_class_use",
                 "sample_size": 24,
                 "fallback_level": 1,
             },
-            "violations": {"n": 24, "median": 1.0, "p75": 2.0, "p90": 3.0,
-                           "project_count": 5, "percentile_rank": 80.0},
-            "inspections": {"n": 24, "median": 0.5, "p75": 1.0, "p90": 2.0,
+            # Cache uses the V2.3 internal shape that
+            # _assemble_cache emits: violations marked
+            # unavailable; inspections + 311 carry summary stats.
+            "violations": {
+                "available": False,
+                "unavailable_reason":
+                    "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+                "peer_data_dropped_in_pr":
+                    "v2.3-schema-corrections-hotfix",
+            },
+            "inspections": {"available": True,
+                            "n": 24, "median": 0.5, "p75": 1.0, "p90": 2.0,
                             "project_count": 2, "percentile_rank": 70.0},
-            "complaints": {"n": 24, "median": 0.0, "p75": 0.5, "p90": 1.0,
+            "complaints": {"available": True,
+                           "n": 24, "median": 0.0, "p75": 0.5, "p90": 1.0,
                            "project_count": 0, "percentile_rank": 50.0},
         }
         project = {"_id": "P1", "peer_stats_cache": cache}
@@ -643,28 +812,41 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
         self.assertEqual(result["peer_set"]["sample_size"], 24)
-        self.assertEqual(result["violations"]["project_count"], 5)
-        self.assertEqual(result["violations"]["percentile_rank"], 80.0)
         # Hot path: no Socrata calls.
         self.assertEqual(len(socrata.calls), 0)
 
-        # Strict shape parity with V2.2: top-level + each dataset
-        # sub-dict + peer_set for tier 1 must have EXACTLY these
-        # key sets. A regression that adds or drops a field
-        # silently breaks score.py's peer-subscore math.
+        # Strict shape parity: top-level keys and per-dataset
+        # key sets. Violations carries the unavailable-signal
+        # keys only; inspections + 311 carry V2.2 keys plus the
+        # new ``available`` flag.
         self.assertSetEqual(
             set(result.keys()),
             {"peer_set", "violations", "inspections", "complaints"},
         )
-        per_dataset_keys = {
-            "project_count", "peer_median", "peer_p75", "peer_p90",
-            "percentile_rank", "peer_sample_size",
+        unavailable_keys = {
+            "available", "unavailable_reason", "peer_data_dropped_in_pr",
         }
-        for label in ("violations", "inspections", "complaints"):
+        self.assertSetEqual(
+            set(result["violations"].keys()), unavailable_keys,
+            "violations sub-dict shape diverged from "
+            "V2.3-unavailable schema",
+        )
+        self.assertFalse(result["violations"]["available"])
+        available_keys = {
+            "available", "project_count", "peer_median",
+            "peer_p75", "peer_p90", "percentile_rank",
+            "peer_sample_size",
+        }
+        for label in ("inspections", "complaints"):
             self.assertSetEqual(
-                set(result[label].keys()), per_dataset_keys,
-                f"{label} sub-dict shape diverged from V2.2",
+                set(result[label].keys()), available_keys,
+                f"{label} sub-dict shape diverged from "
+                f"V2.3-available schema",
             )
+            self.assertTrue(result[label]["available"])
+        # Inspections percentile data is intact.
+        self.assertEqual(result["inspections"]["project_count"], 2)
+        self.assertEqual(result["inspections"]["percentile_rank"], 70.0)
         # Tier 1 peer_set carries all five keys (the V2.2 tier-1
         # baseline emission from peer_bbls()).
         self.assertSetEqual(
@@ -764,17 +946,23 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
 
     def test_synchronous_compute_on_cache_miss_persists_back(self):
         socrata = MockSocrataClient()
+        # Schema-correct PLUTO seed (2-letter borough + DOF
+        # code) — plus a row for the project's own BBL so the
+        # pluto_snapshot lookup resolves cleanly.
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100014{i:04d}", "borough": "MANHATTAN",
-             "bldgclass": "O", "landuse": "office"}
+            {"bbl": f"100014{i:04d}", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"}
             for i in range(25)
+        ] + [
+            {"bbl": "1000140000", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"},
         ])
         socrata.seed(DATASET_DOB_VIOLATIONS, [])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [])
         project = {
             "_id": "P2", "bbl": "1000140000", "borough": "MANHATTAN",
-            "project_class": "O", "use_type": "office",
+            "use_type": "office",
         }
         db = _StubDb(projects=[dict(project)])
 
@@ -914,10 +1102,15 @@ class TestCompareProjectStatusGuards(unittest.TestCase):
         fresh cache."""
         socrata = MockSocrataClient()
         # Seed a tier-1 PLUTO peer set so compute can complete.
+        # Schema-correct (2-letter borough + DOF code) + own-BBL
+        # snapshot row for fetch_project_pluto_snapshot.
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100250{i:04d}", "borough": "MANHATTAN",
-             "bldgclass": "O", "landuse": "office"}
+            {"bbl": f"100250{i:04d}", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"}
             for i in range(25)
+        ] + [
+            {"bbl": "1002500000", "borough": "MN",
+             "bldgclass": "O4", "landuse": "office"},
         ])
         socrata.seed(DATASET_DOB_VIOLATIONS, [])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
@@ -934,7 +1127,7 @@ class TestCompareProjectStatusGuards(unittest.TestCase):
         project = {
             "_id": "PG3", "peer_stats_cache": cache,
             "bbl": "1002500000", "borough": "MANHATTAN",
-            "project_class": "O", "use_type": "office",
+            "use_type": "office",
         }
         db = _StubDb(projects=[project])
 
