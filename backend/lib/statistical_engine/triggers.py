@@ -560,8 +560,41 @@ def _soql_quote(value: str) -> str:
 
 def _iso_z(dt: datetime) -> str:
     """Format a datetime in ISO-8601 form Socrata accepts as a
-    floating-timestamp comparator RHS."""
+    floating-timestamp comparator RHS. Used for 311 +
+    inspections (which carry true timestamp columns).
+    """
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _yyyymmdd(dt: datetime) -> str:
+    """Format a datetime as ``YYYYMMDD``, the no-separator string
+    format dob_violations (3h2n-5cm9) uses for ``issue_date``.
+    """
+    return dt.strftime("%Y%m%d")
+
+
+# DOB inspections (p937-wjvj) ships a numeric ``boro_code`` (1-5)
+# alongside its mixed-case ``borough`` ("Brooklyn") column. The
+# borough_code is the stable identifier — the casing of the
+# string column has flipped across past dataset versions. Use the
+# numeric code for borough-sweep queries.
+_INSPECTION_BORO_CODE = {
+    "MANHATTAN":     "1",
+    "BRONX":         "2",
+    "BROOKLYN":      "3",
+    "QUEENS":        "4",
+    "STATEN ISLAND": "5",
+}
+
+
+def _inspection_boro_code(stored: Optional[str]) -> Optional[str]:
+    """Translate Blueview's stored UPPER-case full borough name to
+    the 1-5 numeric ``boro_code`` p937-wjvj uses. Returns None for
+    unknown inputs so the caller can drop the filter rather than
+    send a malformed query."""
+    if not stored:
+        return None
+    return _INSPECTION_BORO_CODE.get(stored.strip().upper())
 
 
 def _parse_socrata_dt(value: Any) -> Optional[datetime]:
@@ -577,6 +610,27 @@ def _parse_socrata_dt(value: Any) -> Optional[datetime]:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
+    except ValueError:
+        return None
+
+
+def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
+    """Parse the ``issue_date`` column from dob_violations
+    (3h2n-5cm9), which is a YYYYMMDD string like ``"20171227"``.
+    Returns a tz-aware UTC datetime at midnight on that date.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if len(s) != 8 or not s.isdigit():
+        return None
+    try:
+        return datetime(
+            int(s[:4]), int(s[4:6]), int(s[6:8]),
+            tzinfo=timezone.utc,
+        )
     except ValueError:
         return None
 
@@ -628,13 +682,17 @@ async def gather_trigger_inputs(
     cutoff_90d = cur_now - timedelta(days=90)
     last7_cutoff = cur_now - timedelta(days=7)
 
-    # 311 at BIN — past 24h. ~erm2-nwe9.
-    if bin_:
+    # 311 at OWN BUILDING — past 24h. Schema-corrections hotfix:
+    # erm2-nwe9 has NO ``bin`` column; filter by ``bbl`` instead.
+    # The trigger function (trigger_311_at_bin) keeps its name for
+    # backwards compatibility but its semantics are now "311 at
+    # the project's BBL", not "311 at the project's BIN".
+    if bbl:
         try:
             rows = await socrata.query_all(
                 DATASET_COMPLAINTS_311,
                 where=(
-                    f"bin = {_soql_quote(bin_)} AND created_date > "
+                    f"bbl = {_soql_quote(bbl)} AND created_date > "
                     f"{_soql_quote(_iso_z(cutoff_24h))}"
                 ),
                 page_size=1000,
@@ -643,10 +701,11 @@ async def gather_trigger_inputs(
         except SocrataQueryError as e:
             logger.warning("[triggers] recent_311_at_bin failed: %r", e)
 
-    # 311 neighbor — past 24h, same block, NOT same BIN. We push
-    # the block-prefix filter down to SoQL via starts_with() —
-    # smaller wire size than V2.2's "fetch whole day, filter in
-    # Python" pattern.
+    # 311 neighbor — past 24h, same block, NOT same building. We
+    # push the block-prefix filter down to SoQL via starts_with()
+    # — smaller wire size than V2.2's "fetch whole day, filter in
+    # Python" pattern. Schema-corrections hotfix: skip own-building
+    # via ``bbl`` (not ``bin``, which doesn't exist on 311).
     if block:
         try:
             rows = await socrata.query_all(
@@ -658,19 +717,23 @@ async def gather_trigger_inputs(
                 page_size=1000,
             )
             for doc in rows:
-                if doc.get("bin") != bin_:
+                if doc.get("bbl") != bbl:
                     out["recent_311_neighbor"].append(doc)
         except SocrataQueryError as e:
             logger.warning("[triggers] recent_311_neighbor failed: %r", e)
 
     # Borough inspection rolling 90-day counts (per-day list).
-    borough = project.get("borough")
-    if borough:
+    # Schema-corrections hotfix: inspections (p937-wjvj) ships
+    # ``borough`` in mixed case ("Brooklyn") and ``boro_code`` as
+    # a 1-5 numeric. The numeric is stable across dataset
+    # republications; use that instead of the brittle string.
+    boro_code = _inspection_boro_code(project.get("borough"))
+    if boro_code:
         try:
             rows = await socrata.query_all(
                 DATASET_DOB_INSPECTIONS,
                 where=(
-                    f"borough = {_soql_quote(borough)} AND "
+                    f"boro_code = {_soql_quote(boro_code)} AND "
                     f"inspection_date > {_soql_quote(_iso_z(cutoff_90d))}"
                 ),
                 select=["inspection_date"],
@@ -691,14 +754,23 @@ async def gather_trigger_inputs(
         except SocrataQueryError as e:
             logger.warning("[triggers] borough inspections failed: %r", e)
 
-    # Neighbor SWO + nearby violations (BBL block proximity).
-    if block:
+    # Neighbor SWO + nearby violations (block proximity).
+    # Schema-corrections hotfix: dob_violations (3h2n-5cm9) does
+    # NOT carry a ``bbl`` column; the block-proximity filter has
+    # to go through ``boro``+``block`` instead. ``issue_date`` is
+    # also a YYYYMMDD string column (not ISO datetime) so cutoffs
+    # and parsing both switch to ``_yyyymmdd`` /
+    # ``_parse_socrata_yyyymmdd``.
+    if bbl and len(bbl) >= 6:
+        boro_digit = bbl[:1]
+        block_only = bbl[1:6].lstrip("0") or "0"
         try:
             rows = await socrata.query_all(
                 DATASET_DOB_VIOLATIONS,
                 where=(
-                    f"starts_with(bbl, {_soql_quote(block)}) AND "
-                    f"issue_date > {_soql_quote(_iso_z(cutoff_60d))}"
+                    f"boro = {_soql_quote(boro_digit)} AND "
+                    f"block = {_soql_quote(block_only)} AND "
+                    f"issue_date > {_soql_quote(_yyyymmdd(cutoff_60d))}"
                 ),
                 page_size=5000,
             )
@@ -707,7 +779,7 @@ async def gather_trigger_inputs(
                 # trigger via the own-BIN query below.
                 if doc.get("bin") == bin_:
                     continue
-                occ = _parse_socrata_dt(doc.get("issue_date"))
+                occ = _parse_socrata_yyyymmdd(doc.get("issue_date"))
                 if occ is None:
                     continue
                 if occ >= cutoff_60d:

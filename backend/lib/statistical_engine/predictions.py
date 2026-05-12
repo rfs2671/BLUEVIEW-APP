@@ -300,6 +300,17 @@ async def predict_inspection_from_complaint(
     """
     cur_now = now or datetime.now(timezone.utc)
     complaint_type = (complaint.get("complaint_type") or "").strip()
+    # TODO(schema-corrections): both sides of this OR happen to
+    # produce the same UPPER-case full borough name format that
+    # the 311 dataset (erm2-nwe9) stores natively — Blueview
+    # projects also store "BROOKLYN" — so the query at line ~320
+    # works by coincidence. If a future commit normalizes
+    # project.borough to 2-letter PLUTO codes ("BK") or mixed
+    # case ("Brooklyn"), this line MUST translate back to the
+    # 311 storage format ("BROOKLYN") before issuing the query.
+    # The other dataset-specific borough translations live in
+    # baselines.py (_pluto_borough) and triggers.py
+    # (_inspection_boro_code) — model the fix on those.
     borough = (complaint.get("borough") or project.get("borough") or "").strip()
     complaint_id = (complaint.get("unique_key") or "").strip()
     complaint_date = _parse_socrata_dt(complaint.get("created_date")) or cur_now

@@ -72,7 +72,10 @@ RETRY_JITTER_SECONDS = 0.5
 #
 #   • dob_violations  3h2n-5cm9   — V2.2.4 Path A curl probe 2026-05-10
 #   • dob_inspections p937-wjvj   — V2.2.2 BUG 1 fix
-#   • dob_permits     ipu4-2q9a   — V2.2.3 BUG 6 fix
+#   • dob_permits     rbx6-tga4   — V2.3 schema-corrections hotfix
+#                                  (ipu4-2q9a deprecated; rbx6-tga4
+#                                  is current-of-record and carries
+#                                  both bin AND bbl)
 #   • complaints_311  erm2-nwe9   — original
 #   • ecb_violations  6bgk-3dad   — original
 #   • hpd_violations  wvxf-dwi5   — original
@@ -80,7 +83,7 @@ RETRY_JITTER_SECONDS = 0.5
 
 DATASET_DOB_VIOLATIONS  = "3h2n-5cm9"
 DATASET_DOB_INSPECTIONS = "p937-wjvj"
-DATASET_DOB_PERMITS     = "ipu4-2q9a"
+DATASET_DOB_PERMITS     = "rbx6-tga4"
 DATASET_COMPLAINTS_311  = "erm2-nwe9"
 DATASET_ECB_VIOLATIONS  = "6bgk-3dad"
 DATASET_HPD_VIOLATIONS  = "wvxf-dwi5"

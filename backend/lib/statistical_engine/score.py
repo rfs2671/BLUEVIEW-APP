@@ -118,20 +118,56 @@ def _normalize_own_building(
     return float(max(0.0, min(100.0, score)))
 
 
+def _percentile_or_none(dataset_summary: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Extract the percentile_rank for one dataset dim of a
+    ``peer_compare`` dict, returning None when the dimension is
+    flagged ``available=False`` by the V2.3 schema-corrections
+    hotfix. Backward-compat: a missing ``available`` field
+    defaults to True (legacy caches without the flag).
+    """
+    if not dataset_summary:
+        return None
+    if dataset_summary.get("available", True) is False:
+        return None
+    return float(dataset_summary.get("percentile_rank", 0.0))
+
+
 def _normalize_peer_comparison(
     *,
-    violations_percentile: float,
-    inspections_percentile: float,
-    complaints_percentile: float,
+    violations_percentile: Optional[float],
+    inspections_percentile: Optional[float],
+    complaints_percentile: Optional[float],
 ) -> float:
-    """Take the project's percentile rank across the three event
-    types; mean. 50th = average; 99th = far worse than peers.
-    Clipped to [0, 100]."""
-    pct = (
-        violations_percentile +
-        inspections_percentile +
-        complaints_percentile
-    ) / 3.0
+    """Take the project's percentile rank across the available
+    event types; mean. 50th = average; 99th = far worse than
+    peers. Clipped to [0, 100].
+
+    V2.3 schema-corrections hotfix: any dimension may be ``None``
+    (e.g. violations, which is gated off the peer comparison
+    because dob_violations has no bbl column). Average is taken
+    over the measurable dimensions only — the divisor is the
+    count of non-None inputs, not a hard-coded 3. This prevents
+    a gated dimension from biasing the subscore (pinning to 100
+    or 0 depending on the project_count).
+
+    If ALL three dimensions are unavailable (theoretical edge
+    case), returns 0.0 — distinct from the timeout / empty
+    cases, which surface 0 with all-zero percentile_ranks via
+    ``baselines._zero_peer_marker``. An info log line records
+    the case for diagnostics.
+    """
+    dims = [
+        p for p in (violations_percentile,
+                    inspections_percentile,
+                    complaints_percentile)
+        if p is not None
+    ]
+    if not dims:
+        logger.info(
+            "[score] peer_subscore=0 reason=all_dimensions_unavailable",
+        )
+        return 0.0
+    pct = sum(dims) / len(dims)
     return float(max(0.0, min(100.0, pct)))
 
 
@@ -291,14 +327,17 @@ async def gather_score_inputs(
     """
     cur_now = now or datetime.now(timezone.utc)
     bin_ = project.get("nyc_bin") or project.get("bin")
+    bbl = project.get("bbl") or project.get("nyc_bbl")
     project_id = str(project.get("_id") or project.get("id") or "")
 
     # Own-building counts. V2.3: lazy Socrata via the centralized
     # helper in baselines.py. Soft-fails per-dataset inside the
     # helper, so a single bad source doesn't blank the others.
+    # Schema-corrections hotfix: 311 has no bin column; pass bbl
+    # so the helper can filter open-complaints by bbl instead.
     try:
         own = await count_own_building_events(
-            socrata, bin_=bin_, now=cur_now,
+            socrata, bin_=bin_, bbl=bbl, now=cur_now,
         )
     except Exception as e:
         logger.warning(
@@ -428,12 +467,9 @@ def _scores_from_inputs(
         open_complaints_30d=own.get("open_complaints_30d", 0),
     )
     peer_value = _normalize_peer_comparison(
-        violations_percentile=(peer.get("violations") or {}).get(
-            "percentile_rank", 0.0),
-        inspections_percentile=(peer.get("inspections") or {}).get(
-            "percentile_rank", 0.0),
-        complaints_percentile=(peer.get("complaints") or {}).get(
-            "percentile_rank", 0.0),
+        violations_percentile=_percentile_or_none(peer.get("violations")),
+        inspections_percentile=_percentile_or_none(peer.get("inspections")),
+        complaints_percentile=_percentile_or_none(peer.get("complaints")),
     )
     triggers_value = _normalize_active_triggers(active)
     internal_value = _normalize_internal_compliance(
