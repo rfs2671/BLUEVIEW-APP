@@ -2840,6 +2840,23 @@ async def onboarding_create_project(
     project_doc["id"] = str(result.inserted_id)
     project_doc.pop("_id", None)
 
+    # V2.3 Commit 4 — async pre-warm of peer_stats_cache. Fire-and-
+    # forget; the HTTP response returns immediately while the
+    # compute runs in the background. First risk-score recompute
+    # on this project becomes a cache-hit instead of paying the
+    # 500ms-2s synchronous compute cost. Spawn is wrapped in
+    # try/except so a bug here can never fail project creation.
+    try:
+        asyncio.create_task(
+            _stat_engine.prewarm_peer_stats(db, result.inserted_id),
+            name=f"prewarm_peer_stats:{result.inserted_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[create_project] prewarm task spawn failed for "
+            f"{result.inserted_id}: {_e!r}",
+        )
+
     return project_doc
 
 
@@ -3652,6 +3669,26 @@ async def get_project_risk_score(
         latest = doc
     if latest is None:
         raise HTTPException(status_code=404, detail="No score yet")
+
+    # V2.3 Commit 6 — opportunistic prediction-resolution check.
+    # Fire-and-forget: while the operator is viewing this
+    # project's score, refresh any active 311-inspection
+    # predictions for the same project. Picks up actual DOB
+    # inspections that landed in the window between the last
+    # 30-min sweep and now, so the FE sees current resolution
+    # status without waiting for the scheduled tick. Wrapped in
+    # try/except so a spawn-side bug never breaks the GET.
+    try:
+        asyncio.create_task(
+            _stat_engine.opportunistic_resolution_check(db, project_id),
+            name=f"prediction_resolution_check:{project_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[prediction_resolution] opportunistic spawn failed for "
+            f"{project_id}: {_e!r}",
+        )
+
     return {"score": serialize_id(latest)}
 
 
@@ -3698,11 +3735,11 @@ async def calculate_project_risk_score(
 
 # ──────────────── V2.2 admin endpoints ────────────────────────────
 #
-# Three admin-only endpoints landed in Commit 6:
+# V2.3 Commit 1: the admin backfill endpoint was removed (it served
+# the V2.2 local-mirror architecture, which is being replaced by
+# lazy Socrata queries). Two admin-only endpoints survive:
 #   GET  /api/admin/risk-score/calibration  — calibration breakdown
 #   POST /api/admin/risk-score/weights      — manual prior tuning
-#   POST /api/admin/risk-score/backfill     — operator-triggered
-#                                              2-year initial backfill
 
 @api_router.get("/admin/risk-score/calibration")
 async def get_admin_risk_score_calibration(
@@ -3745,36 +3782,11 @@ async def post_admin_risk_score_weights(
     return {"prior": doc}
 
 
-class V22BackfillRequest(BaseModel):
-    years: Optional[int] = None
-    max_pages_per_dataset: Optional[int] = None
-
-
-@api_router.post("/admin/risk-score/backfill")
-async def post_admin_risk_score_backfill(
-    body: Optional[V22BackfillRequest] = None,
-    current_user = Depends(get_admin_user),
-):
-    """Operator-triggered initial 2-year backfill. Long-running
-    — the operator should run this from a long-lived REPL or
-    background process; this endpoint kicks it off and returns
-    after the FIRST page so the request doesn't time out.
-
-    Subsequent calls resume from the last cursor in
-    ingestion_state, so this is safe to invoke multiple times.
-    """
-    body = body or V22BackfillRequest()
-    years = body.years or _stat_engine.BACKFILL_YEARS
-    # Run only one page per dataset per HTTP request so we don't
-    # block the server thread for 30+ minutes. Operator runs
-    # this repeatedly (or via a long-running script) until
-    # ingestion_state.backfill_finished flips to True for every
-    # dataset.
-    max_pages = body.max_pages_per_dataset or 1
-    summaries = await _stat_engine.backfill_all_datasets(
-        db, years=years, max_pages_per_dataset=max_pages,
-    )
-    return {"backfill": summaries}
+# V2.3 Commit 1: the V2.2 backfill request model and endpoint
+# handler were removed. The handler drove the V2.2 local-mirror
+# backfill which is deprecated. Lazy-Socrata queries (Commits 2-3)
+# need no backfill endpoint; peer stats are computed at project
+# creation.
 
 
 # ==================== ADMIN USER MANAGEMENT ====================
@@ -5511,6 +5523,134 @@ def _empty_preview_response(days: int) -> Dict[str, Any]:
 # host the key material, not the operator's laptop).
 
 
+# ── V2.3 Commit 7 — In-app notifications inbox endpoints ──────────
+#
+# Backs the project-page notifications surface. The Mongo
+# collection is ``notifications`` (distinct from the email-audit
+# ``notification_log`` and the per-user ``notification_preferences``).
+# Schema + dispatch logic live in lib/notifications_inbox.py;
+# these endpoints are thin read/write wrappers.
+#
+# All four endpoints scope every Mongo operation to the current
+# user's ``user_id``. No cross-user reads or writes are possible
+# even by passing crafted notification ids — the (_id, user_id)
+# filter pair on update_one ensures a 404 instead of a write
+# against someone else's notification.
+
+import lib.notifications_inbox as _notifications_inbox  # noqa: E402
+
+
+@api_router.get("/notifications", tags=["Notifications"])
+async def list_notifications(
+    unread_only: bool = False,
+    project_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    current_user = Depends(get_current_user),
+):
+    """List the current user's notifications, newest first.
+
+    Default filter: ``status="active"`` (hides dismissed entries).
+    Optional ``unread_only=True`` adds ``read_at IS NULL``.
+    Optional ``project_id`` scopes to one project.
+
+    Pagination: same envelope as paginated_query
+    ({items, total, limit, skip, has_more}). offset is mapped to
+    skip for consistency.
+    """
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+    }
+    if unread_only:
+        query["read_at"] = None
+    if project_id:
+        query["project_id"] = project_id
+    return await paginated_query(
+        db[_notifications_inbox.NOTIFICATIONS_COLLECTION],
+        query,
+        sort_field="created_at",
+        sort_dir=-1,
+        limit=limit,
+        skip=offset,
+    )
+
+
+@api_router.get("/notifications/unread-count", tags=["Notifications"])
+async def get_notifications_unread_count(
+    project_id: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Return the current user's unread-active notification count.
+    FE polls this on a 60-second interval for the per-project
+    badge. Cheap: indexed query on (user_id, read_at)."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+        "read_at": None,
+    }
+    if project_id:
+        query["project_id"] = project_id
+    count = await db[_notifications_inbox.NOTIFICATIONS_COLLECTION].count_documents(query)
+    return {"count": count}
+
+
+@api_router.post(
+    "/notifications/{notification_id}/mark-read",
+    tags=["Notifications"],
+)
+async def mark_notification_read(
+    notification_id: str,
+    current_user = Depends(get_current_user),
+):
+    """Mark one notification as read. Ownership enforced by the
+    (_id, user_id) compound filter — 404 on cross-user access."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    now = datetime.now(timezone.utc)
+    coll = db[_notifications_inbox.NOTIFICATIONS_COLLECTION]
+    result = await coll.update_one(
+        {"_id": to_query_id(notification_id), "user_id": user_id},
+        {"$set": {"read_at": now}},
+    )
+    if getattr(result, "matched_count", 0) == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    updated = await coll.find_one(
+        {"_id": to_query_id(notification_id), "user_id": user_id},
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return serialize_id(dict(updated))
+
+
+@api_router.post(
+    "/notifications/mark-all-read",
+    tags=["Notifications"],
+)
+async def mark_all_notifications_read(
+    project_id: Optional[str] = None,
+    current_user = Depends(get_current_user),
+):
+    """Bulk mark all unread-active notifications for the current
+    user as read. Optional ``project_id`` scopes to one project's
+    inbox."""
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    now = datetime.now(timezone.utc)
+    query: Dict[str, Any] = {
+        "user_id": user_id,
+        "status":  "active",
+        "read_at": None,
+    }
+    if project_id:
+        query["project_id"] = project_id
+    result = await db[_notifications_inbox.NOTIFICATIONS_COLLECTION].update_many(
+        query,
+        {"$set": {"read_at": now}},
+    )
+    return {"marked_count": getattr(result, "modified_count", 0) or 0}
+
+
 # ── Authorization document ─────────────────────────────────────────
 # Historical MR.10 surface. The frontend credential-entry UI used to
 # require the operator to accept this text + type the licensee name
@@ -6755,6 +6895,23 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
         "name": project_dict.get("name"), "address": project_dict.get("address"),
         "project_class": project_dict.get("project_class"), "suggested_class": suggested,
     })
+
+    # V2.3 Commit 4 — async pre-warm of peer_stats_cache. Fire-and-
+    # forget; the HTTP response returns immediately while the
+    # compute runs in the background. First risk-score recompute
+    # on this project becomes a cache-hit instead of paying the
+    # 500ms-2s synchronous compute cost. Spawn is wrapped in
+    # try/except so a bug here can never fail project creation.
+    try:
+        asyncio.create_task(
+            _stat_engine.prewarm_peer_stats(db, result.inserted_id),
+            name=f"prewarm_peer_stats:{result.inserted_id}",
+        )
+    except Exception as _e:
+        logger.warning(
+            f"[create_project] prewarm task spawn failed for "
+            f"{result.inserted_id}: {_e!r}",
+        )
 
     # Defense in depth — the lift above already covered model_dump's
     # None values, but if any code path between then and now wrote
@@ -13956,6 +14113,51 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
                 # poll for a project quietly backfills the historical
                 # complaints without spamming the owner.
                 await _send_critical_dob_alert_throttled(project, doc, source="311")
+
+            # V2.3 Commit 6 — predictive inspection surfacing.
+            # Spawn a fire-and-forget similar-case correlation
+            # only when ALL four suppression conditions are met:
+            #
+            #   1. existing is None       — truly NEW complaint.
+            #      Status transitions (e.g., Open → Closed) also
+            #      reach this path via the insert above, but the
+            #      complaint itself was seen earlier; any
+            #      inspection it triggered may have already
+            #      happened, and a status-change prediction would
+            #      have lower signal value.
+            #   2. not is_seed_transition_311 — synthetic seed
+            #      rows (from the V2.2 schema migration) must not
+            #      fire predictions.
+            #   3. _initial_scan_done — same gate the email
+            #      throttler uses. First poll for a project is
+            #      historical backfill; predictions on backfill
+            #      would surface stale "inspection likely
+            #      tomorrow" alerts for complaints from months
+            #      ago.
+            #   4. severity == "Action" — non-Action 311 categories
+            #      (noise, parking) don't correlate with DOB
+            #      inspections.
+            #
+            # Spawn wrapped in try/except so a prediction-side bug
+            # never breaks the 311 poll's existing dedup + Mongo
+            # write path. The wrapper itself (try_predict_inspection_
+            # from_complaint) has its own outer catch-all.
+            if (existing is None
+                    and not is_seed_transition_311
+                    and severity == "Action"
+                    and await _initial_scan_done(project_id, "311")):
+                try:
+                    asyncio.create_task(
+                        _stat_engine.try_predict_inspection_from_complaint(
+                            db, project, rec,
+                        ),
+                        name=f"predict_inspection:{project_id}:{unique_key}",
+                    )
+                except Exception as _e:
+                    logger.warning(
+                        f"[predict_inspection] task spawn failed for "
+                        f"{project_id}:{unique_key}: {_e!r}",
+                    )
         except Exception as e:
             # MR.14 (commit 2a) — the legacy unique index on
             # raw_dob_id is being dropped in this commit, so duplicate-
@@ -24186,89 +24388,17 @@ async def startup_event():
         coalesce=True,
     )
 
-    # Phase V2.2 — the V2.1 daily risk-score tick was removed in
-    # Commit 1 of V2.2. The statistical-engine scheduling lands
-    # in Commits 2 / 3 / 6:
-    #   - Commit 2 (this commit): weekly NYC Open Data delta cron.
-    #   - Commit 3: nightly baseline aggregator.
-    #   - Commit 6: daily calibration outcome-attribution.
-    #
-    # Weekly NYC Open Data ingest. Sunday 2 AM ET. Pulls the past
-    # 7 days of new records from each of the 6 BIN-keyed event
-    # datasets + PLUTO. Idempotent — record_id unique index
-    # dedupes overlap with the initial 2-year backfill.
-    # max_instances=1 + coalesce=True so a slow run skips its
-    # successor instead of stacking. The initial 2-year backfill
-    # is operator-triggered via an admin endpoint (lands in
-    # Commit 6); this cron only handles the steady-state delta.
-    async def _v22_weekly_ingest_tick():
-        try:
-            await _stat_engine.weekly_delta_all_datasets(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 ingestion] weekly tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_weekly_ingest_tick,
-        CronTrigger(
-            day_of_week='sun', hour=2, minute=0,
-            timezone="America/New_York",
-        ),
-        id='v2_2_weekly_ingest',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Phase V2.2 Commit 3 — nightly baseline aggregator. 3:30 AM
-    # ET so it runs after the V2.0 logbook tick (3 AM) and well
-    # before the per-project re-stat needs the data. Walks every
-    # distinct (borough, bldgclass, landuse) tuple in PLUTO,
-    # computes summary stats over the past 2 years of NYC source
-    # data, upserts into statistical_baselines. Idempotent —
-    # peer-set + year_month is the upsert key.
-    async def _v22_baseline_aggregator_tick():
-        try:
-            await _stat_engine.run_baseline_aggregator(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 baselines] nightly tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_baseline_aggregator_tick,
-        CronTrigger(hour=3, minute=30, timezone="America/New_York"),
-        id='v2_2_baseline_aggregator',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-
-    # Phase V2.2 Commit 6 — daily calibration outcome attribution.
-    # 5 AM ET so it runs after the V2.0 logbook (3 AM), V2.2
-    # baselines (3:30 AM), V2.2 risk-score recomputes triggered by
-    # those, and well before the operator typically looks at the
-    # admin calibration view. Walks every prediction whose
-    # expires_at <= now and outcome_status == 'active', attributes
-    # hit/miss based on whether a matching event landed in the
-    # window. Soft-fails per prediction.
-    async def _v22_calibration_tick():
-        try:
-            await _stat_engine.attribute_outcomes_for_expired_predictions(db)
-        except Exception as e:
-            logger.error(
-                f"[v2.2 calibration] daily tick failed: {e!r}",
-                exc_info=True,
-            )
-    scheduler.add_job(
-        _v22_calibration_tick,
-        CronTrigger(hour=5, minute=0, timezone="America/New_York"),
-        id='v2_2_calibration_attribution',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    # V2.3 Commit 1: three V2.2 scheduler ticks removed (weekly
+    # mirror ingest, nightly baseline aggregator, daily calibration
+    # attribution). All three drove the V2.2 local-mirror
+    # infrastructure that's being deprecated:
+    #   - the weekly ingest fed the nyc_* mirror collections (deleted).
+    #   - the baseline aggregator pre-computed the baselines collection
+    #     (deleted; lazy queries replace it in Commit 3).
+    #   - the calibration attribution job will return in a later V2.3
+    #     commit once the lazy-query replacement for the trigger
+    #     detection path is in place. Removing it now to keep the
+    #     surface coherent during the V2.3 commit chain.
 
     # DOB compliance scanner — MR.14 (commit 2a) every 15 minutes for
     # the v1 monitoring product. Operator F1: "DOB datasets at 15 min;
@@ -24397,6 +24527,126 @@ async def startup_event():
             logger.info("🪞 Eligibility shadow sweep scheduled (every 30 min)")
         except Exception as _e:
             logger.error(f"eligibility_shadow_sweep scheduler wire failed: {_e!r}")
+
+    # V2.3 Commit 5 — peer_stats refresh cron. Sweeps stale
+    # (>14 day) ready caches, failed caches outside the 24h
+    # retry-escape window, and orphaned pending caches (>15 min
+    # without progress, indicating a crashed prewarm). Batches
+    # of REFRESH_BATCH_SIZE per tick at REFRESH_TICK_MINUTES
+    # cadence; sequential per-project processing within the
+    # tick keeps Socrata throughput bounded. max_instances=1 +
+    # coalesce=True mean an overrunning tick has its successor
+    # skipped instead of stacking. Wrapper-tick try/except
+    # follows the _logbook_nightly_tick precedent so a sweep
+    # crash is logged but doesn't kill the scheduler.
+    async def _peer_stats_refresh_tick():
+        try:
+            stats = await _stat_engine.refresh_stale_peer_stats_caches(db)
+            logger.info(
+                f"[peer_stats_refresh] tick complete: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[peer_stats_refresh] tick crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _peer_stats_refresh_tick,
+        IntervalTrigger(minutes=_stat_engine.REFRESH_TICK_MINUTES),
+        id='peer_stats_refresh',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # V2.3 Commit 6 — prediction resolution sweep. Walks active
+    # 311-inspection predictions every 30 minutes (matches the
+    # 311-poll cadence so resolutions are observed close to
+    # when new inspections actually appear in Socrata). Per-
+    # project Socrata roundtrip is small (limit=1 inspections
+    # query). max_instances=1 + coalesce=True prevent overlap;
+    # an unusually slow sweep skips the next tick instead of
+    # stacking.
+    async def _prediction_resolution_sweep_tick():
+        try:
+            stats = await _stat_engine.sweep_prediction_resolutions(db)
+            logger.info(
+                f"[prediction_resolution] sweep complete: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[prediction_resolution] sweep crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _prediction_resolution_sweep_tick,
+        IntervalTrigger(minutes=30),
+        id='prediction_resolution_sweep',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # V2.3 Commit 6 — daily resolved-prediction cleanup. Deletes
+    # resolved (hit / miss / expired_no_data) prediction rows
+    # older than RESOLVED_PREDICTION_RETENTION_DAYS (30) to
+    # bound predicted_events collection size. Scoped via
+    # method == PREDICTION_METHOD so V2.2-trigger predictions on
+    # the same collection aren't touched. 03:45 ET sits after
+    # the V2.0 logbook tick (3 AM) and the operator's typical
+    # quiet hours, before any morning email crons.
+    async def _prediction_cleanup_tick():
+        try:
+            stats = await _stat_engine.cleanup_resolved_predictions(db)
+            logger.info(
+                f"[prediction_cleanup] daily cleanup: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[prediction_cleanup] crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _prediction_cleanup_tick,
+        CronTrigger(hour=3, minute=45, timezone="America/New_York"),
+        id='prediction_cleanup',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # V2.3 Commit 7 — in-app notifications inbox daily cleanup.
+    # Two operations:
+    #   (A) Delete notifications with non-null read_at older than
+    #       READ_RETENTION_DAYS (90 days) — bounds long-term
+    #       collection growth without losing recent context.
+    #   (B) Auto-dismiss notifications whose status="active" AND
+    #       expires_at is in the past — cleans expired predictions
+    #       from the FE's default status="active" filter without
+    #       deleting the audit trail.
+    # 03:55 ET sits after the prediction-cleanup tick (03:45 ET)
+    # so a prediction that expired overnight is first surfaced as
+    # such on the prediction side, then dismissed on the
+    # notifications side — predictable order for log archaeology.
+    async def _notifications_cleanup_tick():
+        try:
+            stats = await _notifications_inbox.cleanup_inbox(db)
+            logger.info(
+                f"[notifications_cleanup] daily: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[notifications_cleanup] crashed: {e!r}",
+                exc_info=True,
+            )
+    scheduler.add_job(
+        _notifications_cleanup_tick,
+        CronTrigger(hour=3, minute=55, timezone="America/New_York"),
+        id='notifications_cleanup',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
     # ── Resend domain health check ──
     # Probe before the digest cron is registered so a verification
@@ -24531,13 +24781,12 @@ async def startup_event():
             **{k: v for k, v in _idx_spec.items() if k not in ("keys", "name")},
         )
 
-    # Phase V2.2 — statistical risk engine indexes. Eleven new
-    # collections (NYC source datasets + peer-aggregation +
-    # prediction tracking + ingestion-state cursor). Specs
-    # sourced from lib/statistical_engine/schema.py;
-    # ALL_V22_INDEX_SPECS lets us iterate the whole set in one
-    # walk so adding a new collection is one line in the spec
-    # site, no startup-hook coordination needed.
+    # V2.3 Commit 1: ALL_V22_INDEX_SPECS shrank from 11 collections
+    # to 2. The nyc_* mirror collections + statistical_baselines +
+    # ingestion_state index specs were removed alongside their
+    # deletion in lib/statistical_engine/schema.py. Surviving
+    # entries: predicted_events + prediction_outcomes (both
+    # untouched in Commit 1; rewritten consumers come in Commit 3).
     for _coll_name, _idx_specs in _stat_engine.ALL_V22_INDEX_SPECS:
         _coll = db[_coll_name]
         for _idx_spec in _idx_specs:
@@ -24550,6 +24799,64 @@ async def startup_event():
                     if k not in ("keys", "name")
                 },
             )
+
+    # V2.3 Commit 5 — compound index on peer_stats_cache for the
+    # refresh cron's eligibility query. Status has small cardinality
+    # (~4 values: ready / pending / failed / absent), so the
+    # status-key prefix narrows the scan tightly; the
+    # last_refreshed_at second key directly covers the stale-ready
+    # clause's sort. Failed and orphan-pending clauses still scan
+    # within their status bucket but the bucket is small.
+    # _ensure_index_resilient is idempotent — survives both an
+    # already-existing index and a spec change.
+    await _ensure_index_resilient(
+        db.projects,
+        keys=[
+            ("peer_stats_cache.status", 1),
+            ("peer_stats_cache.last_refreshed_at", 1),
+        ],
+        name="projects_peer_stats_status_refreshed_at",
+    )
+
+    # V2.3 Commit 7 — notifications inbox indexes. Five compound
+    # indexes covering the four FE-facing query shapes + the
+    # cleanup cron's sweep:
+    #   • (user_id, created_at DESC) — primary list view
+    #   • (user_id, read_at, created_at DESC) — unread-only filter
+    #   • (project_id, created_at DESC) — per-project audit
+    #   • (expires_at) — cleanup cron's expired-active scan
+    #   • (source_kind, source_id) — dedup lookup at dispatch time
+    # Read-heavy collection so the write-amplification of 5 indexes
+    # is acceptable. Cleanup cron + 90-day read retention bound
+    # collection size; with ~1000 active projects × maybe 5
+    # predictions/month × maybe 10 recipients each, expected
+    # steady-state is ~50K rows — trivial for indexed reads.
+    _notif_coll = db[_notifications_inbox.NOTIFICATIONS_COLLECTION]
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("user_id", 1), ("created_at", -1)],
+        name="notifications_user_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("user_id", 1), ("read_at", 1), ("created_at", -1)],
+        name="notifications_user_read_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("project_id", 1), ("created_at", -1)],
+        name="notifications_project_created",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("expires_at", 1)],
+        name="notifications_expires",
+    )
+    await _ensure_index_resilient(
+        _notif_coll,
+        keys=[("source_kind", 1), ("source_id", 1)],
+        name="notifications_source_lookup",
+    )
 
     # risk_scores collection retains its index from V2.1 — V2.2
     # produces fresh rows in the same shape so the FE

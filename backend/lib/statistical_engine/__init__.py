@@ -1,32 +1,57 @@
-"""Phase V2.2 — Statistical Risk Engine + Event Predictor.
+"""Phase V2.3 — Statistical Risk Engine + Event Predictor.
 
-Replaces the V2.1 heuristic risk score with a statistical model
-driven by NYC Open Data + project peer comparison + active
-trigger detection. NO feature flag — V2.2 ships as the only
-risk-score code path.
+V2.3 architecture: lazy Socrata queries replace the V2.2 local
+nyc_* mirror. No backfill cron, no weekly ingest, no
+statistical_baselines pre-aggregation cache. Per-project peer
+stats are computed once at creation, cached on the project doc,
+and incrementally refreshed every 14 days.
 
-  • schema.py        — collection names, indexes spec, model
-                       version constant, score_band helper.
-  • ingestion.py     — NYC Open Data Socrata client + 6 dataset
-                       fetchers + PLUTO + backfill + weekly delta.
-                       (Commit 2)
-  • baselines.py     — peer-set query, sample-size fallback,
-                       compare-to-peer aggregation.
-                       (Commit 3)
-  • triggers.py      — 8 trigger detectors + event predictor
-                       (Commit 4).
-  • score.py         — risk score recomputation using statistical
-                       inputs (Commit 5).
-  • calibration.py   — outcome tracking + calibration math
-                       + admin tunable weights (Commit 6).
+This is the post-Commit-3 surface. All four consumer modules
+(baselines / triggers / score / calibration) now query Socrata
+lazily via the shared ``SocrataClient`` instead of reading from
+the V2.2 local mirror. ``peer_stats_cache`` lives on each project
+document with a 14-day staleness window.
 
-Every NYC dataset is BIN-keyed where possible. PLUTO and the
-peer-baseline pre-aggregations live in their own collections.
-Event-driven re-stat is wired through the existing pollers
-(nightly_dob_scan, _poll_311_fast_complaints) — they upsert into
-both the v1 dob_logs collection AND the V2.2 statistical
-collections so the score reflects the freshest data without
-waiting for the weekly cron.
+  • schema.py        — model version + score bands + predicted_events /
+                       prediction_outcomes index specs (only).
+  • utils.py         — BBL synthesis + normalization (only).
+                       Transitional NYC_* collection-name constants
+                       deleted in Commit 3.
+  • socrata_client.py — async Socrata query wrapper over
+                       ServerHttpClient (retry/backoff + SoQL
+                       construction + pagination + dataset-id
+                       constants).
+  • baselines.py     — V2.3: lazy peer-comparison + 14-day cache
+                       lifecycle. compute_peer_stats_full,
+                       refresh_peer_stats_incremental,
+                       count_own_building_events, and the
+                       cache-aware compare_project_to_peers.
+  • triggers.py      — V2.3: 8 trigger detectors. gather_trigger_inputs
+                       now takes a SocrataClient.
+  • score.py         — V2.3: recompute_and_persist takes an
+                       optional SocrataClient (defaults to inline
+                       construction so server.py doesn't change).
+  • calibration.py   — V2.3: outcome attribution via lazy Socrata
+                       queries keyed on the new TRIGGER_EVIDENCE_DATASET
+                       mapping.
+  • prewarm.py       — V2.3 Commit 4: background pre-warm of
+                       peer_stats_cache fired by server.py on
+                       project creation. compare_project_to_peers
+                       grew pending/failed/24h-TTL state guards
+                       in the same commit.
+  • refresh_cron.py  — V2.3 Commit 5: stagger-paced refresh sweep
+                       run every 15 min by APScheduler. Three
+                       eligibility classes (stale-ready,
+                       failed-past-24h, orphan-pending-past-15min)
+                       with explicit per-status routing.
+  • predictions.py   — V2.3 Commit 6: event-driven predictive
+                       inspection surfacing. Hooked from the
+                       311 poll on truly-new + action-severity
+                       complaints. Similar-case correlation
+                       against historical 311 + DOB inspections
+                       → display message + ≥70% confidence
+                       store. Plus a 30-min resolution sweep
+                       and a daily cleanup at 03:45 ET.
 """
 
 from lib.statistical_engine.calibration import (  # noqa: F401
@@ -73,49 +98,67 @@ from lib.statistical_engine.triggers import (  # noqa: F401
 )
 from lib.statistical_engine.baselines import (  # noqa: F401
     peer_bbls,
-    compute_baseline_for_peer_set,
-    upsert_baseline,
-    run_baseline_aggregator,
     compare_project_to_peers,
+    compute_peer_stats_full,
+    refresh_peer_stats_incremental,
+    count_own_building_events,
+    PEER_STATS_FRESH_DAYS,
+    PEER_STATS_LOOKBACK_DAYS,
+    PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
+    PEER_STATS_FAILED_RETRY_TTL_HOURS,
 )
-from lib.statistical_engine.ingestion import (  # noqa: F401
-    DATASETS,
-    BACKFILL_YEARS,
-    WEEKLY_DELTA_DAYS,
-    SOCRATA_PAGE_LIMIT,
-    backfill_dataset,
-    backfill_all_datasets,
-    weekly_delta_dataset,
-    weekly_delta_all_datasets,
-    forward_to_v22,
-    upsert_record,
+from lib.statistical_engine.prewarm import (  # noqa: F401
+    prewarm_peer_stats,
+    PREWARM_TIMEOUT_SECONDS,
+    ERROR_KIND_TIMEOUT,
+    ERROR_KIND_SOCRATA,
+    ERROR_KIND_UNEXPECTED,
+)
+from lib.statistical_engine.refresh_cron import (  # noqa: F401
+    refresh_stale_peer_stats_caches,
+    REFRESH_BATCH_SIZE,
+    REFRESH_TICK_MINUTES,
+    REFRESH_COMPUTE_TIMEOUT_SECONDS,
+    ORPHAN_PENDING_THRESHOLD_MINUTES,
+)
+from lib.statistical_engine.predictions import (  # noqa: F401
+    predict_inspection_from_complaint,
+    try_predict_inspection_from_complaint,
+    sweep_prediction_resolutions,
+    opportunistic_resolution_check,
+    cleanup_resolved_predictions,
+    PREDICTION_CONFIDENCE_THRESHOLD,
+    PREDICTION_LOOKBACK_YEARS,
+    PREDICTION_INSPECTION_WINDOW_DAYS,
+    PREDICTION_MIN_SAMPLE_SIZE,
+    PREDICTION_MIN_INSPECTION_RATE,
+    PREDICTION_COMPUTE_TIMEOUT_SECONDS,
+    RESOLVED_PREDICTION_RETENTION_DAYS,
+    PREDICTION_METHOD,
+)
+from lib.statistical_engine.utils import (  # noqa: F401
+    _construct_bbl_from_components,
+    normalize_bbl,
+)
+from lib.statistical_engine.socrata_client import (  # noqa: F401
+    SocrataClient,
+    SocrataQueryError,
+    ALL_DATASET_IDS,
+    DATASET_DOB_VIOLATIONS,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_PERMITS,
+    DATASET_COMPLAINTS_311,
+    DATASET_ECB_VIOLATIONS,
+    DATASET_HPD_VIOLATIONS,
+    DATASET_PLUTO,
 )
 from lib.statistical_engine.schema import (  # noqa: F401
-    # Collection names
-    NYC_VIOLATIONS_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_PERMITS_COLLECTION,
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_ECB_VIOLATIONS_COLLECTION,
-    NYC_HPD_VIOLATIONS_COLLECTION,
-    NYC_PLUTO_COLLECTION,
-    STATISTICAL_BASELINES_COLLECTION,
+    # Surviving collection constants
     PREDICTED_EVENTS_COLLECTION,
     PREDICTION_OUTCOMES_COLLECTION,
-    INGESTION_STATE_COLLECTION,
-    ALL_V22_COLLECTIONS,
-    # Index specs (consumed by server.py startup)
-    NYC_VIOLATIONS_INDEXES,
-    NYC_INSPECTIONS_INDEXES,
-    NYC_PERMITS_INDEXES,
-    NYC_COMPLAINTS_311_INDEXES,
-    NYC_ECB_VIOLATIONS_INDEXES,
-    NYC_HPD_VIOLATIONS_INDEXES,
-    NYC_PLUTO_INDEXES,
-    STATISTICAL_BASELINES_INDEXES,
+    # Surviving index specs (consumed by server.py startup)
     PREDICTED_EVENTS_INDEXES,
     PREDICTION_OUTCOMES_INDEXES,
-    INGESTION_STATE_INDEXES,
     ALL_V22_INDEX_SPECS,
     # Model + bands
     MODEL_VERSION,

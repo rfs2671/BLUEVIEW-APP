@@ -1,22 +1,26 @@
 """Phase V2.2 — Commit 1 schema scaffolding tests.
 
-Pin every contract that V2.2 Commit 1 promises:
+V2.3 Commit 1 trim: the V2.2 local-mirror collections
+(nyc_violations / nyc_inspections / nyc_permits / nyc_complaints_311
+/ nyc_ecb_violations / nyc_hpd_violations / nyc_pluto /
+statistical_baselines / ingestion_state) are being replaced by
+lazy Socrata queries. The constants + index specs that pinned
+those collections are gone from schema.py — assertions about
+them have been dropped here.
 
-  • The 11 V2.2 collections exist in lib.statistical_engine.schema
-    with the documented constants.
-  • Every NYC-source collection has the four-index baseline
-    (record_id unique, bin/date, borough/date, date) plus a
-    dedicated bbl/date index for nyc_complaints_311.
-  • PLUTO has bin-unique + bbl + borough/class indexes
-    (PLUTO is a snapshot, not an event stream).
-  • statistical_baselines, predicted_events, prediction_outcomes,
-    ingestion_state all have their documented indexes.
-  • ALL_V22_INDEX_SPECS covers every V2.2 collection.
+What survives in this file:
+
+  • predicted_events + prediction_outcomes collection names
+    (these are written by the trigger detector + calibration,
+    which keep their MongoDB state).
   • MODEL_VERSION pinned to "statistical-v1".
   • score_band cutoffs match V2.1.2 backend (≤30 / ≤60 / ≤80 / >80)
     so the FE bandFor helper in RiskScoreCircle.jsx stays in sync.
   • Sample-size + confidence thresholds (20+, 0.70+) pinned per
     spec.
+  • predicted_events + prediction_outcomes indexes.
+  • ALL_V22_INDEX_SPECS covers the surviving 2 collections + no
+    duplicate index names.
   • V2.1 lib path (lib/risk_score/*) is GONE — importing it fails.
   • V2.1 server.py surfaces (v2_risk_score flag, helper, scheduler
     tick) are GONE.
@@ -24,7 +28,7 @@ Pin every contract that V2.2 Commit 1 promises:
     registered at startup, _stat_engine import line present.
   • Frontend RiskScoreCircle + RiskScoreDrawer files still exist
     with first-hook + band-threshold pins (carrying the V2.1.2 +
-    V2.1.4 invariants forward against the V2.2 backend).
+    V2.1.4 invariants forward against the V2.2/V2.3 backend).
 """
 
 from __future__ import annotations
@@ -51,45 +55,12 @@ from lib.statistical_engine import schema as se_schema  # noqa: E402
 
 
 # ──────────────────────────────────────────────────────────────────
-# Collection names + counts
+# Surviving collection names (V2.3 Commit 1: only the two
+# prediction-state collections remain in schema.py)
 # ──────────────────────────────────────────────────────────────────
 
 
 class TestCollectionNames(unittest.TestCase):
-
-    def test_eleven_collections(self):
-        self.assertEqual(len(se_schema.ALL_V22_COLLECTIONS), 11)
-
-    def test_nyc_violations_name(self):
-        self.assertEqual(se_schema.NYC_VIOLATIONS_COLLECTION, "nyc_violations")
-
-    def test_nyc_inspections_name(self):
-        self.assertEqual(
-            se_schema.NYC_INSPECTIONS_COLLECTION, "nyc_inspections")
-
-    def test_nyc_permits_name(self):
-        self.assertEqual(se_schema.NYC_PERMITS_COLLECTION, "nyc_permits")
-
-    def test_nyc_complaints_311_name(self):
-        self.assertEqual(
-            se_schema.NYC_COMPLAINTS_311_COLLECTION, "nyc_complaints_311")
-
-    def test_nyc_ecb_violations_name(self):
-        self.assertEqual(
-            se_schema.NYC_ECB_VIOLATIONS_COLLECTION, "nyc_ecb_violations")
-
-    def test_nyc_hpd_violations_name(self):
-        self.assertEqual(
-            se_schema.NYC_HPD_VIOLATIONS_COLLECTION, "nyc_hpd_violations")
-
-    def test_nyc_pluto_name(self):
-        self.assertEqual(se_schema.NYC_PLUTO_COLLECTION, "nyc_pluto")
-
-    def test_statistical_baselines_name(self):
-        self.assertEqual(
-            se_schema.STATISTICAL_BASELINES_COLLECTION,
-            "statistical_baselines",
-        )
 
     def test_predicted_events_name(self):
         self.assertEqual(
@@ -98,10 +69,6 @@ class TestCollectionNames(unittest.TestCase):
     def test_prediction_outcomes_name(self):
         self.assertEqual(
             se_schema.PREDICTION_OUTCOMES_COLLECTION, "prediction_outcomes")
-
-    def test_ingestion_state_name(self):
-        self.assertEqual(
-            se_schema.INGESTION_STATE_COLLECTION, "ingestion_state")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -142,7 +109,7 @@ class TestVersionAndThresholds(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Index specs — NYC source datasets
+# Index specs — surviving aggregation + prediction collections
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -160,100 +127,7 @@ def _has_unique_index_on(specs, *fields):
     return False
 
 
-class TestNycSourceIndexes(unittest.TestCase):
-    """Every NYC-source collection has the standard 5-index
-    baseline (V2.2.4 Path A added the bbl index): record_id
-    unique + (bin, date) + (bbl, date) + (borough, date) +
-    (date)."""
-
-    def _check_baseline(self, specs, prefix):
-        names = _index_names(specs)
-        # record_id unique
-        self.assertIn(f"{prefix}_record_id_unique", names)
-        self.assertTrue(_has_unique_index_on(specs, "record_id"))
-        # (bin, occurred_date)
-        self.assertIn(f"{prefix}_bin_date", names)
-        # (bbl, occurred_date) — V2.2.4 Path A
-        self.assertIn(f"{prefix}_bbl_date", names)
-        # (borough, occurred_date)
-        self.assertIn(f"{prefix}_borough_date", names)
-        # (occurred_date)
-        self.assertIn(f"{prefix}_date", names)
-
-    def test_nyc_violations(self):
-        self._check_baseline(
-            se_schema.NYC_VIOLATIONS_INDEXES, "nyc_violations")
-
-    def test_nyc_inspections(self):
-        self._check_baseline(
-            se_schema.NYC_INSPECTIONS_INDEXES, "nyc_inspections")
-
-    def test_nyc_permits(self):
-        self._check_baseline(
-            se_schema.NYC_PERMITS_INDEXES, "nyc_permits")
-
-    def test_nyc_complaints_311_baseline(self):
-        self._check_baseline(
-            se_schema.NYC_COMPLAINTS_311_INDEXES, "nyc_complaints_311")
-
-    def test_nyc_complaints_311_has_bbl_index(self):
-        # 311 has an extra (bbl, date) index for the
-        # neighbor-trigger (proximity via BBL block component).
-        names = _index_names(se_schema.NYC_COMPLAINTS_311_INDEXES)
-        self.assertIn("nyc_complaints_311_bbl_date", names)
-
-    def test_nyc_ecb_violations(self):
-        self._check_baseline(
-            se_schema.NYC_ECB_VIOLATIONS_INDEXES, "nyc_ecb_violations")
-
-    def test_nyc_hpd_violations(self):
-        self._check_baseline(
-            se_schema.NYC_HPD_VIOLATIONS_INDEXES, "nyc_hpd_violations")
-
-
-class TestPlutoIndexes(unittest.TestCase):
-    """PLUTO is a snapshot. V2.2.4 Path A: the unique key flipped
-    from `bin` (V2.2-era) to `bbl` (current). PLUTO's Socrata
-    payload has no `bin` column, so the previous unique-on-bin
-    index produced a DKE storm — every insert collided on bin:null.
-    """
-
-    def test_bbl_unique(self):
-        self.assertTrue(_has_unique_index_on(
-            se_schema.NYC_PLUTO_INDEXES, "bbl"))
-
-    def test_bbl_unique_index_name(self):
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertIn("nyc_pluto_bbl_unique", names)
-
-    def test_legacy_bin_unique_removed(self):
-        # Hard pin: the pre-V2.2.4 unique-on-bin index must NOT
-        # be in the spec. If it is, the migration script that
-        # drops it has to re-run before peer-comparison heals.
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertNotIn("nyc_pluto_bin_unique", names)
-        self.assertFalse(_has_unique_index_on(
-            se_schema.NYC_PLUTO_INDEXES, "bin"))
-
-    def test_borough_class_index(self):
-        names = _index_names(se_schema.NYC_PLUTO_INDEXES)
-        self.assertIn("nyc_pluto_borough_class", names)
-
-
-# ──────────────────────────────────────────────────────────────────
-# Index specs — aggregation + prediction collections
-# ──────────────────────────────────────────────────────────────────
-
-
 class TestAggregationIndexes(unittest.TestCase):
-
-    def test_baselines_peer_key_index(self):
-        names = _index_names(se_schema.STATISTICAL_BASELINES_INDEXES)
-        self.assertIn("statistical_baselines_peer_key", names)
-
-    def test_baselines_year_month_index(self):
-        names = _index_names(se_schema.STATISTICAL_BASELINES_INDEXES)
-        self.assertIn("statistical_baselines_year_month", names)
 
     def test_predicted_events_project_expires_index(self):
         names = _index_names(se_schema.PREDICTED_EVENTS_INDEXES)
@@ -277,22 +151,21 @@ class TestAggregationIndexes(unittest.TestCase):
         names = _index_names(se_schema.PREDICTION_OUTCOMES_INDEXES)
         self.assertIn("prediction_outcomes_project_expired", names)
 
-    def test_ingestion_state_dataset_unique(self):
-        self.assertTrue(_has_unique_index_on(
-            se_schema.INGESTION_STATE_INDEXES, "dataset"))
-
 
 class TestAllV22IndexSpecs(unittest.TestCase):
     """ALL_V22_INDEX_SPECS is the iterable used by server.py at
-    startup. It must cover every V2.2 collection — adding a new
-    collection means adding a new entry here AND in ALL_V22_COLLECTIONS,
-    and these tests catch a forgotten ALL_V22_INDEX_SPECS entry."""
+    startup. V2.3 Commit 1: it now covers only the two surviving
+    collections (predicted_events + prediction_outcomes)."""
 
-    def test_covers_every_collection(self):
+    def test_only_surviving_collections(self):
         covered = set(name for name, _ in se_schema.ALL_V22_INDEX_SPECS)
-        all_collections = set(se_schema.ALL_V22_COLLECTIONS)
-        self.assertEqual(covered, all_collections,
-                         "ALL_V22_INDEX_SPECS doesn't match collection set")
+        self.assertEqual(
+            covered,
+            {
+                se_schema.PREDICTED_EVENTS_COLLECTION,
+                se_schema.PREDICTION_OUTCOMES_COLLECTION,
+            },
+        )
 
     def test_no_duplicate_index_names_across_collections(self):
         # Index names are globally unique within the codebase to
@@ -315,15 +188,17 @@ class TestPackageReExports(unittest.TestCase):
     re-exports."""
 
     def test_collection_names_reexported(self):
-        self.assertEqual(stat_engine.NYC_VIOLATIONS_COLLECTION,
-                         "nyc_violations")
         self.assertEqual(stat_engine.PREDICTED_EVENTS_COLLECTION,
                          "predicted_events")
+        self.assertEqual(stat_engine.PREDICTION_OUTCOMES_COLLECTION,
+                         "prediction_outcomes")
 
     def test_indexes_reexported(self):
         # Server.py needs ALL_V22_INDEX_SPECS to wire startup.
+        # V2.3 Commit 1: shrank from 11 to 2 (the prediction
+        # state collections only).
         self.assertTrue(hasattr(stat_engine, "ALL_V22_INDEX_SPECS"))
-        self.assertEqual(len(stat_engine.ALL_V22_INDEX_SPECS), 11)
+        self.assertEqual(len(stat_engine.ALL_V22_INDEX_SPECS), 2)
 
     def test_model_version_reexported(self):
         self.assertEqual(stat_engine.MODEL_VERSION, "statistical-v1")
@@ -336,6 +211,57 @@ class TestPackageReExports(unittest.TestCase):
     def test_threshold_constants_reexported(self):
         self.assertEqual(stat_engine.MIN_PEER_SAMPLE_SIZE, 20)
         self.assertAlmostEqual(stat_engine.MIN_CONFIDENCE_THRESHOLD, 0.70)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 1: removed schema surfaces are actually gone
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestV22MirrorSurfacesRemoved(unittest.TestCase):
+    """The V2.2 local-mirror constants and their index specs
+    must NOT be on the schema module anymore. They live
+    transitionally in lib.statistical_engine.utils (consumed by
+    baselines.py / triggers.py / score.py / calibration.py until
+    Commit 3), but schema.py is no longer the source."""
+
+    def test_nyc_collection_constants_gone(self):
+        for name in (
+            "NYC_VIOLATIONS_COLLECTION",
+            "NYC_INSPECTIONS_COLLECTION",
+            "NYC_PERMITS_COLLECTION",
+            "NYC_COMPLAINTS_311_COLLECTION",
+            "NYC_ECB_VIOLATIONS_COLLECTION",
+            "NYC_HPD_VIOLATIONS_COLLECTION",
+            "NYC_PLUTO_COLLECTION",
+            "STATISTICAL_BASELINES_COLLECTION",
+            "INGESTION_STATE_COLLECTION",
+            "ALL_V22_COLLECTIONS",
+        ):
+            self.assertFalse(
+                hasattr(se_schema, name),
+                f"schema.py still exposes {name}; should have been removed",
+            )
+
+    def test_nyc_index_specs_gone(self):
+        for name in (
+            "NYC_VIOLATIONS_INDEXES",
+            "NYC_INSPECTIONS_INDEXES",
+            "NYC_PERMITS_INDEXES",
+            "NYC_COMPLAINTS_311_INDEXES",
+            "NYC_ECB_VIOLATIONS_INDEXES",
+            "NYC_HPD_VIOLATIONS_INDEXES",
+            "NYC_PLUTO_INDEXES",
+            "STATISTICAL_BASELINES_INDEXES",
+            "INGESTION_STATE_INDEXES",
+        ):
+            self.assertFalse(
+                hasattr(se_schema, name),
+                f"schema.py still exposes {name}; should have been removed",
+            )
+
+    def test_nyc_source_indexes_helper_gone(self):
+        self.assertFalse(hasattr(se_schema, "_nyc_source_indexes"))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -406,6 +332,599 @@ class TestServerPyV21Removed(unittest.TestCase):
         # The "hide endpoint behind 404 if flag off" helper went
         # away with the flag.
         self.assertNotIn("_risk_score_404", self.text)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 1: server.py V2.2 cron + backfill removal
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV22CronTicksRemoved(unittest.TestCase):
+    """V2.3 Commit 1 stripped the three V2.2 scheduler ticks +
+    the V22 backfill endpoint + the V22BackfillRequest model.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def test_no_weekly_ingest_tick(self):
+        self.assertNotIn("_v22_weekly_ingest_tick", self.text)
+        self.assertNotIn("v2_2_weekly_ingest", self.text)
+
+    def test_no_baseline_aggregator_tick(self):
+        self.assertNotIn("_v22_baseline_aggregator_tick", self.text)
+        self.assertNotIn("v2_2_baseline_aggregator", self.text)
+
+    def test_no_calibration_tick(self):
+        self.assertNotIn("_v22_calibration_tick", self.text)
+        self.assertNotIn("v2_2_calibration_attribution", self.text)
+
+    def test_no_backfill_endpoint(self):
+        self.assertNotIn("V22BackfillRequest", self.text)
+        self.assertNotIn(
+            "/admin/risk-score/backfill", self.text,
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 4: project-creation endpoints spawn prewarm_peer_stats
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23PrewarmWiring(unittest.TestCase):
+    """Commit 4 added a fire-and-forget ``prewarm_peer_stats``
+    spawn to BOTH project creation endpoints:
+
+        POST /api/projects                  (line ~6726)
+        POST /api/onboarding/project        (line ~2839)
+
+    The third site (test-data seed at startup, ~24107) is
+    intentionally NOT wired per the Commit 4 spec.
+
+    Each wiring must:
+      • spawn via ``asyncio.create_task``
+      • call ``_stat_engine.prewarm_peer_stats(db, result.inserted_id)``
+      • include a ``name=`` tag for asyncio task debugging
+      • wrap the spawn in try/except so project creation never
+        fails because of pre-warm code
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def _slice_endpoint(self, anchor: str) -> str:
+        """Return the text from ``anchor`` to the next
+        ``@api_router`` decorator (i.e. the full handler body).
+        Falls back to a generous span if the anchor is the last
+        endpoint in the file."""
+        s = self.text.find(anchor)
+        self.assertGreater(s, 0, f"endpoint anchor not found: {anchor}")
+        e = self.text.find("@api_router", s + len(anchor))
+        if e < 0:
+            # Last endpoint in file — take a wide window.
+            e = min(len(self.text), s + 20000)
+        return self.text[s:e]
+
+    def test_create_project_endpoint_spawns_prewarm(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/projects", response_model=ProjectResponse)',
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        self.assertIn("_stat_engine.prewarm_peer_stats(db, result.inserted_id)",
+                      slice_)
+        self.assertIn(
+            'name=f"prewarm_peer_stats:{result.inserted_id}"',
+            slice_,
+        )
+
+    def test_create_project_endpoint_wraps_spawn_in_try_except(self):
+        """A bug in the prewarm spawn must never fail project
+        creation. Pin the try/except wrapper."""
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/projects", response_model=ProjectResponse)',
+        )
+        # The spawn must be inside a try block whose except logs.
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        # Look back from the spawn for the nearest "try:" — must
+        # exist before the next handler-level statement.
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "prewarm spawn not wrapped in try block")
+        # The catch must mention the prewarm task spawn so
+        # operators can grep logs.
+        following = slice_[spawn_idx:]
+        self.assertIn("except Exception", following)
+        self.assertIn("prewarm task spawn failed", following)
+
+    def test_onboarding_create_project_endpoint_spawns_prewarm(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/onboarding/project")',
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        self.assertIn("_stat_engine.prewarm_peer_stats(db, result.inserted_id)",
+                      slice_)
+        self.assertIn(
+            'name=f"prewarm_peer_stats:{result.inserted_id}"',
+            slice_,
+        )
+
+    def test_onboarding_create_project_endpoint_wraps_spawn_in_try_except(self):
+        slice_ = self._slice_endpoint(
+            '@api_router.post("/onboarding/project")',
+        )
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "prewarm spawn not wrapped in try block")
+        following = slice_[spawn_idx:]
+        self.assertIn("except Exception", following)
+        self.assertIn("prewarm task spawn failed", following)
+
+    def test_prewarm_NOT_wired_to_test_data_seed(self):
+        """Site C — the test-data seeding block at line ~24107 —
+        is intentionally NOT wired. Per Commit 4 spec Q1: skip
+        test-data seed. Pin via a targeted search: the seed block
+        creates an ESB test project; that block must not contain
+        a prewarm spawn."""
+        # Locate the test-project seed insert by its unique
+        # marker.
+        s = self.text.find("Test Project - ESB")
+        self.assertGreater(s, 0, "test-data seed marker missing")
+        # Walk forward to the end of the seed block (logger.info
+        # is the closing marker).
+        e = self.text.find("Test data seeding complete", s)
+        self.assertGreater(e, s, "seed block end-marker missing")
+        seed_slice = self.text[s:e]
+        # No prewarm_peer_stats call within the seed block.
+        self.assertNotIn("prewarm_peer_stats", seed_slice)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 5: peer_stats refresh cron + index wiring
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23RefreshCronWiring(unittest.TestCase):
+    """Commit 5 wired three things in server.py:
+
+      1. ``_peer_stats_refresh_tick`` wrapper-tick function
+         (matches the ``_logbook_nightly_tick`` precedent —
+         try/except + logger.error with exc_info=True).
+      2. ``scheduler.add_job(_peer_stats_refresh_tick, ...)``
+         registration with IntervalTrigger, max_instances=1,
+         coalesce=True (cron-lock).
+      3. ``_ensure_index_resilient`` for the compound index on
+         peer_stats_cache.{status, last_refreshed_at} so the
+         sweep query is index-backed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    def test_refresh_tick_function_defined(self):
+        self.assertIn(
+            "async def _peer_stats_refresh_tick():",
+            self.text,
+        )
+
+    def test_refresh_tick_wraps_call_in_try_except(self):
+        """Wrapper pattern from _logbook_nightly_tick — sweep
+        crashes must be logged at ERROR with exc_info=True, not
+        crash the scheduler."""
+        s = self.text.find("async def _peer_stats_refresh_tick():")
+        self.assertGreater(s, 0)
+        # Walk forward to the end of the tick body (next
+        # scheduler.add_job marks it).
+        e = self.text.find("scheduler.add_job(", s)
+        self.assertGreater(e, s)
+        body = self.text[s:e]
+        self.assertIn("try:", body)
+        self.assertIn("refresh_stale_peer_stats_caches", body)
+        self.assertIn("except Exception", body)
+        self.assertIn("exc_info=True", body)
+
+    def test_refresh_tick_registered_with_interval_trigger(self):
+        """IntervalTrigger every REFRESH_TICK_MINUTES, id +
+        replace_existing + max_instances=1 + coalesce=True."""
+        s = self.text.find("id='peer_stats_refresh'")
+        self.assertGreater(s, 0, "peer_stats_refresh job id missing")
+        # Take a generous slice around the registration call.
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("scheduler.add_job(", slice_)
+        self.assertIn("_peer_stats_refresh_tick,", slice_)
+        self.assertIn("IntervalTrigger(minutes=", slice_)
+        self.assertIn("_stat_engine.REFRESH_TICK_MINUTES", slice_)
+        self.assertIn("replace_existing=True", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    def test_peer_stats_index_ensured_at_startup(self):
+        """Compound index on peer_stats_cache.{status,
+        last_refreshed_at} ensured via _ensure_index_resilient."""
+        s = self.text.find("projects_peer_stats_status_refreshed_at")
+        self.assertGreater(s, 0, "peer_stats index name missing")
+        # The call should be inside an _ensure_index_resilient
+        # invocation against db.projects.
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("_ensure_index_resilient(", slice_)
+        self.assertIn("db.projects,", slice_)
+        self.assertIn("peer_stats_cache.status", slice_)
+        self.assertIn("peer_stats_cache.last_refreshed_at", slice_)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 6: predictive inspection hook + 2 crons + opportunistic
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23PredictionsHookWiring(unittest.TestCase):
+    """Commit 6 wires four things in server.py:
+
+      1. Prediction-spawn hook inside ``_ingest_311_for_project``
+         immediately after the existing ``db.dob_logs.insert_one``
+         + ``_send_critical_dob_alert_throttled`` block, gated by
+         ALL FOUR suppression conditions (existing is None +
+         not is_seed_transition_311 + severity == "Action" +
+         _initial_scan_done).
+      2. ``_prediction_resolution_sweep_tick`` — 30-min interval
+         APScheduler tick with max_instances=1 + coalesce=True.
+      3. ``_prediction_cleanup_tick`` — daily cron at 03:45 ET
+         (NOT 03:15) with max_instances=1 + coalesce=True.
+      4. Opportunistic resolution check fire-and-forget from
+         GET ``/projects/{project_id}/risk-score``.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    # ── Hook predicate ──────────────────────────────────────────
+
+    def _hook_slice(self) -> str:
+        # The hook lives inside _ingest_311_for_project right
+        # after db.dob_logs.insert_one. Anchor on the unique
+        # task-name template.
+        s = self.text.find('name=f"predict_inspection:')
+        self.assertGreater(s, 0, "predict_inspection task spawn missing")
+        start = max(0, s - 2000)
+        end = min(len(self.text), s + 500)
+        return self.text[start:end]
+
+    def test_hook_predicate_checks_existing_is_None(self):
+        slice_ = self._hook_slice()
+        self.assertIn("existing is None", slice_)
+
+    def test_hook_predicate_checks_not_seed_transition(self):
+        slice_ = self._hook_slice()
+        self.assertIn("not is_seed_transition_311", slice_)
+
+    def test_hook_predicate_checks_severity_action(self):
+        slice_ = self._hook_slice()
+        self.assertIn('severity == "Action"', slice_)
+
+    def test_hook_predicate_checks_initial_scan_done(self):
+        slice_ = self._hook_slice()
+        self.assertIn('_initial_scan_done(project_id, "311")', slice_)
+
+    def test_hook_calls_stat_engine_try_predict(self):
+        slice_ = self._hook_slice()
+        self.assertIn(
+            "_stat_engine.try_predict_inspection_from_complaint",
+            slice_,
+        )
+
+    def test_hook_wraps_spawn_in_try_except(self):
+        slice_ = self._hook_slice()
+        # Walk back from the create_task to find the enclosing try.
+        spawn_idx = slice_.find("asyncio.create_task(")
+        self.assertGreater(spawn_idx, 0)
+        preceding = slice_[:spawn_idx]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "predict-spawn not wrapped in try block")
+        self.assertIn("except Exception", slice_[spawn_idx:])
+
+    # ── Resolution sweep cron ──────────────────────────────────
+
+    def test_resolution_sweep_tick_function_defined(self):
+        self.assertIn(
+            "async def _prediction_resolution_sweep_tick():",
+            self.text,
+        )
+
+    def test_resolution_sweep_registered_30min_interval(self):
+        s = self.text.find("id='prediction_resolution_sweep'")
+        self.assertGreater(s, 0, "resolution sweep job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn("scheduler.add_job(", slice_)
+        self.assertIn("_prediction_resolution_sweep_tick,", slice_)
+        self.assertIn("IntervalTrigger(minutes=30)", slice_)
+        self.assertIn("replace_existing=True", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    # ── Daily cleanup cron ─────────────────────────────────────
+
+    def test_cleanup_tick_function_defined(self):
+        self.assertIn(
+            "async def _prediction_cleanup_tick():",
+            self.text,
+        )
+
+    def test_cleanup_registered_at_03_45_ET(self):
+        """Q8 refinement: cleanup at 03:45 ET, NOT 03:15."""
+        s = self.text.find("id='prediction_cleanup'")
+        self.assertGreater(s, 0, "cleanup job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn(
+            'CronTrigger(hour=3, minute=45, timezone="America/New_York")',
+            slice_,
+        )
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+    # ── Opportunistic resolution check wire ────────────────────
+
+    def test_opportunistic_resolution_check_wired_on_get_risk_score(self):
+        # Anchor on the GET endpoint decorator + walk to the
+        # next @api_router. The opportunistic spawn must appear
+        # inside the handler body.
+        s = self.text.find(
+            '@api_router.get("/projects/{project_id}/risk-score")',
+        )
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn(
+            "_stat_engine.opportunistic_resolution_check(db, project_id)",
+            slice_,
+        )
+        self.assertIn("asyncio.create_task(", slice_)
+        # Must be wrapped in try/except so a spawn-side bug
+        # never breaks the GET.
+        self.assertIn("except Exception", slice_)
+
+
+# ──────────────────────────────────────────────────────────────────
+# V2.3 Commit 7: notifications inbox endpoints + indexes + cron
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestServerPyV23NotificationsInboxWiring(unittest.TestCase):
+    """Commit 7 wires:
+
+      1. ``lib/notifications_inbox.py`` import (under
+         ``_notifications_inbox``).
+      2. Four FE-facing endpoints:
+           GET  /api/notifications
+           GET  /api/notifications/unread-count
+           POST /api/notifications/{notification_id}/mark-read
+           POST /api/notifications/mark-all-read
+         Each scoped to ``current_user`` via ``Depends(get_current_user)``
+         and per-query ``user_id`` filter (no cross-user leakage).
+      3. Five compound indexes on the ``notifications`` collection
+         via ``_ensure_index_resilient``.
+      4. ``_notifications_cleanup_tick`` cron at 03:55 ET
+         (post Commit 6's 03:45 prediction cleanup).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (_BACKEND / "server.py").read_text(encoding="utf-8")
+
+    # ── Import ─────────────────────────────────────────────────
+
+    def test_notifications_inbox_module_imported(self):
+        self.assertIn(
+            "import lib.notifications_inbox as _notifications_inbox",
+            self.text,
+        )
+
+    # ── Four endpoints exist ───────────────────────────────────
+
+    def test_list_endpoint_present(self):
+        self.assertIn(
+            '@api_router.get("/notifications", tags=["Notifications"])',
+            self.text,
+        )
+
+    def test_unread_count_endpoint_present(self):
+        self.assertIn(
+            '@api_router.get("/notifications/unread-count", tags=["Notifications"])',
+            self.text,
+        )
+
+    def test_mark_read_endpoint_present(self):
+        # The decorator wraps over multiple lines, so anchor on
+        # the path + tags pair separately.
+        self.assertIn(
+            '"/notifications/{notification_id}/mark-read"', self.text,
+        )
+
+    def test_mark_all_read_endpoint_present(self):
+        self.assertIn('"/notifications/mark-all-read"', self.text)
+
+    # ── Auth dependency on every endpoint ──────────────────────
+
+    def test_all_endpoints_gated_by_get_current_user(self):
+        """Each of the 4 endpoint handlers must take
+        ``current_user = Depends(get_current_user)``. Pin via
+        per-handler search."""
+        for handler in (
+            "async def list_notifications(",
+            "async def get_notifications_unread_count(",
+            "async def mark_notification_read(",
+            "async def mark_all_notifications_read(",
+        ):
+            s = self.text.find(handler)
+            self.assertGreater(s, 0, f"{handler} not found")
+            # Walk to the next handler-bodied decorator (or +800 chars).
+            slice_ = self.text[s:s + 800]
+            self.assertIn(
+                "Depends(get_current_user)", slice_,
+                f"{handler} missing auth dependency",
+            )
+
+    # ── User-scope filter on every endpoint ────────────────────
+
+    def test_list_endpoint_scopes_query_to_user_id(self):
+        s = self.text.find("async def list_notifications(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        # The query dict must include user_id derived from current_user.
+        self.assertIn('"user_id": user_id', slice_)
+        # And status="active" as the default visibility filter.
+        self.assertIn('"status":  "active"', slice_)
+
+    def test_unread_count_scopes_query_to_user_id(self):
+        s = self.text.find("async def get_notifications_unread_count(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn('"user_id": user_id', slice_)
+        self.assertIn('"read_at": None', slice_)
+
+    def test_mark_read_uses_ownership_compound_filter(self):
+        """The (_id, user_id) compound filter ensures cross-user
+        mark-read attempts return 404 instead of writing to
+        someone else's notification."""
+        s = self.text.find("async def mark_notification_read(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn(
+            'to_query_id(notification_id), "user_id": user_id',
+            slice_,
+        )
+
+    def test_mark_all_read_scopes_to_user_and_status(self):
+        s = self.text.find("async def mark_all_notifications_read(")
+        self.assertGreater(s, 0)
+        e = self.text.find("@api_router", s + 1)
+        slice_ = self.text[s:e]
+        self.assertIn('"user_id": user_id', slice_)
+        self.assertIn('"status":  "active"', slice_)
+        self.assertIn('"read_at": None', slice_)
+
+    # ── Indexes ────────────────────────────────────────────────
+
+    def test_five_notifications_indexes_ensured(self):
+        for name in (
+            "notifications_user_created",
+            "notifications_user_read_created",
+            "notifications_project_created",
+            "notifications_expires",
+            "notifications_source_lookup",
+        ):
+            self.assertIn(
+                f'name="{name}"', self.text,
+                f"index {name} not ensured at startup",
+            )
+
+    # ── Cleanup cron ────────────────────────────────────────────
+
+    def test_cleanup_tick_function_defined(self):
+        self.assertIn(
+            "async def _notifications_cleanup_tick():",
+            self.text,
+        )
+
+    def test_cleanup_cron_registered_at_03_55_ET(self):
+        s = self.text.find("id='notifications_cleanup'")
+        self.assertGreater(s, 0, "cleanup cron job id missing")
+        start = max(0, s - 500)
+        end = min(len(self.text), s + 500)
+        slice_ = self.text[start:end]
+        self.assertIn(
+            'CronTrigger(hour=3, minute=55, timezone="America/New_York")',
+            slice_,
+        )
+        self.assertIn("_notifications_cleanup_tick,", slice_)
+        self.assertIn("max_instances=1", slice_)
+        self.assertIn("coalesce=True", slice_)
+
+
+class TestPredictionsModuleCommit7Wiring(unittest.TestCase):
+    """The WOULD-NOTIFY log line in predictions.py is replaced
+    with a real ``dispatch_notification`` call wrapped in
+    try/except so prediction storage success is not undone by a
+    dispatch failure."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (
+            _BACKEND / "lib" / "statistical_engine" / "predictions.py"
+        ).read_text(encoding="utf-8")
+
+    def test_would_notify_log_replaced(self):
+        """The placeholder log string must be GONE from the
+        module (verifies the WOULD-NOTIFY removal didn't get
+        accidentally left behind)."""
+        self.assertNotIn("WOULD NOTIFY", self.text)
+
+    def test_dispatch_notification_imported(self):
+        self.assertIn(
+            "from lib.notifications_inbox import dispatch_notification",
+            self.text,
+        )
+
+    def test_dispatch_called_with_documented_kwargs(self):
+        """All the spec-documented kwargs appear in the dispatch
+        call site."""
+        # Anchor on the await dispatch_notification call. The
+        # call spans many lines with nested expressions; take a
+        # generous slice that comfortably covers the full call
+        # site (~1500 chars).
+        s = self.text.find("await dispatch_notification(")
+        self.assertGreater(s, 0, "dispatch_notification call site missing")
+        slice_ = self.text[s:s + 1500]
+        for kwarg in (
+            "project=project",
+            'kind="inspection_prediction"',
+            "severity=_severity",
+            'title="Inspection Prediction"',
+            'source_kind="prediction"',
+            "source_id=",
+            "metadata=",
+            "expires_at=",
+            'deeplink_anchor="predictions"',
+        ):
+            self.assertIn(
+                kwarg, slice_,
+                f"dispatch_notification missing kwarg: {kwarg}",
+            )
+
+    def test_dispatch_wrapped_in_try_except(self):
+        """Dispatch failure must NOT undo the prediction storage
+        that already succeeded above."""
+        s = self.text.find("await dispatch_notification(")
+        self.assertGreater(s, 0)
+        # Walk back to find the enclosing try.
+        preceding = self.text[:s]
+        last_try = preceding.rfind("try:")
+        self.assertGreater(last_try, 0,
+                           "dispatch_notification not wrapped in try block")
+        # And the except must mention the prediction-stored
+        # invariant for log archaeology.
+        slice_ = self.text[s:s + 1000]
+        self.assertIn("except Exception", slice_)
+        self.assertIn("prediction stored", slice_)
 
 
 # ──────────────────────────────────────────────────────────────────

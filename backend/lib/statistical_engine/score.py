@@ -43,15 +43,15 @@ import random
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from lib.server_http import ServerHttpClient
 from lib.statistical_engine.baselines import (
     compare_project_to_peers,
+    count_own_building_events,
 )
 from lib.statistical_engine.schema import (
     MODEL_VERSION,
-    NYC_COMPLAINTS_311_COLLECTION,
-    NYC_INSPECTIONS_COLLECTION,
-    NYC_VIOLATIONS_COLLECTION,
 )
+from lib.statistical_engine.socrata_client import SocrataClient
 from lib.statistical_engine.triggers import (
     active_predictions_for_project,
     run_triggers_for_project,
@@ -276,55 +276,45 @@ def _factor_breakdown(
 
 
 async def gather_score_inputs(
-    db, project: Dict[str, Any], *,
+    db,
+    project: Dict[str, Any],
+    *,
+    socrata: SocrataClient,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Pre-fetch every input the score needs in a small fixed
-    number of Mongo round-trips."""
+    """Pre-fetch every input the score needs.
+
+    V2.3 signature change: ``socrata`` is a REQUIRED keyword arg
+    here (the inner function expects a live client). The
+    outermost entrypoint ``recompute_and_persist`` constructs one
+    inline if its caller didn't supply one, and threads it down.
+    """
     cur_now = now or datetime.now(timezone.utc)
     bin_ = project.get("nyc_bin") or project.get("bin")
     project_id = str(project.get("_id") or project.get("id") or "")
 
-    # Own-building counts.
-    own = {
-        "violations_30d":         0,
-        "violations_90d":         0,
-        "inspections_failed_60d": 0,
-        "open_complaints_30d":    0,
-    }
-    if bin_:
-        c30 = cur_now - timedelta(days=30)
-        c60 = cur_now - timedelta(days=60)
-        c90 = cur_now - timedelta(days=90)
-        cursor = db[NYC_VIOLATIONS_COLLECTION].find({
-            "bin": bin_, "occurred_date": {"$gte": c90},
-        })
-        async for doc in cursor:
-            occ = doc.get("occurred_date")
-            if isinstance(occ, datetime):
-                if occ >= c30:
-                    own["violations_30d"] += 1
-                if occ >= c90:
-                    own["violations_90d"] += 1
-        cursor = db[NYC_INSPECTIONS_COLLECTION].find({
-            "bin": bin_, "occurred_date": {"$gte": c60},
-        })
-        async for doc in cursor:
-            res = (doc.get("result") or "").lower()
-            if "fail" in res or "violation" in res:
-                own["inspections_failed_60d"] += 1
-        cursor = db[NYC_COMPLAINTS_311_COLLECTION].find({
-            "bin": bin_, "occurred_date": {"$gte": c30},
-        })
-        async for doc in cursor:
-            status = (doc.get("status") or "").lower()
-            if status != "closed":
-                own["open_complaints_30d"] += 1
+    # Own-building counts. V2.3: lazy Socrata via the centralized
+    # helper in baselines.py. Soft-fails per-dataset inside the
+    # helper, so a single bad source doesn't blank the others.
+    try:
+        own = await count_own_building_events(
+            socrata, bin_=bin_, now=cur_now,
+        )
+    except Exception as e:
+        logger.warning(
+            f"[score] count_own_building_events failed: {e!r}",
+        )
+        own = {
+            "violations_30d":         0,
+            "violations_90d":         0,
+            "inspections_failed_60d": 0,
+            "open_complaints_30d":    0,
+        }
 
     # Peer comparison.
     try:
         peer_compare = await compare_project_to_peers(
-            db, project, now=cur_now,
+            db, project, socrata=socrata, now=cur_now,
         )
     except Exception as e:
         logger.warning(
@@ -502,40 +492,70 @@ async def recompute_and_persist(
     db,
     project: Dict[str, Any],
     *,
+    socrata: Optional[SocrataClient] = None,
     now: Optional[datetime] = None,
     rng: Optional[random.Random] = None,
 ) -> Dict[str, Any]:
     """Full pipeline: gather inputs, calculate score, run all 8
     triggers (so freshly-fired predictions feed the next read),
     then persist a row to risk_scores. Returns the inserted doc.
+
+    V2.3 signature change: accepts an optional ``socrata``
+    SocrataClient. When None, constructs one inline backed by a
+    fresh ServerHttpClient that lives for the duration of this
+    call. That single client + connection pool is threaded into
+    triggers + peer comparison + own-building counts so the whole
+    recompute pipeline reuses one HTTP connection where possible
+    (typically 7-10 Socrata calls per recompute on a cache miss,
+    1-2 on a cache hit).
+
+    server.py:calculate_project_risk_score passes ``project``
+    without a SocrataClient — Commit 3 keeps that endpoint
+    untouched by handling client construction here. Commit 4 may
+    eventually wire a shared application-level client through
+    request scope.
     """
     cur_now = now or datetime.now(timezone.utc)
     project_id = str(project.get("_id") or project.get("id") or "")
     if not project_id:
         return {}
 
-    # Fire triggers first — they may persist new predicted_events
-    # rows that this score's input gathering will pick up.
+    inline_http: Optional[ServerHttpClient] = None
+    if socrata is None:
+        inline_http = ServerHttpClient(timeout=10.0)
+        await inline_http.__aenter__()
+        socrata = SocrataClient(inline_http)
     try:
-        await run_triggers_for_project(db, project, now=cur_now)
-    except Exception as e:
-        logger.warning(f"[score] run_triggers_for_project: {e!r}")
+        # Fire triggers first — they may persist new
+        # predicted_events rows that this score's input
+        # gathering picks up via active_predictions_for_project.
+        try:
+            await run_triggers_for_project(
+                db, project, socrata=socrata, now=cur_now,
+            )
+        except Exception as e:
+            logger.warning(f"[score] run_triggers_for_project: {e!r}")
 
-    inputs = await gather_score_inputs(db, project, now=cur_now)
-    result = calculate_risk_score(inputs, rng=rng)
+        inputs = await gather_score_inputs(
+            db, project, socrata=socrata, now=cur_now,
+        )
+        result = calculate_risk_score(inputs, rng=rng)
 
-    doc = {
-        "project_id":           project_id,
-        "company_id":           str(project.get("company_id") or ""),
-        "calculated_at":        cur_now,
-        "score":                result["score"],
-        "confidence_low":       result["confidence_low"],
-        "confidence_high":      result["confidence_high"],
-        "contributing_factors": result["contributing_factors"],
-        "group_values":         result["group_values"],
-        "model_version":        MODEL_VERSION,
-        "weights_snapshot":     dict(GROUP_WEIGHTS),
-    }
-    res = await db.risk_scores.insert_one(doc)
-    doc["_id"] = res.inserted_id
-    return doc
+        doc = {
+            "project_id":           project_id,
+            "company_id":           str(project.get("company_id") or ""),
+            "calculated_at":        cur_now,
+            "score":                result["score"],
+            "confidence_low":       result["confidence_low"],
+            "confidence_high":      result["confidence_high"],
+            "contributing_factors": result["contributing_factors"],
+            "group_values":         result["group_values"],
+            "model_version":        MODEL_VERSION,
+            "weights_snapshot":     dict(GROUP_WEIGHTS),
+        }
+        res = await db.risk_scores.insert_one(doc)
+        doc["_id"] = res.inserted_id
+        return doc
+    finally:
+        if inline_http is not None:
+            await inline_http.__aexit__(None, None, None)

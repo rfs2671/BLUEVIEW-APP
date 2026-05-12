@@ -1,20 +1,24 @@
-"""Phase V2.2 — Commit 4 trigger detector + event predictor tests.
+"""Phase V2.3 — trigger detector + event-predictor tests.
 
-Pin every contract:
+Replaces test_v2_2_triggers.py. The individual trigger detectors
+are pure functions (untouched by V2.3); their positive/null tests
+carry forward unchanged. The orchestrator-layer tests
+(``gather_trigger_inputs``, ``run_triggers_for_project``) are
+rewritten to use ``MockSocrataClient`` instead of the V2.2
+_StubDb-with-nyc_*-collections fixture.
 
-  • 8 trigger constants exist with stable names (used by
-    calibration aggregator + admin tuning UI).
-  • Each trigger fires on its positive case and abstains on the
-    null case.
-  • Publication gate: confidence ≥ 0.70 AND peer_sample_size ≥
-    20 — predictions failing the gate are NOT persisted.
+Coverage:
+  • 8 trigger-kind constants exist with stable names.
+  • Each trigger fires on its positive case and abstains on null.
+  • Publication gate: confidence ≥ 0.70 AND peer_sample_size ≥ 20.
   • upsert_prediction is idempotent within a day.
-  • expire_stale_predictions flips outcome_status to 'expired'
-    only for predictions whose expires_at has passed.
-  • active_predictions_for_project returns only active, unexpired
-    rows.
-  • run_triggers_for_project orchestrates all 8 and persists the
-    qualifying predictions.
+  • expire_stale_predictions flips outcome_status only for past-
+    expires_at, active predictions.
+  • active_predictions_for_project filters active + unexpired.
+  • gather_trigger_inputs: each of the 5 lazy Socrata fetches
+    produces the right shape from seeded rows.
+  • run_triggers_for_project end-to-end with mock client +
+    seeded violations / 311.
 """
 
 from __future__ import annotations
@@ -35,32 +39,37 @@ os.environ.setdefault("QWEN_API_KEY", "")
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 sys.path.insert(0, str(_BACKEND))
+sys.path.insert(0, str(_HERE))
 
 from lib.statistical_engine import triggers as tr  # noqa: E402
 from lib.statistical_engine import schema as se_schema  # noqa: E402
+from lib.statistical_engine.socrata_client import (  # noqa: E402
+    DATASET_COMPLAINTS_311,
+    DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_VIOLATIONS,
+)
+
+from _socrata_mock import MockSocrataClient  # noqa: E402
 
 
 def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
 
 
 # ──────────────────────────────────────────────────────────────────
-# Trigger kind constants
+# Trigger-kind constants
 # ──────────────────────────────────────────────────────────────────
 
 
 class TestTriggerKinds(unittest.TestCase):
 
-    def test_eight_triggers(self):
-        self.assertEqual(len(tr.ALL_TRIGGER_KINDS), 8)
+    def test_nine_triggers(self):
+        # V2.3 Commit 6 added TRIGGER_311_INSPECTION_PREDICTION as
+        # a distinct kind from the existing TRIGGER_311_AT_BIN
+        # (score-driven). Total moves from 8 → 9.
+        self.assertEqual(len(tr.ALL_TRIGGER_KINDS), 9)
 
     def test_kind_names_pinned(self):
-        # Stable string identifiers — calibration aggregator and
-        # admin UI both index by these strings.
         self.assertEqual(tr.TRIGGER_311_AT_BIN, "311_at_bin")
         self.assertEqual(tr.TRIGGER_311_NEIGHBOR, "311_neighbor")
         self.assertEqual(tr.TRIGGER_CSC_PERIODIC, "csc_periodic")
@@ -70,6 +79,9 @@ class TestTriggerKinds(unittest.TestCase):
         self.assertEqual(tr.TRIGGER_CURE_DEADLINE_REINSPECT,
                          "cure_deadline_reinspection")
         self.assertEqual(tr.TRIGGER_SSMR_SHED_AGING, "ssmr_shed_aging")
+        # V2.3 Commit 6 addition.
+        self.assertEqual(tr.TRIGGER_311_INSPECTION_PREDICTION,
+                         "311_inspection_prediction")
 
     def test_default_windows_present_for_each(self):
         for kind in tr.ALL_TRIGGER_KINDS:
@@ -100,7 +112,7 @@ class TestBblBlockHelper(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
-# Each trigger: positive + null
+# Each trigger: positive + null (pure functions, untouched)
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -172,9 +184,7 @@ class TestTriggerCscPeriodic(unittest.TestCase):
 class TestTriggerBoroughSweep(unittest.TestCase):
 
     def test_fires_at_2_sigma_above_mean(self):
-        # 90-day distribution: mostly 5s, with a recent spike.
         history = [5] * 80 + [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-        # last_7d_count chosen well above mean+2sigma.
         out = tr.trigger_borough_sweep(
             {"_id": "p1"},
             borough_inspection_counts_90d=history,
@@ -285,40 +295,32 @@ class TestTriggerSsmrShed(unittest.TestCase):
 class TestPublicationGate(unittest.TestCase):
 
     def test_passes_when_both_thresholds_met(self):
-        prediction = {
-            "confidence": 0.75,
-            "peer_sample_size": 25,
-        }
-        self.assertTrue(tr.passes_publication_gate(prediction))
+        self.assertTrue(tr.passes_publication_gate({
+            "confidence": 0.75, "peer_sample_size": 25,
+        }))
 
     def test_fails_low_confidence(self):
-        prediction = {
-            "confidence": 0.65,
-            "peer_sample_size": 100,
-        }
-        self.assertFalse(tr.passes_publication_gate(prediction))
+        self.assertFalse(tr.passes_publication_gate({
+            "confidence": 0.65, "peer_sample_size": 100,
+        }))
 
     def test_fails_low_sample_size(self):
-        prediction = {
-            "confidence": 0.95,
-            "peer_sample_size": 5,
-        }
-        self.assertFalse(tr.passes_publication_gate(prediction))
+        self.assertFalse(tr.passes_publication_gate({
+            "confidence": 0.95, "peer_sample_size": 5,
+        }))
 
     def test_handles_none(self):
         self.assertFalse(tr.passes_publication_gate(None))
 
     def test_uses_schema_constants(self):
-        # Pin: thresholds match the schema constants.
-        prediction = {
+        self.assertTrue(tr.passes_publication_gate({
             "confidence": se_schema.MIN_CONFIDENCE_THRESHOLD,
             "peer_sample_size": se_schema.MIN_PEER_SAMPLE_SIZE,
-        }
-        self.assertTrue(tr.passes_publication_gate(prediction))
+        }))
 
 
 # ──────────────────────────────────────────────────────────────────
-# upsert_prediction + active query + expiration
+# upsert_prediction + expire + active query
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -329,7 +331,6 @@ class _StubColl:
     def find(self, query=None):
         outer = self
         items = list(outer.docs)
-        # very small filter subset
         if query:
             filtered = []
             for d in items:
@@ -374,7 +375,8 @@ class _StubColl:
                 if isinstance(v, dict):
                     if "$lte" in v and not (actual is not None and actual <= v["$lte"]):
                         ok = False; break
-                elif actual != v: ok = False; break
+                elif actual != v:
+                    ok = False; break
             if ok:
                 if "$set" in update: d.update(update["$set"])
                 modified += 1
@@ -385,6 +387,7 @@ class _StubColl:
 class _StubDb:
     def __init__(self):
         self._cs = {}
+
     def __getitem__(self, name):
         if name not in self._cs:
             self._cs[name] = _StubColl()
@@ -443,7 +446,6 @@ class TestUpsertPrediction(unittest.TestCase):
                 db, project=self.project, prediction=self.passing,
                 now=self.now,
             ))
-        # Same (project, kind, day) → 1 row, not 3.
         self.assertEqual(
             len(db[se_schema.PREDICTED_EVENTS_COLLECTION].docs), 1,
         )
@@ -454,12 +456,6 @@ class TestUpsertPrediction(unittest.TestCase):
             db, project=self.project, prediction=self.passing,
             now=self.now,
         ))
-        # expires_at = predicted_at_day (midnight) + 14 days. So
-        # the gap from `self.now` (mid-afternoon) is 13 days +
-        # change. Pin: expires_at is in the 13–14 day window
-        # past `now` (sanity-checks that days_window_max=14 is
-        # honored without depending on the day-truncation
-        # implementation detail).
         delta = out["expires_at"] - self.now
         self.assertGreaterEqual(delta.days, 13)
         self.assertLessEqual(delta.days, 14)
@@ -470,7 +466,6 @@ class TestExpireStalePredictions(unittest.TestCase):
     def test_flips_status_only_when_expired(self):
         db = _StubDb()
         now = datetime(2026, 5, 8, 14, 0, tzinfo=timezone.utc)
-        # Two docs: one expired, one still active.
         db[se_schema.PREDICTED_EVENTS_COLLECTION].docs = [
             {
                 "project_id": "P1", "trigger_kind": "311_at_bin",
@@ -506,15 +501,110 @@ class TestActivePredictionsQuery(unittest.TestCase):
             {"project_id": "P1", "expires_at": now + timedelta(days=10),
              "outcome_status": "expired"},
         ]
-        out = _run(tr.active_predictions_for_project(
-            db, "P1", now=now,
-        ))
-        # Only the first row qualifies.
+        out = _run(tr.active_predictions_for_project(db, "P1", now=now))
         self.assertEqual(len(out), 1)
 
 
 # ──────────────────────────────────────────────────────────────────
-# Orchestrator
+# gather_trigger_inputs (lazy Socrata)
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestGatherTriggerInputs(unittest.TestCase):
+    """Each of the 5 Socrata fetches inside gather_trigger_inputs
+    produces the expected output shape from seeded rows."""
+
+    def _project(self):
+        return {
+            "_id": "P1",
+            "nyc_bin": "1234567",
+            "bbl": "1001234567",
+            "borough": "MANHATTAN",
+        }
+
+    def test_311_at_bin_hits_complaints_dataset(self):
+        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_COMPLAINTS_311, [
+            {"record_id": "311_a", "bin": "1234567",
+             "bbl": "1001234567",
+             "created_date": (now - timedelta(hours=2)).strftime(
+                 "%Y-%m-%dT%H:%M:%S")},
+        ])
+        out = _run(tr.gather_trigger_inputs(
+            socrata, self._project(), now=now,
+        ))
+        self.assertEqual(len(out["recent_311_at_bin"]), 1)
+        self.assertEqual(out["borough_inspection_counts_90d"], [])
+
+    def test_311_neighbor_filters_by_block_prefix_via_socrata(self):
+        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_COMPLAINTS_311, [
+            {"record_id": "311_b", "bin": "1234567",
+             "bbl": "1001234567",
+             "created_date": (now - timedelta(hours=3)).strftime(
+                 "%Y-%m-%dT%H:%M:%S")},
+            {"record_id": "311_c", "bin": "9999999",
+             "bbl": "1001234568",
+             "created_date": (now - timedelta(hours=4)).strftime(
+                 "%Y-%m-%dT%H:%M:%S")},
+        ])
+        out = _run(tr.gather_trigger_inputs(
+            socrata, self._project(), now=now,
+        ))
+        # Only the neighbor BIN survives.
+        self.assertEqual(len(out["recent_311_neighbor"]), 1)
+        self.assertEqual(
+            out["recent_311_neighbor"][0]["record_id"], "311_c",
+        )
+
+    def test_borough_inspections_aggregated_into_per_day_counts(self):
+        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_DOB_INSPECTIONS, [
+            {"borough": "MANHATTAN", "inspection_date":
+                (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")},
+            {"borough": "MANHATTAN", "inspection_date":
+                (now - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")},
+            {"borough": "MANHATTAN", "inspection_date":
+                (now - timedelta(days=80)).strftime("%Y-%m-%dT%H:%M:%S")},
+        ])
+        out = _run(tr.gather_trigger_inputs(
+            socrata, self._project(), now=now,
+        ))
+        self.assertEqual(sum(out["borough_inspection_counts_90d"]), 3)
+        self.assertEqual(out["last_7d_count"], 2)
+
+    def test_neighbor_swo_and_nearby_violations_counted(self):
+        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_DOB_VIOLATIONS, [
+            # Same block, different BIN, SWO description, last 30d.
+            {"bbl": "1001234568", "bin": "1111111",
+             "issue_date": (now - timedelta(days=10)).strftime(
+                 "%Y-%m-%dT%H:%M:%S"),
+             "description": "STOP WORK ORDER issued"},
+            # Same block, different BIN, no SWO, last 60d.
+            {"bbl": "1001234569", "bin": "2222222",
+             "issue_date": (now - timedelta(days=40)).strftime(
+                 "%Y-%m-%dT%H:%M:%S"),
+             "description": "Other"},
+            # Same BIN as project — should be skipped.
+            {"bbl": "1001234567", "bin": "1234567",
+             "issue_date": (now - timedelta(days=20)).strftime(
+                 "%Y-%m-%dT%H:%M:%S"),
+             "description": "Stop work"},
+        ])
+        out = _run(tr.gather_trigger_inputs(
+            socrata, self._project(), now=now,
+        ))
+        self.assertEqual(out["nearby_violations_60d"], 2)
+        self.assertEqual(out["neighbor_swo_count_30d"], 1)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Orchestrator end-to-end
 # ──────────────────────────────────────────────────────────────────
 
 
@@ -523,37 +613,24 @@ class TestRunTriggersOrchestrator(unittest.TestCase):
     def test_persists_qualifying_predictions(self):
         db = _StubDb()
         now = datetime(2026, 5, 8, tzinfo=timezone.utc)
-        # Seed a 311 at the project's BIN within 24h to fire
-        # trigger_311_at_bin.
-        db[se_schema.NYC_COMPLAINTS_311_COLLECTION].docs = [
-            {
-                "record_id": "311_1",
-                "bin": "1234567",
-                "bbl": "1001234567",
-                "borough": "MANHATTAN",
-                "occurred_date": now - timedelta(hours=2),
-            },
-        ]
-        # Plenty of borough inspection history (zeroes is fine —
-        # borough_sweep won't fire).
-        db[se_schema.NYC_INSPECTIONS_COLLECTION].docs = [
-            {
-                "record_id": f"i_{i}",
-                "bin": f"99{i:05d}",
-                "borough": "MANHATTAN",
-                "occurred_date": now - timedelta(days=i),
-            }
-            for i in range(20)
-        ]
-        # No nearby violations — only trigger_311_at_bin should
-        # fire.
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_COMPLAINTS_311, [
+            {"record_id": "311_1", "bin": "1234567",
+             "bbl": "1001234567",
+             "created_date": (now - timedelta(hours=2)).strftime(
+                 "%Y-%m-%dT%H:%M:%S")},
+        ])
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_DOB_VIOLATIONS, [])
         project = {
             "_id": "P1", "company_id": "co_a",
             "nyc_bin": "1234567", "bbl": "1001234567",
             "borough": "MANHATTAN",
             "_peer_sample_size_for_test": 30,
         }
-        out = _run(tr.run_triggers_for_project(db, project, now=now))
+        out = _run(tr.run_triggers_for_project(
+            db, project, socrata=socrata, now=now,
+        ))
         self.assertGreaterEqual(len(out), 1)
         kinds = {p["trigger_kind"] for p in out}
         self.assertIn(tr.TRIGGER_311_AT_BIN, kinds)
@@ -564,7 +641,7 @@ class TestRunTriggersOrchestrator(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────
 
 
-class TestPackageReExportsCommit4(unittest.TestCase):
+class TestPackageReExports(unittest.TestCase):
 
     def test_triggers_api_reexported(self):
         from lib import statistical_engine as stat_engine
