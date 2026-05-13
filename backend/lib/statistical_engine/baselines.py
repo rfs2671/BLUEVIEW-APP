@@ -156,13 +156,34 @@ _VIOLATIONS_UNAVAILABLE_REASON = (
 # queries and unioned.
 SOQL_IN_CHUNK_SIZE = 250
 
-# Hard cap on the tier-4 citywide PLUTO fallback. The full NYC
-# parcel set is ~858k rows; paginating it under the sync 30s
-# timeout always times out (verified in prod). When we reach the
-# citywide tier we take a single 10k-row page and either accept
-# that as the peer set OR return the zero-peer marker — never
-# paginate further.
-CITYWIDE_TIER_MAX_PEERS = 10000
+# Per-tier hard caps on PLUTO peer-set discovery. Each tier
+# fetches a single bounded page — we never ``query_all`` PLUTO
+# from any tier, because paginating returns sets too large for
+# downstream chunked event-count queries to complete inside the
+# sync 30s timeout. Verified in prod against Bronx (tier 3 alone
+# returns ~90k BBLs unbounded; the event-count chunking phase
+# then times out long before the citywide tier-4 cap is ever
+# reached).
+#
+# Rationale for the per-tier values:
+#   • Tier 1 (borough × class × use_type) — narrowest filter,
+#     real-world peer sets rarely exceed a few hundred. 5k is
+#     a generous ceiling against unusual borough/class mixes.
+#   • Tier 2 (borough × class) — drops use_type, sets grow.
+#   • Tier 3 (borough only) — broad; Bronx is ~90k BBLs, so the
+#     cap is the only thing keeping prod alive.
+#   • Tier 4 (citywide, unfiltered) — ~858k BBLs.
+#
+# Tunable per future production observation.
+TIER_1_MAX_PEERS = 5000
+TIER_2_MAX_PEERS = 7500
+TIER_3_MAX_PEERS = 10000
+TIER_4_MAX_PEERS = 10000
+
+# Backward-compat alias preserved so the V2.3 schema-corrections
+# hotfix tests + any callers that imported the old name continue
+# to resolve. Equivalent to TIER_4_MAX_PEERS.
+CITYWIDE_TIER_MAX_PEERS = TIER_4_MAX_PEERS
 
 # PLUTO uses 2-letter borough codes, not the upper-case full
 # names Blueview stores on projects. Map at query construction
@@ -305,8 +326,14 @@ async def fetch_project_pluto_snapshot(
         rows = await socrata.query(
             DATASET_PLUTO,
             where=f"bbl = {_soql_quote(project_bbl)}",
+            # PLUTO (64uk-42ks) does NOT carry a ``bin`` column —
+            # listing ``bin`` in $select returns HTTP 400 from
+            # Socrata. Only request columns the dataset actually
+            # exposes. (The project's BIN, if known, lives on the
+            # Blueview project doc already; PLUTO is queried purely
+            # for DOF building-class + landuse.)
             select=["bbl", "borough", "bldgclass", "landuse",
-                    "block", "lot", "bin"],
+                    "block", "lot"],
             limit=1,
         )
     except SocrataQueryError as e:
@@ -438,6 +465,12 @@ async def peer_bbls(
     snapshot_landuse = (snapshot or {}).get("landuse")
     effective_use_type = use_type or snapshot_landuse
 
+    # Every tier passes ``limit=`` so PLUTO returns a single
+    # bounded page — never ``query_all``. Without these caps the
+    # tier-3 query alone (Bronx, ~90k BBLs) paginates long enough
+    # that the downstream chunked event-count phase exhausts the
+    # 30s sync timeout. Verified in prod hotfix #3.
+
     # Tier 1: borough × class × use_type. Requires both a
     # PLUTO-format borough code AND a real DOF bldgclass; if
     # either is missing we skip directly to a coarser tier.
@@ -447,6 +480,7 @@ async def peer_bbls(
             borough=borough_pluto,
             bldgclass=dof_bldgclass,
             landuse=effective_use_type,
+            limit=TIER_1_MAX_PEERS,
         )
         if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
             return bbls, {
@@ -464,6 +498,7 @@ async def peer_bbls(
             socrata,
             borough=borough_pluto,
             bldgclass=dof_bldgclass,
+            limit=TIER_2_MAX_PEERS,
         )
         if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
             return bbls, {
@@ -474,10 +509,14 @@ async def peer_bbls(
                 "pluto_snapshot": snapshot,
             }
 
-    # Tier 3: borough (drop class).
+    # Tier 3: borough (drop class). The Bronx alone has ~90k
+    # parcels — without TIER_3_MAX_PEERS the downstream chunked
+    # event-count queries time out.
     if borough_pluto:
         bbls = await _bbls_matching_socrata(
-            socrata, borough=borough_pluto,
+            socrata,
+            borough=borough_pluto,
+            limit=TIER_3_MAX_PEERS,
         )
         if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
             return bbls, {
@@ -487,12 +526,11 @@ async def peer_bbls(
                 "pluto_snapshot": snapshot,
             }
 
-    # Tier 4: citywide (no filters), capped at
-    # CITYWIDE_TIER_MAX_PEERS. We never paginate further at this
-    # tier — the full ~858k-parcel scan always exhausts the sync
-    # 30s timeout in prod.
+    # Tier 4: citywide (no filters). The full ~858k-parcel scan
+    # always exhausts the sync 30s timeout in prod without this
+    # cap (verified during PR #4 production rollout).
     bbls = await _bbls_matching_socrata(
-        socrata, limit=CITYWIDE_TIER_MAX_PEERS,
+        socrata, limit=TIER_4_MAX_PEERS,
     )
     return bbls, {
         "tier": "citywide",
