@@ -13545,6 +13545,25 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
 
                         rec["_record_type"] = ep["record_type"]
                         rec["_id_field"] = id_field
+                        # V2.3.A2 Change 3 — stamp the source
+                        # dataset slug on every record. Parsed
+                        # from the endpoint URL's last path
+                        # segment (e.g. ".../resource/855j-jady.json"
+                        # → "855j-jady"). The url.split("?", 1)[0]
+                        # strips any future query-string suffix
+                        # before the slug parse so a maintainer
+                        # adding ".../855j-jady.json?$where=..." to
+                        # an endpoint URL string doesn't silently
+                        # break the stamping. Forward-only: existing
+                        # ~624 dob_logs records on prod remain
+                        # unstamped; no backfill in this PR.
+                        try:
+                            url_path = ep["url"].split("?", 1)[0]
+                            rec["_dataset"] = (
+                                url_path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                            )
+                        except Exception:
+                            rec["_dataset"] = None
                         if ep["record_type"] == "violation":
                             # Check ALL text fields for stop work indicators across all 3 violation datasets
                             swo_fields = [
@@ -15303,6 +15322,15 @@ async def run_dob_sync_for_project(project: dict) -> list:
                 "created_at": now,
                 "updated_at": now,
                 "is_deleted": False,
+                # V2.3.A2 Change 3 — persist the source dataset
+                # slug so future code that needs "did this come
+                # from BIS legacy or DOB NOW Safety?" can answer
+                # without re-parsing. Forward-only: existing
+                # records remain unstamped. The in-flight tag
+                # ``_dataset`` is stamped on the raw record in
+                # _query_dob_apis; here we promote it to the
+                # bare ``dataset`` field on the persisted doc.
+                "dataset": rec.get("_dataset"),
                 **extra_fields,
             }
             # MR.14 (commit 2a) — universal current_status field

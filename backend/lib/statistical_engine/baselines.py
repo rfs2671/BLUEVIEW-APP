@@ -56,12 +56,13 @@ NEW IN V2.3:
     drops events older than the 2-year window, recomputes
     summary stats.
 
-  • ``count_own_building_events(socrata, *, bin_, bbl=None, now=None)``
+  • ``count_own_building_events(*, bin_, bbl=None, project_id, db, now=None)``
     — project-specific own-building counts (violations, failed
-    inspections, open complaints). Used by ``score.gather_score_inputs``.
-    Schema-corrections hotfix: ``bbl`` kwarg added because 311
-    (erm2-nwe9) has no bin column — open-complaints filter must
-    use bbl instead.
+    inspections, open complaints). Used by
+    ``score.gather_score_inputs``. V2.3.A2: pivots from lazy
+    Socrata queries to a 4-facet Mongo aggregate against
+    db.dob_logs (legacy-poller-populated, covers the full DOB
+    dataset list). ``project_id`` + ``db`` are now required.
 
 DELETED in V2.3 Commit 3 (the V2.2 baseline-aggregator cron was
 removed in Commit 1; these helpers wrote to the now-dropped
@@ -217,7 +218,7 @@ def _pluto_borough(stored: Optional[str]) -> Optional[str]:
 def _yyyymmdd(dt: datetime) -> str:
     """Format a datetime as YYYYMMDD (no separators), the format
     dob_violations (3h2n-5cm9) uses for ``issue_date``. Distinct
-    from ``_iso_z`` which produces ISO-8601 for the 311 +
+    from ``_iso_prefix`` which produces ISO-8601 for the 311 +
     inspections datasets.
     """
     return dt.strftime("%Y%m%d")
@@ -287,11 +288,17 @@ def _chunk(seq: List[str], n: int) -> List[List[str]]:
     return [seq[i:i + n] for i in range(0, len(seq), n)]
 
 
-def _iso_z(dt: datetime) -> str:
-    """Format a datetime in the ISO-8601-Z form Socrata's floating-
-    timestamp columns accept on the right-hand side of a comparator
-    (e.g. ``occurred_date > '2024-05-08T00:00:00'``).
-    """
+def _iso_prefix(dt: datetime) -> str:
+    """Format a datetime as the ISO-8601 prefix Socrata's floating-
+    timestamp columns AND dob_logs's ISO-stored fields accept on
+    the right-hand side of a comparator (e.g.
+    ``created_date > '2024-05-08T00:00:00'``).
+
+    Renamed from ``_iso_z`` (V2.3.A2): no ``Z`` suffix exists in
+    the actual stored values (verified against dob_logs
+    complaint_date + inspection_date and Socrata floating-timestamp
+    convention). The previous name implied UTC-Zulu suffix which
+    misled callers. Format string is unchanged."""
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -596,9 +603,9 @@ async def _count_events_for_bbls_socrata(
         return {b: 0 for b in bbls}
 
     date_col = _DATE_FIELDS.get(dataset_id, "occurred_date")
-    where_date = f"{date_col} > {_soql_quote(_iso_z(since))}"
+    where_date = f"{date_col} > {_soql_quote(_iso_prefix(since))}"
     if until is not None:
-        where_date += f" AND {date_col} < {_soql_quote(_iso_z(until))}"
+        where_date += f" AND {date_col} < {_soql_quote(_iso_prefix(until))}"
 
     counts: Dict[str, int] = {b: 0 for b in bbls}
 
@@ -1014,19 +1021,29 @@ async def refresh_peer_stats_incremental(
 
 
 async def count_own_building_events(
-    socrata: SocrataClient,
     *,
-    bin_: Optional[str],
-    bbl: Optional[str] = None,
+    project_id: Optional[str] = None,
+    db: Any = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, int]:
-    """Project-specific own-building counts. Replaces the three
-    direct ``db[NYC_*_COLLECTION].find()`` calls score.py made in
-    V2.2.
+    """Project-specific own-building counts. V2.3.A2: pivots from
+    lazy Socrata queries (which polled a subset of the legacy
+    poller's dataset list and missed projects whose enforcement
+    sits in 855j-jady / 6bgk-3dad / eabe-havv) to a single
+    4-facet aggregate against db.dob_logs.
 
-    Returns the same shape ``score.gather_score_inputs`` builds
-    today:
+    db.dob_logs is populated every 15 min by
+    run_dob_sync_for_project (server.py:15101) → _query_dob_apis
+    (server.py:13192) which polls the FULL DOB dataset list:
+    855j-jady (DOB NOW Safety), 3h2n-5cm9 (BIS legacy violations),
+    6bgk-3dad (ECB/OATH), eabe-havv (DOB complaints), erm2-nwe9
+    (311 complaints), p937-wjvj (inspections), plus the permit
+    and specialty datasets (CofO, Façade FISP, Boiler, Elevator,
+    SWO dedicated). Reading from dob_logs gives us coverage of all
+    those sources without re-polling Socrata at score-compute
+    time.
 
+    Returns:
       {
         "violations_30d":         int,
         "violations_90d":         int,
@@ -1034,23 +1051,41 @@ async def count_own_building_events(
         "open_complaints_30d":    int,
       }
 
-    Schema-corrections hotfix:
-      • DOB violations (3h2n-5cm9) — ``bin`` filter remains
-        correct, but ``issue_date`` is a ``YYYYMMDD`` string
-        column, NOT ISO datetime. Cutoffs are now formatted via
-        ``_yyyymmdd`` for the where clause; parsing of returned
-        rows uses ``_parse_socrata_yyyymmdd`` to recover datetimes
-        for the 30d/90d split.
-      • 311 (erm2-nwe9) — has NO ``bin`` column. Filter by
-        ``bbl`` instead. ``bbl`` kwarg threaded through from
-        ``score.py``; if absent we skip the 311 count and log
-        rather than burn a quota request that would 400.
+    Required kwargs:
+      • ``project_id`` — scopes the dob_logs query.
+      • ``db`` — the Motor AsyncIOMotorDatabase handle.
 
-    Empty ``bin_`` skips violations + inspections (which both key
-    on bin); empty ``bbl`` skips 311. Socrata query failures
-    soft-fail per-dataset (zero for the affected key, others
-    still populated). This preserves the V2.2 behavior of
-    degrading gracefully on partial-data outages.
+    Signature note (V2.3.A2): the V2.2 ``bin_`` + ``bbl`` kwargs
+    have been DROPPED. They were specific to the Socrata-query
+    construction path that A2 replaced. The dob_logs aggregate
+    scopes by ``project_id`` instead — the project's BIN/BBL
+    aren't needed because each dob_logs document is already
+    project-scoped at write time.
+
+    Schema invariants (locked Stage 1 v3 FINAL, Q1-Q9 + B1):
+      • Closed-state set for violations + SWOs: ``["certified",
+        "dismissed"]``  (Q1; no "paid" or "resolved" in production).
+      • Closed-state set for complaints: ``["Closed", "CLOSED"]``
+        (Q2; case-sensitive — both variants appear).
+      • Failed-inspection discriminator: ``severity == "Action"``
+        (Q3; computed at write time by
+        server._determine_severity).
+      • ``is_seed_transition: {$ne: True}`` (Q5; defensive — no
+        production records carry this flag today but the filter
+        protects future ingestion changes).
+      • ``violation_date`` is stored YYYYMMDD (Q7); cutoffs
+        formatted via ``_yyyymmdd``.
+      • ``complaint_date`` + ``inspection_date`` stored ISO with
+        millisecond suffix (B1.a, B1.b); cutoffs formatted via
+        ``_iso_prefix`` — lexicographic ``$gte`` works because
+        the cutoff is a valid string prefix.
+
+    On legacy callers that forgot the project_id+db kwargs, the
+    function logs a warning and returns the zero-count shape
+    rather than crashing.
+
+    On aggregate exception, same defensive shape — never block
+    score compute on a dob_logs query hiccup.
     """
     out = {
         "violations_30d":         0,
@@ -1058,91 +1093,105 @@ async def count_own_building_events(
         "inspections_failed_60d": 0,
         "open_complaints_30d":    0,
     }
-    if not bin_ and not bbl:
+    if not project_id or db is None:
+        logger.warning(
+            "[baselines] count_own_building_events called without "
+            "project_id+db — returning zero counts (legacy caller "
+            "or test fixture path)",
+        )
         return out
+
     cur_now = now or datetime.now(timezone.utc)
     c30 = cur_now - timedelta(days=30)
     c60 = cur_now - timedelta(days=60)
     c90 = cur_now - timedelta(days=90)
 
-    # Violations — last 90 days, then split into 30d / 90d.
-    # issue_date is YYYYMMDD on 3h2n-5cm9; cutoffs and parsing
-    # must use that format, not ISO datetime.
-    if bin_:
-        bin_q = _soql_quote(str(bin_))
-        try:
-            rows = await socrata.query_all(
-                DATASET_DOB_VIOLATIONS,
-                where=(
-                    f"bin = {bin_q} AND issue_date > "
-                    f"{_soql_quote(_yyyymmdd(c90))}"
-                ),
-                select=["issue_date"],
-                page_size=PEER_STATS_PAGE_SIZE,
-            )
-            for r in rows:
-                occ = _parse_socrata_yyyymmdd(r.get("issue_date"))
-                if occ is None:
-                    continue
-                if occ >= c30:
-                    out["violations_30d"] += 1
-                if occ >= c90:
-                    out["violations_90d"] += 1
-        except SocrataQueryError as e:
-            logger.warning("[baselines] own violations failed: %r", e)
+    # Per-dataset date formats stored on dob_logs:
+    #   • violation_date  → YYYYMMDD (3h2n-5cm9, 855j-jady,
+    #     6bgk-3dad write through _extract_violation_fields).
+    #   • complaint_date  → ISO-prefix "%Y-%m-%dT%H:%M:%S.000"
+    #     (eabe-havv + erm2-nwe9).
+    #   • inspection_date → ISO-prefix "%Y-%m-%dT%H:%M:%S.000"
+    #     (p937-wjvj).
+    # Lexicographic $gte works for both — the cutoff is a valid
+    # prefix of the stored value.
+    v_cut_30 = _yyyymmdd(c30)
+    v_cut_90 = _yyyymmdd(c90)
+    c_cut_30 = _iso_prefix(c30)
+    i_cut_60 = _iso_prefix(c60)
 
-    # Failed inspections — last 60 days. Socrata column is `result`
-    # on p937-wjvj; we substring-match "fail" or "violation" to
-    # preserve V2.2 semantics.
-    if bin_:
-        bin_q = _soql_quote(str(bin_))
-        try:
-            rows = await socrata.query_all(
-                DATASET_DOB_INSPECTIONS,
-                where=(
-                    f"bin = {bin_q} AND inspection_date > "
-                    f"{_soql_quote(_iso_z(c60))}"
-                ),
-                select=["result"],
-                page_size=PEER_STATS_PAGE_SIZE,
-            )
-            for r in rows:
-                res = (r.get("result") or "").lower()
-                if "fail" in res or "violation" in res:
-                    out["inspections_failed_60d"] += 1
-        except SocrataQueryError as e:
-            logger.warning("[baselines] own inspections failed: %r", e)
+    pipeline = [
+        {"$match": {
+            "project_id": project_id,
+            "is_deleted": {"$ne": True},
+            "is_seed_transition": {"$ne": True},
+        }},
+        {"$facet": {
+            "violations_30d": [
+                {"$match": {
+                    "record_type": {"$in": ["violation", "swo"]},
+                    "resolution_state": {"$nin": ["certified", "dismissed"]},
+                    "violation_date": {"$gte": v_cut_30},
+                }},
+                {"$count": "n"},
+            ],
+            "violations_90d": [
+                {"$match": {
+                    "record_type": {"$in": ["violation", "swo"]},
+                    "resolution_state": {"$nin": ["certified", "dismissed"]},
+                    "violation_date": {"$gte": v_cut_90},
+                }},
+                {"$count": "n"},
+            ],
+            "inspections_failed_60d": [
+                {"$match": {
+                    "record_type": "inspection",
+                    "severity": "Action",
+                    "inspection_date": {"$gte": i_cut_60},
+                }},
+                {"$count": "n"},
+            ],
+            "open_complaints_30d": [
+                {"$match": {
+                    "record_type": "complaint",
+                    "complaint_status": {"$nin": ["Closed", "CLOSED"]},
+                    "complaint_date": {"$gte": c_cut_30},
+                }},
+                {"$count": "n"},
+            ],
+        }},
+    ]
 
-    # Open 311 — last 30 days, status != "closed". 311 (erm2-nwe9)
-    # has no ``bin`` column; filter by bbl instead.
-    if bbl:
-        bbl_q = _soql_quote(str(bbl))
-        try:
-            rows = await socrata.query_all(
-                DATASET_COMPLAINTS_311,
-                where=(
-                    f"bbl = {bbl_q} AND created_date > "
-                    f"{_soql_quote(_iso_z(c30))}"
-                ),
-                select=["status"],
-                page_size=PEER_STATS_PAGE_SIZE,
-            )
-            for r in rows:
-                status = (r.get("status") or "").lower()
-                if status != "closed":
-                    out["open_complaints_30d"] += 1
-        except SocrataQueryError as e:
-            logger.warning("[baselines] own 311 failed: %r", e)
-    elif bin_:
-        # We have BIN but no BBL — can't filter 311 (no bin column).
-        # Log once at info so operators see the gap without filling
-        # the log with warnings.
-        logger.info(
-            "[baselines] own 311 skipped: no bbl provided (311 "
-            "has no bin column)",
+    try:
+        result = await db.dob_logs.aggregate(pipeline).to_list(length=1)
+    except Exception as e:
+        logger.warning(
+            "[baselines] count_own_building_events aggregate failed "
+            "for project %s: %r", project_id, e,
         )
-
+        return out
+    if not result:
+        return out
+    doc = result[0]
+    out["violations_30d"]         = _extract_facet_count(doc, "violations_30d")
+    out["violations_90d"]         = _extract_facet_count(doc, "violations_90d")
+    out["inspections_failed_60d"] = _extract_facet_count(doc, "inspections_failed_60d")
+    out["open_complaints_30d"]    = _extract_facet_count(doc, "open_complaints_30d")
     return out
+
+
+def _extract_facet_count(doc: Dict[str, Any], facet_key: str) -> int:
+    """$facet returns each sub-pipeline's result as a list. With
+    a terminal ``$count``, that list is either ``[{"n": N}]``
+    (match) or ``[]`` (no match). Defensive: any unexpected shape
+    collapses to 0 rather than crashing the caller."""
+    bucket = doc.get(facet_key) or []
+    if not bucket:
+        return 0
+    try:
+        return int(bucket[0].get("n") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _parse_socrata_dt(value: Any) -> Optional[datetime]:

@@ -191,7 +191,7 @@ def _soql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _iso_z(dt: datetime) -> str:
+def _iso_prefix(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -330,8 +330,8 @@ async def predict_inspection_from_complaint(
             where=(
                 f"complaint_type = {_soql_quote(complaint_type)} AND "
                 f"borough = {_soql_quote(borough)} AND "
-                f"created_date > {_soql_quote(_iso_z(window_start))} AND "
-                f"created_date < {_soql_quote(_iso_z(upper_bound))}"
+                f"created_date > {_soql_quote(_iso_prefix(window_start))} AND "
+                f"created_date < {_soql_quote(_iso_prefix(upper_bound))}"
             ),
             select=["unique_key", "bbl", "created_date"],
             page_size=_SOCRATA_PAGE_SIZE,
@@ -365,7 +365,7 @@ async def predict_inspection_from_complaint(
                 DATASET_DOB_INSPECTIONS,
                 where=(
                     f"bbl IN ({in_clause}) AND "
-                    f"inspection_date > {_soql_quote(_iso_z(window_start))}"
+                    f"inspection_date > {_soql_quote(_iso_prefix(window_start))}"
                 ),
                 select=["bbl", "inspection_date"],
                 page_size=_SOCRATA_PAGE_SIZE,
@@ -650,7 +650,7 @@ async def _resolve_one_prediction(
             DATASET_DOB_INSPECTIONS,
             where=(
                 f"bin = {_soql_quote(bin_)} AND "
-                f"inspection_date >= {_soql_quote(_iso_z(predicted_since))}"
+                f"inspection_date >= {_soql_quote(_iso_prefix(predicted_since))}"
             ),
             order="inspection_date ASC",
             limit=1,

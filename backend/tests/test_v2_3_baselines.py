@@ -8,7 +8,7 @@ peer_stats_cache lifecycle.
   • Peer-key extraction from project doc (pure, untouched).
   • Fallback ladder: full → drop use_type → drop class → citywide
     (rewritten to lazy PLUTO queries via MockSocrataClient).
-  • SoQL helpers (_soql_quote / _soql_in / _iso_z) produce
+  • SoQL helpers (_soql_quote / _soql_in / _iso_prefix) produce
     well-formed Socrata syntax.
   • Per-BBL event counts include zero-count BBLs.
   • Summary stats: n, mean, median, p75, p90, p95, max (math
@@ -40,6 +40,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
 os.environ.setdefault("DB_NAME", "smoke_test")
@@ -95,9 +96,133 @@ class _StubProjectsColl:
         return r
 
 
+class _StubDobLogsCursor:
+    """Mongo-aggregate cursor stand-in. Implements the .to_list()
+    coroutine count_own_building_events awaits."""
+
+    def __init__(self, docs):
+        self._docs = docs
+
+    async def to_list(self, length=None):
+        if length is None:
+            return list(self._docs)
+        return list(self._docs)[:length]
+
+
+def _stub_dob_match_field(actual, condition):
+    """Evaluate one field's match condition. Supports the SoQL-ish
+    operator subset count_own_building_events uses:
+      • bare equality
+      • $ne / $in / $nin / $gte / $exists
+    Anything else raises so a future pipeline change can't silently
+    bypass the stub.
+    """
+    if isinstance(condition, dict):
+        for op, expected in condition.items():
+            if op == "$ne":
+                if actual == expected:
+                    return False
+            elif op == "$in":
+                if actual not in expected:
+                    return False
+            elif op == "$nin":
+                if actual in expected:
+                    return False
+            elif op == "$gte":
+                if actual is None or actual < expected:
+                    return False
+            elif op == "$gt":
+                if actual is None or actual <= expected:
+                    return False
+            elif op == "$exists":
+                exists = actual is not None
+                if exists != expected:
+                    return False
+            else:
+                raise NotImplementedError(
+                    f"_StubDobLogsColl does not implement {op!r} yet; "
+                    f"extend the stub if the pipeline added a new operator",
+                )
+        return True
+    return actual == condition
+
+
+def _stub_dob_match(doc, criteria):
+    return all(
+        _stub_dob_match_field(doc.get(field), cond)
+        for field, cond in criteria.items()
+    )
+
+
+class _StubDobLogsColl:
+    """In-memory dob_logs collection that interprets the specific
+    aggregate pipeline shape count_own_building_events emits:
+
+      [
+        { "$match": <top-level filter> },
+        { "$facet": {
+            "<name>": [
+              { "$match": <facet filter> },
+              { "$count": "n" },
+            ],
+            ...
+        }},
+      ]
+
+    Returns a list-of-one shape mirroring real Mongo $facet output.
+    """
+
+    def __init__(self, docs=None):
+        self.docs = list(docs or [])
+        self.aggregate_calls: List[Any] = []
+
+    def seed(self, docs):
+        self.docs.extend(docs)
+
+    def aggregate(self, pipeline, *args, **kwargs):
+        self.aggregate_calls.append(pipeline)
+        return _StubDobLogsCursor(self._evaluate(list(pipeline)))
+
+    def _evaluate(self, pipeline):
+        docs = list(self.docs)
+        for stage in pipeline:
+            if "$match" in stage:
+                docs = [d for d in docs if _stub_dob_match(d, stage["$match"])]
+                continue
+            if "$facet" in stage:
+                result = {}
+                for facet_name, facet_pipeline in stage["$facet"].items():
+                    fdocs = list(docs)
+                    for fstage in facet_pipeline:
+                        if "$match" in fstage:
+                            fdocs = [
+                                d for d in fdocs
+                                if _stub_dob_match(d, fstage["$match"])
+                            ]
+                        elif "$count" in fstage:
+                            count_field = fstage["$count"]
+                            fdocs = [{count_field: len(fdocs)}] if fdocs else []
+                        else:
+                            raise NotImplementedError(
+                                f"_StubDobLogsColl facet stage {fstage!r} "
+                                f"not implemented",
+                            )
+                    result[facet_name] = fdocs
+                return [result]
+            if "$count" in stage:
+                count_field = stage["$count"]
+                docs = [{count_field: len(docs)}] if docs else []
+                continue
+            raise NotImplementedError(
+                f"_StubDobLogsColl top-level stage {stage!r} not implemented",
+            )
+        return docs
+
+
 class _StubDb:
-    def __init__(self, projects=None):
+    def __init__(self, projects=None, dob_logs=None):
         self.projects = _StubProjectsColl(projects)
+        self.dob_logs = _StubDobLogsColl(dob_logs)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -164,9 +289,9 @@ class TestSoqlHelpers(unittest.TestCase):
     def test_in_clause_empty_list_is_defanged(self):
         self.assertEqual(bl._soql_in("bbl", []), "bbl IN ('')")
 
-    def test_iso_z_format(self):
+    def test_iso_prefix_format(self):
         dt = datetime(2026, 5, 8, 12, 30, 45, tzinfo=timezone.utc)
-        self.assertEqual(bl._iso_z(dt), "2026-05-08T12:30:45")
+        self.assertEqual(bl._iso_prefix(dt), "2026-05-08T12:30:45")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -752,96 +877,264 @@ class TestRefreshPeerStatsIncremental(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
-# count_own_building_events
+# count_own_building_events — V2.3.A2 (Mongo-aggregate-against-dob_logs)
+#
+# Tests 1–6 of the A2 PR. Pivots count_own_building_events away from
+# Socrata polling (subset of datasets) to a 4-facet Mongo aggregate
+# against db.dob_logs (populated nightly by run_dob_sync_for_project
+# from the full DOB dataset list).
+#
+# All tests pass the NEW signature (project_id + db kwargs, no socrata
+# positional). On main, count_own_building_events still has the old
+# `socrata` positional signature, so every test below fails with
+# TypeError. After A2 Stage 3 implementation, all 6 pass.
 # ──────────────────────────────────────────────────────────────────
 
 
+_PROJECT_ID = "test_project_X"
+
+
+def _dob_log(
+    *,
+    record_type: str,
+    project_id: str = _PROJECT_ID,
+    raw_dob_id: str = None,
+    is_deleted: bool = False,
+    is_seed_transition: bool = False,
+    **extras,
+):
+    """Helper — assemble a dob_logs document with the universal
+    fields the legacy poller stamps + per-type extras. Mirrors the
+    write shape at server.py:15292-15317.
+
+    Defaults the raw_dob_id to a uuid4 hex slice so multiple calls
+    can't collide (the V2.2.A2 Stage 4 cosmetic note flagged
+    id(extras)-based defaults as collision-prone if the caller
+    reuses the same extras dict).
+    """
+    raw_id = raw_dob_id or f"{record_type}:{uuid4().hex[:8]}"
+    doc = {
+        "project_id":         project_id,
+        "company_id":         "company_X",
+        "nyc_bin":            "1234567",
+        "record_type":        record_type,
+        "raw_dob_id":         raw_id,
+        "is_deleted":         is_deleted,
+        "is_seed_transition": is_seed_transition,
+    }
+    doc.update(extras)
+    return doc
+
+
 class TestCountOwnBuildingEvents(unittest.TestCase):
+    """A2 — read from db.dob_logs via aggregate pipeline.
 
-    def test_empty_bin_returns_all_zeros(self):
-        socrata = MockSocrataClient()
-        out = _run(bl.count_own_building_events(socrata, bin_=None))
-        self.assertEqual(out, {
-            "violations_30d": 0, "violations_90d": 0,
-            "inspections_failed_60d": 0, "open_complaints_30d": 0,
-        })
+    Sub-tests pin:
+      1. Active SWO counts as a violation (Menahan reproduction).
+      2. Closed violations ($nin: ["certified", "dismissed"]) excluded.
+      3. 30d / 60d / 90d window boundaries against YYYYMMDD strings.
+      4. severity="Action" discriminator for failed inspections.
+      5. Case-sensitive Closed / CLOSED filter for complaints
+         (Q2 finding — both case variants appear in production).
+      6. is_seed_transition=True records excluded (defensive — no
+         records carry this flag today per Q5, but the filter
+         protects against future ingestion changes that re-introduce
+         synthetic seeds).
+    """
 
-    def test_violations_split_into_30d_and_90d_buckets(self):
-        """Schema-corrections hotfix: ``issue_date`` on
-        dob_violations (3h2n-5cm9) is a YYYYMMDD text column,
-        not ISO-8601. Cutoffs and seed dates both use the
-        no-separator format."""
-        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_DOB_VIOLATIONS, [
-            {"bin": "1234567",
-             "issue_date": (now - timedelta(days=5)).strftime("%Y%m%d")},
-            {"bin": "1234567",
-             "issue_date": (now - timedelta(days=10)).strftime("%Y%m%d")},
-            {"bin": "1234567",
-             "issue_date": (now - timedelta(days=45)).strftime("%Y%m%d")},
-            {"bin": "1234567",
-             "issue_date": (now - timedelta(days=80)).strftime("%Y%m%d")},
-        ])
-        socrata.seed(DATASET_DOB_INSPECTIONS, [])
-        socrata.seed(DATASET_COMPLAINTS_311, [])
-        out = _run(bl.count_own_building_events(
-            socrata, bin_="1234567", now=now,
-        ))
-        self.assertEqual(out["violations_30d"], 2)
-        self.assertEqual(out["violations_90d"], 4)
-
-    def test_failed_inspections_substring_match(self):
-        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_DOB_VIOLATIONS, [])
-        socrata.seed(DATASET_DOB_INSPECTIONS, [
-            {"bin": "1234567",
-             "inspection_date": (now - timedelta(days=10)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "result": "Failed - Reinspect"},
-            {"bin": "1234567",
-             "inspection_date": (now - timedelta(days=20)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "result": "Passed"},
-            {"bin": "1234567",
-             "inspection_date": (now - timedelta(days=30)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "result": "Violation issued"},
-        ])
-        socrata.seed(DATASET_COMPLAINTS_311, [])
-        out = _run(bl.count_own_building_events(
-            socrata, bin_="1234567", now=now,
-        ))
-        self.assertEqual(out["inspections_failed_60d"], 2)
-
-    def test_open_complaints_excludes_closed(self):
-        """Schema-corrections hotfix: 311 (erm2-nwe9) has NO
-        ``bin`` column — the own-complaints filter must use
-        ``bbl`` instead. Caller threads the project's bbl
-        through to ``count_own_building_events``."""
-        now = datetime(2026, 5, 10, tzinfo=timezone.utc)
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_DOB_VIOLATIONS, [])
-        socrata.seed(DATASET_DOB_INSPECTIONS, [])
-        socrata.seed(DATASET_COMPLAINTS_311, [
-            {"bbl": "1001234567",
-             "created_date": (now - timedelta(days=5)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "status": "Open"},
-            {"bbl": "1001234567",
-             "created_date": (now - timedelta(days=10)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "status": "Closed"},
-            {"bbl": "1001234567",
-             "created_date": (now - timedelta(days=15)).strftime(
-                 "%Y-%m-%dT%H:%M:%S"),
-             "status": "In Progress"},
+    def test_count_own_building_events_includes_active_swo(self):
+        """Test 1 — Menahan reproduction: a single SWO with
+        resolution_state='hearing_scheduled' must count as
+        violations_30d AND violations_90d (record_type SWO is
+        treated as a violation for own-building counts)."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="swo",
+                resolution_state="hearing_scheduled",
+                violation_date=(now - timedelta(days=7)).strftime("%Y%m%d"),
+            ),
         ])
         out = _run(bl.count_own_building_events(
-            socrata, bin_="1234567", bbl="1001234567", now=now,
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
         ))
+        self.assertGreaterEqual(out["violations_30d"], 1)
+        self.assertGreaterEqual(out["violations_90d"], 1)
+
+    def test_count_own_building_events_excludes_closed_violations(self):
+        """Test 2 — Q1-locked closed-state set
+        ["certified", "dismissed"] applied via $nin."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=5)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="certified",
+                violation_date=(now - timedelta(days=5)).strftime("%Y%m%d"),
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        self.assertEqual(out["violations_30d"], 1)
+
+    def test_count_own_building_events_respects_30_60_90_windows(self):
+        """Test 3 — YYYYMMDD string-compare cutoff logic across
+        the window boundaries. Q7-locked format."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=15)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=45)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=75)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=120)).strftime("%Y%m%d"),
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        # 15d-old → in 30d window AND 90d window.
+        # 45d, 75d → in 90d window only.
+        # 120d → outside both.
+        self.assertEqual(out["violations_30d"], 1)
+        self.assertEqual(out["violations_90d"], 3)
+
+    def test_count_own_building_events_inspections_action_only(self):
+        """Test 4 — Q3-locked severity="Action" discriminator.
+        Inspections without severity=Action MUST NOT count even if
+        they fall in the 60d window."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="inspection",
+                severity="Action",
+                inspection_date=(now - timedelta(days=10)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+            _dob_log(
+                record_type="inspection",
+                severity="Good",
+                inspection_date=(now - timedelta(days=10)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+            _dob_log(
+                record_type="inspection",
+                severity="Good",
+                inspection_date=(now - timedelta(days=20)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        self.assertEqual(out["inspections_failed_60d"], 1)
+
+    def test_count_own_building_events_open_complaints_handles_case_sensitivity(self):
+        """Test 5 — Q2-locked case-sensitive closed set
+        ["Closed", "CLOSED"]. Both case variants appear in
+        production and BOTH must be excluded. ACTIVE and
+        "In Progress" both count as open."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="complaint",
+                complaint_status="Closed",
+                complaint_date=(now - timedelta(days=5)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+            _dob_log(
+                record_type="complaint",
+                complaint_status="CLOSED",
+                complaint_date=(now - timedelta(days=5)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+            _dob_log(
+                record_type="complaint",
+                complaint_status="ACTIVE",
+                complaint_date=(now - timedelta(days=5)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+            _dob_log(
+                record_type="complaint",
+                complaint_status="In Progress",
+                complaint_date=(now - timedelta(days=5)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000",
+                ),
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        # Both Closed + CLOSED excluded; ACTIVE + In Progress count.
         self.assertEqual(out["open_complaints_30d"], 2)
+
+    def test_count_own_building_events_excludes_seed_transition_records(self):
+        """Test 6 — defensive filter from Q5. No production
+        records carry is_seed_transition=True today, but the
+        pipeline MUST exclude them to protect against future
+        ingestion changes (e.g., V2.3→V2.4 schema migration
+        with a fresh synthetic-seed flag)."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=5)).strftime("%Y%m%d"),
+                is_seed_transition=False,
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=5)).strftime("%Y%m%d"),
+                is_seed_transition=True,
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        self.assertEqual(out["violations_30d"], 1)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1335,6 +1628,221 @@ class TestPackageReExports(unittest.TestCase):
                 hasattr(stat_engine, name),
                 f"{name} still exported; should have been removed",
             )
+
+
+# ──────────────────────────────────────────────────────────────────
+# A2 integration — Menahan-fixture produces non-zero own_building
+#
+# Test 10 of the A2 PR. End-to-end pin: a project doc + dob_logs
+# shaped roughly like Menahan (active SWO + recent violations +
+# active complaint + failed inspection) feeds recompute_and_persist
+# which writes a risk_scores doc whose contributing_factors[group=
+# "own_building"].value is > 0.
+#
+# Uses the new module-level coefficient constants in score.py (C3
+# Path 1: OWN_BUILDING_WEIGHT_VIOLATIONS_30D etc.). Before Stage 3
+# implementation these constants don't exist → test fails on
+# AttributeError when accessed via getattr (caught explicitly so
+# the failure message is informative).
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestRecomputePersistMenahanFixture(unittest.TestCase):
+    """A2 — Menahan-fixture integration test (test 10)."""
+
+    def test_recompute_persist_produces_nonzero_own_building_for_menahan_fixture(self):
+        """Seeds dob_logs with a Menahan-like enforcement shape,
+        runs recompute_and_persist, asserts:
+
+          (a) The contributing_factors row for group=='own_building'
+              has value > 0.
+          (b) The value equals the formula's output using the new
+              module-level coefficient constants in score.py:
+                v30 * OWN_BUILDING_WEIGHT_VIOLATIONS_30D
+              + v90 * OWN_BUILDING_WEIGHT_VIOLATIONS_90D
+              + i_failed * OWN_BUILDING_WEIGHT_INSPECTIONS_FAILED_60D
+              + open_311 * OWN_BUILDING_WEIGHT_OPEN_COMPLAINTS_30D
+              clamped to [0, 100].
+
+        Fixture shape:
+          • 3 active violations within 30d  → v30 = 3
+          • 2 additional active violations within 90d (but
+            outside 30d)                    → v90 = 5  (total in 90d)
+          • 1 failed inspection within 60d  → i_failed = 1
+          • 1 open (ACTIVE) complaint w/in 30d → open_311 = 1
+
+        Expected own_building (with current constants 8/2/12/4):
+          3*8 + 5*2 + 1*12 + 1*4 = 24 + 10 + 12 + 4 = 50.
+        Test computes expected dynamically from the constants so a
+        future coefficient retune doesn't break this test
+        spuriously.
+        """
+        from lib.statistical_engine import score as sc
+
+        # Verify the new coefficient constants exist (C3 Path 1).
+        # On main these don't exist yet → AttributeError with a
+        # message that flags this as Stage 3 work.
+        weights = {}
+        for name in (
+            "OWN_BUILDING_WEIGHT_VIOLATIONS_30D",
+            "OWN_BUILDING_WEIGHT_VIOLATIONS_90D",
+            "OWN_BUILDING_WEIGHT_INSPECTIONS_FAILED_60D",
+            "OWN_BUILDING_WEIGHT_OPEN_COMPLAINTS_30D",
+        ):
+            value = getattr(sc, name, None)
+            self.assertIsNotNone(
+                value,
+                f"score.py missing module-level constant {name!r} — "
+                f"A2 Stage 3 must extract the own-building formula "
+                f"coefficients per C3 Path 1.",
+            )
+            weights[name] = value
+
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        project_id = "menahan_fixture_project"
+        project = {
+            "_id": project_id,
+            "id": project_id,
+            "company_id": "fixture_company",
+            "name": "9 Menahan Street",
+            "nyc_bin": "3325703",
+            "bbl": "3033040024",
+            "borough": "BROOKLYN",
+            "track_dob_status": True,
+            # Pre-staged to a known-good state so the test isolates
+            # the own_building factor.
+            "peer_stats_cache": {
+                "status": "ready",
+                "computed_at": now - timedelta(days=1),
+                "last_refreshed_at": now - timedelta(days=1),
+                "peer_criteria": {
+                    "borough": "BROOKLYN",
+                    "project_class": "O4",
+                    "use_type": "office",
+                    "tier": "borough_class_use",
+                    "sample_size": 24,
+                    "fallback_level": 1,
+                },
+                "violations": {
+                    "available": False,
+                    "unavailable_reason":
+                        "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+                    "peer_data_dropped_in_pr": "v2.3-schema-corrections-hotfix",
+                },
+                "inspections": {
+                    "available": True,
+                    "n": 24, "median": 0.0, "p75": 0.0, "p90": 0.0,
+                    "project_count": 0, "percentile_rank": 50.0,
+                },
+                "complaints": {
+                    "available": True,
+                    "n": 24, "median": 0.0, "p75": 0.0, "p90": 0.0,
+                    "project_count": 0, "percentile_rank": 50.0,
+                },
+            },
+        }
+        db = _StubDb(projects=[project])
+
+        # Seed dob_logs with a Menahan-like shape.
+        dob_logs_seed = []
+        for i in range(3):
+            dob_logs_seed.append(_dob_log(
+                project_id=project_id,
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - timedelta(days=(5 + i))).strftime("%Y%m%d"),
+                raw_dob_id=f"v30:{i}",
+            ))
+        for i in range(2):
+            dob_logs_seed.append(_dob_log(
+                project_id=project_id,
+                record_type="violation",
+                resolution_state="hearing_scheduled",
+                violation_date=(now - timedelta(days=(45 + i))).strftime("%Y%m%d"),
+                raw_dob_id=f"v90:{i}",
+            ))
+        dob_logs_seed.append(_dob_log(
+            project_id=project_id,
+            record_type="inspection",
+            severity="Action",
+            inspection_date=(now - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S.000"),
+            raw_dob_id="i60:0",
+        ))
+        dob_logs_seed.append(_dob_log(
+            project_id=project_id,
+            record_type="complaint",
+            complaint_status="ACTIVE",
+            complaint_date=(now - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S.000"),
+            raw_dob_id="c30:0",
+        ))
+        db.dob_logs.seed(dob_logs_seed)
+
+        # Stub the risk_scores collection (recompute_and_persist
+        # writes a doc to it).
+        from unittest.mock import MagicMock as _MM
+        rs_inserts = []
+
+        class _StubRiskScoresColl:
+            async def insert_one(self, doc):
+                rs_inserts.append(doc)
+                r = _MM(); r.inserted_id = "fake_score_id"
+                return r
+
+            async def update_many(self, *_a, **_kw):
+                r = _MM(); r.matched_count = 0; r.modified_count = 0
+                return r
+
+        db.risk_scores = _StubRiskScoresColl()
+
+        # Run recompute_and_persist with an empty Socrata mock.
+        # Prevents real network calls during the trigger-evaluation
+        # path that ``recompute_and_persist`` invokes before
+        # ``gather_score_inputs`` (per Stage 4 Confirmation 2 —
+        # without the mock, the trigger path would attempt real
+        # Socrata queries that fail and get swallowed by the
+        # try/except in ``recompute_and_persist``, costing ~8s of
+        # retry backoff per test run).
+        mock_socrata = MockSocrataClient()
+        doc = _run(sc.recompute_and_persist(
+            db, project, socrata=mock_socrata, now=now,
+        ))
+
+        # Find the own_building factor row.
+        contributing = doc.get("contributing_factors") or []
+        own_row = next(
+            (f for f in contributing
+             if f.get("group") == "own_building"
+             or f.get("name") == "own_building"),
+            None,
+        )
+        self.assertIsNotNone(
+            own_row, "no own_building factor in contributing_factors",
+        )
+
+        # Expected value computed from the dynamic coefficients.
+        # Fixture: v30=3, v90=5, i_failed=1, open_311=1.
+        expected = (
+            3 * weights["OWN_BUILDING_WEIGHT_VIOLATIONS_30D"]
+            + 5 * weights["OWN_BUILDING_WEIGHT_VIOLATIONS_90D"]
+            + 1 * weights["OWN_BUILDING_WEIGHT_INSPECTIONS_FAILED_60D"]
+            + 1 * weights["OWN_BUILDING_WEIGHT_OPEN_COMPLAINTS_30D"]
+        )
+        expected = float(max(0.0, min(100.0, expected)))
+
+        actual = float(own_row.get("value") or own_row.get("subscore") or 0.0)
+        self.assertGreater(
+            actual, 0.0,
+            "own_building subscore is 0 — A2 pivot to dob_logs "
+            "did not produce non-zero output for Menahan fixture",
+        )
+        self.assertAlmostEqual(
+            actual, expected,
+            msg=(
+                f"own_building value {actual} != expected {expected} "
+                f"(formula: v30=3, v90=5, i_failed=1, open_311=1 with "
+                f"weights {weights})"
+            ),
+        )
 
 
 if __name__ == "__main__":

@@ -558,7 +558,7 @@ def _soql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _iso_z(dt: datetime) -> str:
+def _iso_prefix(dt: datetime) -> str:
     """Format a datetime in ISO-8601 form Socrata accepts as a
     floating-timestamp comparator RHS. Used for 311 +
     inspections (which carry true timestamp columns).
@@ -640,6 +640,8 @@ async def gather_trigger_inputs(
     project: Dict[str, Any],
     *,
     now: Optional[datetime] = None,
+    project_id: Optional[str] = None,
+    db: Any = None,
 ) -> Dict[str, Any]:
     """Pre-fetch the data each trigger needs in one pass so we
     don't fire 8 sequential per-trigger Socrata calls.
@@ -657,6 +659,20 @@ async def gather_trigger_inputs(
     the other triggers' inputs populate normally. This preserves
     the V2.2 behavior of degrading gracefully when one source
     times out.
+
+    V2.3.A2 additions (Stage 1 v3 FINAL):
+      • New kwargs ``project_id`` + ``db`` — accepted for signature
+        symmetry with ``count_own_building_events`` and for use by
+        future Mongo-pivoted trigger inputs. NOT used by any
+        current input shape in this PR (B3: recent_311_at_bin
+        stays on Socrata to preserve calibration).
+      • B2 deferral: ``open_violations_with_cure`` is now
+        hard-coded to ``[]``. The Socrata cure_deadline column is
+        sparsely populated and the regex-based extraction in
+        legacy poller is too unreliable to feed
+        ``trigger_cure_deadline_reinspection``. Re-enable in a
+        follow-up PR once a typed cure-deadline source is
+        identified.
     """
     cur_now = now or datetime.now(timezone.utc)
     bin_ = project.get("nyc_bin") or project.get("bin")
@@ -693,7 +709,7 @@ async def gather_trigger_inputs(
                 DATASET_COMPLAINTS_311,
                 where=(
                     f"bbl = {_soql_quote(bbl)} AND created_date > "
-                    f"{_soql_quote(_iso_z(cutoff_24h))}"
+                    f"{_soql_quote(_iso_prefix(cutoff_24h))}"
                 ),
                 page_size=1000,
             )
@@ -712,7 +728,7 @@ async def gather_trigger_inputs(
                 DATASET_COMPLAINTS_311,
                 where=(
                     f"starts_with(bbl, {_soql_quote(block)}) AND "
-                    f"created_date > {_soql_quote(_iso_z(cutoff_24h))}"
+                    f"created_date > {_soql_quote(_iso_prefix(cutoff_24h))}"
                 ),
                 page_size=1000,
             )
@@ -734,7 +750,7 @@ async def gather_trigger_inputs(
                 DATASET_DOB_INSPECTIONS,
                 where=(
                     f"boro_code = {_soql_quote(boro_code)} AND "
-                    f"inspection_date > {_soql_quote(_iso_z(cutoff_90d))}"
+                    f"inspection_date > {_soql_quote(_iso_prefix(cutoff_90d))}"
                 ),
                 select=["inspection_date"],
                 page_size=5000,
@@ -791,34 +807,17 @@ async def gather_trigger_inputs(
         except SocrataQueryError as e:
             logger.warning("[triggers] neighbor violations failed: %r", e)
 
-    # Open violations with cure deadline on the project's own BIN.
-    # Socrata dataset 3h2n-5cm9 doesn't ship a typed cure_deadline
-    # column on the public schema (V2.2 sourced it from a
-    # synthetic field populated by the ingestion canonicalizer).
-    # For Commit 3 we look at every row for the BIN and surface
-    # any whose cure_deadline is parseable in the future; this
-    # preserves V2.2 behavior with the limited data Socrata
-    # exposes. If a future commit needs richer cure-deadline
-    # detection it can pull from the DOB NOW endpoint via the
-    # worker queue.
-    if bin_:
-        try:
-            rows = await socrata.query_all(
-                DATASET_DOB_VIOLATIONS,
-                where=f"bin = {_soql_quote(bin_)}",
-                page_size=1000,
-            )
-            for doc in rows:
-                cure_raw = doc.get("cure_deadline")
-                cure = _parse_socrata_dt(cure_raw) if cure_raw else None
-                if cure is not None:
-                    # Materialize the parsed datetime so downstream
-                    # trigger logic (which expects a datetime) works.
-                    doc = dict(doc)
-                    doc["cure_deadline"] = cure
-                    out["open_violations_with_cure"].append(doc)
-        except SocrataQueryError as e:
-            logger.warning("[triggers] own-BIN violations failed: %r", e)
+    # V2.3.A2 B2 deferral — ``open_violations_with_cure`` stays at
+    # [] regardless of upstream content. The Socrata cure_deadline
+    # column on 3h2n-5cm9 is not a typed field (it's regex-
+    # extracted from disposition_comments at write time in the
+    # legacy poller via _extract_compliance_deadline); production
+    # cardinality is too sparse to drive trigger_cure_deadline_
+    # reinspection or trigger_cse_followup reliably. Re-enable in
+    # a follow-up PR once a typed cure-deadline source is
+    # identified (likely from a DOB NOW endpoint that ships the
+    # field explicitly).
+    out["open_violations_with_cure"] = []
 
     return out
 
@@ -850,7 +849,11 @@ async def run_triggers_for_project(
         await inline_http.__aenter__()
         socrata = SocrataClient(inline_http)
     try:
-        inputs = await gather_trigger_inputs(socrata, project, now=cur_now)
+        project_id = str(project.get("_id") or project.get("id") or "")
+        inputs = await gather_trigger_inputs(
+            socrata, project, now=cur_now,
+            project_id=project_id, db=db,
+        )
         return await _run_triggers_with_inputs(
             db, project, inputs, now=cur_now,
         )
