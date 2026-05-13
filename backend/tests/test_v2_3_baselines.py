@@ -311,6 +311,42 @@ class TestFallbackLadder(unittest.TestCase):
         pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
         self.assertEqual(len(pluto_calls), 1)
 
+    def test_all_tiers_apply_peer_cap_not_just_citywide(self):
+        """Hotfix #3 BUG B regression pin: every fallback tier
+        (1, 2, 3, 4) caps its PLUTO peer-set at its
+        TIER_*_MAX_PEERS constant. Bronx alone is ~90k parcels;
+        without a tier-3 cap the downstream chunked event-count
+        phase times out before reaching tier-4.
+
+        Seeds 12,000 BBLs that match tier-3 (borough-only). With
+        a TIER_3 cap of 10,000 the peer set returns exactly the
+        cap — NOT the seeded 12,000 — and never paginates to
+        fetch the overflow."""
+        socrata = MockSocrataClient()
+        # 12k Bronx BBLs with NO bldgclass field so tier 1+2
+        # filter to 0 matches → falls through to tier 3.
+        socrata.seed(DATASET_PLUTO, [
+            {"bbl": f"200095{i:05d}", "borough": "BX"}
+            for i in range(12000)
+        ])
+        # Pre-stamp pluto_snapshot so no snapshot-fetch round
+        # trip happens. snapshot bldgclass="C1" doesn't match
+        # any seeded row (seeds have no bldgclass field), so
+        # tier 1+2 return zero. Tier 3 (borough only) matches
+        # all 12k.
+        proj = {
+            "bbl": "2000959999",
+            "borough": "BRONX",
+            "pluto_snapshot": {"bldgclass": "C1", "landuse": "school"},
+        }
+        bbls, meta = _run(bl.peer_bbls(socrata, proj))
+        # Tier 3 resolved — borough-only.
+        self.assertEqual(meta["tier"], "borough")
+        # Capped exactly at TIER_3_MAX_PEERS — not the seeded 12k.
+        self.assertEqual(len(bbls), bl.TIER_3_MAX_PEERS)
+        self.assertEqual(len(bbls), 10000)
+        self.assertNotEqual(len(bbls), 12000)
+
     def test_pluto_bbl_decimal_suffix_stripped(self):
         socrata = MockSocrataClient()
         socrata.seed(DATASET_PLUTO, [
@@ -326,6 +362,54 @@ class TestFallbackLadder(unittest.TestCase):
         bbls, _meta = _run(bl.peer_bbls(socrata, proj))
         for b in bbls:
             self.assertNotIn(".", b, f"BBL {b!r} carries .0 suffix")
+
+    def test_pluto_snapshot_fetch_only_selects_existing_columns(self):
+        """Hotfix #3 BUG A regression pin: PLUTO (64uk-42ks)
+        carries NO ``bin`` column. ``fetch_project_pluto_snapshot``
+        must NOT include ``bin`` (or any other non-existent
+        column) in its ``$select`` — Socrata returns HTTP 400 on
+        an unknown column and the snapshot fetch fails, which
+        cascades into tier-1/2 falling through to tier-3/4.
+
+        Pins the EXACT column list: only columns that PLUTO
+        actually exposes. A future engineer who adds a needed
+        column should verify against the live PLUTO schema
+        before extending the list."""
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_PLUTO, [
+            {"bbl": "2029580210", "borough": "BX",
+             "bldgclass": "C1", "landuse": "01",
+             "block": "2958", "lot": "210"},
+        ])
+        proj = {"bbl": "2029580210"}
+        snapshot = _run(bl.fetch_project_pluto_snapshot(socrata, proj))
+        self.assertIsNotNone(snapshot)
+
+        # Inspect the ACTUAL $select that was sent to Socrata —
+        # not just the returned dict, which the mock projects
+        # itself. The mock records every call's kwargs.
+        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
+        self.assertEqual(len(pluto_calls), 1)
+        _dataset, kwargs = pluto_calls[0]
+        select_list = kwargs.get("select") or []
+        select_set = set(select_list)
+
+        # The EXACT allowed columns — every entry must exist on
+        # the live PLUTO schema. ``bin`` is explicitly forbidden.
+        expected_select = {
+            "bbl", "borough", "bldgclass", "landuse",
+            "block", "lot",
+        }
+        self.assertSetEqual(
+            select_set, expected_select,
+            "fetch_project_pluto_snapshot $select drifted from "
+            "the verified-against-live-PLUTO set",
+        )
+        self.assertNotIn(
+            "bin", select_set,
+            "PLUTO has no ``bin`` column — listing it in $select "
+            "returns HTTP 400 (hotfix #3 BUG A).",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────
