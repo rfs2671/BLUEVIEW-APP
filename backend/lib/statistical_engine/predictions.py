@@ -97,8 +97,10 @@ logger = logging.getLogger(__name__)
 PREDICTION_CONFIDENCE_THRESHOLD = 0.70
 
 # Lookback window for the training data (historical complaints +
-# matching DOB inspections). 2 years matches the same window
-# used by the V2.3 peer-stats engine (PEER_STATS_LOOKBACK_DAYS).
+# matching DOB inspections). Note: peer-stats engine moved to a
+# 36-month rolling window in PR #14. PREDICTION_LOOKBACK_YEARS
+# stays at 2 — different concern (training-data horizon for
+# inspection-from-complaint prediction, not peer comparison).
 PREDICTION_LOOKBACK_YEARS = 2
 
 # How long after a complaint a follow-up inspection still counts

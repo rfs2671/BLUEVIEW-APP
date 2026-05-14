@@ -113,9 +113,19 @@ PEER_STATS_FRESH_DAYS = 14
 # stuck projects aren't permanently broken.
 PEER_STATS_FAILED_RETRY_TTL_HOURS = 24
 
-# Lookback window for the event datasets. Same 2-year span the V2.2
-# aggregator used so percentile distributions are comparable.
-PEER_STATS_LOOKBACK_DAYS = 365 * 2
+# Lookback window for the event datasets. PR #14 expanded this from
+# 2 years (V2.2/V2.3.A2 era) to 36 months aligned to the start of
+# the current calendar month — the rolling window start is computed
+# via ``_rolling_36mo_window_start(now)``; this constant is the
+# coarse magnitude used as a safety bound only. ``compute_peer_stats_full``
+# computes the actual start via the helper, so changing this number
+# alone will NOT change the window semantics — both have to move.
+PEER_STATS_LOOKBACK_DAYS = 365 * 3
+
+# PR #14 — minimum number of peer BBLs (after excluding the project's
+# own BBL) for the zip_36mo tier to fire. ZIP queries returning fewer
+# peers silently fall back to citywide.
+PEER_STATS_ZIP_SAMPLE_FLOOR = 100
 
 # Hard wall-clock cap on the on-demand-compute fallback. If
 # Socrata is misbehaving we'd rather return a zero-peer marker
@@ -337,10 +347,16 @@ async def fetch_project_pluto_snapshot(
             # listing ``bin`` in $select returns HTTP 400 from
             # Socrata. Only request columns the dataset actually
             # exposes. (The project's BIN, if known, lives on the
-            # Blueview project doc already; PLUTO is queried purely
-            # for DOF building-class + landuse.)
+            # Blueview project doc already; PLUTO is queried for
+            # DOF building-class + landuse + ZIP code.)
+            #
+            # PR #14: added ``zipcode`` so the peer-set discovery
+            # can key on ZIP instead of borough+class+use_type.
+            # Existing snapshots persisted before PR #14 lack the
+            # field; ``compute_peer_stats_full`` lazy-refreshes
+            # those snapshots on next compute.
             select=["bbl", "borough", "bldgclass", "landuse",
-                    "block", "lot"],
+                    "block", "lot", "zipcode"],
             limit=1,
         )
     except SocrataQueryError as e:
@@ -424,124 +440,161 @@ async def _bbls_matching_socrata(
     return out
 
 
+def _rolling_36mo_window_start(now: datetime) -> datetime:
+    """PR #14 — rolling 36-month window start, aligned to the first
+    day of the current calendar month at midnight UTC.
+
+    Examples (May 2026 inputs):
+      • datetime(2026, 5, 14, 12, 30, 45, tzinfo=UTC) → datetime(2023, 5, 1, 0, 0, 0, tzinfo=UTC)
+      • datetime(2024, 2, 29, 23, 59, 59, tzinfo=UTC) → datetime(2021, 2, 1, 0, 0, 0, tzinfo=UTC)
+      • datetime(2024, 3, 31, 9, 0, tzinfo=UTC)       → datetime(2021, 3, 1, 0, 0, 0, tzinfo=UTC)
+      • datetime(2026, 1, 15, 0, 0, tzinfo=UTC)       → datetime(2023, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+    Contract:
+      • Time-of-day on input is IGNORED — output is always midnight UTC.
+      • Day-of-month on input is IGNORED — output is always day=1.
+      • Timezone-naive input is treated as UTC (no error raised).
+      • Output is timezone-aware UTC.
+
+    "36 months" is implemented as "3 calendar years back" since the
+    starting point is already aligned to day=1 (avoiding the
+    end-of-month arithmetic gotchas).
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    current_month_start = now.replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0,
+    )
+    return current_month_start.replace(year=current_month_start.year - 3)
+
+
+async def _bbls_matching_zip_socrata(
+    socrata: SocrataClient,
+    *,
+    zipcode: str,
+    limit: Optional[int] = None,
+) -> List[str]:
+    """PR #14 — query PLUTO for BBLs whose ``zipcode`` matches the
+    project's ZIP. Returns a list of normalized BBL strings.
+
+    Mirror of ``_bbls_matching_socrata`` but keyed on the new
+    ``zipcode`` column. PLUTO ships zipcode as a string ("11221"
+    etc.); we filter via ``zipcode = '<zip>'`` and the existing
+    PLUTO bbl-normalization pipeline strips the ``.00000000``
+    suffix on each row.
+    """
+    if not zipcode:
+        return []
+    where = f"zipcode = {_soql_quote(zipcode)}"
+    try:
+        if limit is not None:
+            rows = await socrata.query(
+                DATASET_PLUTO,
+                where=where,
+                select=["bbl"],
+                limit=limit,
+            )
+        else:
+            rows = await socrata.query_all(
+                DATASET_PLUTO,
+                where=where,
+                select=["bbl"],
+                page_size=PEER_STATS_PAGE_SIZE,
+            )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] PLUTO ZIP peer fetch for %s failed: %r",
+            zipcode, e,
+        )
+        return []
+
+    out: List[str] = []
+    for r in rows:
+        normalized = normalize_bbl(r.get("bbl"))
+        if normalized:
+            out.append(normalized)
+    return out
+
+
 async def peer_bbls(
     socrata: SocrataClient,
     project: Dict[str, Any],
+    *,
+    force_citywide: bool = False,
 ) -> Tuple[List[str], Dict[str, Any]]:
-    """Resolve the peer BBL list for a project, applying the
-    fallback ladder if the most-specific peer set is below
-    ``MIN_PEER_SAMPLE_SIZE`` (20).
+    """Resolve the peer BBL list for a project. PR #14 replaced the
+    4-tier borough_class_use ladder with a 2-tier ladder:
 
-    V2.3 signature change: takes ``SocrataClient`` instead of
-    ``db`` (PLUTO is no longer mirrored locally).
+      • Tier 1 — ``zip_36mo``: BBLs in the project's ZIP code.
+        Fires when the ZIP returns at least ``PEER_STATS_ZIP_SAMPLE_FLOOR``
+        peer BBLs (after excluding the project's own BBL).
+      • Tier 2 — ``citywide``: capped scan of the full city. Fires
+        when the ZIP query returns below floor, OR when the caller
+        sets ``force_citywide=True`` (used by
+        ``compute_peer_stats_full`` for the zero-activity fallback
+        check after events are counted).
 
-    Schema-corrections hotfix:
-      • PLUTO ``borough`` is a 2-letter code (``MN``/``BK``/...).
-        Translate the project's stored UPPER-case full name via
-        ``_pluto_borough`` before filtering.
-      • PLUTO ``bldgclass`` is the NYC DOF building-class code,
-        NOT Blueview's internal ``project_class`` enum. Fetch
-        the project's own PLUTO row to discover its real
-        ``bldgclass`` (cached at ``project["pluto_snapshot"]``
-        if previously fetched) and filter on THAT in tiers 1-2.
-      • Tier 4 (citywide) is capped at
-        ``CITYWIDE_TIER_MAX_PEERS`` — paginating the whole NYC
-        parcel set under the 30s sync timeout always times out.
+    The ZIP fallback is SILENT — no warning emitted; cache just
+    reads ``tier="citywide"`` instead of ``"zip_36mo"``.
 
-    Returns (bbls, metadata). metadata describes which tier was
-    used and the sample size — surfaced by
-    ``compare_project_to_peers`` so the FE drawer can disclose
-    "Compared against N projects in [borough]". The metadata
-    additionally carries ``pluto_snapshot`` when one was
-    discovered or reused, so the caller can persist it on the
-    project doc and skip the snapshot fetch on next compute.
+    V2.3 signature: takes ``SocrataClient`` instead of ``db``
+    (PLUTO is no longer mirrored locally).
+
+    Returns ``(bbls, metadata)`` where bbls is the project-own-BBL-
+    excluded peer list, and metadata describes which tier was used,
+    the ZIP that was tried (recorded even when falling back to
+    citywide for diagnostics), the project's borough, the sample
+    size, and the project's PLUTO snapshot.
     """
     key = _project_peer_key(project)
     borough_stored = key.get("borough")
-    borough_pluto = _pluto_borough(borough_stored)
-    use_type = key.get("use_type")
+    project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
 
-    # Discover the project's REAL DOF building class for
-    # tier-1/tier-2 peer queries. Read from cached snapshot if
-    # present (set by a prior recompute); otherwise fetch lazily
-    # and surface it back so the caller can persist.
+    # Discover the project's PLUTO snapshot for zipcode (and
+    # bldgclass/landuse retained for the persisted snapshot, even
+    # though they're no longer used for peer keying under PR #14).
     snapshot: Optional[Dict[str, Any]] = project.get("pluto_snapshot")
     if not snapshot:
         snapshot = await fetch_project_pluto_snapshot(socrata, project)
-    dof_bldgclass = (snapshot or {}).get("bldgclass")
-    snapshot_landuse = (snapshot or {}).get("landuse")
-    effective_use_type = use_type or snapshot_landuse
+    project_zipcode = (snapshot or {}).get("zipcode")
 
-    # Every tier passes ``limit=`` so PLUTO returns a single
-    # bounded page — never ``query_all``. Without these caps the
-    # tier-3 query alone (Bronx, ~90k BBLs) paginates long enough
-    # that the downstream chunked event-count phase exhausts the
-    # 30s sync timeout. Verified in prod hotfix #3.
+    def _exclude_own(bbls: List[str]) -> List[str]:
+        return [b for b in bbls if b and b != project_bbl]
 
-    # Tier 1: borough × class × use_type. Requires both a
-    # PLUTO-format borough code AND a real DOF bldgclass; if
-    # either is missing we skip directly to a coarser tier.
-    if borough_pluto and dof_bldgclass:
-        bbls = await _bbls_matching_socrata(
+    # ── Tier 1: zip_36mo ───────────────────────────────────────
+    # Skipped if the caller forced citywide OR no zipcode is
+    # available on the project's PLUTO snapshot.
+    if not force_citywide and project_zipcode:
+        zip_bbls_raw = await _bbls_matching_zip_socrata(
             socrata,
-            borough=borough_pluto,
-            bldgclass=dof_bldgclass,
-            landuse=effective_use_type,
+            zipcode=project_zipcode,
             limit=TIER_1_MAX_PEERS,
         )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough_class_use",
-                "borough": borough_stored,
-                "project_class": dof_bldgclass,
-                "use_type": effective_use_type,
-                "sample_size": len(bbls),
+        zip_bbls = _exclude_own(zip_bbls_raw)
+        if len(zip_bbls) >= PEER_STATS_ZIP_SAMPLE_FLOOR:
+            return zip_bbls, {
+                "tier":           "zip_36mo",
+                "zipcode":        project_zipcode,
+                "borough":        borough_stored,
+                "sample_size":    len(zip_bbls),
                 "pluto_snapshot": snapshot,
             }
 
-    # Tier 2: borough × class (drop use_type).
-    if borough_pluto and dof_bldgclass:
-        bbls = await _bbls_matching_socrata(
-            socrata,
-            borough=borough_pluto,
-            bldgclass=dof_bldgclass,
-            limit=TIER_2_MAX_PEERS,
-        )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough_class",
-                "borough": borough_stored,
-                "project_class": dof_bldgclass,
-                "sample_size": len(bbls),
-                "pluto_snapshot": snapshot,
-            }
-
-    # Tier 3: borough (drop class). The Bronx alone has ~90k
-    # parcels — without TIER_3_MAX_PEERS the downstream chunked
-    # event-count queries time out.
-    if borough_pluto:
-        bbls = await _bbls_matching_socrata(
-            socrata,
-            borough=borough_pluto,
-            limit=TIER_3_MAX_PEERS,
-        )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough",
-                "borough": borough_stored,
-                "sample_size": len(bbls),
-                "pluto_snapshot": snapshot,
-            }
-
-    # Tier 4: citywide (no filters). The full ~858k-parcel scan
-    # always exhausts the sync 30s timeout in prod without this
-    # cap (verified during PR #4 production rollout).
-    bbls = await _bbls_matching_socrata(
+    # ── Tier 2: citywide (fallback) ────────────────────────────
+    # Triggered when ZIP below floor, force_citywide=True (caller-
+    # driven zero-activity fallback), OR no zipcode known.
+    citywide_raw = await _bbls_matching_socrata(
         socrata, limit=TIER_4_MAX_PEERS,
     )
-    return bbls, {
-        "tier": "citywide",
-        "sample_size": len(bbls),
+    citywide_bbls = _exclude_own(citywide_raw)
+    return citywide_bbls, {
+        "tier":           "citywide",
+        # Record the ZIP that was tried (or None if no snapshot)
+        # so the cache can surface why citywide was used. Silent
+        # to the UI but informative in mongosh.
+        "zipcode":        project_zipcode,
+        "borough":        borough_stored,
+        "sample_size":    len(citywide_bbls),
         "pluto_snapshot": snapshot,
     }
 
@@ -712,13 +765,30 @@ async def compute_peer_stats_full(
     the whole cache.
     """
     cur_now = now or datetime.now(timezone.utc)
-    window_start = cur_now - timedelta(days=lookback_days)
+    # PR #14 — rolling 36-month window aligned to first of current
+    # calendar month. window_end stays at cur_now (T1.a — daily
+    # sliding).
+    window_start = _rolling_36mo_window_start(cur_now)
+
+    # PR #14 — lazy snapshot refresh. Projects with a pre-PR-14
+    # ``pluto_snapshot`` (no ``zipcode`` field) need their snapshot
+    # re-fetched before peer_bbls can do the ZIP-tier query.
+    existing_snapshot = project.get("pluto_snapshot")
+    if existing_snapshot and "zipcode" not in existing_snapshot:
+        refreshed = await fetch_project_pluto_snapshot(socrata, project)
+        if refreshed:
+            # Mutate the in-memory project dict so the downstream
+            # ``peer_bbls`` call sees the refreshed snapshot and
+            # ``_persist_cache`` writes the updated snapshot back
+            # to the projects collection.
+            project["pluto_snapshot"] = refreshed
 
     bbls, peer_meta = await peer_bbls(socrata, project)
     project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
 
-    # Exclude the project's own BBL from the peer count so the
-    # comparison is "us vs. peers", not "us vs. (peers + us)".
+    # peer_bbls already excludes the project's own BBL (PR #14).
+    # Apply once more as a defensive filter against legacy callers
+    # that may bypass peer_bbls in the future.
     peer_bbl_list = [b for b in bbls if b and b != project_bbl]
 
     # Pull the three event counts in parallel — independent
@@ -738,6 +808,39 @@ async def compute_peer_stats_full(
     v_counts, i_counts, c_counts = await asyncio.gather(
         v_task, i_task, c_task,
     )
+
+    # PR #14 zero-activity fallback (T2.b): if we're on the
+    # zip_36mo tier and BOTH inspections + complaints have zero
+    # peer events across the 36-month window, the ZIP is too
+    # sparse to compute meaningful percentiles. Silently re-issue
+    # with force_citywide=True and re-count events for the
+    # broader peer set. Violations is gated unavailable and
+    # excluded from the zero-activity check by design.
+    if peer_meta.get("tier") == "zip_36mo":
+        inspections_total = sum(i_counts.values())
+        complaints_total = sum(c_counts.values())
+        if inspections_total == 0 and complaints_total == 0:
+            bbls, peer_meta = await peer_bbls(
+                socrata, project, force_citywide=True,
+            )
+            peer_bbl_list = [
+                b for b in bbls if b and b != project_bbl
+            ]
+            v_task = _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_VIOLATIONS, peer_bbl_list,
+                since=window_start, until=cur_now,
+            )
+            i_task = _count_events_for_bbls_socrata(
+                socrata, DATASET_DOB_INSPECTIONS, peer_bbl_list,
+                since=window_start, until=cur_now,
+            )
+            c_task = _count_events_for_bbls_socrata(
+                socrata, DATASET_COMPLAINTS_311, peer_bbl_list,
+                since=window_start, until=cur_now,
+            )
+            v_counts, i_counts, c_counts = await asyncio.gather(
+                v_task, i_task, c_task,
+            )
 
     # Project's own counts in the same window (1 query per dataset,
     # filtered by BBL = own).
@@ -835,24 +938,31 @@ def _assemble_cache(
             return _one_unavailable(_VIOLATIONS_UNAVAILABLE_REASON)
         return _one_available(counts, project_count)
 
+    # PR #14 — 2-tier ladder (zip_36mo → citywide). Old 4-tier
+    # values (borough_class_use / borough_class / borough) no
+    # longer emitted; ``.get(tier, 2)`` defaults unknown values
+    # to the fallback level for safety.
     tier_to_fallback_level = {
-        "borough_class_use": 1,
-        "borough_class":     2,
-        "borough":           3,
-        "citywide":          4,
+        "zip_36mo":  1,
+        "citywide":  2,
     }
 
     return {
         "computed_at":       computed_at,
         "last_refreshed_at": last_refreshed_at,
         "peer_criteria": {
+            # PR #14 — ``zipcode`` keys the primary tier; recorded
+            # even under citywide fallback for diagnostics.
+            # ``borough`` retained for the FE's citywide-fallback
+            # narrative copy ("in your borough"). ``project_class``
+            # and ``use_type`` dropped — no longer used for peer
+            # discovery under the ZIP-keyed ladder.
+            "zipcode":         peer_meta.get("zipcode"),
             "borough":         peer_meta.get("borough"),
-            "project_class":   peer_meta.get("project_class"),
-            "use_type":        peer_meta.get("use_type"),
             "bbl":             project_bbl,
             "sample_size":     len(peer_bbl_list),
             "fallback_level":  tier_to_fallback_level.get(
-                peer_meta.get("tier"), 4,
+                peer_meta.get("tier"), 2,
             ),
             "tier":            peer_meta.get("tier"),
             # Persist the BBL list so incremental refresh can reuse
