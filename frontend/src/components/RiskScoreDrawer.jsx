@@ -287,8 +287,9 @@ const RiskScoreDrawer = ({
           </View>
 
           <ScrollView
+            style={styles.bodyScroll}
             contentContainerStyle={styles.body}
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator={true}
           >
             {loading && !hasScore ? (
               <ActivityIndicator color={colors.text.primary} />
@@ -571,6 +572,17 @@ function buildStyles(colors, isDark) {
     closeButton: {
       padding: 6,
       borderRadius: borderRadius.sm,
+    },
+    bodyScroll: {
+      // PR #11 follow-up — claim the vertical space between the
+      // pinned header and footer so the ScrollView has a bounded
+      // height to scroll within. Without flex:1, the ScrollView
+      // expanded to fit content and the peer-context section pushed
+      // the footer below the viewport. ``minHeight: 0`` overrides
+      // RN-Web's default flex behavior of "don't shrink below
+      // content size" which would otherwise re-create the overflow.
+      flex: 1,
+      minHeight: 0,
     },
     body: {
       paddingHorizontal: spacing.lg,
