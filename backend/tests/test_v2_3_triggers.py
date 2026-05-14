@@ -835,5 +835,232 @@ class TestA2TriggerInputContracts(unittest.TestCase):
         )
 
 
+# ──────────────────────────────────────────────────────────────────
+# active_triggers factor — A2 Amendment 1 follow-up
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestActiveTriggersFactor(unittest.TestCase):
+    """Pins ``compute_active_triggers_for_project`` — the dob_logs-
+    backed implementation of the 5 current-state trigger kinds that
+    A2 Amendment 1 deferred:
+
+      • active_swo            — SWO with resolution_state NOT IN
+                                [certified, dismissed, resolved]
+      • recent_swo_60d        — any SWO with violation_date >= today-60d
+      • escalating_violations — ≥5 violations (any resolution_state)
+                                with violation_date >= today-60d
+      • repeat_violator_90d   — ≥8 violations (any resolution_state)
+                                with violation_date >= today-90d
+      • open_severe_complaint — complaint with complaint_status == ACTIVE
+                                AND severity == "Action"
+
+    Returns a list of dicts of shape ``{"trigger_kind": <name>}``
+    in stable order (matching the bullet list above) so callers
+    that build the factor breakdown produce consistent output.
+
+    Note on severe-complaint signal: ``risk_level`` is set by
+    ``_extract_complaint_fields`` (DOB path) but NOT by
+    ``_build_311_doc`` (311 path). Per operator's spec
+    fallback, we use ``severity == "Action"`` instead — that
+    field IS universal across both paths.
+    """
+
+    _PROJECT_ID = "test_project_X"
+
+    def _y(self, now, days_ago):
+        """YYYYMMDD cutoff for violation_date matching."""
+        return (now - timedelta(days=days_ago)).strftime("%Y%m%d")
+
+    def test_active_triggers_zero_for_clean_baseline(self):
+        """Test 1 — project with no SWO, no recent violations, no
+        open complaints. All 5 trigger conditions abstain.
+        """
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+        now = datetime(2026, 5, 14, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([])  # empty — clean baseline
+        out = _run(tr.compute_active_triggers_for_project(
+            db, self._PROJECT_ID, now=now,
+        ))
+        self.assertEqual(
+            out, [],
+            f"Clean baseline must produce empty trigger list. "
+            f"Got: {out!r}",
+        )
+
+    def test_active_triggers_fires_active_swo(self):
+        """Test 2 — single SWO at resolution_state='hearing_scheduled'.
+        Must fire active_swo (resolution_state not in the closed-set).
+        violation_date set within 60d so recent_swo_60d also fires
+        incidentally; assertion uses ``in`` + ``>= 1`` so either count
+        passes."""
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+        now = datetime(2026, 5, 14, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="swo",
+                resolution_state="hearing_scheduled",
+                violation_date=self._y(now, 30),
+            ),
+        ])
+        out = _run(tr.compute_active_triggers_for_project(
+            db, self._PROJECT_ID, now=now,
+        ))
+        kinds = [t["trigger_kind"] for t in out]
+        self.assertIn(
+            "active_swo", kinds,
+            f"hearing_scheduled SWO must fire active_swo. Got kinds={kinds!r}",
+        )
+        self.assertGreaterEqual(
+            len(out), 1,
+            f"active_count must be at least 1. Got: {out!r}",
+        )
+
+    def test_active_triggers_fires_escalating_violations_at_5plus_in_60d(self):
+        """Test 3 — 5 violations (any resolution_state) with
+        violation_dates in last 60d. Must fire
+        escalating_violations (threshold ≥ 5)."""
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+        now = datetime(2026, 5, 14, tzinfo=timezone.utc)
+        db = _StubDb()
+        # 5 violations within 60d, mixed resolution_state — any
+        # resolution_state counts per operator's spec.
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=self._y(now, 10),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=self._y(now, 20),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="certified",
+                violation_date=self._y(now, 30),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="dismissed",
+                violation_date=self._y(now, 45),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="hearing_scheduled",
+                violation_date=self._y(now, 55),
+            ),
+        ])
+        out = _run(tr.compute_active_triggers_for_project(
+            db, self._PROJECT_ID, now=now,
+        ))
+        kinds = [t["trigger_kind"] for t in out]
+        self.assertIn(
+            "escalating_violations", kinds,
+            f"5 violations in 60d (any resolution_state) must fire "
+            f"escalating_violations. Got kinds={kinds!r}",
+        )
+
+    def test_active_triggers_does_not_fire_for_certified_swo_alone(self):
+        """Test 4 — single SWO at resolution_state='certified', no
+        other activity. active_swo MUST NOT fire (certified is in
+        the closed-set)."""
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+        now = datetime(2026, 5, 14, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="swo",
+                resolution_state="certified",
+                # Outside both 60d and 90d windows so recent_swo_60d
+                # and other windows don't fire either.
+                violation_date=self._y(now, 200),
+            ),
+        ])
+        out = _run(tr.compute_active_triggers_for_project(
+            db, self._PROJECT_ID, now=now,
+        ))
+        kinds = [t["trigger_kind"] for t in out]
+        self.assertNotIn(
+            "active_swo", kinds,
+            f"certified SWO must NOT fire active_swo. Got kinds={kinds!r}",
+        )
+
+    def test_active_triggers_menahan_shape_fires_multiple(self):
+        """Test 5 — Menahan-shaped fixture: 1 SWO at hearing_scheduled
+        with violation_date 84d ago (OUTSIDE 60d window) + 5
+        violations (mix of certified / open) with violation_dates
+        in last 60d.
+
+        Expected:
+          • active_swo fires (resolution_state not in closed-set)
+          • recent_swo_60d does NOT fire (SWO is 84d old > 60d)
+          • escalating_violations fires (5 violations in 60d ≥ 5)
+          • repeat_violator_90d does NOT fire (only 6 total ≥ 8 needed)
+          • open_severe_complaint does NOT fire (no complaints)
+        Therefore active_count >= 2 covering active_swo +
+        escalating_violations.
+        """
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+        now = datetime(2026, 5, 14, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            # The 84-day-old SWO (outside 60d window).
+            _dob_log(
+                record_type="swo",
+                resolution_state="hearing_scheduled",
+                violation_date=self._y(now, 84),
+            ),
+            # 5 violations with violation_dates inside the 60d
+            # window, mix of resolution_state.
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=self._y(now, 8),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="certified",
+                violation_date=self._y(now, 18),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=self._y(now, 28),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="certified",
+                violation_date=self._y(now, 40),
+            ),
+            _dob_log(
+                record_type="violation",
+                resolution_state="open",
+                violation_date=self._y(now, 52),
+            ),
+        ])
+        out = _run(tr.compute_active_triggers_for_project(
+            db, self._PROJECT_ID, now=now,
+        ))
+        kinds = [t["trigger_kind"] for t in out]
+        self.assertIn(
+            "active_swo", kinds,
+            f"Menahan shape must fire active_swo. Got kinds={kinds!r}",
+        )
+        self.assertIn(
+            "escalating_violations", kinds,
+            f"Menahan shape must fire escalating_violations. "
+            f"Got kinds={kinds!r}",
+        )
+        self.assertGreaterEqual(
+            len(out), 2,
+            f"Menahan shape must produce active_count >= 2. "
+            f"Got: {out!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

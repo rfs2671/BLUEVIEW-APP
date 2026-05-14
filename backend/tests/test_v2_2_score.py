@@ -194,15 +194,36 @@ class TestNormalizePeerComparison(unittest.TestCase):
     def test_active_triggers_empty_is_zero(self):
         self.assertEqual(sc._normalize_active_triggers([]), 0.0)
 
-    def test_active_triggers_diminishing_returns(self):
-        # 1 prediction at confidence 0.80 = 80 * 1.0 = 80.
-        v1 = sc._normalize_active_triggers([{"confidence": 0.80}])
-        self.assertEqual(v1, 80.0)
-        # 2 predictions: 0.80 * 1.0 + 0.80 * 0.5 = 80 + 40 = 120 → clamp 100.
-        v2 = sc._normalize_active_triggers([
-            {"confidence": 0.80}, {"confidence": 0.80},
-        ])
-        self.assertEqual(v2, 100.0)
+    def test_active_triggers_step_function_by_count(self):
+        # V2.3.A2 Amendment 1 follow-up — step function on count of
+        # fired trigger kinds (cap at 5). Replaces the V2.3 Commit 6
+        # confidence×diminishing-returns formula. Upstream is now
+        # ``triggers.compute_active_triggers_for_project`` which
+        # produces dicts of shape ``{"trigger_kind": <name>}``;
+        # confidence is no longer part of the signal.
+        self.assertEqual(
+            sc._normalize_active_triggers([{"trigger_kind": "a"}]), 30.0,
+        )
+        self.assertEqual(sc._normalize_active_triggers([
+            {"trigger_kind": "a"}, {"trigger_kind": "b"},
+        ]), 55.0)
+        self.assertEqual(sc._normalize_active_triggers([
+            {"trigger_kind": "a"}, {"trigger_kind": "b"},
+            {"trigger_kind": "c"},
+        ]), 75.0)
+        self.assertEqual(sc._normalize_active_triggers([
+            {"trigger_kind": "a"}, {"trigger_kind": "b"},
+            {"trigger_kind": "c"}, {"trigger_kind": "d"},
+        ]), 90.0)
+        self.assertEqual(sc._normalize_active_triggers([
+            {"trigger_kind": "a"}, {"trigger_kind": "b"},
+            {"trigger_kind": "c"}, {"trigger_kind": "d"},
+            {"trigger_kind": "e"},
+        ]), 100.0)
+        # Cap at 5 — additional triggers don't push past 100.
+        self.assertEqual(sc._normalize_active_triggers(
+            [{"trigger_kind": f"k{i}"} for i in range(7)],
+        ), 100.0)
 
     def test_internal_compliance_clean(self):
         self.assertEqual(sc._normalize_internal_compliance(

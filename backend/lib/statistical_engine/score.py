@@ -54,6 +54,7 @@ from lib.statistical_engine.schema import (
 from lib.statistical_engine.socrata_client import SocrataClient
 from lib.statistical_engine.triggers import (
     active_predictions_for_project,
+    compute_active_triggers_for_project,
     run_triggers_for_project,
 )
 
@@ -188,26 +189,42 @@ def _normalize_peer_comparison(
     return float(max(0.0, min(100.0, pct)))
 
 
+# V2.3.A2 Amendment 1 follow-up — step function on the count of
+# fired trigger kinds. Cap at 5. Values pinned by the operator spec
+# (active_count → value mapping):
+#   0 triggers → 0
+#   1 trigger  → 30
+#   2 triggers → 55
+#   3 triggers → 75
+#   4 triggers → 90
+#   5 triggers → 100
+_ACTIVE_TRIGGERS_VALUE_BY_COUNT = {
+    0: 0.0,
+    1: 30.0,
+    2: 55.0,
+    3: 75.0,
+    4: 90.0,
+    5: 100.0,
+}
+
+
 def _normalize_active_triggers(
-    active_predictions: Sequence[Dict[str, Any]],
+    active_triggers: Sequence[Dict[str, Any]],
 ) -> float:
-    """Map active predictions to [0, 100]. Each prediction
-    contributes its confidence×100 capped, with diminishing
-    returns past 4 predictions."""
-    if not active_predictions:
-        return 0.0
-    # Sort by confidence desc; weight higher-confidence
-    # predictions more.
-    confs = sorted(
-        [float(p.get("confidence", 0.0)) for p in active_predictions],
-        reverse=True,
-    )
-    score = 0.0
-    factor = 1.0
-    for c in confs:
-        score += c * 100.0 * factor
-        factor *= 0.5  # diminishing returns
-    return float(max(0.0, min(100.0, score)))
+    """Map fired triggers to [0, 100] via the step function pinned
+    by ``_ACTIVE_TRIGGERS_VALUE_BY_COUNT``. Counts the items in
+    ``active_triggers`` (each dict represents one fired trigger
+    kind), caps at 5, returns the corresponding value.
+
+    Replaces the V2.3 Commit 6 confidence×diminishing-returns
+    formula. The new upstream is
+    ``triggers.compute_active_triggers_for_project`` (current-state
+    dob_logs-derived triggers), which produces unweighted dicts of
+    shape ``{"trigger_kind": <name>}`` — confidence is no longer
+    part of the signal.
+    """
+    count = min(5, len(active_triggers or []))
+    return _ACTIVE_TRIGGERS_VALUE_BY_COUNT[count]
 
 
 def _normalize_internal_compliance(
@@ -378,16 +395,24 @@ async def gather_score_inputs(
         )
         peer_compare = {"peer_set": {"sample_size": 0}}
 
-    # Active predictions.
+    # Active triggers. V2.3.A2 Amendment 1 follow-up: pivots from
+    # the V2.3-Commit-6 ``active_predictions_for_project`` reader
+    # (which pulled from the predicted_events collection — empty in
+    # production for current projects) to the current-state
+    # dob_logs-derived ``compute_active_triggers_for_project``
+    # (5 trigger kinds: active_swo, recent_swo_60d,
+    # escalating_violations, repeat_violator_90d,
+    # open_severe_complaint). Soft-fails inside the helper so a
+    # dob_logs query hiccup never blocks the score compute.
     active_predictions = []
     if project_id:
         try:
-            active_predictions = await active_predictions_for_project(
+            active_predictions = await compute_active_triggers_for_project(
                 db, project_id, now=cur_now,
             )
         except Exception as e:
             logger.warning(
-                f"[score] active_predictions_for_project failed: {e!r}",
+                f"[score] compute_active_triggers_for_project failed: {e!r}",
             )
 
     # Internal compliance — V2.0 logbook deficiencies + missing
@@ -580,8 +605,13 @@ async def recompute_and_persist(
         socrata = SocrataClient(inline_http)
     try:
         # Fire triggers first — they may persist new
-        # predicted_events rows that this score's input
-        # gathering picks up via active_predictions_for_project.
+        # predicted_events rows that other UI surfaces read.
+        # V2.3.A2 Amendment 1 follow-up: score input gathering
+        # no longer reads predicted_events; it reads current-
+        # state triggers from dob_logs via
+        # compute_active_triggers_for_project. The
+        # run_triggers_for_project call still runs to maintain
+        # the predicted_events pipeline for non-score consumers.
         try:
             await run_triggers_for_project(
                 db, project, socrata=socrata, now=cur_now,

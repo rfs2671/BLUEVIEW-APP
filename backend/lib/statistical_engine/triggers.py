@@ -517,6 +517,171 @@ async def active_predictions_for_project(
     return out
 
 
+# ── A2 Amendment 1 follow-up: active_triggers current-state factor ──
+
+# Stable order for the 5 trigger kinds. Output list preserves this
+# order so the contributing_factors breakdown is consistent across
+# recomputes.
+ACTIVE_TRIGGER_KIND_ACTIVE_SWO            = "active_swo"
+ACTIVE_TRIGGER_KIND_RECENT_SWO_60D        = "recent_swo_60d"
+ACTIVE_TRIGGER_KIND_ESCALATING_VIOLATIONS = "escalating_violations"
+ACTIVE_TRIGGER_KIND_REPEAT_VIOLATOR_90D   = "repeat_violator_90d"
+ACTIVE_TRIGGER_KIND_OPEN_SEVERE_COMPLAINT = "open_severe_complaint"
+
+ACTIVE_TRIGGER_KINDS_ORDER = [
+    ACTIVE_TRIGGER_KIND_ACTIVE_SWO,
+    ACTIVE_TRIGGER_KIND_RECENT_SWO_60D,
+    ACTIVE_TRIGGER_KIND_ESCALATING_VIOLATIONS,
+    ACTIVE_TRIGGER_KIND_REPEAT_VIOLATOR_90D,
+    ACTIVE_TRIGGER_KIND_OPEN_SEVERE_COMPLAINT,
+]
+
+# Resolution-state values that mean "this SWO is closed". An SWO
+# whose resolution_state is NOT in this set still requires action.
+# Mirrors PR #8's Q1-locked closed-state set, extended with
+# "resolved" per the A2 Amendment 1 follow-up spec.
+_SWO_CLOSED_STATES = ["certified", "dismissed", "resolved"]
+
+# Threshold for escalating_violations: ≥ 5 violations (any
+# resolution_state) within the 60-day window.
+_ESCALATING_VIOLATIONS_THRESHOLD = 5
+
+# Threshold for repeat_violator_90d: ≥ 8 violations (any
+# resolution_state) within the 90-day window.
+_REPEAT_VIOLATOR_90D_THRESHOLD = 8
+
+
+def _facet_count(facet_result: List[Dict[str, Any]]) -> int:
+    """Read the ``{"n": <int>}`` doc out of a ``$facet`` branch
+    that ends in ``$count: "n"``. Empty branch → 0."""
+    if not facet_result:
+        return 0
+    return int(facet_result[0].get("n", 0) or 0)
+
+
+async def compute_active_triggers_for_project(
+    db, project_id: str, *, now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """V2.3.A2 Amendment 1 follow-up — implement the 5 current-
+    state trigger kinds the original A2 PR deferred.
+
+    Reads ``db.dob_logs`` via a single 5-facet aggregate. Each
+    facet evaluates whether one trigger kind fires; the function
+    returns a list of ``{"trigger_kind": <name>}`` dicts in the
+    stable ``ACTIVE_TRIGGER_KINDS_ORDER``.
+
+    Trigger conditions:
+
+      • ``active_swo``            — any SWO (``record_type == "swo"``)
+        with ``resolution_state`` NOT IN ``_SWO_CLOSED_STATES``.
+      • ``recent_swo_60d``        — any SWO with ``violation_date >=
+        today-60d`` (YYYYMMDD lexicographic).
+      • ``escalating_violations`` — ≥5 records with ``record_type
+        IN [violation, swo]`` and ``violation_date >= today-60d``.
+      • ``repeat_violator_90d``   — ≥8 records with the same
+        record_type set and ``violation_date >= today-90d``.
+      • ``open_severe_complaint`` — any complaint with
+        ``complaint_status == "ACTIVE"`` AND ``severity == "Action"``.
+        Uses ``severity`` instead of ``risk_level`` because the
+        latter is not stamped by the 311 path (operator's spec
+        fallback).
+
+    Common scope filters (Q1 / Q5 / C1.a pinned in PR #8):
+      • project_id match
+      • ``is_deleted: {$ne: True}``
+      • ``is_seed_transition: {$ne: True}``
+
+    Soft-fails on aggregate exception — returns ``[]`` so a
+    dob_logs hiccup never blocks the score compute. The score
+    layer treats an empty list as ``value = 0``.
+    """
+    out: List[Dict[str, Any]] = []
+    if not project_id or db is None:
+        return out
+
+    cur_now = now or datetime.now(timezone.utc)
+    cut_60 = _yyyymmdd(cur_now - timedelta(days=60))
+    cut_90 = _yyyymmdd(cur_now - timedelta(days=90))
+
+    pipeline = [
+        {"$match": {
+            "project_id":         project_id,
+            "is_deleted":         {"$ne": True},
+            "is_seed_transition": {"$ne": True},
+        }},
+        {"$facet": {
+            ACTIVE_TRIGGER_KIND_ACTIVE_SWO: [
+                {"$match": {
+                    "record_type":      "swo",
+                    "resolution_state": {"$nin": _SWO_CLOSED_STATES},
+                }},
+                {"$count": "n"},
+            ],
+            ACTIVE_TRIGGER_KIND_RECENT_SWO_60D: [
+                {"$match": {
+                    "record_type":    "swo",
+                    "violation_date": {"$gte": cut_60},
+                }},
+                {"$count": "n"},
+            ],
+            ACTIVE_TRIGGER_KIND_ESCALATING_VIOLATIONS: [
+                {"$match": {
+                    "record_type":    {"$in": ["violation", "swo"]},
+                    "violation_date": {"$gte": cut_60},
+                }},
+                {"$count": "n"},
+            ],
+            ACTIVE_TRIGGER_KIND_REPEAT_VIOLATOR_90D: [
+                {"$match": {
+                    "record_type":    {"$in": ["violation", "swo"]},
+                    "violation_date": {"$gte": cut_90},
+                }},
+                {"$count": "n"},
+            ],
+            ACTIVE_TRIGGER_KIND_OPEN_SEVERE_COMPLAINT: [
+                {"$match": {
+                    "record_type":      "complaint",
+                    "complaint_status": "ACTIVE",
+                    "severity":         "Action",
+                }},
+                {"$count": "n"},
+            ],
+        }},
+    ]
+
+    try:
+        result = await db.dob_logs.aggregate(pipeline).to_list(length=1)
+    except Exception as e:
+        logger.warning(
+            f"[triggers] compute_active_triggers_for_project "
+            f"aggregate failed for project={project_id!r}: {e!r}",
+        )
+        return out
+
+    if not result:
+        return out
+    facets = result[0]
+
+    counts = {
+        kind: _facet_count(facets.get(kind, []))
+        for kind in ACTIVE_TRIGGER_KINDS_ORDER
+    }
+
+    # Stable-order emission, per-kind firing rule.
+    if counts[ACTIVE_TRIGGER_KIND_ACTIVE_SWO] > 0:
+        out.append({"trigger_kind": ACTIVE_TRIGGER_KIND_ACTIVE_SWO})
+    if counts[ACTIVE_TRIGGER_KIND_RECENT_SWO_60D] > 0:
+        out.append({"trigger_kind": ACTIVE_TRIGGER_KIND_RECENT_SWO_60D})
+    if counts[ACTIVE_TRIGGER_KIND_ESCALATING_VIOLATIONS] >= _ESCALATING_VIOLATIONS_THRESHOLD:
+        out.append({"trigger_kind": ACTIVE_TRIGGER_KIND_ESCALATING_VIOLATIONS})
+    if counts[ACTIVE_TRIGGER_KIND_REPEAT_VIOLATOR_90D] >= _REPEAT_VIOLATOR_90D_THRESHOLD:
+        out.append({"trigger_kind": ACTIVE_TRIGGER_KIND_REPEAT_VIOLATOR_90D})
+    if counts[ACTIVE_TRIGGER_KIND_OPEN_SEVERE_COMPLAINT] > 0:
+        out.append({"trigger_kind": ACTIVE_TRIGGER_KIND_OPEN_SEVERE_COMPLAINT})
+
+    return out
+
+
 # ── Orchestrator ──────────────────────────────────────────────────
 
 
