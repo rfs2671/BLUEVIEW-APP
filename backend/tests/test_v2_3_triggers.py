@@ -664,5 +664,176 @@ class TestPackageReExports(unittest.TestCase):
                             f"missing re-export: {name}")
 
 
+# ──────────────────────────────────────────────────────────────────
+# A2 trigger-input behavior pins (tests 7 + 8 of the A2 PR)
+#
+# B3 decision: recent_311_at_bin stays sourced from Socrata
+# (preserves trigger calibration; mixing in DOB complaints from
+# eabe-havv would change the signal's statistical correlate).
+#
+# B2 decision: open_violations_with_cure deferred. The cure-
+# deadline trigger now returns an empty list regardless of
+# upstream data (compliance_deadline field is too sparse on
+# dob_logs and Socrata to be a reliable signal source).
+#
+# These tests call gather_trigger_inputs with the NEW A2
+# signature (project_id + db kwargs). On main the function
+# still has the old signature → tests fail with TypeError.
+# After Stage 3 implementation, B3 + B2 behavior is pinned.
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestA2TriggerInputContracts(unittest.TestCase):
+    """Tests 7 + 8 of the A2 PR."""
+
+    def _project(self):
+        return {
+            "_id": "test_project_X",
+            "id": "test_project_X",
+            "nyc_bin": "1234567",
+            "bbl": "1001234567",
+            "borough": "MANHATTAN",
+        }
+
+    def test_gather_trigger_inputs_recent_311_uses_socrata_not_mongo(self):
+        """Test 7 — B3 Option 3 pin: recent_311_at_bin STAYS
+        Socrata-sourced even after A2 adds project_id+db kwargs.
+
+        Fixture: dob_logs contains a fresh complaint (DOB complaint
+        with project's bbl, complaint_status=ACTIVE, within 24h).
+        Socrata mock contains a DIFFERENT 311 complaint (same bbl,
+        different record_id, within 24h).
+
+        Assert: recent_311_at_bin contains only the SOCRATA
+        complaint. The dob_logs complaint MUST NOT appear in the
+        trigger input.
+
+        Why this matters: trigger calibration (historical_match_rate
+        in passes_publication_gate) was tuned against 311 complaints
+        only. Mixing DOB complaints (eabe-havv) from dob_logs into
+        the trigger would invalidate the calibration. B3 Option 3
+        keeps the calibration intact by sourcing only Socrata
+        erm2-nwe9.
+        """
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        now = _dt(2026, 5, 13, tzinfo=_tz.utc)
+        socrata = MockSocrataClient()
+
+        # Socrata mock: 1 fresh 311 complaint at the project's bbl.
+        socrata.seed(DATASET_COMPLAINTS_311, [
+            {"record_id": "311_socrata_id",
+             "bbl": "1001234567",
+             "bin": "1234567",
+             "created_date": (now - _td(hours=2)).strftime(
+                 "%Y-%m-%dT%H:%M:%S")},
+        ])
+
+        # dob_logs (mocked stub_db): a fresh DOB complaint — this
+        # MUST NOT leak into recent_311_at_bin.
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                project_id="test_project_X",
+                record_type="complaint",
+                complaint_status="ACTIVE",
+                complaint_date=(now - _td(hours=1)).strftime(
+                    "%Y-%m-%dT%H:%M:%S.000"),
+                raw_dob_id="dob_complaint_id",
+            ),
+        ])
+
+        out = _run(tr.gather_trigger_inputs(
+            socrata,
+            self._project(),
+            now=now,
+            project_id="test_project_X",
+            db=db,
+        ))
+
+        # Exactly one 311 complaint should appear — and it's
+        # the SOCRATA one (record_id "311_socrata_id"), not the
+        # dob_logs one (raw_dob_id "dob_complaint_id").
+        recent_311 = out.get("recent_311_at_bin") or []
+        self.assertEqual(
+            len(recent_311), 1,
+            "recent_311_at_bin should contain exactly 1 entry "
+            "(the Socrata 311 complaint); dob_logs DOB complaints "
+            "must not leak in per B3 Option 3",
+        )
+        # The single entry must be the Socrata one.
+        actual_id = (
+            recent_311[0].get("record_id")
+            or recent_311[0].get("raw_dob_id")
+            or recent_311[0].get("unique_key")
+            or ""
+        )
+        self.assertEqual(
+            actual_id, "311_socrata_id",
+            f"recent_311_at_bin contains wrong source (got {actual_id!r}); "
+            f"expected the Socrata 311 record, not the dob_logs DOB complaint",
+        )
+
+    def test_gather_trigger_inputs_open_violations_with_cure_deferred_returns_empty(self):
+        """Test 8 — B2 deferral pin: open_violations_with_cure
+        is ALWAYS an empty list, regardless of upstream content
+        (dob_logs or Socrata).
+
+        compliance_deadline (the field this trigger depends on)
+        is sparsely populated — extracted via regex from
+        free-form disposition text. Per the Stage 1 v3 deferral,
+        this trigger stays empty in A2; the cure-deadline source
+        upgrade is a follow-up PR.
+
+        Fixture: seed BOTH Socrata violations (with a parseable
+        cure_deadline in the future) AND dob_logs violations
+        (with compliance_deadline set). The trigger input
+        MUST be empty regardless.
+        """
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        now = _dt(2026, 5, 13, tzinfo=_tz.utc)
+        socrata = MockSocrataClient()
+
+        # Socrata violations with cure_deadline in the future.
+        socrata.seed(DATASET_DOB_VIOLATIONS, [
+            {"bin": "1234567",
+             "issue_date": (now - _td(days=10)).strftime("%Y%m%d"),
+             "cure_deadline": (now + _td(days=7)).strftime("%Y-%m-%d"),
+             "violation_number": "v_with_cure_socrata"},
+        ])
+
+        from tests.test_v2_3_baselines import _StubDb, _dob_log
+
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                project_id="test_project_X",
+                record_type="violation",
+                resolution_state="open",
+                violation_date=(now - _td(days=10)).strftime("%Y%m%d"),
+                compliance_deadline=(now + _td(days=7)).strftime("%Y-%m-%d"),
+                raw_dob_id="v_with_cure_dob_logs",
+            ),
+        ])
+
+        out = _run(tr.gather_trigger_inputs(
+            socrata,
+            self._project(),
+            now=now,
+            project_id="test_project_X",
+            db=db,
+        ))
+
+        self.assertEqual(
+            out.get("open_violations_with_cure"), [],
+            "open_violations_with_cure must be [] regardless of "
+            "upstream data per B2 deferral (cure-deadline source "
+            "upgrade is a follow-up PR)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

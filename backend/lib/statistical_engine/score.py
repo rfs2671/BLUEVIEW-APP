@@ -99,6 +99,16 @@ CONFIDENCE_INTERVAL_PCT = 95
 # ── Group normalizers ─────────────────────────────────────────────
 
 
+# Module-level constants — own-building coefficient weights.
+# Named so that test fixtures + future calibration tuning can refer
+# to them without touching every reader of the formula. Extracted
+# from the inline literals at A2 (V2.3.A2 C3 Path 1).
+OWN_BUILDING_WEIGHT_VIOLATIONS_30D         = 8
+OWN_BUILDING_WEIGHT_VIOLATIONS_90D         = 2
+OWN_BUILDING_WEIGHT_INSPECTIONS_FAILED_60D = 12
+OWN_BUILDING_WEIGHT_OPEN_COMPLAINTS_30D    = 4
+
+
 def _normalize_own_building(
     *,
     violations_30d: int,
@@ -108,12 +118,19 @@ def _normalize_own_building(
 ) -> float:
     """Map own-building event counts to [0, 100]. Caps tuned for
     a high-but-recoverable site (5 recent violations + 2 failed
-    inspections + 5 complaints = ~75)."""
+    inspections + 5 complaints = ~75).
+
+    Coefficients are exposed as module-level constants
+    (``OWN_BUILDING_WEIGHT_*``) so test fixtures + calibration
+    tuning can read them by name. A future re-tune is a one-line
+    change at the constant definition; this function follows
+    mechanically.
+    """
     score = (
-        violations_30d * 8 +
-        violations_90d * 2 +
-        inspections_failed_60d * 12 +
-        open_complaints_30d * 4
+        violations_30d         * OWN_BUILDING_WEIGHT_VIOLATIONS_30D +
+        violations_90d         * OWN_BUILDING_WEIGHT_VIOLATIONS_90D +
+        inspections_failed_60d * OWN_BUILDING_WEIGHT_INSPECTIONS_FAILED_60D +
+        open_complaints_30d    * OWN_BUILDING_WEIGHT_OPEN_COMPLAINTS_30D
     )
     return float(max(0.0, min(100.0, score)))
 
@@ -326,18 +343,18 @@ async def gather_score_inputs(
     inline if its caller didn't supply one, and threads it down.
     """
     cur_now = now or datetime.now(timezone.utc)
-    bin_ = project.get("nyc_bin") or project.get("bin")
-    bbl = project.get("bbl") or project.get("nyc_bbl")
     project_id = str(project.get("_id") or project.get("id") or "")
 
-    # Own-building counts. V2.3: lazy Socrata via the centralized
-    # helper in baselines.py. Soft-fails per-dataset inside the
-    # helper, so a single bad source doesn't blank the others.
-    # Schema-corrections hotfix: 311 has no bin column; pass bbl
-    # so the helper can filter open-complaints by bbl instead.
+    # Own-building counts. V2.3.A2: pivots from lazy Socrata
+    # queries (subset of datasets) to a single Mongo aggregate
+    # against db.dob_logs (legacy-poller-populated, full DOB
+    # dataset coverage). Soft-fails inside the helper so a
+    # dob_logs query hiccup never blocks the score compute.
     try:
         own = await count_own_building_events(
-            socrata, bin_=bin_, bbl=bbl, now=cur_now,
+            project_id=project_id,
+            db=db,
+            now=cur_now,
         )
     except Exception as e:
         logger.warning(

@@ -109,7 +109,7 @@ def _soql_quote(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _iso_z(dt: datetime) -> str:
+def _iso_prefix(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 
@@ -132,8 +132,8 @@ async def _first_event_in_window(
             dataset_id,
             where=(
                 f"bin = {_soql_quote(bin_)} AND "
-                f"{date_field} >= {_soql_quote(_iso_z(since))} AND "
-                f"{date_field} <= {_soql_quote(_iso_z(until))}"
+                f"{date_field} >= {_soql_quote(_iso_prefix(since))} AND "
+                f"{date_field} <= {_soql_quote(_iso_prefix(until))}"
             ),
             order=f"{date_field} ASC",
             limit=1,
