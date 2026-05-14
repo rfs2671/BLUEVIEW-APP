@@ -1138,6 +1138,148 @@ class TestCountOwnBuildingEvents(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────
+# PR #9 — heterogeneous date format regression tests
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestA3DateNormalizationRegression(unittest.TestCase):
+    """PR #9 regression tests against the heterogeneous date format
+    bug found at Stage 10 of PR #8 verification.
+
+    Bug: ``count_own_building_events`` filters complaints via
+    ``$gte: _iso_prefix(c30)`` (e.g. ``"2026-04-13T00:00:00"``).
+    Lexicographic comparison fails for MM/DD/YYYY-formatted source
+    records — they're silently excluded from
+    ``open_complaints_30d`` because '0' (0x30) < '2' (0x32).
+
+    Stage 1.5 Query B confirmed 50 MDY complaints in production
+    (22% of complaints), all on the DOB path (eabe-havv via
+    ``_extract_complaint_fields``). Zero on the 311 path today.
+
+    Test 12 pins the WRITE→READ contract: extractor normalizes MDY
+    at ingestion → aggregate counts the resulting ISO records
+    correctly. Per Stage 2 T5.A: regression test exercises both
+    sides of the contract.
+
+    Test 13 pins the violation aggregate's behavior given populated
+    ``violation_date`` (post-backfill steady state): records with
+    YYYYMMDD dates in the window count; records with null dates
+    are excluded.
+    """
+
+    def test_12_count_own_building_events_counts_normalized_mdy_complaints(self):
+        """Test 12 — write→read regression. RED-PHASE expected
+        failure: current ``_extract_complaint_fields`` does not
+        normalize MDY ``date_entered``, so the resulting dob_log
+        has ``complaint_date == "06/04/2025"``. Aggregate's
+        ``$gte`` filter against ISO cutoff '2026-04-13...' fails
+        lexicographically — count is 0 not 1."""
+        from server import _extract_complaint_fields
+
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+
+        # Two raw Socrata-shaped records: one MDY, one ISO. Both
+        # within the 30-day window. Both have ACTIVE status (open
+        # complaint per Q2 case-sensitive filter).
+        raw_mdy = {
+            "complaint_number":   "5042113",
+            "date_entered":       (now - timedelta(days=10)).strftime("%m/%d/%Y"),
+            "status":             "ACTIVE",
+            "complaint_category": "21",
+        }
+        raw_iso = {
+            "complaint_number":   "5042114",
+            "date_entered":       (now - timedelta(days=15)).strftime(
+                "%Y-%m-%dT%H:%M:%S.000"
+            ),
+            "status":             "ACTIVE",
+            "complaint_category": "21",
+        }
+
+        # Run them through the extractor (this is the WRITE side
+        # of the regression — extractor must produce ISO output).
+        mdy_extracted = _extract_complaint_fields(raw_mdy)
+        iso_extracted = _extract_complaint_fields(raw_iso)
+
+        # Stuff into dob_logs fixture (READ side — aggregate
+        # must count both records as open complaints).
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="complaint",
+                raw_dob_id="5042113",  # DOB-path (no 311: prefix)
+                complaint_status=mdy_extracted["complaint_status"],
+                complaint_date=mdy_extracted["complaint_date"],
+            ),
+            _dob_log(
+                record_type="complaint",
+                raw_dob_id="5042114",  # DOB-path
+                complaint_status=iso_extracted["complaint_status"],
+                complaint_date=iso_extracted["complaint_date"],
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        self.assertEqual(
+            out["open_complaints_30d"], 2,
+            f"Both MDY-origin AND ISO-origin complaints must count "
+            f"toward open_complaints_30d after extractor "
+            f"normalization. MDY extracted complaint_date: "
+            f"{mdy_extracted.get('complaint_date')!r}",
+        )
+
+    def test_13_count_own_building_events_counts_violations_with_extracted_date(self):
+        """Test 13 — post-backfill steady state for violation_date.
+        Fixture has 2 violations with populated YYYYMMDD dates and
+        1 violation with null violation_date. Aggregate counts the
+        populated records; null records are excluded by the date
+        filter.
+
+        Characterization test: aggregate's existing behavior is
+        already correct; this pins the post-backfill regression
+        target so any future change that breaks date filtering
+        gets caught."""
+        now = datetime(2026, 5, 13, tzinfo=timezone.utc)
+        db = _StubDb()
+        db.dob_logs.seed([
+            _dob_log(
+                record_type="violation",
+                raw_dob_id="022217AEUHAZ100357",  # pre-A2 AEUHAZ pattern
+                resolution_state="open",
+                violation_date=(now - timedelta(days=10)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                raw_dob_id="VIO-FTF-PL-PER-202412-0191848",  # pre-A2 VIO pattern
+                resolution_state="open",
+                violation_date=(now - timedelta(days=20)).strftime("%Y%m%d"),
+            ),
+            _dob_log(
+                record_type="violation",
+                raw_dob_id="022701LL629116468",  # pre-A2 LL629 pattern — null date
+                resolution_state="open",
+                violation_date=None,
+            ),
+        ])
+        out = _run(bl.count_own_building_events(
+            project_id=_PROJECT_ID,
+            db=db,
+            now=now,
+        ))
+        # 2 populated records in 30d window count; 1 null-date
+        # record is excluded by the $gte filter (null fails $gte
+        # against a YYYYMMDD cutoff string).
+        self.assertEqual(
+            out["violations_30d"], 2,
+            f"Aggregate must count populated-date violations and "
+            f"exclude null-date ones. Got: {out!r}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
 # compare_project_to_peers — cache-aware
 # ──────────────────────────────────────────────────────────────────
 

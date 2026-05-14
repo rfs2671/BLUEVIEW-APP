@@ -14015,6 +14015,79 @@ async def _fetch_311_for_project(
         return []
 
 
+def _build_311_doc(rec: dict, project: dict, now: datetime) -> dict:
+    """V2.3.A3 PR #9 — extracted from ``_ingest_311_for_project``'s
+    inline dict construction (formerly at server.py:14063-14093) per
+    Stage 2 T6.B refactor. Pure function for testability.
+
+    No behavior change beyond date normalization via
+    ``_normalize_dob_date_to_iso`` on ``complaint_date`` +
+    ``closed_date``. The mutation-and-diff logic
+    (``current_status``, ``signal_kind``, ``previous_status``,
+    ``is_seed_transition``) stays in the caller — this function
+    only produces the base dob_log document shape.
+
+    Args:
+      rec     — raw Socrata record from erm2-nwe9.
+      project — project document (provides ``_id``, ``company_id``,
+                ``nyc_bin``).
+      now     — write-time UTC timestamp.
+
+    Returns the dob_log document with 311-shape fields populated
+    + ISO-canonical date fields.
+    """
+    project_id = str(project.get("_id"))
+    company_id = project.get("company_id", "")
+    nyc_bin = (project.get("nyc_bin") or "").strip()
+    unique_key = str(rec.get("unique_key") or "").strip()
+    raw_dob_id = f"311:{unique_key}"
+
+    ctype = (rec.get("complaint_type") or "").strip()
+    severity = _severity_for_311(ctype)
+    complaint_status = rec.get("status") or None
+
+    address_parts = [
+        (rec.get("incident_address") or "").strip(),
+        (rec.get("city") or "").strip(),
+    ]
+    incident_address = ", ".join(p for p in address_parts if p)
+
+    return {
+        "project_id":        project_id,
+        "company_id":        company_id,
+        "nyc_bin":           nyc_bin,
+        "record_type":       "complaint",
+        "raw_dob_id":        raw_dob_id,
+        "ai_summary":        _fmt_311_summary(rec),
+        "severity":          severity,
+        "next_action":       _next_action_for_311(rec),
+        "dob_link":          (
+            f"https://portal.311.nyc.gov/sr-details/?id={unique_key}"
+        ),
+        "detected_at":       now,
+        "created_at":        now,
+        "updated_at":        now,
+        "is_deleted":        False,
+        # 311-shaped extras — keep them on the same document so the
+        # frontend timeline shows the same fields as DOB complaints.
+        "complaint_number":  unique_key,
+        "complaint_type":    ctype or None,
+        "complaint_status":  complaint_status,
+        # V2.3.A3 PR #9 — normalize via shared helper. Defensive:
+        # current production 311 path emits ISO; if NYC ever
+        # changes erm2-nwe9's source format, the helper handles it.
+        "complaint_date":    _normalize_dob_date_to_iso(rec.get("created_date")),
+        "closed_date":       _normalize_dob_date_to_iso(rec.get("closed_date")),
+        "description":       (rec.get("descriptor") or "").strip() or None,
+        "incident_address":  incident_address or None,
+        "complaint_source":  "311",
+        "source":            "311",   # extra tag so analytics can split 311 vs DOB
+        "agency":            (rec.get("agency") or "").strip() or None,
+        "agency_name":       (rec.get("agency_name") or "").strip() or None,
+        "resolution_description": (rec.get("resolution_description") or "").strip() or None,
+    }
+
+
 async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") -> dict:
     """Fetch + upsert new 311 records for one project. Returns a small stats dict."""
     project_id = str(project.get("_id"))
@@ -14050,47 +14123,14 @@ async def _ingest_311_for_project(project: dict, client: "httpx.AsyncClient") ->
             sort=[("detected_at", -1)],
         )
 
-        ctype = (rec.get("complaint_type") or "").strip()
-        severity = _severity_for_311(ctype)
-        complaint_status = rec.get("status") or None
-
-        address_parts = [
-            (rec.get("incident_address") or "").strip(),
-            (rec.get("city") or "").strip(),
-        ]
-        incident_address = ", ".join(p for p in address_parts if p)
-
-        doc = {
-            "project_id":        project_id,
-            "company_id":        company_id,
-            "nyc_bin":           nyc_bin,
-            "record_type":       "complaint",
-            "raw_dob_id":        raw_dob_id,
-            "ai_summary":        _fmt_311_summary(rec),
-            "severity":          severity,
-            "next_action":       _next_action_for_311(rec),
-            "dob_link":          (
-                f"https://portal.311.nyc.gov/sr-details/?id={unique_key}"
-            ),
-            "detected_at":       now,
-            "created_at":        now,
-            "updated_at":        now,
-            "is_deleted":        False,
-            # 311-shaped extras — keep them on the same document so the
-            # frontend timeline shows the same fields as DOB complaints.
-            "complaint_number":  unique_key,
-            "complaint_type":    ctype or None,
-            "complaint_status":  complaint_status,
-            "complaint_date":    rec.get("created_date"),
-            "closed_date":       rec.get("closed_date"),
-            "description":       (rec.get("descriptor") or "").strip() or None,
-            "incident_address":  incident_address or None,
-            "complaint_source":  "311",
-            "source":            "311",   # extra tag so analytics can split 311 vs DOB
-            "agency":            (rec.get("agency") or "").strip() or None,
-            "agency_name":       (rec.get("agency_name") or "").strip() or None,
-            "resolution_description": (rec.get("resolution_description") or "").strip() or None,
-        }
+        # V2.3.A3 PR #9 — base dob_log shape built by the pure
+        # ``_build_311_doc`` helper (T6.B refactor target). Helper
+        # normalizes complaint_date + closed_date via the shared
+        # ``_normalize_dob_date_to_iso``.
+        doc = _build_311_doc(rec, project, now)
+        # severity is needed below (action-count + alert gate); pull
+        # it off the doc since the helper computes it.
+        severity = doc["severity"]
         # MR.14 (commit 2a) v1-monitoring schema additions.
         # MR.14 (commit 2b) — classifier-driven signal_kind.
         current_status = _extract_dob_log_status(doc)
@@ -14377,6 +14417,86 @@ def _extract_dob_log_status(dob_log: dict) -> Optional[str]:
     return s.upper()
 
 
+# ─── V2.3.A3 PR #9 — Date format normalization ────────────────────
+
+# Regex pre-detection for the three date format families dob_logs
+# stores. Compiled once at module load.
+_ISO_DATE_ONLY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_ISO_WITH_TIME_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$"
+)
+_MDY_DATE_RE = re.compile(r"^([0-9]{1,2})/([0-9]{1,2})/([0-9]{4})$")
+
+
+def _normalize_dob_date_to_iso(raw):
+    """V2.3.A3 PR #9 — heterogeneous date format helper.
+
+    Normalizes ``complaint_date`` / ``closed_date`` inputs to the
+    canonical dob_logs storage format ``%Y-%m-%dT%H:%M:%S.000``
+    (B1.a / B1.b locked format). Idempotent on already-canonical
+    inputs.
+
+    Accepts:
+      • ISO with ms suffix    ``"2025-06-04T12:30:45.000"``  → passthrough
+      • ISO without ms        ``"2025-06-04T12:30:45"``      → append ``.000``
+      • ISO date-only         ``"2025-06-04"``               → expand to midnight + ``.000``
+      • MDY zero-padded       ``"06/04/2025"``               → ``"2025-06-04T00:00:00.000"``
+      • MDY single-digit      ``"6/4/2025"``                 → ``"2025-06-04T00:00:00.000"``
+      • ``None`` / ``""`` / whitespace                       → ``None``
+      • Malformed                                            → log WARNING + ``None``
+
+    PR #9 Stage 1.5 Query B found 22% of production complaint_date
+    values stored as MDY (50 records, all on the DOB-path eabe-havv
+    via ``_extract_complaint_fields``). The aggregate pipeline in
+    ``count_own_building_events`` uses lexicographic ``$gte``
+    comparison which silently rejected MDY records since
+    ``'0' (0x30) < '2' (0x32)``. This helper normalizes on write so
+    the aggregate filter operates on uniform ISO strings.
+
+    Stage 2 T2.C: malformed inputs emit a WARNING log line that
+    references the raw value (strict-but-visible — bad source data
+    stays out of dob_logs while operators still see new format
+    surfaces in logs).
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    # ISO date-only — expand to midnight
+    if _ISO_DATE_ONLY_RE.match(raw):
+        return raw + "T00:00:00.000"
+
+    # ISO with time — canonicalize ms suffix
+    if _ISO_WITH_TIME_RE.match(raw):
+        if "." in raw:
+            return raw  # already canonical
+        return raw + ".000"
+
+    # MDY — parse + canonicalize to midnight ISO
+    m = _MDY_DATE_RE.match(raw)
+    if m:
+        mo, dy, yr = m.groups()
+        try:
+            return datetime(int(yr), int(mo), int(dy)).strftime(
+                "%Y-%m-%dT00:00:00.000"
+            )
+        except ValueError:
+            # e.g., "13/45/2025" — month/day out of range; fall
+            # through to the malformed branch below.
+            pass
+
+    # Malformed — warn + None
+    logger.warning(
+        f"[_normalize_dob_date_to_iso] Unrecognized date format: "
+        f"{raw!r} — returning None"
+    )
+    return None
+
+
 def _extract_swo_fields(rec: dict) -> dict:
     """MR.14 (commit 2b) — extract from the 3usq-5cid Stop Work
     Orders dataset. Status field on this dataset is the SWO's
@@ -14618,8 +14738,13 @@ def _extract_complaint_fields(rec: dict) -> dict:
     fields["complaint_number"] = rec.get("complaint_number") or None
     fields["complaint_type"] = rec.get("complaint_category") or None
     fields["complaint_status"] = rec.get("status") or None
-    fields["complaint_date"] = rec.get("date_entered") or None
-    fields["closed_date"] = rec.get("disposition_date") or None
+    # V2.3.A3 PR #9 — normalize MDY → ISO at ingestion time. Stage 1.5
+    # Query B found 50 production complaints stored as MDY via this
+    # path. T3.B: closed_date also normalized for symmetry with the
+    # 311 path's hygiene + so a single record never carries one ISO
+    # date and one MDY date.
+    fields["complaint_date"] = _normalize_dob_date_to_iso(rec.get("date_entered"))
+    fields["closed_date"] = _normalize_dob_date_to_iso(rec.get("disposition_date"))
     # Build rich description from code lookups
     category = rec.get("complaint_category") or ""
     disposition_code = rec.get("disposition_code") or ""
