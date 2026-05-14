@@ -83,6 +83,42 @@ const FACTOR_METADATA = {
   },
 };
 
+// English ordinal suffix per the standard rule:
+//   • 11, 12, 13 → "th" (the teen-exception)
+//   • last digit 1 → "st" (except 11)
+//   • last digit 2 → "nd" (except 12)
+//   • last digit 3 → "rd" (except 13)
+//   • everything else → "th"
+// Operator-spec examples: 1→1st, 12→12th, 22→22nd, 23→23rd,
+// 63→63rd, 86→86th.
+function _ordinalSuffix(n) {
+  const v = Math.abs(Math.trunc(n)) % 100;
+  if (v >= 11 && v <= 13) return 'th';
+  switch (v % 10) {
+    case 1: return 'st';
+    case 2: return 'nd';
+    case 3: return 'rd';
+    default: return 'th';
+  }
+}
+
+// Title-case helper for display normalization. PLUTO ships
+// borough names in UPPER-CASE ("BROOKLYN") and project_class
+// values in lower_underscore ("major_a"); both render badly in
+// prose. This collapses underscores and whitespace into single
+// spaces and capitalizes each word: "BROOKLYN" → "Brooklyn",
+// "STATEN ISLAND" → "Staten Island", "major_a" → "Major A",
+// "residential" → "Residential".
+function _titleCase(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .toLowerCase()
+    .split(/[\s_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 // Tier-phrase resolver for the peer-comparison context narrative.
 // peer_set.tier is one of the four strings emitted by baselines.py's
 // fallback ladder. Anything outside the known set falls back to
@@ -90,9 +126,12 @@ const FACTOR_METADATA = {
 function _peerTierPhrase(peerSet) {
   if (!peerSet || typeof peerSet !== 'object') return 'in similar buildings';
   const tier        = peerSet.tier || '';
-  const borough     = peerSet.borough || '';
-  const projectClass = peerSet.project_class || '';
-  const useType     = peerSet.use_type || '';
+  // Display-normalize the three interpolated fields. PLUTO stores
+  // borough in all-caps and project_class in lower_underscore;
+  // _titleCase collapses both into readable prose.
+  const borough     = _titleCase(peerSet.borough);
+  const projectClass = _titleCase(peerSet.project_class);
+  const useType     = _titleCase(peerSet.use_type);
   if (tier === 'borough_class_use' && borough && projectClass && useType) {
     return `in ${borough} (class ${projectClass}, use type ${useType})`;
   }
@@ -116,7 +155,8 @@ function _formatPercentile(pct) {
   if (pct === null || pct === undefined) return 'data unavailable';
   const n = Number(pct);
   if (!Number.isFinite(n)) return 'data unavailable';
-  return `${Math.round(n)}th percentile`;
+  const rounded = Math.round(n);
+  return `${rounded}${_ordinalSuffix(rounded)} percentile`;
 }
 
 const RiskScoreDrawer = ({
