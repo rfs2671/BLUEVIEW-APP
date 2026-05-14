@@ -19,7 +19,6 @@ import {
   MapPin,
   Users,
   Building2,
-  QrCode,
   ClipboardList,
   Settings,
   Wifi,
@@ -617,9 +616,6 @@ export default function ProjectDetailScreen() {
                 isAdmin={isAdmin}
                 size={84}
               />
-              <View style={s.qrBadge}>
-                <QrCode size={20} strokeWidth={1.5} color={colors.text.primary} />
-              </View>
             </View>
           </GlassCard>
 
@@ -1417,16 +1413,6 @@ function buildStyles(colors, isDark) {
   locationText: {
     fontSize: 14,
     color: colors.text.muted,
-  },
-  qrBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.glass.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: colors.glass.border,
   },
   statsRow: {
     flexDirection: 'row',

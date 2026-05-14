@@ -58,16 +58,66 @@ import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
 import { bandFor, RISK_SCORE_TITLE } from './RiskScoreCircle';
 
-const FACTOR_LABELS = {
-  active_dob_violations:               'Active DOB violations',
-  permit_days_to_expiration:           'Permit expiration',
-  inspection_compliance_missed:        'Missed inspections',
-  deficiency_count_30d:                'Logbook deficiencies (30d)',
-  subcontractor_insurance_expirations: 'Sub COI expirations',
-  missing_logs_30d:                    'Missing daily logs (30d)',
-  sst_expirations_next_30d:            'SST cards expiring (30d)',
-  days_since_last_activity:            'Days since last activity',
+// V2.3 — per-factor labels + descriptions. Replaces the V2.0-era
+// FACTOR_LABELS (which keyed off legacy field names that no longer
+// match the four V2.3 group constants written by
+// score._factor_breakdown). Single source of truth — label is the
+// header text, description is the small muted paragraph rendered
+// under the bar.
+const FACTOR_METADATA = {
+  own_building: {
+    label:       "This Building's Recent Activity",
+    description: "Recent violations, failed inspections, and open complaints on this specific BIN in the last 30-90 days.",
+  },
+  peer_comparison: {
+    label:       'Compared to Similar Buildings',
+    description: "How this building's compliance history compares against other buildings in the same borough, class, and use type.",
+  },
+  active_triggers: {
+    label:       'Active Enforcement Signals',
+    description: 'Live risk signals like active Stop Work Orders, hearing-scheduled violations, escalating violation counts, and severe open complaints.',
+  },
+  internal_compliance: {
+    label:       'Internal Compliance',
+    description: 'In-app compliance signals: missing daily logs, expiring SST certifications, and outstanding deficiencies.',
+  },
 };
+
+// Tier-phrase resolver for the peer-comparison context narrative.
+// peer_set.tier is one of the four strings emitted by baselines.py's
+// fallback ladder. Anything outside the known set falls back to
+// generic copy so the section still renders cleanly.
+function _peerTierPhrase(peerSet) {
+  if (!peerSet || typeof peerSet !== 'object') return 'in similar buildings';
+  const tier        = peerSet.tier || '';
+  const borough     = peerSet.borough || '';
+  const projectClass = peerSet.project_class || '';
+  const useType     = peerSet.use_type || '';
+  if (tier === 'borough_class_use' && borough && projectClass && useType) {
+    return `in ${borough} (class ${projectClass}, use type ${useType})`;
+  }
+  if (tier === 'borough_class' && borough && projectClass) {
+    return `in ${borough} (class ${projectClass})`;
+  }
+  if (tier === 'borough' && borough) {
+    return `in ${borough}`;
+  }
+  if (tier === 'citywide') {
+    return 'citywide';
+  }
+  return 'in similar buildings';
+}
+
+// Render-safe percentile string. Backend emits Math.round-friendly
+// floats for inspections/complaints/violations percentile_rank;
+// violations is null when the dataset is gated unavailable
+// (baselines.py:UNAVAILABLE_PEER_DATASETS).
+function _formatPercentile(pct) {
+  if (pct === null || pct === undefined) return 'data unavailable';
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return 'data unavailable';
+  return `${Math.round(n)}th percentile`;
+}
 
 const RiskScoreDrawer = ({
   projectId,
@@ -279,14 +329,20 @@ const RiskScoreDrawer = ({
                     </Text>
                   ) : (
                     factors.map((f, i) => {
-                      const label = FACTOR_LABELS[f.factor] || f.factor;
+                      // BC-compatible key lookup: V2.3 docs write
+                      // ``group``; older V2.0/V2.1 docs may have
+                      // written ``factor``. Prefer ``group``.
+                      const groupKey = f.group || f.factor;
+                      const meta = FACTOR_METADATA[groupKey];
+                      const label = meta ? meta.label : groupKey;
+                      const description = meta ? meta.description : null;
                       const contribution = Number(f.contribution || 0);
                       const weight = Number(f.weight || 0);
                       const fillPct = weight > 0
                         ? Math.max(0, Math.min(1, contribution / weight))
                         : 0;
                       return (
-                        <View key={`${f.factor}-${i}`} style={styles.factorRow}>
+                        <View key={`${groupKey}-${i}`} style={styles.factorRow}>
                           <View style={styles.factorHeaderRow}>
                             <Text style={styles.factorLabel}>{label}</Text>
                             <Text style={styles.factorContribution}>
@@ -304,11 +360,72 @@ const RiskScoreDrawer = ({
                               ]}
                             />
                           </View>
+                          {description && (
+                            <Text style={styles.factorDescription}>
+                              {description}
+                            </Text>
+                          )}
                         </View>
                       );
                     })
                   )}
                 </View>
+
+                {/*
+                  Peer Comparison Context — V2.3 narrative section.
+                  Renders only when the contributing_factors list
+                  includes a peer_comparison row with a non-empty
+                  details object. The bullets pivot on peer_set.tier
+                  to phrase the comparison correctly (citywide vs
+                  borough vs borough+class+use_type). Missing /
+                  malformed details gracefully suppress the section.
+                */}
+                {(() => {
+                  const peerRow = factors.find(
+                    (f) => (f.group || f.factor) === 'peer_comparison',
+                  );
+                  const details = peerRow && peerRow.details;
+                  if (!details || typeof details !== 'object') return null;
+
+                  const peerSet = details.peer_set || {};
+                  const sampleSize = Number(
+                    details.peer_sample_size
+                      || peerSet.sample_size
+                      || 0,
+                  );
+                  if (!sampleSize) return null;
+
+                  const tierPhrase = _peerTierPhrase(peerSet);
+                  const sampleSizeText = sampleSize.toLocaleString('en-US');
+
+                  return (
+                    <View style={styles.peerContextSection}>
+                      <Text style={styles.sectionLabel}>
+                        PEER COMPARISON CONTEXT
+                      </Text>
+                      <Text style={styles.peerClarifier}>
+                        (Higher percentile = more activity than peers)
+                      </Text>
+                      <Text style={styles.peerLead}>
+                        Compared to {sampleSizeText} similar buildings {tierPhrase}:
+                      </Text>
+                      <Text style={styles.peerBullet}>
+                        {'•'} Inspections: {_formatPercentile(details.inspections_pct)}
+                      </Text>
+                      <Text style={styles.peerBullet}>
+                        {'•'} Complaints:  {_formatPercentile(details.complaints_pct)}
+                      </Text>
+                      <Text style={styles.peerBullet}>
+                        {'•'} Violations:  {_formatPercentile(details.violations_pct)}
+                      </Text>
+                      {sampleSize < 50 && (
+                        <Text style={styles.peerSmallSampleNote}>
+                          Small sample — comparison may be less reliable.
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })()}
               </>
             )}
           </ScrollView>
@@ -525,6 +642,48 @@ function buildStyles(colors, isDark) {
     factorBarFill: {
       height: 4,
       borderRadius: 2,
+    },
+    factorDescription: {
+      // V2.3 — muted explanation of what the factor means, rendered
+      // below the bar so non-technical users can read the row as a
+      // sentence rather than a label + number.
+      marginTop: 4,
+      fontSize: 11,
+      lineHeight: 16,
+      color: colors.text.muted,
+    },
+    peerContextSection: {
+      // V2.3 — narrative section under the factors list. Sits
+      // visually grouped (own marginTop) but reads as a distinct
+      // block from the factor rows above.
+      marginTop: spacing.lg,
+      gap: 2,
+    },
+    peerClarifier: {
+      // The required clarifier line under the section header —
+      // users misread "86th percentile" as good without it.
+      fontSize: 11,
+      color: colors.text.muted,
+      fontStyle: 'italic',
+      marginBottom: spacing.xs,
+    },
+    peerLead: {
+      fontSize: 13,
+      color: colors.text.secondary,
+      lineHeight: 18,
+      marginBottom: 4,
+    },
+    peerBullet: {
+      fontSize: 13,
+      color: colors.text.primary,
+      lineHeight: 20,
+      paddingLeft: spacing.sm,
+    },
+    peerSmallSampleNote: {
+      marginTop: spacing.xs,
+      fontSize: 11,
+      color: colors.text.muted,
+      fontStyle: 'italic',
     },
     emptyText: {
       fontSize: 13,
