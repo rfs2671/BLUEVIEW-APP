@@ -314,69 +314,12 @@ class TestFallbackLadder(unittest.TestCase):
     project's own BBL — keeps these tests focused on the tier
     ladder logic itself."""
 
-    def test_tier_1_full_match(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100000{i:04d}", "MN", "O4", "office")
-            for i in range(1, 26)
-        ])
-        proj = {
-            "bbl": "1000009999",  # not in the seeded peer set
-            "borough": "MANHATTAN",
-            "pluto_snapshot": {
-                "bldgclass": "O4", "landuse": "office",
-            },
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(len(bbls), 25)
-        self.assertEqual(meta["tier"], "borough_class_use")
-        self.assertEqual(meta["sample_size"], 25)
-
-    def test_tier_2_drop_use_type(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100001{i:04d}", "MN", "O4", "residential")
-            for i in range(5)
-        ] + [
-            _pluto_row(f"100002{i:04d}", "MN", "O4", "commercial")
-            for i in range(25)
-        ])
-        proj = {
-            "bbl": "1000019999",
-            "borough": "MANHATTAN",
-            "pluto_snapshot": {
-                "bldgclass": "O4", "landuse": "residential",
-            },
-            "use_type": "residential",
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(meta["tier"], "borough_class")
-        self.assertEqual(meta["sample_size"], 30)
-
-    def test_tier_3_drop_class(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"400003{i:04d}", "QN", "A0", "residential")
-            for i in range(2)
-        ] + [
-            _pluto_row(f"400004{i:04d}", "QN", "M0", "industrial")
-            for i in range(2)
-        ] + [
-            _pluto_row(f"400005{i:04d}", "QN", "A0", "office")
-            for i in range(25)
-        ])
-        proj = {
-            "bbl": "4000039999",
-            "borough": "QUEENS",
-            "pluto_snapshot": {
-                "bldgclass": "C1",  # no PLUTO rows match
-                "landuse": "school",
-            },
-            "use_type": "school",
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(meta["tier"], "borough")
-        self.assertGreaterEqual(meta["sample_size"], 20)
+    # PR #14: tests for the old 4-tier ladder
+    # (borough_class_use → borough_class → borough → citywide) were
+    # removed. The new 2-tier ladder (zip_36mo → citywide) is pinned
+    # by TestPR14ZipPeerRedesign at the bottom of this file. Tier-4
+    # citywide tests below remain valid because the citywide tier
+    # itself stays (now fallback_level=2 instead of 4).
 
     def test_tier_4_citywide(self):
         socrata = MockSocrataClient()
@@ -436,41 +379,12 @@ class TestFallbackLadder(unittest.TestCase):
         pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
         self.assertEqual(len(pluto_calls), 1)
 
-    def test_all_tiers_apply_peer_cap_not_just_citywide(self):
-        """Hotfix #3 BUG B regression pin: every fallback tier
-        (1, 2, 3, 4) caps its PLUTO peer-set at its
-        TIER_*_MAX_PEERS constant. Bronx alone is ~90k parcels;
-        without a tier-3 cap the downstream chunked event-count
-        phase times out before reaching tier-4.
-
-        Seeds 12,000 BBLs that match tier-3 (borough-only). With
-        a TIER_3 cap of 10,000 the peer set returns exactly the
-        cap — NOT the seeded 12,000 — and never paginates to
-        fetch the overflow."""
-        socrata = MockSocrataClient()
-        # 12k Bronx BBLs with NO bldgclass field so tier 1+2
-        # filter to 0 matches → falls through to tier 3.
-        socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"200095{i:05d}", "borough": "BX"}
-            for i in range(12000)
-        ])
-        # Pre-stamp pluto_snapshot so no snapshot-fetch round
-        # trip happens. snapshot bldgclass="C1" doesn't match
-        # any seeded row (seeds have no bldgclass field), so
-        # tier 1+2 return zero. Tier 3 (borough only) matches
-        # all 12k.
-        proj = {
-            "bbl": "2000959999",
-            "borough": "BRONX",
-            "pluto_snapshot": {"bldgclass": "C1", "landuse": "school"},
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        # Tier 3 resolved — borough-only.
-        self.assertEqual(meta["tier"], "borough")
-        # Capped exactly at TIER_3_MAX_PEERS — not the seeded 12k.
-        self.assertEqual(len(bbls), bl.TIER_3_MAX_PEERS)
-        self.assertEqual(len(bbls), 10000)
-        self.assertNotEqual(len(bbls), 12000)
+    # PR #14: test_all_tiers_apply_peer_cap_not_just_citywide was
+    # removed. The cap-per-tier invariant it pinned was specific to
+    # the 4-tier ladder (tiers 1-3 capped at TIER_*_MAX_PEERS so
+    # they don't paginate the full city). Under the 2-tier ladder
+    # only citywide remains as a capped path; that case is covered
+    # by test_tier_4_citywide_caps_at_max_peers below.
 
     def test_pluto_bbl_decimal_suffix_stripped(self):
         socrata = MockSocrataClient()
@@ -521,9 +435,11 @@ class TestFallbackLadder(unittest.TestCase):
 
         # The EXACT allowed columns — every entry must exist on
         # the live PLUTO schema. ``bin`` is explicitly forbidden.
+        # PR #14 added ``zipcode`` so the peer-set discovery can
+        # key on ZIP instead of borough+class+use_type.
         expected_select = {
             "bbl", "borough", "bldgclass", "landuse",
-            "block", "lot",
+            "block", "lot", "zipcode",
         }
         self.assertSetEqual(
             select_set, expected_select,
@@ -713,8 +629,13 @@ class TestComputePeerStatsFull(unittest.TestCase):
         self.assertIn("computed_at", cache)
         self.assertIn("last_refreshed_at", cache)
         self.assertEqual(cache["computed_at"], cache["last_refreshed_at"])
-        self.assertEqual(cache["peer_criteria"]["fallback_level"], 1)
-        self.assertEqual(cache["peer_criteria"]["tier"], "borough_class_use")
+        # PR #14: this fixture does NOT seed zipcode on the PLUTO
+        # rows, so peer_bbls' ZIP-tier query skips and falls back
+        # to citywide. Under the 2-tier ladder citywide is
+        # fallback_level=2 (was tier 4 → fallback_level=4 in the
+        # 4-tier ladder).
+        self.assertEqual(cache["peer_criteria"]["fallback_level"], 2)
+        self.assertEqual(cache["peer_criteria"]["tier"], "citywide")
         self.assertEqual(cache["peer_criteria"]["sample_size"], 24)
         self.assertIn("violations", cache)
         self.assertIn("inspections", cache)
@@ -1489,7 +1410,11 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             db, project, socrata=socrata,
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
-        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
+        # PR #14: fixture omits zipcode on PLUTO rows → ZIP tier
+        # skipped → citywide fallback. The intent of this test
+        # (cache miss triggers sync compute and persists back)
+        # is unchanged by the tier-vocabulary shift.
+        self.assertEqual(result["peer_set"]["tier"], "citywide")
         self.assertIn("violations", result)
         self.assertEqual(len(db.projects.update_one_calls), 1)
         persisted_set = db.projects.update_one_calls[0]["update"]["$set"]
@@ -1654,7 +1579,10 @@ class TestCompareProjectStatusGuards(unittest.TestCase):
             db, project, socrata=socrata, now=now,
         ))
         # Compute ran → not the failed/zero marker; full result.
-        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
+        # PR #14: fixture omits zipcode on PLUTO rows → citywide
+        # fallback. The intent here (failed cache past 24h TTL
+        # triggers sync compute) is unchanged by the tier shift.
+        self.assertEqual(result["peer_set"]["tier"], "citywide")
         # At least one Socrata call fired (PLUTO peer-discovery
         # alone makes one).
         self.assertGreater(len(socrata.calls), 0)
@@ -1984,6 +1912,610 @@ class TestRecomputePersistMenahanFixture(unittest.TestCase):
                 f"(formula: v30=3, v90=5, i_failed=1, open_311=1 with "
                 f"weights {weights})"
             ),
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14 — ZIP-code + 36-month peer comparison redesign
+# ──────────────────────────────────────────────────────────────────
+
+
+# Lazy-import the new helper. Stage 3 will add
+# ``_rolling_36mo_window_start`` to baselines.py; until then the
+# import returns None and tests guard with ``self.fail(...)`` that
+# carries an implementation hint.
+try:
+    from lib.statistical_engine.baselines import (  # noqa: E402
+        _rolling_36mo_window_start,
+    )
+    HAS_ROLLING_36MO_HELPER = True
+except ImportError:
+    _rolling_36mo_window_start = None  # type: ignore
+    HAS_ROLLING_36MO_HELPER = False
+
+
+class TestPR14ZipPeerRedesign(unittest.TestCase):
+    """PR #14 — peer comparison redesign.
+
+    Replaces the V2.3 4-tier fallback ladder (borough_class_use →
+    borough_class → borough → citywide) with a 2-tier ladder
+    (``zip_36mo`` → ``citywide``). Window expands from 730 days
+    (``PEER_STATS_LOOKBACK_DAYS = 365 * 2``) to 36 months aligned
+    to start of current calendar month (``= 365 * 3``).
+
+    Locked design (Stage 2.A trade-offs):
+      • T1.a — window_end == cur_now (daily sliding).
+      • T2.b — fall back when BOTH inspections AND complaints
+        return zero peer events in the window.
+      • T3.b — peer_criteria keeps ``borough`` (for FE citywide-
+        fallback narrative), drops ``project_class`` + ``use_type``.
+      • T4.a — citywide fallback issues a second PLUTO query only
+        if the ZIP-tier set is below floor OR shows zero activity.
+      • T5.b — ``_rolling_36mo_window_start(now)`` is a public
+        module-level helper, directly unit-testable.
+
+    Tests 7 + 8 are characterization (may pass red because the
+    underlying surface is shape-agnostic).
+    """
+
+    _ZIP_SAMPLE_FLOOR = 100  # operator's locked floor
+
+    def _seed_pluto_for_zip(self, socrata, *, zipcode, peer_bbls,
+                             project_bbl, borough_code="BK",
+                             bldgclass="C1", landuse="01"):
+        """Seed PLUTO rows including the new ``zipcode`` column. The
+        production code (post-PR-14) will SELECT zipcode in
+        ``fetch_project_pluto_snapshot`` and filter peer-set queries
+        on ``zipcode='<value>'``. MockSocrataClient's WHERE evaluator
+        handles the filter automatically when the column is present
+        on seeded rows.
+
+        Each row also carries borough/bldgclass/landuse so the
+        existing fetch_project_pluto_snapshot remains satisfied for
+        the project's own BBL lookup. The project_bbl row is
+        included so the lookup resolves cleanly."""
+        rows = [
+            {"bbl": b, "borough": borough_code, "bldgclass": bldgclass,
+             "landuse": landuse, "zipcode": zipcode}
+            for b in peer_bbls
+        ]
+        # Ensure project's own BBL is in the pool (PLUTO snapshot
+        # lookup needs it). De-dup if it's already in peer_bbls.
+        if project_bbl not in peer_bbls:
+            rows.append({
+                "bbl": project_bbl, "borough": borough_code,
+                "bldgclass": bldgclass, "landuse": landuse,
+                "zipcode": zipcode,
+            })
+        socrata.seed(DATASET_PLUTO, rows)
+
+    def _seed_inspections_for_bbls(self, socrata, bbls, *,
+                                    per_bbl=1, sample_date="2025-06-01T00:00:00"):
+        """Seed inspections so the peer percentile math has signal.
+        Skipped or per_bbl=0 → zero-activity fixture."""
+        if not bbls or per_bbl <= 0:
+            socrata.seed(DATASET_DOB_INSPECTIONS, [])
+            return
+        socrata.seed(DATASET_DOB_INSPECTIONS, [
+            {"bbl": b, "inspection_date": sample_date}
+            for b in bbls for _ in range(per_bbl)
+        ])
+
+    def _seed_complaints_for_bbls(self, socrata, bbls, *,
+                                   per_bbl=1, sample_date="2025-06-01T00:00:00"):
+        """Mirror of _seed_inspections_for_bbls for 311."""
+        if not bbls or per_bbl <= 0:
+            socrata.seed(DATASET_COMPLAINTS_311, [])
+            return
+        socrata.seed(DATASET_COMPLAINTS_311, [
+            {"bbl": b, "created_date": sample_date}
+            for b in bbls for _ in range(per_bbl)
+        ])
+
+    # ── Test 1 ────────────────────────────────────────────────
+
+    def test_peer_set_uses_zip_36mo_tier_when_zip_has_enough_peers(self):
+        """Test 1 — 150 peer BBLs in ZIP 11221 → zip_36mo tier
+        fires; project's own BBL excluded; sample_size==149.
+
+        Fixture note: generated peer BBLs use range(100, 249) to
+        avoid colliding with project_bbl='3033040024'; otherwise
+        the project's BBL appears twice in the seeded pool and
+        _exclude_own removes both, dropping sample_size to 148.
+        """
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        # 149 generated peer BBLs (offset to avoid project_bbl) + 1
+        # explicit project_bbl row = 150 total unique BBLs in ZIP.
+        peer_bbls = [f"303304{i:04d}" for i in range(100, 249)] + [project_bbl]
+        self._seed_pluto_for_zip(
+            socrata, zipcode="11221", peer_bbls=peer_bbls,
+            project_bbl=project_bbl, borough_code="BK",
+        )
+        # Seed activity so the zero-activity fallback isn't triggered.
+        self._seed_inspections_for_bbls(socrata, peer_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, [])
+
+        project = {
+            "_id": "P_ZIP_FULL",
+            "bbl": project_bbl,
+            "nyc_bin": "3325703",
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "borough": "BROOKLYN",
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc),
+        ))
+        pc = cache["peer_criteria"]
+        self.assertEqual(
+            pc["tier"], "zip_36mo",
+            f"Expected tier='zip_36mo' for ZIP with 150 BBLs. "
+            f"Got: {pc.get('tier')!r}. PR #14 needs to replace the "
+            f"4-tier borough_class_use ladder in baselines.peer_bbls "
+            f"with a 2-tier zip → citywide ladder.",
+        )
+        self.assertEqual(pc["fallback_level"], 1)
+        self.assertEqual(pc["zipcode"], "11221")
+        self.assertEqual(pc["borough"], "BROOKLYN")
+        # T3.b — project_class and use_type are no longer used for
+        # peer keying and should not appear in peer_criteria.
+        self.assertNotIn(
+            "project_class", pc,
+            "PR #14 T3.b: peer_criteria should drop project_class "
+            "(no longer used for peer discovery).",
+        )
+        self.assertNotIn("use_type", pc)
+        # 150 PLUTO rows in ZIP, project's own BBL excluded → 149 peers.
+        self.assertEqual(pc["sample_size"], 149)
+        self.assertEqual(len(pc["peer_bbl_list"]), 149)
+        self.assertNotIn(project_bbl, pc["peer_bbl_list"])
+
+    # ── Test 2 ────────────────────────────────────────────────
+
+    def test_peer_set_falls_back_to_citywide_when_zip_below_floor(self):
+        """Test 2 — ZIP 10044 returns only 80 BBLs (< 100 floor) →
+        SILENT fallback to citywide tier. peer_criteria.zipcode is
+        STILL populated (records which ZIP was tried for
+        diagnostics)."""
+        socrata = MockSocrataClient()
+        project_bbl = "1001230001"
+        zip_bbls = [f"100123{i:04d}" for i in range(79)] + [project_bbl]
+        citywide_bbls = [f"100200{i:04d}" for i in range(5000)]
+
+        # PLUTO pool covers BOTH the ZIP-keyed and citywide-keyed
+        # queries the implementation will issue. MockSocrataClient's
+        # WHERE evaluator filters by zipcode='10044' for the first
+        # query and matches everything for the second (no zipcode
+        # filter in citywide).
+        zip_rows = [
+            {"bbl": b, "borough": "MN", "bldgclass": "R6",
+             "landuse": "01", "zipcode": "10044"}
+            for b in zip_bbls
+        ]
+        # Citywide rows have a different zipcode so the ZIP-filtered
+        # query doesn't pick them up, but the citywide PLUTO query
+        # (no zipcode WHERE) does.
+        citywide_rows = [
+            {"bbl": b, "borough": "MN", "bldgclass": "R5",
+             "landuse": "01", "zipcode": "10025"}
+            for b in citywide_bbls
+        ]
+        socrata.seed(DATASET_PLUTO, zip_rows + citywide_rows)
+        # Activity on the union so the citywide branch has signal.
+        self._seed_inspections_for_bbls(
+            socrata, zip_bbls + citywide_bbls, per_bbl=1,
+        )
+        self._seed_complaints_for_bbls(socrata, [])
+
+        project = {
+            "_id": "P_LOW_DENSITY",
+            "bbl": project_bbl,
+            "address": "1 Roosevelt Island Loop, MANHATTAN, NY 10044",
+            "borough": "MANHATTAN",
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc),
+        ))
+        pc = cache["peer_criteria"]
+        self.assertEqual(
+            pc["tier"], "citywide",
+            f"Expected silent fallback to citywide (ZIP had only 80 "
+            f"peers, below {self._ZIP_SAMPLE_FLOOR} floor). "
+            f"Got tier={pc.get('tier')!r}.",
+        )
+        self.assertEqual(pc["fallback_level"], 2)
+        # zipcode is still recorded — diagnostics value.
+        self.assertEqual(pc["zipcode"], "10044")
+        self.assertEqual(pc["borough"], "MANHATTAN")
+        # Citywide sample should reach into the thousands.
+        self.assertGreater(
+            pc["sample_size"], self._ZIP_SAMPLE_FLOOR,
+            f"Citywide sample below the ZIP floor — fallback "
+            f"didn't broaden the peer set. Got sample_size="
+            f"{pc.get('sample_size')!r}.",
+        )
+
+    # ── Test 3 ────────────────────────────────────────────────
+
+    def test_peer_set_falls_back_to_citywide_when_zip_has_zero_activity(self):
+        """Test 3 — ZIP 12345 has 200 BBLs (structurally enough),
+        but ZERO event activity across inspections AND complaints
+        in the 36-month window. Per T2.b → SILENT citywide fallback.
+
+        (Violations is gated unavailable regardless and doesn't
+        contribute to the zero-activity check.)"""
+        socrata = MockSocrataClient()
+        project_bbl = "9999990001"
+        zip_bbls = [f"999999{i:04d}" for i in range(199)] + [project_bbl]
+        citywide_bbls = [f"100200{i:04d}" for i in range(5000)]
+
+        zip_rows = [
+            {"bbl": b, "borough": "QN", "bldgclass": "R3",
+             "landuse": "01", "zipcode": "12345"}
+            for b in zip_bbls
+        ]
+        citywide_rows = [
+            {"bbl": b, "borough": "MN", "bldgclass": "R5",
+             "landuse": "01", "zipcode": "10025"}
+            for b in citywide_bbls
+        ]
+        socrata.seed(DATASET_PLUTO, zip_rows + citywide_rows)
+        # Zero events keyed to the ZIP peer BBLs — but citywide
+        # peers do have activity so the fallback has signal to
+        # compute against.
+        self._seed_inspections_for_bbls(socrata, citywide_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, [])
+
+        project = {
+            "_id": "P_ZIP_DEAD",
+            "bbl": project_bbl,
+            "address": "1 Dead St, QUEENS, NY 12345",
+            "borough": "QUEENS",
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, 12, 0, tzinfo=timezone.utc),
+        ))
+        pc = cache["peer_criteria"]
+        self.assertEqual(
+            pc["tier"], "citywide",
+            f"Expected silent fallback to citywide (ZIP had 200 "
+            f"peers structurally but zero inspections AND zero "
+            f"complaints in window). Got tier={pc.get('tier')!r}.",
+        )
+        self.assertEqual(pc["fallback_level"], 2)
+        self.assertEqual(pc["zipcode"], "12345")
+
+    # ── Test 4 ────────────────────────────────────────────────
+
+    def test_window_uses_36_months_from_current_month_start(self):
+        """Test 4 — window_start aligns to first of current calendar
+        month, then subtracts 36 months. Time-of-day on the input
+        is ignored on the start side. Window_end == cur_now per T1.a.
+
+        Examples (mirror operator's spec):
+          • now = 2026-05-14 12:30 → window_start = 2023-05-01 00:00
+          • now = 2024-02-29 (leap)→ window_start = 2021-02-01
+          • now = 2024-03-31      → window_start = 2021-03-01
+          • now = 2026-01-15      → window_start = 2023-01-01
+        """
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        peer_bbls = [f"303304{i:04d}" for i in range(149)] + [project_bbl]
+        self._seed_pluto_for_zip(
+            socrata, zipcode="11221", peer_bbls=peer_bbls,
+            project_bbl=project_bbl, borough_code="BK",
+        )
+        self._seed_inspections_for_bbls(socrata, peer_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, [])
+        project = {
+            "_id": "P_WIN",
+            "bbl": project_bbl,
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "borough": "BROOKLYN",
+        }
+        now_mid_month = datetime(
+            2026, 5, 14, 12, 30, 45, tzinfo=timezone.utc,
+        )
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project, now=now_mid_month,
+        ))
+
+        self.assertEqual(
+            cache["events_window_start"],
+            datetime(2023, 5, 1, 0, 0, 0, tzinfo=timezone.utc),
+            f"Expected events_window_start aligned to first of "
+            f"current calendar month minus 36 months. "
+            f"Got: {cache.get('events_window_start')!r}.",
+        )
+        # T1.a — window_end is cur_now (passthrough, daily sliding).
+        self.assertEqual(
+            cache["events_window_end"], now_mid_month,
+            f"Expected events_window_end == cur_now (T1.a daily "
+            f"sliding). Got: {cache.get('events_window_end')!r}.",
+        )
+
+    # ── Test 5 ────────────────────────────────────────────────
+
+    def test_pluto_snapshot_includes_zipcode_after_pr14(self):
+        """Test 5 — fresh PLUTO fetch (no existing snapshot) must
+        emit a SELECT clause that includes ``zipcode``, and the
+        persisted snapshot must carry the field.
+
+        Verifies via MockSocrataClient call recording that the
+        SELECT projection includes zipcode."""
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        peer_bbls = [f"303304{i:04d}" for i in range(149)] + [project_bbl]
+        self._seed_pluto_for_zip(
+            socrata, zipcode="11221", peer_bbls=peer_bbls,
+            project_bbl=project_bbl, borough_code="BK",
+        )
+        self._seed_inspections_for_bbls(socrata, peer_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, [])
+
+        project = {
+            "_id": "P_FRESH",
+            "bbl": project_bbl,
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "borough": "BROOKLYN",
+            # NO existing pluto_snapshot.
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, tzinfo=timezone.utc),
+        ))
+
+        snapshot = (cache.get("peer_criteria") or {}).get("pluto_snapshot")
+        self.assertIsNotNone(
+            snapshot,
+            "PLUTO snapshot not produced by compute_peer_stats_full.",
+        )
+        self.assertIn(
+            "zipcode", snapshot,
+            f"PR #14: pluto_snapshot must include zipcode. Got keys: "
+            f"{sorted(snapshot.keys()) if snapshot else None!r}. "
+            f"Stage 3 fix: add 'zipcode' to the SELECT clause in "
+            f"baselines.fetch_project_pluto_snapshot.",
+        )
+        self.assertEqual(snapshot["zipcode"], "11221")
+
+    # ── Test 6 ────────────────────────────────────────────────
+
+    def test_lazy_pluto_refresh_when_existing_snapshot_lacks_zipcode(self):
+        """Test 6 — project has a pre-PR-14 pluto_snapshot (no
+        zipcode field). compute_peer_stats_full must detect the
+        missing field and re-query PLUTO, populating zipcode on the
+        updated snapshot."""
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        peer_bbls = [f"303304{i:04d}" for i in range(149)] + [project_bbl]
+        self._seed_pluto_for_zip(
+            socrata, zipcode="11221", peer_bbls=peer_bbls,
+            project_bbl=project_bbl, borough_code="BK",
+        )
+        self._seed_inspections_for_bbls(socrata, peer_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, [])
+
+        # Pre-PR-14 shape — snapshot exists but lacks zipcode.
+        legacy_snapshot = {
+            "bbl": project_bbl,
+            "borough": "BK",
+            "bldgclass": "C1",
+            "landuse": "01",
+            "block": "3040",
+            "lot": "24",
+            # NO zipcode key — this is the trigger.
+        }
+        project = {
+            "_id": "P_LEGACY",
+            "bbl": project_bbl,
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "borough": "BROOKLYN",
+            "pluto_snapshot": legacy_snapshot,
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, tzinfo=timezone.utc),
+        ))
+        snapshot = (cache.get("peer_criteria") or {}).get("pluto_snapshot")
+        self.assertIsNotNone(snapshot)
+        self.assertIn(
+            "zipcode", snapshot,
+            f"PR #14 lazy refresh: when existing snapshot lacks "
+            f"zipcode, compute_peer_stats_full must re-query PLUTO "
+            f"and stamp it. Got snapshot keys: "
+            f"{sorted(snapshot.keys()) if snapshot else None!r}.",
+        )
+        self.assertEqual(snapshot["zipcode"], "11221")
+
+    # ── Test 7 — characterization ─────────────────────────────
+
+    def test_violations_still_unavailable_under_zip_tier(self):
+        """Test 7 — characterization. PR #14 does NOT lift the
+        BBL-vs-BIN gate on dob_violations. Under the new zip_36mo
+        tier, violations.available stays False with the same
+        unavailable_reason. inspections + complaints stay available."""
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        peer_bbls = [f"303304{i:04d}" for i in range(149)] + [project_bbl]
+        self._seed_pluto_for_zip(
+            socrata, zipcode="11221", peer_bbls=peer_bbls,
+            project_bbl=project_bbl, borough_code="BK",
+        )
+        self._seed_inspections_for_bbls(socrata, peer_bbls, per_bbl=1)
+        self._seed_complaints_for_bbls(socrata, peer_bbls, per_bbl=1)
+
+        project = {
+            "_id": "P_ZIP_VIO",
+            "bbl": project_bbl,
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "borough": "BROOKLYN",
+        }
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project,
+            now=datetime(2026, 5, 14, tzinfo=timezone.utc),
+        ))
+        # Positive control — we ARE in the new tier.
+        # (Characterization: this may also fail red if tier hasn't
+        # been implemented yet; that's fine — the violations gate
+        # assertion below is the durable contract.)
+        self.assertEqual(
+            cache["violations"]["available"], False,
+            "PR #14 must not lift the violations gate — dob_violations "
+            "still lacks a bbl column on Socrata.",
+        )
+        self.assertEqual(
+            cache["violations"].get("unavailable_reason"),
+            "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+        )
+        # Positive controls: gates are violations-specific.
+        self.assertEqual(cache["inspections"]["available"], True)
+        self.assertEqual(cache["complaints"]["available"], True)
+
+    # ── Test 8 — characterization ─────────────────────────────
+
+    def test_score_factor_breakdown_passes_new_peer_criteria_shape_through(self):
+        """Test 8 — characterization. score._factor_breakdown is
+        shape-agnostic to peer-set tier vocabulary; it just passes
+        peer_compare["peer_set"] through into the contributing-
+        factors row's details. This test pins that contract — if a
+        future change starts stripping tier/zipcode from the row,
+        it gets caught."""
+        # Import at function scope to keep the top-level imports
+        # focused on baselines.
+        from lib.statistical_engine import score  # noqa: WPS433
+
+        peer_compare = {
+            "peer_set": {
+                "tier": "zip_36mo",
+                "fallback_level": 1,
+                "zipcode": "11221",
+                "borough": "BROOKLYN",
+                "sample_size": 149,
+            },
+            "inspections": {
+                "available": True,
+                "percentile_rank": 63.0,
+                "project_count": 12,
+                "n": 149,
+            },
+            "complaints": {
+                "available": True,
+                "percentile_rank": 42.0,
+                "project_count": 5,
+                "n": 149,
+            },
+            "violations": {
+                "available": False,
+                "unavailable_reason":
+                    "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+            },
+        }
+        rows = score._factor_breakdown(
+            group_values={
+                "own_building": 0.0, "peer_comparison": 50.0,
+                "active_triggers": 0.0, "internal_compliance": 0.0,
+            },
+            own_inputs={},
+            peer_compare=peer_compare,
+            active_predictions=[],
+            internal_inputs={},
+        )
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(
+            peer_row,
+            "No peer_comparison row in factor breakdown.",
+        )
+        details = peer_row["details"]
+        self.assertEqual(details["peer_set"]["tier"], "zip_36mo")
+        self.assertEqual(details["peer_set"]["zipcode"], "11221")
+        self.assertEqual(details["peer_set"]["sample_size"], 149)
+        self.assertEqual(details["peer_sample_size"], 149)
+        self.assertEqual(details["inspections_pct"], 63.0)
+        self.assertEqual(details["complaints_pct"], 42.0)
+        self.assertIsNone(details["violations_pct"])
+
+    # ── Test 9 — helper unit tests ────────────────────────────
+
+    def test_rolling_36mo_window_start_helper_handles_edge_cases(self):
+        """Test 9 — direct unit test on the
+        ``_rolling_36mo_window_start(now) -> datetime`` helper
+        (Stage 2 T5.b). Covers leap-day, month-end, year boundary,
+        and timezone-naive contract per the operator's spec.
+
+        Contract (documented in this test for Stage 3 to honor):
+          • Output is tz-aware UTC.
+          • Output is the FIRST DAY OF CURRENT CALENDAR MONTH
+            minus 36 months, at midnight UTC.
+          • Time-of-day on input is ignored.
+          • Timezone-naive input is treated as UTC (no error).
+        """
+        if not HAS_ROLLING_36MO_HELPER:
+            self.fail(
+                "lib.statistical_engine.baselines._rolling_36mo_window_start "
+                "not implemented. Stage 3: add a module-level helper "
+                "_rolling_36mo_window_start(now: datetime) -> datetime "
+                "that returns the first day of current calendar month "
+                "minus 36 months, at midnight UTC. Time-of-day on "
+                "input is ignored. Timezone-naive input is treated "
+                "as UTC."
+            )
+
+        # Regular mid-month, mid-day timestamp.
+        self.assertEqual(
+            _rolling_36mo_window_start(
+                datetime(2026, 5, 14, 12, 30, 45, tzinfo=timezone.utc),
+            ),
+            datetime(2023, 5, 1, 0, 0, 0, tzinfo=timezone.utc),
+            "Mid-month input must align to first of current month "
+            "minus 36 months.",
+        )
+
+        # Leap day input.
+        self.assertEqual(
+            _rolling_36mo_window_start(
+                datetime(2024, 2, 29, 23, 59, 59, tzinfo=timezone.utc),
+            ),
+            datetime(2021, 2, 1, 0, 0, 0, tzinfo=timezone.utc),
+            "Leap-day input should not error and should align to "
+            "Feb 1 three years prior.",
+        )
+
+        # Month-end input.
+        self.assertEqual(
+            _rolling_36mo_window_start(
+                datetime(2024, 3, 31, 9, 0, tzinfo=timezone.utc),
+            ),
+            datetime(2021, 3, 1, 0, 0, 0, tzinfo=timezone.utc),
+            "Month-end input must still align to first of that month "
+            "minus 36 months.",
+        )
+
+        # Year boundary input.
+        self.assertEqual(
+            _rolling_36mo_window_start(
+                datetime(2026, 1, 15, 0, 0, tzinfo=timezone.utc),
+            ),
+            datetime(2023, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            "Year-boundary input should subtract 3 years cleanly.",
+        )
+
+        # Timezone-naive input — treated as UTC per locked contract.
+        # No exception raised; output is tz-aware UTC.
+        result_naive = _rolling_36mo_window_start(
+            datetime(2026, 5, 14, 12, 30, 45),  # no tzinfo
+        )
+        self.assertEqual(
+            result_naive,
+            datetime(2023, 5, 1, 0, 0, 0, tzinfo=timezone.utc),
+            "Timezone-naive input must be treated as UTC (no error, "
+            "tz-aware UTC output).",
         )
 
 
