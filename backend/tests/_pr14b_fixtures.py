@@ -493,14 +493,20 @@ def make_modern_cohort_fixture(
             borough=borough,
         )
         # 2. PLUTO row (target-state filter).
+        # PR #14G: seed with .00000000 suffix on bbl and .0000000
+        # on numfloors/yearbuilt to mirror production PLUTO format
+        # (Socrata ships those columns as numeric-float text). If
+        # production code drops _normalize_pluto_bbl, the dict-lookup
+        # in pluto_by_bbl mis-keys and the cohort returns 0 rows.
         socrata.seed(DATASET_PLUTO, [{
-            "bbl": bbl_, "borough": borough_pluto,
+            "bbl": f"{bbl_}.00000000",
+            "borough": borough_pluto,
             "bldgclass": building_class, "landuse": "01",
             "block": "3040", "lot": f"{i:04d}",
             "zipcode": "11221", "cd": "304",
-            "yearbuilt": str(yearbuilt),
+            "yearbuilt": f"{yearbuilt}.0000000",
             "unitsres": "8", "unitstotal": "8",
-            "numfloors": str(numfloors),
+            "numfloors": f"{numfloors}.0000000",
             "bldgarea": "8000", "lotarea": "2500",
         }])
         # 3. rbx6-tga4 row (Q6 lifecycle cross-join for

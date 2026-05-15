@@ -452,7 +452,10 @@ async def fetch_project_pluto_snapshot(
     if not rows:
         return None
     row = dict(rows[0])
-    normalized = normalize_bbl(row.get("bbl"))
+    # PR #14G: PLUTO ships bbl with .00000000 suffix; normalize to
+    # plain 10-digit text so downstream consumers comparing against
+    # pkdm-hqz6 / BIS bbls don't mis-key.
+    normalized = _normalize_pluto_bbl(row.get("bbl"))
     if normalized:
         row["bbl"] = normalized
     return row
@@ -523,11 +526,15 @@ async def _resolve_bbls_for_cohort_bins(
     # Flatten + dedup. Order across chunks isn't significant for
     # downstream event-count queries (those re-key by BBL and the
     # peer-stats math is order-invariant).
+    # PR #14G: PLUTO ships bbl with .00000000 suffix; normalize so
+    # downstream BBL-keyed event queries against inspections / 311
+    # (which receive plain text bbl from this list) match the
+    # un-suffixed bbl format those datasets store.
     bbls_out: List[str] = []
     seen = set()
     for rows in chunk_results:
         for r in rows:
-            bbl = normalize_bbl(r.get("bbl"))
+            bbl = _normalize_pluto_bbl(r.get("bbl"))
             if bbl and bbl not in seen:
                 bbls_out.append(bbl)
                 seen.add(bbl)
@@ -1575,6 +1582,44 @@ def _parse_bis_mdy_date(value: Any) -> Optional[datetime]:
         return datetime(year, month, day, tzinfo=timezone.utc)
     except ValueError:
         return None
+
+
+# PR #14G (Stage 10 follow-up) — PLUTO's bbl column ships with a
+# Socrata numeric-float ``.00000000`` suffix
+# (e.g., ``"3012440018.00000000"``) while pkdm-hqz6 and BIS
+# ic3t-wcy2 ship bbl as plain 10-digit text (``"3012440018"``).
+# Stage 10 production verification on Menahan showed Modern cohort
+# returning 0 rows because dict-lookup keys mismatched between the
+# pkdm-side bbl and the un-normalized PLUTO-side bbl. A general
+# ``normalize_bbl`` helper exists in utils.py; this PLUTO-specific
+# sibling makes intent explicit at every PLUTO row consumption
+# point and tolerates any decimal portion (not just ``.0+``) so a
+# future PLUTO-side format quirk (typed float fractional) doesn't
+# silently mis-key the join.
+def _normalize_pluto_bbl(raw: Any) -> Optional[str]:
+    """Strip the Socrata numeric-float fractional suffix from a
+    PLUTO ``bbl`` value so it matches pkdm-hqz6 / BIS plain
+    10-digit text format.
+
+    Examples:
+      ``"3012440018.00000000"`` → ``"3012440018"``
+      ``"3012440018"``          → ``"3012440018"`` (pass-through)
+      ``None`` / ``""``         → ``None``
+      ``3012440018.0``          → ``"3012440018"`` (coerced via str())
+
+    Returns ``None`` for ``None`` / empty / whitespace-only input.
+    Returns the input unchanged (after str() coercion + strip) when
+    no decimal point is present. Always returns a string (or None)
+    so the downstream dict lookup keys are predictable.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if "." in s:
+        s = s.split(".", 1)[0]
+    return s
 
 
 def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
@@ -2809,15 +2854,22 @@ async def _fetch_modern_cohort(
         chunk_results = await asyncio.gather(
             *(_query_pluto_chunk(c) for c in chunks),
         )
+        # PR #14G: PLUTO ships bbl with .00000000 suffix; normalize
+        # before dict-keying so the lookup below (keyed on the
+        # pkdm-side plain bbl) matches. Pre-fix: 0 cohort rows
+        # because dict-lookup keys mismatched between sides.
         for rows in chunk_results:
             for pr in rows:
-                bbl_n = normalize_bbl(pr.get("bbl"))
+                bbl_n = _normalize_pluto_bbl(pr.get("bbl"))
                 if bbl_n:
                     pluto_by_bbl[bbl_n] = pr
 
     # ── Step 5: target_state filter ───────────────────────────
     filtered: List[Dict[str, Any]] = []
     for r in pkdm_rows:
+        # pkdm-hqz6 bbl is plain 10-digit text; normalize_bbl is a
+        # no-op here. Lookup key matches the PLUTO-side normalized
+        # bbl from Step 4.
         bbl_n = normalize_bbl(r.get("bbl"))
         pluto_row = pluto_by_bbl.get(bbl_n) if bbl_n else None
         if pluto_row is None:
