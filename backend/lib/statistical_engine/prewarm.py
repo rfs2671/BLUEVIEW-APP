@@ -352,3 +352,59 @@ async def prewarm_peer_stats(db, project_id: Any) -> None:
             "[prewarm] %s top-level exception swallowed: %r",
             log_id, e,
         )
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14B — auto-classification trigger
+# ──────────────────────────────────────────────────────────────────
+
+
+async def maybe_classify_project_dob_type(
+    socrata,
+    project: Dict[str, Any],
+    db,
+    *,
+    force: bool = False,
+) -> None:
+    """PR #14B — lazy auto-classification of ``dob_project_type``.
+
+    Per Stage 2.A T7.c lock: fires the DOB classifier when:
+
+      • ``nyc_bin`` is populated on the project doc, AND
+      • ``dob_project_type`` is missing OR ``force=True``.
+
+    The function short-circuits to a no-op when either guard
+    fails — no Socrata query, no DB write. The ``force=True``
+    branch is the entry point for the admin
+    ``POST /api/admin/projects/{id}/classify-dob`` endpoint
+    (T7.c hybrid: lazy default + manual override).
+
+    Errors from the classifier are caught and logged — the
+    trigger fires on the compliance-sync path and a transient
+    Socrata failure must not block the sync.
+    """
+    if not project.get("nyc_bin"):
+        # No BIN — classifier would short-circuit anyway, but
+        # bailing here saves the Socrata call AND keeps test 54's
+        # ``socrata.calls`` assertion clean (no query attempted).
+        return
+
+    if not force and project.get("dob_project_type"):
+        # Idempotent: already classified.
+        return
+
+    try:
+        # Lazy import to avoid a top-of-module circular: dob_classifier
+        # imports from cohort_config / dob_now_parser / socrata_client
+        # which are stable, but importing it at module top-level would
+        # couple prewarm.py to its load order.
+        from lib.statistical_engine.dob_classifier import (
+            fetch_project_dob_classification,
+        )
+        await fetch_project_dob_classification(socrata, project, db)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[prewarm] maybe_classify_project_dob_type failed for "
+            "project=%r bin=%r: %r",
+            project.get("_id"), project.get("nyc_bin"), e,
+        )

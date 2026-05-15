@@ -756,5 +756,194 @@ class TestPackageReExportsCommit5(unittest.TestCase):
                             f"missing re-export: {name}")
 
 
+# ──────────────────────────────────────────────────────────────────
+# PR #14B — peer_comparison factor breakdown shape (5 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestPeerComparisonFactorBreakdown(unittest.TestCase):
+    """PR #14B Stage 2.B — strict characterization (per T6.a lock).
+
+    ``score._factor_breakdown`` is shape-agnostic to peer-set
+    contents; it passes ``peer_compare["peer_set"]`` through into
+    the contributing-factors row's ``details``. PR #14B adds new
+    keys to that surface (``dob_project_type``,
+    ``geography_tier_used``, ``low_confidence_flag``,
+    ``lifecycle_normalized_percentile``).
+
+    Per T6.a strict lock: these tests assert the new keys EXPLICITLY
+    flow through. Red phase fails when score.py's _factor_breakdown
+    doesn't yet surface the new keys in the details dict.
+    """
+
+    def _peer_compare_pr14b(self, **overrides):
+        """Standard PR #14B-shaped peer_compare dict."""
+        base = {
+            "peer_set": {
+                "tier": "zip_bldgclass_type",
+                "fallback_level": 1,
+                "dob_project_type": "new_building",
+                "geography_tier_used": "zip_bldgclass_type",
+                "low_confidence_flag": False,
+                "sample_size": 149,
+                "borough": "BROOKLYN",
+                "zipcode": "11221",
+            },
+            "inspections": {
+                "available": True,
+                "percentile_rank": 63.0,
+                "lifecycle_normalized_percentile": 58.0,
+                "project_count": 12,
+                "n": 149,
+            },
+            "complaints": {
+                "available": True,
+                "percentile_rank": 42.0,
+                "lifecycle_normalized_percentile": 38.0,
+                "project_count": 5,
+                "n": 149,
+            },
+            "violations": {
+                "available": False,
+                "unavailable_reason":
+                    "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def _call_factor_breakdown(self, peer_compare):
+        """Invoke score._factor_breakdown with minimal other inputs."""
+        return sc._factor_breakdown(
+            group_values={
+                "own_building": 0.0, "peer_comparison": 50.0,
+                "active_triggers": 0.0, "internal_compliance": 0.0,
+            },
+            own_inputs={},
+            peer_compare=peer_compare,
+            active_predictions=[],
+            internal_inputs={},
+        )
+
+    def test_factor_breakdown_surfaces_dob_project_type_in_details(self):
+        """Test 56 — details.peer_set.dob_project_type passes
+        through verbatim."""
+        rows = self._call_factor_breakdown(
+            self._peer_compare_pr14b(),
+        )
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(peer_row)
+        self.assertEqual(
+            peer_row["details"]["peer_set"].get("dob_project_type"),
+            "new_building",
+            "PR #14B: dob_project_type must surface in peer_comparison "
+            "factor row details. Stage 3: update score._factor_breakdown "
+            "to include peer_set.dob_project_type in the details payload.",
+        )
+
+    def test_factor_breakdown_surfaces_geography_tier_used(self):
+        """Test 57 — details.peer_set.geography_tier_used flows."""
+        rows = self._call_factor_breakdown(
+            self._peer_compare_pr14b(),
+        )
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(peer_row)
+        self.assertEqual(
+            peer_row["details"]["peer_set"].get("geography_tier_used"),
+            "zip_bldgclass_type",
+        )
+
+    def test_factor_breakdown_surfaces_low_confidence_flag(self):
+        """Test 58 — details.peer_set.low_confidence_flag flows."""
+        compare = self._peer_compare_pr14b(
+            peer_set={
+                "tier": "cd_bldgclass_type",
+                "fallback_level": 2,
+                "dob_project_type": "minor_alt",
+                "geography_tier_used": "cd_bldgclass_type",
+                "low_confidence_flag": True,
+                "sample_size": 45,
+                "borough": "BROOKLYN",
+            },
+        )
+        rows = self._call_factor_breakdown(compare)
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(peer_row)
+        self.assertEqual(
+            peer_row["details"]["peer_set"].get("low_confidence_flag"),
+            True,
+            "low_confidence_flag must flow through to factor breakdown "
+            "details so the FE can surface the 'low confidence' "
+            "indicator on small cohorts.",
+        )
+
+    def test_factor_breakdown_surfaces_lifecycle_normalized_percentile(self):
+        """Test 59 — per-dataset lifecycle_normalized_percentile
+        flows through to top-level details (not nested under
+        peer_set). Convention: ``details.inspections_lifecycle_normalized_percentile``,
+        ``details.complaints_lifecycle_normalized_percentile``."""
+        rows = self._call_factor_breakdown(
+            self._peer_compare_pr14b(),
+        )
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(peer_row)
+        self.assertEqual(
+            peer_row["details"].get("inspections_lifecycle_normalized_percentile"),
+            58.0,
+            "Stage 3: surface inspections_lifecycle_normalized_percentile "
+            "at top of details (parallel to existing inspections_pct).",
+        )
+        self.assertEqual(
+            peer_row["details"].get("complaints_lifecycle_normalized_percentile"),
+            38.0,
+        )
+
+    def test_factor_breakdown_handles_null_lifecycle_normalized_percentile(self):
+        """Test 60 — When lifecycle normalization was skipped per
+        T2.a (empty cohort or no duration data), the per-dataset
+        lifecycle_normalized_percentile is None. _factor_breakdown
+        must pass None through cleanly, not error."""
+        compare = self._peer_compare_pr14b(
+            inspections={
+                "available": True,
+                "percentile_rank": 63.0,
+                "lifecycle_normalized_percentile": None,  # T2.a skip
+                "project_count": 12,
+                "n": 149,
+            },
+            complaints={
+                "available": True,
+                "percentile_rank": 42.0,
+                "lifecycle_normalized_percentile": None,
+                "project_count": 5,
+                "n": 149,
+            },
+        )
+        rows = self._call_factor_breakdown(compare)
+        peer_row = next(
+            (r for r in rows if r.get("group") == "peer_comparison"),
+            None,
+        )
+        self.assertIsNotNone(peer_row)
+        self.assertIsNone(
+            peer_row["details"].get("inspections_lifecycle_normalized_percentile"),
+        )
+        self.assertIsNone(
+            peer_row["details"].get("complaints_lifecycle_normalized_percentile"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

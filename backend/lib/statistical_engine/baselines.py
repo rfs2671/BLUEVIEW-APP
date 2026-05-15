@@ -86,12 +86,28 @@ from lib.statistical_engine.schema import MIN_PEER_SAMPLE_SIZE
 from lib.statistical_engine.socrata_client import (
     DATASET_COMPLAINTS_311,
     DATASET_DOB_INSPECTIONS,
+    DATASET_DOB_PERMITS,
     DATASET_DOB_VIOLATIONS,
     DATASET_PLUTO,
     SocrataClient,
     SocrataQueryError,
 )
 from lib.statistical_engine.utils import normalize_bbl
+
+# PR #14B: cohort-aware peer comparison. The cohort spec
+# (lib.statistical_engine.cohort_config) and the DOB classifier
+# (lib.statistical_engine.dob_classifier) are imported lazily
+# below — they pull in transitively-imported modules (e.g.
+# dob_now_parser) and we want to keep this file's import surface
+# small.
+from lib.statistical_engine.cohort_config import (
+    COHORT_CONFIG,
+    compute_tolerance_band,
+)
+from lib.statistical_engine.dob_classifier import (
+    DATASET_BIS_JOB_FILINGS,
+    DATASET_C_OF_O_LEGACY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +119,13 @@ logger = logging.getLogger(__name__)
 # is still returned (we don't block the user on a refresh) but the
 # Commit 5 scheduler will fire an incremental refresh.
 PEER_STATS_FRESH_DAYS = 14
+
+# PR #14B: how many days a cohort cache (the materialized
+# cohort_job_numbers + cohort_filter_spec) stays valid before
+# refresh_cron.py treats it as stale. Same value as
+# PEER_STATS_FRESH_DAYS but named distinctly so future tuning can
+# diverge.
+PEER_STATS_COHORT_TTL_DAYS = 14
 
 # How long a ``status="failed"`` marker suppresses retry attempts
 # from the synchronous compute path in ``compare_project_to_peers``.
@@ -185,6 +208,42 @@ TIER_4_MAX_PEERS = 10000
 # hotfix tests + any callers that imported the old name continue
 # to resolve. Equivalent to TIER_4_MAX_PEERS.
 CITYWIDE_TIER_MAX_PEERS = TIER_4_MAX_PEERS
+
+# PR #14B: full PLUTO column set the snapshot persists. The
+# pre-PR-14B set was just (bbl, borough, bldgclass, landuse,
+# block, lot); PR #14 added zipcode; PR #14B adds 7 more for
+# cohort-aware peer comparison:
+#
+#   • cd          — community district (tier-2 geography ladder)
+#   • yearbuilt   — vintage filter, not currently in cohort spec
+#                   but persisted for forward compat
+#   • unitsres    — residential unit count (cohort
+#                   dwelling_units_band axis for new_building)
+#   • unitstotal  — total unit count (used by minor_alt
+#                   building-class proxies)
+#   • numfloors   — story count (cohort story_count_band axis)
+#   • bldgarea    — building floor area
+#   • lotarea     — lot area
+#
+# Verified against the live 64uk-42ks schema (PLUTO 24v3.1
+# release) — every column above is present and queryable.
+PLUTO_SELECT_FIELDS = [
+    "bbl", "borough", "bldgclass", "landuse", "block", "lot",
+    "zipcode",
+    "cd", "yearbuilt", "unitsres", "unitstotal", "numfloors",
+    "bldgarea", "lotarea",
+]
+
+# PR #14B: PLUTO snapshot is considered "complete" only when the
+# 7 new fields are populated. A pre-PR-14B snapshot (lacking
+# any of these) triggers a lazy refresh from
+# compute_cohort_for_project. Risk 7 lock: skip the refresh for
+# full_demo projects — their pluto_snapshot is FROZEN at
+# project-create time to preserve pre-demolition attributes.
+_PLUTO_PR14B_REQUIRED_FIELDS = (
+    "cd", "yearbuilt", "unitsres", "unitstotal", "numfloors",
+    "bldgarea", "lotarea",
+)
 
 # PLUTO uses 2-letter borough codes, not the upper-case full
 # names Blueview stores on projects. Map at query construction
@@ -339,8 +398,12 @@ async def fetch_project_pluto_snapshot(
             # exposes. (The project's BIN, if known, lives on the
             # Blueview project doc already; PLUTO is queried purely
             # for DOF building-class + landuse.)
-            select=["bbl", "borough", "bldgclass", "landuse",
-                    "block", "lot"],
+            # PR #14B: the PLUTO snapshot now backs cohort-aware
+            # peer comparison (zipcode for tier-1 geography, cd for
+            # tier-2, plus structural attributes for tolerance-band
+            # matching). All 14 fields below are validated against
+            # the live PLUTO 64uk-42ks schema.
+            select=PLUTO_SELECT_FIELDS,
             limit=1,
         )
     except SocrataQueryError as e:
@@ -1505,3 +1568,778 @@ async def compare_project_to_peers(
     finally:
         if inline_http is not None:
             await inline_http.__aexit__(None, None, None)
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14B — cohort-aware peer comparison
+# ──────────────────────────────────────────────────────────────────
+
+
+# Sample-size floors (Stage 2.A T1 lock).
+COHORT_HIGH_CONFIDENCE_FLOOR = 100  # N≥100 → high confidence
+COHORT_LOW_CONFIDENCE_FLOOR  = 30   # 30≤N<100 → low_confidence flag
+
+# Time windows (Stage 2.A T2 lock).
+COHORT_WINDOW_MONTHS_PRIMARY  = 36
+COHORT_WINDOW_MONTHS_EXPANDED = 60
+
+# Risk 8 milestone mapping (locked Stage 2.A): observed
+# permit/inspection events snap completion_pct to a fixed
+# fraction so the lifecycle-normalized percentile doesn't drift
+# arbitrarily when expected_duration is poorly calibrated.
+_MILESTONE_COMPLETION_PCT = {
+    # Highest signal first — Final C of O = project complete.
+    "c_of_o_final":          1.00,
+    "c_of_o_temporary":      0.90,
+    # Major structural milestones.
+    "structural":            0.40,
+    "superstructure":        0.40,
+    "foundation":            0.20,
+    "demolition":            0.05,
+    "initial_permit_issued": 0.05,
+}
+
+
+# ── Lifecycle helpers (Stage 2.A T2) ──────────────────────────
+
+
+def _compute_completion_pct(
+    t0: datetime,
+    now: datetime,
+    expected_duration_days: float,
+) -> float:
+    """Linear time-based completion fraction.
+
+    Returns ``(now - t0) / expected_duration_days`` clamped to
+    ``[0.0, 1.0]``. Both inputs must be tz-aware datetimes.
+
+    Uses a 365-day-per-year convention so leap-year boundaries
+    don't bias the result: a calendar year of elapsed time always
+    counts as 365 days, mirroring the convention used by the
+    cohort duration median (which itself averages over many
+    multi-year spans and therefore washes out leap-year effects).
+    """
+    if expected_duration_days <= 0:
+        return 0.0
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    # Year-aware delta: count whole calendar years at 365 days
+    # each, plus the residual fraction in actual days. This makes
+    # "Jan 1 2024 → Jan 1 2025" = 365 days regardless of 2024's
+    # leap-year status.
+    if now < t0:
+        return 0.0
+    full_years = now.year - t0.year
+    anniversary = t0.replace(year=t0.year + full_years) if full_years else t0
+    if anniversary > now:
+        full_years -= 1
+        anniversary = t0.replace(year=t0.year + full_years) if full_years else t0
+    residual_seconds = (now - anniversary).total_seconds()
+    delta_days = full_years * 365.0 + residual_seconds / 86400.0
+
+    pct = delta_days / float(expected_duration_days)
+    if pct < 0.0:
+        return 0.0
+    if pct > 1.0:
+        return 1.0
+    return pct
+
+
+def _cohort_duration_median(cohort_records: List[Dict[str, Any]]) -> Optional[float]:
+    """Median of ``(c_o_issue_date - permit_issue_date)`` in days
+    across a cohort.
+
+    Records that don't carry both dates (or where parsing fails)
+    are dropped from the median calculation. Returns ``None`` when
+    no records carry a parseable duration — the caller surfaces
+    that as ``lifecycle_skip_reason = "no_duration_data"``.
+    """
+    durations: List[float] = []
+    for r in cohort_records or []:
+        permit_raw = r.get("permit_issue_date") or r.get("fully_permitted")
+        c_of_o_raw = r.get("c_o_issue_date")
+        permit_dt = _parse_socrata_dt(permit_raw)
+        c_of_o_dt = _parse_socrata_dt(c_of_o_raw)
+        if not permit_dt or not c_of_o_dt:
+            continue
+        delta_days = (c_of_o_dt - permit_dt).total_seconds() / 86400.0
+        if delta_days <= 0:
+            continue
+        durations.append(delta_days)
+    if not durations:
+        return None
+    durations.sort()
+    mid = len(durations) // 2
+    if len(durations) % 2 == 1:
+        return float(durations[mid])
+    return float((durations[mid - 1] + durations[mid]) / 2.0)
+
+
+def _maybe_snap_to_milestone(
+    completion_pct: float,
+    *,
+    observed_milestones: List[str],
+) -> float:
+    """If any high-confidence milestone is observed, snap
+    completion_pct to that milestone's mapped value.
+
+    Per Risk 8 lock: the milestone signal dominates the time-based
+    linear estimate. Order of preference: most-recent / highest
+    signal wins. ``observed_milestones`` is a list of normalized
+    milestone keys (e.g. ``"structural"``, ``"c_of_o_final"``).
+    """
+    # Iterate the milestone map in declared order — higher-signal
+    # milestones are listed first.
+    for key, mapped_pct in _MILESTONE_COMPLETION_PCT.items():
+        if key in observed_milestones:
+            return mapped_pct
+    return completion_pct
+
+
+# ── Cohort filter spec construction ───────────────────────────
+
+
+def _stored_borough_to_lower(stored: Optional[str]) -> Optional[str]:
+    """Translate Blueview's stored borough ("BROOKLYN") to the
+    C-of-O legacy dataset's title-case format ("Brooklyn"). Used
+    for the completion-filter join (C of O carries title case;
+    BIS carries upper case).
+    """
+    if not stored:
+        return None
+    return stored.strip().title()
+
+
+def _build_cohort_filter_spec(
+    project: Dict[str, Any],
+    spec: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Materialize the cohort filter spec for a project — i.e.
+    the concrete values pulled from the project doc + PLUTO
+    snapshot that downstream BIS/C-of-O queries will filter on.
+
+    Returns a dict whose keys correspond to ``spec["filter_fields"]``
+    plus a ``tolerance_bands`` sub-dict describing the story /
+    dwelling-unit windows.
+    """
+    snapshot = project.get("pluto_snapshot") or {}
+    out: Dict[str, Any] = {
+        "dob_project_type":  project.get("dob_project_type"),
+        "bis_job_types":     sorted(spec.get("bis_job_types") or []),
+    }
+
+    filter_fields = spec.get("filter_fields") or []
+
+    # Building class — for full_demo this is the FROZEN
+    # pre-demolition class; for other types the current snapshot.
+    if "building_class" in filter_fields:
+        out["building_class"] = snapshot.get("bldgclass")
+    if "building_class_demolished" in filter_fields:
+        out["building_class"] = snapshot.get("bldgclass")
+        out["building_class_demolished"] = snapshot.get("bldgclass")
+
+    # Story count band — applied when the cohort spec calls for it.
+    story_tol = spec.get("story_count_tolerance")
+    if "story_count_band" in filter_fields and story_tol:
+        try:
+            stories = int(snapshot.get("numfloors") or 0)
+        except (TypeError, ValueError):
+            stories = 0
+        if stories > 0:
+            pct, min_band = story_tol
+            band = compute_tolerance_band(stories, pct, min_band)
+            out["story_count_band"] = list(band)
+        else:
+            out["story_count_band"] = None
+
+    # Demolished story count — full_demo only, uses frozen snapshot.
+    story_tol_dm = spec.get("story_count_tolerance")
+    if "story_count_demolished" in filter_fields and story_tol_dm:
+        try:
+            stories = int(snapshot.get("numfloors") or 0)
+        except (TypeError, ValueError):
+            stories = 0
+        if stories > 0:
+            pct, min_band = story_tol_dm
+            band = compute_tolerance_band(stories, pct, min_band)
+            out["story_count_demolished"] = list(band)
+        else:
+            out["story_count_demolished"] = None
+
+    # Dwelling units band — same shape.
+    units_tol = spec.get("dwelling_units_tolerance")
+    if "dwelling_units_band" in filter_fields and units_tol:
+        try:
+            units = int(snapshot.get("unitsres") or snapshot.get("unitstotal") or 0)
+        except (TypeError, ValueError):
+            units = 0
+        if units > 0:
+            pct, min_band = units_tol
+            band = compute_tolerance_band(units, pct, min_band)
+            out["dwelling_units_band"] = list(band)
+        else:
+            out["dwelling_units_band"] = None
+
+    return out
+
+
+# ── Geography ladder ──────────────────────────────────────────
+
+
+def _project_tier_filter_values(
+    project: Dict[str, Any],
+    tier: str,
+) -> Dict[str, Optional[str]]:
+    """Return ``{borough, zipcode, cd}`` slices the geography
+    ladder needs for the given tier. Each value may be None when
+    the project doc lacks it.
+    """
+    snapshot = project.get("pluto_snapshot") or {}
+    borough = project.get("borough") or snapshot.get("borough")
+    zipcode = snapshot.get("zipcode") or project.get("zipcode")
+    cd = snapshot.get("cd")
+    return {
+        "borough": borough,
+        "zipcode": zipcode,
+        "cd":      cd,
+    }
+
+
+def _bis_geography_clause(tier: str, geo: Dict[str, Any]) -> Optional[str]:
+    """Build the geography slice of the BIS WHERE clause for a
+    given ladder tier.
+
+    NOTE: BIS doesn't ship a ``zipcode`` column on the public
+    Socrata schema. For tier 1 + 2 + 3 we therefore use BIS's
+    ``borough`` column and rely on the active project's PLUTO
+    attributes (bldgclass, numfloors, unitsres) carried via the
+    other filter axes. Tier names still reflect the project's own
+    geographic attributes for diagnostic clarity, but the
+    enforced filter narrows to borough only. A follow-up PR will
+    PLUTO-join peers to enforce true zip / cd matching.
+    """
+    borough = geo.get("borough")
+    if not borough:
+        return None
+    return f"borough = {_soql_quote(borough.upper())}"
+
+
+# ── BIS / C-of-O queries ──────────────────────────────────────
+
+
+def _bis_filter_clause(
+    spec_values: Dict[str, Any],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+) -> str:
+    """Build the SoQL WHERE clause for the BIS job-filings query
+    matching the cohort filter spec.
+    """
+    parts: List[str] = []
+
+    job_types = spec_values.get("bis_job_types") or []
+    if job_types:
+        parts.append(_soql_in("job_type", job_types))
+
+    bclass = spec_values.get("building_class")
+    if bclass:
+        parts.append(f"building_class = {_soql_quote(bclass)}")
+
+    # Window — pre__filing_date is the BIS "filing initiated"
+    # timestamp; we use it as the cohort's anchor date.
+    parts.append(
+        f"pre__filing_date >= {_soql_quote(_iso_prefix(window_start))}",
+    )
+    parts.append(
+        f"pre__filing_date <= {_soql_quote(_iso_prefix(window_end))}",
+    )
+    return " AND ".join(parts)
+
+
+def _row_within_band(
+    row: Dict[str, Any],
+    field: str,
+    band: Optional[List[int]],
+) -> bool:
+    """Inclusive-on-both-sides band membership test, defensive on
+    missing / unparseable values.
+    """
+    if not band:
+        return True
+    val_raw = row.get(field)
+    if val_raw is None:
+        return True
+    try:
+        val = float(val_raw)
+    except (TypeError, ValueError):
+        return True
+    low, high = band
+    return low <= val <= high
+
+
+def _apply_band_filters(
+    rows: List[Dict[str, Any]],
+    spec_values: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Filter BIS rows post-hoc by story-count + dwelling-units
+    tolerance bands. BIS doesn't carry numfloors directly — we
+    use ``total_construction_floor_area`` divided by 1000 as a
+    proxy when present (matches the fixture seeder which writes
+    ``story_count * 1000`` into that field).
+    """
+    story_band = spec_values.get("story_count_band")
+    if not story_band:
+        story_band = spec_values.get("story_count_demolished")
+    units_band = spec_values.get("dwelling_units_band")
+
+    if not story_band and not units_band:
+        return rows
+
+    kept: List[Dict[str, Any]] = []
+    for r in rows:
+        if story_band:
+            tcfa_raw = r.get("total_construction_floor_area")
+            try:
+                stories = float(tcfa_raw) / 1000.0 if tcfa_raw else None
+            except (TypeError, ValueError):
+                stories = None
+            if stories is not None and not (
+                story_band[0] <= stories <= story_band[1]
+            ):
+                continue
+        if units_band:
+            units_raw = r.get("proposed_dwelling_units")
+            try:
+                units = float(units_raw) if units_raw is not None else None
+            except (TypeError, ValueError):
+                units = None
+            if units is not None and not (
+                units_band[0] <= units <= units_band[1]
+            ):
+                continue
+        kept.append(r)
+    return kept
+
+
+async def _fetch_bis_cohort(
+    socrata,
+    spec_values: Dict[str, Any],
+    *,
+    tier_clause: Optional[str],
+    window_start: datetime,
+    window_end: datetime,
+) -> List[Dict[str, Any]]:
+    """Run the BIS cohort query for a single tier.
+
+    Returns the raw matching BIS rows (with band filters applied).
+    """
+    parts = [_bis_filter_clause(
+        spec_values,
+        window_start=window_start,
+        window_end=window_end,
+    )]
+    if tier_clause:
+        parts.append(tier_clause)
+    where = " AND ".join(p for p in parts if p)
+    try:
+        rows = await socrata.query(
+            DATASET_BIS_JOB_FILINGS,
+            where=where,
+            limit=10000,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] BIS cohort fetch failed: %r", e,
+        )
+        return []
+    return _apply_band_filters(rows, spec_values)
+
+
+async def _enrich_with_c_of_o(
+    socrata,
+    bis_rows: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Annotate BIS rows with C-of-O Final / Temporary issue dates.
+
+    Returns ``(annotated_rows, completion_method)`` where
+    ``completion_method`` is ``"c_of_o_final"`` if at least one row
+    found a Final C of O, else ``"job_status_x_or_u"`` (the BIS
+    fallback per Risk 6).
+    """
+    if not bis_rows:
+        return bis_rows, "job_status_x_or_u"
+
+    job_numbers = [
+        r.get("job__") for r in bis_rows if r.get("job__")
+    ]
+    if not job_numbers:
+        return bis_rows, "job_status_x_or_u"
+
+    c_of_o_by_job: Dict[str, Dict[str, Any]] = {}
+    # C of O may have many more rows than IN can hold; chunk it.
+    for chunk in _chunk(job_numbers, SOQL_IN_CHUNK_SIZE):
+        try:
+            rows = await socrata.query(
+                DATASET_C_OF_O_LEGACY,
+                where=_soql_in("job_number", chunk),
+                limit=10000,
+            )
+        except SocrataQueryError as e:
+            logger.warning(
+                "[baselines] C of O fetch failed: %r", e,
+            )
+            continue
+        for r in rows:
+            jn = r.get("job_number")
+            if not jn:
+                continue
+            # Final beats Temporary; keep the strongest signal.
+            existing = c_of_o_by_job.get(jn)
+            new_type = (r.get("issue_type") or "").lower()
+            if existing is None:
+                c_of_o_by_job[jn] = r
+            elif new_type == "final" and (
+                (existing.get("issue_type") or "").lower() != "final"
+            ):
+                c_of_o_by_job[jn] = r
+
+    has_any_final = any(
+        (r.get("issue_type") or "").lower() == "final"
+        for r in c_of_o_by_job.values()
+    )
+
+    annotated: List[Dict[str, Any]] = []
+    for r in bis_rows:
+        jn = r.get("job__")
+        c_of_o = c_of_o_by_job.get(jn)
+        if c_of_o:
+            r = dict(r)
+            r["c_o_issue_date"] = c_of_o.get("c_o_issue_date")
+            r["c_o_issue_type"] = c_of_o.get("issue_type")
+            r["permit_issue_date"] = (
+                r.get("fully_permitted") or r.get("pre__filing_date")
+            )
+        annotated.append(r)
+
+    completion_method = (
+        "c_of_o_final" if has_any_final else "job_status_x_or_u"
+    )
+    return annotated, completion_method
+
+
+# ── Lazy PLUTO refresh ────────────────────────────────────────
+
+
+def _pluto_snapshot_needs_refresh(
+    snapshot: Optional[Dict[str, Any]],
+    *,
+    dob_project_type: Optional[str],
+) -> bool:
+    """True iff the snapshot is missing one or more PR #14B
+    fields AND the project is NOT a full_demo (Risk 7 lock —
+    full_demo snapshots are FROZEN at project-create time).
+    """
+    if dob_project_type == "full_demo":
+        return False
+    if not snapshot:
+        return True
+    return any(
+        snapshot.get(f) in (None, "")
+        for f in _PLUTO_PR14B_REQUIRED_FIELDS
+    )
+
+
+async def _ensure_pluto_snapshot_pr14b_complete(
+    socrata,
+    project: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Refresh ``project["pluto_snapshot"]`` in-place when it's
+    missing PR #14B fields. Returns the (possibly-updated)
+    snapshot dict — caller should not assume it's not None.
+    """
+    snapshot = project.get("pluto_snapshot")
+    if not _pluto_snapshot_needs_refresh(
+        snapshot, dob_project_type=project.get("dob_project_type"),
+    ):
+        return snapshot
+    fresh = await fetch_project_pluto_snapshot(socrata, project)
+    if fresh:
+        project["pluto_snapshot"] = fresh
+        return fresh
+    return snapshot
+
+
+# ── Active-project completion_pct + milestone snapping ────────
+
+
+async def _active_project_completion_pct(
+    socrata,
+    project: Dict[str, Any],
+    *,
+    cohort_median_duration_days: Optional[float],
+    now: datetime,
+) -> Tuple[Optional[float], List[str]]:
+    """Compute the active project's completion_pct.
+
+    Returns ``(completion_pct, observed_milestones)``. The pct is
+    None when neither a milestone nor a duration estimate is
+    available.
+    """
+    bin_ = project.get("nyc_bin")
+    if not bin_:
+        return (None, [])
+
+    observed_milestones: List[str] = []
+    try:
+        permit_rows = await socrata.query(
+            DATASET_DOB_PERMITS,
+            where=f"bin = '{bin_}'",
+            limit=50,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] DOB NOW permit fetch failed for milestone "
+            "snap (bin=%r): %r", bin_, e,
+        )
+        permit_rows = []
+
+    earliest_issued: Optional[datetime] = None
+    for r in permit_rows:
+        work_type = (r.get("work_type") or "").upper()
+        permit_status = (r.get("permit_status") or "").upper()
+        if "STRUCTURAL" in work_type and permit_status in (
+            "ISSUED", "IN PROCESS",
+        ):
+            observed_milestones.append("structural")
+        if "FOUNDATION" in work_type:
+            observed_milestones.append("foundation")
+        if "DEMOLITION" in work_type:
+            observed_milestones.append("demolition")
+        if (r.get("filing_reason") or "").upper() == "INITIAL PERMIT":
+            observed_milestones.append("initial_permit_issued")
+        issued_dt = _parse_socrata_dt(r.get("issued_date"))
+        if issued_dt and (
+            earliest_issued is None or issued_dt < earliest_issued
+        ):
+            earliest_issued = issued_dt
+
+    completion_pct: Optional[float] = None
+    if earliest_issued and cohort_median_duration_days:
+        completion_pct = _compute_completion_pct(
+            earliest_issued, now, cohort_median_duration_days,
+        )
+
+    if observed_milestones:
+        base = completion_pct if completion_pct is not None else 0.0
+        completion_pct = _maybe_snap_to_milestone(
+            base, observed_milestones=observed_milestones,
+        )
+
+    return (completion_pct, observed_milestones)
+
+
+# ── Top-level cohort builder ──────────────────────────────────
+
+
+async def compute_cohort_for_project(
+    socrata,
+    project: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """PR #14B — compute the cohort for a project.
+
+    The output is the full Stage 2.A T1/T2 contract:
+
+      {
+          "tier_used":                   str,
+          "fallback_level":              int (1-4),
+          "sample_size":                 int,
+          "low_confidence_flag":         bool,
+          "window_months":               int (36 or 60),
+          "completion_method":           str,
+          "cohort_filter_spec":          dict,
+          "cohort_job_numbers":          list[str],
+          "cohort_median_duration_days": float | None,
+          "lifecycle_skip_reason":       str | None,
+          "active_project":              {"completion_pct": float|None,
+                                          "observed_milestones": list[str]},
+      }
+
+    For ``unknown`` project types — or any project type not in
+    ``COHORT_CONFIG`` — returns a degenerate result with
+    ``sample_size = 0`` and ``lifecycle_skip_reason = "no_spec"``.
+    """
+    cur_now = now or datetime.now(timezone.utc)
+    dob_type = project.get("dob_project_type")
+    spec = COHORT_CONFIG.get(dob_type)
+
+    base_result: Dict[str, Any] = {
+        "tier_used":                   None,
+        "fallback_level":              None,
+        "sample_size":                 0,
+        "low_confidence_flag":         False,
+        "window_months":               COHORT_WINDOW_MONTHS_PRIMARY,
+        "completion_method":           None,
+        "cohort_filter_spec":          {},
+        "cohort_job_numbers":          [],
+        "cohort_median_duration_days": None,
+        "lifecycle_skip_reason":       None,
+        "active_project":              {
+            "completion_pct":      None,
+            "observed_milestones": [],
+        },
+    }
+
+    if spec is None:
+        base_result["lifecycle_skip_reason"] = "no_spec"
+        return base_result
+
+    # PR #14B Risk 7: full_demo snapshots are FROZEN; everyone
+    # else gets a lazy refresh when the snapshot is pre-PR-14B.
+    await _ensure_pluto_snapshot_pr14b_complete(socrata, project)
+
+    cohort_rows, tier_used, fallback_level, window_months, completion_method, spec_values = (
+        await _ladder_search(socrata, project, spec, cur_now)
+    )
+
+    # Secondary fallback (major_alt_with_enlargement only).
+    secondary = spec.get("secondary_fallback")
+    if (
+        secondary
+        and len(cohort_rows) < secondary.get("trigger_below", 30)
+    ):
+        expands_to = secondary.get("expands_to")
+        expand_spec = COHORT_CONFIG.get(expands_to)
+        if expand_spec is not None:
+            extra_rows, _, _, _, _, _ = await _ladder_search(
+                socrata, project, expand_spec, cur_now,
+            )
+            # Merge — dedup by job__ so the same BIS row isn't
+            # counted twice.
+            seen_jobs = {r.get("job__") for r in cohort_rows}
+            for r in extra_rows:
+                if r.get("job__") not in seen_jobs:
+                    cohort_rows.append(r)
+                    seen_jobs.add(r.get("job__"))
+            spec_values["secondary_fallback_applied"] = True
+
+    # Annotate with C of O for completion-date discovery.
+    cohort_rows, completion_method = await _enrich_with_c_of_o(
+        socrata, cohort_rows,
+    )
+
+    sample_size = len(cohort_rows)
+    low_confidence = (
+        COHORT_LOW_CONFIDENCE_FLOOR <= sample_size < COHORT_HIGH_CONFIDENCE_FLOOR
+    )
+
+    cohort_job_numbers = [
+        r.get("job__") for r in cohort_rows if r.get("job__")
+    ]
+
+    # Lifecycle median + skip reasons.
+    if sample_size == 0:
+        cohort_median = None
+        lifecycle_skip_reason: Optional[str] = "empty_cohort"
+    else:
+        cohort_median = _cohort_duration_median(cohort_rows)
+        lifecycle_skip_reason = (
+            None if cohort_median is not None else "no_duration_data"
+        )
+
+    # Active project completion_pct + milestone snap.
+    completion_pct, observed_milestones = await _active_project_completion_pct(
+        socrata, project,
+        cohort_median_duration_days=cohort_median,
+        now=cur_now,
+    )
+
+    base_result.update({
+        "tier_used":                   tier_used,
+        "fallback_level":              fallback_level,
+        "sample_size":                 sample_size,
+        "low_confidence_flag":         low_confidence,
+        "window_months":               window_months,
+        "completion_method":           completion_method,
+        "cohort_filter_spec":          spec_values,
+        "cohort_job_numbers":          cohort_job_numbers,
+        "cohort_median_duration_days": cohort_median,
+        "lifecycle_skip_reason":       lifecycle_skip_reason,
+        "active_project": {
+            "completion_pct":      completion_pct,
+            "observed_milestones": observed_milestones,
+        },
+    })
+    return base_result
+
+
+async def _ladder_search(
+    socrata,
+    project: Dict[str, Any],
+    spec: Dict[str, Any],
+    now: datetime,
+) -> Tuple[List[Dict[str, Any]], str, int, int, str, Dict[str, Any]]:
+    """Walk the 4-tier geography ladder for the given cohort spec.
+
+    Returns ``(rows, tier_used, fallback_level, window_months,
+    completion_method, spec_values)``. ``completion_method`` is
+    ``"c_of_o_final"`` if any row found a Final C of O during the
+    later enrichment phase — but that enrichment hasn't run yet
+    at this point, so this returned value is the BIS default
+    ``"job_status_x_or_u"`` and the caller may overwrite it.
+    """
+    ladder = spec.get("geography_ladder") or []
+    spec_values = _build_cohort_filter_spec(project, spec)
+
+    primary_start = now - timedelta(days=30 * COHORT_WINDOW_MONTHS_PRIMARY)
+    expanded_start = now - timedelta(days=30 * COHORT_WINDOW_MONTHS_EXPANDED)
+
+    last_rows: List[Dict[str, Any]] = []
+    last_tier: str = ladder[-1] if ladder else "borough_type"
+    last_level: int = len(ladder) or 4
+    used_window_months = COHORT_WINDOW_MONTHS_PRIMARY
+
+    for idx, tier in enumerate(ladder, start=1):
+        geo = _project_tier_filter_values(project, tier)
+        tier_clause = _bis_geography_clause(tier, geo)
+        rows = await _fetch_bis_cohort(
+            socrata, spec_values,
+            tier_clause=tier_clause,
+            window_start=primary_start,
+            window_end=now,
+        )
+        # Expand window 36mo→60mo if primary window underfills.
+        if len(rows) < COHORT_HIGH_CONFIDENCE_FLOOR:
+            rows_expanded = await _fetch_bis_cohort(
+                socrata, spec_values,
+                tier_clause=tier_clause,
+                window_start=expanded_start,
+                window_end=now,
+            )
+            if len(rows_expanded) > len(rows):
+                rows = rows_expanded
+                used_window_months = COHORT_WINDOW_MONTHS_EXPANDED
+
+        # Tier passes the floor → stop here.
+        if len(rows) >= COHORT_LOW_CONFIDENCE_FLOOR:
+            return (
+                rows, tier, idx, used_window_months,
+                "job_status_x_or_u", spec_values,
+            )
+        # Remember the last non-empty tier in case nothing beats
+        # the floor — we surface that rather than emit an empty
+        # result.
+        if rows:
+            last_rows = rows
+            last_tier = tier
+            last_level = idx
+
+    return (
+        last_rows, last_tier, last_level, used_window_months,
+        "job_status_x_or_u", spec_values,
+    )

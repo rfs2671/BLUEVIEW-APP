@@ -106,6 +106,9 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     PEER_STATS_LOOKBACK_DAYS,
     PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
     PEER_STATS_FAILED_RETRY_TTL_HOURS,
+    # PR #14B — cohort-aware peer comparison
+    PEER_STATS_COHORT_TTL_DAYS,
+    compute_cohort_for_project,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,
@@ -113,6 +116,19 @@ from lib.statistical_engine.prewarm import (  # noqa: F401
     ERROR_KIND_TIMEOUT,
     ERROR_KIND_SOCRATA,
     ERROR_KIND_UNEXPECTED,
+    # PR #14B — auto-classification trigger
+    maybe_classify_project_dob_type,
+)
+# PR #14B — cohort spec + parser + classifier (new modules)
+from lib.statistical_engine.cohort_config import (  # noqa: F401
+    COHORT_CONFIG,
+    compute_tolerance_band,
+)
+from lib.statistical_engine.dob_now_parser import (  # noqa: F401
+    parse_dob_now_description,
+)
+from lib.statistical_engine.dob_classifier import (  # noqa: F401
+    fetch_project_dob_classification,
 )
 from lib.statistical_engine.refresh_cron import (  # noqa: F401
     refresh_stale_peer_stats_caches,

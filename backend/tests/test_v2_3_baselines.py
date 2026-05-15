@@ -521,9 +521,19 @@ class TestFallbackLadder(unittest.TestCase):
 
         # The EXACT allowed columns — every entry must exist on
         # the live PLUTO schema. ``bin`` is explicitly forbidden.
+        # PR #14B widens the SELECT to include zipcode + cd +
+        # yearbuilt + unitsres + unitstotal + numfloors +
+        # bldgarea + lotarea (validated against live 64uk-42ks
+        # 24v3.1 schema). Test 47/48 in
+        # ``TestPlutoSelectExtensionPR14B`` pins the new contract;
+        # this test continues to enforce the strict allow-list
+        # discipline (i.e., no drift outside what's verified).
         expected_select = {
             "bbl", "borough", "bldgclass", "landuse",
             "block", "lot",
+            "zipcode",
+            "cd", "yearbuilt", "unitsres", "unitstotal",
+            "numfloors", "bldgarea", "lotarea",
         }
         self.assertSetEqual(
             select_set, expected_select,
@@ -1984,6 +1994,629 @@ class TestRecomputePersistMenahanFixture(unittest.TestCase):
                 f"(formula: v30=3, v90=5, i_failed=1, open_311=1 with "
                 f"weights {weights})"
             ),
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14B — cohort-aware peer comparison (3 test classes, 22 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+# Lazy imports for PR #14B production symbols.
+try:
+    from lib.statistical_engine.baselines import (  # noqa: E402
+        compute_cohort_for_project,
+    )
+    HAS_COMPUTE_COHORT = True
+except ImportError:
+    compute_cohort_for_project = None  # type: ignore
+    HAS_COMPUTE_COHORT = False
+
+try:
+    from lib.statistical_engine.baselines import (  # noqa: E402
+        _compute_completion_pct,
+        _cohort_duration_median,
+    )
+    HAS_LIFECYCLE_HELPERS = True
+except ImportError:
+    _compute_completion_pct = None  # type: ignore
+    _cohort_duration_median = None  # type: ignore
+    HAS_LIFECYCLE_HELPERS = False
+
+
+# PR #14B fixture helpers (in tests/_pr14b_fixtures.py).
+from _pr14b_fixtures import (  # noqa: E402
+    DATASET_BIS_JOB_FILINGS,
+    DATASET_C_OF_O_LEGACY,
+    DATASET_DOB_PERMITS,
+    seed_bis_for_bin,
+    seed_c_of_o_for_job,
+    seed_dob_now_for_bin,
+    make_cohort_fixture,
+)
+
+
+class TestComputeCohortForProject(unittest.TestCase):
+    """PR #14B — verify ``compute_cohort_for_project``.
+
+    Per Stage 2.A locked design:
+      • 4-tier geography ladder (zip → cd → borough+broader → borough)
+      • Sample size N≥100 high confidence, 30≤N<100 low_confidence,
+        N<30 fall back to next tier
+      • 36mo window primary, expand to 60mo if N<100
+      • Completion: C of O Final primary, job_status_x_or_u fallback
+      • Per-project_type filter from cohort_config.py
+    """
+
+    def _require_compute_cohort(self):
+        if not HAS_COMPUTE_COHORT:
+            self.fail(
+                "lib.statistical_engine.baselines.compute_cohort_for_project "
+                "not implemented. Stage 3: add the function that "
+                "reads project.dob_project_type, looks up cohort spec, "
+                "queries BIS + C of O, applies tolerance bands + "
+                "geography ladder."
+            )
+
+    def _project_new_building(self, **overrides):
+        base = {
+            "_id": "P_NB",
+            "nyc_bin": "3325703",
+            "bbl": "3033040024",
+            "borough": "BROOKLYN",
+            "address": "100 Main St, BROOKLYN, NY 11221",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+                "numfloors": 5, "unitsres": 8, "unitstotal": 8,
+                "zipcode": "11221", "cd": "304",
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_new_building_tier_1_happy_path_zip_match(self):
+        """Test 29 — 120 NB filings matching tier 1 (zip+bldgclass+type)
+        → fires tier 1, no low_confidence flag."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=120,
+            bin_prefix="3033040", job_number_prefix="32100",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(result["tier_used"], "zip_bldgclass_type")
+        self.assertEqual(result["fallback_level"], 1)
+        self.assertEqual(result["sample_size"], 120)
+        self.assertFalse(result["low_confidence_flag"])
+        self.assertEqual(len(result["cohort_job_numbers"]), 120)
+
+    def test_major_alt_with_enlargement_uses_a1_filter_first_then_nb_secondary(self):
+        """Test 30 — primary A1 cohort < 30; secondary fallback per
+        T4 merges in new_building cohort to reach floor."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=25, bin_prefix="3033041", job_number_prefix="32200",
+            borough="BROOKLYN", building_class="C1", bis_job_type="A1",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building",
+            n_records=200, bin_prefix="3033042", job_number_prefix="32300",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building(
+            _id="P_ALT", dob_project_type="major_alt_with_enlargement",
+        )
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertGreaterEqual(result["sample_size"], 30)
+        self.assertTrue(
+            result["cohort_filter_spec"].get("secondary_fallback_applied"),
+        )
+
+    def test_minor_alt_skips_story_units_filters(self):
+        """Test 31 — minor_alt does NOT filter on story_count or
+        dwelling_units. 150 mixed-story A2/A3 records all qualify."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="minor_alt", n_records=50,
+            bin_prefix="3000050", job_number_prefix="32400",
+            borough="BROOKLYN", building_class="C1", bis_job_type="A2",
+            story_count=2, dwelling_units=2, completed=True,
+        )
+        make_cohort_fixture(
+            socrata, project_type="minor_alt", n_records=50,
+            bin_prefix="3000060", job_number_prefix="32500",
+            borough="BROOKLYN", building_class="C1", bis_job_type="A3",
+            story_count=8, dwelling_units=12, completed=True,
+        )
+        make_cohort_fixture(
+            socrata, project_type="minor_alt", n_records=50,
+            bin_prefix="3000070", job_number_prefix="32600",
+            borough="BROOKLYN", building_class="C1", bis_job_type="A2",
+            story_count=12, dwelling_units=40, completed=True,
+        )
+        project = self._project_new_building(
+            _id="P_MINOR", dob_project_type="minor_alt",
+        )
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(
+            result["sample_size"], 150,
+            "minor_alt must include all records regardless of story "
+            "count per cohort_config (no story_count_band filter)",
+        )
+
+    def test_full_demo_uses_demolished_attributes_from_pluto_snapshot(self):
+        """Test 32 — full_demo cohort uses pre-demolition bldgclass
+        from frozen pluto_snapshot per Risk 7 lock."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="full_demo", n_records=150,
+            bin_prefix="3001000", job_number_prefix="32700",
+            borough="BROOKLYN", building_class="A2", bis_job_type="DM",
+            story_count=2, dwelling_units=2, completed=True,
+        )
+        project = self._project_new_building(
+            _id="P_DEMO", dob_project_type="full_demo",
+            pluto_snapshot={
+                "bbl": "3033040024", "borough": "BK",
+                "bldgclass": "A2",  # frozen pre-demolition class
+                "numfloors": 2, "unitsres": 2, "unitstotal": 2,
+                "zipcode": "11221", "cd": "304",
+            },
+        )
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertGreater(result["sample_size"], 100)
+        self.assertEqual(
+            result["cohort_filter_spec"].get("building_class"), "A2",
+        )
+
+    def test_geography_ladder_falls_through_tier_1_to_tier_2_when_zip_below_floor(self):
+        """Test 33 — Tier 1 (zip) returns 20 below floor. Ladder
+        advances to tier 2 (cd)."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=20,
+            bin_prefix="3003000", job_number_prefix="32800",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        # Stage 3's ladder may advance OR may still report zip if
+        # secondary fixtures absent. Accept either as in-bounds —
+        # the durable assertion is that the result is internally
+        # consistent.
+        self.assertIn(
+            result["tier_used"],
+            ("cd_bldgclass_type", "borough_broader_type", "borough_type"),
+            "Sub-30 sample at tier 1 must advance ladder. Got: "
+            + repr(result["tier_used"]),
+        )
+
+    def test_geography_ladder_final_fallback_to_borough_only(self):
+        """Test 34 — Tiers 1-3 all fail; tier 4 (borough+type)
+        returns 5000 (project's bldgclass C1, cohort R6)."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=5000,
+            bin_prefix="3099000", job_number_prefix="32900",
+            borough="BROOKLYN", building_class="R6",
+            bis_job_type="NB", story_count=5, dwelling_units=8,
+            completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertIn(
+            result["fallback_level"], (3, 4),
+            "Ladder must fall to tier 3 or 4 when narrower tiers "
+            "fail. Got fallback_level=" + str(result["fallback_level"]),
+        )
+
+    def test_sample_size_above_100_no_low_confidence_flag(self):
+        """Test 35 — N=200 above 100 high-confidence threshold."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=200,
+            bin_prefix="3033040", job_number_prefix="33000",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertFalse(result["low_confidence_flag"])
+
+    def test_sample_size_below_100_above_30_sets_low_confidence_flag(self):
+        """Test 36 — N=50, between 30 floor + 100 high-confidence."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=50,
+            bin_prefix="3033040", job_number_prefix="33100",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(result["sample_size"], 50)
+        self.assertTrue(result["low_confidence_flag"])
+
+    def test_sample_size_below_30_falls_back_to_next_tier(self):
+        """Test 37 — N=20 at tier 1 → fallback_level ≥ 2."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=20,
+            bin_prefix="3033040", job_number_prefix="33200",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertGreaterEqual(result["fallback_level"], 2)
+
+    def test_completion_filter_uses_c_of_o_final_primary(self):
+        """Test 38 — C of O Final present → completion_method =
+        c_of_o_final."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=150,
+            bin_prefix="3033040", job_number_prefix="33300",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+            c_o_issue_type="Final",
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(result["completion_method"], "c_of_o_final")
+
+    def test_completion_filter_falls_back_to_job_status_x_or_u(self):
+        """Test 39 — Risk 6 key lock: when C of O empty, completion
+        filter falls back to job_status_x_or_u."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=150,
+            bin_prefix="3033040", job_number_prefix="33400",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8,
+            completed=False,  # No C of O written
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(
+            result["completion_method"], "job_status_x_or_u",
+            "Fallback completion_method per Risk 6 key lock",
+        )
+
+    def test_window_expands_from_36mo_to_60mo_when_under_100(self):
+        """Test 40 — 36mo cohort <100; 60mo cohort >100. Window
+        expands to 60mo."""
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=60,
+            bin_prefix="3033040", job_number_prefix="33500",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+            pre__filing_date="2023-06-15",
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=190,
+            bin_prefix="3033050", job_number_prefix="33600",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+            pre__filing_date="2021-08-15",
+        )
+        project = self._project_new_building()
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(
+            result["window_months"], 60,
+            "Window must expand from 36mo to 60mo when 36mo N<100",
+        )
+
+
+class TestLifecycleNormalization(unittest.TestCase):
+    """PR #14B — lifecycle-stage normalization helpers.
+
+    T_0 = permit issuance, T_end = completion. Active project's
+    completion_pct compared against cohort median to produce
+    lifecycle_normalized_percentile.
+    """
+
+    def _require_lifecycle_helpers(self):
+        if not HAS_LIFECYCLE_HELPERS:
+            self.fail(
+                "lib.statistical_engine.baselines._compute_completion_pct "
+                "or _cohort_duration_median not implemented. "
+                "Stage 3: add module-level helpers."
+            )
+
+    def test_completion_pct_compute_from_t0_and_expected_duration(self):
+        """Test 41 — (now − t0) / expected_duration = 0.5."""
+        self._require_lifecycle_helpers()
+        t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        pct = _compute_completion_pct(t0, now, expected_duration_days=730)
+        self.assertAlmostEqual(pct, 0.5, places=3)
+
+    def test_cohort_duration_median_when_samples_exist(self):
+        """Test 42 — median of cohort durations in days.
+        5 records with c_o_issue_date − permit_issue_date deltas
+        ≈[200, 400, 600, 800, 1000] days → median ≈600."""
+        self._require_lifecycle_helpers()
+        cohort_records = [
+            {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2022-07-20"},
+            {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2023-02-05"},
+            {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2023-08-24"},
+            {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2024-03-10"},
+            {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2024-09-27"},
+        ]
+        median_days = _cohort_duration_median(cohort_records)
+        self.assertGreaterEqual(median_days, 599)
+        self.assertLessEqual(median_days, 601)
+
+    def test_lifecycle_normalized_percentile_output_shape(self):
+        """Test 43 — compute_cohort_for_project surfaces
+        cohort_median_duration_days for downstream lifecycle math."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=150,
+            bin_prefix="3033040", job_number_prefix="33700",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = {
+            "_id": "P_LC", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+                "numfloors": 5, "unitsres": 8, "unitstotal": 8,
+                "zipcode": "11221", "cd": "304",
+            },
+        }
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertIn(
+            "cohort_median_duration_days", result,
+            "Cohort result must carry median duration for downstream "
+            "lifecycle math. Keys: " + repr(sorted(result.keys())),
+        )
+
+    def test_milestone_snap_to_superstructure_when_permit_observed(self):
+        """Test 44 — Risk 8 mapping: Structural permit observed →
+        completion_pct snaps to 0.40."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="Structural",
+            filing_reason="Initial Permit",
+            permit_status="Issued",
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=150,
+            bin_prefix="3033040", job_number_prefix="33800",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = {
+            "_id": "P_MILESTONE", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+                "numfloors": 5, "unitsres": 8, "unitstotal": 8,
+                "zipcode": "11221", "cd": "304",
+            },
+        }
+        result = _run(compute_cohort_for_project(socrata, project))
+        active = result.get("active_project") or {}
+        self.assertAlmostEqual(
+            active.get("completion_pct", 0.0), 0.40, places=2,
+            msg=(
+                "Structural permit must snap completion_pct to 0.40 "
+                "per Risk 8 milestone mapping. Got: "
+                + repr(active.get("completion_pct"))
+            ),
+        )
+
+    def test_skip_lifecycle_when_cohort_empty(self):
+        """Test 45 — T2.a fallback: empty cohort → skip lifecycle,
+        emit None + 'empty_cohort' reason."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_BIS_JOB_FILINGS, [])
+        socrata.seed(DATASET_C_OF_O_LEGACY, [])
+        project = {
+            "_id": "P_EMPTY", "nyc_bin": "1111111",
+            "bbl": "1001110000", "borough": "MANHATTAN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bbl": "1001110000", "borough": "MN", "bldgclass": "C1",
+                "numfloors": 5, "unitsres": 8, "unitstotal": 8,
+                "zipcode": "10044", "cd": "108",
+            },
+        }
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertEqual(result.get("sample_size"), 0)
+        self.assertIsNone(result.get("cohort_median_duration_days"))
+        self.assertEqual(
+            result.get("lifecycle_skip_reason"), "empty_cohort",
+        )
+
+    def test_skip_lifecycle_when_cohort_duration_data_missing(self):
+        """Test 46 — cohort has 50 BBLs but no C of O Final issue
+        dates → no_duration_data reason."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=50,
+            bin_prefix="3033040", job_number_prefix="33900",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8,
+            completed=False,
+        )
+        project = {
+            "_id": "P_NODUR", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+                "numfloors": 5, "unitsres": 8, "unitstotal": 8,
+                "zipcode": "11221", "cd": "304",
+            },
+        }
+        result = _run(compute_cohort_for_project(socrata, project))
+        self.assertIsNone(result.get("cohort_median_duration_days"))
+        self.assertEqual(
+            result.get("lifecycle_skip_reason"), "no_duration_data",
+        )
+
+
+class TestPlutoSelectExtensionPR14B(unittest.TestCase):
+    """PR #14B PLUTO SELECT extension.
+
+    PR #14 added zipcode. PR #14B adds cd, yearbuilt, unitsres,
+    unitstotal, numfloors, bldgarea, lotarea (7 new fields).
+    """
+
+    def test_pluto_snapshot_includes_new_fields_after_pr14b(self):
+        """Test 47 — fresh PLUTO fetch surfaces all 7 PR #14B fields."""
+        socrata = MockSocrataClient()
+        project_bbl = "3033040024"
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": project_bbl, "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        snapshot = _run(bl.fetch_project_pluto_snapshot(
+            socrata, {"bbl": project_bbl},
+        ))
+        self.assertIsNotNone(snapshot)
+        for field in (
+            "cd", "yearbuilt", "unitsres", "unitstotal",
+            "numfloors", "bldgarea", "lotarea",
+        ):
+            self.assertIn(
+                field, snapshot,
+                f"PLUTO snapshot missing PR #14B field {field!r}. "
+                f"Stage 3: add to SELECT clause in "
+                f"baselines.fetch_project_pluto_snapshot.",
+            )
+
+    def test_pluto_select_clause_contains_all_pr14b_fields(self):
+        """Test 48 — actual $select clause has all 14 fields."""
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        _run(bl.fetch_project_pluto_snapshot(
+            socrata, {"bbl": "3033040024"},
+        ))
+        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
+        self.assertGreaterEqual(len(pluto_calls), 1)
+        _, kwargs = pluto_calls[0]
+        select_set = set(kwargs.get("select") or [])
+        for required in (
+            "bbl", "borough", "bldgclass", "landuse", "block", "lot",
+            "zipcode", "cd", "yearbuilt", "unitsres", "unitstotal",
+            "numfloors", "bldgarea", "lotarea",
+        ):
+            self.assertIn(
+                required, select_set,
+                f"PLUTO SELECT missing {required!r}. Got: "
+                + repr(sorted(select_set)),
+            )
+
+    def test_lazy_pluto_refresh_when_existing_snapshot_lacks_new_fields(self):
+        """Test 49 — pre-PR-14B snapshot triggers lazy re-query."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        legacy_snapshot = {
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221",
+            # Missing: cd, yearbuilt, unitsres, unitstotal, numfloors,
+            # bldgarea, lotarea
+        }
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=120,
+            bin_prefix="3033040", job_number_prefix="34000",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = {
+            "_id": "P_LAZY", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": legacy_snapshot,
+        }
+        _run(compute_cohort_for_project(socrata, project))
+        snapshot = project.get("pluto_snapshot")
+        self.assertIn("cd", snapshot)
+        self.assertIn("numfloors", snapshot)
+
+    def test_idempotent_refresh_no_unnecessary_query_when_all_fields_present(self):
+        """Test 50 — complete snapshot → no PLUTO query issued."""
+        if not HAS_COMPUTE_COHORT:
+            self.fail("compute_cohort_for_project not implemented.")
+        socrata = MockSocrataClient()
+        complete_snapshot = {
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": 8, "unitstotal": 8, "numfloors": 5,
+            "bldgarea": 8038, "lotarea": 2500,
+        }
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=120,
+            bin_prefix="3033040", job_number_prefix="34100",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
+        project = {
+            "_id": "P_IDEM", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": dict(complete_snapshot),
+        }
+        _run(compute_cohort_for_project(socrata, project))
+        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
+        self.assertEqual(
+            len(pluto_calls), 0,
+            f"Idempotent path issued {len(pluto_calls)} PLUTO "
+            f"query/queries; expected 0 (snapshot is complete).",
         )
 
 
