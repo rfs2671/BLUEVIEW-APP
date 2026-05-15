@@ -2176,10 +2176,16 @@ class TestFetchLegacyCohort(unittest.TestCase):
                 "'2021-06-30' (Golden Era window per Q7)."
             )
 
-    def test_fetch_legacy_cohort_queries_bis_with_golden_era_window(self):
-        """Q7 lock — BIS Legacy query restricts pre__filing_date to
-        2018-06-30 .. 2021-06-30 (Golden Era — BIS stopped
-        receiving filings 2021+)."""
+    def test_fetch_legacy_cohort_applies_golden_era_window_client_side(self):
+        """PR #14F Stage 10 fix — Legacy BIS query does NOT push a
+        pre__filing_date threshold into the SoQL WHERE clause (text-
+        typed column would lex-compare against an ISO literal and
+        silently fail). Window is enforced client-side via
+        ``_parse_bis_mdy_date``.
+
+        Q7 lock — window = 2016-01-01 .. 2021-06-30 (widened in
+        PR #14F to capture the 2014-2018 peak years).
+        """
         self._require_fetch_legacy()
         from lib.statistical_engine.baselines import _fetch_legacy_cohort
         socrata = MockSocrataClient()
@@ -2187,7 +2193,7 @@ class TestFetchLegacyCohort(unittest.TestCase):
             socrata, project_type="new_building", n_records=120,
             bin_prefix="3033040", borough="BROOKLYN",
             building_class="C1", bis_job_type="NB",
-            pre__filing_date="2020-01-15",  # within Golden Era
+            pre__filing_date="2020-01-15",  # within widened Golden Era
         )
         project = {
             "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
@@ -2198,17 +2204,17 @@ class TestFetchLegacyCohort(unittest.TestCase):
         bis_calls = [c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS]
         self.assertGreater(len(bis_calls), 0)
         where = bis_calls[0][1].get("where") or ""
-        # Golden Era window must appear in WHERE.
-        self.assertIn(
-            "2018-06-30", where,
-            f"Legacy WHERE must restrict pre__filing_date >= "
-            f"2018-06-30 (Golden Era start). Got WHERE: {where!r}",
+        # PR #14F: pre__filing_date NOT in SoQL WHERE — client-side only.
+        self.assertNotIn(
+            "pre__filing_date", where,
+            f"PR #14F lock — pre__filing_date threshold must NOT "
+            f"appear in BIS SoQL WHERE (lex comparison against "
+            f"MM/DD/YYYY text would silently return 0). Window is "
+            f"enforced client-side via _parse_bis_mdy_date. "
+            f"Got WHERE: {where!r}",
         )
-        self.assertIn(
-            "2021-06-30", where,
-            f"Legacy WHERE must restrict pre__filing_date <= "
-            f"2021-06-30 (Golden Era end). Got WHERE: {where!r}",
-        )
+        # Rows seeded within the window still pass through.
+        self.assertEqual(len(cohort), 120)
 
     def test_fetch_legacy_cohort_returns_empty_when_no_bis_rows(self):
         """Legacy returns [] cleanly when no rows match.

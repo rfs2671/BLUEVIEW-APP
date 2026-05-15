@@ -169,7 +169,15 @@ PR14E_MODERN_COHORT_FLOOR = 100
 # receiving filings 2021+ (transition to DOB NOW). Legacy queries
 # restrict pre__filing_date to this window so cohort members are
 # both completed AND from the era when BIS was still authoritative.
-PR14E_LEGACY_WINDOW_START_ISO = "2018-06-30"
+#
+# PR #14F (Stage 10 widening): operator's live Socrata count probe
+# showed Brooklyn C1 A1 X/U has 235+236+250+141+243 in 2014-2018
+# (peak years) but only 235+134+64+7 from 2018-2021. Widening the
+# start from 2018-06-30 → 2016-01-01 captures ~1700 records vs.
+# ~440 — pushes Legacy floor reliably above 100 for sparse combos
+# while staying within the pre-DOB-NOW authoritative era. End
+# boundary stays at 2021-06-30 (BIS post-2021 has <10 records/yr).
+PR14E_LEGACY_WINDOW_START_ISO = "2016-01-01"
 PR14E_LEGACY_WINDOW_END_ISO = "2021-06-30"
 
 # PR #14E (T4 lock) — Modern cohort window (months back from now).
@@ -747,6 +755,38 @@ async def compute_peer_stats_full(
                 "[baselines] auto-classify failed for project=%r: %r",
                 project.get("_id"), e,
             )
+
+    # ── Step 2b: PR #14F — always sync dob_extracted_scope from db
+    # ──────────────────────────────────────────────────────────
+    # PR #14E added a mirror inside ``maybe_classify_project_dob_type``
+    # but it only fires when the classifier actually runs (i.e. when
+    # ``dob_project_type`` was missing). For projects that were
+    # classified in a prior compute (dob_project_type pre-set), the
+    # in-memory dict lacked ``dob_extracted_scope`` so
+    # ``_derive_target_state_for_project``'s Q5 hybrid would silently
+    # fall through to ``pluto_fallback`` instead of using the parser
+    # output. Stage 10 mongosh on Menahan reproduced this: parser had
+    # already extracted story_count=4 (saved in db) yet target_state.
+    # source = "pluto_fallback" / band_widened=True.
+    #
+    # Fix: always read fresh from db when the field is missing in
+    # memory. Cheap (single find_one by _id; same call as the
+    # classifier's persist path). Guards against:
+    #   • pre-PR-14E persisted scope from old parser
+    #   • projects classified in a different process
+    #   • test harness shorthand that mutates only some fields
+    if "dob_extracted_scope" not in project:
+        project_id = project.get("_id") or project.get("id")
+        projects_coll = getattr(db, "projects", None) if db else None
+        if project_id is not None and projects_coll is not None:
+            try:
+                fresh = await projects_coll.find_one({"_id": project_id})
+                if fresh and "dob_extracted_scope" in fresh:
+                    project["dob_extracted_scope"] = fresh.get(
+                        "dob_extracted_scope",
+                    )
+            except Exception:  # pragma: no cover — defensive
+                pass
 
     # ── Step 3: compute cohort ───────────────────────────────────
     cohort_result = await compute_cohort_for_project(
@@ -1481,6 +1521,58 @@ def _parse_pkdm_date(value: Any) -> Optional[datetime]:
             year, month, day, hour24, minute, second,
             tzinfo=timezone.utc,
         )
+    except ValueError:
+        return None
+
+
+# PR #14F (Stage 10 lex-comparison bugfix) — parser for BIS
+# pre__filing_date. BIS ic3t-wcy2 ships dates in MM/DD/YYYY text
+# (4-digit year, NO Y2K cutoff needed). The trailing time portion
+# is optional and may use either a space or 'T' separator. Distinct
+# from _parse_pkdm_date which handles the 2-digit-year pkdm-hqz6
+# format. PR #14E pushed pre__filing_date thresholds into SoQL
+# WHERE clauses producing silent lex-comparison failures (e.g.
+# "06/30/2018" < "2018-06-30" because '0' < '2'); PR #14F moves
+# the date filter client-side using this helper.
+_BIS_MDY_DATE_RE = re.compile(
+    r"^\s*"
+    r"(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})"
+    r"(?:[\sT]+.*)?"  # optional trailing time portion (ignored)
+    r"\s*$",
+)
+
+
+def _parse_bis_mdy_date(value: Any) -> Optional[datetime]:
+    """Parse BIS ``pre__filing_date`` MM/DD/YYYY format into a
+    tz-aware UTC datetime.
+
+    BIS ic3t-wcy2 stores dates as text in ``MM/DD/YYYY`` form,
+    optionally followed by whitespace or ``T`` and a time portion
+    (which we discard — we only need date-level resolution for the
+    Golden Era window check).
+
+    Returns ``None`` on malformed / empty / non-string input.
+    Pass-through for already-parsed ``datetime`` objects (mirrors
+    ``_parse_pkdm_date`` / ``_parse_socrata_dt``).
+
+    No Y2K cutoff needed (4-digit year). Out-of-range numeric
+    values (month=13, etc.) return None via ValueError.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    m = _BIS_MDY_DATE_RE.match(value)
+    if not m:
+        return None
+    try:
+        month = int(m.group("month"))
+        day = int(m.group("day"))
+        year = int(m.group("year"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        return datetime(year, month, day, tzinfo=timezone.utc)
     except ValueError:
         return None
 
@@ -2633,6 +2725,14 @@ async def _fetch_modern_cohort(
         return []
 
     # ── Step 1+2: query pkdm-hqz6 ──────────────────────────────
+    # PR #14F (Stage 10 lex-comparison bugfix): WHERE intentionally
+    # excludes any ``c_of_o_issuance_date`` threshold. Pushing a
+    # MM/DD/YY date threshold into SoQL would lex-compare against
+    # the underlying TEXT column (Socrata stores the date as text,
+    # not a typed timestamp). E.g. "06/23/21" > "05/15/23" because
+    # '06' > '05' as strings — so a 2023 threshold lets 2021 rows
+    # through silently. Pull the un-filtered population and apply
+    # the 36mo window client-side via _parse_pkdm_date below.
     where_parts = [
         _soql_in("c_of_o_filing_type", ["Final", "Initial"]),
         _soql_in("job_type", pkdm_job_types),
@@ -2643,7 +2743,12 @@ async def _fetch_modern_cohort(
         pkdm_rows = await socrata.query(
             DATASET_DOB_C_OF_O,
             where=where,
-            limit=10000,
+            # PR #14F: bumped 10000 → 5000 is intentionally smaller
+            # only for cap discipline. 5000 still safely accommodates
+            # the pre-filter population for the largest single
+            # borough × job_type combo (current ~4,026 for
+            # Brooklyn ALTERATION TYPE 1, headroom for growth).
+            limit=5000,
         )
     except SocrataQueryError as e:
         logger.warning(
@@ -2654,7 +2759,10 @@ async def _fetch_modern_cohort(
     if not pkdm_rows:
         return []
 
-    # ── Step 3: 36-month post-hoc date window ─────────────────
+    # ── Step 3: 36-month CLIENT-SIDE date window (PR #14F) ────
+    # Cache the parsed datetime on the row so we don't double-parse
+    # downstream (Step 5 target_state filter + Step 6 cross-join
+    # don't re-read it, but lifecycle median later may).
     window_start = cur_now - timedelta(days=30 * PR14E_MODERN_WINDOW_MONTHS)
     in_window: List[Dict[str, Any]] = []
     for r in pkdm_rows:
@@ -2666,6 +2774,7 @@ async def _fetch_modern_cohort(
             in_window.append(r)
             continue
         if issued_dt >= window_start:
+            r["_parsed_issuance_dt"] = issued_dt  # cache for downstream
             in_window.append(r)
     pkdm_rows = in_window
 
@@ -2800,11 +2909,20 @@ async def _fetch_legacy_cohort(
       • building_class = <target_state.bldgclass>
       • borough = <upper>
       • job_status IN ('X', 'U')
-      • pre__filing_date BETWEEN '2018-06-30' AND '2021-06-30'
 
     Per Q7 lock — BIS stopped receiving filings 2021+; the Golden
     Era window bounds cohort members to pre-DOB-NOW filings that
     still completed.
+
+    PR #14F (Stage 10 lex-comparison bugfix): the Golden Era window
+    is enforced CLIENT-SIDE on the parsed ``pre__filing_date``, NOT
+    in the SoQL WHERE clause. BIS stores pre__filing_date as TEXT
+    in MM/DD/YYYY form; pushing an ISO threshold like
+    ``pre__filing_date >= '2018-06-30T00:00:00'`` lex-compared
+    against text would fail every row ("06/30/2018" < "2018-06-30"
+    because '0' < '2'), silently returning 0. We use the
+    ``_parse_bis_mdy_date`` helper to apply the window after the
+    un-filtered population pull.
 
     target_state filter (bldgclass + optional story band) is applied
     in WHERE where possible (bldgclass), and post-hoc on the
@@ -2838,15 +2956,13 @@ async def _fetch_legacy_cohort(
     if not bis_job_types:
         return []
 
-    window_start = legacy_cfg.get("window_start_iso", PR14E_LEGACY_WINDOW_START_ISO)
-    window_end = legacy_cfg.get("window_end_iso", PR14E_LEGACY_WINDOW_END_ISO)
-
+    # PR #14F: pre__filing_date threshold REMOVED from SoQL WHERE
+    # (text-typed column would lex-compare against an ISO literal
+    # and silently fail). Window is enforced client-side below.
     where_parts: List[str] = [
         _soql_in("job_type", bis_job_types),
         f"borough = {_soql_quote(borough.upper())}",
         _soql_in("job_status", ["X", "U"]),
-        f"pre__filing_date >= {_soql_quote(window_start)}",
-        f"pre__filing_date <= {_soql_quote(window_end)}",
     ]
     target_class = target.get("bldgclass")
     if target_class:
@@ -2859,13 +2975,52 @@ async def _fetch_legacy_cohort(
         rows = await socrata.query(
             DATASET_BIS_JOB_FILINGS,
             where=where,
-            limit=10000,
+            # PR #14F: bumped 10000 → 5000 for cap discipline (matches
+            # _fetch_modern_cohort). 5000 accommodates the un-filtered
+            # Brooklyn A1+X/U population (~2,360 per Stage 1 reference)
+            # with headroom; pre-filter pulls are bounded by the
+            # client-side Golden Era window.
+            limit=5000,
         )
     except SocrataQueryError as e:
         logger.warning(
             "[baselines] Legacy BIS cohort fetch failed: %r", e,
         )
         return []
+
+    if not rows:
+        return []
+
+    # ── PR #14F: CLIENT-SIDE Golden Era window filter ─────────
+    # Parse ``pre__filing_date`` (MM/DD/YYYY text) and keep only
+    # rows within [window_start, window_end] inclusive. Rows with
+    # un-parseable dates are dropped here (different from Modern's
+    # "keep undated" — BIS rows without a filing date are rare and
+    # not statistically useful as cohort members anyway).
+    window_start_iso = legacy_cfg.get(
+        "window_start_iso", PR14E_LEGACY_WINDOW_START_ISO,
+    )
+    window_end_iso = legacy_cfg.get(
+        "window_end_iso", PR14E_LEGACY_WINDOW_END_ISO,
+    )
+    window_start_dt = _parse_socrata_dt(window_start_iso)
+    window_end_dt = _parse_socrata_dt(window_end_iso)
+    in_window: List[Dict[str, Any]] = []
+    for r in rows:
+        filing_raw = r.get("pre__filing_date")
+        filing_dt = (
+            _parse_bis_mdy_date(filing_raw)
+            or _parse_socrata_dt(filing_raw)
+        )
+        if filing_dt is None:
+            continue
+        if window_start_dt and filing_dt < window_start_dt:
+            continue
+        if window_end_dt and filing_dt > window_end_dt:
+            continue
+        r["_parsed_pre__filing_dt"] = filing_dt  # cache for downstream
+        in_window.append(r)
+    rows = in_window
 
     if not rows:
         return []
