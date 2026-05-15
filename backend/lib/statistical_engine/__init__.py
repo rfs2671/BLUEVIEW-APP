@@ -125,6 +125,8 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     _parse_bis_mdy_date,
     # PR #14G — PLUTO bbl format normalization (Stage 10 zero-cohort fix)
     _normalize_pluto_bbl,
+    # PR #14I — borough name normalization for DOB-dataset queries
+    _normalize_borough_to_full_name,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,
