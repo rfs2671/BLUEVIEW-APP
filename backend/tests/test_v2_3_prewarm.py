@@ -533,5 +533,183 @@ class TestPrewarmReexports(unittest.TestCase):
             )
 
 
+# ──────────────────────────────────────────────────────────────────
+# PR #14B — auto-classification trigger (5 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+# PR #14B production symbols + fixture helpers.
+try:
+    from lib.statistical_engine.dob_classifier import (  # noqa: E402
+        fetch_project_dob_classification,
+    )
+    HAS_DOB_CLASSIFIER_PR14B = True
+except ImportError:
+    fetch_project_dob_classification = None  # type: ignore
+    HAS_DOB_CLASSIFIER_PR14B = False
+
+try:
+    from lib.statistical_engine.prewarm import (  # noqa: E402
+        maybe_classify_project_dob_type,
+    )
+    HAS_AUTO_CLASSIFY_TRIGGER = True
+except ImportError:
+    maybe_classify_project_dob_type = None  # type: ignore
+    HAS_AUTO_CLASSIFY_TRIGGER = False
+
+
+from _socrata_mock import MockSocrataClient  # noqa: E402
+from _pr14b_fixtures import (  # noqa: E402
+    DATASET_BIS_JOB_FILINGS,
+    DATASET_DOB_PERMITS,
+    seed_bis_for_bin,
+    seed_dob_now_for_bin,
+)
+
+
+class _PR14BProjects:
+    """Minimal projects stub for PR #14B trigger tests. Records
+    every update_one call so tests can assert exact $set payload."""
+
+    def __init__(self):
+        self.update_one_calls: List[Dict[str, Any]] = []
+
+    async def update_one(self, filter_doc, update_doc, **kwargs):
+        self.update_one_calls.append(
+            {"filter": filter_doc, "update": update_doc}
+        )
+        r = MagicMock()
+        r.matched_count = 1
+        r.modified_count = 1
+        return r
+
+
+class _PR14BDb:
+    def __init__(self):
+        self.projects = _PR14BProjects()
+
+
+class TestAutoClassificationTrigger(unittest.TestCase):
+    """PR #14B Stage 2.B — auto-classification trigger.
+
+    Stage 2.A T7.c locked: lazy default (fires on next compliance
+    sync when ``nyc_bin`` populated + ``dob_project_type`` is None)
+    plus admin force-classify endpoint.
+
+    Production entry point: ``prewarm.maybe_classify_project_dob_type(
+    socrata, project, db, *, force=False)``.
+    """
+
+    def _require_trigger(self):
+        if not HAS_AUTO_CLASSIFY_TRIGGER:
+            self.fail(
+                "lib.statistical_engine.prewarm.maybe_classify_project_dob_type "
+                "not implemented. Stage 3: add trigger function + "
+                "wire into nightly_dob_scan compliance-sync path."
+            )
+
+    def test_classification_fires_when_nyc_bin_populates_and_type_is_none(self):
+        """Test 51 — project has nyc_bin but no dob_project_type →
+        trigger fires + persists."""
+        self._require_trigger()
+        socrata = MockSocrataClient()
+        seed_dob_now_for_bin(
+            socrata, bin="1234567",
+            work_type="General Construction",
+            filing_reason="Initial Permit",
+            job_description="NEW BUILDING 5-STORY RESIDENTIAL",
+        )
+        db = _PR14BDb()
+        project = {"_id": "P1", "nyc_bin": "1234567"}
+        _run(maybe_classify_project_dob_type(socrata, project, db))
+        self.assertEqual(
+            len(db.projects.update_one_calls), 1,
+            "Trigger must persist classification when type is None "
+            "and bin is set.",
+        )
+
+    def test_classification_idempotent_when_already_set(self):
+        """Test 52 — dob_project_type already set → no-op."""
+        self._require_trigger()
+        socrata = MockSocrataClient()
+        db = _PR14BDb()
+        project = {
+            "_id": "P2", "nyc_bin": "1234567",
+            "dob_project_type": "new_building",
+        }
+        _run(maybe_classify_project_dob_type(socrata, project, db))
+        self.assertEqual(
+            len(db.projects.update_one_calls), 0,
+            "Trigger MUST be idempotent; no DB writes when type set.",
+        )
+
+    def test_classification_unknown_path_persists_unknown_marker(self):
+        """Test 53 — both DOB NOW and BIS empty → persists
+        dob_project_type='unknown' with reason marker."""
+        self._require_trigger()
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_DOB_PERMITS, [])
+        socrata.seed(DATASET_BIS_JOB_FILINGS, [])
+        db = _PR14BDb()
+        project = {"_id": "P3", "nyc_bin": "9999999"}
+        _run(maybe_classify_project_dob_type(socrata, project, db))
+        self.assertEqual(len(db.projects.update_one_calls), 1)
+        set_payload = db.projects.update_one_calls[0]["update"].get("$set", {})
+        self.assertEqual(set_payload.get("dob_project_type"), "unknown")
+        snapshot = set_payload.get("dob_job_snapshot") or {}
+        self.assertIn(
+            "unable_to_classify_reason", snapshot,
+            "Unknown classification must carry a reason marker.",
+        )
+
+    def test_classification_skipped_when_nyc_bin_missing(self):
+        """Test 54 — no nyc_bin → trigger short-circuits before
+        Socrata query."""
+        self._require_trigger()
+        socrata = MockSocrataClient()
+        db = _PR14BDb()
+        project = {"_id": "P4"}  # no nyc_bin
+        _run(maybe_classify_project_dob_type(socrata, project, db))
+        self.assertEqual(
+            len(db.projects.update_one_calls), 0,
+            "Trigger MUST NOT fire when nyc_bin missing.",
+        )
+        self.assertEqual(
+            len(socrata.calls), 0,
+            "Trigger MUST short-circuit before Socrata query when "
+            "nyc_bin missing.",
+        )
+
+    def test_admin_endpoint_force_classify_overrides_persisted_value(self):
+        """Test 55 — T7.c hybrid: ``force=True`` overrides
+        idempotency check. Used by POST
+        /api/admin/projects/{id}/classify-dob."""
+        self._require_trigger()
+        socrata = MockSocrataClient()
+        seed_dob_now_for_bin(
+            socrata, bin="1234567",
+            work_type="Full Demolition",
+            filing_reason="Initial Permit",
+        )
+        db = _PR14BDb()
+        project = {
+            "_id": "P5", "nyc_bin": "1234567",
+            "dob_project_type": "unknown",
+        }
+        _run(maybe_classify_project_dob_type(
+            socrata, project, db, force=True,
+        ))
+        self.assertEqual(
+            len(db.projects.update_one_calls), 1,
+            "force=True must override idempotency check.",
+        )
+        set_payload = db.projects.update_one_calls[0]["update"].get("$set", {})
+        self.assertEqual(
+            set_payload.get("dob_project_type"), "full_demo",
+            "Force re-classify on Full Demolition DOB NOW row should "
+            "produce full_demo.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

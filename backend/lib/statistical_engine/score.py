@@ -316,12 +316,28 @@ def _factor_breakdown(
         if group == GROUP_OWN_BUILDING:
             details = dict(own_inputs)
         elif group == GROUP_PEER_COMPARISON:
+            # PR #14B: surface the per-dataset
+            # ``lifecycle_normalized_percentile`` alongside the
+            # raw ``percentile_rank``. Tests 59 + 60 pin both the
+            # non-null pass-through (lifecycle math fired) and the
+            # null pass-through (lifecycle skipped per T2.a). The
+            # peer_set dict is passed through verbatim so PR #14B's
+            # new keys (``dob_project_type``, ``geography_tier_used``,
+            # ``low_confidence_flag``) reach the FE without further
+            # plumbing here.
+            inspections_block = peer_compare.get("inspections") or {}
+            complaints_block  = peer_compare.get("complaints") or {}
+            violations_block  = peer_compare.get("violations") or {}
             details = {
-                "peer_set":            peer_compare.get("peer_set", {}),
-                "violations_pct":      (peer_compare.get("violations") or {}).get("percentile_rank"),
-                "inspections_pct":     (peer_compare.get("inspections") or {}).get("percentile_rank"),
-                "complaints_pct":      (peer_compare.get("complaints") or {}).get("percentile_rank"),
-                "peer_sample_size":    (peer_compare.get("peer_set") or {}).get("sample_size"),
+                "peer_set":         peer_compare.get("peer_set", {}),
+                "violations_pct":   violations_block.get("percentile_rank"),
+                "inspections_pct":  inspections_block.get("percentile_rank"),
+                "complaints_pct":   complaints_block.get("percentile_rank"),
+                "peer_sample_size": (peer_compare.get("peer_set") or {}).get("sample_size"),
+                "inspections_lifecycle_normalized_percentile":
+                    inspections_block.get("lifecycle_normalized_percentile"),
+                "complaints_lifecycle_normalized_percentile":
+                    complaints_block.get("lifecycle_normalized_percentile"),
             }
         elif group == GROUP_ACTIVE_TRIGGERS:
             details = {

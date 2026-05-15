@@ -14,7 +14,7 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Literal, Optional, Dict, Any, Tuple
 from enum import Enum
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -1284,6 +1284,21 @@ class ProjectCreate(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
+    # PR #14B — DOB project type taxonomy. Drives the cohort-aware
+    # peer comparison (see lib/statistical_engine/cohort_config.py).
+    # Populated either by the auto-classification trigger
+    # (prewarm.maybe_classify_project_dob_type) on the next
+    # compliance-sync after nyc_bin is set, OR via the admin
+    # ``POST /api/admin/projects/{id}/classify-dob`` endpoint.
+    dob_project_type: Optional[Literal[
+        "new_building",
+        "major_alt_with_enlargement",
+        "minor_alt",
+        "full_demo",
+        "unknown",
+    ]] = None
+    dob_job_snapshot: Optional[Dict[str, Any]] = None
+    dob_extracted_scope: Optional[Dict[str, Any]] = None
     # Card audit / NFC gate check-in config. See backend/card_audit.py.
     lat: Optional[float] = None
     lng: Optional[float] = None
@@ -1306,6 +1321,17 @@ class ProjectUpdate(BaseModel):
     ssp_number: Optional[str] = None
     ssp_filing_date: Optional[str] = None
     ssp_expiration_date: Optional[str] = None
+    # PR #14B — DOB project type taxonomy. See ProjectCreate
+    # docstring for usage.
+    dob_project_type: Optional[Literal[
+        "new_building",
+        "major_alt_with_enlargement",
+        "minor_alt",
+        "full_demo",
+        "unknown",
+    ]] = None
+    dob_job_snapshot: Optional[Dict[str, Any]] = None
+    dob_extracted_scope: Optional[Dict[str, Any]] = None
     # Per-project subcontractor roster. Each entry pairs a trade with
     # the specific company doing that trade on this project. Workers
     # pick one combined entry from the dropdown at check-in time and
