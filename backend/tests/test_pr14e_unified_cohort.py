@@ -819,6 +819,20 @@ class TestUnifiedCohort(unittest.TestCase):
         target = criteria.get("target_state") or {}
         self.assertEqual(target.get("numfloors"), 4)
         self.assertEqual(target.get("source"), "parser")
+        # PR #14F: parser path uses ±25% band, NOT the widened ±50%
+        # PLUTO fallback band. For numfloors=4, band = [3, 5].
+        self.assertEqual(
+            list(target.get("numfloors_band") or []), [3, 5],
+            f"PR #14F regression — parser-derived numfloors_band must "
+            f"be ±25% = [3, 5] for numfloors=4. Got "
+            f"{target.get('numfloors_band')!r}. If band is [2, 6] the "
+            f"helper fell through to pluto_fallback (±50%) — see "
+            f"Step 2b _derive_target_state_for_project plumbing.",
+        )
+        self.assertFalse(
+            target.get("band_widened"),
+            "PR #14F: parser path must NOT widen band; band_widened=False.",
+        )
         # 5. Pipeline reached ready (not timeout / zero-marker).
         self.assertEqual(
             cache.get("status"), "ready",
@@ -828,6 +842,277 @@ class TestUnifiedCohort(unittest.TestCase):
             f"PR #14E fixes both via Modern primary (pkdm-hqz6 "
             f"ships bbl inline, no BIN→BBL bridge needed).",
         )
+
+    # ──────────────────────────────────────────────────────────
+    # PR #14F regression tests
+    # ──────────────────────────────────────────────────────────
+
+    def test_modern_cohort_applies_date_filter_client_side(self):
+        """PR #14F (Stage 10 lex-comparison bugfix) — Modern path
+        does NOT push a c_of_o_issuance_date threshold into SoQL
+        WHERE (pkdm-hqz6 stores dates as MM/DD/YY text; lex compare
+        against MM/DD/YY threshold lets older years through, e.g.
+        '06/23/21' > '05/15/23' as strings). Window is enforced
+        client-side via _parse_pkdm_date.
+
+        Seeds 5 in-window + 5 out-of-window pkdm-hqz6 rows;
+        confirms cohort_source_segments.modern_count == 5 and the
+        SoQL WHERE clause does NOT carry the date filter.
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+        from _pr14b_fixtures import _pkdm_co_issuance_date_mdy
+
+        socrata = MockSocrataClient()
+        fixed_now = _dt(2026, 5, 15, tzinfo=_tz.utc)
+        # Active project + classifier seed.
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "2020",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            job_description="NEW BUILDING 5-STORY RESIDENTIAL",
+        )
+        # 5 in-window peers (months_ago=12, well within 36mo).
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=5,
+            bin_prefix="900100", bbl_prefix="900101",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=5, yearbuilt=2020,
+            months_ago=12, now=fixed_now,
+        )
+        # 5 out-of-window peers (months_ago=60 = 5 years back).
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=5,
+            bin_prefix="900200", bbl_prefix="900201",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=5, yearbuilt=2020,
+            months_ago=60, now=fixed_now,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        project = _menahan_like_project(
+            _id="P_DATE_FILTER_MODERN",
+            dob_project_type="new_building",
+            pluto_numfloors="5",
+        )
+        db = _StubDb(projects=[dict(project)])
+        cache = _run(compute_peer_stats_full(
+            socrata, project, db=db, now=fixed_now,
+        ))
+        segments = (cache.get("peer_criteria") or {}).get(
+            "cohort_source_segments"
+        ) or {}
+        self.assertEqual(
+            segments.get("modern_count"), 5,
+            f"PR #14F: Modern cohort must filter date client-side. "
+            f"Expected 5 in-window peers; got "
+            f"{segments.get('modern_count')}. If 10: the 36mo "
+            f"window wasn't applied. If 0: the un-filtered pull "
+            f"didn't work.",
+        )
+        # Verify the SoQL WHERE clauses to pkdm-hqz6 lack date filter.
+        pkdm_calls = [
+            c for c in socrata.calls if c[0] == DATASET_DOB_C_OF_O
+        ]
+        self.assertGreater(len(pkdm_calls), 0)
+        for ds, kw in pkdm_calls:
+            where = kw.get("where") or ""
+            self.assertNotIn(
+                "c_of_o_issuance_date", where,
+                f"PR #14F lock — c_of_o_issuance_date must NOT appear "
+                f"in pkdm-hqz6 SoQL WHERE (text-typed column lex "
+                f"comparison would let 2021 rows pass a 2023 "
+                f"threshold). Got WHERE: {where!r}",
+            )
+
+    def test_legacy_cohort_applies_date_filter_client_side(self):
+        """PR #14F (Stage 10 lex-comparison bugfix) — Legacy BIS
+        path does NOT push a pre__filing_date threshold into SoQL
+        WHERE (BIS stores pre__filing_date as MM/DD/YYYY text;
+        '06/30/2018' < '2018-06-30' lex because '0' < '2', so an
+        ISO threshold silently fails every row). Window enforced
+        client-side via _parse_bis_mdy_date.
+
+        Seeds 5 in-window + 5 out-of-window BIS rows; confirms
+        only in-window rows pass through.
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+        from lib.statistical_engine.baselines import _fetch_legacy_cohort
+
+        socrata = MockSocrataClient()
+        # 5 in-window rows (MM/DD/YYYY format, 2018-2020 inside
+        # Golden Era 2016-01-01 .. 2021-06-30).
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=5,
+            bin_prefix="800100", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="06/30/2018",
+        )
+        # 5 out-of-window rows (pre-2016 OR post-2021).
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=3,
+            bin_prefix="800200", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="01/01/2014",  # pre-Golden-Era
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=2,
+            bin_prefix="800300", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="01/01/2025",  # post-Golden-Era
+        )
+        project = {
+            "_id": "P_DATE_FILTER_LEGACY", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {"bldgclass": "C1", "numfloors": 5},
+        }
+        cohort = _run(_fetch_legacy_cohort(socrata, project))
+        self.assertEqual(
+            len(cohort), 5,
+            f"PR #14F: Legacy cohort must filter Golden Era window "
+            f"client-side. Expected 5 in-window rows; got "
+            f"{len(cohort)}. If 10: window not applied. If 0: "
+            f"client-side filter is broken — verify _parse_bis_mdy_date "
+            f"handles MM/DD/YYYY format.",
+        )
+        # Verify WHERE lacks pre__filing_date threshold.
+        bis_calls = [
+            c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS
+        ]
+        self.assertGreater(len(bis_calls), 0)
+        for ds, kw in bis_calls:
+            where = kw.get("where") or ""
+            self.assertNotIn(
+                "pre__filing_date", where,
+                f"PR #14F lock — pre__filing_date must NOT appear in "
+                f"BIS SoQL WHERE. Got WHERE: {where!r}",
+            )
+
+    def test_parse_bis_mdy_date_handles_mdy_yyyy_format(self):
+        """PR #14F — _parse_bis_mdy_date unit test for the BIS
+        pre__filing_date format (MM/DD/YYYY, optional trailing time).
+        """
+        try:
+            from lib.statistical_engine.baselines import _parse_bis_mdy_date
+        except ImportError:
+            self.fail(
+                "_parse_bis_mdy_date not implemented. PR #14F: add "
+                "helper near _parse_pkdm_date in baselines.py."
+            )
+        from datetime import datetime as _dt, timezone as _tz
+        # Basic MM/DD/YYYY.
+        self.assertEqual(
+            _parse_bis_mdy_date("06/30/2018"),
+            _dt(2018, 6, 30, tzinfo=_tz.utc),
+        )
+        self.assertEqual(
+            _parse_bis_mdy_date("01/01/2016"),
+            _dt(2016, 1, 1, tzinfo=_tz.utc),
+        )
+        # Trailing time (space separator) — discarded.
+        self.assertEqual(
+            _parse_bis_mdy_date("12/31/2020 11:59:59 PM"),
+            _dt(2020, 12, 31, tzinfo=_tz.utc),
+        )
+        # Trailing time (T separator) — discarded.
+        self.assertEqual(
+            _parse_bis_mdy_date("06/30/2018T00:00:00.000"),
+            _dt(2018, 6, 30, tzinfo=_tz.utc),
+        )
+        # Malformed / out-of-range → None.
+        self.assertIsNone(_parse_bis_mdy_date("garbage"))
+        self.assertIsNone(_parse_bis_mdy_date(""))
+        self.assertIsNone(_parse_bis_mdy_date(None))
+        self.assertIsNone(_parse_bis_mdy_date("13/01/2020"))  # bad month
+        # Pass-through for already-parsed datetimes.
+        dt = _dt(2020, 6, 15, tzinfo=_tz.utc)
+        self.assertEqual(_parse_bis_mdy_date(dt), dt)
+
+    def test_target_state_reads_persisted_dob_extracted_scope(self):
+        """PR #14F regression — when ``dob_project_type`` is already
+        set on the in-memory project dict (idempotent classifier
+        skip), ``compute_peer_stats_full`` must still sync
+        ``dob_extracted_scope`` from db so the Q5 parser primary
+        path fires. Stage 10 mongosh on Menahan showed this was
+        broken: parser had extracted story_count=4 (saved in db)
+        yet target_state.source == "pluto_fallback".
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+        socrata = MockSocrataClient()
+        # Modern peers at numfloors=4 (parser-extracted target).
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "2",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            job_description=(
+                "PROPOSED ALTERATION TYPE 1 TO EXISTING 2 STORY + "
+                "CELLAR BUILDING. PROPOSED 4-STORY+CELLAR+MEZZ."
+            ),
+        )
+        make_modern_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=120, bin_prefix="700100", bbl_prefix="700101",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=4, yearbuilt=1925,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        # Project in-memory has dob_project_type set BUT NO
+        # dob_extracted_scope in the dict — mirrors the production
+        # state where prior classification persisted to db but the
+        # in-memory project doc was reconstructed without it.
+        project = _menahan_like_project(
+            _id="P_DOB_SCOPE_SYNC",
+            dob_project_type="major_alt_with_enlargement",
+        )
+        # Persist dob_extracted_scope to the stub db (simulates
+        # a previously-run classifier). project dict in-memory
+        # deliberately lacks the key.
+        db = _StubDb(projects=[{
+            "_id": "P_DOB_SCOPE_SYNC",
+            "dob_extracted_scope": {"story_count": 4},
+        }])
+
+        cache = _run(compute_peer_stats_full(socrata, project, db=db))
+        criteria = cache.get("peer_criteria") or {}
+        target = criteria.get("target_state") or {}
+
+        self.assertEqual(
+            target.get("source"), "parser",
+            f"PR #14F regression — target_state.source must be "
+            f"'parser' when dob_extracted_scope.story_count is "
+            f"persisted in db, even if in-memory project dict "
+            f"lacked it on entry. Got: {target.get('source')!r}. "
+            f"Stage 10 production showed 'pluto_fallback' here. "
+            f"Fix: compute_peer_stats_full Step 2b re-reads from "
+            f"db when in-memory dict lacks dob_extracted_scope.",
+        )
+        self.assertEqual(target.get("numfloors"), 4)
+        self.assertEqual(
+            list(target.get("numfloors_band") or []), [3, 5],
+            "PR #14F: parser path uses ±25% band [3,5], not "
+            "widened [2,6].",
+        )
+        self.assertFalse(target.get("band_widened"))
 
 
 if __name__ == "__main__":

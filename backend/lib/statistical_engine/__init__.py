@@ -121,6 +121,8 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     PR14E_LEGACY_WINDOW_END_ISO,
     PR14E_MODERN_WINDOW_MONTHS,
     DATASET_DOB_C_OF_O,
+    # PR #14F — BIS MDY date parser (Stage 10 lex-comparison fix)
+    _parse_bis_mdy_date,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,
