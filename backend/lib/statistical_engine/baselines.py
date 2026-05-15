@@ -139,6 +139,27 @@ PEER_STATS_COHORT_TTL_DAYS = 14
 # unset), the schema check catches it on the next read.
 PR14C_SCHEMA_VERSION = "pr14c"
 
+# PR #14D Q4 lock — cohort_bins are capped at this size before the
+# PLUTO BIN→BBL join in compute_peer_stats_full Step 4. Some
+# project types (especially minor_alt = BIS A2/A3 union at borough
+# scope = ~458K records in Brooklyn) produce 50K-100K row cohorts.
+# The PLUTO join chunks across SOQL_IN_CHUNK_SIZE BINs each; even
+# parallelized via asyncio.gather (Fix 3), the join cost grows
+# linearly with cohort size and would still dominate the 60s
+# timeout budget. 500 is a defensible cap — well above the N=100
+# high-confidence sample-size floor (so percentile math stays
+# stable), small enough to bound PLUTO join cost at 2 chunks.
+#
+# When the cap fires, a diagnostic marker is emitted:
+#   peer_criteria.cohort_truncation = {
+#       "applied":       True,
+#       "original_size": <pre-truncation length>,
+#       "cap":           500,
+#   }
+# Per §8.5 lock the marker is sparse-by-default — absent when
+# cohort_bins ≤ cap.
+COHORT_MAX_PEERS_FOR_PLUTO_JOIN = 500
+
 # How long a ``status="failed"`` marker suppresses retry attempts
 # from the synchronous compute path in ``compare_project_to_peers``.
 # Within this window, returning the zero-peer marker avoids burning
@@ -159,7 +180,13 @@ PEER_STATS_LOOKBACK_DAYS = 365 * 2
 # lazy peer-set discovery does 1 PLUTO + 3 event-dataset queries
 # (chunked), realistically 3-10s in prod and occasionally longer
 # under load.
-PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 30.0
+#
+# PR #14D Fix 4: bumped 30→60s as defensive headroom. Fixes 2+3
+# (cohort cap + parallel PLUTO join) make the path much faster
+# for normal cases, but Menahan's pre-fix timeout taught us that
+# unusual cohort shapes can still strain the budget. Railway
+# proxy default is 300s — bump is well within bounds.
+PEER_STATS_COMPUTE_TIMEOUT_SECONDS = 60.0
 
 # Socrata page size used by peer-event queries. Tuned to one round
 # trip for typical Manhattan peer sets (~500 BBLs × ~5 events/BBL
@@ -418,11 +445,11 @@ async def _resolve_bbls_for_cohort_bins(
     if not bin_list:
         return []
 
-    bbls_out: List[str] = []
-    seen = set()
-    for chunk in _chunk(bin_list, SOQL_IN_CHUNK_SIZE):
+    chunks = list(_chunk(bin_list, SOQL_IN_CHUNK_SIZE))
+
+    async def _query_one_chunk(chunk: List[str]) -> List[Dict[str, Any]]:
         try:
-            rows = await socrata.query(
+            return await socrata.query(
                 DATASET_PLUTO,
                 where=_soql_in("bin", chunk),
                 select=["bbl", "bin"],
@@ -432,7 +459,27 @@ async def _resolve_bbls_for_cohort_bins(
             logger.warning(
                 "[baselines] PLUTO BIN→BBL join chunk failed: %r", e,
             )
-            continue
+            return []
+
+    # PR #14D Fix 3: parallelize PLUTO BIN→BBL chunks via
+    # asyncio.gather. Pre-PR-14D each chunk fired serially (await
+    # inside loop), so wall-clock = N × per-chunk latency. With
+    # cohort_max=500 (Fix 2) and SOQL_IN_CHUNK_SIZE=250, that's 2
+    # sequential round-trips; parallel collapses to 1 RTT in
+    # wall-clock terms. Larger cohorts (pre-cap) saw exponentially
+    # worse blow-up — Menahan's pre-cap minor_alt cohort would
+    # have fired ~40 serial chunks at 1-2s each = 40-80s, blowing
+    # the 30s timeout. Cap + parallel together close the regression.
+    chunk_results = await asyncio.gather(
+        *(_query_one_chunk(c) for c in chunks),
+    )
+
+    # Flatten + dedup. Order across chunks isn't significant for
+    # downstream event-count queries (those re-key by BBL and the
+    # peer-stats math is order-invariant).
+    bbls_out: List[str] = []
+    seen = set()
+    for rows in chunk_results:
         for r in rows:
             bbl = normalize_bbl(r.get("bbl"))
             if bbl and bbl not in seen:
@@ -670,6 +717,23 @@ async def compute_peer_stats_full(
 
     # ── Step 4: resolve cohort BINs → BBLs for event queries ────
     cohort_bins = cohort_result.get("cohort_bins") or []
+
+    # PR #14D Fix 2 + Q4/T2 lock: cap cohort_bins BEFORE the PLUTO
+    # BIN→BBL join. Some project types (notably minor_alt at
+    # borough scope) produce 50K-100K BIN cohorts that even after
+    # parallelization would dominate the 60s timeout budget. The
+    # cap is applied here — after cohort assembly, before the
+    # downstream join — so the marker reflects the true
+    # pre-truncation size for diagnostics.
+    cohort_truncation: Optional[Dict[str, Any]] = None
+    if len(cohort_bins) > COHORT_MAX_PEERS_FOR_PLUTO_JOIN:
+        cohort_truncation = {
+            "applied":       True,
+            "original_size": len(cohort_bins),
+            "cap":           COHORT_MAX_PEERS_FOR_PLUTO_JOIN,
+        }
+        cohort_bins = cohort_bins[:COHORT_MAX_PEERS_FOR_PLUTO_JOIN]
+
     peer_bbl_list = await _resolve_bbls_for_cohort_bins(
         socrata, cohort_bins,
     )
@@ -756,6 +820,13 @@ async def compute_peer_stats_full(
             cur_now.isoformat() if pluto_snapshot_refreshed else None
         ),
     }
+
+    # PR #14D §8.5 sparse-by-default: only emit cohort_truncation
+    # marker when the cap actually fired. Reduces cache bloat for
+    # the common case (cohort under cap) where no truncation
+    # happened.
+    if cohort_truncation is not None:
+        peer_meta["cohort_truncation"] = cohort_truncation
 
     cache = _assemble_cache(
         peer_meta=peer_meta,
@@ -884,6 +955,13 @@ def _assemble_cache(
             DATASET_COMPLAINTS_311:  dict(c_counts),
         },
     }
+
+    # PR #14D §8.5 sparse-by-default: forward the cohort_truncation
+    # marker into peer_criteria only when present. The compute layer
+    # (compute_peer_stats_full) only adds the key to peer_meta when
+    # the cap actually fired; absence here means "no truncation".
+    if peer_meta.get("cohort_truncation") is not None:
+        peer_criteria["cohort_truncation"] = peer_meta["cohort_truncation"]
 
     return {
         "computed_at":       computed_at,
