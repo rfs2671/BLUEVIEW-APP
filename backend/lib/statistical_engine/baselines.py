@@ -2784,6 +2784,14 @@ async def _fetch_modern_cohort(
         f"borough = {_soql_quote(borough_upper)}",
     ]
     where = " AND ".join(where_parts)
+    # PR #14H-diag-2 (TEMPORARY — to be reverted): surface the EXACT
+    # SoQL Modern Call A sends to Socrata. Operator pastes this from
+    # Railway to confirm dataset + WHERE + LIMIT match expectations.
+    _modern_limit = 5000
+    logger.info(
+        "[PR14E-DIAG] modern SoQL: dataset=%s where=%r limit=%r",
+        DATASET_DOB_C_OF_O, where, _modern_limit,
+    )
     try:
         pkdm_rows = await socrata.query(
             DATASET_DOB_C_OF_O,
@@ -2793,9 +2801,15 @@ async def _fetch_modern_cohort(
             # the pre-filter population for the largest single
             # borough × job_type combo (current ~4,026 for
             # Brooklyn ALTERATION TYPE 1, headroom for growth).
-            limit=5000,
+            limit=_modern_limit,
         )
     except SocrataQueryError as e:
+        # PR #14H-diag-2: explicit DIAG-prefixed exception so the
+        # operator's grep on [PR14E-DIAG] surfaces error-path runs
+        # alongside success-path counts.
+        logger.warning(
+            "[PR14E-DIAG] modern SoQL exception: %r", e,
+        )
         logger.warning(
             "[baselines] pkdm-hqz6 Modern cohort fetch failed: %r", e,
         )
@@ -3059,7 +3073,14 @@ async def _fetch_legacy_cohort(
             f"building_class = {_soql_quote(target_class)}",
         )
     where = " AND ".join(where_parts)
-
+    # PR #14H-diag-2 (TEMPORARY — to be reverted): surface the EXACT
+    # SoQL Legacy BIS query sends to Socrata. Operator pastes from
+    # Railway to confirm dataset + WHERE + LIMIT match expectations.
+    _legacy_limit = 5000
+    logger.info(
+        "[PR14E-DIAG] legacy SoQL: dataset=%s where=%r limit=%r",
+        DATASET_BIS_JOB_FILINGS, where, _legacy_limit,
+    )
     try:
         rows = await socrata.query(
             DATASET_BIS_JOB_FILINGS,
@@ -3069,9 +3090,15 @@ async def _fetch_legacy_cohort(
             # Brooklyn A1+X/U population (~2,360 per Stage 1 reference)
             # with headroom; pre-filter pulls are bounded by the
             # client-side Golden Era window.
-            limit=5000,
+            limit=_legacy_limit,
         )
     except SocrataQueryError as e:
+        # PR #14H-diag-2: explicit DIAG-prefixed exception so grep on
+        # [PR14E-DIAG] surfaces error-path runs alongside success
+        # counts.
+        logger.warning(
+            "[PR14E-DIAG] legacy SoQL exception: %r", e,
+        )
         logger.warning(
             "[baselines] Legacy BIS cohort fetch failed: %r", e,
         )
