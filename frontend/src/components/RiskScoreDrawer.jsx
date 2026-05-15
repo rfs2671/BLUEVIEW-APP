@@ -483,11 +483,18 @@ const RiskScoreDrawer = ({
                 recalcBusy && { opacity: 0.5 },
               ]}
             >
-              <RefreshCw
-                size={14}
-                strokeWidth={1.5}
-                color={colors.text.primary}
-              />
+              {recalcBusy ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.text.primary}
+                />
+              ) : (
+                <RefreshCw
+                  size={14}
+                  strokeWidth={1.5}
+                  color={colors.text.primary}
+                />
+              )}
               <Text style={styles.recalcText}>
                 {recalcBusy ? 'Recalculating…' : 'Recalculate now'}
               </Text>
