@@ -1622,6 +1622,59 @@ def _normalize_pluto_bbl(raw: Any) -> Optional[str]:
     return s
 
 
+# PR #14I (Stage 10 follow-up #2) — borough name format mismatch
+# between PLUTO and the DOB datasets. PLUTO 64uk-42ks stores borough
+# as a 2-letter code ("BK", "MN", "BX", "QN", "SI"). The DOB datasets
+# (pkdm-hqz6 / ic3t-wcy2 / rbx6-tga4) store borough as the full
+# uppercase name ("BROOKLYN", "MANHATTAN", "BRONX", "QUEENS",
+# "STATEN ISLAND"). PR #14E threaded the project's stored borough
+# value (which arrives via project doc OR via PLUTO snapshot
+# refresh) through the DOB-side WHERE clauses unconditionally. When
+# the snapshot had been freshly refreshed, the value was "BK"; the
+# pkdm/BIS queries received ``borough = 'BK'`` and matched zero
+# rows. PR #18 SoQL log surfaced this in production.
+#
+# This helper expands a PLUTO code → DOB full name. Pass-through
+# when the input is already a full name (defensive: same code path
+# works for projects where ``borough`` arrives from the user-facing
+# field, which is already "BROOKLYN"). Case-insensitive.
+_BOROUGH_FULL_NAME_BY_CODE = {
+    "BK": "BROOKLYN",
+    "MN": "MANHATTAN",
+    "BX": "BRONX",
+    "QN": "QUEENS",
+    "SI": "STATEN ISLAND",
+}
+
+
+def _normalize_borough_to_full_name(raw: Any) -> Optional[str]:
+    """Expand PLUTO 2-letter borough code to full uppercase name
+    for use against DOB-dataset borough columns.
+
+    Examples:
+      "BK"           → "BROOKLYN"
+      "bk"           → "BROOKLYN"   (case-insensitive)
+      "BROOKLYN"     → "BROOKLYN"   (pass-through)
+      "brooklyn"     → "BROOKLYN"
+      "STATEN ISLAND" → "STATEN ISLAND"
+      None / "" / "   " → None
+      "MARS"         → "MARS"       (unknown code passes through; let
+                                     Socrata's empty-result surface the
+                                     mismatch rather than silently
+                                     coercing to a default)
+
+    One-way only: this helper is for queries against
+    pkdm-hqz6 / ic3t-wcy2 / rbx6-tga4 etc. PLUTO queries continue to
+    use the 2-letter code (PLUTO's native format).
+    """
+    if not raw:
+        return None
+    s = str(raw).strip().upper()
+    if not s:
+        return None
+    return _BOROUGH_FULL_NAME_BY_CODE.get(s, s)
+
+
 def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
     """Parse the ``issue_date`` text column from dob_violations
     (3h2n-5cm9), which is a YYYYMMDD string like ``"20171227"``.
@@ -2221,7 +2274,14 @@ def _bis_geography_clause(tier: str, geo: Dict[str, Any]) -> Optional[str]:
     borough = geo.get("borough")
     if not borough:
         return None
-    return f"borough = {_soql_quote(borough.upper())}"
+    # PR #14I: BIS ic3t-wcy2 stores borough as the full uppercase
+    # name ("BROOKLYN"). The geo dict may carry the PLUTO 2-letter
+    # code ("BK") if the project's pluto_snapshot is the source.
+    # Normalize before sending to SoQL.
+    borough_full = _normalize_borough_to_full_name(borough)
+    if not borough_full:
+        return None
+    return f"borough = {_soql_quote(borough_full)}"
 
 
 # ── BIS / C-of-O queries ──────────────────────────────────────
@@ -2763,7 +2823,17 @@ async def _fetch_modern_cohort(
     )
     if not borough:
         return []
-    borough_upper = borough.strip().upper()
+    # PR #14I (Stage 10 follow-up #2): pkdm-hqz6 stores borough as
+    # the full uppercase name ("BROOKLYN"); PLUTO snapshots ship the
+    # 2-letter code ("BK"). When project["borough"] is missing the
+    # value falls through to pluto_snapshot["borough"]="BK" and the
+    # downstream SoQL `borough = 'BK'` matches zero pkdm-hqz6 rows
+    # silently. Stage 10 production logs (PR #18) confirmed this is
+    # the Menahan zero-cohort root cause. Normalize to full name
+    # before quoting into the WHERE.
+    borough_upper = _normalize_borough_to_full_name(borough)
+    if not borough_upper:
+        return []
 
     pkdm_job_types = list(modern_cfg.get("pkdm_job_types") or ())
     if not pkdm_job_types:
@@ -2784,14 +2854,6 @@ async def _fetch_modern_cohort(
         f"borough = {_soql_quote(borough_upper)}",
     ]
     where = " AND ".join(where_parts)
-    # PR #14H-diag-2 (TEMPORARY — to be reverted): surface the EXACT
-    # SoQL Modern Call A sends to Socrata. Operator pastes this from
-    # Railway to confirm dataset + WHERE + LIMIT match expectations.
-    _modern_limit = 5000
-    logger.info(
-        "[PR14E-DIAG] modern SoQL: dataset=%s where=%r limit=%r",
-        DATASET_DOB_C_OF_O, where, _modern_limit,
-    )
     try:
         pkdm_rows = await socrata.query(
             DATASET_DOB_C_OF_O,
@@ -2801,24 +2863,13 @@ async def _fetch_modern_cohort(
             # the pre-filter population for the largest single
             # borough × job_type combo (current ~4,026 for
             # Brooklyn ALTERATION TYPE 1, headroom for growth).
-            limit=_modern_limit,
+            limit=5000,
         )
     except SocrataQueryError as e:
-        # PR #14H-diag-2: explicit DIAG-prefixed exception so the
-        # operator's grep on [PR14E-DIAG] surfaces error-path runs
-        # alongside success-path counts.
-        logger.warning(
-            "[PR14E-DIAG] modern SoQL exception: %r", e,
-        )
         logger.warning(
             "[baselines] pkdm-hqz6 Modern cohort fetch failed: %r", e,
         )
         return []
-
-    # PR #14H-diag (TEMPORARY — to be reverted): cohort funnel
-    # instrumentation. Surfaces Modern path row counts at each step
-    # so operator can identify the zeroing step from Railway logs.
-    logger.info("[PR14E-DIAG] modern pkdm raw rows: %d", len(pkdm_rows))
 
     if not pkdm_rows:
         return []
@@ -2841,12 +2892,6 @@ async def _fetch_modern_cohort(
             r["_parsed_issuance_dt"] = issued_dt  # cache for downstream
             in_window.append(r)
     pkdm_rows = in_window
-
-    # PR #14H-diag (TEMPORARY): 36mo client-side window result.
-    logger.info(
-        "[PR14E-DIAG] modern after 36mo window: %d (cutoff=%s)",
-        len(in_window), window_start.isoformat(),
-    )
 
     if not pkdm_rows:
         return []
@@ -2889,19 +2934,6 @@ async def _fetch_modern_cohort(
                 if bbl_n:
                     pluto_by_bbl[bbl_n] = pr
 
-    # PR #14H-diag (TEMPORARY): PLUTO join result + key-sample diff.
-    # The first-5 list lets us eyeball whether pluto_by_bbl keys
-    # (post-_normalize_pluto_bbl) match cohort_bbls (pkdm-side plain
-    # 10-digit). A format mismatch would surface as "no overlap".
-    total_pluto_rows = sum(len(rows) for rows in chunk_results) if cohort_bbls else 0
-    logger.info(
-        "[PR14E-DIAG] modern PLUTO join: pluto_rows=%d, pluto_by_bbl keys (first 5): %r",
-        total_pluto_rows, list(pluto_by_bbl.keys())[:5],
-    )
-    logger.info(
-        "[PR14E-DIAG] modern cohort bbls (first 5): %r", cohort_bbls[:5],
-    )
-
     # ── Step 5: target_state filter ───────────────────────────
     filtered: List[Dict[str, Any]] = []
     for r in pkdm_rows:
@@ -2923,13 +2955,6 @@ async def _fetch_modern_cohort(
         merged["pluto_yearbuilt"] = pluto_row.get("yearbuilt")
         merged["source"] = "modern"
         filtered.append(merged)
-
-    # PR #14H-diag (TEMPORARY): post target_state filter row count
-    # plus the filter parameters that did the trimming.
-    logger.info(
-        "[PR14E-DIAG] modern after pluto_match: %d (target_bldgclass=%r, band=%r)",
-        len(filtered), target.get("bldgclass"), target.get("numfloors_band"),
-    )
 
     if not filtered:
         return []
@@ -2987,12 +3012,6 @@ async def _fetch_modern_cohort(
         if "c_o_issue_date" not in r:
             r["c_o_issue_date"] = r.get("c_of_o_issuance_date")
 
-    # PR #14H-diag (TEMPORARY): final Modern cohort count returned
-    # to compute_cohort_for_project (which then decides if Legacy
-    # extension fires per PR14E_MODERN_COHORT_FLOOR).
-    logger.info(
-        "[PR14E-DIAG] modern final: %d cohort rows returning", len(filtered),
-    )
     return filtered
 
 
@@ -3054,6 +3073,13 @@ async def _fetch_legacy_cohort(
     )
     if not borough:
         return []
+    # PR #14I (Stage 10 follow-up #2): BIS ic3t-wcy2 stores borough
+    # as the full uppercase name ("BROOKLYN"); pluto_snapshot ships
+    # the 2-letter code ("BK"). Same lex-mismatch bug surfaced on
+    # the Legacy path. Normalize to full name before SoQL.
+    borough_full = _normalize_borough_to_full_name(borough)
+    if not borough_full:
+        return []
 
     bis_job_types = list(legacy_cfg.get("bis_job_types") or ())
     if not bis_job_types:
@@ -3064,7 +3090,7 @@ async def _fetch_legacy_cohort(
     # and silently fail). Window is enforced client-side below.
     where_parts: List[str] = [
         _soql_in("job_type", bis_job_types),
-        f"borough = {_soql_quote(borough.upper())}",
+        f"borough = {_soql_quote(borough_full)}",
         _soql_in("job_status", ["X", "U"]),
     ]
     target_class = target.get("bldgclass")
@@ -3073,14 +3099,7 @@ async def _fetch_legacy_cohort(
             f"building_class = {_soql_quote(target_class)}",
         )
     where = " AND ".join(where_parts)
-    # PR #14H-diag-2 (TEMPORARY — to be reverted): surface the EXACT
-    # SoQL Legacy BIS query sends to Socrata. Operator pastes from
-    # Railway to confirm dataset + WHERE + LIMIT match expectations.
-    _legacy_limit = 5000
-    logger.info(
-        "[PR14E-DIAG] legacy SoQL: dataset=%s where=%r limit=%r",
-        DATASET_BIS_JOB_FILINGS, where, _legacy_limit,
-    )
+
     try:
         rows = await socrata.query(
             DATASET_BIS_JOB_FILINGS,
@@ -3090,25 +3109,13 @@ async def _fetch_legacy_cohort(
             # Brooklyn A1+X/U population (~2,360 per Stage 1 reference)
             # with headroom; pre-filter pulls are bounded by the
             # client-side Golden Era window.
-            limit=_legacy_limit,
+            limit=5000,
         )
     except SocrataQueryError as e:
-        # PR #14H-diag-2: explicit DIAG-prefixed exception so grep on
-        # [PR14E-DIAG] surfaces error-path runs alongside success
-        # counts.
-        logger.warning(
-            "[PR14E-DIAG] legacy SoQL exception: %r", e,
-        )
         logger.warning(
             "[baselines] Legacy BIS cohort fetch failed: %r", e,
         )
         return []
-
-    # PR #14H-diag (TEMPORARY — to be reverted): cohort funnel
-    # instrumentation for the Legacy BIS path. Surfaces row count
-    # after each filter step so operator can identify the zeroing
-    # step from Railway logs.
-    logger.info("[PR14E-DIAG] legacy bis raw rows: %d", len(rows))
 
     if not rows:
         return []
@@ -3144,14 +3151,6 @@ async def _fetch_legacy_cohort(
         in_window.append(r)
     rows = in_window
 
-    # PR #14H-diag (TEMPORARY): post Golden Era window count + bounds.
-    logger.info(
-        "[PR14E-DIAG] legacy after window: %d (start=%s, end=%s)",
-        len(in_window),
-        window_start_dt.isoformat() if window_start_dt else window_start_iso,
-        window_end_dt.isoformat() if window_end_dt else window_end_iso,
-    )
-
     if not rows:
         return []
 
@@ -3162,13 +3161,6 @@ async def _fetch_legacy_cohort(
     if band:
         synthetic = {"story_count_band": list(band)}
         rows = _apply_band_filters(rows, synthetic)
-
-    # PR #14H-diag (TEMPORARY): post numfloors band filter count
-    # plus the band that drove the trim.
-    logger.info(
-        "[PR14E-DIAG] legacy after band filter: %d (band=%r)",
-        len(rows), target.get("numfloors_band"),
-    )
 
     # ── Annotate with bbl + provenance ────────────────────────
     # BIS rows are BIN-indexed; BBL is not always derivable inline.
@@ -3191,11 +3183,6 @@ async def _fetch_legacy_cohort(
         )
         out.append(merged)
 
-    # PR #14H-diag (TEMPORARY): final Legacy cohort count returned
-    # to compute_cohort_for_project for Modern→Legacy merge.
-    logger.info(
-        "[PR14E-DIAG] legacy final: %d cohort rows returning", len(out),
-    )
     return out
 
 

@@ -1234,6 +1234,198 @@ class TestUnifiedCohort(unittest.TestCase):
                     f"happen before provenance is built.",
                 )
 
+    # ──────────────────────────────────────────────────────────
+    # PR #14I regression tests — borough name format normalization
+    # ──────────────────────────────────────────────────────────
+
+    def test_normalize_borough_to_full_name(self):
+        """PR #14I unit test — _normalize_borough_to_full_name
+        expands PLUTO 2-letter borough codes to the DOB-dataset
+        full uppercase format, pass-through when already a full
+        name, case-insensitive.
+        """
+        try:
+            from lib.statistical_engine.baselines import (
+                _normalize_borough_to_full_name,
+            )
+        except ImportError:
+            self.fail(
+                "_normalize_borough_to_full_name not implemented. "
+                "PR #14I: add helper near _normalize_pluto_bbl in "
+                "baselines.py."
+            )
+        # PLUTO 2-letter codes → DOB full names.
+        self.assertEqual(_normalize_borough_to_full_name("BK"), "BROOKLYN")
+        self.assertEqual(_normalize_borough_to_full_name("MN"), "MANHATTAN")
+        self.assertEqual(_normalize_borough_to_full_name("BX"), "BRONX")
+        self.assertEqual(_normalize_borough_to_full_name("QN"), "QUEENS")
+        self.assertEqual(_normalize_borough_to_full_name("SI"), "STATEN ISLAND")
+        # Case-insensitive.
+        self.assertEqual(_normalize_borough_to_full_name("bk"), "BROOKLYN")
+        self.assertEqual(_normalize_borough_to_full_name("Bk"), "BROOKLYN")
+        # Pass-through full names.
+        self.assertEqual(
+            _normalize_borough_to_full_name("BROOKLYN"), "BROOKLYN",
+        )
+        self.assertEqual(
+            _normalize_borough_to_full_name("brooklyn"), "BROOKLYN",
+        )
+        self.assertEqual(
+            _normalize_borough_to_full_name("STATEN ISLAND"), "STATEN ISLAND",
+        )
+        # None / empty / whitespace-only → None.
+        self.assertIsNone(_normalize_borough_to_full_name(None))
+        self.assertIsNone(_normalize_borough_to_full_name(""))
+        self.assertIsNone(_normalize_borough_to_full_name("   "))
+
+    def test_borough_code_expanded_for_dob_datasets(self):
+        """PR #14I regression — when project.borough is the PLUTO
+        2-letter code (e.g. arrives via pluto_snapshot fallthrough),
+        the SoQL WHERE for pkdm-hqz6 must use the full uppercase
+        name ("BROOKLYN") because that's how pkdm-hqz6 stores it.
+
+        Stage 10 production: project doc had pluto_snapshot.borough
+        = "BK"; production code sent ``borough = 'BK'`` to pkdm-hqz6;
+        zero rows came back; cohort was empty.
+
+        This test exercises the bug by setting project.borough = "BK"
+        directly (worst-case PLUTO code on the project doc). pkdm-hqz6
+        seeded with borough='BROOKLYN' (production format). The fix
+        normalizes both sides before the SoQL comparison.
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+
+        socrata = MockSocrataClient()
+        # Active project's PLUTO row (full PR #14B schema).
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024.00000000", "borough": "BK",
+            "bldgclass": "C1", "landuse": "01",
+            "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8",
+            "numfloors": "4.0000000",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            job_description="PROPOSED ALTERATION TYPE 1. 4-STORY.",
+        )
+        # Modern peers — seeded with borough='BROOKLYN' per
+        # make_modern_cohort_fixture default (matches production).
+        make_modern_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=120, bin_prefix="450100", bbl_prefix="450101",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=4, yearbuilt=1925,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        # CRITICAL: project.borough = "BK" (PLUTO 2-letter code).
+        # Without PR #14I normalization, the SoQL becomes
+        # ``borough = 'BK'`` and pkdm-hqz6 returns zero rows.
+        project = _menahan_like_project(
+            _id="P_BK_PROJECT",
+            borough="BK",  # PLUTO code, NOT full name
+            dob_project_type="major_alt_with_enlargement",
+            dob_extracted_scope={"story_count": 4},
+            pluto_numfloors="4",
+        )
+        db = _StubDb(projects=[dict(project)])
+        cache = _run(compute_peer_stats_full(socrata, project, db=db))
+        segments = (cache.get("peer_criteria") or {}).get(
+            "cohort_source_segments"
+        ) or {}
+        self.assertGreater(
+            segments.get("modern_count", 0), 0,
+            f"PR #14I regression — project.borough='BK' must be "
+            f"expanded to 'BROOKLYN' before the pkdm-hqz6 SoQL "
+            f"WHERE. Expected modern_count > 0; got "
+            f"{segments.get('modern_count')}. If 0: helper isn't "
+            f"applied at _fetch_modern_cohort's borough_upper site.",
+        )
+        # Inspect pkdm-hqz6 SoQL — must NOT contain "borough = 'BK'".
+        pkdm_calls = [
+            c for c in socrata.calls if c[0] == DATASET_DOB_C_OF_O
+        ]
+        self.assertGreater(len(pkdm_calls), 0)
+        for ds, kw in pkdm_calls:
+            where = kw.get("where") or ""
+            self.assertIn(
+                "borough = 'BROOKLYN'", where,
+                f"PR #14I: pkdm-hqz6 SoQL must filter on "
+                f"borough='BROOKLYN' (full name). Got WHERE: "
+                f"{where!r}",
+            )
+            self.assertNotIn(
+                "borough = 'BK'", where,
+                f"PR #14I: pkdm-hqz6 SoQL must NOT carry PLUTO "
+                f"2-letter code. Got WHERE: {where!r}",
+            )
+
+    def test_borough_falls_through_to_pluto_snapshot_BK_normalized(self):
+        """PR #14I regression variant — project.borough missing,
+        pluto_snapshot.borough = "BK" (the production Menahan
+        scenario). The fallthrough must still produce a full-name
+        borough in the SoQL.
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024.00000000", "borough": "BK",
+            "bldgclass": "C1", "landuse": "01",
+            "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8",
+            "numfloors": "4.0000000",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            job_description="PROPOSED ALTERATION TYPE 1. 4-STORY.",
+        )
+        make_modern_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=120, bin_prefix="450200", bbl_prefix="450201",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=4, yearbuilt=1925,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        # project.borough MISSING entirely; pluto_snapshot.borough='BK'.
+        project = _menahan_like_project(
+            _id="P_BK_FALLTHRU",
+            dob_project_type="major_alt_with_enlargement",
+            dob_extracted_scope={"story_count": 4},
+            pluto_numfloors="4",
+        )
+        # Force the project.borough fallthrough path.
+        project.pop("borough", None)
+        db = _StubDb(projects=[dict(project)])
+        cache = _run(compute_peer_stats_full(socrata, project, db=db))
+        segments = (cache.get("peer_criteria") or {}).get(
+            "cohort_source_segments"
+        ) or {}
+        self.assertGreater(
+            segments.get("modern_count", 0), 0,
+            f"PR #14I fallthrough — pluto_snapshot.borough='BK' must "
+            f"be expanded to 'BROOKLYN' for pkdm-hqz6. Got "
+            f"modern_count={segments.get('modern_count')}.",
+        )
+        pkdm_calls = [
+            c for c in socrata.calls if c[0] == DATASET_DOB_C_OF_O
+        ]
+        for ds, kw in pkdm_calls:
+            where = kw.get("where") or ""
+            self.assertIn("borough = 'BROOKLYN'", where)
+            self.assertNotIn("borough = 'BK'", where)
+
 
 if __name__ == "__main__":
     unittest.main()
