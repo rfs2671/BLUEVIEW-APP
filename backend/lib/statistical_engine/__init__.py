@@ -112,6 +112,8 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     compute_cohort_for_project,
     # PR #14C — cohort wiring + schema-version invalidation
     PR14C_SCHEMA_VERSION,
+    # PR #14D — cohort cap for PLUTO BIN→BBL join
+    COHORT_MAX_PEERS_FOR_PLUTO_JOIN,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,

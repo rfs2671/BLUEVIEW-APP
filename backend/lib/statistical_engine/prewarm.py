@@ -63,11 +63,16 @@ logger = logging.getLogger(__name__)
 
 # ── Tunables ──────────────────────────────────────────────────────
 
-# Background compute is allowed to run up to 30s before being
-# cancelled. This is intentionally generous compared to the 5s
+# Background compute is allowed to run up to 60s before being
+# cancelled. This is intentionally generous compared to the
 # sync-path timeout because we're not blocking a user; we'd rather
 # succeed slowly than fail fast.
-PREWARM_TIMEOUT_SECONDS = 30.0
+#
+# PR #14D Fix 4: bumped 30→60s alongside
+# PEER_STATS_COMPUTE_TIMEOUT_SECONDS. Background prewarm runs
+# the same cohort-aware path that surfaced the Menahan timeout
+# — same defensive headroom applies.
+PREWARM_TIMEOUT_SECONDS = 60.0
 
 
 # ── Error kind labels ─────────────────────────────────────────────

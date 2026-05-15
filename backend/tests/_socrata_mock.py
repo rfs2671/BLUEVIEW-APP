@@ -56,6 +56,42 @@ _RE_COMPARE_NUM = re.compile(
 )
 _RE_AND = re.compile(r"\s+AND\s+", re.IGNORECASE)
 
+# PR #14D §8.1 lock: extend WHERE evaluator with SoQL LIKE support.
+# Pattern: ``field LIKE 'pattern'`` where ``%`` matches any number
+# of characters and ``_`` matches a single character (SoQL grammar
+# is case-sensitive by default). Production code in PR #14D's
+# classifier uses ``LIKE '%-I1' OR LIKE '%-I1-%'`` to filter to
+# initial DOB NOW filings.
+_RE_LIKE = re.compile(
+    r"(\w+)\s+LIKE\s+'([^']*)'", re.IGNORECASE,
+)
+_RE_OR = re.compile(r"\s+OR\s+", re.IGNORECASE)
+
+
+def _like_to_regex(pattern: str) -> str:
+    """Translate a SoQL LIKE pattern to an anchored Python regex.
+
+    SoQL semantics:
+      • ``%`` → matches zero or more characters (regex ``.*``)
+      • ``_`` → matches exactly one character (regex ``.``)
+      • All other characters → matched literally (regex-escaped)
+
+    Anchored with ``^`` / ``$`` per SoQL's full-string match.
+    Char-by-char translation avoids re.escape's surprise that
+    neither ``%`` nor ``_`` is a regex meta (so re.escape leaves
+    them alone, and a post-hoc replace can't find the escaped
+    form).
+    """
+    out = []
+    for ch in pattern:
+        if ch == "%":
+            out.append(".*")
+        elif ch == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(ch))
+    return "^" + "".join(out) + "$"
+
 
 def _coerce_dt(s: str) -> Optional[datetime]:
     """If a SoQL literal looks like an ISO-8601 timestamp, parse it
@@ -108,6 +144,34 @@ def _eval_clause(clause: str, row: Dict[str, Any]) -> bool:
     if not clause:
         return True
 
+    # PR #14D §8.1: strip outer parens when they span the whole
+    # clause. Required for the new classifier WHERE shape
+    # ``bin = '...' AND (job_filing_number LIKE '%-I1' OR ...)``
+    # where the AND-split produces a paren-wrapped OR group.
+    if clause.startswith("(") and clause.endswith(")"):
+        # Verify outer parens are balanced across the full clause
+        # (i.e., this isn't ``(a) AND (b)`` where parens are
+        # multiple disjoint groups).
+        depth = 0
+        spans_whole = True
+        for i, ch in enumerate(clause):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i < len(clause) - 1:
+                    spans_whole = False
+                    break
+        if spans_whole:
+            return _eval_clause(clause[1:-1], row)
+
+    # PR #14D §8.1: handle OR splits at clause level. AND splits
+    # happen at evaluate_where's top level; OR can only appear
+    # inside paren groups, which arrive here after the strip above.
+    or_parts = _RE_OR.split(clause)
+    if len(or_parts) > 1:
+        return any(_eval_clause(p, row) for p in or_parts)
+
     m = _RE_STARTS_WITH.match(clause)
     if m:
         field, prefix = m.group(1), m.group(2)
@@ -123,6 +187,15 @@ def _eval_clause(clause: str, row: Dict[str, Any]) -> bool:
             items.append(q if q else n)
         actual = row.get(field)
         return str(actual) in items
+
+    # PR #14D §8.1: LIKE pattern matching with SoQL wildcard semantics.
+    m = _RE_LIKE.match(clause)
+    if m:
+        field, pattern = m.group(1), m.group(2)
+        val = row.get(field)
+        if not isinstance(val, str):
+            return False
+        return bool(re.match(_like_to_regex(pattern), val))
 
     m = _RE_COMPARE_STR.match(clause)
     if m:

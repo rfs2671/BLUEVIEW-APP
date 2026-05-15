@@ -70,6 +70,18 @@ _FULL_DEMOLITION_WORK_TYPES = (
     "FULL DEMOLITION",
 )
 
+# PR #14D Q1 + T4 lock — scope-carrying DOB NOW work_types. When
+# the BIN's DOB NOW rows contain none of these, the classifier
+# falls through to BIS (rather than picking an auxiliary trade
+# row like Plumbing / Sidewalk Shed / Construction Fence and
+# defaulting to minor_alt). Stage 1 surveyed real DOB NOW data
+# and found ~40% of A1/DM projects have NO scope-carrying row in
+# DOB NOW — the actual project lives in BIS legacy.
+SCOPE_CARRYING_WORK_TYPES = frozenset((
+    "General Construction",
+    "Full Demolition",
+))
+
 
 # ── BIS job_type → dob_project_type map (built from COHORT_CONFIG)
 #
@@ -185,16 +197,44 @@ async def _classify_via_dob_now(
     Returns ``(project_type, snapshot, extracted_scope)`` on hit,
     or ``(None, {}, {})`` when no rows match — signal to the caller
     that the BIS fallback path should run next.
+
+    PR #14D Fix 1: filter to -I1 (Initial) job filings only, sorted
+    by ``approved_date ASC`` (earliest first). DOB NOW reuses
+    ``filing_reason='Initial Permit'`` on subsequent (-S2, -S3, …)
+    filings, so the ``job_filing_number`` suffix is the reliable
+    initial-application marker. Pre-PR-14D the unordered query
+    occasionally surfaced a renewal row first (B00736930-S4
+    Foundation for Menahan), defaulting to minor_alt.
+
+    Per Q1 lock: when DOB NOW returns rows but NONE carry a
+    scope-defining ``work_type`` (General Construction / Full
+    Demolition), return ``(None, {}, {})`` to trigger the BIS
+    fallback rather than picking an auxiliary trade row.
     """
     rows = await socrata.query(
         DATASET_DOB_PERMITS,
-        where=f"bin = '{bin_}'",
+        where=(
+            f"bin = '{bin_}' AND "
+            f"(job_filing_number LIKE '%-I1' OR "
+            f"job_filing_number LIKE '%-I1-%')"
+        ),
+        order="approved_date ASC",
         limit=50,
     )
     if not rows:
         return (None, {}, {})
 
-    row = rows[0]
+    # PR #14D Q1 lock: prefer scope-carrying work_types. When none
+    # match, fall through to BIS (Stage 1 Task 2+3 finding —
+    # ~40% of A1/DM projects have no scope-carrying DOB NOW row).
+    preferred = [
+        r for r in rows
+        if (r.get("work_type") or "") in SCOPE_CARRYING_WORK_TYPES
+    ]
+    if not preferred:
+        return (None, {}, {})
+
+    row = preferred[0]
     work_type   = (row.get("work_type") or "").strip()
     description = (row.get("job_description") or "")
     desc_upper  = description.upper()

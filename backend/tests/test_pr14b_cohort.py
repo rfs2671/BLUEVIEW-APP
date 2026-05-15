@@ -590,6 +590,203 @@ class TestFetchProjectDobClassification(unittest.TestCase):
                 f"{sorted(set_payload.keys())!r}",
             )
 
+    # ──────────────────────────────────────────────────────────
+    # PR #14D tests — classifier fixes (Bug 1 from production)
+    # ──────────────────────────────────────────────────────────
+
+    def test_classifier_filters_to_i1_jobs_via_like_clause(self):
+        """PR #14D — Classifier WHERE clause must filter to initial
+        (-I1) filings, ignoring subsequent (-S4 etc.) filings.
+
+        Production Bug 1 root cause: B00736930-I1 (the actual
+        Menahan A1 project) was overshadowed by B00736930-S4
+        (Foundation, a later subsequent filing) because the
+        classifier picked the first DOB NOW row by raw query order.
+        """
+        self._require_classifier()
+        socrata = MockSocrataClient()
+        # Seed two rows for the same BIN: -I1 General Construction
+        # and -S4 Foundation. Both have scope-ish work_types but
+        # only the -I1 carries the project-defining description.
+        socrata.seed(DATASET_DOB_PERMITS, [
+            {
+                "bin": "1234567",
+                "job_filing_number": "B11234567-S4",
+                "work_type": "Foundation",
+                "filing_reason": "Initial Permit",
+                "job_description": "FOUNDATION WORK PER PLANS.",
+                "approved_date": "2024-03-15T00:00:00.000",
+            },
+            {
+                "bin": "1234567",
+                "job_filing_number": "B11234567-I1",
+                "work_type": "General Construction",
+                "filing_reason": "Initial Permit",
+                "job_description": (
+                    "NEW BUILDING 5-STORY RESIDENTIAL 8 UNITS"
+                ),
+                "approved_date": "2022-01-01T00:00:00.000",
+            },
+        ])
+        db = _StubDbForClassifier(projects=[
+            {"_id": "P_LIKE", "nyc_bin": "1234567"},
+        ])
+        proj_type, snapshot = _run(fetch_project_dob_classification(
+            socrata, {"_id": "P_LIKE", "nyc_bin": "1234567"}, db,
+        ))
+        self.assertEqual(
+            proj_type, "new_building",
+            f"Classifier picked the wrong row. Expected new_building "
+            f"from B11234567-I1 General Construction; got "
+            f"{proj_type!r}. Stage 3 Fix 1: update "
+            f"_classify_via_dob_now WHERE clause in "
+            f"dob_classifier.py:~166 to "
+            f"``bin = '...' AND (job_filing_number LIKE '%-I1' OR "
+            f"job_filing_number LIKE '%-I1-%')`` + "
+            f"``ORDER BY approved_date ASC``."
+        )
+        # Verify the WHERE clause actually issued contains -I1.
+        permit_calls = [c for c in socrata.calls if c[0] == DATASET_DOB_PERMITS]
+        self.assertGreater(len(permit_calls), 0)
+        where_clauses = " | ".join(
+            (c[1].get("where") or "") for c in permit_calls
+        )
+        self.assertIn(
+            "-I1", where_clauses,
+            f"DOB NOW WHERE clause must filter to -I1 suffix. "
+            f"Stage 3 Fix 1: add LIKE '%-I1' to the query. "
+            f"WHERE observed: {where_clauses!r}"
+        )
+
+    def test_dob_now_only_auxiliary_rows_triggers_bis_fallback(self):
+        """PR #14D Q1 lock — DOB NOW returns rows but ALL are
+        auxiliary work_types (no General Construction / Full
+        Demolition). Classifier must fall through to BIS, not
+        pick rows[0] (which would default to minor_alt).
+
+        This is the structural Stage 1 Task 2 finding: many A1
+        projects have NO General Construction row in DOB NOW —
+        the A1 filing lives in BIS, and DOB NOW only carries
+        auxiliary trades.
+        """
+        self._require_classifier()
+        socrata = MockSocrataClient()
+        # DOB NOW: only Plumbing (auxiliary trade).
+        seed_dob_now_for_bin(
+            socrata, bin="2234567",
+            job_filing_number="B12234567-I1",
+            work_type="Plumbing",
+            filing_reason="Initial Permit",
+            job_description="NEW FIXTURES THROUGHOUT.",
+        )
+        # BIS: A1 → expects major_alt_with_enlargement.
+        seed_bis_for_bin(
+            socrata, bin="2234567", job_number="322021441",
+            job_type="A1", building_class="C1", borough="BROOKLYN",
+        )
+        db = _StubDbForClassifier(projects=[
+            {"_id": "P_AUX", "nyc_bin": "2234567"},
+        ])
+        proj_type, snapshot = _run(fetch_project_dob_classification(
+            socrata, {"_id": "P_AUX", "nyc_bin": "2234567"}, db,
+        ))
+        self.assertEqual(
+            proj_type, "major_alt_with_enlargement",
+            f"DOB NOW Plumbing row is not scope-carrying; classifier "
+            f"must fall through to BIS classification (A1 → "
+            f"major_alt_with_enlargement). Got {proj_type!r}. "
+            f"Stage 3 Q1 lock: in _classify_via_dob_now "
+            f"(dob_classifier.py:~155), filter rows to scope-carrying "
+            f"work_types and when preferred list is empty, return "
+            f"(None, {{}}, {{}}) to trigger _classify_via_bis."
+        )
+        # Per Q2 lock: snapshot.source stays "bis_fallback" (don't
+        # proliferate source variants).
+        self.assertEqual(
+            snapshot.get("source"), "bis_fallback",
+            f"Per Q2 lock, snapshot.source must be 'bis_fallback' "
+            f"when the BIS-fallback path fires (regardless of "
+            f"whether DOB NOW had non-scope rows or was empty). "
+            f"Got {snapshot.get('source')!r}."
+        )
+
+    def test_dob_now_construction_fence_with_bis_dm_classifies_as_full_demo(self):
+        """PR #14D Q1 lock — Realistic full_demo project shape:
+        DOB NOW has only Construction Fence rows, BIS has DM
+        job_type. Parallel to the auxiliary→A1 test but exercises
+        the DM (Full Demolition) BIS-fallback path.
+        """
+        self._require_classifier()
+        socrata = MockSocrataClient()
+        seed_dob_now_for_bin(
+            socrata, bin="3234567",
+            job_filing_number="B13234567-I1",
+            work_type="Construction Fence",
+            filing_reason="Initial Permit",
+            job_description="INSTALLATION OF FENCE AS PER PLANS.",
+        )
+        seed_bis_for_bin(
+            socrata, bin="3234567", job_number="322103157",
+            job_type="DM", building_class="A2", borough="BROOKLYN",
+        )
+        db = _StubDbForClassifier(projects=[
+            {"_id": "P_DM", "nyc_bin": "3234567"},
+        ])
+        proj_type, snapshot = _run(fetch_project_dob_classification(
+            socrata, {"_id": "P_DM", "nyc_bin": "3234567"}, db,
+        ))
+        self.assertEqual(
+            proj_type, "full_demo",
+            f"DM (Demolition) BIS row should classify as full_demo "
+            f"even when DOB NOW has only Construction Fence rows. "
+            f"Got {proj_type!r}. Stage 3 Q1 lock: same "
+            f"scope-carrying fallback to BIS as the A1/Plumbing test."
+        )
+        self.assertEqual(snapshot.get("source"), "bis_fallback")
+
+    def test_menahan_real_data_classifies_as_major_alt_with_enlargement(self):
+        """PR #14D T3 lock — Real Menahan DOB NOW data (5 rows
+        from operator's curl probe). Classifier MUST pick
+        B00736930-I1 General Construction (the scope-carrying row
+        with VERTICAL AND HORIZONTAL ENLARGEMENT language) and
+        classify as major_alt_with_enlargement.
+
+        This is the canary fixture: real curl data → real fixture
+        → real test → real confidence at Stage 10 verification.
+        """
+        self._require_classifier()
+        from _pr14b_fixtures import seed_menahan_realistic_dob_now
+        socrata = MockSocrataClient()
+        meta = seed_menahan_realistic_dob_now(socrata)
+        db = _StubDbForClassifier(projects=[
+            {"_id": "P_MENAHAN_REAL", "nyc_bin": meta["bin"]},
+        ])
+        proj_type, snapshot = _run(fetch_project_dob_classification(
+            socrata,
+            {"_id": "P_MENAHAN_REAL", "nyc_bin": meta["bin"]},
+            db,
+        ))
+        self.assertEqual(
+            proj_type, meta["expected_type"],
+            f"Real Menahan classification regression. Expected "
+            f"{meta['expected_type']!r}, got {proj_type!r}. "
+            f"Investigation trail: PR #14D Bug 1 — pre-fix "
+            f"classifier was picking B00736930-S4 Foundation (a "
+            f"renewal subsequent filing) instead of the actual "
+            f"B00736930-I1 General Construction row. Stage 3 fix: "
+            f"-I1 suffix filter + scope-carrying work_type "
+            f"preference. The selected row's job_filing_number "
+            f"should be {meta['scope_row_job']}."
+        )
+        self.assertEqual(
+            snapshot.get("job_filing_number"), meta["scope_row_job"],
+            f"Classifier selected the wrong row. Snapshot "
+            f"job_filing_number={snapshot.get('job_filing_number')!r}, "
+            f"expected {meta['scope_row_job']!r} (the General "
+            f"Construction row with vertical/horizontal enlargement "
+            f"description)."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
