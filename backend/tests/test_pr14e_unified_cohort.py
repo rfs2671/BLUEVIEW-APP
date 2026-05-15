@@ -1114,6 +1114,126 @@ class TestUnifiedCohort(unittest.TestCase):
         )
         self.assertFalse(target.get("band_widened"))
 
+    # ──────────────────────────────────────────────────────────
+    # PR #14G regression tests — PLUTO bbl format normalization
+    # ──────────────────────────────────────────────────────────
+
+    def test_normalize_pluto_bbl_handles_production_format(self):
+        """PR #14G unit test — _normalize_pluto_bbl strips the
+        Socrata numeric-float ``.00000000`` suffix from PLUTO bbl
+        values so cohort joins match pkdm-hqz6 / BIS plain
+        10-digit format.
+        """
+        try:
+            from lib.statistical_engine.baselines import _normalize_pluto_bbl
+        except ImportError:
+            self.fail(
+                "_normalize_pluto_bbl not implemented. PR #14G: add "
+                "helper near _parse_bis_mdy_date in baselines.py."
+            )
+        # Production PLUTO format → strip suffix.
+        self.assertEqual(
+            _normalize_pluto_bbl("3012440018.00000000"), "3012440018",
+        )
+        # Plain 10-digit → pass-through.
+        self.assertEqual(
+            _normalize_pluto_bbl("3012440018"), "3012440018",
+        )
+        # Float input → coerce via str(), strip suffix.
+        self.assertEqual(
+            _normalize_pluto_bbl(3012440018.0), "3012440018",
+        )
+        # Defensive: non-zero fractional still strips (would be
+        # malformed bbl in practice but helper is permissive).
+        self.assertEqual(
+            _normalize_pluto_bbl("3012440018.5"), "3012440018",
+        )
+        # None / empty → None.
+        self.assertIsNone(_normalize_pluto_bbl(None))
+        self.assertIsNone(_normalize_pluto_bbl(""))
+        self.assertIsNone(_normalize_pluto_bbl("   "))
+
+    def test_pluto_bbl_normalization_matches_pkdm_format(self):
+        """PR #14G regression — PLUTO returns bbl with .00000000
+        suffix; cohort join must normalize so dict-keyed match
+        works against pkdm-hqz6 / BIS plain format. Pre-fix:
+        Modern cohort returned 0 rows because pluto_by_bbl was
+        keyed on un-normalized "3012440018.00000000" but the
+        lookup used the plain pkdm bbl "3012440018".
+
+        Test seeds 5 pkdm-hqz6 rows + 5 PLUTO rows with the
+        production ``.00000000`` suffix. Modern cohort must
+        produce 5 cohort members; if normalization is dropped,
+        cohort_source_segments.modern_count == 0.
+        """
+        self._require_db_kwarg()
+        self._require_pr14e_schema()
+
+        socrata = MockSocrataClient()
+        # Active project's PLUTO snapshot — production format.
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024.00000000",  # production suffix
+            "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8",
+            "numfloors": "4.0000000",  # production numeric-text format
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            job_description=(
+                "PROPOSED ALTERATION TYPE 1. PROPOSED 4-STORY+CELLAR."
+            ),
+        )
+        # 5 pkdm-hqz6 rows (plain bbl) + matching PLUTO peer rows
+        # (with .00000000 suffix per make_modern_cohort_fixture
+        # production-format seed).
+        make_modern_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=5, bin_prefix="600100", bbl_prefix="600101",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=4, yearbuilt=1925,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        project = _menahan_like_project(
+            _id="P_PLUTO_BBL_FMT",
+            dob_project_type="major_alt_with_enlargement",
+            dob_extracted_scope={"story_count": 4},
+            pluto_numfloors="4",
+        )
+        db = _StubDb(projects=[dict(project)])
+        cache = _run(compute_peer_stats_full(socrata, project, db=db))
+        segments = (cache.get("peer_criteria") or {}).get(
+            "cohort_source_segments"
+        ) or {}
+        self.assertEqual(
+            segments.get("modern_count"), 5,
+            f"PR #14G regression — PLUTO bbl .00000000 suffix must "
+            f"be normalized so cohort join matches. Expected 5 "
+            f"cohort rows; got {segments.get('modern_count')}. "
+            f"If 0: _normalize_pluto_bbl was dropped or not applied "
+            f"at the pluto_by_bbl dict-keying site in "
+            f"_fetch_modern_cohort Step 4.",
+        )
+        # Confirm the cohort_member_provenance carries plain bbls
+        # (not suffixed) — downstream event queries depend on this.
+        provenance = (cache.get("peer_criteria") or {}).get(
+            "cohort_member_provenance"
+        ) or []
+        for entry in provenance:
+            bbl = entry.get("bbl")
+            if bbl:
+                self.assertNotIn(
+                    ".", bbl,
+                    f"cohort_member_provenance entry has bbl with "
+                    f"'.' suffix: {bbl!r}. Normalization must "
+                    f"happen before provenance is built.",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

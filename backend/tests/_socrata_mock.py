@@ -111,6 +111,25 @@ def _coerce_dt(s: str) -> Optional[datetime]:
         return None
 
 
+# PR #14G — Socrata-like numeric-text coercion. PLUTO stores bbl /
+# numfloors / yearbuilt as float-text with trailing ``.0+`` suffix
+# (e.g. ``"3012440018.00000000"``). When a query compares against a
+# plain integer literal (``bbl = '3012440018'``), live Socrata
+# treats the column as numeric and matches. The mock previously did
+# strict string equality, so seeding PLUTO with the production
+# ``.00000000`` suffix broke tests. Strip a trailing ``.0+`` from
+# numeric-looking text on both sides of a comparison to mirror
+# Socrata's behavior. Non-numeric strings (dates, free text) and
+# decimals with non-zero fractional parts pass through unchanged.
+def _strip_trailing_zero_decimal(value: Any) -> str:
+    s = str(value).strip() if value is not None else ""
+    if "." in s:
+        head, _, tail = s.partition(".")
+        if head and head.lstrip("-").isdigit() and tail and set(tail) <= {"0"}:
+            return head
+    return s
+
+
 def _compare(actual: Any, op: str, expected_str: str) -> bool:
     """Apply a SoQL comparator. Special-cases timestamps so a
     datetime field in the seeded row compares correctly against
@@ -125,7 +144,11 @@ def _compare(actual: Any, op: str, expected_str: str) -> bool:
             actual_dt = actual_dt.replace(tzinfo=timezone.utc)
         a, e = actual_dt, expected_dt
     else:
-        a, e = str(actual), expected_str
+        # PR #14G: mirror Socrata's numeric-column comparison so
+        # PLUTO bbl/numfloors/yearbuilt's ".00000000" suffix matches
+        # a plain integer literal on the WHERE right-hand side.
+        a = _strip_trailing_zero_decimal(actual)
+        e = _strip_trailing_zero_decimal(expected_str)
     return _eval_op(a, op, e)
 
 
@@ -186,7 +209,13 @@ def _eval_clause(clause: str, row: Dict[str, Any]) -> bool:
         for q, n in re.findall(r"'([^']*)'|(-?\d+(?:\.\d+)?)", items_str):
             items.append(q if q else n)
         actual = row.get(field)
-        return str(actual) in items
+        # PR #14G: numeric-text coercion mirrors Socrata's typed
+        # numeric column behavior (PLUTO bbl "3012440018.00000000"
+        # matches plain item "3012440018"). Strip trailing .0+ from
+        # both sides before set membership.
+        actual_norm = _strip_trailing_zero_decimal(actual)
+        items_norm = [_strip_trailing_zero_decimal(i) for i in items]
+        return actual_norm in items_norm
 
     # PR #14D §8.1: LIKE pattern matching with SoQL wildcard semantics.
     m = _RE_LIKE.match(clause)
