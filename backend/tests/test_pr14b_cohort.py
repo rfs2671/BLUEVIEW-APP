@@ -138,6 +138,39 @@ class TestCohortConfig(unittest.TestCase):
         self.assertIn("geography_ladder", spec)
         self.assertIn("completion_filter", spec)
 
+        # PR #14E — Modern path config (Q2 lock + Q3 yearbuilt filter).
+        self.assertIn(
+            "modern_path", spec,
+            "PR #14E: new_building spec must carry a modern_path "
+            "config dict. Stage 3: add to COHORT_CONFIG entries "
+            "(cohort_config.py). Shape: "
+            "{'pkdm_job_types': tuple, 'yearbuilt_filter_min': int}.",
+        )
+        modern = spec["modern_path"]
+        self.assertIsNotNone(modern,
+            "new_building HAS a modern path; only full_demo has "
+            "modern_path=None (Q4 lock).")
+        self.assertIn("pkdm_job_types", modern)
+        # Risk 3: both casings of NEW BUILDING per pkdm-hqz6 vocab.
+        pkdm_types = set(modern["pkdm_job_types"])
+        self.assertEqual(
+            pkdm_types, {"NEW BUILDING", "New Building"},
+            "new_building.modern_path.pkdm_job_types must include "
+            "both 'NEW BUILDING' and 'New Building' (Risk 3 case "
+            "variants in pkdm-hqz6 enum).",
+        )
+        # Q3 lock: NB cohort applies yearbuilt >= 2000 filter.
+        self.assertEqual(
+            modern.get("yearbuilt_filter_min"), 2000,
+            "new_building.modern_path.yearbuilt_filter_min must "
+            "be 2000 (Q3 lock — modern-era construction peers).",
+        )
+        # PR #14E — Legacy path config (Q7 fallback).
+        self.assertIn("legacy_path", spec)
+        legacy = spec["legacy_path"]
+        self.assertIn("bis_job_types", legacy)
+        self.assertIn("NB", legacy["bis_job_types"])
+
     def test_major_alt_with_enlargement_secondary_fallback_to_nb(self):
         """Test 2 — operator's spec: when major_alt cohort < 30,
         secondary_fallback expands to include new_building cohort."""
@@ -153,6 +186,29 @@ class TestCohortConfig(unittest.TestCase):
             spec["secondary_fallback"].get("expands_to"),
             "new_building",
             "secondary_fallback should expand to new_building cohort",
+        )
+
+        # PR #14E — Modern path: ALTERATION TYPE 1; no yearbuilt filter (Q3).
+        self.assertIn("modern_path", spec)
+        modern = spec["modern_path"]
+        self.assertIsNotNone(modern)
+        self.assertIn(
+            "ALTERATION TYPE 1", modern.get("pkdm_job_types", []),
+            "major_alt_with_enlargement.modern_path.pkdm_job_types "
+            "must include 'ALTERATION TYPE 1' per Stage 1 Task 4 "
+            "enum discovery.",
+        )
+        self.assertIsNone(
+            modern.get("yearbuilt_filter_min"),
+            "A1 cohort must NOT filter by yearbuilt (Q3 lock — "
+            "filter applies to NB only).",
+        )
+        # Legacy path preserves PR #14B secondary_fallback semantics.
+        self.assertIn("legacy_path", spec)
+        self.assertIn(
+            "secondary_fallback", spec["legacy_path"],
+            "Legacy path retains secondary_fallback (A1 → NB merge "
+            "when primary < 30) per PR #14B T4 lock.",
         )
 
     def test_minor_alt_spec_no_story_or_unit_filtering(self):
@@ -177,6 +233,17 @@ class TestCohortConfig(unittest.TestCase):
             "minor_alt should map to BIS job_types A2 + A3",
         )
 
+        # PR #14E — Modern path: Alteration CO; no yearbuilt filter.
+        self.assertIn("modern_path", spec)
+        modern = spec["modern_path"]
+        self.assertIsNotNone(modern)
+        self.assertIn(
+            "Alteration CO", modern.get("pkdm_job_types", []),
+            "minor_alt.modern_path.pkdm_job_types must include "
+            "'Alteration CO' per Stage 1 Task 1 pkdm-hqz6 enum.",
+        )
+        self.assertIsNone(modern.get("yearbuilt_filter_min"))
+
     def test_full_demo_spec_uses_demolished_attributes(self):
         """Test 4 — full_demo cohort filters on the DEMOLISHED
         structure's attributes (from PLUTO snapshot frozen at
@@ -191,6 +258,24 @@ class TestCohortConfig(unittest.TestCase):
         )
         bis_types = spec.get("bis_job_types") or spec.get("job_types") or []
         self.assertIn("DM", bis_types)
+
+        # PR #14E Q4 lock: full_demo has NO modern path (pkdm-hqz6
+        # has no DEMOLITION job_type; C of O is for OCCUPANCY).
+        # Cohort stays BIS DM only.
+        self.assertIn("modern_path", spec,
+            "full_demo spec must EXPLICITLY carry modern_path key "
+            "set to None (Q4 lock) — distinguishes 'BIS-only by "
+            "design' from 'missing config'.")
+        self.assertIsNone(
+            spec["modern_path"],
+            "full_demo.modern_path must be None per Q4 lock — "
+            "pkdm-hqz6 has no DEMOLITION job_type so cohort sources "
+            "from BIS DM only. _fetch_demo_cohort handles this path "
+            "(T7 lock).",
+        )
+        # Legacy path still carries DM.
+        self.assertIn("legacy_path", spec)
+        self.assertIn("DM", spec["legacy_path"].get("bis_job_types", []))
 
     def test_unknown_project_type_returns_no_cohort_spec(self):
         """Test 5 — unknown is a marker meaning 'classifier failed';
@@ -349,6 +434,64 @@ class TestDobNowParser(unittest.TestCase):
             "Facade repair must NOT be classified as enlargement",
         )
         self.assertEqual(result.get("use_type"), "other")
+
+    def test_extract_enlargement_returns_false_on_negation(self):
+        """PR #14E §7.1 + T2 lock — negation keywords win over
+        positive enlargement keywords.
+
+        Pre-PR-14E parser matched literal "ENLARGEMENT" as positive
+        without checking for "NO ENLARGEMENT" / "NOT ENLARGED" / etc.
+        Stage 1 Task 5 sample BIN 3057867 had description ending
+        "...NO ENLARGEMENT IS PROPOSED. REMOVE PART EXT WALL..." —
+        classifier mis-categorized as major_alt_with_enlargement.
+
+        Stage 3 fix (dob_now_parser._extract_enlargement):
+          NEGATION_KEYWORDS = (
+              "NO ENLARGEMENT",
+              "NOT ENLARGED",
+              "WITHOUT ENLARGEMENT",
+              "NO INCREASE IN BULK",
+          )
+          if any(neg in text for neg in NEGATION_KEYWORDS):
+              return False  # negation wins, even if positive
+                            # enlargement/extension/addition keyword
+                            # also appears
+          return any(kw in text for kw in _ENLARGEMENT_KEYWORDS)
+        """
+        self._require_parser()
+        # Case A: explicit "NO ENLARGEMENT" alongside a positive
+        # extension keyword. Negation must win.
+        result = parse_dob_now_description(
+            "REAR EXTENSION 200 SQFT TO 1ST FLOOR. NO ENLARGEMENT "
+            "IS PROPOSED. STRUCTURAL SCOPE FILED SEPARATE.",
+            "General Construction",
+        )
+        self.assertFalse(
+            result.get("enlargement"),
+            "Explicit 'NO ENLARGEMENT' must beat positive "
+            "EXTENSION/ENLARGEMENT keyword. Stage 3 §7.1 + T2 lock: "
+            "add NEGATION_KEYWORDS pre-filter to "
+            "dob_now_parser._extract_enlargement (lib/statistical_engine/"
+            "dob_now_parser.py)."
+        )
+        # Case B: "WITHOUT ENLARGEMENT" variant.
+        result_b = parse_dob_now_description(
+            "INTERIOR PARTITION WORK WITHOUT ENLARGEMENT.",
+            "General Construction",
+        )
+        self.assertFalse(result_b.get("enlargement"))
+        # Case C: positive enlargement language stays positive when
+        # NO negation present. Defensive regression check.
+        result_c = parse_dob_now_description(
+            "VERTICAL ENLARGEMENT OF EXISTING 3-STORY BUILDING.",
+            "General Construction",
+        )
+        self.assertTrue(
+            result_c.get("enlargement"),
+            "Positive enlargement description with NO negation "
+            "must still return True. Negation gate should not "
+            "over-fire.",
+        )
 
 
 # ──────────────────────────────────────────────────────────────────

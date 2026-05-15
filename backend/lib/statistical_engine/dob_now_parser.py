@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 # ── Regex patterns ────────────────────────────────────────────────
@@ -74,6 +74,23 @@ _ENLARGEMENT_KEYWORDS = (
     "VERTICAL",
     "HORIZONTAL",
     "EXPAND",
+)
+
+# PR #14E §7.1 + T2 + Risk 7 lock — negation phrases that explicitly
+# rule out enlargement, even when a positive keyword (ENLARGEMENT /
+# EXTENSION / ADDITION / etc.) also appears in the description.
+# Pre-PR-14E ``_extract_enlargement`` matched literal ``ENLARGEMENT``
+# as positive without checking for negation; Stage 1 Task 5 sample
+# BIN 3057867 ("...NO ENLARGEMENT IS PROPOSED. REMOVE PART EXT
+# WALL...") mis-classified as major_alt_with_enlargement.
+#
+# Negation gate runs FIRST in _extract_enlargement so explicit
+# negation always wins over a positive keyword hit.
+NEGATION_KEYWORDS = (
+    "NO ENLARGEMENT",
+    "NOT ENLARGED",
+    "WITHOUT ENLARGEMENT",
+    "NO INCREASE IN BULK",
 )
 
 _RESIDENTIAL_KEYWORDS = (
@@ -134,14 +151,29 @@ def parse_dob_now_description(
 
 
 def _extract_story_count(text: str) -> Optional[int]:
-    """Return the first ``N STORY``/``N STORIES``/``N-STORY`` value."""
-    m = _STORY_RE.search(text)
-    if not m:
+    """Return the MAX ``N STORY``/``N STORIES``/``N-STORY`` value
+    found in the text.
+
+    PR #14E rationale (§7.6 target_state): enlargement descriptions
+    routinely cite both the EXISTING and PROPOSED story counts
+    (e.g., Menahan: "EXISTING 2 STORY ... PROPOSED 4-STORY+CELLAR+MEZZ").
+    The cohort target_state needs the PROPOSED/post-enlargement
+    state, which is reliably the larger value. Demolitions and
+    new construction typically only cite one value, so max=value
+    in those cases. Returns None when no match.
+    """
+    matches = _STORY_RE.findall(text)
+    if not matches:
         return None
-    try:
-        return int(m.group(1))
-    except (TypeError, ValueError):
+    counts: List[int] = []
+    for m in matches:
+        try:
+            counts.append(int(m))
+        except (TypeError, ValueError):
+            continue
+    if not counts:
         return None
+    return max(counts)
 
 
 def _extract_dwelling_units(text: str) -> Optional[int]:
@@ -182,12 +214,21 @@ def _extract_use_type(text: str) -> str:
 
 
 def _extract_enlargement(text: str) -> bool:
-    """Return True iff any enlargement-family keyword is present.
+    """Return True iff any enlargement-family keyword is present
+    AND no negation phrase explicitly rules it out.
 
     The keyword list is biased toward recall over precision —
     misclassifying an enlargement as a minor_alt is worse than the
     reverse, so we tolerate a few false positives. The classifier
     layer applies additional ``work_type`` + NB-keyword constraints
     before assigning ``major_alt_with_enlargement``.
+
+    PR #14E §7.1 + T2 + Risk 7 lock — negation gate runs FIRST:
+    descriptions containing ``NO ENLARGEMENT`` / ``NOT ENLARGED`` /
+    ``WITHOUT ENLARGEMENT`` / ``NO INCREASE IN BULK`` return False
+    even when a positive keyword also appears. Operator's BIN
+    3057867 sample drove this fix.
     """
+    if any(neg in text for neg in NEGATION_KEYWORDS):
+        return False
     return any(kw in text for kw in _ENLARGEMENT_KEYWORDS)

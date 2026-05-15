@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -138,6 +139,43 @@ PEER_STATS_COHORT_TTL_DAYS = 14
 # window (e.g., a prewarm task that fired between deploy and
 # unset), the schema check catches it on the next read.
 PR14C_SCHEMA_VERSION = "pr14c"
+
+# PR #14E schema version stamp (Stage 3 §7.3 + Risk 6 lock).
+# Unified Cohort architecture flips cohort source from BIS-only
+# to Modern (pkdm-hqz6) primary + BIS Legacy fallback. Any cache
+# carrying the older ``pr14c`` stamp must be invalidated so the
+# new cohort_source_segments / target_state / cohort_member_provenance
+# shape gets recomputed. compare_project_to_peers reads this constant
+# at read time; deploy is paired with the operator's standard
+# ``$unset peer_stats_cache`` migration for belt-and-suspenders.
+PR14E_SCHEMA_VERSION = "pr14e"
+
+# PR #14E (Q2 lock) — DOB NOW C of O dataset. The Modern cohort
+# source: ships bbl + bin inline (so no PLUTO BIN→BBL bridge
+# needed) + job_type + c_of_o_filing_type + c_of_o_issuance_date.
+# Schema discovery (Stage 1 Task 1): job_type enum carries BOTH
+# casings ("NEW BUILDING" + "New Building" — Risk 3); issuance
+# date format is "MM/DD/YY HH:MM:SS AM/PM" with 1+ spaces between
+# date and time (§7.7 lock).
+DATASET_DOB_C_OF_O = "pkdm-hqz6"
+
+# PR #14E Q7 lock — Modern cohort floor. When _fetch_modern_cohort
+# returns fewer than this, _fetch_legacy_cohort is invoked to
+# extend; merge dedups by bbl. Threshold is strict-less-than 100
+# (exact 100 satisfies, 99 triggers Legacy).
+PR14E_MODERN_COHORT_FLOOR = 100
+
+# PR #14E (Q7 lock) — BIS Legacy "Golden Era" window. BIS stopped
+# receiving filings 2021+ (transition to DOB NOW). Legacy queries
+# restrict pre__filing_date to this window so cohort members are
+# both completed AND from the era when BIS was still authoritative.
+PR14E_LEGACY_WINDOW_START_ISO = "2018-06-30"
+PR14E_LEGACY_WINDOW_END_ISO = "2021-06-30"
+
+# PR #14E (T4 lock) — Modern cohort window (months back from now).
+# pkdm-hqz6 carries filings 2021+; we look back 36 months to match
+# the BIS primary cohort window used in PR #14B.
+PR14E_MODERN_WINDOW_MONTHS = 36
 
 # PR #14D Q4 lock — cohort_bins are capped at this size before the
 # PLUTO BIN→BBL join in compute_peer_stats_full Step 4. Some
@@ -734,9 +772,51 @@ async def compute_peer_stats_full(
         }
         cohort_bins = cohort_bins[:COHORT_MAX_PEERS_FOR_PLUTO_JOIN]
 
-    peer_bbl_list = await _resolve_bbls_for_cohort_bins(
-        socrata, cohort_bins,
-    )
+    # PR #14E §7.6 lock — Modern cohort rows ship bbl inline from
+    # pkdm-hqz6, so we can pull BBLs directly from
+    # cohort_member_provenance and skip the BIN→BBL bridge for
+    # those rows. Bridge stays in place for Legacy BIS rows
+    # (which carry bin only) AND as a final cap-applier (we slice
+    # cohort_bins to the cap above).
+    provenance_rows = cohort_result.get("cohort_member_provenance") or []
+    inline_bbls: List[str] = []
+    bridge_bins: List[str] = []
+    seen_provenance_bbls: set = set()
+    # Trim provenance to the same prefix length as cohort_bins so
+    # truncation stays consistent.
+    if len(provenance_rows) > COHORT_MAX_PEERS_FOR_PLUTO_JOIN:
+        provenance_rows = provenance_rows[:COHORT_MAX_PEERS_FOR_PLUTO_JOIN]
+    for entry in provenance_rows:
+        bbl_n = normalize_bbl(entry.get("bbl")) if entry.get("bbl") else None
+        if bbl_n:
+            if bbl_n not in seen_provenance_bbls:
+                inline_bbls.append(bbl_n)
+                seen_provenance_bbls.add(bbl_n)
+        elif entry.get("bin"):
+            bridge_bins.append(entry["bin"])
+
+    bridged_bbls: List[str] = []
+    if bridge_bins:
+        bridged_bbls = await _resolve_bbls_for_cohort_bins(
+            socrata, bridge_bins,
+        )
+
+    # Combine inline (Modern) + bridged (Legacy) BBLs; dedup.
+    peer_bbl_list: List[str] = []
+    seen_final: set = set()
+    for bbl in list(inline_bbls) + list(bridged_bbls):
+        bbl_n = normalize_bbl(bbl)
+        if bbl_n and bbl_n not in seen_final:
+            peer_bbl_list.append(bbl_n)
+            seen_final.add(bbl_n)
+
+    # Fall back to legacy BIN→BBL pathway when provenance is empty
+    # (defensive — covers pre-PR-14E cache-recompute scenarios).
+    if not peer_bbl_list and cohort_bins:
+        peer_bbl_list = await _resolve_bbls_for_cohort_bins(
+            socrata, cohort_bins,
+        )
+
     # Strip the project's own BBL so the comparison is
     # "us vs. peers", not "us vs. (peers + us)".
     if project_bbl:
@@ -805,8 +885,21 @@ async def compute_peer_stats_full(
         "lifecycle_skip_reason":       cohort_result.get("lifecycle_skip_reason"),
         # Q3 sentinel — empty cohort gets cohort_unavailable=True.
         "cohort_unavailable":          sample_size == 0,
-        # Schema version stamp (Q4 Option B).
-        "schema_version":              PR14C_SCHEMA_VERSION,
+        # PR #14E §7.3 + Risk 6 — schema version bump from
+        # PR14C_SCHEMA_VERSION. compare_project_to_peers invalidates
+        # any cache with schema_version != PR14E_SCHEMA_VERSION.
+        "schema_version":              PR14E_SCHEMA_VERSION,
+        # PR #14E surface additions (Q2 + Q5 + Q7).
+        "cohort_source_segments":  cohort_result.get("cohort_source_segments") or {
+            "modern_count": 0, "legacy_count": 0,
+            "modern_window_months": PR14E_MODERN_WINDOW_MONTHS,
+            "legacy_window_start":  PR14E_LEGACY_WINDOW_START_ISO,
+            "legacy_window_end":    PR14E_LEGACY_WINDOW_END_ISO,
+        },
+        "target_state":             cohort_result.get("target_state") or {},
+        "cohort_member_provenance": cohort_result.get(
+            "cohort_member_provenance",
+        ) or [],
         # Carryover keys preserved from V2.3 shape so other code
         # (incremental refresh + persistence) keeps working:
         "borough":                     project.get("borough"),
@@ -936,9 +1029,16 @@ def _assemble_cache(
         "lifecycle_skip_reason":       peer_meta.get("lifecycle_skip_reason"),
         # Q3 empty-cohort sentinel.
         "cohort_unavailable":          peer_meta.get("cohort_unavailable", False),
-        # Q4 Option B schema version stamp — drives the cache-hit
-        # invalidation check in compare_project_to_peers.
-        "schema_version":              PR14C_SCHEMA_VERSION,
+        # PR #14E §7.3 + Risk 6 schema bump (was PR14C_SCHEMA_VERSION).
+        # Drives the cache-hit invalidation check in
+        # compare_project_to_peers.
+        "schema_version":              PR14E_SCHEMA_VERSION,
+        # PR #14E surface additions — forward from peer_meta.
+        "cohort_source_segments":  peer_meta.get("cohort_source_segments") or {},
+        "target_state":            peer_meta.get("target_state") or {},
+        "cohort_member_provenance": peer_meta.get(
+            "cohort_member_provenance",
+        ) or [],
         # Carry-forward keys (used by incremental refresh + persist):
         "borough":                     peer_meta.get("borough"),
         "bbl":                         project_bbl,
@@ -1313,6 +1413,78 @@ def _parse_socrata_dt(value: Any) -> Optional[datetime]:
         return None
 
 
+# PR #14E (§7.2 + §7.7 + Risk 2 + T1 lock) — parser for pkdm-hqz6's
+# c_of_o_issuance_date column. Format is ``MM/DD/YY HH:MM:SS AM/PM``
+# with 1+ spaces between the date and time portions (production data
+# ships both single- and double-space variants per Stage 1 Task 1
+# curl probe). Distinct from ``_parse_socrata_dt`` because the latter
+# expects ISO-8601, and from ``_parse_socrata_yyyymmdd`` because that
+# expects an 8-digit numeric string.
+_PKDM_DATE_RE = re.compile(
+    r"^\s*"
+    r"(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<yy>\d{2})"
+    r"\s+"
+    r"(?P<hour>\d{1,2}):(?P<minute>\d{2}):(?P<second>\d{2})"
+    r"\s+"
+    r"(?P<ampm>AM|PM|am|pm)"
+    r"\s*$",
+)
+
+
+def _parse_pkdm_date(value: Any) -> Optional[datetime]:
+    """Parse pkdm-hqz6 ``c_of_o_issuance_date`` into a tz-aware UTC datetime.
+
+    Format: ``MM/DD/YY HH:MM:SS AM/PM`` with 1+ whitespace between
+    the date and time portions (§7.7 lock — production ships both
+    single- and double-space variants).
+
+    T1 Y2K cutoff: yy < 50 → 20yy; yy >= 50 → 19yy. Valid range
+    1950-2049 (2049 horizon documented; the data only contains
+    21st-century filings in practice).
+
+    Returns ``None`` on:
+      • non-string non-datetime input
+      • empty / whitespace-only string
+      • format mismatch
+      • out-of-range numeric values (e.g., month=13)
+
+    Pass-through for already-parsed ``datetime`` objects (mirrors
+    ``_parse_socrata_dt`` for caller ergonomics).
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str):
+        return None
+    m = _PKDM_DATE_RE.match(value)
+    if not m:
+        return None
+    try:
+        month = int(m.group("month"))
+        day = int(m.group("day"))
+        yy = int(m.group("yy"))
+        hour12 = int(m.group("hour"))
+        minute = int(m.group("minute"))
+        second = int(m.group("second"))
+    except (TypeError, ValueError):
+        return None
+    ampm = m.group("ampm").upper()
+    # T1 Y2K cutoff.
+    year = (2000 + yy) if yy < 50 else (1900 + yy)
+    # 12-hour → 24-hour conversion: 12 AM → 00, 12 PM → 12,
+    # 1-11 AM → 1-11, 1-11 PM → 13-23.
+    if hour12 == 12:
+        hour24 = 0 if ampm == "AM" else 12
+    else:
+        hour24 = hour12 if ampm == "AM" else hour12 + 12
+    try:
+        return datetime(
+            year, month, day, hour24, minute, second,
+            tzinfo=timezone.utc,
+        )
+    except ValueError:
+        return None
+
+
 def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
     """Parse the ``issue_date`` text column from dob_violations
     (3h2n-5cm9), which is a YYYYMMDD string like ``"20171227"``.
@@ -1423,6 +1595,9 @@ def _v22_shape_from_cache(cache: Dict[str, Any]) -> Dict[str, Any]:
         "borough":              criteria.get("borough"),
         "zipcode":              (criteria.get("pluto_snapshot") or {}).get("zipcode"),
         "cohort_unavailable":   criteria.get("cohort_unavailable", False),
+        # PR #14E surface forwarding — FE drawer renders these.
+        "cohort_source_segments":  criteria.get("cohort_source_segments") or {},
+        "target_state":            criteria.get("target_state") or {},
     }
 
     out: Dict[str, Any] = {"peer_set": peer_set}
@@ -1550,13 +1725,12 @@ async def compare_project_to_peers(
     cur_now = now or datetime.now(timezone.utc)
     cache = project.get("peer_stats_cache")
 
-    # PR #14C Q4 Option B + T4: schema-version invalidation.
-    # If a ``status=ready`` cache lacks ``schema_version`` OR
-    # carries a value other than the current
-    # ``PR14C_SCHEMA_VERSION``, treat it as a miss → fall through
-    # to recompute. Catches V2.3-shape caches that survived the
-    # deploy-time ``$unset`` migration (or were written by a stale
-    # prewarm task between deploy and the unset script).
+    # PR #14E §7.3 + Risk 6 (was PR #14C Q4 Option B + T4):
+    # schema-version invalidation. If a ``status=ready`` cache
+    # lacks ``schema_version`` OR carries a value other than the
+    # current ``PR14E_SCHEMA_VERSION``, treat it as a miss → fall
+    # through to recompute. Catches PR14C- (and earlier) shape
+    # caches that survived the deploy-time ``$unset`` migration.
     #
     # Gated on ``status=ready`` because pending + failed are status
     # markers written by prewarm + refresh_cron BEFORE compute_peer_stats_full
@@ -1565,14 +1739,14 @@ async def compare_project_to_peers(
     # concurrent compare/prewarm calls coexist (V2.3 Commit 4).
     if cache and cache.get("status") == "ready":
         criteria = cache.get("peer_criteria") or {}
-        if criteria.get("schema_version") != PR14C_SCHEMA_VERSION:
+        if criteria.get("schema_version") != PR14E_SCHEMA_VERSION:
             logger.info(
                 "[baselines] peer_stats_cache schema mismatch for "
                 "%s (got %r, expected %r); invalidating + "
                 "forcing recompute",
                 project.get("_id"),
                 criteria.get("schema_version"),
-                PR14C_SCHEMA_VERSION,
+                PR14E_SCHEMA_VERSION,
             )
             cache = None
 
@@ -1737,10 +1911,18 @@ def _cohort_duration_median(cohort_records: List[Dict[str, Any]]) -> Optional[fl
     """
     durations: List[float] = []
     for r in cohort_records or []:
-        permit_raw = r.get("permit_issue_date") or r.get("fully_permitted")
-        c_of_o_raw = r.get("c_o_issue_date")
-        permit_dt = _parse_socrata_dt(permit_raw)
-        c_of_o_dt = _parse_socrata_dt(c_of_o_raw)
+        permit_raw = (
+            r.get("permit_issue_date")
+            or r.get("permit_issued_date")  # PR #14E rbx6-tga4 cross-join key
+            or r.get("fully_permitted")
+        )
+        c_of_o_raw = r.get("c_o_issue_date") or r.get("c_of_o_issuance_date")
+        # PR #14E §7.2 — try ISO parser first (V2.3 BIS path), fall
+        # back to pkdm-hqz6's MM/DD/YY HH:MM:SS AM/PM format (Modern
+        # path). Same dual-parse for permit dates in case rbx6-tga4
+        # cross-join populated them as ISO strings.
+        permit_dt = _parse_socrata_dt(permit_raw) or _parse_pkdm_date(permit_raw)
+        c_of_o_dt = _parse_socrata_dt(c_of_o_raw) or _parse_pkdm_date(c_of_o_raw)
         if not permit_dt or not c_of_o_dt:
             continue
         delta_days = (c_of_o_dt - permit_dt).total_seconds() / 86400.0
@@ -2220,6 +2402,545 @@ async def _active_project_completion_pct(
     return (completion_pct, observed_milestones)
 
 
+# ── PR #14E — Unified Cohort: target state derivation ────────
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    """Best-effort int conversion. Returns None on TypeError / ValueError
+    / None / empty-string. Used across target-state derivation where
+    PLUTO values arrive as strings."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_target_state_for_project(
+    project: Dict[str, Any],
+    project_type: str,
+) -> Dict[str, Any]:
+    """PR #14E Q5 lock — derive cohort target_state from project doc.
+
+    Returns a dict with the shape:
+      {
+          "bldgclass":     str | None,
+          "numfloors":     int | None,
+          "numfloors_band": (low, high) | None,
+          "source":        "parser" | "pluto" | "pluto_fallback" | "frozen_pluto_snapshot",
+          "band_widened":  bool,
+          "yearbuilt_filter_min": int | None,
+          "apply_yearbuilt_filter": bool,
+      }
+
+    Project-type semantics:
+      • new_building — bldgclass + numfloors from current PLUTO
+        snapshot; source = ``pluto``; numfloors band = ±25%;
+        yearbuilt filter enforced at >=2000 (Q3 lock).
+      • major_alt_with_enlargement (A1) — bldgclass from PLUTO;
+        numfloors via Q5 hybrid:
+          - parser primary when ``dob_extracted_scope.story_count``
+            is a confident positive int → source=``parser``,
+            band=±25%.
+          - PLUTO fallback otherwise → source=``pluto_fallback``,
+            band=±50% (widened), ``band_widened=True``.
+        No yearbuilt filter (Q3 lock — NB-only).
+      • minor_alt — bldgclass from PLUTO; numfloors=None (no story
+        filter for minor_alt per spec); source=``pluto``.
+      • full_demo — uses FROZEN pluto_snapshot per Risk 7. source=
+        ``frozen_pluto_snapshot``; bldgclass + numfloors from the
+        pre-demolition snapshot.
+
+    Returned dict feeds both ``_fetch_modern_cohort`` and
+    ``_fetch_legacy_cohort``. Inclusion in peer_criteria allows the
+    FE to display the cohort's matching attributes.
+    """
+    snapshot = project.get("pluto_snapshot") or {}
+    bldgclass = snapshot.get("bldgclass")
+    pluto_numfloors = _safe_int(snapshot.get("numfloors"))
+    parser_scope = project.get("dob_extracted_scope") or {}
+    parser_floors = _safe_int(parser_scope.get("story_count"))
+
+    base: Dict[str, Any] = {
+        "bldgclass":              bldgclass,
+        "numfloors":              None,
+        "numfloors_band":         None,
+        "source":                 "pluto",
+        "band_widened":           False,
+        "yearbuilt_filter_min":   None,
+        "apply_yearbuilt_filter": False,
+    }
+
+    if project_type == "new_building":
+        base["numfloors"] = pluto_numfloors
+        if pluto_numfloors and pluto_numfloors > 0:
+            base["numfloors_band"] = list(
+                compute_tolerance_band(pluto_numfloors, 0.25, 1),
+            )
+        base["yearbuilt_filter_min"] = 2000
+        base["apply_yearbuilt_filter"] = True
+        base["source"] = "pluto"
+        return base
+
+    if project_type == "major_alt_with_enlargement":
+        # Q5 hybrid — parser primary, PLUTO fallback.
+        if parser_floors and parser_floors > 0:
+            base["numfloors"] = parser_floors
+            base["numfloors_band"] = list(
+                compute_tolerance_band(parser_floors, 0.25, 1),
+            )
+            base["source"] = "parser"
+            base["band_widened"] = False
+        else:
+            base["numfloors"] = pluto_numfloors
+            if pluto_numfloors and pluto_numfloors > 0:
+                # PLUTO fallback gets a wider ±50% band per Q5 because
+                # PLUTO snapshot reflects pre-enlargement state which
+                # is less reliable as a proxy for post-enlargement
+                # peer matching.
+                base["numfloors_band"] = list(
+                    compute_tolerance_band(pluto_numfloors, 0.50, 1),
+                )
+            base["source"] = "pluto_fallback"
+            base["band_widened"] = True
+        return base
+
+    if project_type == "minor_alt":
+        # No numfloors filter for minor_alt per spec.
+        base["numfloors"] = None
+        base["numfloors_band"] = None
+        base["source"] = "pluto"
+        return base
+
+    if project_type == "full_demo":
+        # T7 lock — frozen pluto_snapshot is the source of truth.
+        base["numfloors"] = pluto_numfloors
+        if pluto_numfloors and pluto_numfloors > 0:
+            base["numfloors_band"] = list(
+                compute_tolerance_band(pluto_numfloors, 0.25, 1),
+            )
+        base["source"] = "frozen_pluto_snapshot"
+        return base
+
+    # unknown / unmapped — return base with no narrowing applied.
+    return base
+
+
+# ── PR #14E — Modern cohort source (pkdm-hqz6) ───────────────
+
+
+def _modern_pluto_match(
+    pluto_row: Dict[str, Any],
+    target: Dict[str, Any],
+) -> bool:
+    """Apply target-state filter (bldgclass + numfloors band +
+    optional yearbuilt floor) to a single PLUTO row. Defensive on
+    missing values — if a PLUTO row lacks the field, we keep it
+    rather than drop (better recall than precision; sample-size
+    floor downstream).
+    """
+    target_class = target.get("bldgclass")
+    if target_class:
+        row_class = pluto_row.get("bldgclass")
+        if row_class and row_class != target_class:
+            return False
+    band = target.get("numfloors_band")
+    if band:
+        row_floors = _safe_int(pluto_row.get("numfloors"))
+        if row_floors is not None:
+            low, high = band[0], band[1]
+            if not (low <= row_floors <= high):
+                return False
+    if target.get("apply_yearbuilt_filter"):
+        ymin = target.get("yearbuilt_filter_min")
+        if ymin is not None:
+            row_year = _safe_int(pluto_row.get("yearbuilt"))
+            if row_year is None or row_year < ymin:
+                return False
+    return True
+
+
+async def _fetch_modern_cohort(
+    socrata,
+    project: Dict[str, Any],
+    *,
+    now: Optional[datetime] = None,
+    target_state: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """PR #14E §7.6 + T4 — fetch Modern cohort from pkdm-hqz6.
+
+    Pipeline:
+      1. Build WHERE: ``c_of_o_filing_type IN ('Final', 'Initial')
+         AND job_type IN (<case variants>) AND borough = <upper>``.
+         Returns [] when project_type has no modern_path (full_demo).
+      2. Query pkdm-hqz6 (no PLUTO bridge needed — bbl + bin ship
+         inline per Stage 1 Task 1).
+      3. Apply 36-month window post-hoc against c_of_o_issuance_date
+         (parsed with ``_parse_pkdm_date`` — pkdm-hqz6 ships dates
+         in MM/DD/YY format, not ISO, so the SoQL WHERE can't filter
+         by date directly without a date-coercion layer).
+      4. PLUTO chunked + parallel join (Fix 3 pattern from PR #14D)
+         to fetch bldgclass + numfloors + yearbuilt per cohort bbl.
+      5. Apply target_state filter (bldgclass + numfloors band +
+         optional yearbuilt >=2000).
+      6. rbx6-tga4 chunked + parallel cross-join by BIN to enrich
+         each cohort row with ``permit_issued_date`` for downstream
+         lifecycle duration math (Q6 lock).
+      7. Return list of dicts:
+           [{bbl, bin, job_filing_name, c_of_o_issuance_date,
+             permit_issued_date, source: 'modern', ...}, ...]
+
+    Args:
+        socrata: SocrataClient instance.
+        project: Project doc (must carry borough + pluto_snapshot
+            + optionally dob_extracted_scope + dob_project_type).
+        now: Optional injection point for tests; defaults to
+            ``datetime.now(timezone.utc)``.
+        target_state: Pre-derived target_state dict. When not
+            provided, derived inline via
+            ``_derive_target_state_for_project``.
+
+    Returns ``[]`` if:
+      • project_type has no modern_path (full_demo per Q4)
+      • borough missing
+      • pkdm-hqz6 query fails or returns 0 rows
+    """
+    cur_now = now or datetime.now(timezone.utc)
+    project_type = project.get("dob_project_type")
+    spec = COHORT_CONFIG.get(project_type)
+    if spec is None:
+        return []
+    modern_cfg = spec.get("modern_path")
+    if not modern_cfg:
+        # full_demo (Q4 lock) — no Modern path.
+        return []
+
+    target = target_state or _derive_target_state_for_project(
+        project, project_type,
+    )
+
+    borough = (
+        project.get("borough")
+        or (project.get("pluto_snapshot") or {}).get("borough")
+    )
+    if not borough:
+        return []
+    borough_upper = borough.strip().upper()
+
+    pkdm_job_types = list(modern_cfg.get("pkdm_job_types") or ())
+    if not pkdm_job_types:
+        return []
+
+    # ── Step 1+2: query pkdm-hqz6 ──────────────────────────────
+    where_parts = [
+        _soql_in("c_of_o_filing_type", ["Final", "Initial"]),
+        _soql_in("job_type", pkdm_job_types),
+        f"borough = {_soql_quote(borough_upper)}",
+    ]
+    where = " AND ".join(where_parts)
+    try:
+        pkdm_rows = await socrata.query(
+            DATASET_DOB_C_OF_O,
+            where=where,
+            limit=10000,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] pkdm-hqz6 Modern cohort fetch failed: %r", e,
+        )
+        return []
+
+    if not pkdm_rows:
+        return []
+
+    # ── Step 3: 36-month post-hoc date window ─────────────────
+    window_start = cur_now - timedelta(days=30 * PR14E_MODERN_WINDOW_MONTHS)
+    in_window: List[Dict[str, Any]] = []
+    for r in pkdm_rows:
+        issued_raw = r.get("c_of_o_issuance_date")
+        issued_dt = _parse_pkdm_date(issued_raw) or _parse_socrata_dt(issued_raw)
+        if issued_dt is None:
+            # Defensive — keep undated rows rather than drop them;
+            # downstream lifecycle median tolerates missing date.
+            in_window.append(r)
+            continue
+        if issued_dt >= window_start:
+            in_window.append(r)
+    pkdm_rows = in_window
+
+    if not pkdm_rows:
+        return []
+
+    # ── Step 4: PLUTO chunked + parallel join ────────────────
+    cohort_bbls = [
+        normalize_bbl(r.get("bbl"))
+        for r in pkdm_rows if r.get("bbl")
+    ]
+    cohort_bbls = [b for b in cohort_bbls if b]
+
+    pluto_by_bbl: Dict[str, Dict[str, Any]] = {}
+    if cohort_bbls:
+        async def _query_pluto_chunk(chunk: List[str]) -> List[Dict[str, Any]]:
+            try:
+                return await socrata.query(
+                    DATASET_PLUTO,
+                    where=_soql_in("bbl", chunk),
+                    select=["bbl", "bldgclass", "numfloors", "yearbuilt"],
+                    limit=10000,
+                )
+            except SocrataQueryError as e:
+                logger.warning(
+                    "[baselines] Modern cohort PLUTO chunk failed: %r",
+                    e,
+                )
+                return []
+
+        chunks = list(_chunk(cohort_bbls, SOQL_IN_CHUNK_SIZE))
+        chunk_results = await asyncio.gather(
+            *(_query_pluto_chunk(c) for c in chunks),
+        )
+        for rows in chunk_results:
+            for pr in rows:
+                bbl_n = normalize_bbl(pr.get("bbl"))
+                if bbl_n:
+                    pluto_by_bbl[bbl_n] = pr
+
+    # ── Step 5: target_state filter ───────────────────────────
+    filtered: List[Dict[str, Any]] = []
+    for r in pkdm_rows:
+        bbl_n = normalize_bbl(r.get("bbl"))
+        pluto_row = pluto_by_bbl.get(bbl_n) if bbl_n else None
+        if pluto_row is None:
+            # No PLUTO match — drop the row; target_state filter
+            # can't be applied without it.
+            continue
+        if not _modern_pluto_match(pluto_row, target):
+            continue
+        merged = dict(r)
+        merged["bbl"] = bbl_n
+        merged["pluto_bldgclass"] = pluto_row.get("bldgclass")
+        merged["pluto_numfloors"] = pluto_row.get("numfloors")
+        merged["pluto_yearbuilt"] = pluto_row.get("yearbuilt")
+        merged["source"] = "modern"
+        filtered.append(merged)
+
+    if not filtered:
+        return []
+
+    # ── Step 6: rbx6-tga4 cross-join for permit_issued_date ──
+    cohort_bins = [r.get("bin") for r in filtered if r.get("bin")]
+    permit_by_bin: Dict[str, str] = {}
+    if cohort_bins:
+        async def _query_permit_chunk(chunk: List[str]) -> List[Dict[str, Any]]:
+            try:
+                return await socrata.query(
+                    DATASET_DOB_PERMITS,
+                    where=(
+                        f"{_soql_in('bin', chunk)} AND "
+                        f"permit_status = {_soql_quote('Signed-off')}"
+                    ),
+                    select=["bin", "issued_date", "approved_date"],
+                    limit=10000,
+                )
+            except SocrataQueryError as e:
+                logger.warning(
+                    "[baselines] Modern cohort rbx6-tga4 chunk failed: %r",
+                    e,
+                )
+                return []
+
+        bin_chunks = list(_chunk(cohort_bins, SOQL_IN_CHUNK_SIZE))
+        bin_chunk_results = await asyncio.gather(
+            *(_query_permit_chunk(c) for c in bin_chunks),
+        )
+        for rows in bin_chunk_results:
+            for permit_row in rows:
+                bin_id = permit_row.get("bin")
+                if not bin_id:
+                    continue
+                # Earliest issued_date wins (first-permit-issued =
+                # cohort lifecycle t_0).
+                issued = (
+                    permit_row.get("issued_date")
+                    or permit_row.get("approved_date")
+                )
+                if not issued:
+                    continue
+                existing = permit_by_bin.get(bin_id)
+                if existing is None or issued < existing:
+                    permit_by_bin[bin_id] = issued
+
+    for r in filtered:
+        bin_id = r.get("bin")
+        r["permit_issued_date"] = permit_by_bin.get(bin_id) if bin_id else None
+        r["permit_issue_date"] = r["permit_issued_date"]  # alias for legacy
+        # Promote the pkdm issuance date into the canonical c_o key
+        # so _cohort_duration_median picks it up via existing dual
+        # parsers.
+        if "c_o_issue_date" not in r:
+            r["c_o_issue_date"] = r.get("c_of_o_issuance_date")
+
+    return filtered
+
+
+# ── PR #14E — Legacy cohort source (BIS Golden Era) ──────────
+
+
+async def _fetch_legacy_cohort(
+    socrata,
+    project: Dict[str, Any],
+    *,
+    target_state: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """PR #14E §7.6 + Q7 — fetch Legacy cohort from BIS Golden Era.
+
+    Queries ic3t-wcy2 with:
+      • job_type IN (<bis_job_types from legacy_path>)
+      • building_class = <target_state.bldgclass>
+      • borough = <upper>
+      • job_status IN ('X', 'U')
+      • pre__filing_date BETWEEN '2018-06-30' AND '2021-06-30'
+
+    Per Q7 lock — BIS stopped receiving filings 2021+; the Golden
+    Era window bounds cohort members to pre-DOB-NOW filings that
+    still completed.
+
+    target_state filter (bldgclass + optional story band) is applied
+    in WHERE where possible (bldgclass), and post-hoc on the
+    ``total_construction_floor_area`` proxy for story count
+    (matches PR #14B band semantics).
+
+    Returns ``[]`` if no rows match (caller drops to empty_cohort
+    sentinel rather than raising). Each row is annotated with
+    ``source="legacy"`` for cohort_member_provenance.
+    """
+    project_type = project.get("dob_project_type")
+    spec = COHORT_CONFIG.get(project_type)
+    if spec is None:
+        return []
+    legacy_cfg = spec.get("legacy_path")
+    if not legacy_cfg:
+        return []
+
+    target = target_state or _derive_target_state_for_project(
+        project, project_type,
+    )
+
+    borough = (
+        project.get("borough")
+        or (project.get("pluto_snapshot") or {}).get("borough")
+    )
+    if not borough:
+        return []
+
+    bis_job_types = list(legacy_cfg.get("bis_job_types") or ())
+    if not bis_job_types:
+        return []
+
+    window_start = legacy_cfg.get("window_start_iso", PR14E_LEGACY_WINDOW_START_ISO)
+    window_end = legacy_cfg.get("window_end_iso", PR14E_LEGACY_WINDOW_END_ISO)
+
+    where_parts: List[str] = [
+        _soql_in("job_type", bis_job_types),
+        f"borough = {_soql_quote(borough.upper())}",
+        _soql_in("job_status", ["X", "U"]),
+        f"pre__filing_date >= {_soql_quote(window_start)}",
+        f"pre__filing_date <= {_soql_quote(window_end)}",
+    ]
+    target_class = target.get("bldgclass")
+    if target_class:
+        where_parts.append(
+            f"building_class = {_soql_quote(target_class)}",
+        )
+    where = " AND ".join(where_parts)
+
+    try:
+        rows = await socrata.query(
+            DATASET_BIS_JOB_FILINGS,
+            where=where,
+            limit=10000,
+        )
+    except SocrataQueryError as e:
+        logger.warning(
+            "[baselines] Legacy BIS cohort fetch failed: %r", e,
+        )
+        return []
+
+    if not rows:
+        return []
+
+    # ── Post-hoc target-state band filter (numfloors via TCFA proxy) ─
+    # Builds a synthetic ``spec_values`` dict so we can reuse the
+    # existing PR #14B ``_apply_band_filters`` helper.
+    band = target.get("numfloors_band")
+    if band:
+        synthetic = {"story_count_band": list(band)}
+        rows = _apply_band_filters(rows, synthetic)
+
+    # ── Annotate with bbl + provenance ────────────────────────
+    # BIS rows are BIN-indexed; BBL is not always derivable inline.
+    # PR #14B's compute_peer_stats_full bridges via PLUTO BIN→BBL
+    # (still in use for the Legacy code path). For the Modern→Legacy
+    # merge dedup, the BIN identifier serves as the join key for
+    # cohort_member_provenance.
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        merged = dict(r)
+        # Best-effort BBL: trust an inline ``bbl`` column when
+        # present (some BIS slices include it); otherwise leave None
+        # and let downstream resolution (PLUTO BIN→BBL bridge) fill in.
+        merged["bbl"] = normalize_bbl(r.get("bbl"))
+        merged["bin"] = r.get("bin__") or r.get("bin")
+        merged["source"] = "legacy"
+        # Synthesize lifecycle date keys for downstream median math.
+        merged["permit_issue_date"] = (
+            r.get("fully_permitted") or r.get("pre__filing_date")
+        )
+        out.append(merged)
+
+    return out
+
+
+# ── PR #14E — full_demo dedicated path (T7 lock) ─────────────
+
+
+async def _fetch_demo_cohort(
+    socrata,
+    project: Dict[str, Any],
+    *,
+    target_state: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """PR #14E T7 lock — dedicated full_demo cohort helper.
+
+    pkdm-hqz6 has no DEMOLITION job_type (C of O is for OCCUPANCY,
+    not demolition) so full_demo cohort sources exclusively from
+    BIS DM. The active project's PLUTO snapshot is FROZEN at
+    project-create time per Risk 7 so we don't re-fetch a snapshot
+    that no longer reflects the demolished structure's attributes.
+
+    Implementation reuses ``_fetch_legacy_cohort`` after deriving
+    target_state from the frozen snapshot.
+
+    Returns rows with ``source="legacy"`` because semantically the
+    cohort comes from the same BIS Golden Era source; the
+    distinguishing feature is target_state.source =
+    ``frozen_pluto_snapshot``.
+    """
+    if project.get("dob_project_type") != "full_demo":
+        # Defensive — caller routed through _fetch_demo_cohort but
+        # project isn't full_demo; fall through to legacy.
+        return await _fetch_legacy_cohort(
+            socrata, project, target_state=target_state,
+        )
+    target = target_state or _derive_target_state_for_project(
+        project, "full_demo",
+    )
+    return await _fetch_legacy_cohort(
+        socrata, project, target_state=target,
+    )
+
+
 # ── Top-level cohort builder ──────────────────────────────────
 
 
@@ -2229,28 +2950,37 @@ async def compute_cohort_for_project(
     *,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """PR #14B — compute the cohort for a project.
+    """PR #14E §7.6 — compute the Unified Cohort for a project.
 
-    The output is the full Stage 2.A T1/T2 contract:
+    Architecture (Q2 + Q7 locks):
+      • Modern primary  — pkdm-hqz6 (DOB NOW C of O), 2021+ filings,
+        target-state-filtered. Bypasses PR #14C's PLUTO BIN→BBL
+        bridge because pkdm-hqz6 ships bbl + bin inline.
+      • Legacy fallback — BIS Golden Era (2018-06-30 .. 2021-06-30).
+        Activates ONLY when Modern returns < 100 rows.
+      • Merge rule    — Modern rows first; Legacy extension dedups
+        by bbl (when both present) or by bin (when bbl missing on
+        the BIS side). Caps at COHORT_MAX_PEERS_FOR_PLUTO_JOIN
+        post-merge.
+      • full_demo     — routes to ``_fetch_demo_cohort`` (T7 lock).
+        Modern path is None (Q4 lock).
 
-      {
-          "tier_used":                   str,
-          "fallback_level":              int (1-4),
-          "sample_size":                 int,
-          "low_confidence_flag":         bool,
-          "window_months":               int (36 or 60),
-          "completion_method":           str,
-          "cohort_filter_spec":          dict,
-          "cohort_job_numbers":          list[str],
-          "cohort_median_duration_days": float | None,
-          "lifecycle_skip_reason":       str | None,
-          "active_project":              {"completion_pct": float|None,
-                                          "observed_milestones": list[str]},
-      }
+    The output extends the PR #14B contract with three new keys:
 
-    For ``unknown`` project types — or any project type not in
-    ``COHORT_CONFIG`` — returns a degenerate result with
-    ``sample_size = 0`` and ``lifecycle_skip_reason = "no_spec"``.
+      • ``cohort_source_segments`` —
+            {"modern_count": int, "legacy_count": int,
+             "modern_window_months": 36,
+             "legacy_window_start": "2018-06-30",
+             "legacy_window_end": "2021-06-30"}
+      • ``target_state``  — see ``_derive_target_state_for_project``.
+      • ``cohort_member_provenance`` — list of dicts, one per cohort
+        row, with ``source ∈ {"modern", "legacy"}`` plus identifying
+        ``bbl``/``bin``/``job_id``.
+
+    Existing keys (``sample_size``, ``cohort_filter_spec``,
+    ``cohort_job_numbers``, ``cohort_bins``,
+    ``cohort_median_duration_days``, ``active_project``, etc.) are
+    preserved for backward compatibility with PR #14B/C consumers.
     """
     cur_now = now or datetime.now(timezone.utc)
     dob_type = project.get("dob_project_type")
@@ -2261,7 +2991,7 @@ async def compute_cohort_for_project(
         "fallback_level":              None,
         "sample_size":                 0,
         "low_confidence_flag":         False,
-        "window_months":               COHORT_WINDOW_MONTHS_PRIMARY,
+        "window_months":               PR14E_MODERN_WINDOW_MONTHS,
         "completion_method":           None,
         "cohort_filter_spec":          {},
         "cohort_job_numbers":          [],
@@ -2272,6 +3002,16 @@ async def compute_cohort_for_project(
             "completion_pct":      None,
             "observed_milestones": [],
         },
+        # PR #14E surface additions.
+        "cohort_source_segments": {
+            "modern_count":         0,
+            "legacy_count":         0,
+            "modern_window_months": PR14E_MODERN_WINDOW_MONTHS,
+            "legacy_window_start":  PR14E_LEGACY_WINDOW_START_ISO,
+            "legacy_window_end":    PR14E_LEGACY_WINDOW_END_ISO,
+        },
+        "target_state":              {},
+        "cohort_member_provenance":  [],
     }
 
     if spec is None:
@@ -2282,55 +3022,120 @@ async def compute_cohort_for_project(
     # else gets a lazy refresh when the snapshot is pre-PR-14B.
     await _ensure_pluto_snapshot_pr14b_complete(socrata, project)
 
-    cohort_rows, tier_used, fallback_level, window_months, completion_method, spec_values = (
-        await _ladder_search(socrata, project, spec, cur_now)
-    )
+    # ── Step 1: derive target_state from project + project_type ──
+    target_state = _derive_target_state_for_project(project, dob_type)
 
-    # Secondary fallback (major_alt_with_enlargement only).
-    secondary = spec.get("secondary_fallback")
-    if (
-        secondary
-        and len(cohort_rows) < secondary.get("trigger_below", 30)
-    ):
-        expands_to = secondary.get("expands_to")
-        expand_spec = COHORT_CONFIG.get(expands_to)
-        if expand_spec is not None:
-            extra_rows, _, _, _, _, _ = await _ladder_search(
-                socrata, project, expand_spec, cur_now,
+    # ── Step 2: full_demo dedicated path (T7 lock) ─────────────
+    if dob_type == "full_demo":
+        demo_rows = await _fetch_demo_cohort(
+            socrata, project, target_state=target_state,
+        )
+        modern_count = 0
+        legacy_count = len(demo_rows)
+        cohort_rows = demo_rows
+    else:
+        # ── Step 3: Modern primary fetch ──────────────────────
+        modern_rows = await _fetch_modern_cohort(
+            socrata, project,
+            now=cur_now, target_state=target_state,
+        )
+        modern_count = len(modern_rows)
+        cohort_rows: List[Dict[str, Any]] = list(modern_rows)
+
+        # ── Step 4: Legacy extension when Modern < floor ──────
+        legacy_count = 0
+        if modern_count < PR14E_MODERN_COHORT_FLOOR:
+            legacy_rows = await _fetch_legacy_cohort(
+                socrata, project, target_state=target_state,
             )
-            # Merge — dedup by job__ so the same BIS row isn't
-            # counted twice.
-            seen_jobs = {r.get("job__") for r in cohort_rows}
-            for r in extra_rows:
-                if r.get("job__") not in seen_jobs:
-                    cohort_rows.append(r)
-                    seen_jobs.add(r.get("job__"))
-            spec_values["secondary_fallback_applied"] = True
+            # Secondary fallback (A1 → NB) for Legacy path only —
+            # PR #14B T4 carry-over (Stage 2.A) preserved on the
+            # Legacy side.
+            legacy_cfg = spec.get("legacy_path") or {}
+            secondary = legacy_cfg.get("secondary_fallback")
+            if (
+                secondary
+                and len(legacy_rows) < secondary.get("trigger_below", 30)
+            ):
+                expands_to = secondary.get("expands_to")
+                expand_spec = COHORT_CONFIG.get(expands_to)
+                if expand_spec is not None:
+                    # Build a synthetic project for the expand spec so
+                    # _fetch_legacy_cohort routes through the right
+                    # legacy_path.
+                    expand_proj = dict(project)
+                    expand_proj["dob_project_type"] = expands_to
+                    extra_rows = await _fetch_legacy_cohort(
+                        socrata, expand_proj, target_state=target_state,
+                    )
+                    seen_keys = {
+                        (r.get("bin") or r.get("job__")) for r in legacy_rows
+                    }
+                    for r in extra_rows:
+                        key = r.get("bin") or r.get("job__")
+                        if key and key not in seen_keys:
+                            legacy_rows.append(r)
+                            seen_keys.add(key)
 
-    # Annotate with C of O for completion-date discovery.
-    cohort_rows, completion_method = await _enrich_with_c_of_o(
-        socrata, cohort_rows,
-    )
+            # ── Step 5: dedup-merge by bbl, then bin ──────────
+            # Note: the PR #14D cohort cap (500) is enforced by
+            # compute_peer_stats_full when it slices cohort_bins for
+            # the BIN→BBL bridge; we don't cap here so the caller
+            # can record the pre-cap size in the truncation marker.
+            seen_bbls = {
+                normalize_bbl(r.get("bbl")) for r in cohort_rows
+                if r.get("bbl")
+            }
+            seen_bins = {r.get("bin") for r in cohort_rows if r.get("bin")}
+            for r in legacy_rows:
+                bbl_n = normalize_bbl(r.get("bbl"))
+                bin_id = r.get("bin")
+                if bbl_n and bbl_n in seen_bbls:
+                    continue
+                if bin_id and bin_id in seen_bins:
+                    continue
+                cohort_rows.append(r)
+                if bbl_n:
+                    seen_bbls.add(bbl_n)
+                if bin_id:
+                    seen_bins.add(bin_id)
+            legacy_count = len(cohort_rows) - modern_count
 
     sample_size = len(cohort_rows)
     low_confidence = (
         COHORT_LOW_CONFIDENCE_FLOOR <= sample_size < COHORT_HIGH_CONFIDENCE_FLOOR
     )
 
-    cohort_job_numbers = [
-        r.get("job__") for r in cohort_rows if r.get("job__")
-    ]
-    # PR #14C: surface cohort BINs so compute_peer_stats_full
-    # can resolve them to BBLs via _resolve_bbls_for_cohort_bins
-    # (Q2/T2 PLUTO BIN→BBL join). BIS rows carry ``bin__``
-    # (double-underscore), not ``bin``.
-    cohort_bins = [
-        r.get("bin__") for r in cohort_rows if r.get("bin__")
-    ]
+    # ── Step 7: derive existing PR #14B output keys ───────────
+    cohort_filter_spec = _build_cohort_filter_spec(project, spec)
+    cohort_filter_spec["dob_project_type"] = dob_type
 
-    # Lifecycle median + skip reasons.
+    cohort_job_numbers: List[str] = []
+    cohort_bins: List[str] = []
+    provenance: List[Dict[str, Any]] = []
+    for r in cohort_rows:
+        # Stable job_id: prefer pkdm job_filing_name, then BIS job__.
+        job_id = (
+            r.get("job_filing_name")
+            or r.get("job__")
+            or r.get("application_number")
+            or r.get("job_filing_number")
+        )
+        if job_id:
+            cohort_job_numbers.append(job_id)
+        bin_id = r.get("bin") or r.get("bin__")
+        if bin_id:
+            cohort_bins.append(bin_id)
+        provenance.append({
+            "job_id": job_id,
+            "bbl":    normalize_bbl(r.get("bbl")) if r.get("bbl") else None,
+            "bin":    bin_id,
+            "source": r.get("source") or "modern",
+        })
+
+    # ── Step 8: lifecycle median ────────────────────────────
     if sample_size == 0:
-        cohort_median = None
+        cohort_median: Optional[float] = None
         lifecycle_skip_reason: Optional[str] = "empty_cohort"
     else:
         cohort_median = _cohort_duration_median(cohort_rows)
@@ -2338,21 +3143,33 @@ async def compute_cohort_for_project(
             None if cohort_median is not None else "no_duration_data"
         )
 
-    # Active project completion_pct + milestone snap.
+    # ── Step 9: active project completion_pct + milestone snap ─
     completion_pct, observed_milestones = await _active_project_completion_pct(
         socrata, project,
         cohort_median_duration_days=cohort_median,
         now=cur_now,
     )
 
+    # ── Step 10: determine completion_method label ─────────
+    # If Modern dominates, completion_method = "c_of_o_final"
+    # (pkdm-hqz6 IS the C of O dataset). Else BIS fallback.
+    completion_method = (
+        "c_of_o_final" if modern_count > 0 else "job_status_x_or_u"
+    )
+
+    # tier_used / fallback_level retained as label-only for
+    # backward compat — Unified Cohort doesn't ladder geographically.
+    tier_used: Optional[str] = "borough_type"
+    fallback_level: Optional[int] = 4
+
     base_result.update({
         "tier_used":                   tier_used,
         "fallback_level":              fallback_level,
         "sample_size":                 sample_size,
         "low_confidence_flag":         low_confidence,
-        "window_months":               window_months,
+        "window_months":               PR14E_MODERN_WINDOW_MONTHS,
         "completion_method":           completion_method,
-        "cohort_filter_spec":          spec_values,
+        "cohort_filter_spec":          cohort_filter_spec,
         "cohort_job_numbers":          cohort_job_numbers,
         "cohort_bins":                 cohort_bins,
         "cohort_median_duration_days": cohort_median,
@@ -2361,6 +3178,16 @@ async def compute_cohort_for_project(
             "completion_pct":      completion_pct,
             "observed_milestones": observed_milestones,
         },
+        # PR #14E surface.
+        "cohort_source_segments": {
+            "modern_count":         modern_count,
+            "legacy_count":         legacy_count,
+            "modern_window_months": PR14E_MODERN_WINDOW_MONTHS,
+            "legacy_window_start":  PR14E_LEGACY_WINDOW_START_ISO,
+            "legacy_window_end":    PR14E_LEGACY_WINDOW_END_ISO,
+        },
+        "target_state":             target_state,
+        "cohort_member_provenance": provenance,
     })
     return base_result
 
