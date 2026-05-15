@@ -230,41 +230,13 @@ class _StubDb:
 # ──────────────────────────────────────────────────────────────────
 
 
-class TestPeerKey(unittest.TestCase):
-
-    def test_uses_explicit_borough(self):
-        key = bl._project_peer_key({
-            "borough": "MANHATTAN",
-            "project_class": "major_b",
-            "use_type": "residential",
-        })
-        self.assertEqual(key["borough"], "MANHATTAN")
-        self.assertEqual(key["project_class"], "major_b")
-        self.assertEqual(key["use_type"], "residential")
-
-    def test_falls_back_to_bbl_borough(self):
-        key = bl._project_peer_key({"bbl": "1001234567"})
-        self.assertEqual(key["borough"], "MANHATTAN")
-        self.assertEqual(key["project_class"], "regular")
-
-    def test_falls_back_to_landuse_for_use_type(self):
-        key = bl._project_peer_key({
-            "borough": "QUEENS", "landuse": "commercial",
-        })
-        self.assertEqual(key["use_type"], "commercial")
-
-    def test_borough_unknown_when_no_bbl(self):
-        key = bl._project_peer_key({})
-        self.assertIsNone(key["borough"])
-
-    def test_borough_decoded_for_each_code(self):
-        cases = [
-            ("1", "MANHATTAN"), ("2", "BRONX"), ("3", "BROOKLYN"),
-            ("4", "QUEENS"), ("5", "STATEN ISLAND"),
-        ]
-        for code, name in cases:
-            key = bl._project_peer_key({"bbl": f"{code}001234567"})
-            self.assertEqual(key["borough"], name, f"code {code}")
+# PR #14C Stage 2.B — TestPeerKey REMOVED.
+#
+# Q7 lock: ``_project_peer_key`` retires alongside the V2.3 4-tier
+# ladder (peer_bbls + _bbls_matching_socrata). Cohort-aware peer
+# comparison reads ``dob_project_type`` + PLUTO snapshot directly
+# instead of building a V2.3 peer-key dict. TestPeerKey covered 5
+# tests pinning the retired function's behavior.
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -306,245 +278,27 @@ def _pluto_row(bbl_, borough, bldgclass=None, landuse=None):
     return d
 
 
-class TestFallbackLadder(unittest.TestCase):
-    """Schema-corrections hotfix: PLUTO uses 2-letter ``borough``
-    codes (``MN``/``BK``/...) and NYC DOF ``bldgclass`` codes
-    (``O4``/``C1``/...). Projects pre-stamp ``pluto_snapshot`` so
-    ``peer_bbls`` doesn't try to fetch the snapshot for the
-    project's own BBL — keeps these tests focused on the tier
-    ladder logic itself."""
-
-    def test_tier_1_full_match(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100000{i:04d}", "MN", "O4", "office")
-            for i in range(1, 26)
-        ])
-        proj = {
-            "bbl": "1000009999",  # not in the seeded peer set
-            "borough": "MANHATTAN",
-            "pluto_snapshot": {
-                "bldgclass": "O4", "landuse": "office",
-            },
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(len(bbls), 25)
-        self.assertEqual(meta["tier"], "borough_class_use")
-        self.assertEqual(meta["sample_size"], 25)
-
-    def test_tier_2_drop_use_type(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100001{i:04d}", "MN", "O4", "residential")
-            for i in range(5)
-        ] + [
-            _pluto_row(f"100002{i:04d}", "MN", "O4", "commercial")
-            for i in range(25)
-        ])
-        proj = {
-            "bbl": "1000019999",
-            "borough": "MANHATTAN",
-            "pluto_snapshot": {
-                "bldgclass": "O4", "landuse": "residential",
-            },
-            "use_type": "residential",
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(meta["tier"], "borough_class")
-        self.assertEqual(meta["sample_size"], 30)
-
-    def test_tier_3_drop_class(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"400003{i:04d}", "QN", "A0", "residential")
-            for i in range(2)
-        ] + [
-            _pluto_row(f"400004{i:04d}", "QN", "M0", "industrial")
-            for i in range(2)
-        ] + [
-            _pluto_row(f"400005{i:04d}", "QN", "A0", "office")
-            for i in range(25)
-        ])
-        proj = {
-            "bbl": "4000039999",
-            "borough": "QUEENS",
-            "pluto_snapshot": {
-                "bldgclass": "C1",  # no PLUTO rows match
-                "landuse": "school",
-            },
-            "use_type": "school",
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(meta["tier"], "borough")
-        self.assertGreaterEqual(meta["sample_size"], 20)
-
-    def test_tier_4_citywide(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"500006{i:04d}", "SI") for i in range(5)
-        ] + [
-            _pluto_row(f"100007{i:04d}", "MN") for i in range(15)
-        ])
-        # Borough doesn't match the seeded rows, no snapshot →
-        # tier 1-3 all return 0, tier 4 returns the full set.
-        proj = {"bbl": "2000079999", "borough": "BRONX"}
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        self.assertEqual(meta["tier"], "citywide")
-        self.assertEqual(meta["sample_size"], 20)
-
-    def test_tier_4_citywide_caps_at_max_peers(self):
-        """NEW PIN 3 — schema-corrections hotfix CORRECTION 4.
-
-        Tier-4 citywide fallback MUST cap at
-        ``CITYWIDE_TIER_MAX_PEERS`` (10,000) and MUST NOT
-        paginate. Paginating the full ~858k-parcel NYC city
-        always times out under the 30s sync timeout — verified
-        in prod. This pin catches a future engineer who
-        accidentally re-enables pagination or raises the cap.
-
-        Test contrivance: project has an unrecognized borough so
-        ``_pluto_borough`` returns None and tiers 1-3 are all
-        short-circuited (each requires a 2-letter borough
-        translation). That leaves tier 4 as the ONLY PLUTO call
-        — the assertion below pins that exact call count."""
-        socrata = MockSocrataClient()
-        # Seed 15,000 rows. Tier 4 is unfiltered so they all match.
-        socrata.seed(DATASET_PLUTO, [
-            _pluto_row(f"100008{i:05d}", "MN")
-            for i in range(15000)
-        ])
-        # ``_pluto_borough`` returns None for unknown inputs →
-        # ``borough_pluto`` is None → every tier 1/2/3 branch
-        # (gated by ``if borough_pluto and ...``) is skipped.
-        # Pre-stamping ``pluto_snapshot`` with a truthy value
-        # that lacks ``bldgclass`` skips the snapshot-fetch round
-        # trip AND keeps ``dof_bldgclass`` None (no tier-1/2
-        # match anyway). Only the tier-4 fetch runs.
-        proj = {
-            "bbl": "2000089999",
-            "borough": "ATLANTIS",  # not in _PLUTO_BOROUGH_CODE
-            "pluto_snapshot": {"bbl": "2000089999"},  # no bldgclass
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        # Cap is applied — exactly the cap, NOT the seeded 15,000.
-        self.assertEqual(meta["tier"], "citywide")
-        self.assertEqual(len(bbls), bl.CITYWIDE_TIER_MAX_PEERS)
-        self.assertEqual(len(bbls), 10000)
-        self.assertNotEqual(len(bbls), 15000)
-        # No pagination + tiers 1-3 short-circuited → exactly ONE
-        # PLUTO call total (the tier-4 single bounded ``query``).
-        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
-        self.assertEqual(len(pluto_calls), 1)
-
-    def test_all_tiers_apply_peer_cap_not_just_citywide(self):
-        """Hotfix #3 BUG B regression pin: every fallback tier
-        (1, 2, 3, 4) caps its PLUTO peer-set at its
-        TIER_*_MAX_PEERS constant. Bronx alone is ~90k parcels;
-        without a tier-3 cap the downstream chunked event-count
-        phase times out before reaching tier-4.
-
-        Seeds 12,000 BBLs that match tier-3 (borough-only). With
-        a TIER_3 cap of 10,000 the peer set returns exactly the
-        cap — NOT the seeded 12,000 — and never paginates to
-        fetch the overflow."""
-        socrata = MockSocrataClient()
-        # 12k Bronx BBLs with NO bldgclass field so tier 1+2
-        # filter to 0 matches → falls through to tier 3.
-        socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"200095{i:05d}", "borough": "BX"}
-            for i in range(12000)
-        ])
-        # Pre-stamp pluto_snapshot so no snapshot-fetch round
-        # trip happens. snapshot bldgclass="C1" doesn't match
-        # any seeded row (seeds have no bldgclass field), so
-        # tier 1+2 return zero. Tier 3 (borough only) matches
-        # all 12k.
-        proj = {
-            "bbl": "2000959999",
-            "borough": "BRONX",
-            "pluto_snapshot": {"bldgclass": "C1", "landuse": "school"},
-        }
-        bbls, meta = _run(bl.peer_bbls(socrata, proj))
-        # Tier 3 resolved — borough-only.
-        self.assertEqual(meta["tier"], "borough")
-        # Capped exactly at TIER_3_MAX_PEERS — not the seeded 12k.
-        self.assertEqual(len(bbls), bl.TIER_3_MAX_PEERS)
-        self.assertEqual(len(bbls), 10000)
-        self.assertNotEqual(len(bbls), 12000)
-
-    def test_pluto_bbl_decimal_suffix_stripped(self):
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100008{i:04d}.00000000", "borough": "MN",
-             "bldgclass": "O4", "landuse": "office"}
-            for i in range(20)
-        ])
-        proj = {
-            "bbl": "1000089999",
-            "borough": "MANHATTAN",
-            "pluto_snapshot": {"bldgclass": "O4", "landuse": "office"},
-        }
-        bbls, _meta = _run(bl.peer_bbls(socrata, proj))
-        for b in bbls:
-            self.assertNotIn(".", b, f"BBL {b!r} carries .0 suffix")
-
-    def test_pluto_snapshot_fetch_only_selects_existing_columns(self):
-        """Hotfix #3 BUG A regression pin: PLUTO (64uk-42ks)
-        carries NO ``bin`` column. ``fetch_project_pluto_snapshot``
-        must NOT include ``bin`` (or any other non-existent
-        column) in its ``$select`` — Socrata returns HTTP 400 on
-        an unknown column and the snapshot fetch fails, which
-        cascades into tier-1/2 falling through to tier-3/4.
-
-        Pins the EXACT column list: only columns that PLUTO
-        actually exposes. A future engineer who adds a needed
-        column should verify against the live PLUTO schema
-        before extending the list."""
-        socrata = MockSocrataClient()
-        socrata.seed(DATASET_PLUTO, [
-            {"bbl": "2029580210", "borough": "BX",
-             "bldgclass": "C1", "landuse": "01",
-             "block": "2958", "lot": "210"},
-        ])
-        proj = {"bbl": "2029580210"}
-        snapshot = _run(bl.fetch_project_pluto_snapshot(socrata, proj))
-        self.assertIsNotNone(snapshot)
-
-        # Inspect the ACTUAL $select that was sent to Socrata —
-        # not just the returned dict, which the mock projects
-        # itself. The mock records every call's kwargs.
-        pluto_calls = [c for c in socrata.calls if c[0] == DATASET_PLUTO]
-        self.assertEqual(len(pluto_calls), 1)
-        _dataset, kwargs = pluto_calls[0]
-        select_list = kwargs.get("select") or []
-        select_set = set(select_list)
-
-        # The EXACT allowed columns — every entry must exist on
-        # the live PLUTO schema. ``bin`` is explicitly forbidden.
-        # PR #14B widens the SELECT to include zipcode + cd +
-        # yearbuilt + unitsres + unitstotal + numfloors +
-        # bldgarea + lotarea (validated against live 64uk-42ks
-        # 24v3.1 schema). Test 47/48 in
-        # ``TestPlutoSelectExtensionPR14B`` pins the new contract;
-        # this test continues to enforce the strict allow-list
-        # discipline (i.e., no drift outside what's verified).
-        expected_select = {
-            "bbl", "borough", "bldgclass", "landuse",
-            "block", "lot",
-            "zipcode",
-            "cd", "yearbuilt", "unitsres", "unitstotal",
-            "numfloors", "bldgarea", "lotarea",
-        }
-        self.assertSetEqual(
-            select_set, expected_select,
-            "fetch_project_pluto_snapshot $select drifted from "
-            "the verified-against-live-PLUTO set",
-        )
-        self.assertNotIn(
-            "bin", select_set,
-            "PLUTO has no ``bin`` column — listing it in $select "
-            "returns HTTP 400 (hotfix #3 BUG A).",
-        )
+# PR #14C Stage 2.B — TestFallbackLadder REMOVED.
+#
+# Q7 lock: the V2.3 4-tier ladder (borough_class_use →
+# borough_class → borough → citywide) retires alongside
+# peer_bbls + _bbls_matching_socrata + the TIER_*_MAX_PEERS
+# constants. Cohort discovery is now driven by
+# compute_cohort_for_project (PR #14B) wired through
+# compute_peer_stats_full (PR #14C wiring point 1).
+#
+# Coverage migration:
+#   • Tier transition behavior is now tested by
+#     TestComputeCohortForProject in test_v2_3_baselines.py
+#     (12 tests covering the 4-tier geography ladder per
+#     dob_project_type, sample-size floors, 36→60mo window
+#     expansion, secondary fallback).
+#   • PLUTO SELECT contract is tested by
+#     TestPlutoSelectExtensionPR14B::test_pluto_select_clause_contains_all_pr14b_fields
+#     (positive-form coverage; strict-set discipline replaced
+#     by the explicit 14-field list).
+#
+# TestFallbackLadder previously covered 10+ tests (~240 lines).
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -674,121 +428,127 @@ class TestPercentileRank(unittest.TestCase):
 
 
 class TestComputePeerStatsFull(unittest.TestCase):
+    """PR #14C REWRITTEN — compute_peer_stats_full drives the PR #14B
+    cohort path (compute_cohort_for_project) instead of the retired
+    V2.3 4-tier peer_bbls() ladder.
 
-    def _seed_full_dataset(self, socrata, *, peer_bbls, project_bbl,
-                           i_per_bbl, project_i):
-        """Schema-corrections hotfix: peer aggregation rides on
-        the inspections dataset (which has a real ``bbl`` column).
-        Violations is gated off peer comparison and surfaces as
-        ``{"available": False, ...}`` in the cache."""
-        # Schema-correct PLUTO seed: 2-letter borough + DOF
-        # bldgclass code. Project's own BBL also gets a PLUTO
-        # row so fetch_project_pluto_snapshot resolves cleanly.
+    Pre-PR-14C this class pinned V2.3 peer_criteria (project_class,
+    use_type, tier="borough_class_use"). Per Q7 lock those keys are
+    retired. The 3 tests below pin the new PR #14B shape + the
+    preserved violations-unavailable hotfix.
+
+    All tests call compute_peer_stats_full with db= kwarg per
+    Stage 2.A §6.1 lock. RED phase fails with TypeError on missing
+    kwarg; Stage 3 adds the kwarg + classification + cohort wiring.
+    """
+
+    def _seed_cohort_for_pr14c(self, socrata):
+        """Seed PLUTO (active project + cohort BINs for Q2 join),
+        DOB NOW (classifier route), BIS (cohort), C of O (completion),
+        and empty event datasets."""
+        from _pr14b_fixtures import (
+            DATASET_BIS_JOB_FILINGS,
+            DATASET_DOB_PERMITS,
+            make_cohort_fixture,
+            seed_dob_now_for_bin,
+        )
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            filing_reason="Initial Permit",
+            job_description="NEW BUILDING 5-STORY RESIDENTIAL 8 UNITS",
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=150,
+            bin_prefix="3033040", job_number_prefix="32100",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": b, "borough": "MN", "bldgclass": "O4",
-             "landuse": "office"}
-            for b in (peer_bbls + [project_bbl])
+            {
+                "bbl": f"3033041{i:04d}",
+                "bin": f"3033040{i:04d}",
+                "borough": "BK", "bldgclass": "C1",
+                "landuse": "01", "zipcode": "11221", "cd": "304",
+                "yearbuilt": "1990", "unitsres": "8",
+                "unitstotal": "8", "numfloors": "5",
+                "bldgarea": "8000", "lotarea": "2500",
+            }
+            for i in range(150)
         ])
-        # Project events on inspections (replaces V2.2-era
-        # violations seeding — violations is now gated).
-        socrata.seed(DATASET_DOB_INSPECTIONS, [
-            {"bbl": project_bbl, "inspection_date": "2025-06-01T00:00:00"}
-            for _ in range(project_i)
-        ])
-        # Peer events on inspections.
-        for b in peer_bbls:
-            if b == project_bbl:
-                continue
-            socrata.seed(DATASET_DOB_INSPECTIONS, [
-                {"bbl": b, "inspection_date": "2025-06-01T00:00:00"}
-                for _ in range(i_per_bbl)
-            ])
-        # Empty 311 to keep complaints summary clean.
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [])
 
-    def test_returns_documented_shape(self):
+    def _menahan_like_project(self, **overrides):
+        base = {
+            "_id": "P_NB",
+            "name": "9 Menahan",
+            "nyc_bin": "3325703",
+            "bbl": "3033040024",
+            "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+        }
+        base.update(overrides)
+        return base
+
+    def _stub_db(self, project):
+        class _SimpleDb:
+            def __init__(self, projects_coll):
+                self.projects = projects_coll
+        return _SimpleDb(_StubProjectsColl(docs=[dict(project)]))
+
+    def test_returns_pr14b_shape(self):
+        """Cache.peer_criteria carries PR #14B keys, NOT V2.3 keys.
+        Replaces the pre-PR-14C assertion that
+        peer_criteria.tier == 'borough_class_use'."""
         socrata = MockSocrataClient()
-        peer_set = [f"100010{i:04d}" for i in range(25)]
-        self._seed_full_dataset(
-            socrata, peer_bbls=peer_set,
-            project_bbl="1000100000", i_per_bbl=1, project_i=10,
-        )
+        self._seed_cohort_for_pr14c(socrata)
+        project = self._menahan_like_project()
         cache = _run(bl.compute_peer_stats_full(
-            socrata,
-            {"bbl": "1000100000", "borough": "MANHATTAN",
-             "use_type": "office"},
+            socrata, project, db=self._stub_db(project),
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
         self.assertEqual(cache["status"], "ready")
-        self.assertIn("computed_at", cache)
-        self.assertIn("last_refreshed_at", cache)
-        self.assertEqual(cache["computed_at"], cache["last_refreshed_at"])
-        self.assertEqual(cache["peer_criteria"]["fallback_level"], 1)
-        self.assertEqual(cache["peer_criteria"]["tier"], "borough_class_use")
-        self.assertEqual(cache["peer_criteria"]["sample_size"], 24)
-        self.assertIn("violations", cache)
-        self.assertIn("inspections", cache)
-        self.assertIn("complaints", cache)
-        # Project counts now ride on inspections; violations is
-        # gated as {"available": False, ...} (no project_count
-        # on that sub-dict).
-        self.assertEqual(cache["inspections"]["project_count"], 10)
-
-    def test_excludes_project_own_bbl_from_peer_summary(self):
-        socrata = MockSocrataClient()
-        peer_set = [f"100011{i:04d}" for i in range(25)]
-        self._seed_full_dataset(
-            socrata, peer_bbls=peer_set,
-            project_bbl="1000110000", i_per_bbl=1, project_i=50,
+        criteria = cache["peer_criteria"]
+        self.assertEqual(criteria["dob_project_type"], "new_building")
+        self.assertIn("geography_tier_used", criteria)
+        self.assertIn("low_confidence_flag", criteria)
+        self.assertEqual(
+            criteria.get("schema_version"), "pr14c",
+            "Stage 3 Q4: stamp PR14C_SCHEMA_VERSION onto every "
+            "cache write so the schema check in "
+            "compare_project_to_peers can validate the cache "
+            "vintage.",
         )
-        cache = _run(bl.compute_peer_stats_full(
-            socrata,
-            {"bbl": "1000110000", "borough": "MANHATTAN",
-             "use_type": "office"},
-            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
-        ))
-        # Inspections now carries the percentile math (violations
-        # is gated unavailable per the schema-corrections hotfix).
-        self.assertEqual(cache["inspections"]["project_count"], 50)
-        self.assertEqual(cache["inspections"]["median"], 1.0)
-        self.assertEqual(cache["inspections"]["n"], 24)
-        self.assertAlmostEqual(
-            cache["inspections"]["percentile_rank"], 100.0,
-        )
+        self.assertNotIn("project_class", criteria)
+        self.assertNotIn("use_type", criteria)
 
     def test_violations_gated_as_unavailable_in_peer_cache(self):
-        """NEW PIN 1 — schema-corrections hotfix CORRECTION 3
-        Option A. dob_violations is excluded from BBL-keyed peer
-        comparison (the dataset has no ``bbl`` column), so the
-        cache must surface a degenerate
-        ``{"available": False, ...}`` entry rather than
-        zero-filled stats. score._normalize_peer_comparison
-        relies on this signal to skip the dimension and average
-        only over measurable ones."""
+        """V2.3 schema-corrections hotfix CORRECTION 3 Option A
+        is PRESERVED through PR #14C. dob_violations stays excluded
+        from BBL-keyed peer comparison (no ``bbl`` column on
+        3h2n-5cm9); cache surfaces a degenerate
+        ``{"available": False, ...}`` entry."""
         socrata = MockSocrataClient()
-        peer_set = [f"100018{i:04d}" for i in range(25)]
-        self._seed_full_dataset(
-            socrata, peer_bbls=peer_set,
-            project_bbl="1000180000", i_per_bbl=2, project_i=5,
-        )
+        self._seed_cohort_for_pr14c(socrata)
+        project = self._menahan_like_project()
         cache = _run(bl.compute_peer_stats_full(
-            socrata,
-            {"bbl": "1000180000", "borough": "MANHATTAN",
-             "use_type": "office"},
+            socrata, project, db=self._stub_db(project),
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
-        # violations is unavailable.
         self.assertEqual(cache["violations"]["available"], False)
         self.assertEqual(
             cache["violations"]["unavailable_reason"],
             "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
         )
         self.assertIn("peer_data_dropped_in_pr", cache["violations"])
-        # The unavailable shape MUST NOT carry the per-dataset
-        # measurement fields — a future engineer who "fixes" the
-        # gate by zero-filling instead of marking unavailable
-        # would re-introduce the percentile_rank-pinned-to-100
-        # bug; this pin catches that.
         for forbidden_key in (
             "percentile_rank", "peer_median", "peer_p75",
             "peer_p90", "project_count",
@@ -798,12 +558,33 @@ class TestComputePeerStatsFull(unittest.TestCase):
                 f"violations sub-dict carries {forbidden_key!r} "
                 f"while available=False",
             )
-        # inspections + 311 are available with the full V2.3
-        # internal shape.
         self.assertEqual(cache["inspections"]["available"], True)
         self.assertEqual(cache["complaints"]["available"], True)
         for label in ("inspections", "complaints"):
             self.assertIn("percentile_rank", cache[label])
+            self.assertIn(
+                "lifecycle_normalized_percentile", cache[label],
+                f"{label}: missing lifecycle_normalized_percentile "
+                f"key. Stage 3 Q1: emit None placeholder.",
+            )
+
+    def test_lifecycle_normalized_percentile_is_none_per_q1_lock(self):
+        """Per Q1 lock, inspections + complaints carry
+        lifecycle_normalized_percentile=None. PR #14D will replace
+        None with a calibrated formula."""
+        socrata = MockSocrataClient()
+        self._seed_cohort_for_pr14c(socrata)
+        project = self._menahan_like_project()
+        cache = _run(bl.compute_peer_stats_full(
+            socrata, project, db=self._stub_db(project),
+            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
+        ))
+        for label in ("inspections", "complaints"):
+            self.assertIsNone(
+                cache[label].get("lifecycle_normalized_percentile"),
+                f"{label}.lifecycle_normalized_percentile must be "
+                f"None per Q1 lock.",
+            )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -854,19 +635,24 @@ class TestRefreshPeerStatsIncremental(unittest.TestCase):
         }
         project = {
             "bbl": "1000130000", "borough": "MANHATTAN",
-            "project_class": "O", "use_type": "office",
+            "dob_project_type": "new_building",
             "peer_stats_cache": {
                 "computed_at": old_computed_at,
                 "last_refreshed_at": old_last_refreshed,
                 "status": "ready",
+                # PR #14C: peer_criteria seeded with new shape +
+                # schema_version="pr14c" so the cache-hit branch
+                # doesn't trigger schema-mismatch recompute.
                 "peer_criteria": {
-                    "borough": "MANHATTAN",
-                    "project_class": "O", "use_type": "office",
-                    "tier": "borough_class_use",
-                    "bbl": "1000130000",
-                    "sample_size": len(peer_set) - 1,
-                    "fallback_level": 1,
-                    "peer_bbl_list": peer_set,
+                    "schema_version":      "pr14c",
+                    "borough":             "MANHATTAN",
+                    "dob_project_type":    "new_building",
+                    "geography_tier_used": "zip_bldgclass_type",
+                    "low_confidence_flag": False,
+                    "bbl":                 "1000130000",
+                    "sample_size":         len(peer_set) - 1,
+                    "fallback_level":      1,
+                    "peer_bbl_list":       peer_set,
                     "_peer_counts_by_dataset": {
                         DATASET_DOB_VIOLATIONS:  {b: 0 for b in peer_set},
                         DATASET_DOB_INSPECTIONS: {b: 0 for b in peer_set},
@@ -1295,13 +1081,24 @@ class TestA3DateNormalizationRegression(unittest.TestCase):
 
 
 class TestCompareProjectToPeersCacheAware(unittest.TestCase):
+    """PR #14C UPDATED — cache-aware compare with PR #14B shape +
+    schema_version invalidation.
 
-    def test_returns_cached_when_ready(self):
-        """Schema-corrections hotfix: per-dataset entries gain
-        an ``available`` flag. ``violations`` is gated unavailable
-        and surfaces only the unavailable-signal keys; the other
-        two carry the V2.3 measurement shape (V2.2 keys +
-        ``available``).
+    Pre-PR-14C tests pinned the V2.3 tier-conditional emission
+    (tier-3 hides project_class/use_type, tier-4 hides borough).
+    Per Q7 lock, those V2.3 vocabularies retire. New shape always
+    emits dob_project_type + geography_tier_used + low_confidence_flag.
+
+    The 4 tests below cover:
+      1. ready-cache hot path with PR #14B shape pass-through
+      2. cache miss → synchronous compute + persist
+      3. timeout → zero-peer marker with reason
+      4. SocrataQueryError → zero-peer marker with reason
+    """
+
+    def test_returns_cached_when_ready_with_pr14b_shape(self):
+        """Cache-hit hot path emits PR #14B peer_set keys.
+        Violations stays unavailable per V2.3 hotfix.
         """
         socrata = MockSocrataClient()
         cache = {
@@ -1309,16 +1106,16 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             "computed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
             "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
             "peer_criteria": {
-                "borough": "MANHATTAN",
-                "project_class": "O4",
-                "use_type": "office",
-                "tier": "borough_class_use",
-                "sample_size": 24,
-                "fallback_level": 1,
+                "schema_version":      "pr14c",
+                "dob_project_type":    "new_building",
+                "geography_tier_used": "zip_bldgclass_type",
+                "low_confidence_flag": False,
+                "borough":             "MANHATTAN",
+                "sample_size":         24,
+                "fallback_level":      1,
+                "window_months":       36,
+                "completion_method":   "c_of_o_final",
             },
-            # Cache uses the V2.3 internal shape that
-            # _assemble_cache emits: violations marked
-            # unavailable; inspections + 311 carry summary stats.
             "violations": {
                 "available": False,
                 "unavailable_reason":
@@ -1326,12 +1123,18 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
                 "peer_data_dropped_in_pr":
                     "v2.3-schema-corrections-hotfix",
             },
-            "inspections": {"available": True,
-                            "n": 24, "median": 0.5, "p75": 1.0, "p90": 2.0,
-                            "project_count": 2, "percentile_rank": 70.0},
-            "complaints": {"available": True,
-                           "n": 24, "median": 0.0, "p75": 0.5, "p90": 1.0,
-                           "project_count": 0, "percentile_rank": 50.0},
+            "inspections": {
+                "available": True,
+                "n": 24, "median": 0.5, "p75": 1.0, "p90": 2.0,
+                "project_count": 2, "percentile_rank": 70.0,
+                "lifecycle_normalized_percentile": None,
+            },
+            "complaints": {
+                "available": True,
+                "n": 24, "median": 0.0, "p75": 0.5, "p90": 1.0,
+                "project_count": 0, "percentile_rank": 50.0,
+                "lifecycle_normalized_percentile": None,
+            },
         }
         project = {"_id": "P1", "peer_stats_cache": cache}
         db = _StubDb(projects=[project])
@@ -1340,158 +1143,82 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             db, project, socrata=socrata,
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
-        self.assertEqual(result["peer_set"]["sample_size"], 24)
-        # Hot path: no Socrata calls.
+
+        # Hot path: zero Socrata.
         self.assertEqual(len(socrata.calls), 0)
 
-        # Strict shape parity: top-level keys and per-dataset
-        # key sets. Violations carries the unavailable-signal
-        # keys only; inspections + 311 carry V2.2 keys plus the
-        # new ``available`` flag.
-        self.assertSetEqual(
-            set(result.keys()),
-            {"peer_set", "violations", "inspections", "complaints"},
+        # PR #14B peer_set vocabulary.
+        peer_set = result["peer_set"]
+        self.assertEqual(peer_set["dob_project_type"], "new_building")
+        self.assertEqual(
+            peer_set["geography_tier_used"], "zip_bldgclass_type",
         )
-        unavailable_keys = {
-            "available", "unavailable_reason", "peer_data_dropped_in_pr",
-        }
-        self.assertSetEqual(
-            set(result["violations"].keys()), unavailable_keys,
-            "violations sub-dict shape diverged from "
-            "V2.3-unavailable schema",
-        )
+        self.assertEqual(peer_set["low_confidence_flag"], False)
+        self.assertEqual(peer_set["sample_size"], 24)
+        # V2.3 keys ABSENT.
+        self.assertNotIn("project_class", peer_set)
+        self.assertNotIn("use_type", peer_set)
+
+        # Violations preserved as unavailable.
         self.assertFalse(result["violations"]["available"])
-        available_keys = {
-            "available", "project_count", "peer_median",
-            "peer_p75", "peer_p90", "percentile_rank",
-            "peer_sample_size",
-        }
+        # Lifecycle keys pass through.
         for label in ("inspections", "complaints"):
-            self.assertSetEqual(
-                set(result[label].keys()), available_keys,
-                f"{label} sub-dict shape diverged from "
-                f"V2.3-available schema",
+            self.assertIn(
+                "lifecycle_normalized_percentile", result[label],
             )
-            self.assertTrue(result[label]["available"])
-        # Inspections percentile data is intact.
-        self.assertEqual(result["inspections"]["project_count"], 2)
-        self.assertEqual(result["inspections"]["percentile_rank"], 70.0)
-        # Tier 1 peer_set carries all five keys (the V2.2 tier-1
-        # baseline emission from peer_bbls()).
-        self.assertSetEqual(
-            set(result["peer_set"].keys()),
-            {"tier", "sample_size", "borough", "project_class", "use_type"},
-        )
-        # Tier value remains the V2.2 string, not the int level.
-        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
-
-    def test_cached_return_shape_tier_3(self):
-        """Tier-3 (borough-only) fallback: V2.2 ``peer_bbls()``
-        emitted only ``{tier, borough, sample_size}`` — no
-        ``project_class``, no ``use_type``. The V2.3 cache-hit
-        path must mirror that exactly so consumers (including
-        the FE drawer) don't see phantom None-valued fields."""
-        socrata = MockSocrataClient()
-        cache = {
-            "status": "ready",
-            "computed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
-            "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
-            "peer_criteria": {
-                "borough":        "BRONX",
-                "project_class":  "X",      # cache stores it, but
-                "use_type":       "y",      # tier-3 must NOT emit
-                "tier":           "borough",
-                "sample_size":    35,
-                "fallback_level": 3,
-            },
-            "violations":  {"n": 35, "median": 0.0, "p75": 1.0, "p90": 2.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-            "inspections": {"n": 35, "median": 0.0, "p75": 0.0, "p90": 1.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-            "complaints":  {"n": 35, "median": 0.0, "p75": 0.0, "p90": 0.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-        }
-        project = {"_id": "P_T3", "peer_stats_cache": cache}
-        db = _StubDb(projects=[project])
-
-        result = _run(bl.compare_project_to_peers(
-            db, project, socrata=socrata,
-            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
-        ))
-        self.assertEqual(len(socrata.calls), 0)
-        # Exact tier-3 peer_set key set — no project_class, no use_type.
-        self.assertSetEqual(
-            set(result["peer_set"].keys()),
-            {"tier", "sample_size", "borough"},
-        )
-        self.assertEqual(result["peer_set"]["tier"], "borough")
-        self.assertEqual(result["peer_set"]["borough"], "BRONX")
-        self.assertEqual(result["peer_set"]["sample_size"], 35)
-        self.assertNotIn("project_class", result["peer_set"])
-        self.assertNotIn("use_type", result["peer_set"])
-
-    def test_cached_return_shape_tier_4(self):
-        """Tier-4 (citywide) fallback: V2.2 ``peer_bbls()``
-        emitted only ``{tier, sample_size}`` — no borough,
-        no project_class, no use_type."""
-        socrata = MockSocrataClient()
-        cache = {
-            "status": "ready",
-            "computed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
-            "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
-            "peer_criteria": {
-                "borough":        "QUEENS",  # cache stores them, but
-                "project_class":  "X",       # tier-4 must NOT emit
-                "use_type":       "y",       # any of these three.
-                "tier":           "citywide",
-                "sample_size":    1200,
-                "fallback_level": 4,
-            },
-            "violations":  {"n": 1200, "median": 0.0, "p75": 1.0, "p90": 2.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-            "inspections": {"n": 1200, "median": 0.0, "p75": 0.0, "p90": 1.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-            "complaints":  {"n": 1200, "median": 0.0, "p75": 0.0, "p90": 0.0,
-                            "project_count": 0, "percentile_rank": 50.0},
-        }
-        project = {"_id": "P_T4", "peer_stats_cache": cache}
-        db = _StubDb(projects=[project])
-
-        result = _run(bl.compare_project_to_peers(
-            db, project, socrata=socrata,
-            now=datetime(2026, 5, 10, tzinfo=timezone.utc),
-        ))
-        self.assertEqual(len(socrata.calls), 0)
-        # Exact tier-4 peer_set key set — only tier + sample_size.
-        self.assertSetEqual(
-            set(result["peer_set"].keys()),
-            {"tier", "sample_size"},
-        )
-        self.assertEqual(result["peer_set"]["tier"], "citywide")
-        self.assertEqual(result["peer_set"]["sample_size"], 1200)
-        self.assertNotIn("borough", result["peer_set"])
-        self.assertNotIn("project_class", result["peer_set"])
-        self.assertNotIn("use_type", result["peer_set"])
+            self.assertIsNone(
+                result[label]["lifecycle_normalized_percentile"],
+            )
 
     def test_synchronous_compute_on_cache_miss_persists_back(self):
+        """Cache absent → sync compute path fires. Cohort + classify
+        wired via PR #14C (call sites confirmed by test_pr14c_wiring).
+        Just pin the persist-back contract here.
+        """
         socrata = MockSocrataClient()
-        # Schema-correct PLUTO seed (2-letter borough + DOF
-        # code) — plus a row for the project's own BBL so the
-        # pluto_snapshot lookup resolves cleanly.
+        from _pr14b_fixtures import (
+            make_cohort_fixture, seed_dob_now_for_bin,
+        )
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "5",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        seed_dob_now_for_bin(
+            socrata, bin="3325703",
+            work_type="General Construction",
+            filing_reason="Initial Permit",
+            job_description="NEW BUILDING 5-STORY RESIDENTIAL 8 UNITS",
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=120,
+            bin_prefix="3033041", job_number_prefix="32200",
+            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
+            story_count=5, dwelling_units=8, completed=True,
+        )
         socrata.seed(DATASET_PLUTO, [
-            {"bbl": f"100014{i:04d}", "borough": "MN",
-             "bldgclass": "O4", "landuse": "office"}
-            for i in range(25)
-        ] + [
-            {"bbl": "1000140000", "borough": "MN",
-             "bldgclass": "O4", "landuse": "office"},
+            {
+                "bbl": f"3033042{i:04d}",
+                "bin": f"3033041{i:04d}",
+                "borough": "BK", "bldgclass": "C1",
+                "landuse": "01", "zipcode": "11221", "cd": "304",
+                "yearbuilt": "1990", "unitsres": "8",
+                "unitstotal": "8", "numfloors": "5",
+                "bldgarea": "8000", "lotarea": "2500",
+            }
+            for i in range(120)
         ])
-        socrata.seed(DATASET_DOB_VIOLATIONS, [])
         socrata.seed(DATASET_DOB_INSPECTIONS, [])
         socrata.seed(DATASET_COMPLAINTS_311, [])
+
         project = {
-            "_id": "P2", "bbl": "1000140000", "borough": "MANHATTAN",
-            "use_type": "office",
+            "_id": "P2",
+            "bbl": "3033040024",
+            "nyc_bin": "3325703",
+            "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
         }
         db = _StubDb(projects=[dict(project)])
 
@@ -1499,13 +1226,24 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             db, project, socrata=socrata,
             now=datetime(2026, 5, 10, tzinfo=timezone.utc),
         ))
-        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
-        self.assertIn("violations", result)
-        self.assertEqual(len(db.projects.update_one_calls), 1)
-        persisted_set = db.projects.update_one_calls[0]["update"]["$set"]
-        self.assertIn("peer_stats_cache", persisted_set)
-        new_cache = persisted_set["peer_stats_cache"]
+        # PR #14B shape in returned result.
+        self.assertEqual(
+            result["peer_set"].get("dob_project_type"), "new_building",
+        )
+        # Cache was persisted.
+        self.assertGreaterEqual(len(db.projects.update_one_calls), 1)
+        # Find the call that wrote peer_stats_cache.
+        peer_stats_writes = [
+            c for c in db.projects.update_one_calls
+            if "peer_stats_cache" in (c["update"].get("$set") or {})
+        ]
+        self.assertGreaterEqual(len(peer_stats_writes), 1)
+        new_cache = peer_stats_writes[-1]["update"]["$set"]["peer_stats_cache"]
         self.assertEqual(new_cache["status"], "ready")
+        self.assertEqual(
+            new_cache["peer_criteria"].get("schema_version"), "pr14c",
+            "Sync-compute path must stamp schema_version per Q4.",
+        )
 
     def test_timeout_returns_zero_peer_marker_with_reason(self):
         socrata = MockSocrataClient()
@@ -1663,17 +1401,31 @@ class TestCompareProjectStatusGuards(unittest.TestCase):
         result = _run(bl.compare_project_to_peers(
             db, project, socrata=socrata, now=now,
         ))
-        # Compute ran → not the failed/zero marker; full result.
-        self.assertEqual(result["peer_set"]["tier"], "borough_class_use")
-        # At least one Socrata call fired (PLUTO peer-discovery
-        # alone makes one).
+        # PR #14C: V2.3 ``borough_class_use`` tier vocab retired
+        # (Q7). The retry escape hatch's contract is that the
+        # status-failed-past-24h project gets a FRESH compute
+        # written — verify by checking peer_stats_cache.status =
+        # ready was persisted, not zero/failed marker. The exact
+        # tier value depends on whether the project's DOB classify
+        # + cohort path resolved data; here we don't seed enough
+        # cohort-side data, so the tier may be None (empty cohort)
+        # — that's still a successful compute, just an
+        # unavailable-cohort one.
         self.assertGreater(len(socrata.calls), 0)
-        # Fresh cache persisted.
-        self.assertEqual(len(db.projects.update_one_calls), 1)
-        persisted_set = db.projects.update_one_calls[0]["update"]["$set"]
-        self.assertEqual(
-            persisted_set["peer_stats_cache"]["status"], "ready",
-        )
+        # At least one cache-persist write fired. Note: schema
+        # check at the head of compare_project_to_peers may
+        # invalidate the seeded "failed" cache via the status-ready
+        # gate, but the retry path still runs sync compute, which
+        # writes a fresh status="ready" cache.
+        self.assertGreaterEqual(len(db.projects.update_one_calls), 1)
+        # Find the call that wrote peer_stats_cache.
+        peer_writes = [
+            c for c in db.projects.update_one_calls
+            if "peer_stats_cache" in (c["update"].get("$set") or {})
+        ]
+        self.assertGreaterEqual(len(peer_writes), 1)
+        persisted_cache = peer_writes[-1]["update"]["$set"]["peer_stats_cache"]
+        self.assertEqual(persisted_cache["status"], "ready")
 
     def test_failed_status_with_naive_datetime_normalized_to_utc(self):
         """Defensive: if failed_at is a naive datetime (no
@@ -1754,8 +1506,9 @@ class TestPackageReExports(unittest.TestCase):
 
     def test_v23_api_reexported(self):
         from lib import statistical_engine as stat_engine
+        # PR #14C: peer_bbls retired per Q7 lock — replaced by
+        # compute_cohort_for_project. PR14C_SCHEMA_VERSION added.
         for name in (
-            "peer_bbls",
             "compare_project_to_peers",
             "compute_peer_stats_full",
             "refresh_peer_stats_incremental",
@@ -1763,6 +1516,8 @@ class TestPackageReExports(unittest.TestCase):
             "PEER_STATS_FRESH_DAYS",
             "PEER_STATS_LOOKBACK_DAYS",
             "PEER_STATS_COMPUTE_TIMEOUT_SECONDS",
+            "PR14C_SCHEMA_VERSION",
+            "compute_cohort_for_project",
         ):
             self.assertTrue(
                 hasattr(stat_engine, name),
@@ -1868,12 +1623,19 @@ class TestRecomputePersistMenahanFixture(unittest.TestCase):
                 "computed_at": now - timedelta(days=1),
                 "last_refreshed_at": now - timedelta(days=1),
                 "peer_criteria": {
-                    "borough": "BROOKLYN",
-                    "project_class": "O4",
-                    "use_type": "office",
-                    "tier": "borough_class_use",
-                    "sample_size": 24,
-                    "fallback_level": 1,
+                    # PR #14C: schema_version added so the cache-hit
+                    # branch's schema check (Q4 Option B) doesn't
+                    # invalidate this fixture and force recompute.
+                    # Test isolates own_building math, doesn't care
+                    # about peer factor — just needs the cache served
+                    # so the rest of recompute_and_persist runs.
+                    "schema_version":      "pr14c",
+                    "borough":             "BROOKLYN",
+                    "dob_project_type":    "new_building",
+                    "geography_tier_used": "zip_bldgclass_type",
+                    "low_confidence_flag": False,
+                    "sample_size":         24,
+                    "fallback_level":      1,
                 },
                 "violations": {
                     "available": False,

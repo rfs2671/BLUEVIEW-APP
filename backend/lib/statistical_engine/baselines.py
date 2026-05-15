@@ -127,6 +127,18 @@ PEER_STATS_FRESH_DAYS = 14
 # diverge.
 PEER_STATS_COHORT_TTL_DAYS = 14
 
+# PR #14C schema version stamp (Stage 2.A Q4 Option B + §6.3 lock).
+# Every peer_stats_cache written by PR #14C+ code carries
+# ``peer_criteria.schema_version == PR14C_SCHEMA_VERSION``.
+# compare_project_to_peers treats any cache lacking this value
+# OR carrying a different value as a miss → forces recompute
+# against the current schema. Belt-and-suspenders with the
+# operator's deploy-time ``$unset peer_stats_cache`` migration
+# (Q4 Option A): if a stale V2.3 cache slips through the deploy
+# window (e.g., a prewarm task that fired between deploy and
+# unset), the schema check catches it on the next read.
+PR14C_SCHEMA_VERSION = "pr14c"
+
 # How long a ``status="failed"`` marker suppresses retry attempts
 # from the synchronous compute path in ``compare_project_to_peers``.
 # Within this window, returning the zero-peer marker avoids burning
@@ -180,34 +192,13 @@ _VIOLATIONS_UNAVAILABLE_REASON = (
 # queries and unioned.
 SOQL_IN_CHUNK_SIZE = 250
 
-# Per-tier hard caps on PLUTO peer-set discovery. Each tier
-# fetches a single bounded page — we never ``query_all`` PLUTO
-# from any tier, because paginating returns sets too large for
-# downstream chunked event-count queries to complete inside the
-# sync 30s timeout. Verified in prod against Bronx (tier 3 alone
-# returns ~90k BBLs unbounded; the event-count chunking phase
-# then times out long before the citywide tier-4 cap is ever
-# reached).
-#
-# Rationale for the per-tier values:
-#   • Tier 1 (borough × class × use_type) — narrowest filter,
-#     real-world peer sets rarely exceed a few hundred. 5k is
-#     a generous ceiling against unusual borough/class mixes.
-#   • Tier 2 (borough × class) — drops use_type, sets grow.
-#   • Tier 3 (borough only) — broad; Bronx is ~90k BBLs, so the
-#     cap is the only thing keeping prod alive.
-#   • Tier 4 (citywide, unfiltered) — ~858k BBLs.
-#
-# Tunable per future production observation.
-TIER_1_MAX_PEERS = 5000
-TIER_2_MAX_PEERS = 7500
-TIER_3_MAX_PEERS = 10000
-TIER_4_MAX_PEERS = 10000
-
-# Backward-compat alias preserved so the V2.3 schema-corrections
-# hotfix tests + any callers that imported the old name continue
-# to resolve. Equivalent to TIER_4_MAX_PEERS.
-CITYWIDE_TIER_MAX_PEERS = TIER_4_MAX_PEERS
+# PR #14C Q7 lock — TIER_*_MAX_PEERS constants retired alongside
+# the V2.3 4-tier ladder. Cohort population is now derived from
+# compute_cohort_for_project (PR #14B) which has its own
+# sample-size floor (COHORT_LOW_CONFIDENCE_FLOOR=30) and tier
+# advancement logic. Citywide-cap no longer needed because BIS
+# filings are pre-narrowed by job_type before the geography
+# clause runs.
 
 # PR #14B: full PLUTO column set the snapshot persists. The
 # pre-PR-14B set was just (bbl, borough, bldgclass, landuse,
@@ -286,37 +277,10 @@ def _yyyymmdd(dt: datetime) -> str:
 # ── Peer-set key construction (pure logic, untouched from V2.2) ───
 
 
-def _project_peer_key(project: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Extract the canonical peer-set key from a project doc.
-
-    Borough comes from project.borough or PLUTO-fallback via BBL.
-    project_class is the operator-set classification
-    (regular / major_a / major_b). use_type is the PLUTO
-    ``landuse`` or ``bldgclass`` field — for now we use whichever
-    is present.
-    """
-    return {
-        "borough":       project.get("borough") or _bin_borough_fallback(project),
-        "project_class": project.get("project_class") or "regular",
-        "use_type":      project.get("use_type") or project.get("landuse"),
-    }
-
-
-def _bin_borough_fallback(project: Dict[str, Any]) -> Optional[str]:
-    """Derive borough from BBL when the project doc doesn't carry
-    an explicit borough. BBL is 10 chars: first char is borough
-    (1-5)."""
-    bbl = project.get("bbl") or project.get("nyc_bbl")
-    if not bbl or not isinstance(bbl, str):
-        return None
-    boro_code = bbl[:1]
-    return {
-        "1": "MANHATTAN",
-        "2": "BRONX",
-        "3": "BROOKLYN",
-        "4": "QUEENS",
-        "5": "STATEN ISLAND",
-    }.get(boro_code)
+# PR #14C Q7 lock — _project_peer_key + _bin_borough_fallback
+# retired. Cohort discovery now reads dob_project_type directly
+# from the project doc + PLUTO snapshot (cd, zipcode, bldgclass
+# for tier construction) via compute_cohort_for_project.
 
 
 # ── SoQL helpers ──────────────────────────────────────────────────
@@ -421,192 +385,65 @@ async def fetch_project_pluto_snapshot(
     return row
 
 
-async def _bbls_matching_socrata(
+
+# PR #14C Q7 lock — _bbls_matching_socrata retired alongside
+# peer_bbls. The active project's PLUTO row is still fetched via
+# fetch_project_pluto_snapshot; cohort BIN→BBL resolution uses
+# _resolve_bbls_for_cohort_bins (the Q2/T2 batched join).
+
+
+async def _resolve_bbls_for_cohort_bins(
     socrata: SocrataClient,
-    *,
-    borough: Optional[str] = None,  # already in PLUTO 2-letter form
-    bldgclass: Optional[str] = None,
-    landuse: Optional[str] = None,
-    limit: Optional[int] = None,
+    bin_list: List[str],
 ) -> List[str]:
-    """Query Socrata PLUTO (64uk-42ks) for BBLs matching the
-    supplied filters. None = unconstrained on that axis.
+    """PR #14C — resolve cohort BINs to BBLs via batched PLUTO query.
 
-    PLUTO column conventions (verified against live Socrata API):
-      • ``borough`` is a 2-letter code (``MN``/``BX``/``BK``/``QN``/
-        ``SI``). The caller must pre-translate Blueview's stored
-        UPPER-case full name via ``_pluto_borough``.
-      • ``bldgclass`` is the NYC DOF building-class code (e.g.
-        ``"C1"``, ``"R6"``, ``"S2"``, ``"O4"``). Callers must pass
-        the project's REAL DOF class (from its PLUTO snapshot),
-        NOT Blueview's internal ``project_class`` enum.
-      • ``bbl`` values ship with a ``.00000000`` decimal suffix
-        that ``normalize_bbl`` strips below.
+    PR #14B's ``compute_cohort_for_project`` returns BIS-keyed
+    metadata (``cohort_job_numbers`` + ``cohort_bins``) because BIS
+    is BIN-indexed. The downstream event-count queries
+    (``_count_events_for_bbls_socrata``) are BBL-keyed because the
+    inspections + 311 datasets ship a ``bbl`` column but no ``bin``.
+    This helper bridges the two via a single batched PLUTO join.
 
-    If ``limit`` is provided we issue a single bounded ``query()``
-    instead of paginating — used by the tier-4 citywide fallback
-    to cap at ``CITYWIDE_TIER_MAX_PEERS`` rather than walk the
-    full ~858k-parcel city.
+    Per Stage 2.A Q2/T2 lock:
+      • Single batched call with ``bin IN (chunk)`` (chunk size
+        from ``SOQL_IN_CHUNK_SIZE``, same as event-count chunking).
+      • Output deduped, BIN→BBL collisions resolved to first hit.
+      • Missing BINs (no PLUTO row) silently dropped.
+      • Per-chunk SocrataQueryError logged + skipped; partial
+        results returned rather than blanking everything.
+
+    Closes the ``_bis_geography_clause`` TODO from PR #14B.
     """
-    where_parts: List[str] = []
-    if borough is not None:
-        where_parts.append(f"borough = {_soql_quote(borough)}")
-    if bldgclass is not None:
-        where_parts.append(f"bldgclass = {_soql_quote(bldgclass)}")
-    if landuse is not None:
-        where_parts.append(f"landuse = {_soql_quote(landuse)}")
-    where = " AND ".join(where_parts) if where_parts else None
-
-    try:
-        if limit is not None:
-            # Tier-4 citywide path: one bounded GET, no pagination.
-            rows = await socrata.query(
-                DATASET_PLUTO,
-                where=where,
-                select=["bbl"],
-                limit=limit,
-            )
-        else:
-            rows = await socrata.query_all(
-                DATASET_PLUTO,
-                where=where,
-                select=["bbl"],
-                page_size=PEER_STATS_PAGE_SIZE,
-            )
-    except SocrataQueryError as e:
-        logger.warning(
-            "[baselines] PLUTO peer fetch failed: %r", e,
-        )
+    if not bin_list:
         return []
 
-    out: List[str] = []
-    for r in rows:
-        normalized = normalize_bbl(r.get("bbl"))
-        if normalized:
-            out.append(normalized)
-    return out
+    bbls_out: List[str] = []
+    seen = set()
+    for chunk in _chunk(bin_list, SOQL_IN_CHUNK_SIZE):
+        try:
+            rows = await socrata.query(
+                DATASET_PLUTO,
+                where=_soql_in("bin", chunk),
+                select=["bbl", "bin"],
+                limit=10000,
+            )
+        except SocrataQueryError as e:
+            logger.warning(
+                "[baselines] PLUTO BIN→BBL join chunk failed: %r", e,
+            )
+            continue
+        for r in rows:
+            bbl = normalize_bbl(r.get("bbl"))
+            if bbl and bbl not in seen:
+                bbls_out.append(bbl)
+                seen.add(bbl)
+    return bbls_out
 
 
-async def peer_bbls(
-    socrata: SocrataClient,
-    project: Dict[str, Any],
-) -> Tuple[List[str], Dict[str, Any]]:
-    """Resolve the peer BBL list for a project, applying the
-    fallback ladder if the most-specific peer set is below
-    ``MIN_PEER_SAMPLE_SIZE`` (20).
 
-    V2.3 signature change: takes ``SocrataClient`` instead of
-    ``db`` (PLUTO is no longer mirrored locally).
-
-    Schema-corrections hotfix:
-      • PLUTO ``borough`` is a 2-letter code (``MN``/``BK``/...).
-        Translate the project's stored UPPER-case full name via
-        ``_pluto_borough`` before filtering.
-      • PLUTO ``bldgclass`` is the NYC DOF building-class code,
-        NOT Blueview's internal ``project_class`` enum. Fetch
-        the project's own PLUTO row to discover its real
-        ``bldgclass`` (cached at ``project["pluto_snapshot"]``
-        if previously fetched) and filter on THAT in tiers 1-2.
-      • Tier 4 (citywide) is capped at
-        ``CITYWIDE_TIER_MAX_PEERS`` — paginating the whole NYC
-        parcel set under the 30s sync timeout always times out.
-
-    Returns (bbls, metadata). metadata describes which tier was
-    used and the sample size — surfaced by
-    ``compare_project_to_peers`` so the FE drawer can disclose
-    "Compared against N projects in [borough]". The metadata
-    additionally carries ``pluto_snapshot`` when one was
-    discovered or reused, so the caller can persist it on the
-    project doc and skip the snapshot fetch on next compute.
-    """
-    key = _project_peer_key(project)
-    borough_stored = key.get("borough")
-    borough_pluto = _pluto_borough(borough_stored)
-    use_type = key.get("use_type")
-
-    # Discover the project's REAL DOF building class for
-    # tier-1/tier-2 peer queries. Read from cached snapshot if
-    # present (set by a prior recompute); otherwise fetch lazily
-    # and surface it back so the caller can persist.
-    snapshot: Optional[Dict[str, Any]] = project.get("pluto_snapshot")
-    if not snapshot:
-        snapshot = await fetch_project_pluto_snapshot(socrata, project)
-    dof_bldgclass = (snapshot or {}).get("bldgclass")
-    snapshot_landuse = (snapshot or {}).get("landuse")
-    effective_use_type = use_type or snapshot_landuse
-
-    # Every tier passes ``limit=`` so PLUTO returns a single
-    # bounded page — never ``query_all``. Without these caps the
-    # tier-3 query alone (Bronx, ~90k BBLs) paginates long enough
-    # that the downstream chunked event-count phase exhausts the
-    # 30s sync timeout. Verified in prod hotfix #3.
-
-    # Tier 1: borough × class × use_type. Requires both a
-    # PLUTO-format borough code AND a real DOF bldgclass; if
-    # either is missing we skip directly to a coarser tier.
-    if borough_pluto and dof_bldgclass:
-        bbls = await _bbls_matching_socrata(
-            socrata,
-            borough=borough_pluto,
-            bldgclass=dof_bldgclass,
-            landuse=effective_use_type,
-            limit=TIER_1_MAX_PEERS,
-        )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough_class_use",
-                "borough": borough_stored,
-                "project_class": dof_bldgclass,
-                "use_type": effective_use_type,
-                "sample_size": len(bbls),
-                "pluto_snapshot": snapshot,
-            }
-
-    # Tier 2: borough × class (drop use_type).
-    if borough_pluto and dof_bldgclass:
-        bbls = await _bbls_matching_socrata(
-            socrata,
-            borough=borough_pluto,
-            bldgclass=dof_bldgclass,
-            limit=TIER_2_MAX_PEERS,
-        )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough_class",
-                "borough": borough_stored,
-                "project_class": dof_bldgclass,
-                "sample_size": len(bbls),
-                "pluto_snapshot": snapshot,
-            }
-
-    # Tier 3: borough (drop class). The Bronx alone has ~90k
-    # parcels — without TIER_3_MAX_PEERS the downstream chunked
-    # event-count queries time out.
-    if borough_pluto:
-        bbls = await _bbls_matching_socrata(
-            socrata,
-            borough=borough_pluto,
-            limit=TIER_3_MAX_PEERS,
-        )
-        if len(bbls) >= MIN_PEER_SAMPLE_SIZE:
-            return bbls, {
-                "tier": "borough",
-                "borough": borough_stored,
-                "sample_size": len(bbls),
-                "pluto_snapshot": snapshot,
-            }
-
-    # Tier 4: citywide (no filters). The full ~858k-parcel scan
-    # always exhausts the sync 30s timeout in prod without this
-    # cap (verified during PR #4 production rollout).
-    bbls = await _bbls_matching_socrata(
-        socrata, limit=TIER_4_MAX_PEERS,
-    )
-    return bbls, {
-        "tier": "citywide",
-        "sample_size": len(bbls),
-        "pluto_snapshot": snapshot,
-    }
+# PR #14C Q7 lock — peer_bbls retired. Cohort discovery now goes
+# through compute_cohort_for_project (PR #14B).
 
 
 # ── Per-BBL event counts (rewritten — lazy Socrata, chunked IN) ───
@@ -755,37 +592,95 @@ def _percentile_rank(sorted_peer_counts: List[int], project_count: int) -> float
 async def compute_peer_stats_full(
     socrata: SocrataClient,
     project: Dict[str, Any],
+    db: Any,
     *,
     lookback_days: int = PEER_STATS_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """First-time peer-stats aggregation for a project. Returns a
-    fully-populated ``peer_stats_cache`` dict ready to persist on
-    the project doc.
+    """PR #14C — cohort-aware first-time peer-stats aggregation.
 
-    Cost: 1 PLUTO query for peer-BBL discovery (with up to 3 more
-    if the fallback ladder kicks in) + 3 event-dataset queries
-    (chunked for large peer sets). Expected wall-clock for a
-    typical Manhattan peer set: 500ms-2s.
+    Wires the PR #14B cohort machinery into the recompute path.
+    Replaces the V2.3 4-tier ``peer_bbls()`` ladder (retired per
+    Q7 lock) with ``compute_cohort_for_project`` as the cohort
+    source.
+
+    Flow:
+      1. Lazy PLUTO snapshot refresh (forces 14-field SELECT for
+         pre-PR-14B project docs; skipped for full_demo per Risk 7).
+      2. Auto-classify ``dob_project_type`` when missing (one-time
+         Socrata call to DOB NOW + BIS via the classifier).
+      3. Compute cohort via ``compute_cohort_for_project`` —
+         returns BIS-keyed metadata (cohort_bins + cohort_job_numbers).
+      4. PLUTO BIN→BBL join (Q2/T2) to get BBLs that key the
+         event-count queries.
+      5. Count peer events on inspections + 311 (violations stays
+         gated per V2.3 hotfix — no ``bbl`` column on 3h2n-5cm9).
+      6. Count project's own events.
+      7. Assemble cache with PR #14B peer_criteria shape +
+         schema_version stamp + lifecycle_normalized_percentile=None
+         placeholders (Q1 lock; real formula deferred to PR #14D).
+
+    Per Stage 2.A §6.1: ``db`` is a required argument (used by the
+    classifier to persist the three ``dob_*`` fields on the project
+    doc). All 5 call sites pass it through.
+
+    Empty-cohort handling (Q3): when ``compute_cohort_for_project``
+    returns ``sample_size=0`` (e.g., classifier returned 'unknown'),
+    the cache is still written with the PR #14B shape + a
+    ``cohort_unavailable=True`` sentinel. FE drawer + score
+    normalizer use the sentinel to skip percentile display.
 
     Raises ``SocrataQueryError`` only if a query exhausts retries
-    AND the caller didn't already wrap us in a timeout — most
-    failure modes are tolerated internally (returning zero counts
-    for the affected dataset) so a single bad shard doesn't blank
-    the whole cache.
+    AND the caller didn't already wrap us in a timeout.
     """
     cur_now = now or datetime.now(timezone.utc)
     window_start = cur_now - timedelta(days=lookback_days)
-
-    bbls, peer_meta = await peer_bbls(socrata, project)
     project_bbl = normalize_bbl(project.get("bbl") or project.get("nyc_bbl"))
 
-    # Exclude the project's own BBL from the peer count so the
-    # comparison is "us vs. peers", not "us vs. (peers + us)".
-    peer_bbl_list = [b for b in bbls if b and b != project_bbl]
+    # ── Step 1: lazy PLUTO snapshot refresh ──────────────────────
+    snapshot_before = project.get("pluto_snapshot")
+    await _ensure_pluto_snapshot_pr14b_complete(socrata, project)
+    snapshot_after = project.get("pluto_snapshot")
+    pluto_snapshot_refreshed = (
+        snapshot_after is not None
+        and snapshot_after is not snapshot_before
+    )
 
-    # Pull the three event counts in parallel — independent
-    # Socrata calls, no need to serialize.
+    # ── Step 2: auto-classify (idempotency guarded here, not in
+    #            the classifier — saves a Python call frame on the
+    #            hot path) ──────────────────────────────────────
+    if not project.get("dob_project_type"):
+        # ``maybe_classify_project_dob_type`` is bound at the
+        # module bottom via a deferred import (see end of file).
+        # Lives in prewarm.py, but importing it here at module top
+        # would create a cycle since prewarm.py imports
+        # ``compute_peer_stats_full`` from this module.
+        try:
+            await maybe_classify_project_dob_type(socrata, project, db)
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning(
+                "[baselines] auto-classify failed for project=%r: %r",
+                project.get("_id"), e,
+            )
+
+    # ── Step 3: compute cohort ───────────────────────────────────
+    cohort_result = await compute_cohort_for_project(
+        socrata, project, now=cur_now,
+    )
+
+    # ── Step 4: resolve cohort BINs → BBLs for event queries ────
+    cohort_bins = cohort_result.get("cohort_bins") or []
+    peer_bbl_list = await _resolve_bbls_for_cohort_bins(
+        socrata, cohort_bins,
+    )
+    # Strip the project's own BBL so the comparison is
+    # "us vs. peers", not "us vs. (peers + us)".
+    if project_bbl:
+        peer_bbl_list = [
+            b for b in peer_bbl_list if normalize_bbl(b) != project_bbl
+        ]
+
+    # ── Step 5: count peer events in parallel ───────────────────
     v_task = _count_events_for_bbls_socrata(
         socrata, DATASET_DOB_VIOLATIONS, peer_bbl_list,
         since=window_start, until=cur_now,
@@ -802,8 +697,7 @@ async def compute_peer_stats_full(
         v_task, i_task, c_task,
     )
 
-    # Project's own counts in the same window (1 query per dataset,
-    # filtered by BBL = own).
+    # ── Step 6: project's own counts ────────────────────────────
     proj_v, proj_i, proj_c = 0, 0, 0
     if project_bbl:
         own_counts = await asyncio.gather(
@@ -824,7 +718,46 @@ async def compute_peer_stats_full(
         proj_i = own_counts[1].get(project_bbl, 0)
         proj_c = own_counts[2].get(project_bbl, 0)
 
-    return _assemble_cache(
+    # ── Step 7: build peer_meta from cohort result + assemble ───
+    cohort_filter_spec = cohort_result.get("cohort_filter_spec") or {}
+    sample_size = cohort_result.get("sample_size", 0) or 0
+    peer_meta = {
+        # PR #14B keys (Stage 2.A T3 hybrid: full shape + sentinel).
+        "dob_project_type": (
+            cohort_filter_spec.get("dob_project_type")
+            or project.get("dob_project_type")
+        ),
+        "geography_tier_used":         cohort_result.get("tier_used"),
+        "fallback_level":              cohort_result.get("fallback_level"),
+        "low_confidence_flag":         cohort_result.get("low_confidence_flag", False),
+        "sample_size":                 sample_size,
+        "window_months":               cohort_result.get("window_months"),
+        "completion_method":           cohort_result.get("completion_method"),
+        "cohort_filter_spec":          cohort_filter_spec,
+        "cohort_job_numbers":          cohort_result.get("cohort_job_numbers") or [],
+        "cohort_bins":                 cohort_bins,
+        "cohort_median_duration_days": cohort_result.get("cohort_median_duration_days"),
+        "active_project":              cohort_result.get("active_project") or {},
+        "lifecycle_skip_reason":       cohort_result.get("lifecycle_skip_reason"),
+        # Q3 sentinel — empty cohort gets cohort_unavailable=True.
+        "cohort_unavailable":          sample_size == 0,
+        # Schema version stamp (Q4 Option B).
+        "schema_version":              PR14C_SCHEMA_VERSION,
+        # Carryover keys preserved from V2.3 shape so other code
+        # (incremental refresh + persistence) keeps working:
+        "borough":                     project.get("borough"),
+        "bbl":                         project_bbl,
+        "peer_bbl_list":               peer_bbl_list,
+        "pluto_snapshot":              project.get("pluto_snapshot"),
+        # Q6 Latent Bug 1 fix marker — tells _persist_cache to
+        # force-write the refreshed snapshot to db.projects even
+        # when project.pluto_snapshot is already truthy.
+        "pluto_snapshot_refreshed_at": (
+            cur_now.isoformat() if pluto_snapshot_refreshed else None
+        ),
+    }
+
+    cache = _assemble_cache(
         peer_meta=peer_meta,
         project_bbl=project_bbl,
         peer_bbl_list=peer_bbl_list,
@@ -835,6 +768,15 @@ async def compute_peer_stats_full(
         computed_at=cur_now,
         last_refreshed_at=cur_now,
     )
+
+    # Q1 lock — emit lifecycle_normalized_percentile placeholders.
+    # PR #14D replaces None with a calibrated stage-windowed formula
+    # using cohort_median_duration_days + active_project.completion_pct.
+    for label in ("inspections", "complaints"):
+        if cache.get(label, {}).get("available"):
+            cache[label]["lifecycle_normalized_percentile"] = None
+
+    return cache
 
 
 def _assemble_cache(
@@ -898,42 +840,55 @@ def _assemble_cache(
             return _one_unavailable(_VIOLATIONS_UNAVAILABLE_REASON)
         return _one_available(counts, project_count)
 
-    tier_to_fallback_level = {
-        "borough_class_use": 1,
-        "borough_class":     2,
-        "borough":           3,
-        "citywide":          4,
+    # PR #14C: peer_criteria carries the full PR #14B vocabulary
+    # from peer_meta. Pre-PR-14C this block manually populated V2.3
+    # keys (project_class, use_type, tier="borough_class_use"); per
+    # Q7 lock those keys retired with the V2.3 4-tier ladder.
+    peer_criteria: Dict[str, Any] = {
+        # PR #14B locked keys (T3 hybrid empty-cohort shape):
+        "dob_project_type":            peer_meta.get("dob_project_type"),
+        "geography_tier_used":         peer_meta.get("geography_tier_used"),
+        "fallback_level":              peer_meta.get("fallback_level"),
+        "low_confidence_flag":         peer_meta.get("low_confidence_flag", False),
+        "sample_size":                 (
+            peer_meta.get("sample_size")
+            if peer_meta.get("sample_size") is not None
+            else len(peer_bbl_list)
+        ),
+        "window_months":               peer_meta.get("window_months"),
+        "completion_method":           peer_meta.get("completion_method"),
+        "cohort_filter_spec":          peer_meta.get("cohort_filter_spec") or {},
+        "cohort_job_numbers":          peer_meta.get("cohort_job_numbers") or [],
+        "cohort_bins":                 peer_meta.get("cohort_bins") or [],
+        "cohort_median_duration_days": peer_meta.get("cohort_median_duration_days"),
+        "active_project":              peer_meta.get("active_project") or {},
+        "lifecycle_skip_reason":       peer_meta.get("lifecycle_skip_reason"),
+        # Q3 empty-cohort sentinel.
+        "cohort_unavailable":          peer_meta.get("cohort_unavailable", False),
+        # Q4 Option B schema version stamp — drives the cache-hit
+        # invalidation check in compare_project_to_peers.
+        "schema_version":              PR14C_SCHEMA_VERSION,
+        # Carry-forward keys (used by incremental refresh + persist):
+        "borough":                     peer_meta.get("borough"),
+        "bbl":                         project_bbl,
+        "peer_bbl_list":               peer_bbl_list,
+        "pluto_snapshot":              peer_meta.get("pluto_snapshot"),
+        # Q6 Latent Bug 1 fix marker — _persist_cache reads this to
+        # force-write a refreshed snapshot to db.projects.
+        "pluto_snapshot_refreshed_at": peer_meta.get("pluto_snapshot_refreshed_at"),
+        # Persist per-BBL counts so incremental refresh can
+        # add-then-evict events without re-fetching the full lookback.
+        "_peer_counts_by_dataset": {
+            DATASET_DOB_VIOLATIONS:  dict(v_counts),
+            DATASET_DOB_INSPECTIONS: dict(i_counts),
+            DATASET_COMPLAINTS_311:  dict(c_counts),
+        },
     }
 
     return {
         "computed_at":       computed_at,
         "last_refreshed_at": last_refreshed_at,
-        "peer_criteria": {
-            "borough":         peer_meta.get("borough"),
-            "project_class":   peer_meta.get("project_class"),
-            "use_type":        peer_meta.get("use_type"),
-            "bbl":             project_bbl,
-            "sample_size":     len(peer_bbl_list),
-            "fallback_level":  tier_to_fallback_level.get(
-                peer_meta.get("tier"), 4,
-            ),
-            "tier":            peer_meta.get("tier"),
-            # Persist the BBL list so incremental refresh can reuse
-            # it without re-running the PLUTO peer-discovery query.
-            "peer_bbl_list":   peer_bbl_list,
-            # Forward the project's PLUTO row through the cache so
-            # _persist_cache can stamp it on the project doc and
-            # subsequent recomputes skip the snapshot fetch.
-            "pluto_snapshot":  peer_meta.get("pluto_snapshot"),
-            # Persist per-BBL counts so incremental refresh can
-            # add-then-evict events in the sliding window without
-            # re-fetching the full lookback.
-            "_peer_counts_by_dataset": {
-                DATASET_DOB_VIOLATIONS:  dict(v_counts),
-                DATASET_DOB_INSPECTIONS: dict(i_counts),
-                DATASET_COMPLAINTS_311:  dict(c_counts),
-            },
-        },
+        "peer_criteria":     peer_criteria,
         "events_window_start": window_start,
         "events_window_end":   window_end,
         "violations":          _one_for(DATASET_DOB_VIOLATIONS,  v_counts, proj_v),
@@ -950,6 +905,7 @@ def _assemble_cache(
 async def refresh_peer_stats_incremental(
     socrata: SocrataClient,
     project: Dict[str, Any],
+    db: Any = None,
     *,
     lookback_days: int = PEER_STATS_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
@@ -991,7 +947,8 @@ async def refresh_peer_stats_incremental(
         # Cache doesn't carry the data we need to do a delta
         # refresh — fall back to a full recompute.
         return await compute_peer_stats_full(
-            socrata, project, lookback_days=lookback_days, now=cur_now,
+            socrata, project, db,
+            lookback_days=lookback_days, now=cur_now,
         )
 
     window_start = cur_now - timedelta(days=lookback_days)
@@ -1354,39 +1311,41 @@ def _zero_peer_marker(reason: str) -> Dict[str, Any]:
 
 
 def _v22_shape_from_cache(cache: Dict[str, Any]) -> Dict[str, Any]:
-    """Project the V2.3 cache shape onto the V2.2
-    ``compare_project_to_peers`` return shape so score.py reads
-    the same keys. The internal cache carries extras (per-BBL
-    counts, peer_bbl_list, etc.) that the score consumer doesn't
-    need; we strip them here.
+    """PR #14C — project the cache shape onto the
+    ``compare_project_to_peers`` FE-facing return shape.
 
-    Tier-conditional ``peer_set`` emission for byte-for-byte
-    parity with V2.2: ``peer_bbls()`` historically omitted keys
-    that didn't apply at the resolved tier (tier-3 emits no
-    ``project_class`` / ``use_type``; tier-4 emits only ``tier``
-    + ``sample_size``). Mirroring that here so existing
-    consumers — including any FE drawer that walks the dict —
-    don't see phantom ``None``-valued fields they wouldn't have
-    seen pre-V2.3.
+    Score.py's ``_factor_breakdown`` reads ``peer_set`` directly into
+    the contributing-factors row's ``details``. PR #14C emits the
+    PR #14B vocabulary (``dob_project_type``, ``geography_tier_used``,
+    ``low_confidence_flag``) on this surface — replacing V2.3's
+    tier-conditional ``project_class`` / ``use_type`` emission
+    (retired per Q7 lock).
 
-    The integer ``fallback_level`` (1-4, populated by
-    ``_assemble_cache``) drives the conditional. The output
-    ``peer_set["tier"]`` is the V2.2 string (``"borough_class_use"``
-    etc.) for value parity.
+    Per-dataset ``lifecycle_normalized_percentile`` passes through
+    so the FE drawer can render lifecycle-normalized comparisons.
+    Per Q1 lock, this value is ``None`` until PR #14D ships the
+    calibrated formula.
+
+    The schema check in ``compare_project_to_peers`` (Q4 Option B)
+    ensures this function is only called on current-schema caches.
+    Pre-PR-14C caches are auto-invalidated upstream.
     """
     criteria = cache.get("peer_criteria") or {}
-    level = criteria.get("fallback_level") or 4
 
     peer_set: Dict[str, Any] = {
-        "tier":        criteria.get("tier"),
-        "sample_size": criteria.get("sample_size") or 0,
+        # ``tier`` is preserved for backward-compat with any consumer
+        # that walks the old key name; carries the new vocabulary
+        # value (e.g. "zip_bldgclass_type").
+        "tier":                 criteria.get("geography_tier_used"),
+        "geography_tier_used":  criteria.get("geography_tier_used"),
+        "fallback_level":       criteria.get("fallback_level"),
+        "dob_project_type":     criteria.get("dob_project_type"),
+        "low_confidence_flag":  criteria.get("low_confidence_flag", False),
+        "sample_size":          criteria.get("sample_size") or 0,
+        "borough":              criteria.get("borough"),
+        "zipcode":              (criteria.get("pluto_snapshot") or {}).get("zipcode"),
+        "cohort_unavailable":   criteria.get("cohort_unavailable", False),
     }
-    if level in (1, 2, 3):  # tiers 1-3 are borough-scoped
-        peer_set["borough"] = criteria.get("borough")
-    if level in (1, 2):  # tiers 1-2 carry project_class
-        peer_set["project_class"] = criteria.get("project_class")
-    if level == 1:  # only tier 1 carries use_type
-        peer_set["use_type"] = criteria.get("use_type")
 
     out: Dict[str, Any] = {"peer_set": peer_set}
     for key in ("violations", "inspections", "complaints"):
@@ -1416,6 +1375,11 @@ def _v22_shape_from_cache(cache: Dict[str, Any]) -> Dict[str, Any]:
                 "peer_p90":         float(dataset_summary.get("p90") or 0.0),
                 "percentile_rank":  float(dataset_summary.get("percentile_rank") or 0.0),
                 "peer_sample_size": int(dataset_summary.get("n") or 0),
+                # PR #14C Q1 lock — per-dataset lifecycle pass-through.
+                # None until PR #14D calibration replaces.
+                "lifecycle_normalized_percentile": dataset_summary.get(
+                    "lifecycle_normalized_percentile",
+                ),
             }
     return out
 
@@ -1439,8 +1403,18 @@ async def _persist_cache(db, project: Dict[str, Any], cache: Dict[str, Any]) -> 
     if not project_id:
         return
     update: Dict[str, Any] = {"peer_stats_cache": cache}
-    snapshot = (cache.get("peer_criteria") or {}).get("pluto_snapshot")
-    if snapshot and not project.get("pluto_snapshot"):
+    peer_criteria = cache.get("peer_criteria") or {}
+    snapshot = peer_criteria.get("pluto_snapshot")
+    refreshed_at = peer_criteria.get("pluto_snapshot_refreshed_at")
+    # PR #14C Q6 Latent Bug 1 fix: force-write the refreshed snapshot
+    # even when project.pluto_snapshot is already truthy. Pre-PR-14C
+    # the guard was ``not project.get("pluto_snapshot")`` only — so
+    # after _ensure_pluto_snapshot_pr14b_complete mutated the project
+    # in-memory, this branch skipped the DB write and the new fields
+    # never reached db.projects. The refreshed_at marker (set by
+    # compute_peer_stats_full when the snapshot actually changed)
+    # opens the gate.
+    if snapshot and (not project.get("pluto_snapshot") or refreshed_at):
         update["pluto_snapshot"] = snapshot
     try:
         await db.projects.update_one(
@@ -1498,6 +1472,32 @@ async def compare_project_to_peers(
     cur_now = now or datetime.now(timezone.utc)
     cache = project.get("peer_stats_cache")
 
+    # PR #14C Q4 Option B + T4: schema-version invalidation.
+    # If a ``status=ready`` cache lacks ``schema_version`` OR
+    # carries a value other than the current
+    # ``PR14C_SCHEMA_VERSION``, treat it as a miss → fall through
+    # to recompute. Catches V2.3-shape caches that survived the
+    # deploy-time ``$unset`` migration (or were written by a stale
+    # prewarm task between deploy and the unset script).
+    #
+    # Gated on ``status=ready`` because pending + failed are status
+    # markers written by prewarm + refresh_cron BEFORE compute_peer_stats_full
+    # ever runs — they don't carry peer_criteria at all. Invalidating
+    # them here would break the race-prevention contract that lets
+    # concurrent compare/prewarm calls coexist (V2.3 Commit 4).
+    if cache and cache.get("status") == "ready":
+        criteria = cache.get("peer_criteria") or {}
+        if criteria.get("schema_version") != PR14C_SCHEMA_VERSION:
+            logger.info(
+                "[baselines] peer_stats_cache schema mismatch for "
+                "%s (got %r, expected %r); invalidating + "
+                "forcing recompute",
+                project.get("_id"),
+                criteria.get("schema_version"),
+                PR14C_SCHEMA_VERSION,
+            )
+            cache = None
+
     if cache:
         status = cache.get("status")
         if status == "ready":
@@ -1544,7 +1544,7 @@ async def compare_project_to_peers(
         try:
             new_cache = await asyncio.wait_for(
                 compute_peer_stats_full(
-                    socrata, project,
+                    socrata, project, db,
                     lookback_days=lookback_days, now=cur_now,
                 ),
                 timeout=PEER_STATS_COMPUTE_TIMEOUT_SECONDS,
@@ -2187,6 +2187,7 @@ async def compute_cohort_for_project(
         "completion_method":           None,
         "cohort_filter_spec":          {},
         "cohort_job_numbers":          [],
+        "cohort_bins":                 [],
         "cohort_median_duration_days": None,
         "lifecycle_skip_reason":       None,
         "active_project":              {
@@ -2241,6 +2242,13 @@ async def compute_cohort_for_project(
     cohort_job_numbers = [
         r.get("job__") for r in cohort_rows if r.get("job__")
     ]
+    # PR #14C: surface cohort BINs so compute_peer_stats_full
+    # can resolve them to BBLs via _resolve_bbls_for_cohort_bins
+    # (Q2/T2 PLUTO BIN→BBL join). BIS rows carry ``bin__``
+    # (double-underscore), not ``bin``.
+    cohort_bins = [
+        r.get("bin__") for r in cohort_rows if r.get("bin__")
+    ]
 
     # Lifecycle median + skip reasons.
     if sample_size == 0:
@@ -2268,6 +2276,7 @@ async def compute_cohort_for_project(
         "completion_method":           completion_method,
         "cohort_filter_spec":          spec_values,
         "cohort_job_numbers":          cohort_job_numbers,
+        "cohort_bins":                 cohort_bins,
         "cohort_median_duration_days": cohort_median,
         "lifecycle_skip_reason":       lifecycle_skip_reason,
         "active_project": {
@@ -2343,3 +2352,33 @@ async def _ladder_search(
         last_rows, last_tier, last_level, used_window_months,
         "job_status_x_or_u", spec_values,
     )
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14C deferred-import binding
+#
+# Bound at module bottom (after compute_peer_stats_full is defined)
+# so prewarm.py's `from baselines import compute_peer_stats_full`
+# resolves successfully when prewarm.py is loaded transitively
+# through this import.
+#
+# Python import semantics:
+#   1. baselines.py begins loading; runs all top-level defs.
+#   2. Reaches this import; starts loading prewarm.py.
+#   3. prewarm.py's top-level `from baselines import …` sees
+#      baselines partially loaded but with compute_peer_stats_full
+#      already bound (step 1 completed for that name).
+#   4. prewarm.py finishes loading.
+#   5. baselines.py binds maybe_classify_project_dob_type and
+#      finishes loading.
+#
+# This binding is essential for tests that patch
+# ``lib.statistical_engine.baselines.maybe_classify_project_dob_type``
+# (Stage 2.A T1 lock — primary spy strategy). Without it, the
+# spy would have to target the prewarm module's symbol and the
+# patch path would diverge from the Stage 2.A locked convention.
+# ──────────────────────────────────────────────────────────────────
+
+from lib.statistical_engine.prewarm import (  # noqa: E402
+    maybe_classify_project_dob_type,
+)

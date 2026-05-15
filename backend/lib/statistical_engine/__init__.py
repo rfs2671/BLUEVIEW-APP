@@ -97,7 +97,8 @@ from lib.statistical_engine.triggers import (  # noqa: F401
     run_triggers_for_project,
 )
 from lib.statistical_engine.baselines import (  # noqa: F401
-    peer_bbls,
+    # PR #14C Q7 lock — peer_bbls retired alongside the V2.3 4-tier
+    # ladder. Cohort discovery now goes through compute_cohort_for_project.
     compare_project_to_peers,
     compute_peer_stats_full,
     refresh_peer_stats_incremental,
@@ -109,6 +110,8 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     # PR #14B — cohort-aware peer comparison
     PEER_STATS_COHORT_TTL_DAYS,
     compute_cohort_for_project,
+    # PR #14C — cohort wiring + schema-version invalidation
+    PR14C_SCHEMA_VERSION,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,

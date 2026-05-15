@@ -187,7 +187,10 @@ class TestPrewarmHappyPath(unittest.TestCase):
             "project_class": "O", "use_type": "office",
         }])
 
-        async def _fake_compute(_socrata, _project, *, lookback_days=None, now=None):
+        async def _fake_compute(_socrata, _project, _db=None, *, lookback_days=None, now=None):
+            # PR #14C §6.1: compute_peer_stats_full gained ``db`` as
+            # a required positional arg. Stub accepts it as optional
+            # for backward compat with any pre-PR-14C call shape.
             return _make_ready_cache(sample_size=24)
 
         with patch.object(pw, "compute_peer_stats_full", new=_fake_compute):
@@ -208,7 +211,8 @@ class TestPrewarmHappyPath(unittest.TestCase):
         db = _StubDb(projects=[{"_id": "P2"}])
         observed_at_compute: List[Optional[str]] = []
 
-        async def _observe_compute(_socrata, _project, *, lookback_days=None, now=None):
+        async def _observe_compute(_socrata, _project, _db=None, *, lookback_days=None, now=None):
+            # PR #14C §6.1: ``db`` is a new positional arg.
             # Re-fetch the project doc as it stands at this moment.
             current = await db.projects.find_one({"_id": "P2"})
             observed_at_compute.append(
@@ -224,7 +228,8 @@ class TestPrewarmHappyPath(unittest.TestCase):
     def test_logs_duration_and_sample_size_on_success(self):
         db = _StubDb(projects=[{"_id": "P3"}])
 
-        async def _fake(_s, _p, *, lookback_days=None, now=None):
+        async def _fake(_s, _p, _db=None, *, lookback_days=None, now=None):
+            # PR #14C §6.1: db is now a positional arg.
             return _make_ready_cache(sample_size=37, tier="borough_class")
 
         with patch.object(pw, "compute_peer_stats_full", new=_fake), \
