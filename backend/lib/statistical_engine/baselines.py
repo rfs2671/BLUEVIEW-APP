@@ -2801,6 +2801,11 @@ async def _fetch_modern_cohort(
         )
         return []
 
+    # PR #14H-diag (TEMPORARY — to be reverted): cohort funnel
+    # instrumentation. Surfaces Modern path row counts at each step
+    # so operator can identify the zeroing step from Railway logs.
+    logger.info("[PR14E-DIAG] modern pkdm raw rows: %d", len(pkdm_rows))
+
     if not pkdm_rows:
         return []
 
@@ -2822,6 +2827,12 @@ async def _fetch_modern_cohort(
             r["_parsed_issuance_dt"] = issued_dt  # cache for downstream
             in_window.append(r)
     pkdm_rows = in_window
+
+    # PR #14H-diag (TEMPORARY): 36mo client-side window result.
+    logger.info(
+        "[PR14E-DIAG] modern after 36mo window: %d (cutoff=%s)",
+        len(in_window), window_start.isoformat(),
+    )
 
     if not pkdm_rows:
         return []
@@ -2864,6 +2875,19 @@ async def _fetch_modern_cohort(
                 if bbl_n:
                     pluto_by_bbl[bbl_n] = pr
 
+    # PR #14H-diag (TEMPORARY): PLUTO join result + key-sample diff.
+    # The first-5 list lets us eyeball whether pluto_by_bbl keys
+    # (post-_normalize_pluto_bbl) match cohort_bbls (pkdm-side plain
+    # 10-digit). A format mismatch would surface as "no overlap".
+    total_pluto_rows = sum(len(rows) for rows in chunk_results) if cohort_bbls else 0
+    logger.info(
+        "[PR14E-DIAG] modern PLUTO join: pluto_rows=%d, pluto_by_bbl keys (first 5): %r",
+        total_pluto_rows, list(pluto_by_bbl.keys())[:5],
+    )
+    logger.info(
+        "[PR14E-DIAG] modern cohort bbls (first 5): %r", cohort_bbls[:5],
+    )
+
     # ── Step 5: target_state filter ───────────────────────────
     filtered: List[Dict[str, Any]] = []
     for r in pkdm_rows:
@@ -2885,6 +2909,13 @@ async def _fetch_modern_cohort(
         merged["pluto_yearbuilt"] = pluto_row.get("yearbuilt")
         merged["source"] = "modern"
         filtered.append(merged)
+
+    # PR #14H-diag (TEMPORARY): post target_state filter row count
+    # plus the filter parameters that did the trimming.
+    logger.info(
+        "[PR14E-DIAG] modern after pluto_match: %d (target_bldgclass=%r, band=%r)",
+        len(filtered), target.get("bldgclass"), target.get("numfloors_band"),
+    )
 
     if not filtered:
         return []
@@ -2942,6 +2973,12 @@ async def _fetch_modern_cohort(
         if "c_o_issue_date" not in r:
             r["c_o_issue_date"] = r.get("c_of_o_issuance_date")
 
+    # PR #14H-diag (TEMPORARY): final Modern cohort count returned
+    # to compute_cohort_for_project (which then decides if Legacy
+    # extension fires per PR14E_MODERN_COHORT_FLOOR).
+    logger.info(
+        "[PR14E-DIAG] modern final: %d cohort rows returning", len(filtered),
+    )
     return filtered
 
 
@@ -3040,6 +3077,12 @@ async def _fetch_legacy_cohort(
         )
         return []
 
+    # PR #14H-diag (TEMPORARY — to be reverted): cohort funnel
+    # instrumentation for the Legacy BIS path. Surfaces row count
+    # after each filter step so operator can identify the zeroing
+    # step from Railway logs.
+    logger.info("[PR14E-DIAG] legacy bis raw rows: %d", len(rows))
+
     if not rows:
         return []
 
@@ -3074,6 +3117,14 @@ async def _fetch_legacy_cohort(
         in_window.append(r)
     rows = in_window
 
+    # PR #14H-diag (TEMPORARY): post Golden Era window count + bounds.
+    logger.info(
+        "[PR14E-DIAG] legacy after window: %d (start=%s, end=%s)",
+        len(in_window),
+        window_start_dt.isoformat() if window_start_dt else window_start_iso,
+        window_end_dt.isoformat() if window_end_dt else window_end_iso,
+    )
+
     if not rows:
         return []
 
@@ -3084,6 +3135,13 @@ async def _fetch_legacy_cohort(
     if band:
         synthetic = {"story_count_band": list(band)}
         rows = _apply_band_filters(rows, synthetic)
+
+    # PR #14H-diag (TEMPORARY): post numfloors band filter count
+    # plus the band that drove the trim.
+    logger.info(
+        "[PR14E-DIAG] legacy after band filter: %d (band=%r)",
+        len(rows), target.get("numfloors_band"),
+    )
 
     # ── Annotate with bbl + provenance ────────────────────────
     # BIS rows are BIN-indexed; BBL is not always derivable inline.
@@ -3106,6 +3164,11 @@ async def _fetch_legacy_cohort(
         )
         out.append(merged)
 
+    # PR #14H-diag (TEMPORARY): final Legacy cohort count returned
+    # to compute_cohort_for_project for Modern→Legacy merge.
+    logger.info(
+        "[PR14E-DIAG] legacy final: %d cohort rows returning", len(out),
+    )
     return out
 
 
