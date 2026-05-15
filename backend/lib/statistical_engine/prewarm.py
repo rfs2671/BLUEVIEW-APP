@@ -424,9 +424,21 @@ async def maybe_classify_project_dob_type(
         # lifecycle_skip_reason="no_spec" with cohort_filter_spec={}.
         project["dob_project_type"]    = proj_type
         project["dob_job_snapshot"]    = snapshot
-        # extracted_scope is set on the project doc by the
-        # classifier (in db) but not returned; leave it unset
-        # in-memory — downstream consumers re-read from db if needed.
+        # PR #14E: also mirror dob_extracted_scope so the cohort
+        # builder's Q5 hybrid target_state derivation can read the
+        # parser-extracted story_count without re-reading from db.
+        # The classifier persists this in db.projects.update_one;
+        # re-read via find_one keeps the in-memory dict in sync.
+        try:
+            project_id = project.get("_id") or project.get("id")
+            if project_id is not None and getattr(db, "projects", None):
+                fresh = await db.projects.find_one({"_id": project_id})
+                if fresh and "dob_extracted_scope" in fresh:
+                    project["dob_extracted_scope"] = fresh.get(
+                        "dob_extracted_scope",
+                    )
+        except Exception:  # pragma: no cover — defensive
+            pass
     except Exception as e:  # pragma: no cover — defensive
         logger.warning(
             "[prewarm] maybe_classify_project_dob_type failed for "

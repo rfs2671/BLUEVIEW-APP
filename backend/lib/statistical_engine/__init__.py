@@ -114,6 +114,13 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     PR14C_SCHEMA_VERSION,
     # PR #14D — cohort cap for PLUTO BIN→BBL join
     COHORT_MAX_PEERS_FOR_PLUTO_JOIN,
+    # PR #14E — Unified Cohort: Modern primary + Legacy fallback
+    PR14E_SCHEMA_VERSION,
+    PR14E_MODERN_COHORT_FLOOR,
+    PR14E_LEGACY_WINDOW_START_ISO,
+    PR14E_LEGACY_WINDOW_END_ISO,
+    PR14E_MODERN_WINDOW_MONTHS,
+    DATASET_DOB_C_OF_O,
 )
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,

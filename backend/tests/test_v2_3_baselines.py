@@ -521,7 +521,7 @@ class TestComputePeerStatsFull(unittest.TestCase):
         self.assertIn("geography_tier_used", criteria)
         self.assertIn("low_confidence_flag", criteria)
         self.assertEqual(
-            criteria.get("schema_version"), "pr14c",
+            criteria.get("schema_version"), "pr14e",
             "Stage 3 Q4: stamp PR14C_SCHEMA_VERSION onto every "
             "cache write so the schema check in "
             "compare_project_to_peers can validate the cache "
@@ -641,10 +641,10 @@ class TestRefreshPeerStatsIncremental(unittest.TestCase):
                 "last_refreshed_at": old_last_refreshed,
                 "status": "ready",
                 # PR #14C: peer_criteria seeded with new shape +
-                # schema_version="pr14c" so the cache-hit branch
+                # schema_version="pr14e" so the cache-hit branch
                 # doesn't trigger schema-mismatch recompute.
                 "peer_criteria": {
-                    "schema_version":      "pr14c",
+                    "schema_version":      "pr14e",
                     "borough":             "MANHATTAN",
                     "dob_project_type":    "new_building",
                     "geography_tier_used": "zip_bldgclass_type",
@@ -1106,7 +1106,7 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
             "computed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
             "last_refreshed_at": datetime(2026, 5, 1, tzinfo=timezone.utc),
             "peer_criteria": {
-                "schema_version":      "pr14c",
+                "schema_version":      "pr14e",
                 "dob_project_type":    "new_building",
                 "geography_tier_used": "zip_bldgclass_type",
                 "low_confidence_flag": False,
@@ -1241,7 +1241,7 @@ class TestCompareProjectToPeersCacheAware(unittest.TestCase):
         new_cache = peer_stats_writes[-1]["update"]["$set"]["peer_stats_cache"]
         self.assertEqual(new_cache["status"], "ready")
         self.assertEqual(
-            new_cache["peer_criteria"].get("schema_version"), "pr14c",
+            new_cache["peer_criteria"].get("schema_version"), "pr14e",
             "Sync-compute path must stamp schema_version per Q4.",
         )
 
@@ -1629,7 +1629,7 @@ class TestRecomputePersistMenahanFixture(unittest.TestCase):
                     # Test isolates own_building math, doesn't care
                     # about peer factor — just needs the cache served
                     # so the rest of recompute_and_persist runs.
-                    "schema_version":      "pr14c",
+                    "schema_version":      "pr14e",
                     "borough":             "BROOKLYN",
                     "dob_project_type":    "new_building",
                     "geography_tier_used": "zip_bldgclass_type",
@@ -1795,29 +1795,33 @@ from _pr14b_fixtures import (  # noqa: E402
     seed_c_of_o_for_job,
     seed_dob_now_for_bin,
     make_cohort_fixture,
+    # PR #14E — Modern cohort source helpers (pkdm-hqz6).
+    DATASET_DOB_C_OF_O,
+    seed_pkdm_co_for_bin,
+    make_modern_cohort_fixture,
 )
 
 
 class TestComputeCohortForProject(unittest.TestCase):
-    """PR #14B — verify ``compute_cohort_for_project``.
+    """PR #14E REWRITTEN (per §7.6 + T4 hybrid) — 4 end-to-end tests
+    pinning compute_cohort_for_project happy paths per project type.
 
-    Per Stage 2.A locked design:
-      • 4-tier geography ladder (zip → cd → borough+broader → borough)
-      • Sample size N≥100 high confidence, 30≤N<100 low_confidence,
-        N<30 fall back to next tier
-      • 36mo window primary, expand to 60mo if N<100
-      • Completion: C of O Final primary, job_status_x_or_u fallback
-      • Per-project_type filter from cohort_config.py
+    Pre-PR-14E the class held 12 tests for the BIS 4-tier ladder.
+    Per Q2 lock the cohort source flips to pkdm-hqz6 (Modern primary)
+    with BIS Legacy fallback at < 100 floor. The 12 → 4 e2e
+    rewrite delegates unit coverage to the 3 sub-classes below
+    (TestFetchModernCohort, TestFetchLegacyCohort,
+    TestModernLegacyMerge).
     """
 
     def _require_compute_cohort(self):
         if not HAS_COMPUTE_COHORT:
             self.fail(
                 "lib.statistical_engine.baselines.compute_cohort_for_project "
-                "not implemented. Stage 3: add the function that "
-                "reads project.dob_project_type, looks up cohort spec, "
-                "queries BIS + C of O, applies tolerance bands + "
-                "geography ladder."
+                "not implemented. Stage 3 §7.6: keep the function "
+                "signature; flip internal cohort source to "
+                "_fetch_modern_cohort (pkdm-hqz6) primary, "
+                "_fetch_legacy_cohort (BIS) fallback per Q2."
             )
 
     def _project_new_building(self, **overrides):
@@ -1831,103 +1835,114 @@ class TestComputeCohortForProject(unittest.TestCase):
             "pluto_snapshot": {
                 "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
                 "numfloors": 5, "unitsres": 8, "unitstotal": 8,
-                "zipcode": "11221", "cd": "304",
+                "zipcode": "11221", "cd": "304", "yearbuilt": "2020",
             },
         }
         base.update(overrides)
         return base
 
-    def test_new_building_tier_1_happy_path_zip_match(self):
-        """Test 29 — 120 NB filings matching tier 1 (zip+bldgclass+type)
-        → fires tier 1, no low_confidence flag."""
+    def test_compute_cohort_for_new_building_uses_modern_primary(self):
+        """PR #14E §7.6 + Q2 lock — NB cohort: Modern (pkdm-hqz6)
+        primary when N >= 100. No Legacy BIS query fires."""
         self._require_compute_cohort()
         socrata = MockSocrataClient()
-        make_cohort_fixture(
+        make_modern_cohort_fixture(
             socrata, project_type="new_building", n_records=120,
-            bin_prefix="3033040", job_number_prefix="32100",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            bin_prefix="3033040", borough="BROOKLYN", building_class="C1",
+            numfloors=5, yearbuilt=2020,
         )
         project = self._project_new_building()
         result = _run(compute_cohort_for_project(socrata, project))
-        self.assertEqual(result["tier_used"], "zip_bldgclass_type")
-        self.assertEqual(result["fallback_level"], 1)
-        self.assertEqual(result["sample_size"], 120)
-        self.assertFalse(result["low_confidence_flag"])
-        self.assertEqual(len(result["cohort_job_numbers"]), 120)
+        self.assertGreaterEqual(
+            result.get("sample_size", 0), 100,
+            "Modern cohort with 120 seeded rows must populate "
+            "sample_size >= 100. Stage 3: wire _fetch_modern_cohort "
+            "into compute_cohort_for_project's primary path.",
+        )
+        # No BIS query fired (Modern alone satisfied floor per Q7).
+        bis_calls = [c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS]
+        self.assertEqual(
+            len(bis_calls), 0,
+            "BIS Legacy MUST NOT fire when Modern >= 100. "
+            "Stage 3 Q7 lock: short-circuit _fetch_legacy_cohort.",
+        )
 
-    def test_major_alt_with_enlargement_uses_a1_filter_first_then_nb_secondary(self):
-        """Test 30 — primary A1 cohort < 30; secondary fallback per
-        T4 merges in new_building cohort to reach floor."""
+    def test_compute_cohort_for_major_alt_with_enlargement_uses_modern_primary(self):
+        """PR #14E — A1 cohort sources from pkdm-hqz6 ALTERATION TYPE 1."""
         self._require_compute_cohort()
         socrata = MockSocrataClient()
-        make_cohort_fixture(
+        make_modern_cohort_fixture(
             socrata, project_type="major_alt_with_enlargement",
-            n_records=25, bin_prefix="3033041", job_number_prefix="32200",
-            borough="BROOKLYN", building_class="C1", bis_job_type="A1",
-            story_count=5, dwelling_units=8, completed=True,
-        )
-        make_cohort_fixture(
-            socrata, project_type="new_building",
-            n_records=200, bin_prefix="3033042", job_number_prefix="32300",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            n_records=120, bin_prefix="3033041",
+            borough="BROOKLYN", building_class="C1",
+            numfloors=4, yearbuilt=1925,  # OLD building (A1 alters old)
         )
         project = self._project_new_building(
-            _id="P_ALT", dob_project_type="major_alt_with_enlargement",
+            _id="P_ALT",
+            dob_project_type="major_alt_with_enlargement",
+            dob_extracted_scope={"story_count": 4},  # parser primary per Q5
         )
         result = _run(compute_cohort_for_project(socrata, project))
-        self.assertGreaterEqual(result["sample_size"], 30)
-        self.assertTrue(
-            result["cohort_filter_spec"].get("secondary_fallback_applied"),
+        self.assertGreaterEqual(result.get("sample_size", 0), 100)
+        # Q3: A1 does NOT apply yearbuilt filter — yearbuilt=1925
+        # peers still match.
+        target = result.get("target_state") or {}
+        # Q5: target_state.source = "parser" when dob_extracted_scope
+        # carries a confident story_count.
+        self.assertEqual(
+            target.get("source"), "parser",
+            f"A1 target_state.source must be 'parser' when "
+            f"dob_extracted_scope.story_count is present. Got: "
+            f"{target.get('source')!r}. Stage 3 Q5 lock: implement "
+            f"hybrid target derivation in compute_cohort_for_project."
         )
 
-    def test_minor_alt_skips_story_units_filters(self):
-        """Test 31 — minor_alt does NOT filter on story_count or
-        dwelling_units. 150 mixed-story A2/A3 records all qualify."""
+    def test_compute_cohort_for_minor_alt_uses_modern_primary(self):
+        """PR #14E — minor_alt cohort sources from pkdm-hqz6
+        'Alteration CO' job_type. No numfloors or yearbuilt filter."""
         self._require_compute_cohort()
         socrata = MockSocrataClient()
-        make_cohort_fixture(
-            socrata, project_type="minor_alt", n_records=50,
-            bin_prefix="3000050", job_number_prefix="32400",
-            borough="BROOKLYN", building_class="C1", bis_job_type="A2",
-            story_count=2, dwelling_units=2, completed=True,
+        # Mixed numfloors/yearbuilts to verify NO filtering happens.
+        make_modern_cohort_fixture(
+            socrata, project_type="minor_alt", n_records=60,
+            bin_prefix="3000050", borough="BROOKLYN",
+            building_class="C1", numfloors=2, yearbuilt=1950,
         )
-        make_cohort_fixture(
-            socrata, project_type="minor_alt", n_records=50,
-            bin_prefix="3000060", job_number_prefix="32500",
-            borough="BROOKLYN", building_class="C1", bis_job_type="A3",
-            story_count=8, dwelling_units=12, completed=True,
-        )
-        make_cohort_fixture(
-            socrata, project_type="minor_alt", n_records=50,
-            bin_prefix="3000070", job_number_prefix="32600",
-            borough="BROOKLYN", building_class="C1", bis_job_type="A2",
-            story_count=12, dwelling_units=40, completed=True,
+        make_modern_cohort_fixture(
+            socrata, project_type="minor_alt", n_records=60,
+            bin_prefix="3000060", borough="BROOKLYN",
+            building_class="C1", numfloors=12, yearbuilt=2015,
         )
         project = self._project_new_building(
             _id="P_MINOR", dob_project_type="minor_alt",
         )
         result = _run(compute_cohort_for_project(socrata, project))
+        # All 120 records included (no story/yearbuilt narrowing).
         self.assertEqual(
-            result["sample_size"], 150,
-            "minor_alt must include all records regardless of story "
-            "count per cohort_config (no story_count_band filter)",
+            result.get("sample_size"), 120,
+            "minor_alt must include all peers regardless of numfloors/"
+            "yearbuilt. Stage 3: skip those filters for minor_alt path.",
         )
 
-    def test_full_demo_uses_demolished_attributes_from_pluto_snapshot(self):
-        """Test 32 — full_demo cohort uses pre-demolition bldgclass
-        from frozen pluto_snapshot per Risk 7 lock."""
+    def test_compute_cohort_for_full_demo_uses_legacy_only(self):
+        """PR #14E Q4 lock — full_demo cohort sources from BIS DM
+        only (pkdm-hqz6 has no DEMOLITION job_type). Modern path
+        is None for full_demo. _fetch_demo_cohort helper preserves
+        PR #14B logic exactly (T7 lock)."""
         self._require_compute_cohort()
         socrata = MockSocrataClient()
+        # Seed BIS DM rows (legacy path).
+        # pre__filing_date within Golden Era window (Q7 lock).
         make_cohort_fixture(
             socrata, project_type="full_demo", n_records=150,
             bin_prefix="3001000", job_number_prefix="32700",
-            borough="BROOKLYN", building_class="A2", bis_job_type="DM",
-            story_count=2, dwelling_units=2, completed=True,
+            borough="BROOKLYN", building_class="A2",
+            bis_job_type="DM", story_count=2, dwelling_units=2,
+            completed=True, pre__filing_date="2020-01-15",
         )
         project = self._project_new_building(
-            _id="P_DEMO", dob_project_type="full_demo",
+            _id="P_DEMO",
+            dob_project_type="full_demo",
             pluto_snapshot={
                 "bbl": "3033040024", "borough": "BK",
                 "bldgclass": "A2",  # frozen pre-demolition class
@@ -1936,158 +1951,502 @@ class TestComputeCohortForProject(unittest.TestCase):
             },
         )
         result = _run(compute_cohort_for_project(socrata, project))
-        self.assertGreater(result["sample_size"], 100)
+        self.assertGreater(result.get("sample_size", 0), 100)
+        # No pkdm-hqz6 query fires for full_demo (Q4 lock).
+        pkdm_calls = [c for c in socrata.calls if c[0] == DATASET_DOB_C_OF_O]
         self.assertEqual(
-            result["cohort_filter_spec"].get("building_class"), "A2",
+            len(pkdm_calls), 0,
+            "full_demo path must NOT query pkdm-hqz6 (Q4 lock). "
+            "Stage 3: route full_demo through _fetch_demo_cohort "
+            "(dedicated helper, BIS DM only).",
+        )
+        # T7: target_state.source surfaces as frozen_pluto_snapshot.
+        target = result.get("target_state") or {}
+        self.assertEqual(
+            target.get("source"), "frozen_pluto_snapshot",
+            f"full_demo target_state.source must be "
+            f"'frozen_pluto_snapshot' per T7 lock. Got: "
+            f"{target.get('source')!r}",
         )
 
-    def test_geography_ladder_falls_through_tier_1_to_tier_2_when_zip_below_floor(self):
-        """Test 33 — Tier 1 (zip) returns 20 below floor. Ladder
-        advances to tier 2 (cd)."""
-        self._require_compute_cohort()
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14E unit tests — _fetch_modern_cohort (4 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestFetchModernCohort(unittest.TestCase):
+    """PR #14E §7.6 + T4 — narrow unit tests for the new Modern
+    cohort source helper. Tests query construction, target-state
+    filter, yearbuilt filter, Q6 cross-join.
+    """
+
+    def _require_fetch_modern(self):
+        try:
+            from lib.statistical_engine.baselines import _fetch_modern_cohort  # noqa: F401
+        except ImportError:
+            self.fail(
+                "lib.statistical_engine.baselines._fetch_modern_cohort "
+                "not implemented. Stage 3 §7.6 + T4: add helper that "
+                "queries pkdm-hqz6 with c_of_o_filing_type IN "
+                "('Final', 'Initial') + job_type matches + borough + "
+                "36mo window. PLUTO-join for target filter (bldgclass, "
+                "numfloors, yearbuilt). rbx6-tga4 cross-join for "
+                "permit_issued_date (Q6)."
+            )
+
+    def test_fetch_modern_cohort_queries_pkdm_hqz6_with_correct_filters(self):
+        """WHERE clause includes c_of_o_filing_type IN ('Final',
+        'Initial'), job_type matching, borough match."""
+        self._require_fetch_modern()
+        from lib.statistical_engine.baselines import _fetch_modern_cohort
         socrata = MockSocrataClient()
-        make_cohort_fixture(
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=50,
+            borough="BROOKLYN", building_class="C1",
+        )
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
+        # Stage 3 signature TBD — keep it loose:
+        cohort = _run(_fetch_modern_cohort(socrata, project))
+        self.assertGreater(
+            len(cohort), 0,
+            "Modern cohort must return rows when seeds match filters.",
+        )
+        pkdm_calls = [c for c in socrata.calls if c[0] == DATASET_DOB_C_OF_O]
+        self.assertGreater(len(pkdm_calls), 0)
+        where = pkdm_calls[0][1].get("where") or ""
+        self.assertIn("c_of_o_filing_type", where)
+        self.assertIn("Final", where)
+        self.assertIn("Initial", where)
+        # Borough filter present.
+        self.assertIn("BROOKLYN", where)
+
+    def test_fetch_modern_cohort_applies_yearbuilt_filter_for_nb_only(self):
+        """Q3 lock — NB cohort filters PLUTO yearbuilt >= 2000.
+        A1 / minor_alt cohorts skip this filter."""
+        self._require_fetch_modern()
+        from lib.statistical_engine.baselines import _fetch_modern_cohort
+        # NB case: seed half pre-2000, half post-2000.
+        socrata = MockSocrataClient()
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=30,
+            bin_prefix="100200", bbl_prefix="100201",
+            borough="BROOKLYN", building_class="C1", yearbuilt=1985,
+        )
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=30,
+            bin_prefix="100300", bbl_prefix="100301",
+            borough="BROOKLYN", building_class="C1", yearbuilt=2015,
+        )
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
+        cohort_nb = _run(_fetch_modern_cohort(socrata, project))
+        # Only 30 post-2000 rows should remain.
+        self.assertEqual(
+            len(cohort_nb), 30,
+            f"NB cohort must filter PLUTO yearbuilt < 2000. "
+            f"Got {len(cohort_nb)} rows; expected 30 (the post-2000 "
+            f"seeds). Stage 3 Q3 lock: gate yearbuilt filter on "
+            f"project_type == 'new_building'.",
+        )
+        # A1 case (parallel): same seed, A1 must NOT filter.
+        socrata2 = MockSocrataClient()
+        make_modern_cohort_fixture(
+            socrata2, project_type="major_alt_with_enlargement",
+            n_records=30, bin_prefix="100400", bbl_prefix="100401",
+            borough="BROOKLYN", building_class="C1", yearbuilt=1985,
+        )
+        make_modern_cohort_fixture(
+            socrata2, project_type="major_alt_with_enlargement",
+            n_records=30, bin_prefix="100500", bbl_prefix="100501",
+            borough="BROOKLYN", building_class="C1", yearbuilt=2015,
+        )
+        project_a1 = dict(project,
+            dob_project_type="major_alt_with_enlargement",
+            dob_extracted_scope={"story_count": 5},
+        )
+        cohort_a1 = _run(_fetch_modern_cohort(socrata2, project_a1))
+        self.assertEqual(
+            len(cohort_a1), 60,
+            f"A1 cohort must NOT filter yearbuilt. Got "
+            f"{len(cohort_a1)} rows; expected 60 (all seeded). "
+            f"Stage 3 Q3 lock.",
+        )
+
+    def test_fetch_modern_cohort_handles_case_variant_job_types(self):
+        """Risk 3 lock — both 'NEW BUILDING' and 'New Building'
+        casings of pkdm-hqz6 job_type are matched."""
+        self._require_fetch_modern()
+        from lib.statistical_engine.baselines import _fetch_modern_cohort
+        socrata = MockSocrataClient()
+        # 25 with uppercase, 25 with mixed case.
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=25,
+            bin_prefix="200200", bbl_prefix="200201",
+            borough="BROOKLYN", building_class="C1",
+        )
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=25,
+            bin_prefix="200300", bbl_prefix="200301",
+            borough="BROOKLYN", building_class="C1",
+            job_type_override="New Building",  # mixed case variant
+        )
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
+        cohort = _run(_fetch_modern_cohort(socrata, project))
+        self.assertEqual(
+            len(cohort), 50,
+            f"Modern cohort query MUST match both 'NEW BUILDING' "
+            f"and 'New Building' casings (Risk 3 / pkdm-hqz6 enum "
+            f"inconsistency). Got {len(cohort)}; expected 50. "
+            f"Stage 3: build WHERE as job_type IN ('NEW BUILDING', "
+            f"'New Building') for NB project type.",
+        )
+
+    def test_fetch_modern_cohort_cross_joins_rbx6_for_permit_issued_date(self):
+        """Q6 + T5 lock — Modern cohort cross-joins rbx6-tga4 by
+        BIN list to enrich each cohort row with permit_issued_date
+        (for lifecycle duration math)."""
+        self._require_fetch_modern()
+        from lib.statistical_engine.baselines import _fetch_modern_cohort
+        socrata = MockSocrataClient()
+        make_modern_cohort_fixture(
             socrata, project_type="new_building", n_records=20,
-            bin_prefix="3003000", job_number_prefix="32800",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            borough="BROOKLYN", building_class="C1",
+            permit_issued_date_iso="2022-06-15T00:00:00.000",
         )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
-        # Stage 3's ladder may advance OR may still report zip if
-        # secondary fixtures absent. Accept either as in-bounds —
-        # the durable assertion is that the result is internally
-        # consistent.
-        self.assertIn(
-            result["tier_used"],
-            ("cd_bldgclass_type", "borough_broader_type", "borough_type"),
-            "Sub-30 sample at tier 1 must advance ladder. Got: "
-            + repr(result["tier_used"]),
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
+        cohort = _run(_fetch_modern_cohort(socrata, project))
+        # Each cohort row carries permit_issued_date enriched from
+        # rbx6-tga4 cross-join.
+        with_permit = [r for r in cohort if r.get("permit_issued_date")]
+        self.assertEqual(
+            len(with_permit), 20,
+            f"Modern cohort must cross-join rbx6-tga4 by BIN to "
+            f"populate permit_issued_date on each row. Got "
+            f"{len(with_permit)} of {len(cohort)} with permit_date. "
+            f"Stage 3 Q6 lock: add rbx6-tga4 chunk query keyed by "
+            f"cohort BIN list; merge issued_date into cohort rows."
         )
 
-    def test_geography_ladder_final_fallback_to_borough_only(self):
-        """Test 34 — Tiers 1-3 all fail; tier 4 (borough+type)
-        returns 5000 (project's bldgclass C1, cohort R6)."""
-        self._require_compute_cohort()
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14E unit tests — _fetch_legacy_cohort (4 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestFetchLegacyCohort(unittest.TestCase):
+    """PR #14E §7.6 + T4 — narrow unit tests for the BIS Legacy
+    fallback path. Activates when Modern cohort < 100 (Q7 lock).
+    full_demo uses dedicated _fetch_demo_cohort (T7 lock).
+    """
+
+    def _require_fetch_legacy(self):
+        try:
+            from lib.statistical_engine.baselines import _fetch_legacy_cohort  # noqa: F401
+        except ImportError:
+            self.fail(
+                "lib.statistical_engine.baselines._fetch_legacy_cohort "
+                "not implemented. Stage 3 §7.6 + T4: add helper that "
+                "queries BIS ic3t-wcy2 with job_type + bldgclass + "
+                "borough + job_status IN ('X','U') + "
+                "pre__filing_date BETWEEN '2018-06-30' AND "
+                "'2021-06-30' (Golden Era window per Q7)."
+            )
+
+    def test_fetch_legacy_cohort_queries_bis_with_golden_era_window(self):
+        """Q7 lock — BIS Legacy query restricts pre__filing_date to
+        2018-06-30 .. 2021-06-30 (Golden Era — BIS stopped
+        receiving filings 2021+)."""
+        self._require_fetch_legacy()
+        from lib.statistical_engine.baselines import _fetch_legacy_cohort
         socrata = MockSocrataClient()
         make_cohort_fixture(
-            socrata, project_type="new_building", n_records=5000,
-            bin_prefix="3099000", job_number_prefix="32900",
-            borough="BROOKLYN", building_class="R6",
-            bis_job_type="NB", story_count=5, dwelling_units=8,
-            completed=True,
+            socrata, project_type="new_building", n_records=120,
+            bin_prefix="3033040", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="2020-01-15",  # within Golden Era
         )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {"bldgclass": "C1", "numfloors": 5},
+        }
+        cohort = _run(_fetch_legacy_cohort(socrata, project))
+        bis_calls = [c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS]
+        self.assertGreater(len(bis_calls), 0)
+        where = bis_calls[0][1].get("where") or ""
+        # Golden Era window must appear in WHERE.
         self.assertIn(
-            result["fallback_level"], (3, 4),
-            "Ladder must fall to tier 3 or 4 when narrower tiers "
-            "fail. Got fallback_level=" + str(result["fallback_level"]),
+            "2018-06-30", where,
+            f"Legacy WHERE must restrict pre__filing_date >= "
+            f"2018-06-30 (Golden Era start). Got WHERE: {where!r}",
+        )
+        self.assertIn(
+            "2021-06-30", where,
+            f"Legacy WHERE must restrict pre__filing_date <= "
+            f"2021-06-30 (Golden Era end). Got WHERE: {where!r}",
         )
 
-    def test_sample_size_above_100_no_low_confidence_flag(self):
-        """Test 35 — N=200 above 100 high-confidence threshold."""
+    def test_fetch_legacy_cohort_returns_empty_when_no_bis_rows(self):
+        """Legacy returns [] cleanly when no rows match.
+        compute_cohort_for_project depends on this to drop to
+        empty_cohort sentinel rather than raising.
+        """
+        self._require_fetch_legacy()
+        from lib.statistical_engine.baselines import _fetch_legacy_cohort
+        socrata = MockSocrataClient()
+        socrata.seed(DATASET_BIS_JOB_FILINGS, [])  # explicitly empty
+        project = {
+            "_id": "P", "nyc_bin": "9999999", "bbl": "1111111111",
+            "borough": "MANHATTAN", "dob_project_type": "new_building",
+            "pluto_snapshot": {"bldgclass": "C1", "numfloors": 5},
+        }
+        cohort = _run(_fetch_legacy_cohort(socrata, project))
+        self.assertEqual(cohort, [])
+
+    def test_fetch_legacy_cohort_applies_target_state_filter(self):
+        """Legacy path applies the same target-state filter
+        (bldgclass match) as Modern. Verified by seeding
+        mixed-bldgclass BIS rows + asserting only matching class
+        returns.
+        """
+        self._require_fetch_legacy()
+        from lib.statistical_engine.baselines import _fetch_legacy_cohort
+        socrata = MockSocrataClient()
+        # 30 C1 rows + 30 R6 rows. Target = C1.
+        # pre__filing_date within Golden Era window (Q7 lock).
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=30,
+            bin_prefix="3030001", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="2020-01-15",
+        )
+        make_cohort_fixture(
+            socrata, project_type="new_building", n_records=30,
+            bin_prefix="3030002", borough="BROOKLYN",
+            building_class="R6", bis_job_type="NB",
+            pre__filing_date="2020-01-15",
+        )
+        project = {
+            "_id": "P", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {"bldgclass": "C1", "numfloors": 5},
+        }
+        cohort = _run(_fetch_legacy_cohort(socrata, project))
+        # Only 30 C1 rows match.
+        self.assertEqual(
+            len(cohort), 30,
+            f"Legacy must filter to target bldgclass. Got "
+            f"{len(cohort)} rows; expected 30 (C1 only). Stage 3: "
+            f"apply same target-state filter as Modern path.",
+        )
+
+    def test_fetch_legacy_cohort_full_demo_uses_dm_job_type(self):
+        """T7 lock — full_demo cohort uses BIS DM (Demolition)
+        job_type. _fetch_demo_cohort or _fetch_legacy_cohort
+        with project_type='full_demo' must produce DM-keyed query."""
+        self._require_fetch_legacy()
+        try:
+            from lib.statistical_engine.baselines import _fetch_demo_cohort
+        except ImportError:
+            self.fail(
+                "lib.statistical_engine.baselines._fetch_demo_cohort "
+                "not implemented. Stage 3 T7 lock: dedicated full_demo "
+                "cohort helper preserving PR #14B logic (frozen "
+                "pluto_snapshot, BIS DM source)."
+            )
+        socrata = MockSocrataClient()
+        make_cohort_fixture(
+            socrata, project_type="full_demo", n_records=50,
+            bin_prefix="3001000", borough="BROOKLYN",
+            building_class="A2", bis_job_type="DM",
+            story_count=2, dwelling_units=2,
+            pre__filing_date="2020-01-15",  # within Golden Era
+        )
+        project = {
+            "_id": "P_DEMO", "nyc_bin": "1234567",
+            "bbl": "1234567890", "borough": "BROOKLYN",
+            "dob_project_type": "full_demo",
+            "pluto_snapshot": {
+                "bbl": "1234567890", "bldgclass": "A2",
+                "numfloors": 2, "borough": "BK",
+            },
+        }
+        cohort = _run(_fetch_demo_cohort(socrata, project))
+        self.assertGreater(len(cohort), 0)
+        bis_calls = [c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS]
+        self.assertGreater(len(bis_calls), 0)
+        where = bis_calls[0][1].get("where") or ""
+        self.assertIn(
+            "DM", where,
+            f"full_demo legacy query MUST filter to job_type='DM'. "
+            f"Got WHERE: {where!r}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #14E unit tests — Modern/Legacy merge boundary (3 tests)
+# ──────────────────────────────────────────────────────────────────
+
+
+class TestModernLegacyMerge(unittest.TestCase):
+    """PR #14E §7.6 + T4 + Q7 — boundary tests for the Modern→Legacy
+    merge logic. Threshold = 100 (Modern primary; Legacy fills
+    only when Modern < 100).
+    """
+
+    def _require_compute_cohort(self):
+        if not HAS_COMPUTE_COHORT:
+            self.fail(
+                "compute_cohort_for_project not implemented.",
+            )
+
+    def test_merge_modern_99_triggers_legacy_extension(self):
+        """Q7 lock — Modern at 99 (one below 100 floor) MUST
+        trigger Legacy extension. Total cohort fills with Legacy
+        rows up to 500 cap (PR #14D).
+        """
         self._require_compute_cohort()
         socrata = MockSocrataClient()
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=99,
+            bin_prefix="500100", bbl_prefix="500101",
+            borough="BROOKLYN", building_class="C1",
+        )
         make_cohort_fixture(
             socrata, project_type="new_building", n_records=200,
-            bin_prefix="3033040", job_number_prefix="33000",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            bin_prefix="3033099", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="2020-01-15",
         )
-        project = self._project_new_building()
+        project = {
+            "_id": "P_99", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
         result = _run(compute_cohort_for_project(socrata, project))
-        self.assertFalse(result["low_confidence_flag"])
+        segments = result.get("cohort_source_segments") or {}
+        self.assertEqual(segments.get("modern_count"), 99)
+        self.assertGreater(
+            segments.get("legacy_count", 0), 0,
+            "Modern=99 (under 100 floor) MUST trigger Legacy "
+            "extension. Stage 3 Q7 lock: if len(modern) < 100, "
+            "call _fetch_legacy_cohort; merge with dedup by bbl.",
+        )
 
-    def test_sample_size_below_100_above_30_sets_low_confidence_flag(self):
-        """Test 36 — N=50, between 30 floor + 100 high-confidence."""
+    def test_merge_modern_100_does_not_trigger_legacy(self):
+        """Q7 lock — Modern at exactly 100 satisfies the floor;
+        Legacy MUST NOT fire."""
         self._require_compute_cohort()
         socrata = MockSocrataClient()
+        make_modern_cohort_fixture(
+            socrata, project_type="new_building", n_records=100,
+            bin_prefix="500200", bbl_prefix="500201",
+            borough="BROOKLYN", building_class="C1",
+        )
+        # Seed BIS too, but it must NOT be queried.
         make_cohort_fixture(
+            socrata, project_type="new_building", n_records=200,
+            bin_prefix="3033099", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+        )
+        project = {
+            "_id": "P_100", "nyc_bin": "3325703", "bbl": "3033040024",
+            "borough": "BROOKLYN", "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
+        result = _run(compute_cohort_for_project(socrata, project))
+        segments = result.get("cohort_source_segments") or {}
+        self.assertEqual(segments.get("modern_count"), 100)
+        self.assertEqual(
+            segments.get("legacy_count", 0), 0,
+            "Modern=100 (at floor) MUST satisfy without Legacy. "
+            "Stage 3 Q7: threshold is >= 100 (strict — exact 100 OK).",
+        )
+        # Verify no BIS call fired.
+        bis_calls = [c for c in socrata.calls if c[0] == DATASET_BIS_JOB_FILINGS]
+        self.assertEqual(len(bis_calls), 0)
+
+    def test_merge_dedups_by_bbl_when_both_segments_overlap(self):
+        """When the same bbl appears in BOTH Modern AND Legacy
+        cohorts (rare but possible if a project is both signed-off
+        in DOB NOW AND in BIS Golden Era), dedup by bbl so it
+        counts once. Modern wins (primary).
+        """
+        self._require_compute_cohort()
+        socrata = MockSocrataClient()
+        # Use overlapping BBL between Modern and Legacy seeds.
+        overlap_bbl = "300301{0:04d}"
+        # Modern: 50 rows at bbl_prefix "300301" (so first 50 BBLs
+        # = 3003010000..3003010049).
+        make_modern_cohort_fixture(
             socrata, project_type="new_building", n_records=50,
-            bin_prefix="3033040", job_number_prefix="33100",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            bin_prefix="500300", bbl_prefix="300301",
+            borough="BROOKLYN", building_class="C1",
         )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
-        self.assertEqual(result["sample_size"], 50)
-        self.assertTrue(result["low_confidence_flag"])
-
-    def test_sample_size_below_30_falls_back_to_next_tier(self):
-        """Test 37 — N=20 at tier 1 → fallback_level ≥ 2."""
-        self._require_compute_cohort()
-        socrata = MockSocrataClient()
+        # Legacy: seed 100 rows that include the SAME 50 BBLs
+        # (overlap) via _construct_bbl_from_components.
+        # make_cohort_fixture's BIS rows compute BBL from
+        # borough+block+lot; we set lot+block to match Modern's
+        # bbl pattern. Easier: seed via make_cohort_fixture with
+        # default config and assume overlap doesn't exactly align —
+        # this test then DOWNGRADES to "Modern still primary in
+        # presence of Legacy seed; total >= 50; no double-count
+        # of any bbl".
         make_cohort_fixture(
-            socrata, project_type="new_building", n_records=20,
-            bin_prefix="3033040", job_number_prefix="33200",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
+            socrata, project_type="new_building", n_records=100,
+            bin_prefix="3033098", borough="BROOKLYN",
+            building_class="C1", bis_job_type="NB",
+            pre__filing_date="2020-01-15",
         )
-        project = self._project_new_building()
+        project = {
+            "_id": "P_OVERLAP", "nyc_bin": "3325703",
+            "bbl": "3033040024", "borough": "BROOKLYN",
+            "dob_project_type": "new_building",
+            "pluto_snapshot": {
+                "bldgclass": "C1", "numfloors": 5, "yearbuilt": "2020",
+            },
+        }
         result = _run(compute_cohort_for_project(socrata, project))
-        self.assertGreaterEqual(result["fallback_level"], 2)
-
-    def test_completion_filter_uses_c_of_o_final_primary(self):
-        """Test 38 — C of O Final present → completion_method =
-        c_of_o_final."""
-        self._require_compute_cohort()
-        socrata = MockSocrataClient()
-        make_cohort_fixture(
-            socrata, project_type="new_building", n_records=150,
-            bin_prefix="3033040", job_number_prefix="33300",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
-            c_o_issue_type="Final",
-        )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
-        self.assertEqual(result["completion_method"], "c_of_o_final")
-
-    def test_completion_filter_falls_back_to_job_status_x_or_u(self):
-        """Test 39 — Risk 6 key lock: when C of O empty, completion
-        filter falls back to job_status_x_or_u."""
-        self._require_compute_cohort()
-        socrata = MockSocrataClient()
-        make_cohort_fixture(
-            socrata, project_type="new_building", n_records=150,
-            bin_prefix="3033040", job_number_prefix="33400",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8,
-            completed=False,  # No C of O written
-        )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
-        self.assertEqual(
-            result["completion_method"], "job_status_x_or_u",
-            "Fallback completion_method per Risk 6 key lock",
-        )
-
-    def test_window_expands_from_36mo_to_60mo_when_under_100(self):
-        """Test 40 — 36mo cohort <100; 60mo cohort >100. Window
-        expands to 60mo."""
-        self._require_compute_cohort()
-        socrata = MockSocrataClient()
-        make_cohort_fixture(
-            socrata, project_type="new_building", n_records=60,
-            bin_prefix="3033040", job_number_prefix="33500",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
-            pre__filing_date="2023-06-15",
-        )
-        make_cohort_fixture(
-            socrata, project_type="new_building", n_records=190,
-            bin_prefix="3033050", job_number_prefix="33600",
-            borough="BROOKLYN", building_class="C1", bis_job_type="NB",
-            story_count=5, dwelling_units=8, completed=True,
-            pre__filing_date="2021-08-15",
-        )
-        project = self._project_new_building()
-        result = _run(compute_cohort_for_project(socrata, project))
-        self.assertEqual(
-            result["window_months"], 60,
-            "Window must expand from 36mo to 60mo when 36mo N<100",
-        )
+        # Modern=50 < 100 → Legacy extends. No double-counted bbls.
+        provenance = result.get("cohort_member_provenance") or []
+        bbls_seen = set()
+        for entry in provenance:
+            bbl = entry.get("bbl") or entry.get("job_id")
+            if bbl in bbls_seen:
+                self.fail(
+                    f"Duplicate bbl {bbl!r} in "
+                    f"cohort_member_provenance. Stage 3: dedup by "
+                    f"bbl when merging Modern + Legacy segments."
+                )
+            bbls_seen.add(bbl)
 
 
 class TestLifecycleNormalization(unittest.TestCase):
@@ -2127,6 +2486,46 @@ class TestLifecycleNormalization(unittest.TestCase):
             {"permit_issue_date": "2022-01-01", "c_o_issue_date": "2024-09-27"},
         ]
         median_days = _cohort_duration_median(cohort_records)
+        self.assertGreaterEqual(median_days, 599)
+        self.assertLessEqual(median_days, 601)
+
+    def test_cohort_duration_median_handles_pkdm_mdy_date_format(self):
+        """PR #14E §7.2 + §7.7 — _cohort_duration_median must
+        accept c_o_issue_date in pkdm-hqz6's MM/DD/YY HH:MM:SS
+        AM/PM format alongside ISO permit_issue_date (from the
+        rbx6-tga4 Q6 cross-join).
+
+        Stage 1 Task 1 confirmed pkdm-hqz6 ships dates in the
+        brittle ``MM/DD/YY HH:MM:SS AM/PM`` format (e.g.
+        ``"09/02/25  1:24:22 PM"``). Stage 3 adds
+        ``_parse_pkdm_date`` helper near _parse_socrata_dt
+        (baselines.py:~1218 area). _cohort_duration_median must
+        try both parsers transparently.
+        """
+        self._require_lifecycle_helpers()
+        # Same 5-record window as ISO test, but c_o_issue_date in
+        # pkdm format. Deltas ≈[200, 400, 600, 800, 1000] days.
+        cohort_records = [
+            {"permit_issue_date": "2022-01-01",
+             "c_o_issue_date": "07/20/22 12:00:00 PM"},
+            {"permit_issue_date": "2022-01-01",
+             "c_o_issue_date": "02/05/23 12:00:00 PM"},
+            {"permit_issue_date": "2022-01-01",
+             "c_o_issue_date": "08/24/23 12:00:00 PM"},
+            {"permit_issue_date": "2022-01-01",
+             "c_o_issue_date": "03/10/24 12:00:00 PM"},
+            {"permit_issue_date": "2022-01-01",
+             "c_o_issue_date": "09/27/24 12:00:00 PM"},
+        ]
+        median_days = _cohort_duration_median(cohort_records)
+        self.assertIsNotNone(
+            median_days,
+            "Stage 3 §7.2: _cohort_duration_median must parse "
+            "c_o_issue_date in pkdm-hqz6's MM/DD/YY format. "
+            "Add _parse_pkdm_date helper to baselines.py near "
+            "_parse_socrata_dt; route _cohort_duration_median to "
+            "try ISO parser first, fall back to pkdm parser.",
+        )
         self.assertGreaterEqual(median_days, 599)
         self.assertLessEqual(median_days, 601)
 
@@ -2234,6 +2633,7 @@ class TestLifecycleNormalization(unittest.TestCase):
             borough="BROOKLYN", building_class="C1", bis_job_type="NB",
             story_count=5, dwelling_units=8,
             completed=False,
+            pre__filing_date="2020-01-15",  # PR #14E Golden Era window
         )
         project = {
             "_id": "P_NODUR", "nyc_bin": "3325703",

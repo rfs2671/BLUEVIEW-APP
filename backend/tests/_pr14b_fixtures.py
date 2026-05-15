@@ -16,6 +16,7 @@ not raw SoQL row dicts.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -27,6 +28,14 @@ from typing import Any, Dict, List, Optional
 DATASET_BIS_JOB_FILINGS = "ic3t-wcy2"
 DATASET_C_OF_O_LEGACY   = "bs8b-p36w"
 DATASET_DOB_PERMITS     = "rbx6-tga4"  # DOB NOW; also exists in socrata_client
+DATASET_PLUTO           = "64uk-42ks"  # PLUTO; mirrors socrata_client
+
+# PR #14E (Q2 lock) — DOB NOW C of O dataset, the Modern cohort
+# source. Carries job_type + c_of_o_filing_type + bbl + bin inline.
+# Field format note: c_of_o_issuance_date is "MM/DD/YY HH:MM:SS AM/PM"
+# (per Stage 1 Task 1 schema discovery), NOT ISO — production code
+# uses _parse_pkdm_date helper to read.
+DATASET_DOB_C_OF_O      = "pkdm-hqz6"
 
 
 # ── Per-dataset seeders ───────────────────────────────────────────
@@ -320,4 +329,197 @@ def make_cohort_fixture(
                 job_type=bis_job_type,
                 borough=borough_lower,
             )
+    return rows
+
+
+# ── PR #14E: Modern cohort source (DOB NOW C of O = pkdm-hqz6) ────
+
+
+def _pkdm_co_issuance_date_mdy(
+    months_ago: int,
+    *, now: Optional[datetime] = None,
+) -> str:
+    """PR #14E — convert a relative-to-now offset (in months) into
+    pkdm-hqz6's ``MM/DD/YY HH:MM:SS AM/PM`` format.
+
+    Used by ``make_modern_cohort_fixture`` to seed cohort rows at
+    deterministic times relative to a test ``now``. The 36mo cohort
+    window in production reads from the cohort builder's ``now``
+    arg; this helper produces strings the production code's
+    ``_parse_pkdm_date`` helper will read.
+    """
+    base = now or datetime(2026, 5, 15, tzinfo=timezone.utc)
+    target = base - timedelta(days=30 * months_ago)
+    # MM/DD/YY  HH:MM:SS AM/PM (single space — production
+    # _parse_pkdm_date tolerates 1+ spaces via \s+ per §7.7).
+    return target.strftime("%m/%d/%y %I:%M:%S %p")
+
+
+def seed_pkdm_co_for_bin(
+    socrata,
+    *,
+    bin: str,
+    bbl: str,
+    job_type: str = "NEW BUILDING",
+    c_of_o_filing_type: str = "Final",
+    c_of_o_issuance_date_mdy: str = "01/15/24 12:00:00 AM",
+    submitted_date: Optional[str] = "2023-06-01T00:00:00",
+    borough: str = "BROOKLYN",
+    application_number: Optional[str] = None,
+    job_filing_name: Optional[str] = None,
+    number_of_dwelling_units: Optional[str] = None,
+) -> Dict[str, Any]:
+    """PR #14E — seed one pkdm-hqz6 (DOB NOW C of O) row.
+
+    Mirrors ``seed_bis_for_bin`` / ``seed_dob_now_for_bin`` patterns.
+    Defaults match a Final C of O for a NEW BUILDING in Brooklyn.
+
+    Per Stage 1 Task 1 schema discovery, the dataset's enum vocab:
+      • c_of_o_filing_type: Final / Initial / Renewal With Change /
+        Renewal Without Change (production filter uses
+        ``IN ('Final', 'Initial')``)
+      • job_type: NEW BUILDING / New Building (case variants —
+        production query must match BOTH per Risk 3 lock) /
+        ALTERATION TYPE 1 / Alteration CO / etc.
+      • c_of_o_issuance_date: ``MM/DD/YY HH:MM:SS AM/PM`` — NOT ISO.
+
+    Returns the seeded row dict for test mutation/reference.
+    """
+    row = {
+        "bin":                  bin,
+        "bbl":                  bbl,
+        "job_type":             job_type,
+        "c_of_o_filing_type":   c_of_o_filing_type,
+        "c_of_o_status":        "CO Issued",
+        "c_of_o_issuance_date": c_of_o_issuance_date_mdy,
+        "submitted_date":       submitted_date,
+        "borough":              borough,
+        "application_number":   application_number or f"CO-{bin[-7:]}",
+        "job_filing_name":      job_filing_name or bin,
+    }
+    if number_of_dwelling_units is not None:
+        row["number_of_dwelling_units"] = str(number_of_dwelling_units)
+    socrata.seed(DATASET_DOB_C_OF_O, [row])
+    return row
+
+
+# Map dob_project_type → pkdm-hqz6 job_type values that the
+# Modern cohort query should match.
+_PROJECT_TYPE_TO_PKDM_JOB_TYPES = {
+    "new_building": ("NEW BUILDING", "New Building"),
+    "major_alt_with_enlargement": ("ALTERATION TYPE 1",),
+    "minor_alt": ("Alteration CO",),
+    # full_demo intentionally absent — pkdm-hqz6 has no DEMOLITION
+    # job_type (C of O is for OCCUPANCY; demolished buildings don't
+    # get C of O). full_demo stays on BIS-only path (Q4 lock).
+}
+
+
+def make_modern_cohort_fixture(
+    socrata,
+    *,
+    project_type: str,
+    n_records: int,
+    bin_prefix: str = "300300",
+    bbl_prefix: str = "300301",
+    job_filing_number_prefix: str = "B005",
+    borough: str = "BROOKLYN",
+    borough_pluto: str = "BK",
+    building_class: str = "C1",
+    numfloors: int = 4,
+    yearbuilt: int = 2020,
+    c_of_o_filing_type: str = "Final",
+    months_ago: int = 12,
+    permit_issued_date_iso: str = "2022-06-15T00:00:00.000",
+    job_type_override: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """PR #14E — bulk-seed Modern cohort for N peers.
+
+    Seeds 3 dataset rows per peer:
+      1. ``pkdm-hqz6`` — Final/Initial C of O (the cohort discovery
+         row). c_of_o_issuance_date derived from ``months_ago``
+         relative to ``now`` (default 12mo back from 2026-05-15
+         = within typical 36mo window).
+      2. ``64uk-42ks`` (PLUTO) — bbl + bldgclass + numfloors +
+         yearbuilt (the target-state filter target).
+      3. ``rbx6-tga4`` (DOB NOW Permits) — Signed-off permit with
+         ``issued_date`` + ``approved_date`` (for the Q6 lifecycle
+         cross-join to compute permit_issued_date for cohort
+         members).
+
+    ``project_type`` selects the pkdm-hqz6 ``job_type`` written:
+      new_building              → "NEW BUILDING"
+      major_alt_with_enlargement → "ALTERATION TYPE 1"
+      minor_alt                 → "Alteration CO"
+      (full_demo intentionally not supported — full_demo cohort
+       sources from BIS DM only per Q4 lock. Use
+       ``make_cohort_fixture(project_type="full_demo", ...)``.)
+
+    Pass ``job_type_override`` to test case-variant matching
+    (Risk 3): e.g., job_type_override="New Building" to verify
+    case-insensitive job_type matching in the cohort query.
+
+    Returns the list of seeded (bin, bbl) metadata dicts for test
+    iteration/assertion.
+    """
+    if project_type not in _PROJECT_TYPE_TO_PKDM_JOB_TYPES:
+        raise ValueError(
+            f"make_modern_cohort_fixture: project_type "
+            f"{project_type!r} has no Modern path. full_demo uses "
+            f"BIS DM only (Q4 lock); use make_cohort_fixture."
+        )
+
+    primary_job_type = (
+        job_type_override
+        or _PROJECT_TYPE_TO_PKDM_JOB_TYPES[project_type][0]
+    )
+    c_of_o_issuance_date_mdy = _pkdm_co_issuance_date_mdy(
+        months_ago, now=now,
+    )
+
+    rows: List[Dict[str, Any]] = []
+    for i in range(n_records):
+        bin_ = f"{bin_prefix}{i:04d}"
+        bbl_ = f"{bbl_prefix}{i:04d}"
+        job_no = f"{job_filing_number_prefix}{i:05d}"
+
+        # 1. pkdm-hqz6 row (cohort discovery).
+        seed_pkdm_co_for_bin(
+            socrata, bin=bin_, bbl=bbl_,
+            job_type=primary_job_type,
+            c_of_o_filing_type=c_of_o_filing_type,
+            c_of_o_issuance_date_mdy=c_of_o_issuance_date_mdy,
+            borough=borough,
+        )
+        # 2. PLUTO row (target-state filter).
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": bbl_, "borough": borough_pluto,
+            "bldgclass": building_class, "landuse": "01",
+            "block": "3040", "lot": f"{i:04d}",
+            "zipcode": "11221", "cd": "304",
+            "yearbuilt": str(yearbuilt),
+            "unitsres": "8", "unitstotal": "8",
+            "numfloors": str(numfloors),
+            "bldgarea": "8000", "lotarea": "2500",
+        }])
+        # 3. rbx6-tga4 row (Q6 lifecycle cross-join for
+        #    permit_issued_date).
+        socrata.seed(DATASET_DOB_PERMITS, [{
+            "bin":               bin_,
+            "bbl":               bbl_,
+            "job_filing_number": f"{job_no}-I1",
+            "work_type":         "General Construction",
+            "filing_reason":     "Initial Permit",
+            "job_description":   "",
+            "permit_status":     "Signed-off",
+            "borough":           borough,
+            "issued_date":       permit_issued_date_iso.split("T")[0],
+            "approved_date":     permit_issued_date_iso,
+        }])
+        rows.append({
+            "bin": bin_, "bbl": bbl_,
+            "job_filing_name": bin_,
+            "job_type": primary_job_type,
+        })
     return rows

@@ -20,6 +20,27 @@ primary cohort doesn't meet the floor.
 
 ``unknown`` is not a key — ``COHORT_CONFIG.get("unknown")`` returns
 ``None``, signalling the caller to skip cohort matching entirely.
+
+PR #14E extension (Stage 3 §7.4 lock) — Unified Cohort. Each entry
+gains two new keys:
+
+  • modern_path  — dict describing the pkdm-hqz6 (DOB NOW C of O)
+    source. ``None`` for ``full_demo`` (Q4 lock: pkdm-hqz6 has no
+    DEMOLITION job_type). Shape:
+        {
+            "pkdm_job_types":      tuple of strings (case variants per Risk 3),
+            "yearbuilt_filter_min": int or None  # 2000 for NB, None for others (Q3),
+            "apply_yearbuilt_filter": bool       # mirror of above for clarity,
+        }
+
+  • legacy_path  — dict describing the BIS Legacy Golden Era source.
+    Shape:
+        {
+            "bis_job_types":     tuple of strings,
+            "window_start_iso":  "2018-06-30",
+            "window_end_iso":    "2021-06-30",
+            "secondary_fallback": dict | absent  # A1 → NB merge (T4 PR #14B carry-over)
+        }
 """
 
 from __future__ import annotations
@@ -45,6 +66,14 @@ _COMPLETION_FILTER = {
 }
 
 
+# PR #14E (Q7 lock) — BIS Legacy Golden Era window. Reused across
+# all non-None legacy_path entries.
+_PR14E_LEGACY_WINDOW = {
+    "window_start_iso": "2018-06-30",
+    "window_end_iso":   "2021-06-30",
+}
+
+
 COHORT_CONFIG: Dict[str, Dict[str, Any]] = {
     "new_building": {
         "filter_fields": [
@@ -58,6 +87,16 @@ COHORT_CONFIG: Dict[str, Dict[str, Any]] = {
         "geography_ladder":         list(_GEOGRAPHY_LADDER),
         "completion_filter":        dict(_COMPLETION_FILTER),
         "bis_job_types":            {"NB"},
+        # PR #14E Q2 + Q3 + Risk 3 lock.
+        "modern_path": {
+            "pkdm_job_types":         ("NEW BUILDING", "New Building"),
+            "yearbuilt_filter_min":   2000,   # Q3: NB-only filter
+            "apply_yearbuilt_filter": True,
+        },
+        "legacy_path": {
+            "bis_job_types":     ("NB",),
+            **_PR14E_LEGACY_WINDOW,
+        },
     },
     "major_alt_with_enlargement": {
         "filter_fields": [
@@ -77,6 +116,24 @@ COHORT_CONFIG: Dict[str, Dict[str, Any]] = {
             "expands_to": "new_building",
             "trigger_below": 30,
         },
+        # PR #14E Q2 + Q3 — A1 cohort sources pkdm-hqz6
+        # ALTERATION TYPE 1; no yearbuilt filter (Q3: NB-only).
+        "modern_path": {
+            "pkdm_job_types":         ("ALTERATION TYPE 1",),
+            "yearbuilt_filter_min":   None,
+            "apply_yearbuilt_filter": False,
+        },
+        "legacy_path": {
+            "bis_job_types":     ("A1",),
+            **_PR14E_LEGACY_WINDOW,
+            # T4 PR #14B carry-over: A1 → NB secondary fallback
+            # remains on the Legacy path so PR #14B coverage doesn't
+            # regress when Modern is unavailable.
+            "secondary_fallback": {
+                "expands_to":    "new_building",
+                "trigger_below": 30,
+            },
+        },
     },
     "minor_alt": {
         "filter_fields": [
@@ -88,6 +145,17 @@ COHORT_CONFIG: Dict[str, Dict[str, Any]] = {
         "geography_ladder":         list(_GEOGRAPHY_LADDER),
         "completion_filter":        dict(_COMPLETION_FILTER),
         "bis_job_types":            {"A2", "A3"},
+        # PR #14E Q2 + Q3 — minor_alt cohort sources pkdm-hqz6
+        # 'Alteration CO'; no yearbuilt filter, no story filter.
+        "modern_path": {
+            "pkdm_job_types":         ("Alteration CO",),
+            "yearbuilt_filter_min":   None,
+            "apply_yearbuilt_filter": False,
+        },
+        "legacy_path": {
+            "bis_job_types":     ("A2", "A3"),
+            **_PR14E_LEGACY_WINDOW,
+        },
     },
     "full_demo": {
         "filter_fields": [
@@ -100,6 +168,15 @@ COHORT_CONFIG: Dict[str, Dict[str, Any]] = {
         "geography_ladder":         list(_GEOGRAPHY_LADDER),
         "completion_filter":        dict(_COMPLETION_FILTER),
         "bis_job_types":            {"DM"},
+        # PR #14E Q4 lock — full_demo has NO modern path.
+        # pkdm-hqz6 is a C of O (occupancy) dataset; demolished
+        # buildings don't get C of O. Cohort stays BIS DM only.
+        # _fetch_demo_cohort handles the dedicated path (T7 lock).
+        "modern_path": None,
+        "legacy_path": {
+            "bis_job_types":     ("DM",),
+            **_PR14E_LEGACY_WINDOW,
+        },
     },
     # "unknown" deliberately absent — COHORT_CONFIG.get("unknown")
     # returns None per the locked design.

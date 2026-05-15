@@ -80,6 +80,15 @@ except ImportError:
     PR14C_SCHEMA_VERSION = None  # type: ignore
     HAS_PR14C_SCHEMA_VERSION = False
 
+# PR #14E — schema bump from "pr14c" to "pr14e". Lazy import so
+# Stage 2.B tests can probe for the new constant.
+try:
+    from lib.statistical_engine.baselines import PR14E_SCHEMA_VERSION  # type: ignore
+    HAS_PR14E_SCHEMA_VERSION = True
+except ImportError:
+    PR14E_SCHEMA_VERSION = None  # type: ignore
+    HAS_PR14E_SCHEMA_VERSION = False
+
 
 try:
     from lib.statistical_engine.baselines import (  # type: ignore # noqa: E402
@@ -207,7 +216,9 @@ def _seed_cohort_world(socrata: MockSocrataClient) -> Dict[str, Any]:
             "bin": f"3033040{i:04d}",
             "borough": "BK", "bldgclass": "C1",
             "landuse": "01", "block": "3041", "lot": f"{i:04d}",
-            "zipcode": "11221", "cd": "304", "yearbuilt": "1990",
+            # PR #14E Q3 lock — yearbuilt >= 2000 so NB cohort
+            # passes the modern_path yearbuilt filter.
+            "zipcode": "11221", "cd": "304", "yearbuilt": "2020",
             "unitsres": "8", "unitstotal": "8", "numfloors": "5",
             "bldgarea": "8000", "lotarea": "2500",
         }
@@ -218,6 +229,67 @@ def _seed_cohort_world(socrata: MockSocrataClient) -> Dict[str, Any]:
     # 5. Empty event datasets — tests override per-case.
     socrata.seed(DATASET_DOB_INSPECTIONS, [])
     socrata.seed(DATASET_COMPLAINTS_311, [])
+
+    # 6. PR #14E — also seed Modern path datasets so the new
+    #    pkdm-hqz6 primary cohort source has rows. The 6 inherited
+    #    tests rely on _seed_cohort_world producing a non-empty
+    #    cohort regardless of which source path (Modern primary
+    #    per Q2 or Legacy fallback) production code chooses.
+    #
+    #    Seeds pkdm-hqz6 with 150 NEW BUILDING Final-issued C of O
+    #    rows + rbx6-tga4 with matching Signed-off permit rows for
+    #    the Q6 cross-join. Modern path produces 150 cohort rows
+    #    → no Legacy needed (Q7 floor satisfied).
+    try:
+        from _pr14b_fixtures import (
+            DATASET_DOB_C_OF_O as _DATASET_PKDM,
+            _pkdm_co_issuance_date_mdy,
+        )
+    except ImportError:  # pragma: no cover — PR #14E foundation
+        _DATASET_PKDM = "pkdm-hqz6"
+        _pkdm_co_issuance_date_mdy = None
+    pkdm_rows = []
+    for i in range(150):
+        bin_ = f"3033040{i:04d}"
+        bbl_ = f"3033041{i:04d}"
+        if _pkdm_co_issuance_date_mdy is not None:
+            co_date = _pkdm_co_issuance_date_mdy(12)
+        else:
+            co_date = "05/20/25 12:00:00 AM"
+        pkdm_rows.append({
+            "bin":                  bin_,
+            "bbl":                  bbl_,
+            "job_type":             "NEW BUILDING",
+            "c_of_o_filing_type":   "Final",
+            "c_of_o_status":        "CO Issued",
+            "c_of_o_issuance_date": co_date,
+            "submitted_date":       "2023-06-01T00:00:00",
+            "borough":              "BROOKLYN",
+            "application_number":   f"CO-{bin_[-7:]}",
+            "job_filing_name":      bin_,
+        })
+    socrata.seed(_DATASET_PKDM, pkdm_rows)
+
+    # rbx6-tga4 cohort permit rows (for Q6 cross-join to enrich
+    # permit_issued_date). Each cohort BIN gets a Signed-off -I1
+    # General Construction row.
+    rbx_cohort_rows = []
+    for i in range(150):
+        bin_ = f"3033040{i:04d}"
+        bbl_ = f"3033041{i:04d}"
+        rbx_cohort_rows.append({
+            "bin":               bin_,
+            "bbl":               bbl_,
+            "job_filing_number": f"B005{i:05d}-I1",
+            "work_type":         "General Construction",
+            "filing_reason":     "Initial Permit",
+            "job_description":   "",
+            "permit_status":     "Signed-off",
+            "borough":           "BROOKLYN",
+            "issued_date":       "2022-06-15",
+            "approved_date":     "2022-06-15T00:00:00.000",
+        })
+    socrata.seed(DATASET_DOB_PERMITS, rbx_cohort_rows)
 
     return {
         "cohort_size": 150,
@@ -259,13 +331,13 @@ def _minimal_cohort_result() -> Dict[str, Any]:
 def _pr14b_cache_doc(**overrides) -> Dict[str, Any]:
     """Synthetic PR #14B-shape cache doc for cache-hit tests.
 
-    Carries ``schema_version="pr14c"`` so Q4 Option B's schema
+    Carries ``schema_version="pr14e"`` (PR #14E bump) so's schema
     check serves the cache (test 12). For invalidation tests
     (test 11), use ``_v23_cache_doc()`` instead.
     """
     now = datetime.now(timezone.utc)
     peer_criteria = {
-        "schema_version":              "pr14c",
+        "schema_version":              "pr14e",
         "dob_project_type":            "new_building",
         "geography_tier_used":         "zip_bldgclass_type",
         "low_confidence_flag":         False,
@@ -519,7 +591,7 @@ class TestPr14cWiring(unittest.TestCase):
             )
         # Schema version stamp.
         self.assertEqual(
-            criteria.get("schema_version"), "pr14c",
+            criteria.get("schema_version"), "pr14e",
             "peer_criteria.schema_version must be 'pr14c'. "
             "Stage 3 §6.3 + Q4 Option B: stamp PR14C_SCHEMA_VERSION "
             "into every cache write."
@@ -914,7 +986,7 @@ class TestPr14cWiring(unittest.TestCase):
             "preserved per Q3.",
         )
         self.assertEqual(
-            criteria.get("schema_version"), "pr14c",
+            criteria.get("schema_version"), "pr14e",
             "Even empty-cohort caches must be stamped with "
             "schema_version (Q4 Option B).",
         )
@@ -1030,7 +1102,7 @@ class TestPr14cWiring(unittest.TestCase):
         self._require_schema_version_constant()
         socrata = MockSocrataClient()
         project = _menahan_like_project(
-            peer_stats_cache=_pr14b_cache_doc(),  # schema_version="pr14c"
+            peer_stats_cache=_pr14b_cache_doc(),  # schema_version="pr14e" (PR #14E bump)
         )
         db = _StubDb(projects=[dict(project)])
 
@@ -1116,12 +1188,15 @@ class TestPr14cWiring(unittest.TestCase):
             job_description="NEW BUILDING 5-STORY RESIDENTIAL 8 UNITS",
         )
         # Seed 1247 BIS NB peers (intentionally above 500 cap).
+        # pre__filing_date within Golden Era so PR #14E Legacy path
+        # accepts them.
         n_records = 1247
         make_cohort_fixture(
             socrata, project_type="new_building", n_records=n_records,
             bin_prefix="3033040", job_number_prefix="32100",
             borough="BROOKLYN", building_class="C1", bis_job_type="NB",
             story_count=5, dwelling_units=8, completed=True,
+            pre__filing_date="2020-01-15",
         )
         # PLUTO rows for cohort BINs (mirror the BIN→BBL join target).
         socrata.seed(DATASET_PLUTO, [
@@ -1261,18 +1336,23 @@ class TestPr14cWiring(unittest.TestCase):
             job_description="NEW BUILDING 5-STORY RESIDENTIAL",
         )
         # Exactly 500 cohort BINs → 2 PLUTO chunks at chunk=250.
+        # pre__filing_date within Golden Era so PR #14E Legacy path
+        # accepts them.
         make_cohort_fixture(
             socrata, project_type="new_building", n_records=500,
             bin_prefix="3033040", job_number_prefix="32100",
             borough="BROOKLYN", building_class="C1", bis_job_type="NB",
             story_count=5, dwelling_units=8, completed=True,
+            pre__filing_date="2020-01-15",
         )
-        # PLUTO BIN→BBL rows for the cohort.
+        # PLUTO BIN→BBL rows for the cohort. yearbuilt >= 2000 so
+        # PR #14E NB modern_path filter passes (Q3 lock).
         socrata.seed(DATASET_PLUTO, [
             {
                 "bbl": f"3033041{i:04d}",
                 "bin": f"3033040{i:04d}",
                 "borough": "BK", "bldgclass": "C1",
+                "yearbuilt": "2020", "numfloors": "5",
             }
             for i in range(500)
         ])
@@ -1364,12 +1444,17 @@ class TestPr14cWiring(unittest.TestCase):
         }])
         menahan_meta = seed_menahan_realistic_dob_now(socrata)
         # Seed a 150-record A1 cohort in Brooklyn.
+        # pre__filing_date within Golden Era so PR #14E Legacy path
+        # accepts them when Modern path is empty. story_count=4
+        # matches Menahan's parser-extracted target state (4-STORY+
+        # CELLAR+MEZZ proposed scope) per Q5 parser primary.
         make_cohort_fixture(
             socrata, project_type="major_alt_with_enlargement",
             n_records=150, bin_prefix="3033041",
             job_number_prefix="32200", borough="BROOKLYN",
             building_class="C1", bis_job_type="A1",
-            story_count=2, dwelling_units=8, completed=True,
+            story_count=4, dwelling_units=8, completed=True,
+            pre__filing_date="2020-01-15",
         )
         # PLUTO BIN→BBL rows for the cohort.
         socrata.seed(DATASET_PLUTO, [
@@ -1407,7 +1492,7 @@ class TestPr14cWiring(unittest.TestCase):
             f"baselines.py:~659)."
         )
         self.assertEqual(
-            criteria.get("schema_version"), "pr14c",
+            criteria.get("schema_version"), "pr14e",
             "Cache schema_version stamp missing. Stage 3: "
             "compute_peer_stats_full should stamp "
             "PR14C_SCHEMA_VERSION on every cache write."
@@ -1423,11 +1508,134 @@ class TestPr14cWiring(unittest.TestCase):
             f"check the cap value or parallelization wiring."
         )
         self.assertGreater(criteria.get("sample_size", 0), 0)
-        # Per Q4 lock — schema_version stamp should be the constant.
-        if HAS_PR14C_SCHEMA_VERSION:
+        # PR #14E §7.3 — schema_version stamp should now be the
+        # PR14E constant (was PR14C in Stage 2.B test draft).
+        if HAS_PR14E_SCHEMA_VERSION:
             self.assertEqual(
-                criteria.get("schema_version"), PR14C_SCHEMA_VERSION,
+                criteria.get("schema_version"), PR14E_SCHEMA_VERSION,
             )
+
+    # ──────────────────────────────────────────────────────────
+    # PR #14E test — Menahan PR14E pipeline canary (T8 lock)
+    # ──────────────────────────────────────────────────────────
+
+    def test_menahan_real_data_pr14e_pipeline_classifies_and_populates_cohort(self):
+        """PR #14E T8 lock — Full pipeline canary with PR #14E
+        Unified Cohort architecture.
+
+        Differs from PR #14D's
+        ``test_menahan_real_data_full_pipeline_classifies_correctly``:
+          • Seeds Modern cohort (pkdm-hqz6 ALTERATION TYPE 1)
+            alongside the 5 real Menahan DOB NOW rows.
+          • Asserts new PR #14E cache shape:
+            - cohort_source_segments.modern_count > 0
+            - target_state.source == "parser" (parser primary
+              per Q5; Menahan description carries
+              "PROPOSED 4-STORY+CELLAR+MEZZ")
+            - target_state.numfloors == 4 (parser-extracted)
+            - schema_version == "pr14e"
+          • Pipeline must produce status="ready" (not timeout
+            zero-marker like Menahan's pre-PR-14D production).
+        """
+        self._require_db_kwarg()
+        if not HAS_PR14E_SCHEMA_VERSION:
+            self.fail(
+                "baselines.PR14E_SCHEMA_VERSION not defined. "
+                "Stage 3 §7.3 + Risk 6: add ``PR14E_SCHEMA_VERSION = "
+                "'pr14e'`` to baselines.py near PR14C_SCHEMA_VERSION."
+            )
+        from _pr14b_fixtures import (
+            seed_menahan_realistic_dob_now,
+            make_modern_cohort_fixture,
+        )
+
+        socrata = MockSocrataClient()
+        # Active project's PLUTO snapshot — Menahan pre-enlargement:
+        # 2 stories. Parser will extract target=4 from description.
+        socrata.seed(DATASET_PLUTO, [{
+            "bbl": "3033040024", "borough": "BK", "bldgclass": "C1",
+            "landuse": "01", "block": "3040", "lot": "24",
+            "zipcode": "11221", "cd": "304", "yearbuilt": "1925",
+            "unitsres": "8", "unitstotal": "8", "numfloors": "2",
+            "bldgarea": "8038", "lotarea": "2500",
+        }])
+        # Real Menahan DOB NOW rows (5 rows from operator's curl).
+        menahan_meta = seed_menahan_realistic_dob_now(socrata)
+        # 150 A1 Modern cohort peers in Brooklyn (pkdm-hqz6 +
+        # PLUTO + rbx6-tga4 cross-join rows).
+        make_modern_cohort_fixture(
+            socrata, project_type="major_alt_with_enlargement",
+            n_records=150, bin_prefix="3033041",
+            bbl_prefix="3033042", borough="BROOKLYN",
+            building_class="C1", numfloors=4, yearbuilt=1925,
+        )
+        socrata.seed(DATASET_DOB_INSPECTIONS, [])
+        socrata.seed(DATASET_COMPLAINTS_311, [])
+
+        project = {
+            "_id": "P_MENAHAN_PR14E_PIPELINE",
+            "name": "9 Menahan Street",
+            "nyc_bin": menahan_meta["bin"],
+            "bbl": "3033040024",
+            "borough": "BROOKLYN",
+            # NO pre-set dob_project_type — classifier MUST fire.
+        }
+        db = _StubDb(projects=[dict(project)])
+        cache = _run(compute_peer_stats_full(socrata, project, db=db))
+        criteria = cache.get("peer_criteria") or {}
+
+        # 1. Classifier picked correctly (PR #14D fix preserved).
+        self.assertEqual(
+            criteria.get("dob_project_type"),
+            "major_alt_with_enlargement",
+            f"Classifier regression. Expected "
+            f"major_alt_with_enlargement (Menahan B00736930-I1 "
+            f"General Construction with VERTICAL AND HORIZONTAL "
+            f"ENLARGEMENT). Got {criteria.get('dob_project_type')!r}.",
+        )
+        # 2. PR #14E schema bump applied.
+        self.assertEqual(
+            criteria.get("schema_version"), "pr14e",
+            f"Cache schema_version must be 'pr14e' (PR #14E bump). "
+            f"Got {criteria.get('schema_version')!r}. Stage 3 §7.3 + "
+            f"Risk 6: define PR14E_SCHEMA_VERSION constant and "
+            f"stamp into peer_criteria.",
+        )
+        # 3. Modern cohort populated (Unified Cohort architecture).
+        segments = criteria.get("cohort_source_segments") or {}
+        self.assertGreater(
+            segments.get("modern_count", 0), 0,
+            f"Modern cohort count = "
+            f"{segments.get('modern_count', 'MISSING')}. PR #14E "
+            f"Q2 lock: Modern path (pkdm-hqz6) is PRIMARY. "
+            f"Stage 3 §7.6: thread _fetch_modern_cohort into "
+            f"compute_cohort_for_project.",
+        )
+        # 4. target_state derived from parser (Q5 hybrid lock).
+        target = criteria.get("target_state") or {}
+        self.assertEqual(
+            target.get("source"), "parser",
+            f"Menahan target_state.source must be 'parser' (Q5 "
+            f"hybrid lock — dob_extracted_scope.story_count=4 from "
+            f"'PROPOSED 4-STORY+CELLAR+MEZZ'). Got "
+            f"{target.get('source')!r}. Stage 3: implement target "
+            f"derivation hybrid in compute_cohort_for_project.",
+        )
+        self.assertEqual(
+            target.get("numfloors"), 4,
+            f"Menahan target_state.numfloors must be 4 (parser-"
+            f"extracted from real Menahan description). Got "
+            f"{target.get('numfloors')!r}.",
+        )
+        # 5. Pipeline reached status=ready (not timeout).
+        self.assertEqual(
+            cache.get("status"), "ready",
+            f"Pipeline produced non-ready cache "
+            f"(status={cache.get('status')!r}). Indicates timeout "
+            f"OR _resolve_bbls_for_cohort_bins latent bug (PR #14E "
+            f"fixes both — Modern primary doesn't need BIN→BBL "
+            f"bridge because pkdm-hqz6 ships BBL inline).",
+        )
 
 
 if __name__ == "__main__":
