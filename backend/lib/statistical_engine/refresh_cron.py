@@ -311,19 +311,21 @@ async def _refresh_one_project(
             # reads from the dict, not Mongo, so it gets the data
             # it needs.
             cache = await asyncio.wait_for(
-                refresh_peer_stats_incremental(socrata, project, now=now),
+                # PR #14C §6.1 — db threaded for the new internal
+                # classify + lazy-PLUTO refresh branches.
+                refresh_peer_stats_incremental(socrata, project, db, now=now),
                 timeout=REFRESH_COMPUTE_TIMEOUT_SECONDS,
             )
             log_kind = "refreshed_stale"
         elif kind == "failed":
             cache = await asyncio.wait_for(
-                compute_peer_stats_full(socrata, project, now=now),
+                compute_peer_stats_full(socrata, project, db, now=now),
                 timeout=REFRESH_COMPUTE_TIMEOUT_SECONDS,
             )
             log_kind = "recovered_failed"
         elif kind == "orphan":
             cache = await asyncio.wait_for(
-                compute_peer_stats_full(socrata, project, now=now),
+                compute_peer_stats_full(socrata, project, db, now=now),
                 timeout=REFRESH_COMPUTE_TIMEOUT_SECONDS,
             )
             log_kind = "recovered_orphan"

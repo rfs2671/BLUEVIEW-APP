@@ -411,7 +411,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
         db = _StubDb(projects=[proj])
 
         incremental_called = []
-        async def _track_incremental(_socrata, _project, *, now=None):
+        async def _track_incremental(_socrata, _project, _db=None, *, now=None):
             incremental_called.append(_project["_id"])
             return _fake_ready_cache_result()
 
@@ -452,7 +452,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
         db = _StubDb(projects=[proj])
 
         full_called = []
-        async def _track_full(_s, _p, *, now=None):
+        async def _track_full(_s, _p, _db=None, *, now=None):
             full_called.append(_p["_id"])
             return _fake_ready_cache_result()
 
@@ -485,7 +485,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
         db = _StubDb(projects=[proj])
 
         full_called = []
-        async def _track_full(_s, _p, *, now=None):
+        async def _track_full(_s, _p, _db=None, *, now=None):
             full_called.append(_p["_id"])
             return _fake_ready_cache_result()
 
@@ -544,7 +544,7 @@ class TestRefreshCronBatching(unittest.TestCase):
         db = _StubDb(projects=projects)
 
         processed = []
-        async def _track_incremental(_s, _p, *, now=None):
+        async def _track_incremental(_s, _p, _db=None, *, now=None):
             processed.append(_p["_id"])
             return _fake_ready_cache_result()
 
@@ -581,7 +581,7 @@ class TestRefreshCronErrorPaths(unittest.TestCase):
         db = _StubDb(projects=projects)
 
         call_count = [0]
-        async def _flaky_incremental(_s, p, *, now=None):
+        async def _flaky_incremental(_s, p, _db=None, *, now=None):
             call_count[0] += 1
             if p["_id"] == "P1":
                 raise SocrataQueryError(
@@ -618,7 +618,7 @@ class TestRefreshCronErrorPaths(unittest.TestCase):
         ]
         db = _StubDb(projects=projects)
 
-        async def _slow_when_t0(_s, p, *, now=None):
+        async def _slow_when_t0(_s, p, _db=None, *, now=None):
             if p["_id"] == "T0":
                 await asyncio.sleep(99)  # > test timeout
             return _fake_ready_cache_result()
@@ -663,7 +663,7 @@ class TestRefreshCronLockBeforeCompute(unittest.TestCase):
         db = _StubDb(projects=[proj])
         observed_status: List[Optional[str]] = []
 
-        async def _observe(_s, p, *, now=None):
+        async def _observe(_s, p, _db=None, *, now=None):
             current = await db.projects.find_one({"_id": "LK"})
             observed_status.append(
                 (current.get("peer_stats_cache") or {}).get("status"),

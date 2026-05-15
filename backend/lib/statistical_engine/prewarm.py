@@ -257,7 +257,11 @@ async def prewarm_peer_stats(db, project_id: Any) -> None:
             socrata = SocrataClient(http)
             try:
                 cache = await asyncio.wait_for(
-                    compute_peer_stats_full(socrata, project),
+                    # PR #14C §6.1 — db threaded as required arg so
+                    # the new internal classify + lazy-PLUTO refresh
+                    # branches inside compute_peer_stats_full can
+                    # persist their results.
+                    compute_peer_stats_full(socrata, project, db),
                     timeout=PREWARM_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -401,7 +405,23 @@ async def maybe_classify_project_dob_type(
         from lib.statistical_engine.dob_classifier import (
             fetch_project_dob_classification,
         )
-        await fetch_project_dob_classification(socrata, project, db)
+        proj_type, snapshot = await fetch_project_dob_classification(
+            socrata, project, db,
+        )
+        # PR #14C: mirror the persisted result back onto the
+        # in-memory project dict so the caller (typically
+        # compute_peer_stats_full) sees the classification without
+        # re-reading from db. The classifier persists to db.projects
+        # via update_one, but does NOT mutate the in-memory dict —
+        # so without this mirror, compute_peer_stats_full's
+        # downstream cohort builder would still see
+        # project["dob_project_type"] == None and short-circuit to
+        # lifecycle_skip_reason="no_spec" with cohort_filter_spec={}.
+        project["dob_project_type"]    = proj_type
+        project["dob_job_snapshot"]    = snapshot
+        # extracted_scope is set on the project doc by the
+        # classifier (in db) but not returned; leave it unset
+        # in-memory — downstream consumers re-read from db if needed.
     except Exception as e:  # pragma: no cover — defensive
         logger.warning(
             "[prewarm] maybe_classify_project_dob_type failed for "
