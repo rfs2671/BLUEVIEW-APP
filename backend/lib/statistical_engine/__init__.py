@@ -128,6 +128,22 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     # PR #14I — borough name normalization for DOB-dataset queries
     _normalize_borough_to_full_name,
 )
+# PR #15A — Predictive Inference Engine Phase 1 surface.
+from lib.statistical_engine.daily_panel import (  # noqa: F401
+    compute_daily_panel,
+    derive_cohort_milestone_pct,
+    compute_caseload_proxy_for_cd,
+    compute_rolling_30d_brier,
+    _upsert_validation_ledger_entry,
+    _provenance_checksum,
+    _parse_ecb_yyyymmdd_date,
+    DATASET_DOB_ECB_VIOLATIONS,
+    DATASET_DOB_COMPLAINTS,
+    SEVERE_ECB_SEVERITIES,
+    PR15A_PANEL_SCHEMA_VERSION,
+    DEFAULT_PANEL_WINDOW_DAYS,
+    COHORT_MILESTONE_MIN_CONTRIBUTORS,
+)
 from lib.statistical_engine.prewarm import (  # noqa: F401
     prewarm_peer_stats,
     PREWARM_TIMEOUT_SECONDS,
@@ -190,10 +206,17 @@ from lib.statistical_engine.schema import (  # noqa: F401
     # Surviving collection constants
     PREDICTED_EVENTS_COLLECTION,
     PREDICTION_OUTCOMES_COLLECTION,
+    # PR #15A — Predictive Inference Engine collections
+    DAILY_PANELS_COLLECTION,
+    PREDICTION_VALIDATION_LEDGER_COLLECTION,
     # Surviving index specs (consumed by server.py startup)
     PREDICTED_EVENTS_INDEXES,
     PREDICTION_OUTCOMES_INDEXES,
     ALL_V22_INDEX_SPECS,
+    # PR #15A — Predictive Inference Engine indexes
+    DAILY_PANELS_INDEXES,
+    PREDICTION_VALIDATION_LEDGER_INDEXES,
+    ALL_PR15A_INDEX_SPECS,
     # Model + bands
     MODEL_VERSION,
     SCORE_BAND_GREEN,

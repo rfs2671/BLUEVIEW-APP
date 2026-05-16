@@ -947,6 +947,14 @@ async def compute_peer_stats_full(
         "cohort_member_provenance": cohort_result.get(
             "cohort_member_provenance",
         ) or [],
+        # PR #15A — Predictive Inference Engine cross-reference keys.
+        # Initialized to None / empty; populated by the nightly cron
+        # invoking compute_daily_panel + derive_cohort_milestone_pct.
+        # Tests (test_v2_3_baselines.TestComputePeerStatsFull) assert
+        # the keys are present (not the values) at cache write time.
+        "daily_panel_provenance_checksum": None,
+        "derived_lifecycle_stage_pct":     None,
+        "cohort_derived_milestone_pct":    {},
         # Carryover keys preserved from V2.3 shape so other code
         # (incremental refresh + persistence) keeps working:
         "borough":                     project.get("borough"),
@@ -1086,6 +1094,18 @@ def _assemble_cache(
         "cohort_member_provenance": peer_meta.get(
             "cohort_member_provenance",
         ) or [],
+        # PR #15A — Predictive Inference Engine cross-reference keys.
+        # Initialized at cache-write time; populated by the nightly
+        # cron that runs compute_daily_panel + derive_cohort_milestone_pct.
+        "daily_panel_provenance_checksum": peer_meta.get(
+            "daily_panel_provenance_checksum",
+        ),
+        "derived_lifecycle_stage_pct": peer_meta.get(
+            "derived_lifecycle_stage_pct",
+        ),
+        "cohort_derived_milestone_pct": peer_meta.get(
+            "cohort_derived_milestone_pct",
+        ) or {},
         # Carry-forward keys (used by incremental refresh + persist):
         "borough":                     peer_meta.get("borough"),
         "bbl":                         project_bbl,
@@ -2614,6 +2634,33 @@ def _safe_int(value: Any) -> Optional[int]:
         return None
 
 
+def _apply_safety_cliff_floor(
+    band: List[int],
+    target_floors: Optional[int],
+) -> Tuple[List[int], bool]:
+    """PR #15A Chapter 33 Safety Cliff — when ``target_floors >= 7``,
+    raise the numfloors_band lower bound to ``max(7, int(target_floors
+    * 0.75))``.
+
+    Rationale: high-rise alterations (7+ stories) face categorically
+    different inspection cadence + violation patterns than mid-rise
+    work. The ±25% band on a 10-story target would include 8-12 (no
+    impact), but a parser-extracted 8-story target would yield band
+    [6, 10] which includes 6-story peers operating under significantly
+    different code. The floor `max(7, int(target_floors * 0.75))`
+    keeps peers in the same Safety Cliff regulatory regime.
+
+    Returns ``(adjusted_band, was_adjusted_flag)``. When
+    target_floors is None or < 7, returns ``(band, False)`` unchanged.
+    """
+    if not band or target_floors is None or target_floors < 7:
+        return band, False
+    safety_min = max(7, int(target_floors * 0.75))
+    if band[0] < safety_min:
+        return [safety_min, band[1]], True
+    return band, False
+
+
 def _derive_target_state_for_project(
     project: Dict[str, Any],
     project_type: str,
@@ -2629,6 +2676,7 @@ def _derive_target_state_for_project(
           "band_widened":  bool,
           "yearbuilt_filter_min": int | None,
           "apply_yearbuilt_filter": bool,
+          "numfloors_band_safety_cliff_applied": bool,   # PR #15A Chapter 33
       }
 
     Project-type semantics:
@@ -2649,6 +2697,12 @@ def _derive_target_state_for_project(
         ``frozen_pluto_snapshot``; bldgclass + numfloors from the
         pre-demolition snapshot.
 
+    PR #15A Chapter 33 Safety Cliff:
+      When the effective target floors >= 7, raise band lower bound
+      to ``max(7, int(target_floors * 0.75))``. Applied to
+      ``new_building`` AND ``major_alt_with_enlargement``. Surfaced
+      via ``numfloors_band_safety_cliff_applied`` flag.
+
     Returned dict feeds both ``_fetch_modern_cohort`` and
     ``_fetch_legacy_cohort``. Inclusion in peer_criteria allows the
     FE to display the cohort's matching attributes.
@@ -2667,14 +2721,20 @@ def _derive_target_state_for_project(
         "band_widened":           False,
         "yearbuilt_filter_min":   None,
         "apply_yearbuilt_filter": False,
+        # PR #15A Chapter 33 — defaults to False; only set True
+        # when the floor actually raises the band's low bound.
+        "numfloors_band_safety_cliff_applied": False,
     }
 
     if project_type == "new_building":
         base["numfloors"] = pluto_numfloors
         if pluto_numfloors and pluto_numfloors > 0:
-            base["numfloors_band"] = list(
-                compute_tolerance_band(pluto_numfloors, 0.25, 1),
+            band = list(compute_tolerance_band(pluto_numfloors, 0.25, 1))
+            adjusted, was_adjusted = _apply_safety_cliff_floor(
+                band, pluto_numfloors,
             )
+            base["numfloors_band"] = adjusted
+            base["numfloors_band_safety_cliff_applied"] = was_adjusted
         base["yearbuilt_filter_min"] = 2000
         base["apply_yearbuilt_filter"] = True
         base["source"] = "pluto"
@@ -2684,9 +2744,12 @@ def _derive_target_state_for_project(
         # Q5 hybrid — parser primary, PLUTO fallback.
         if parser_floors and parser_floors > 0:
             base["numfloors"] = parser_floors
-            base["numfloors_band"] = list(
-                compute_tolerance_band(parser_floors, 0.25, 1),
+            band = list(compute_tolerance_band(parser_floors, 0.25, 1))
+            adjusted, was_adjusted = _apply_safety_cliff_floor(
+                band, parser_floors,
             )
+            base["numfloors_band"] = adjusted
+            base["numfloors_band_safety_cliff_applied"] = was_adjusted
             base["source"] = "parser"
             base["band_widened"] = False
         else:
@@ -2696,9 +2759,12 @@ def _derive_target_state_for_project(
                 # PLUTO snapshot reflects pre-enlargement state which
                 # is less reliable as a proxy for post-enlargement
                 # peer matching.
-                base["numfloors_band"] = list(
-                    compute_tolerance_band(pluto_numfloors, 0.50, 1),
+                band = list(compute_tolerance_band(pluto_numfloors, 0.50, 1))
+                adjusted, was_adjusted = _apply_safety_cliff_floor(
+                    band, pluto_numfloors,
                 )
+                base["numfloors_band"] = adjusted
+                base["numfloors_band_safety_cliff_applied"] = was_adjusted
             base["source"] = "pluto_fallback"
             base["band_widened"] = True
         return base
@@ -2714,9 +2780,13 @@ def _derive_target_state_for_project(
         # T7 lock — frozen pluto_snapshot is the source of truth.
         base["numfloors"] = pluto_numfloors
         if pluto_numfloors and pluto_numfloors > 0:
-            base["numfloors_band"] = list(
-                compute_tolerance_band(pluto_numfloors, 0.25, 1),
+            band = list(compute_tolerance_band(pluto_numfloors, 0.25, 1))
+            # Safety Cliff applies to demolition of high-rise too.
+            adjusted, was_adjusted = _apply_safety_cliff_floor(
+                band, pluto_numfloors,
             )
+            base["numfloors_band"] = adjusted
+            base["numfloors_band_safety_cliff_applied"] = was_adjusted
         base["source"] = "frozen_pluto_snapshot"
         return base
 
