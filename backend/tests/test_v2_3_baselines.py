@@ -558,6 +558,37 @@ class TestComputePeerStatsFull(unittest.TestCase):
             "c_of_o_final, ...} median ratios. Stage 3 PR #15A "
             "compute_peer_stats_full Step 7 addition.",
         )
+        # PR #15B Stage 2.A — 3 augmented assertions cross-referencing
+        # the prediction engine's downstream consumers. The keys are
+        # initially None/False/0 at PR #15A write time; PR #15B's
+        # nightly refit cron populates them. Tests assert PRESENCE so
+        # the engine layer doesn't have to defensively branch on
+        # KeyError vs explicit None.
+        self.assertIn(
+            "prediction_cache_compatible", criteria,
+            "PR #15B Stage 2.A — peer_criteria must carry "
+            "``prediction_cache_compatible`` (bool, True for "
+            "PR15B-compatible cohorts). Stage 3 PR #15B: add to "
+            "compute_peer_stats_full's _assemble_cache write path so "
+            "the live mutation engine can pre-flight cohort eligibility "
+            "without re-reading the full criteria block.",
+        )
+        self.assertIn(
+            "should_use_cold_start", criteria,
+            "PR #15B Stage 2.A L10 — peer_criteria must carry "
+            "``should_use_cold_start`` (bool, True iff sample_size<30). "
+            "Stage 3 PR #15B: stamp at cache write time so the nightly "
+            "cron can branch to cold-start without recomputing the "
+            "L10 boundary check. Mirrors low_confidence_flag pattern.",
+        )
+        self.assertIn(
+            "pr15b_model_coefficients_hash", criteria,
+            "PR #15B Stage 2.A T7 — peer_criteria must reserve "
+            "``pr15b_model_coefficients_hash`` slot (initially None) "
+            "for the nightly refit cron's β fit hash. Provides a "
+            "stable join key between peer_stats_cache and "
+            "prediction_models without an additional collection lookup.",
+        )
 
     def test_violations_gated_as_unavailable_in_peer_cache(self):
         """V2.3 schema-corrections hotfix CORRECTION 3 Option A

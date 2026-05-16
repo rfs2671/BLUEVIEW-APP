@@ -146,10 +146,12 @@ class _StubPredictionValidationLedger:
                 return dict(d)
         return None
 
-    def find(self, filter_, projection=None):
+    def find(self, filter_=None, projection=None):
+        """Supports the validation_audit_sweep filter shape:
+        {"target_horizon_at": {"$lt": now}, "observed_outcome": None}."""
         matched = [
             dict(d) for d in self.docs
-            if all(d.get(k) == v for k, v in (filter_ or {}).items())
+            if _match_doc(d, filter_ or {})
         ]
         return _AsyncFindResult(matched)
 
@@ -158,7 +160,7 @@ class _StubPredictionValidationLedger:
             return len(self.docs)
         return sum(
             1 for d in self.docs
-            if all(d.get(k) == v for k, v in filter_.items())
+            if _match_doc(d, filter_)
         )
 
     def aggregate(self, pipeline, **_kwargs):
@@ -238,6 +240,16 @@ def _match_doc(doc: Dict[str, Any], match: Dict[str, Any]) -> bool:
                     return False
                 if op == "$eq" and val != target:
                     return False
+                if op == "$in" and val not in target:
+                    return False
+                if op == "$nin" and val in target:
+                    return False
+                if op == "$exists":
+                    has_key = key in doc
+                    if target and not has_key:
+                        return False
+                    if (not target) and has_key:
+                        return False
         else:
             if val != criterion:
                 return False
@@ -276,13 +288,148 @@ def _group_docs(rows: List[Dict[str, Any]], group: Dict[str, Any]) -> Dict[str, 
     return out
 
 
+class _StubPredictionModels:
+    """PR #15B stub for ``prediction_models`` collection.
+
+    Supports the per-(project_id, fit_at) write pattern used by the
+    nightly refit cron and the model-hash lookup used by live
+    mutation. Mirrors _StubPredictionValidationLedger semantics —
+    find_one + update_one(upsert=True) + insert_one + find.
+    """
+
+    def __init__(self, docs: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.docs: List[Dict[str, Any]] = list(docs or [])
+        self.insert_one_calls: List[Dict[str, Any]] = []
+        self.update_one_calls: List[Dict[str, Any]] = []
+
+    async def insert_one(self, doc, **_kwargs):
+        self.insert_one_calls.append({"doc": dict(doc)})
+        self.docs.append(dict(doc))
+        r = MagicMock()
+        r.inserted_id = None
+        return r
+
+    async def update_one(self, filter_, update, upsert=False, **_kwargs):
+        self.update_one_calls.append({
+            "filter": dict(filter_),
+            "update": dict(update),
+            "upsert": upsert,
+        })
+        for d in self.docs:
+            if all(d.get(k) == v for k, v in filter_.items()):
+                if "$set" in update:
+                    d.update(update["$set"])
+                r = MagicMock()
+                r.matched_count = 1
+                r.upserted_id = None
+                return r
+        if upsert:
+            new_doc = dict(filter_)
+            if "$set" in update:
+                new_doc.update(update["$set"])
+            self.docs.append(new_doc)
+            r = MagicMock()
+            r.matched_count = 0
+            r.upserted_id = "new"
+            return r
+        r = MagicMock()
+        r.matched_count = 0
+        r.upserted_id = None
+        return r
+
+    async def find_one(self, filter_, projection=None, sort=None):
+        matched = [
+            d for d in self.docs
+            if all(d.get(k) == v for k, v in (filter_ or {}).items())
+        ]
+        if sort:
+            for key, direction in sort:
+                matched.sort(key=lambda r: r.get(key) or 0,
+                             reverse=(direction == -1))
+        return dict(matched[0]) if matched else None
+
+    def find(self, filter_, projection=None):
+        matched = [
+            dict(d) for d in self.docs
+            if all(d.get(k) == v for k, v in (filter_ or {}).items())
+        ]
+        return _AsyncFindResult(matched)
+
+    async def count_documents(self, filter_=None):
+        if not filter_:
+            return len(self.docs)
+        return sum(
+            1 for d in self.docs
+            if all(d.get(k) == v for k, v in filter_.items())
+        )
+
+
+class _StubProjectsForCache:
+    """PR #15B stub of db.projects supporting find_one + update_one
+    with $set on prediction_cache sub-document. Used by live mutation
+    tests that need to write back to projects.prediction_cache."""
+
+    def __init__(self, projects: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.docs: List[Dict[str, Any]] = list(projects or [])
+        self.update_one_calls: List[Dict[str, Any]] = []
+
+    async def find_one(self, filter_, projection=None):
+        for d in self.docs:
+            ok = True
+            for k, v in (filter_ or {}).items():
+                if d.get(k) != v:
+                    ok = False
+                    break
+            if ok:
+                return dict(d)
+        return None
+
+    async def update_one(self, filter_, update, upsert=False, **_kwargs):
+        self.update_one_calls.append({
+            "filter": dict(filter_),
+            "update": dict(update),
+            "upsert": upsert,
+        })
+        for d in self.docs:
+            if all(d.get(k) == v for k, v in filter_.items()):
+                if "$set" in update:
+                    for k, v in update["$set"].items():
+                        # support dotted "prediction_cache.foo" keys
+                        if "." in k:
+                            head, tail = k.split(".", 1)
+                            sub = d.setdefault(head, {})
+                            sub[tail] = v
+                        else:
+                            d[k] = v
+                r = MagicMock()
+                r.matched_count = 1
+                r.upserted_id = None
+                return r
+        r = MagicMock()
+        r.matched_count = 0
+        r.upserted_id = None
+        return r
+
+    def find(self, filter_=None, projection=None):
+        """PR #15B Stage 3.B — supports nightly_refit_for_all_projects
+        iterating over active projects. Uses _match_doc to handle
+        $ne/$in/$lt/$gt filters."""
+        matched = [
+            dict(d) for d in self.docs
+            if _match_doc(d, filter_ or {})
+        ]
+        return _AsyncFindResult(matched)
+
+
 class _StubDb:
     """Composite stub matching the prod ``db`` shape PR #15A reads.
 
     Carries:
-      • ``projects`` — _StubProjects from test_pr14c_wiring
+      • ``projects`` — _StubProjects from test_pr14c_wiring (or
+        _StubProjectsForCache for PR #15B live-mutation tests)
       • ``daily_panels`` — _StubDailyPanels (this module)
       • ``prediction_validation_ledger`` — _StubPredictionValidationLedger
+      • ``prediction_models`` — _StubPredictionModels (PR #15B)
       • ``dob_logs`` — placeholder for the existing dob_logs collection
         (PR #15A may not need to mutate; tests pass a pre-populated
         list of dicts)
@@ -297,6 +444,7 @@ class _StubDb:
         projects: Optional[Any] = None,
         daily_panels: Optional[Any] = None,
         prediction_validation_ledger: Optional[Any] = None,
+        prediction_models: Optional[Any] = None,
         dob_logs: Optional[Any] = None,
     ) -> None:
         self.projects = projects
@@ -304,4 +452,5 @@ class _StubDb:
         self.prediction_validation_ledger = (
             prediction_validation_ledger or _StubPredictionValidationLedger()
         )
+        self.prediction_models = prediction_models or _StubPredictionModels()
         self.dob_logs = dob_logs
