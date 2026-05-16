@@ -24979,6 +24979,28 @@ async def startup_event():
                 },
             )
 
+    # PR #15A.1 — Daily Panel + Validation Ledger indexes.
+    # Mirrors the ALL_V22_INDEX_SPECS loop above; covers the two
+    # PR #15A collections (daily_panels + prediction_validation_ledger)
+    # via the same resilient helper. 6 indexes total — see
+    # lib/statistical_engine/schema.py:DAILY_PANELS_INDEXES +
+    # PREDICTION_VALIDATION_LEDGER_INDEXES. The unique compound on
+    # (project_id, calendar_date) enforces the T7 canonical-per-day
+    # contract at the DB layer; the 7-day TTL on daily_panels.built_at
+    # auto-expires stale panels.
+    for _coll_name, _idx_specs in _stat_engine.ALL_PR15A_INDEX_SPECS:
+        _coll = db[_coll_name]
+        for _idx_spec in _idx_specs:
+            await _ensure_index_resilient(
+                _coll,
+                keys=_idx_spec["keys"],
+                name=_idx_spec["name"],
+                **{
+                    k: v for k, v in _idx_spec.items()
+                    if k not in ("keys", "name")
+                },
+            )
+
     # V2.3 Commit 5 — compound index on peer_stats_cache for the
     # refresh cron's eligibility query. Status has small cardinality
     # (~4 values: ready / pending / failed / absent), so the
