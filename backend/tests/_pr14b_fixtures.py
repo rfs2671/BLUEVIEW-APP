@@ -16,8 +16,11 @@ not raw SoQL row dicts.
 
 from __future__ import annotations
 
+import contextlib
+import random
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+from unittest.mock import patch
 
 
 # ── Dataset IDs PR #14B touches ───────────────────────────────────
@@ -29,6 +32,23 @@ DATASET_BIS_JOB_FILINGS = "ic3t-wcy2"
 DATASET_C_OF_O_LEGACY   = "bs8b-p36w"
 DATASET_DOB_PERMITS     = "rbx6-tga4"  # DOB NOW; also exists in socrata_client
 DATASET_PLUTO           = "64uk-42ks"  # PLUTO; mirrors socrata_client
+
+# PR #15A — Predictive Inference Engine source datasets.
+# 6bgk-3dad ECB Violations: target dataset for outcome_violation_d.
+#   ``issue_date`` is YYYYMMDD numeric (8-digit text), parsed via
+#   existing ``_parse_socrata_yyyymmdd`` helper. Severity enum:
+#   {CLASS - 1, CLASS - 2, Hazardous, CLASS - 3, Non-Hazardous,
+#   Unknown}. Locked severity filter: IN ('CLASS - 1', 'CLASS - 2',
+#   'Hazardous') — 3 included, 3 excluded.
+# eabe-havv DOB Complaints: source for SWO state machine AND
+#   complaint_velocity_14d BIN-keyed source. ``date_entered`` and
+#   ``disposition_date`` are MM/DD/YYYY text, parsed via existing
+#   ``_parse_bis_mdy_date``. SWO disposition codes: A8 (close work
+#   = issue SWO), A1 (issue work-stop), A9 (vacate / clear),
+#   B1 (rescind). Last-disposition-wins state machine.
+DATASET_DOB_ECB_VIOLATIONS = "6bgk-3dad"
+DATASET_DOB_COMPLAINTS     = "eabe-havv"
+DATASET_311                = "erm2-nwe9"  # same as DATASET_COMPLAINTS_311 in socrata_client
 
 # PR #14E (Q2 lock) — DOB NOW C of O dataset, the Modern cohort
 # source. Carries job_type + c_of_o_filing_type + bbl + bin inline.
@@ -529,3 +549,318 @@ def make_modern_cohort_fixture(
             "job_type": primary_job_type,
         })
     return rows
+
+
+# ── PR #15A: Predictive Inference Engine fixtures ─────────────────
+
+
+def seed_ecb_violation_for_bin(
+    socrata,
+    *,
+    bin: str,
+    issue_date: str = "20240115",          # YYYYMMDD numeric (production format)
+    severity: str = "CLASS - 1",           # exact match to enum (in locked filter set)
+    ecb_violation_number: Optional[str] = None,
+    ecb_violation_status: str = "ACTIVE",
+    violation_type: str = "Construction",
+    boro: str = "3",                       # Brooklyn = 3
+    block: str = "03040",
+    lot: str = "0024",
+    hearing_date: Optional[str] = None,
+    aggravated_level: str = "NO",
+    respondent_house_number: str = "9",
+    respondent_street: str = "MENAHAN STREET",
+) -> Dict[str, Any]:
+    """PR #15A — seed one 6bgk-3dad ECB Violation row.
+
+    Defaults match a Brooklyn CLASS-1 construction violation —
+    i.e., a "severe" violation that the locked WHERE filter
+    ``severity IN ('CLASS - 1', 'CLASS - 2', 'Hazardous')`` will
+    include in ``outcome_violation_d`` calculation.
+
+    Per Stage 1 curl-verified schema:
+      • ``issue_date`` is YYYYMMDD numeric text (8 digits, e.g.
+        ``"20240115"``). Parser: ``_parse_socrata_yyyymmdd`` already
+        in baselines.py.
+      • ``severity`` enum exact: {CLASS - 1, CLASS - 2, Hazardous,
+        CLASS - 3, Non-Hazardous, Unknown}. Locked filter passes
+        the first 3 only.
+      • ``bin`` plain 7-digit string (production format).
+
+    Returns the seeded row dict so tests can mutate or stash it.
+    """
+    row = {
+        "bin":                       bin,
+        "boro":                      boro,
+        "block":                     block,
+        "lot":                       lot,
+        "ecb_violation_number":      (
+            ecb_violation_number or f"V{bin[-6:]}{issue_date[-4:]}"
+        ),
+        "ecb_violation_status":      ecb_violation_status,
+        "issue_date":                issue_date,
+        "hearing_date":              hearing_date or issue_date,
+        "severity":                  severity,
+        "violation_type":            violation_type,
+        "aggravated_level":          aggravated_level,
+        "respondent_house_number":   respondent_house_number,
+        "respondent_street":         respondent_street,
+    }
+    socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [row])
+    return row
+
+
+def seed_swo_disposition_for_bin(
+    socrata,
+    *,
+    bin: str,
+    complaint_number: str,
+    date_entered: str = "01/15/2024",       # MM/DD/YYYY (production format)
+    disposition_code: str = "A8",           # SWO-relevant: A8/A1/A9/B1
+    disposition_date: Optional[str] = None, # MM/DD/YYYY
+    inspection_date: Optional[str] = None,  # MM/DD/YYYY
+    complaint_category: str = "1B",
+    status: str = "CLOSED",
+    community_board: str = "304",           # 3-digit string (production format)
+    house_number: Optional[str] = None,
+    house_street: Optional[str] = None,
+    zip_code: str = "11221",
+) -> Dict[str, Any]:
+    """PR #15A — seed one eabe-havv DOB Complaint row with SWO
+    disposition for the active SWO state machine.
+
+    Locked SWO disposition codes (Stage 2.A T1 lock):
+      • A8 — Close work (active SWO issued)
+      • A1 — Issue work-stop (active SWO issued)
+      • A9 — Vacate (clears active SWO)
+      • B1 — Rescind (clears active SWO)
+
+    Per Stage 1 curl-verified schema:
+      • ``date_entered`` + ``disposition_date`` are MM/DD/YYYY text
+        (e.g. ``"01/15/2024"``). Parser: ``_parse_bis_mdy_date``
+        already in baselines.py (PR #14F helper).
+      • ``bin`` plain 7-digit text.
+      • ``community_board`` 3-digit string format (1st digit = boro
+        code: 1=MN, 2=BX, 3=BK, 4=QN, 5=SI).
+    """
+    if disposition_code not in ("A1", "A8", "A9", "B1"):
+        # Allow defensive use for non-SWO codes too (caller can
+        # override); the panel state-machine code filters to these
+        # 4 codes when computing active_swo_flag.
+        pass
+    row = {
+        "bin":                bin,
+        "complaint_number":   complaint_number,
+        "date_entered":       date_entered,
+        "disposition_code":   disposition_code,
+        "disposition_date":   disposition_date or date_entered,
+        "inspection_date":    inspection_date,
+        "complaint_category": complaint_category,
+        "status":             status,
+        "community_board":    community_board,
+        "house_number":       house_number or "9",
+        "house_street":       house_street or "MENAHAN STREET",
+        "zip_code":           zip_code,
+    }
+    socrata.seed(DATASET_DOB_COMPLAINTS, [row])
+    return row
+
+
+def make_daily_panel_fixture(
+    db,
+    *,
+    project_id: str,
+    cohort_members: List[Dict[str, Any]],  # [{bbl, bin, segment}]
+    panel_window_days: int = 30,
+    cur_now: Optional[datetime] = None,
+    outcomes_random_seed: int = 42,
+    schema_version: str = "pr15a_v1",
+) -> List[Dict[str, Any]]:
+    """PR #15A — bulk-insert deterministic daily_panels rows into the
+    test ``db.daily_panels`` collection stub.
+
+    For each cohort member × each day in the panel window, emits one
+    row with:
+      • Zero-default x_features (caller can override per-row before
+        feeding to assertions).
+      • ``outcome_violation_d`` toggled via a seeded ``random.Random``
+        so test runs are reproducible.
+      • ``outcome_violation_d_to_d_plus_7`` set to ``None`` for the
+        trailing 7 days per Stage 2.A T5 lock (right-censoring).
+      • ``sample_weight`` 1.0 for ``"modern"`` segment, 0.4 for
+        ``"legacy"`` per Lock B.
+
+    Returns the list of inserted rows so tests can assert against
+    the data shape directly.
+    """
+    panel_built_at = cur_now or datetime(2026, 5, 15, tzinfo=timezone.utc)
+    rng = random.Random(outcomes_random_seed)
+    rows: List[Dict[str, Any]] = []
+    for member in cohort_members:
+        bbl = member["bbl"]
+        bin_ = member["bin"]
+        segment = member.get("segment", "modern")
+        sample_weight = 1.0 if segment == "modern" else 0.4
+        for day_offset in range(panel_window_days):
+            day_dt = panel_built_at - timedelta(
+                days=panel_window_days - 1 - day_offset,
+            )
+            day_calendar_date = day_dt.strftime("%Y-%m-%d")
+            outcome_d = rng.random() < 0.05  # 5% positive base rate
+            # T5 right-censoring: last 7 days can't know outcome.
+            if day_offset >= panel_window_days - 7:
+                outcome_d_to_d7 = None
+            else:
+                outcome_d_to_d7 = (rng.random() < 0.15)
+            row = {
+                "project_id":          project_id,
+                "cohort_member_bbl":   bbl,
+                "cohort_member_bin":   bin_,
+                "cohort_segment":      segment,
+                "sample_weight":       sample_weight,
+                "day_in_lifecycle":    day_offset,
+                "day_calendar_date":   day_calendar_date,
+                "x_features": {
+                    "active_swo_flag":              0,
+                    "complaint_velocity_14d":       0,
+                    "days_since_last_violation":    90,
+                    "derived_lifecycle_stage_pct":  0.20,
+                    "district_caseload_proxy_days": 7.0,
+                },
+                "outcome_violation_d":              outcome_d,
+                "outcome_violation_d_to_d_plus_7":  outcome_d_to_d7,
+                "built_at":                         panel_built_at,
+                "panel_schema_version":             schema_version,
+            }
+            rows.append(row)
+    if rows and getattr(db, "daily_panels", None) is not None:
+        # _StubDailyPanels.insert_many extends self.docs.
+        try:
+            import asyncio
+            coro = db.daily_panels.insert_many(rows)
+            if asyncio.iscoroutine(coro):
+                asyncio.get_event_loop().run_until_complete(coro)
+        except Exception:
+            # Synchronous stub fallback.
+            for r in rows:
+                db.daily_panels.docs.append(r)
+    return rows
+
+
+def seed_validation_ledger_entries(
+    db,
+    *,
+    project_id: str,
+    n_entries: int,
+    prediction_timestamps: Optional[List[datetime]] = None,
+    brier_distribution: Optional[List[float]] = None,
+    target_horizon_days: int = 7,
+    observed_outcomes: Optional[List[Optional[bool]]] = None,
+    predicted_probabilities: Optional[List[float]] = None,
+) -> List[Dict[str, Any]]:
+    """PR #15A — bulk-insert prediction_validation_ledger entries.
+
+    Per Stage 2.A T7 lock: one canonical entry per
+    (project_id, calendar_date). Tests for the upsert path call
+    this helper to seed historical entries, then assert on the
+    rolling-30d Brier aggregation.
+
+    All list args, when provided, must have length ``n_entries``.
+    ``observed_outcomes`` may include ``None`` for unscored entries.
+    """
+    if prediction_timestamps is None:
+        base = datetime(2026, 5, 15, tzinfo=timezone.utc)
+        prediction_timestamps = [base - timedelta(days=i) for i in range(n_entries)]
+    if brier_distribution is None:
+        brier_distribution = [0.10] * n_entries
+    if observed_outcomes is None:
+        observed_outcomes = [True] * n_entries
+    if predicted_probabilities is None:
+        predicted_probabilities = [0.30] * n_entries
+
+    rows: List[Dict[str, Any]] = []
+    for i in range(n_entries):
+        ts = prediction_timestamps[i]
+        rows.append({
+            "project_id":              project_id,
+            "prediction_timestamp":    ts,
+            "target_horizon_days":     target_horizon_days,
+            "target_horizon_at":       ts + timedelta(days=target_horizon_days),
+            "calendar_date":           ts.strftime("%Y-%m-%d"),
+            "predicted_probability":   predicted_probabilities[i],
+            "observed_outcome":        observed_outcomes[i],
+            "scored_at":               (
+                ts + timedelta(days=target_horizon_days)
+                if observed_outcomes[i] is not None else None
+            ),
+            "brier_score_delta":       (
+                brier_distribution[i]
+                if observed_outcomes[i] is not None else None
+            ),
+            "model_coefficients_hash": "sha1_test_hash",
+        })
+    if rows and getattr(db, "prediction_validation_ledger", None) is not None:
+        for r in rows:
+            db.prediction_validation_ledger.docs.append(r)
+    return rows
+
+
+@contextlib.contextmanager
+def mock_nightly_cron_trigger(
+    *,
+    cur_now: datetime,
+) -> Iterator[Dict[str, Any]]:
+    """PR #15A — context manager that freezes ``datetime.now(tz=UTC)``
+    and captures calls to the nightly cron functions.
+
+    Yields a captures dict with:
+      • ``compute_daily_panel_calls`` — list of (args, kwargs) tuples
+      • ``provenance_checksum_calls`` — list of cohort_member_provenance
+        lists passed to the checksum helper
+      • ``prewarm_calls`` — list of (db, project_id) tuples
+
+    Stage 3 implementation must expose:
+      • ``lib.statistical_engine.daily_panel.compute_daily_panel``
+      • ``lib.statistical_engine.daily_panel._provenance_checksum``
+      • ``lib.statistical_engine.prewarm.prewarm_peer_stats`` (existing)
+    """
+    captures: Dict[str, List[Any]] = {
+        "compute_daily_panel_calls":   [],
+        "provenance_checksum_calls":   [],
+        "prewarm_calls":                [],
+    }
+
+    # Patch datetime.now(tz=UTC) in baselines + daily_panel namespaces
+    # so any code reading "today" gets the frozen instant.
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cur_now if tz is None else cur_now.astimezone(tz)
+
+    patches = []
+    try:
+        # Best-effort patches — module may not exist at Stage 2.B
+        # (daily_panel.py defers to Stage 3). Tests that need the
+        # capture-dict at red phase can still introspect via the
+        # yielded ``captures`` after asserting ImportError.
+        import importlib
+        for mod_name in (
+            "lib.statistical_engine.daily_panel",
+            "lib.statistical_engine.baselines",
+            "lib.statistical_engine.prewarm",
+        ):
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError:
+                continue
+            if hasattr(mod, "datetime"):
+                p = patch.object(mod, "datetime", _FrozenDatetime)
+                patches.append(p)
+                p.start()
+        yield captures
+    finally:
+        for p in patches:
+            try:
+                p.stop()
+            except Exception:
+                pass

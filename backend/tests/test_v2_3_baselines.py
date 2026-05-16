@@ -529,6 +529,35 @@ class TestComputePeerStatsFull(unittest.TestCase):
         )
         self.assertNotIn("project_class", criteria)
         self.assertNotIn("use_type", criteria)
+        # PR #15A additions — prediction_cache cross-reference keys
+        # set by the nightly cron (panel build + milestone calibration).
+        # Initially None at write time; populated by PR #15A's
+        # nightly job. Tests assert presence (not value) here so
+        # compute_peer_stats_full's cache write keeps the prediction
+        # engine's downstream consumers aware these keys exist.
+        self.assertIn(
+            "daily_panel_provenance_checksum", criteria,
+            "PR #15A T6 lock — peer_criteria must carry "
+            "``daily_panel_provenance_checksum`` (initially None) "
+            "so the nightly cron can compare incoming cohort "
+            "fingerprint against the persisted one. Stage 3 PR #15A "
+            "compute_peer_stats_full Step 7 addition.",
+        )
+        self.assertIn(
+            "derived_lifecycle_stage_pct", criteria,
+            "PR #15A Lock 1.2 — peer_criteria must carry "
+            "``derived_lifecycle_stage_pct`` (initially None) so "
+            "the nightly milestone calibration can populate. Stage "
+            "3 PR #15A compute_peer_stats_full Step 7 addition.",
+        )
+        self.assertIn(
+            "cohort_derived_milestone_pct", criteria,
+            "PR #15A Lock 1.2 — peer_criteria must carry "
+            "``cohort_derived_milestone_pct`` dict (initially "
+            "empty) for per-milestone {foundation, structural, "
+            "c_of_o_final, ...} median ratios. Stage 3 PR #15A "
+            "compute_peer_stats_full Step 7 addition.",
+        )
 
     def test_violations_gated_as_unavailable_in_peer_cache(self):
         """V2.3 schema-corrections hotfix CORRECTION 3 Option A

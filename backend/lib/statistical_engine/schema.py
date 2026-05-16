@@ -64,6 +64,20 @@ from __future__ import annotations
 PREDICTED_EVENTS_COLLECTION       = "predicted_events"
 PREDICTION_OUTCOMES_COLLECTION    = "prediction_outcomes"
 
+# PR #15A — Predictive Inference Engine Phase 1 collections.
+# ``daily_panels`` is the transient training table the nightly
+# cron materializes per active project. 7-day TTL (single missed
+# nightly leaves yesterday's panel usable for debugging).
+DAILY_PANELS_COLLECTION                  = "daily_panels"
+
+# ``prediction_validation_ledger`` records one canonical entry per
+# (project_id, calendar_date) with predicted_probability +
+# observed_outcome + brier_score_delta. Per Stage 2.A T7 lock:
+# intra-day re-predictions UPSERT the canonical entry, they do not
+# insert duplicates. Drives the rolling-30d Brier audit cron and
+# the structural-recalibration alert at threshold > 0.20.
+PREDICTION_VALIDATION_LEDGER_COLLECTION  = "prediction_validation_ledger"
+
 
 # ── Model version + band thresholds ───────────────────────────────
 #
@@ -173,4 +187,54 @@ PREDICTION_OUTCOMES_INDEXES = (
 ALL_V22_INDEX_SPECS = (
     (PREDICTED_EVENTS_COLLECTION,      PREDICTED_EVENTS_INDEXES),
     (PREDICTION_OUTCOMES_COLLECTION,   PREDICTION_OUTCOMES_INDEXES),
+)
+
+
+# ── PR #15A — Daily Panel + Validation Ledger indexes ─────────────
+
+DAILY_PANELS_INDEXES = (
+    # Per-project panel reads + nightly insert_many sweep.
+    {
+        "keys": [("project_id", 1), ("built_at", -1)],
+        "name": "panels_project_built",
+    },
+    # TTL — auto-expire 7 days post-build per Stage 2.A T6 cadence
+    # (single missed nightly leaves yesterday's panel usable).
+    {
+        "keys": [("built_at", 1)],
+        "name": "panels_built_ttl",
+        "expireAfterSeconds": 7 * 86400,
+    },
+)
+
+PREDICTION_VALIDATION_LEDGER_INDEXES = (
+    # Daily audit cron — walks predictions whose horizon is today.
+    {
+        "keys": [("target_horizon_at", 1)],
+        "name": "validation_horizon",
+    },
+    # Per-project history view (rolling-30d aggregation feeds here).
+    {
+        "keys": [("project_id", 1), ("prediction_timestamp", -1)],
+        "name": "validation_project_predicted",
+    },
+    # Brier-score sweep for structural-recalibration alert.
+    {
+        "keys": [("scored_at", -1), ("brier_score_delta", -1)],
+        "name": "validation_scored_brier",
+    },
+    # Per-project per-calendar-day upsert key (T7 canonical-per-day).
+    # ``unique`` enforces the one-doc-per-day contract at the DB layer.
+    {
+        "keys": [("project_id", 1), ("calendar_date", 1)],
+        "name": "validation_project_day",
+        "unique": True,
+    },
+)
+
+# PR #15A — combined index walk extends ALL_V22_INDEX_SPECS so
+# server.py's startup hook ensures the new collections' indexes.
+ALL_PR15A_INDEX_SPECS = (
+    (DAILY_PANELS_COLLECTION,                 DAILY_PANELS_INDEXES),
+    (PREDICTION_VALIDATION_LEDGER_COLLECTION, PREDICTION_VALIDATION_LEDGER_INDEXES),
 )
