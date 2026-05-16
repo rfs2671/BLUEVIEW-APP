@@ -78,6 +78,15 @@ DAILY_PANELS_COLLECTION                  = "daily_panels"
 # the structural-recalibration alert at threshold > 0.20.
 PREDICTION_VALIDATION_LEDGER_COLLECTION  = "prediction_validation_ledger"
 
+# PR #15B — Predictive Inference Engine Phase 1 model store.
+# ``prediction_models`` records one fit per project per nightly run
+# (or per cold-start fallback). Carries beta_coefficients, panel_mu,
+# panel_sigma, training_brier_score, model_coefficients_hash, and
+# the is_cold_start_fallback flag with borough_baseline_p_*d slots
+# for the actuarial fallback path. 60-day TTL covers a 2-month
+# rolling β history for drift detection (Stage 2.A Task 2 lock).
+PREDICTION_MODELS_COLLECTION             = "prediction_models"
+
 
 # ── Model version + band thresholds ───────────────────────────────
 #
@@ -237,4 +246,43 @@ PREDICTION_VALIDATION_LEDGER_INDEXES = (
 ALL_PR15A_INDEX_SPECS = (
     (DAILY_PANELS_COLLECTION,                 DAILY_PANELS_INDEXES),
     (PREDICTION_VALIDATION_LEDGER_COLLECTION, PREDICTION_VALIDATION_LEDGER_INDEXES),
+)
+
+
+# ── PR #15B — prediction_models indexes ───────────────────────────
+#
+# Three indexes: latest-model-per-project hot path, model-hash join
+# key for the validation ledger, and 60-day TTL covering the rolling
+# β history window used for drift detection. ``unique`` is NOT set
+# on models_project_fit because a single project can have multiple
+# successive fits within the TTL window (one per nightly cron run).
+
+PREDICTION_MODELS_INDEXES = (
+    # Latest model per project (hot path for live mutation engine
+    # looking up the active β + μ + σ on intra-day evaluation).
+    {
+        "keys": [("project_id", 1), ("fit_at", -1)],
+        "name": "models_project_fit",
+    },
+    # Hash lookup for the prediction_validation_ledger join — every
+    # ledger entry stamps model_coefficients_hash so audit traces
+    # back to the fit that produced it.
+    {
+        "keys": [("model_coefficients_hash", 1)],
+        "name": "models_hash",
+    },
+    # 60-day TTL on fit_at — covers a 2-month rolling β history for
+    # drift detection. Stage 2.A Task 2 lock.
+    {
+        "keys": [("fit_at", 1)],
+        "name": "models_fit_ttl",
+        "expireAfterSeconds": 60 * 86400,
+    },
+)
+
+# PR #15B — combined index walk parallel to ALL_PR15A_INDEX_SPECS.
+# server.py:startup_event() iterates this to ensure the
+# prediction_models collection's indexes at boot.
+ALL_PR15B_INDEX_SPECS = (
+    (PREDICTION_MODELS_COLLECTION, PREDICTION_MODELS_INDEXES),
 )

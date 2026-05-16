@@ -955,6 +955,18 @@ async def compute_peer_stats_full(
         "daily_panel_provenance_checksum": None,
         "derived_lifecycle_stage_pct":     None,
         "cohort_derived_milestone_pct":    {},
+        # PR #15B Stage 2.A — Predictive Inference Engine forwarding.
+        # ``prediction_cache_compatible`` is the boolean pre-flight
+        # check the live mutation engine uses to skip cohorts that
+        # the prediction engine won't fit (e.g. cohort_unavailable).
+        # ``should_use_cold_start`` is the L10 sample_size<30
+        # pre-computation so the nightly cron can branch to cold-start
+        # without re-evaluating the boundary. ``pr15b_model_
+        # coefficients_hash`` reserves a join slot (initially None);
+        # the nightly refit cron writes the hash after fitting β.
+        "prediction_cache_compatible":     True,
+        "should_use_cold_start":           (sample_size < 30),
+        "pr15b_model_coefficients_hash":   None,
         # Carryover keys preserved from V2.3 shape so other code
         # (incremental refresh + persistence) keeps working:
         "borough":                     project.get("borough"),
@@ -1106,6 +1118,17 @@ def _assemble_cache(
         "cohort_derived_milestone_pct": peer_meta.get(
             "cohort_derived_milestone_pct",
         ) or {},
+        # PR #15B Stage 2.A — Predictive Inference Engine forwarding.
+        # See compute_peer_stats_full Step 7 for write-side semantics.
+        "prediction_cache_compatible": peer_meta.get(
+            "prediction_cache_compatible", True,
+        ),
+        "should_use_cold_start": peer_meta.get(
+            "should_use_cold_start", False,
+        ),
+        "pr15b_model_coefficients_hash": peer_meta.get(
+            "pr15b_model_coefficients_hash",
+        ),
         # Carry-forward keys (used by incremental refresh + persist):
         "borough":                     peer_meta.get("borough"),
         "bbl":                         project_bbl,

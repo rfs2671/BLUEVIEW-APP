@@ -864,3 +864,304 @@ def mock_nightly_cron_trigger(
                 p.stop()
             except Exception:
                 pass
+
+
+# ──────────────────────────────────────────────────────────────────
+# PR #15B — Predictive Inference Engine fixture helpers
+# ──────────────────────────────────────────────────────────────────
+
+
+def seed_daily_panels_fixture(
+    db,
+    *,
+    project_id: str,
+    cohort_bbls: Optional[List[str]] = None,
+    n_days: int = 540,
+    beta_true: Optional[Dict[str, float]] = None,
+    feature_dist: Optional[Dict[str, Tuple[float, float]]] = None,
+    seed: int = 42,
+    now: Optional[datetime] = None,
+) -> int:
+    """PR #15B — bulk-insert deterministic daily_panels rows for
+    sklearn fit tests.
+
+    Generates panel rows with 5-feature x_d vectors and binary
+    outcome_violation_d via a logistic-link with known ``beta_true``
+    so tests can recover the coefficients within ±0.1 via sklearn
+    fit on the seeded rows.
+
+    Default beta_true (deterministic — used by every PR #15B test
+    that wants known-recoverable coefficients):
+      intercept                       = -2.5
+      active_swo_flag                 =  1.2
+      complaint_velocity_14d          =  0.30
+      days_since_last_violation       = -0.02
+      derived_lifecycle_stage_pct     =  0.01
+      district_caseload_proxy_days    =  0.05
+
+    Returns count inserted. Outcomes are right-censored for trailing
+    7 days per PR #15A T5.
+    """
+    rng = random.Random(seed)
+    cur_now = now or datetime(2026, 5, 15, tzinfo=timezone.utc)
+    beta = beta_true or {
+        "intercept":                    -2.5,
+        "active_swo_flag":               1.2,
+        "complaint_velocity_14d":        0.30,
+        "days_since_last_violation":    -0.02,
+        "derived_lifecycle_stage_pct":   0.01,
+        "district_caseload_proxy_days":  0.05,
+    }
+    dist = feature_dist or {
+        "active_swo_flag":               (0.0, 1.0),     # bernoulli p=0.2 below
+        "complaint_velocity_14d":        (1.5, 1.5),     # mean, sigma
+        "days_since_last_violation":     (40.0, 25.0),   # mean, sigma; clamp [0, 90]
+        "derived_lifecycle_stage_pct":   (50.0, 25.0),   # mean, sigma; clamp [0, 100]
+        "district_caseload_proxy_days":  (7.0, 3.0),     # mean, sigma
+    }
+    bbl_pool = cohort_bbls or [f"3010{i:06d}" for i in range(20)]
+
+    inserted: List[Dict[str, Any]] = []
+    for d in range(n_days):
+        day = cur_now - timedelta(days=(n_days - 1 - d))
+        for bbl in bbl_pool:
+            swo = 1 if rng.random() < 0.2 else 0
+            vel = max(0, rng.gauss(*dist["complaint_velocity_14d"]))
+            dsv = max(0, min(90, rng.gauss(*dist["days_since_last_violation"])))
+            lcp = max(0, min(100, rng.gauss(*dist["derived_lifecycle_stage_pct"])))
+            cdp = max(0, rng.gauss(*dist["district_caseload_proxy_days"]))
+            # logistic outcome
+            z = (beta["intercept"]
+                 + beta["active_swo_flag"] * swo
+                 + beta["complaint_velocity_14d"] * vel
+                 + beta["days_since_last_violation"] * dsv
+                 + beta["derived_lifecycle_stage_pct"] * lcp
+                 + beta["district_caseload_proxy_days"] * cdp)
+            p = 1.0 / (1.0 + 2.718281828 ** (-z))
+            # outcome_d_to_d_plus_7: censor trailing 7 days
+            is_trailing_7d = (cur_now - day).days < 7
+            outcome = None if is_trailing_7d else (rng.random() < p)
+            inserted.append({
+                "project_id": project_id,
+                "cohort_member_bbl": bbl,
+                "calendar_date": day.date().isoformat(),
+                "panel_day_index": d,
+                "built_at": cur_now,
+                "x_features": {
+                    "active_swo_flag":              swo,
+                    "complaint_velocity_14d":       vel,
+                    "days_since_last_violation":    dsv,
+                    "derived_lifecycle_stage_pct":  lcp,
+                    "district_caseload_proxy_days": cdp,
+                },
+                "outcome_violation_d_to_d_plus_7": outcome,
+                "sample_weight": 1.0,
+                "cohort_segment": "modern",
+                "panel_schema_version": "pr15a_v1",
+            })
+
+    if getattr(db, "daily_panels", None) is not None:
+        db.daily_panels.docs.extend(inserted)
+    return len(inserted)
+
+
+def seed_prediction_models_fixture(
+    db,
+    *,
+    project_id: str,
+    beta: Dict[str, float],
+    mu: Optional[Dict[str, float]] = None,
+    sigma: Optional[Dict[str, float]] = None,
+    fit_at: Optional[datetime] = None,
+    is_cold_start_fallback: bool = False,
+    borough_baseline_probs: Optional[Dict[str, float]] = None,
+) -> str:
+    """PR #15B — insert one prediction_models doc.
+
+    Returns the synthetic model_coefficients_hash so callers can
+    cross-reference with prediction_cache or validation_ledger
+    snapshots.
+    """
+    import hashlib
+    cur_at = fit_at or datetime(2026, 5, 15, tzinfo=timezone.utc)
+    mu = mu or {
+        "active_swo_flag":               0.20,
+        "complaint_velocity_14d":        1.50,
+        "days_since_last_violation":     40.0,
+        "derived_lifecycle_stage_pct":   50.0,
+        "district_caseload_proxy_days":  7.0,
+    }
+    sigma = sigma or {
+        "active_swo_flag":               0.40,
+        "complaint_velocity_14d":        1.50,
+        "days_since_last_violation":     25.0,
+        "derived_lifecycle_stage_pct":   25.0,
+        "district_caseload_proxy_days":  3.0,
+    }
+    serialized = (
+        repr(sorted(beta.items())) + repr(sorted(mu.items())) + repr(sorted(sigma.items()))
+    )
+    coeff_hash = hashlib.sha1(serialized.encode("utf-8")).hexdigest()
+    doc = {
+        "project_id":                  project_id,
+        "fit_at":                      cur_at,
+        "beta_coefficients":           dict(beta),
+        "panel_mu":                    dict(mu),
+        "panel_sigma":                 dict(sigma),
+        "cohort_segment_mix":          {"modern": 60, "legacy": 20},
+        "sample_weights_applied":      {"modern": 1.0, "legacy": 0.4},
+        "training_n_observations":     2550,
+        "training_brier_score":        0.08,
+        "training_log_loss":           0.25,
+        "model_coefficients_hash":     coeff_hash,
+        "is_cold_start_fallback":      is_cold_start_fallback,
+        "borough_baseline_p_7d":       (borough_baseline_probs or {}).get("7d"),
+        "borough_baseline_p_14d":      (borough_baseline_probs or {}).get("14d"),
+        "borough_baseline_p_30d":      (borough_baseline_probs or {}).get("30d"),
+        "panel_schema_version":        "pr15a_v1",
+        "model_schema_version":        "pr15b_v1",
+    }
+    if getattr(db, "prediction_models", None) is not None:
+        db.prediction_models.docs.append(doc)
+    return coeff_hash
+
+
+def mock_sklearn_fit_predict(
+    panel_rows: List[Dict[str, Any]],
+    *,
+    horizon_days: int = 7,
+    sample_weights: Optional[Dict[str, float]] = None,
+) -> Optional[Dict[str, Any]]:
+    """PR #15B T1 — REAL sklearn LogisticRegression wrapped for test
+    ergonomics. NOT a mock — uses sklearn.linear_model.LogisticRegression
+    with sample_weight per Lock B.
+
+    Returns ``None`` if sklearn is not installed (Stage 2.B will skip
+    the dependent tests). Returns dict with keys:
+      • beta:    intercept + 5 feature coefficients
+      • mu:      training-set mean per feature (z-score standardization)
+      • sigma:   training-set stddev per feature
+      • training_n: int — non-null outcome rows used
+      • training_brier: float — in-sample Brier score
+    """
+    try:
+        import numpy as np
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+    except ImportError:
+        return None
+
+    weights = sample_weights or {"modern": 1.0, "legacy": 0.4}
+    feature_keys = (
+        "active_swo_flag", "complaint_velocity_14d",
+        "days_since_last_violation", "derived_lifecycle_stage_pct",
+        "district_caseload_proxy_days",
+    )
+
+    X = []
+    y = []
+    w = []
+    for r in panel_rows:
+        outcome = r.get("outcome_violation_d_to_d_plus_7")
+        if outcome is None:
+            continue
+        feats = r.get("x_features") or {}
+        X.append([float(feats.get(k, 0.0)) for k in feature_keys])
+        y.append(1 if outcome else 0)
+        w.append(weights.get(r.get("cohort_segment", "modern"), 1.0))
+
+    if len(X) < 30 or len(set(y)) < 2:
+        return None
+
+    X_arr = np.array(X, dtype=float)
+    y_arr = np.array(y, dtype=int)
+    w_arr = np.array(w, dtype=float)
+
+    scaler = StandardScaler().fit(X_arr)
+    X_std = scaler.transform(X_arr)
+
+    clf = LogisticRegression(solver="lbfgs", max_iter=200)
+    clf.fit(X_std, y_arr, sample_weight=w_arr)
+
+    p_pred = clf.predict_proba(X_std)[:, 1]
+    brier = float(np.mean((p_pred - y_arr) ** 2))
+
+    beta = {
+        "intercept":                    float(clf.intercept_[0]),
+        "active_swo_flag":              float(clf.coef_[0][0]),
+        "complaint_velocity_14d":       float(clf.coef_[0][1]),
+        "days_since_last_violation":    float(clf.coef_[0][2]),
+        "derived_lifecycle_stage_pct":  float(clf.coef_[0][3]),
+        "district_caseload_proxy_days": float(clf.coef_[0][4]),
+    }
+    mu = {k: float(scaler.mean_[i]) for i, k in enumerate(feature_keys)}
+    sigma = {k: float(scaler.scale_[i]) for i, k in enumerate(feature_keys)}
+    return {
+        "beta":              beta,
+        "mu":                mu,
+        "sigma":             sigma,
+        "training_n":        len(X),
+        "training_brier":    brier,
+    }
+
+
+def seed_cold_start_borough_actuarial_data(
+    socrata,
+    *,
+    borough: str = "BROOKLYN",
+    project_type: str = "New Building",
+    n_permits: int = 100,
+    n_severe_ecb: int = 5,
+    window_start: Optional[datetime] = None,
+    window_end: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """PR #15B L4 — seed deterministic mock 6bgk-3dad + rbx6-tga4
+    rows so a borough actuarial hazard helper computes to a known
+    value:
+
+      annual_hazard = n_severe_ecb / n_permits
+      7-day rate    = annual_hazard * (7/365)
+
+    Returns the expected hazard rates so tests can assert exact
+    match (no fuzzy bounds).
+    """
+    cur_end = window_end or datetime(2026, 5, 15, tzinfo=timezone.utc)
+    cur_start = window_start or (cur_end - timedelta(days=365))
+
+    # Seed permits — rbx6-tga4 DOB NOW with borough + job_type
+    for i in range(n_permits):
+        seed_dob_now_for_bin(
+            socrata,
+            bin=f"3050{i:06d}",
+            work_type="General Construction",
+            filing_reason="Initial Permit",
+            borough=borough,
+            issued_date=(cur_start + timedelta(days=i * 3)).date().isoformat(),
+        )
+
+    # Seed ECB violations — 6bgk-3dad with severity in
+    # SEVERE_ECB_SEVERITIES. Date format: YYYYMMDD numeric.
+    for i in range(n_severe_ecb):
+        ecb_day = cur_start + timedelta(days=30 + i * 50)
+        socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [{
+            "bin":           f"3050{i:06d}",
+            "ecb_number":    f"ECB-COLD-{i:05d}",
+            "severity":      "CLASS - 1",
+            "issue_date":    ecb_day.strftime("%Y%m%d"),
+            "borough":       borough,
+            "violation_status": "ACTIVE",
+        }])
+
+    annual_hazard = (n_severe_ecb / n_permits) if n_permits else 0.0
+    return {
+        "borough":         borough,
+        "project_type":    project_type,
+        "n_permits":       n_permits,
+        "n_severe_ecb":    n_severe_ecb,
+        "annual_hazard":   annual_hazard,
+        "expected_p_7d":   annual_hazard * (7 / 365.0),
+        "expected_p_14d":  annual_hazard * (14 / 365.0),
+        "expected_p_30d":  annual_hazard * (30 / 365.0),
+        "window_start":    cur_start,
+        "window_end":      cur_end,
+    }

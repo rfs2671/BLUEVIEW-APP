@@ -25001,6 +25001,100 @@ async def startup_event():
                 },
             )
 
+    # PR #15B — prediction_models indexes (Stage 3.A — Lock L9).
+    # 3 indexes covering: latest-fit-per-project (live mutation hot
+    # path), model-hash join key for the validation ledger, and a
+    # 60-day TTL for rolling β history.
+    for _coll_name, _idx_specs in _stat_engine.ALL_PR15B_INDEX_SPECS:
+        _coll = db[_coll_name]
+        for _idx_spec in _idx_specs:
+            await _ensure_index_resilient(
+                _coll,
+                keys=_idx_spec["keys"],
+                name=_idx_spec["name"],
+                **{
+                    k: v for k, v in _idx_spec.items()
+                    if k not in ("keys", "name")
+                },
+            )
+
+    # PR #15B Stage 3.B — Predictive Inference Engine crons.
+    #
+    # Two cron jobs, registered on the existing APScheduler:
+    #
+    #   • pr15b_nightly_panel_refit (2:45 AM ET) — walks active
+    #     projects, fits β per project via sklearn LogisticRegression
+    #     on daily_panels rows, writes prediction_models +
+    #     prediction_cache + prediction_validation_ledger entries.
+    #     Cold-start branch (sample_size<30) writes borough actuarial
+    #     baselines instead of fitting β.
+    #
+    #   • pr15b_validation_audit_sweep (4:15 AM ET) — walks the
+    #     prediction_validation_ledger entries whose target_horizon_at
+    #     has passed, scores observed_outcome from severe ECB
+    #     violations, computes brier_score_delta.
+    #
+    # L12 lock: both crons isolate failures to the 4 new collection
+    # surfaces (daily_panels, prediction_models, validation_ledger,
+    # projects.prediction_cache). They NEVER mutate peer_stats_cache
+    # or risk_score_log even on per-project exceptions.
+    async def _pr15b_nightly_refit_tick():
+        try:
+            from lib.statistical_engine.socrata_client import (
+                SocrataClient,
+            )
+            from lib.server_http import ServerHttpClient
+            async with ServerHttpClient(timeout=10.0) as _http:
+                _socrata = SocrataClient(_http)
+                stats = await _stat_engine.nightly_refit_for_all_projects(
+                    db, _socrata,
+                )
+            logger.info(f"[pr15b_nightly_refit] tick complete: {stats!r}")
+        except Exception as e:
+            logger.error(
+                f"[pr15b_nightly_refit] tick crashed: {e!r}",
+                exc_info=True,
+            )
+
+    async def _pr15b_validation_audit_tick():
+        try:
+            from lib.statistical_engine.socrata_client import (
+                SocrataClient,
+            )
+            from lib.server_http import ServerHttpClient
+            async with ServerHttpClient(timeout=10.0) as _http:
+                _socrata = SocrataClient(_http)
+                stats = await _stat_engine.validation_audit_sweep(
+                    db, _socrata,
+                )
+            logger.info(f"[pr15b_validation_audit] tick complete: {stats!r}")
+        except Exception as e:
+            logger.error(
+                f"[pr15b_validation_audit] tick crashed: {e!r}",
+                exc_info=True,
+            )
+
+    scheduler.add_job(
+        _pr15b_nightly_refit_tick,
+        CronTrigger(hour=2, minute=45, timezone="America/New_York"),
+        id="pr15b_nightly_panel_refit",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _pr15b_validation_audit_tick,
+        CronTrigger(hour=4, minute=15, timezone="America/New_York"),
+        id="pr15b_validation_audit_sweep",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "🔮 PR #15B prediction engine crons scheduled "
+        "(refit 2:45 AM ET, audit 4:15 AM ET)"
+    )
+
     # V2.3 Commit 5 — compound index on peer_stats_cache for the
     # refresh cron's eligibility query. Status has small cardinality
     # (~4 values: ready / pending / failed / absent), so the

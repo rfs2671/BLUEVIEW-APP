@@ -128,6 +128,41 @@ from lib.statistical_engine.baselines import (  # noqa: F401
     # PR #14I — borough name normalization for DOB-dataset queries
     _normalize_borough_to_full_name,
 )
+# PR #15B — Predictive Inference Engine live-mutation pure helpers.
+# Stage 3.A landed the stateless surface; Stage 3.B will add the
+# async DB/Socrata-touching helpers (compute_x_now_for_project,
+# predict_for_project_nightly, predict_for_project_live, etc.).
+from lib.statistical_engine.live_mutation import (  # noqa: F401
+    winsorize_x_now,
+    should_fire_ensemble,
+    combine_ensemble_probs,
+    is_prediction_cache_valid,
+    is_prediction_cache_stale,
+    should_use_cold_start_fallback,
+    cohort_confidence_tier,
+    format_anchored_baseline_label,
+    build_prediction_cache,
+    build_cold_start_prediction_cache,
+    _model_coefficients_hash,
+    PR15B_PREDICTION_CACHE_SCHEMA_VERSION,
+    PREDICTION_CACHE_STALE_THRESHOLD_SECONDS,
+    COLD_START_SAMPLE_SIZE_FLOOR,
+    ENSEMBLE_BRIER_DIVERGENCE_THRESHOLD,
+    SAMPLE_WEIGHT_MODERN,
+    SAMPLE_WEIGHT_LEGACY,
+    STATE_VECTOR_FEATURES,
+    # PR #15B Stage 3.B — stateful functions
+    compute_x_now_for_project,
+    compute_borough_actuarial_hazard,
+    fit_project_panel,
+    refit_project_cold_start,
+    predict_for_project_nightly,
+    predict_for_project_live,
+    serve_prediction_cache_with_optional_refresh,
+    nightly_refit_for_all_projects,
+    nightly_refit_tick,
+    validation_audit_sweep,
+)
 # PR #15A — Predictive Inference Engine Phase 1 surface.
 from lib.statistical_engine.daily_panel import (  # noqa: F401
     compute_daily_panel,
@@ -209,6 +244,8 @@ from lib.statistical_engine.schema import (  # noqa: F401
     # PR #15A — Predictive Inference Engine collections
     DAILY_PANELS_COLLECTION,
     PREDICTION_VALIDATION_LEDGER_COLLECTION,
+    # PR #15B — prediction_models collection
+    PREDICTION_MODELS_COLLECTION,
     # Surviving index specs (consumed by server.py startup)
     PREDICTED_EVENTS_INDEXES,
     PREDICTION_OUTCOMES_INDEXES,
@@ -217,6 +254,9 @@ from lib.statistical_engine.schema import (  # noqa: F401
     DAILY_PANELS_INDEXES,
     PREDICTION_VALIDATION_LEDGER_INDEXES,
     ALL_PR15A_INDEX_SPECS,
+    # PR #15B — prediction_models indexes + aggregator
+    PREDICTION_MODELS_INDEXES,
+    ALL_PR15B_INDEX_SPECS,
     # Model + bands
     MODEL_VERSION,
     SCORE_BAND_GREEN,
