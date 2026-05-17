@@ -162,10 +162,25 @@ from lib.statistical_engine.live_mutation import (  # noqa: F401
     nightly_refit_for_all_projects,
     nightly_refit_tick,
     validation_audit_sweep,
+    # PR #15B.1 — Stage 3 production fixes
+    _extract_project_type,
+    derive_borough,
+    compute_cohort_baseline_rate,
+    _discrete_time_hazard_horizons,
+)
+# PR #15B.1 — re-exports for new helpers in socrata_client +
+# baselines + daily_panel.
+from lib.statistical_engine.socrata_client import (  # noqa: F401
+    _BIS_BORO_CODES,
+    borough_to_boro_code,
+)
+from lib.statistical_engine.baselines import (  # noqa: F401
+    bbl_to_borough,
 )
 # PR #15A — Predictive Inference Engine Phase 1 surface.
 from lib.statistical_engine.daily_panel import (  # noqa: F401
     compute_daily_panel,
+    nightly_panel_build_for_all_projects,
     derive_cohort_milestone_pct,
     compute_caseload_proxy_for_cd,
     compute_rolling_30d_brier,

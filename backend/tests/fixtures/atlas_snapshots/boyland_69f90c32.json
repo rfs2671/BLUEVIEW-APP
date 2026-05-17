@@ -1,0 +1,245 @@
+{
+  "_id": {
+    "$oid": "69f90c3209947c4967c8074f"
+  },
+  "name": "588 Thomas S Boyland Street, Brooklyn, NY, USA",
+  "location": "588 Thomas S Boyland Street, Brooklyn, NY, USA",
+  "address": "588 THOMAS S BOYLAND STREET, Brooklyn, NY, USA",
+  "status": "active",
+  "building_stories": null,
+  "building_height": null,
+  "footprint_sqft": null,
+  "has_full_demolition": false,
+  "demolition_stories": null,
+  "project_class": "regular",
+  "ssp_number": null,
+  "ssp_filing_date": null,
+  "ssp_expiration_date": null,
+  "lat": null,
+  "lng": null,
+  "geofence_radius_m": 150,
+  "gates": [],
+  "report_email_list": [],
+  "site_device_subfolders": [],
+  "trade_assignments": [],
+  "required_logbooks": [
+    "daily_jobsite",
+    "preshift_signin",
+    "toolbox_talk",
+    "subcontractor_orientation",
+    "osha_log"
+  ],
+  "nfc_tags": [],
+  "created_at": {
+    "$date": "2026-05-04T21:14:26.322Z"
+  },
+  "updated_at": {
+    "$date": "2026-05-04T21:14:26.322Z"
+  },
+  "dropbox_enabled": false,
+  "dropbox_folder": null,
+  "is_deleted": false,
+  "company_id": null,
+  "company_name": null,
+  "admin_id": "69928565130e5c42026637ba",
+  "nyc_bin": "3255362",
+  "bbl": "3035400025",
+  "bbl_source": "address_lookup_at_creation",
+  "bbl_last_synced": {
+    "$date": "2026-05-04T21:14:26.322Z"
+  },
+  "track_dob_status": true,
+  "suggested_class": "regular",
+  "first_poll_completed_at": {
+    "$date": "2026-05-05T13:38:12.153Z"
+  },
+  "first_poll_summary": {
+    "permits": 3,
+    "violations": 0,
+    "inspections": 6
+  },
+  "pluto_snapshot": {
+    "bbl": "3035400025",
+    "borough": "BK",
+    "bldgclass": "A5",
+    "landuse": "1",
+    "block": "3540",
+    "lot": "25",
+    "zipcode": "11212",
+    "cd": "316",
+    "yearbuilt": "1987",
+    "unitsres": "1",
+    "unitstotal": "1",
+    "numfloors": "2.0000000",
+    "bldgarea": "1116",
+    "lotarea": "3660"
+  },
+  "dob_extracted_scope": {
+    "story_count": null,
+    "dwelling_units": null,
+    "use_type": "other",
+    "enlargement": false,
+    "extracted_at": {
+      "$date": "2026-05-16T14:04:37.357Z"
+    }
+  },
+  "dob_job_snapshot": {
+    "source": "dob_now_primary",
+    "work_type": "Full Demolition",
+    "filing_reason": "Initial Permit",
+    "job_description": "Full demolition to a two story house",
+    "job_filing_number": "B01075600-I1",
+    "permit_status": "Permit Issued",
+    "borough": "BROOKLYN",
+    "issued_date": "2026-05-13T00:00:00.000",
+    "classified_at": "2026-05-16T14:04:37.357836+00:00"
+  },
+  "dob_project_type": "full_demo",
+  "peer_stats_cache": {
+    "computed_at": {
+      "$date": "2026-05-16T14:09:53.937Z"
+    },
+    "last_refreshed_at": {
+      "$date": "2026-05-16T14:09:53.937Z"
+    },
+    "peer_criteria": {
+      "dob_project_type": "full_demo",
+      "geography_tier_used": "borough_type",
+      "fallback_level": 4,
+      "low_confidence_flag": false,
+      "sample_size": 0,
+      "window_months": 36,
+      "completion_method": "job_status_x_or_u",
+      "cohort_filter_spec": {
+        "dob_project_type": "full_demo",
+        "bis_job_types": [
+          "DM"
+        ],
+        "building_class": "A5",
+        "building_class_demolished": "A5",
+        "story_count_demolished": null
+      },
+      "cohort_job_numbers": [],
+      "cohort_bins": [],
+      "cohort_median_duration_days": null,
+      "active_project": {
+        "completion_pct": 0.05,
+        "observed_milestones": [
+          "demolition",
+          "initial_permit_issued",
+          "initial_permit_issued"
+        ]
+      },
+      "lifecycle_skip_reason": "empty_cohort",
+      "cohort_unavailable": true,
+      "schema_version": "pr14e",
+      "cohort_source_segments": {
+        "modern_count": 0,
+        "legacy_count": 0,
+        "modern_window_months": 36,
+        "legacy_window_start": "2016-01-01",
+        "legacy_window_end": "2021-06-30"
+      },
+      "target_state": {
+        "bldgclass": "A5",
+        "numfloors": 2,
+        "numfloors_band": [
+          1,
+          3
+        ],
+        "source": "frozen_pluto_snapshot",
+        "band_widened": false,
+        "yearbuilt_filter_min": null,
+        "apply_yearbuilt_filter": false,
+        "numfloors_band_safety_cliff_applied": false
+      },
+      "cohort_member_provenance": [],
+      "daily_panel_provenance_checksum": null,
+      "derived_lifecycle_stage_pct": null,
+      "cohort_derived_milestone_pct": {},
+      "borough": null,
+      "bbl": "3035400025",
+      "peer_bbl_list": [],
+      "pluto_snapshot": {
+        "bbl": "3035400025",
+        "borough": "BK",
+        "bldgclass": "A5",
+        "landuse": "1",
+        "block": "3540",
+        "lot": "25",
+        "zipcode": "11212",
+        "cd": "316",
+        "yearbuilt": "1987",
+        "unitsres": "1",
+        "unitstotal": "1",
+        "numfloors": "2.0000000",
+        "bldgarea": "1116",
+        "lotarea": "3660"
+      },
+      "pluto_snapshot_refreshed_at": null,
+      "_peer_counts_by_dataset": {
+        "3h2n-5cm9": {},
+        "p937-wjvj": {},
+        "erm2-nwe9": {}
+      }
+    },
+    "events_window_start": {
+      "$date": "2024-05-16T14:09:53.937Z"
+    },
+    "events_window_end": {
+      "$date": "2026-05-16T14:09:53.937Z"
+    },
+    "violations": {
+      "available": false,
+      "unavailable_reason": "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+      "peer_data_dropped_in_pr": "v2.3-schema-corrections-hotfix"
+    },
+    "inspections": {
+      "available": true,
+      "n": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p75": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "project_count": 6,
+      "percentile_rank": 0.0,
+      "lifecycle_normalized_percentile": null
+    },
+    "complaints": {
+      "available": true,
+      "n": 0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p75": 0.0,
+      "p90": 0.0,
+      "p95": 0.0,
+      "max": 0.0,
+      "project_count": 12,
+      "percentile_rank": 0.0,
+      "lifecycle_normalized_percentile": null
+    },
+    "status": "ready",
+    "error_message": null
+  },
+  "prediction_cache": {
+    "prob_violation_7d": 0.0,
+    "prob_violation_14d": 0.0,
+    "prob_violation_30d": 0.0,
+    "anchored_baseline_prob_14d": 0.0,
+    "anchored_baseline_label": "BROOKLYN New Building macro baseline",
+    "cohort_tier_utilized": "borough_baseline",
+    "cohort_sample_size": 0,
+    "low_confidence_flag": true,
+    "is_cold_start": true,
+    "lifecycle_stage_pct": null,
+    "district_caseload_proxy_days": null,
+    "model_coefficients_hash": null,
+    "fit_at": null,
+    "last_validated_timestamp": {
+      "$date": "2026-05-16T20:23:57.245Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}

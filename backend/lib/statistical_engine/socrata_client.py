@@ -100,6 +100,48 @@ ALL_DATASET_IDS = (
 )
 
 
+# ── PR #15B.1 B2a — BIS-style boro numeric codes ─────────────────
+#
+# 6bgk-3dad (DOB ECB Violations) is a BIS-derived dataset. It uses
+# the BIS convention of numeric boro codes (1-5), NOT the DOB NOW
+# convention of full uppercase borough names ("BROOKLYN"). PR #15B
+# shipped with WHERE borough = 'BROOKLYN' which returned HTTP 400
+# (No such column: borough) for every borough actuarial call —
+# 27 production projects defaulted to cold-start with zero baseline.
+#
+# Stage 1 probe receipts (PR #15B.1 prod diagnostic):
+#   • Probe A.3: boro distribution shows 1/2/3/4/5 (and one stale 6)
+#   • Probe A.4: cross-reference boro='3' + respondent_city='BROOKLYN'
+#     → confirms 3 == Brooklyn
+#   • Probe A.5: corrected query "boro='3'" returns 409,220 rows / HTTP 200
+#
+# Other DOB datasets (rbx6-tga4, pkdm-hqz6, eabe-havv, erm2-nwe9)
+# continue to use full uppercase names per PR #14I. This mapping is
+# specific to BIS-derived datasets.
+
+_BIS_BORO_CODES = {
+    "MANHATTAN":     "1",
+    "BRONX":         "2",
+    "BROOKLYN":      "3",
+    "QUEENS":        "4",
+    "STATEN ISLAND": "5",
+}
+
+
+def borough_to_boro_code(borough_name: Optional[str]) -> Optional[str]:
+    """Convert a full-name borough ("BROOKLYN") to BIS numeric code
+    ("3") for 6bgk-3dad SoQL queries. Returns None for missing or
+    unknown input (callers decide whether to skip the query or
+    default to a borough).
+
+    PR #15B.1 B2a — wraps _BIS_BORO_CODES with case/whitespace
+    normalization so callers don't need to pre-clean their input.
+    """
+    if not borough_name:
+        return None
+    return _BIS_BORO_CODES.get(borough_name.upper().strip())
+
+
 # ── Exception type ────────────────────────────────────────────────
 
 

@@ -1,0 +1,786 @@
+{
+  "_id": {
+    "$oid": "69f8fb5e9429c5be4b2fcb66"
+  },
+  "name": "638 Lafayette Avenue, Brooklyn, NY, USA",
+  "location": "638 Lafayette Avenue, Brooklyn, NY, USA",
+  "address": "638 LAFAYETTE AVENUE, Brooklyn, NY, USA",
+  "status": "active",
+  "building_stories": null,
+  "building_height": null,
+  "footprint_sqft": null,
+  "has_full_demolition": false,
+  "demolition_stories": null,
+  "project_class": "regular",
+  "ssp_number": null,
+  "ssp_filing_date": null,
+  "ssp_expiration_date": null,
+  "lat": null,
+  "lng": null,
+  "geofence_radius_m": 150,
+  "gates": [],
+  "report_email_list": [],
+  "site_device_subfolders": [],
+  "trade_assignments": [],
+  "required_logbooks": [
+    "daily_jobsite",
+    "preshift_signin",
+    "toolbox_talk",
+    "subcontractor_orientation",
+    "osha_log"
+  ],
+  "nfc_tags": [],
+  "created_at": {
+    "$date": "2026-05-04T20:02:38.235Z"
+  },
+  "updated_at": {
+    "$date": "2026-05-04T20:03:23.314Z"
+  },
+  "dropbox_enabled": false,
+  "dropbox_folder": null,
+  "is_deleted": false,
+  "company_id": null,
+  "company_name": null,
+  "admin_id": "69928565130e5c42026637ba",
+  "nyc_bin": "3418259",
+  "bbl": "3017890032",
+  "bbl_source": "address_lookup_at_creation",
+  "bbl_last_synced": {
+    "$date": "2026-05-04T20:02:38.235Z"
+  },
+  "track_dob_status": true,
+  "suggested_class": "regular",
+  "first_poll_completed_at": {
+    "$date": "2026-05-05T13:38:05.431Z"
+  },
+  "first_poll_summary": {
+    "permits": 18,
+    "violations": 36,
+    "inspections": 109
+  },
+  "dob_extracted_scope": {},
+  "dob_job_snapshot": {
+    "source": "bis_fallback",
+    "bin": "3418259",
+    "job_number": "320709113",
+    "job_type": "NB",
+    "building_class": "C2",
+    "borough": "BROOKLYN",
+    "job_status": "R",
+    "job_status_descrp": "PERMIT ISSUED - ENTIRE JOB/WORK",
+    "pre__filing_date": "02/04/2013",
+    "fully_permitted": "05/14/2013",
+    "latest_action_date": "05/14/2013",
+    "classified_at": "2026-05-15T21:31:27.800182+00:00"
+  },
+  "dob_project_type": "new_building",
+  "peer_stats_cache": {
+    "computed_at": {
+      "$date": "2026-05-16T14:03:46.465Z"
+    },
+    "last_refreshed_at": {
+      "$date": "2026-05-16T14:03:46.465Z"
+    },
+    "peer_criteria": {
+      "dob_project_type": "new_building",
+      "geography_tier_used": "borough_type",
+      "fallback_level": 4,
+      "low_confidence_flag": true,
+      "sample_size": 51,
+      "window_months": 36,
+      "completion_method": "c_of_o_final",
+      "cohort_filter_spec": {
+        "dob_project_type": "new_building",
+        "bis_job_types": [
+          "NB"
+        ],
+        "building_class": "C2",
+        "story_count_band": null,
+        "dwelling_units_band": [
+          4,
+          8
+        ]
+      },
+      "cohort_job_numbers": [
+        "322071690",
+        "B00682883",
+        "B08047782",
+        "301985412",
+        "321195336",
+        "321191456",
+        "321536575",
+        "322031145",
+        "321590907",
+        "321599043",
+        "321713259",
+        "321596787",
+        "B00490362",
+        "321193560",
+        "B08047782",
+        "321195336",
+        "321211372",
+        "321260069",
+        "322031145",
+        "321713507",
+        "321191447",
+        "B00653652",
+        "B00704728",
+        "321211372",
+        "321713240",
+        "321596787",
+        "321974388",
+        "321789418",
+        "B08004511",
+        "321958850",
+        "321194186",
+        "321755864",
+        "321713507",
+        "321599043",
+        "B00682883",
+        "B00670679",
+        "B00561243",
+        "B00670679",
+        "321195238",
+        "321195238",
+        "321193560",
+        "B00704728",
+        "321260069",
+        "321590907",
+        "321387094",
+        "321937400",
+        "321072361",
+        "322061353",
+        "321807988",
+        "321591899",
+        "340798355"
+      ],
+      "cohort_bins": [
+        "3401198",
+        "3111310",
+        "3009258",
+        "3429074",
+        "3424995",
+        "3425094",
+        "3061311",
+        "3429969",
+        "3429087",
+        "3428734",
+        "3323683",
+        "3428631",
+        "3056533",
+        "3424504",
+        "3009258",
+        "3424995",
+        "3430295",
+        "3152412",
+        "3429969",
+        "3036908",
+        "3425095",
+        "3429268",
+        "3427352",
+        "3430295",
+        "3323684",
+        "3428631",
+        "3425604",
+        "3428989",
+        "3129374",
+        "3400905",
+        "3424762",
+        "3423163",
+        "3036908",
+        "3428734",
+        "3429316",
+        "3068378",
+        "3322623",
+        "3068378",
+        "3425390",
+        "3425390",
+        "3424504",
+        "3427352",
+        "3152412",
+        "3429087",
+        "3066334",
+        "3428826",
+        "3426404",
+        "3429171",
+        "3049541",
+        "3428757",
+        "3429437"
+      ],
+      "cohort_median_duration_days": 1262.4932118055556,
+      "active_project": {
+        "completion_pct": 0.2,
+        "observed_milestones": [
+          "initial_permit_issued",
+          "initial_permit_issued",
+          "initial_permit_issued",
+          "foundation",
+          "initial_permit_issued",
+          "initial_permit_issued",
+          "foundation",
+          "initial_permit_issued",
+          "initial_permit_issued",
+          "initial_permit_issued",
+          "initial_permit_issued"
+        ]
+      },
+      "lifecycle_skip_reason": null,
+      "cohort_unavailable": false,
+      "schema_version": "pr14e",
+      "cohort_source_segments": {
+        "modern_count": 46,
+        "legacy_count": 5,
+        "modern_window_months": 36,
+        "legacy_window_start": "2016-01-01",
+        "legacy_window_end": "2021-06-30"
+      },
+      "target_state": {
+        "bldgclass": "C2",
+        "numfloors": 4,
+        "numfloors_band": [
+          3,
+          5
+        ],
+        "source": "pluto",
+        "band_widened": false,
+        "yearbuilt_filter_min": 2000,
+        "apply_yearbuilt_filter": true,
+        "numfloors_band_safety_cliff_applied": false
+      },
+      "cohort_member_provenance": [
+        {
+          "job_id": "322071690",
+          "bbl": "3037890054",
+          "bin": "3401198",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00682883",
+          "bbl": "3049480015",
+          "bin": "3111310",
+          "source": "modern"
+        },
+        {
+          "job_id": "B08047782",
+          "bbl": "3006400027",
+          "bin": "3009258",
+          "source": "modern"
+        },
+        {
+          "job_id": "301985412",
+          "bbl": "3071670128",
+          "bin": "3429074",
+          "source": "modern"
+        },
+        {
+          "job_id": "321195336",
+          "bbl": "3035670008",
+          "bin": "3424995",
+          "source": "modern"
+        },
+        {
+          "job_id": "321191456",
+          "bbl": "3038740012",
+          "bin": "3425094",
+          "source": "modern"
+        },
+        {
+          "job_id": "321536575",
+          "bbl": "3022420027",
+          "bin": "3061311",
+          "source": "modern"
+        },
+        {
+          "job_id": "322031145",
+          "bbl": "3051720051",
+          "bin": "3429969",
+          "source": "modern"
+        },
+        {
+          "job_id": "321590907",
+          "bbl": "3050070010",
+          "bin": "3429087",
+          "source": "modern"
+        },
+        {
+          "job_id": "321599043",
+          "bbl": "3018010001",
+          "bin": "3428734",
+          "source": "modern"
+        },
+        {
+          "job_id": "321713259",
+          "bbl": "3018600064",
+          "bin": "3323683",
+          "source": "modern"
+        },
+        {
+          "job_id": "321596787",
+          "bbl": "3003520150",
+          "bin": "3428631",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00490362",
+          "bbl": "3019730022",
+          "bin": "3056533",
+          "source": "modern"
+        },
+        {
+          "job_id": "321193560",
+          "bbl": "3036120005",
+          "bin": "3424504",
+          "source": "modern"
+        },
+        {
+          "job_id": "B08047782",
+          "bbl": "3006400027",
+          "bin": "3009258",
+          "source": "modern"
+        },
+        {
+          "job_id": "321195336",
+          "bbl": "3035670008",
+          "bin": "3424995",
+          "source": "modern"
+        },
+        {
+          "job_id": "321211372",
+          "bbl": "3031650022",
+          "bin": "3430295",
+          "source": "modern"
+        },
+        {
+          "job_id": "321260069",
+          "bbl": "3060170011",
+          "bin": "3152412",
+          "source": "modern"
+        },
+        {
+          "job_id": "322031145",
+          "bbl": "3051720051",
+          "bin": "3429969",
+          "source": "modern"
+        },
+        {
+          "job_id": "321713507",
+          "bbl": "3013810011",
+          "bin": "3036908",
+          "source": "modern"
+        },
+        {
+          "job_id": "321191447",
+          "bbl": "3038740012",
+          "bin": "3425095",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00653652",
+          "bbl": "3018880100",
+          "bin": "3429268",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00704728",
+          "bbl": "3049480014",
+          "bin": "3427352",
+          "source": "modern"
+        },
+        {
+          "job_id": "321211372",
+          "bbl": "3031650022",
+          "bin": "3430295",
+          "source": "modern"
+        },
+        {
+          "job_id": "321713240",
+          "bbl": "3018600066",
+          "bin": "3323684",
+          "source": "modern"
+        },
+        {
+          "job_id": "321596787",
+          "bbl": "3003520150",
+          "bin": "3428631",
+          "source": "modern"
+        },
+        {
+          "job_id": "321974388",
+          "bbl": "3039600046",
+          "bin": "3425604",
+          "source": "modern"
+        },
+        {
+          "job_id": "321789418",
+          "bbl": "3033680061",
+          "bin": "3428989",
+          "source": "modern"
+        },
+        {
+          "job_id": "B08004511",
+          "bbl": "3054580073",
+          "bin": "3129374",
+          "source": "modern"
+        },
+        {
+          "job_id": "321958850",
+          "bbl": "3033870014",
+          "bin": "3400905",
+          "source": "modern"
+        },
+        {
+          "job_id": "321194186",
+          "bbl": "3075600032",
+          "bin": "3424762",
+          "source": "modern"
+        },
+        {
+          "job_id": "321755864",
+          "bbl": "3048880031",
+          "bin": "3423163",
+          "source": "modern"
+        },
+        {
+          "job_id": "321713507",
+          "bbl": "3013810011",
+          "bin": "3036908",
+          "source": "modern"
+        },
+        {
+          "job_id": "321599043",
+          "bbl": "3018010001",
+          "bin": "3428734",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00682883",
+          "bbl": "3049480014",
+          "bin": "3429316",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00670679",
+          "bbl": "3027470016",
+          "bin": "3068378",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00561243",
+          "bbl": "3025750029",
+          "bin": "3322623",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00670679",
+          "bbl": "3027470016",
+          "bin": "3068378",
+          "source": "modern"
+        },
+        {
+          "job_id": "321195238",
+          "bbl": "3035670008",
+          "bin": "3425390",
+          "source": "modern"
+        },
+        {
+          "job_id": "321195238",
+          "bbl": "3035670008",
+          "bin": "3425390",
+          "source": "modern"
+        },
+        {
+          "job_id": "321193560",
+          "bbl": "3036120005",
+          "bin": "3424504",
+          "source": "modern"
+        },
+        {
+          "job_id": "B00704728",
+          "bbl": "3049480014",
+          "bin": "3427352",
+          "source": "modern"
+        },
+        {
+          "job_id": "321260069",
+          "bbl": "3060170011",
+          "bin": "3152412",
+          "source": "modern"
+        },
+        {
+          "job_id": "321590907",
+          "bbl": "3050070010",
+          "bin": "3429087",
+          "source": "modern"
+        },
+        {
+          "job_id": "321387094",
+          "bbl": "3026520034",
+          "bin": "3066334",
+          "source": "modern"
+        },
+        {
+          "job_id": "321937400",
+          "bbl": "3020460009",
+          "bin": "3428826",
+          "source": "modern"
+        },
+        {
+          "job_id": "321072361",
+          "bbl": null,
+          "bin": "3426404",
+          "source": "legacy"
+        },
+        {
+          "job_id": "322061353",
+          "bbl": null,
+          "bin": "3429171",
+          "source": "legacy"
+        },
+        {
+          "job_id": "321807988",
+          "bbl": null,
+          "bin": "3049541",
+          "source": "legacy"
+        },
+        {
+          "job_id": "321591899",
+          "bbl": null,
+          "bin": "3428757",
+          "source": "legacy"
+        },
+        {
+          "job_id": "340798355",
+          "bbl": null,
+          "bin": "3429437",
+          "source": "legacy"
+        }
+      ],
+      "daily_panel_provenance_checksum": null,
+      "derived_lifecycle_stage_pct": null,
+      "cohort_derived_milestone_pct": {},
+      "borough": null,
+      "bbl": "3017890032",
+      "peer_bbl_list": [
+        "3037890054",
+        "3049480015",
+        "3006400027",
+        "3071670128",
+        "3035670008",
+        "3038740012",
+        "3022420027",
+        "3051720051",
+        "3050070010",
+        "3018010001",
+        "3018600064",
+        "3003520150",
+        "3019730022",
+        "3036120005",
+        "3031650022",
+        "3060170011",
+        "3013810011",
+        "3018880100",
+        "3049480014",
+        "3018600066",
+        "3039600046",
+        "3033680061",
+        "3054580073",
+        "3033870014",
+        "3075600032",
+        "3048880031",
+        "3027470016",
+        "3025750029",
+        "3026520034",
+        "3020460009"
+      ],
+      "pluto_snapshot": {
+        "bbl": "3017890032",
+        "borough": "BK",
+        "bldgclass": "C2",
+        "landuse": "2",
+        "block": "1789",
+        "lot": "32",
+        "zipcode": "11216",
+        "cd": "303",
+        "yearbuilt": "2025",
+        "unitsres": "6",
+        "unitstotal": "6",
+        "numfloors": "4.0000000",
+        "bldgarea": "4692",
+        "lotarea": "2250"
+      },
+      "pluto_snapshot_refreshed_at": "2026-05-16T14:03:46.465442+00:00",
+      "_peer_counts_by_dataset": {
+        "3h2n-5cm9": {
+          "3037890054": 0,
+          "3049480015": 0,
+          "3006400027": 0,
+          "3071670128": 0,
+          "3035670008": 0,
+          "3038740012": 0,
+          "3022420027": 0,
+          "3051720051": 0,
+          "3050070010": 0,
+          "3018010001": 0,
+          "3018600064": 0,
+          "3003520150": 0,
+          "3019730022": 0,
+          "3036120005": 0,
+          "3031650022": 0,
+          "3060170011": 0,
+          "3013810011": 0,
+          "3018880100": 0,
+          "3049480014": 0,
+          "3018600066": 0,
+          "3039600046": 0,
+          "3033680061": 0,
+          "3054580073": 0,
+          "3033870014": 0,
+          "3075600032": 0,
+          "3048880031": 0,
+          "3027470016": 0,
+          "3025750029": 0,
+          "3026520034": 0,
+          "3020460009": 0
+        },
+        "p937-wjvj": {
+          "3037890054": 0,
+          "3049480015": 0,
+          "3006400027": 0,
+          "3071670128": 0,
+          "3035670008": 0,
+          "3038740012": 0,
+          "3022420027": 0,
+          "3051720051": 0,
+          "3050070010": 0,
+          "3018010001": 5,
+          "3018600064": 0,
+          "3003520150": 0,
+          "3019730022": 4,
+          "3036120005": 0,
+          "3031650022": 5,
+          "3060170011": 0,
+          "3013810011": 0,
+          "3018880100": 0,
+          "3049480014": 0,
+          "3018600066": 2,
+          "3039600046": 0,
+          "3033680061": 2,
+          "3054580073": 0,
+          "3033870014": 4,
+          "3075600032": 0,
+          "3048880031": 0,
+          "3027470016": 0,
+          "3025750029": 0,
+          "3026520034": 2,
+          "3020460009": 2
+        },
+        "erm2-nwe9": {
+          "3037890054": 3,
+          "3049480015": 2,
+          "3006400027": 7,
+          "3071670128": 1,
+          "3035670008": 0,
+          "3038740012": 4,
+          "3022420027": 1,
+          "3051720051": 3,
+          "3050070010": 4,
+          "3018010001": 19,
+          "3018600064": 2,
+          "3003520150": 8,
+          "3019730022": 1,
+          "3036120005": 8,
+          "3031650022": 9,
+          "3060170011": 5,
+          "3013810011": 7,
+          "3018880100": 0,
+          "3049480014": 5,
+          "3018600066": 1,
+          "3039600046": 17,
+          "3033680061": 2,
+          "3054580073": 1,
+          "3033870014": 3,
+          "3075600032": 1,
+          "3048880031": 6,
+          "3027470016": 13,
+          "3025750029": 18,
+          "3026520034": 4,
+          "3020460009": 6
+        }
+      }
+    },
+    "events_window_start": {
+      "$date": "2024-05-16T14:03:46.465Z"
+    },
+    "events_window_end": {
+      "$date": "2026-05-16T14:03:46.465Z"
+    },
+    "violations": {
+      "available": false,
+      "unavailable_reason": "bbl_keyed_peer_set_incompatible_with_bin_keyed_dataset",
+      "peer_data_dropped_in_pr": "v2.3-schema-corrections-hotfix"
+    },
+    "inspections": {
+      "available": true,
+      "n": 30.0,
+      "mean": 0.8666666666666667,
+      "median": 0.0,
+      "p75": 2.0,
+      "p90": 4.0,
+      "p95": 5.0,
+      "max": 5.0,
+      "project_count": 10,
+      "percentile_rank": 100.0,
+      "lifecycle_normalized_percentile": null
+    },
+    "complaints": {
+      "available": true,
+      "n": 30.0,
+      "mean": 5.366666666666666,
+      "median": 4.0,
+      "p75": 7.0,
+      "p90": 13.0,
+      "p95": 18.0,
+      "max": 19.0,
+      "project_count": 7,
+      "percentile_rank": 76.66666666666667,
+      "lifecycle_normalized_percentile": null
+    },
+    "status": "ready",
+    "error_message": null
+  },
+  "pluto_snapshot": {
+    "bbl": "3017890032",
+    "borough": "BK",
+    "bldgclass": "C2",
+    "landuse": "2",
+    "block": "1789",
+    "lot": "32",
+    "zipcode": "11216",
+    "cd": "303",
+    "yearbuilt": "2025",
+    "unitsres": "6",
+    "unitstotal": "6",
+    "numfloors": "4.0000000",
+    "bldgarea": "4692",
+    "lotarea": "2250"
+  },
+  "prediction_cache": {
+    "prob_violation_7d": 0.0,
+    "prob_violation_14d": 0.0,
+    "prob_violation_30d": 0.0,
+    "anchored_baseline_prob_14d": 0.0,
+    "anchored_baseline_label": "BROOKLYN New Building macro baseline",
+    "cohort_tier_utilized": "borough_baseline",
+    "cohort_sample_size": 51,
+    "low_confidence_flag": true,
+    "is_cold_start": true,
+    "lifecycle_stage_pct": null,
+    "district_caseload_proxy_days": null,
+    "model_coefficients_hash": null,
+    "fit_at": null,
+    "last_validated_timestamp": {
+      "$date": "2026-05-16T20:23:57.245Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}
