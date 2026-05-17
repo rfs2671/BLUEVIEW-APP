@@ -657,6 +657,51 @@ def _standardize(
     return out
 
 
+def _validate_x_now_with_fallback(
+    x_now: Dict[str, Any],
+    mu: Optional[Dict[str, float]],
+    project_id: str,
+) -> Dict[str, Any]:
+    """PR #15B.3 Site 3 — validate x_now features and fall back to
+    panel_mu when a feature is None / NaN / inf.
+
+    Without this guard, invalid feature values propagate through
+    ``_standardize`` (which silently maps None → 0.0 via its
+    TypeError catch but does NOT log) and into the discrete-time
+    hazard math, where Python's ``min(1.0, NaN)`` quirk produces
+    degenerate 1.0 output. Explicit detection + warning surfaces
+    the data-quality issue rather than masking it.
+
+    Fallback strategy:
+      • Invalid value → use ``mu[feature]`` (the training mean — a
+        sensible neutral value)
+      • If ``mu`` is None or missing the feature → fall back to 0.0
+        (cohort-naive default)
+      • Emit a ``[pr15b3]`` warning log per invalid feature
+
+    Returns a NEW dict with invalid values replaced. Original dict
+    is not mutated. Callers can compare ``out is x_now`` to detect
+    whether any fallback fired.
+    """
+    out = dict(x_now)
+    mu_safe = mu or {}
+    for k in STATE_VECTOR_FEATURES:
+        v = out.get(k)
+        is_invalid = (
+            v is None
+            or (isinstance(v, float) and (math.isnan(v) or math.isinf(v)))
+        )
+        if is_invalid:
+            fallback = mu_safe.get(k, 0.0)
+            logger.warning(
+                "[pr15b3] x_now[%r] invalid (got %r) for project=%s; "
+                "falling back to panel_mu=%r",
+                k, v, project_id, fallback,
+            )
+            out[k] = fallback
+    return out
+
+
 def _apply_beta_to_x_now(
     beta: Dict[str, float],
     x_now_standardized: Dict[str, float],
@@ -666,10 +711,19 @@ def _apply_beta_to_x_now(
     Returns a probability in [0, 1]. Uses STATE_VECTOR_FEATURES
     order for the dot product; intercept is the named ``intercept``
     coefficient.
+
+    PR #15B.3 Site 2 — defensive logit clip to [-10, +10]. Existing
+    ``_sigmoid`` clips at |z|>30 to avoid math.exp overflow; the
+    tighter ±10 clip here caps OUTPUT to [sigmoid(-10), sigmoid(10)]
+    = [4.54e-5, 0.99995] so out-of-distribution inputs never produce
+    degenerate exactly-0 or exactly-1 predictions (which surface in
+    the UI as meaningless "0%" or "100%" risk).
     """
     z = float(beta.get("intercept", 0.0))
     for k in STATE_VECTOR_FEATURES:
         z += float(beta.get(k, 0.0)) * float(x_now_standardized.get(k, 0.0))
+    # PR #15B.3 Site 2 — tighter clip than _sigmoid's ±30.
+    z = max(-10.0, min(10.0, z))
     return _sigmoid(z)
 
 
@@ -1026,8 +1080,35 @@ async def fit_project_panel(
     # Compute mu/sigma per feature for z-score standardization.
     mu_arr = X_arr.mean(axis=0)
     sigma_arr = X_arr.std(axis=0)
-    # Replace zero sigmas with 1.0 so /sigma doesn't div-by-zero;
-    # this is a no-op standardization for constant features.
+
+    # PR #15B.3 Site 1 — zero-variance feature detection.
+    # Any feature whose training-row std < 1e-6 is effectively
+    # constant. sklearn fits a coefficient for it anyway (using
+    # whatever direction the residual loss minimization happens to
+    # land on), but at predict time multiplying by a future
+    # standardized deviation produces nonsense. We:
+    #   (a) substitute panel_sigma=1.0 (sentinel — _standardize
+    #       returns the raw value unchanged for that feature)
+    #   (b) zero the learned coefficient post-fit to neutralize the
+    #       contribution at prediction time
+    # Both are observable post-fit: predict_for_project_live can
+    # check beta[feat]==0 to know the feature was uninformative.
+    ZERO_VARIANCE_THRESHOLD = 1e-6
+    zero_variance_features: List[str] = []
+    for i, k in enumerate(STATE_VECTOR_FEATURES):
+        if sigma_arr[i] < ZERO_VARIANCE_THRESHOLD:
+            zero_variance_features.append(k)
+            sigma_arr[i] = 1.0
+    if zero_variance_features:
+        logger.warning(
+            "[pr15b3] zero-variance features detected for project=%s: "
+            "%s. Setting panel_sigma=1.0 and forcing learned "
+            "coefficients to 0 post-fit.",
+            project_id, zero_variance_features,
+        )
+
+    # Replace any remaining zero sigmas with 1.0 (defense-in-depth;
+    # the threshold check above should have caught everything).
     sigma_safe = np.where(sigma_arr == 0, 1.0, sigma_arr)
     X_std = (X_arr - mu_arr) / sigma_safe
 
@@ -1039,6 +1120,13 @@ async def fit_project_panel(
     }
     for i, k in enumerate(STATE_VECTOR_FEATURES):
         beta[k] = float(clf.coef_[0][i])
+
+    # PR #15B.3 Site 1 — neutralize coefficients for zero-variance
+    # features so live mutation doesn't multiply by an arbitrary
+    # noise coefficient. Math: beta[feat]=0 means feature
+    # contributes 0 to the logit regardless of x_now value.
+    for k in zero_variance_features:
+        beta[k] = 0.0
 
     mu_dict    = {k: float(mu_arr[i])    for i, k in enumerate(STATE_VECTOR_FEATURES)}
     sigma_dict = {k: float(sigma_arr[i]) for i, k in enumerate(STATE_VECTOR_FEATURES)}
@@ -1300,6 +1388,14 @@ async def predict_for_project_nightly(
             x_now = None
         else:
             x_now = await compute_x_now_for_project(db, project, now=cur_now)
+            # PR #15B.3 Site 3 — defensive validation: invalid x_now
+            # features (None/NaN/inf from Socrata partial responses
+            # or upstream bugs) get substituted with panel_mu before
+            # standardization. Surfaces data-quality issues via
+            # [pr15b3] warning.
+            x_now = _validate_x_now_with_fallback(
+                x_now, model_doc.get("panel_mu"), project_id,
+            )
             x_std = _standardize(
                 x_now,
                 model_doc["panel_mu"],
@@ -1457,6 +1553,10 @@ async def predict_for_project_live(
     x_now = await compute_x_now_for_project(db, project, now=cur_now)
     mu = model_doc.get("panel_mu") or {}
     sigma = model_doc.get("panel_sigma") or {}
+    # PR #15B.3 Site 3 — fall back to panel_mu for invalid features
+    # BEFORE winsorize/standardize. See predict_for_project_nightly
+    # for the same guard pattern.
+    x_now = _validate_x_now_with_fallback(x_now, mu, project_id)
     clipped, _fields_clipped = winsorize_x_now(x_now, mu, sigma)
     x_std = _standardize(clipped, mu, sigma)
     beta = model_doc["beta_coefficients"]
@@ -1562,11 +1662,21 @@ async def nightly_refit_for_all_projects(
     socrata,
     *,
     now: Optional[datetime] = None,
-    concurrency_limit: int = 5,
+    concurrency_limit: int = 2,
 ) -> Dict[str, Any]:
     """Cron entry point — iterates active projects and runs
     predict_for_project_nightly per project with a concurrency
     semaphore to bound Socrata throughput.
+
+    PR #15B.3 Site 4 — concurrency reduced from 5 → 2. The refit
+    cron calls compute_x_now_for_project which hits live dob_logs
+    aggregates; parallel calls across 5 projects exposed a race
+    condition where Socrata rate-limiting / network jitter produced
+    partial results (None/NaN values surfaced by Site 3 fallback).
+    Sequential-ish processing (sem=2) ~doubles cron duration but
+    eliminates the contamination risk. nightly_panel_build keeps
+    semaphore=5 because compute_daily_panel writes daily_panels with
+    no live x_now contamination.
 
     L12 lock: NEVER touches peer_stats_cache or risk_score_log.
     Per-project failures are logged but do not cascade.
