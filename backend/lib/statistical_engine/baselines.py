@@ -1718,6 +1718,41 @@ def _normalize_borough_to_full_name(raw: Any) -> Optional[str]:
     return _BOROUGH_FULL_NAME_BY_CODE.get(s, s)
 
 
+# PR #15B.1 B6 — BBL first-character borough lookup. Defensive
+# fallback used by derive_borough() in live_mutation.py when
+# project.borough is None AND pluto_snapshot.borough is also missing.
+#
+# Stage 1 Probe C established this is the production reality: all 5
+# tracked projects have top-level borough=None. PR #14G/14I taught us
+# about borough format mismatches; PR #15B.1 adds the bbl-prefix
+# convention (standard NYC BBL semantics: first digit encodes borough).
+
+_BBL_PREFIX_BOROUGHS = {
+    "1": "MANHATTAN",
+    "2": "BRONX",
+    "3": "BROOKLYN",
+    "4": "QUEENS",
+    "5": "STATEN ISLAND",
+}
+
+
+def bbl_to_borough(bbl: Optional[str]) -> Optional[str]:
+    """Derive full-uppercase borough name from BBL first character.
+    Returns None for missing or malformed input (prefix not in 1-5).
+
+    PR #15B.1 B6 — defensive borough source when
+    pluto_snapshot.borough is also None. NYC BBL semantics:
+      1xxxxxxxxx → MANHATTAN
+      2xxxxxxxxx → BRONX
+      3xxxxxxxxx → BROOKLYN
+      4xxxxxxxxx → QUEENS
+      5xxxxxxxxx → STATEN ISLAND
+    """
+    if not bbl or not isinstance(bbl, str) or len(bbl) < 1:
+        return None
+    return _BBL_PREFIX_BOROUGHS.get(bbl[0])
+
+
 def _parse_socrata_yyyymmdd(value: Any) -> Optional[datetime]:
     """Parse the ``issue_date`` text column from dob_violations
     (3h2n-5cm9), which is a YYYYMMDD string like ``"20171227"``.

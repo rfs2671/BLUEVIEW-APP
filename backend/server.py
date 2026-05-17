@@ -25038,6 +25038,42 @@ async def startup_event():
     # surfaces (daily_panels, prediction_models, validation_ledger,
     # projects.prediction_cache). They NEVER mutate peer_stats_cache
     # or risk_score_log even on per-project exceptions.
+    #
+    # PR #15B.1 B1 — third cron: pr15a_nightly_panel_build (1:30 AM
+    # ET). Registered BEFORE the refit so source order reads
+    # build (1:30) → refit (2:45) → audit (4:15) top-to-bottom.
+    # Without this cron, daily_panels stays empty and every project
+    # falls through to cold-start (the bug Stage 1 Probe D confirmed).
+    async def _pr15a_nightly_panel_build_tick():
+        try:
+            from lib.statistical_engine.socrata_client import (
+                SocrataClient,
+            )
+            from lib.server_http import ServerHttpClient
+            async with ServerHttpClient(timeout=10.0) as _http:
+                _socrata = SocrataClient(_http)
+                stats = await _stat_engine.nightly_panel_build_for_all_projects(
+                    db, _socrata,
+                )
+            logger.info(
+                f"[pr15a_panel_build] tick complete: {stats!r}"
+            )
+        except Exception as e:
+            logger.error(
+                f"[pr15a_panel_build] tick crashed: {e!r}",
+                exc_info=True,
+            )
+
+    scheduler.add_job(
+        _pr15a_nightly_panel_build_tick,
+        CronTrigger(hour=1, minute=30, timezone="America/New_York"),
+        id="pr15a_nightly_panel_build",
+        replace_existing=True, max_instances=1, coalesce=True,
+    )
+    logger.info(
+        "🏗️ PR #15A panel-build cron scheduled (1:30 AM ET)"
+    )
+
     async def _pr15b_nightly_refit_tick():
         try:
             from lib.statistical_engine.socrata_client import (

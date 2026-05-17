@@ -1141,15 +1141,28 @@ def seed_cold_start_borough_actuarial_data(
 
     # Seed ECB violations — 6bgk-3dad with severity in
     # SEVERE_ECB_SEVERITIES. Date format: YYYYMMDD numeric.
+    # PR #15B.1 Stage 1 receipts: 6bgk-3dad uses `boro` (BIS numeric
+    # code) NOT `borough` (full name). Brooklyn = "3", Bronx = "2",
+    # etc. Field name corrected: `ecb_violation_number` NOT `ecb_number`.
+    # See lib/statistical_engine/socrata_client.py:_BIS_BORO_CODES.
+    _BORO_CODE_MAP = {
+        "MANHATTAN": "1", "BRONX": "2", "BROOKLYN": "3",
+        "QUEENS": "4", "STATEN ISLAND": "5",
+    }
+    boro_code = _BORO_CODE_MAP.get(borough.upper().strip(), "3")
     for i in range(n_severe_ecb):
         ecb_day = cur_start + timedelta(days=30 + i * 50)
         socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [{
-            "bin":           f"3050{i:06d}",
-            "ecb_number":    f"ECB-COLD-{i:05d}",
-            "severity":      "CLASS - 1",
-            "issue_date":    ecb_day.strftime("%Y%m%d"),
-            "borough":       borough,
-            "violation_status": "ACTIVE",
+            "bin":                  f"3050{i:06d}",
+            "ecb_violation_number": f"ECB-COLD-{i:05d}",
+            "severity":              "CLASS - 1",
+            "issue_date":            ecb_day.strftime("%Y%m%d"),
+            "boro":                  boro_code,
+            # Backward-compat: keep `borough` too so any consumer
+            # that still references it isn't surprised. PR #15B used
+            # this; PR #15B.1 corrected code reads `boro` instead.
+            "borough":               borough,
+            "violation_status":      "ACTIVE",
         }])
 
     annual_hazard = (n_severe_ecb / n_permits) if n_permits else 0.0

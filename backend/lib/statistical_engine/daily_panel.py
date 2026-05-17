@@ -1185,6 +1185,90 @@ async def compute_daily_panel(
     return panel_rows
 
 
+# ── PR #15B.1 B1 — nightly panel-build cron orchestrator ─────────
+
+
+async def nightly_panel_build_for_all_projects(
+    db: Any,
+    socrata: Any,
+    *,
+    now: Optional[datetime] = None,
+    concurrency_limit: int = 5,
+) -> Dict[str, Any]:
+    """PR #15B.1 B1 — cron entry at 1:30 AM ET (registered in
+    server.py:startup_event). Iterates active projects, invokes
+    compute_daily_panel for each project with a Semaphore bound on
+    Socrata concurrency.
+
+    Without this orchestrator, daily_panels stays empty in production
+    and every project's nightly refit falls through to cold-start.
+    Stage 1 Probe D confirmed 0 panel rows for all 5 tracked
+    projects post-PR #15B deploy.
+
+    L12 isolation: per-project try/except so one project's failure
+    never cascades. NEVER writes to peer_stats_cache or
+    risk_score_log — only daily_panels (via compute_daily_panel)
+    and the existing PR #15A peer_criteria checksum persistence.
+
+    Returns a summary dict: ``n_succeeded`` / ``n_failed`` /
+    ``n_rows_inserted`` / ``errors`` (per-project error strings).
+    """
+    import asyncio
+
+    cur_now = now or datetime.now(timezone.utc)
+
+    if getattr(db, "projects", None) is None:
+        return {"n_succeeded": 0, "n_failed": 0,
+                "n_rows_inserted": 0, "errors": []}
+
+    try:
+        projects = await db.projects.find({}).to_list(length=None)
+    except Exception as e:
+        logger.warning(
+            "[pr15a_panel_build] active projects fetch failed: %r", e,
+        )
+        return {"n_succeeded": 0, "n_failed": 0,
+                "n_rows_inserted": 0, "errors": [repr(e)]}
+
+    n_succeeded = 0
+    n_failed = 0
+    n_rows_inserted = 0
+    errors: List[str] = []
+    sem = asyncio.Semaphore(concurrency_limit)
+
+    async def _one(p: Dict[str, Any]) -> None:
+        nonlocal n_succeeded, n_failed, n_rows_inserted
+        pid = str(p.get("_id") or p.get("id") or "")
+        async with sem:
+            try:
+                # compute_daily_panel signature is (project, db,
+                # socrata, *, ...). Argument order matters — flip
+                # from nightly_refit_for_all_projects' convention.
+                rows = await compute_daily_panel(
+                    p, db, socrata, now=cur_now,
+                )
+                n_succeeded += 1
+                n_rows_inserted += len(rows or [])
+            except Exception as e:
+                logger.exception(
+                    "[pr15a_panel_build] failed for project=%s: %r",
+                    pid, e,
+                )
+                n_failed += 1
+                errors.append(f"{pid}: {e!r}")
+
+    await asyncio.gather(
+        *(_one(p) for p in projects),
+        return_exceptions=True,
+    )
+    return {
+        "n_succeeded":      n_succeeded,
+        "n_failed":         n_failed,
+        "n_rows_inserted":  n_rows_inserted,
+        "errors":           errors,
+    }
+
+
 def _same_calendar_day(dt: datetime, target: datetime) -> bool:
     """True iff dt and target are on the same UTC calendar day."""
     return (

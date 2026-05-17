@@ -102,7 +102,122 @@ STATE_VECTOR_FEATURES: Tuple[str, ...] = (
 )
 
 
-# ── Pure helpers ──────────────────────────────────────────────────
+# ── PR #15B.1 — pure helpers (B3, B6, T1, T2) ─────────────────────
+
+
+def _extract_project_type(project: Dict[str, Any]) -> str:
+    """PR #15B.1 B3 + Q3 — extract project_type from Atlas project
+    doc. Replaces PR #15B's broken `project.get('dob_type_classification')`
+    lookup at 2 call sites.
+
+    Source priority (Stage 1 Probe C confirmed shape on 5 real
+    projects):
+      1. project['dob_project_type']                         (top-level)
+      2. project['peer_stats_cache']['peer_criteria']['dob_project_type']
+      3. 'New Building' (default)
+    """
+    top = project.get("dob_project_type")
+    if top:
+        return str(top)
+    pc = (project.get("peer_stats_cache") or {}).get("peer_criteria") or {}
+    nested = pc.get("dob_project_type")
+    if nested:
+        return str(nested)
+    return "New Building"
+
+
+def derive_borough(project: Dict[str, Any]) -> Optional[str]:
+    """PR #15B.1 B6 — extract full-uppercase borough name from Atlas
+    project doc. Source priority:
+
+      1. project['borough']                                  (top-level)
+      2. _normalize_borough_to_full_name(pluto_snapshot.borough)
+         ("BK" → "BROOKLYN" per PR #14I)
+      3. bbl_to_borough(bbl or nyc_bbl)
+         (bbl[0] prefix; PR #15B.1 B6)
+
+    Returns None when none resolve — caller decides default (usually
+    "BROOKLYN" with a warning, or skip the borough actuarial call).
+
+    Stage 1 Probe C confirmed all 5 production projects carry
+    borough=None at top-level — PR #15B's code defaulted EVERY project
+    to "BROOKLYN", including the 2 Bronx projects.
+    """
+    # Lazy import to avoid module-level cycle.
+    from lib.statistical_engine.baselines import (
+        _normalize_borough_to_full_name,
+        bbl_to_borough,
+    )
+    direct = project.get("borough")
+    if direct and isinstance(direct, str) and direct.strip():
+        return direct.upper().strip()
+    pluto = project.get("pluto_snapshot") or {}
+    pluto_b = pluto.get("borough") if isinstance(pluto, dict) else None
+    if pluto_b:
+        normalized = _normalize_borough_to_full_name(pluto_b)
+        if normalized:
+            return normalized
+    bbl = project.get("bbl") or project.get("nyc_bbl")
+    return bbl_to_borough(bbl)
+
+
+def compute_cohort_baseline_rate(
+    panel_rows: List[Dict[str, Any]],
+) -> float:
+    """PR #15B.1 T2 — mean of outcome_violation_d_to_d_plus_7 across
+    panel rows with non-None outcome. Replaces PR #15B's use of
+    training_brier_score as the anchored_baseline_prob_14d proxy.
+
+    Brier score measures prediction accuracy, not base rate; cohort
+    mean outcome IS the base rate. Drops right-censored trailing-7
+    rows per PR #15A T5. Returns 0.0 for empty / all-censored input
+    so the anchored baseline degrades gracefully.
+    """
+    if not panel_rows:
+        return 0.0
+    vals = [
+        r.get("outcome_violation_d_to_d_plus_7")
+        for r in panel_rows
+        if r.get("outcome_violation_d_to_d_plus_7") is not None
+    ]
+    if not vals:
+        return 0.0
+    return float(sum(1 if v else 0 for v in vals)) / len(vals)
+
+
+def _discrete_time_hazard_horizons(
+    prob_7d: float,
+) -> Tuple[float, float, float]:
+    """PR #15B.1 T1 — discrete-time hazard math.
+
+    Replaces PR #15B's Poisson extrapolation (`prob_n = prob_7 * n/7`),
+    which over-fires alerts for moderate-risk projects (prob_7=0.3 →
+    Poisson 30d clamps to 1.0; DTH gives 0.78).
+
+    Formula:
+        daily = 1 - (1 - p_7) ** (1/7)
+        p_n   = 1 - (1 - daily) ** n
+
+    Input clipped to [0, 1] defensively (sigmoid may produce
+    1.0000001 due to float precision). Special-cases 0.0 and 1.0
+    to avoid pow() edge-case rounding.
+    """
+    p_7 = max(0.0, min(1.0, float(prob_7d)))
+    if p_7 == 0.0:
+        return (0.0, 0.0, 0.0)
+    if p_7 == 1.0:
+        return (1.0, 1.0, 1.0)
+    daily = 1.0 - (1.0 - p_7) ** (1.0 / 7.0)
+    prob_14d = 1.0 - (1.0 - daily) ** 14
+    prob_30d = 1.0 - (1.0 - daily) ** 30
+    return (
+        p_7,
+        max(0.0, min(1.0, prob_14d)),
+        max(0.0, min(1.0, prob_30d)),
+    )
+
+
+# ── Pure helpers (PR #15B) ────────────────────────────────────────
 
 
 def _sigmoid(z: float) -> float:
@@ -690,27 +805,63 @@ async def compute_borough_actuarial_hazard(
     when denominator is 0 (avoid div-by-zero — cold-start projects
     in low-activity boroughs get a 0.0 baseline rather than NaN).
 
-    Date filtering is client-side per PR #14F (Socrata date columns
-    are text in some datasets; lex-comparison hazards push us to
-    Python-side filters).
+    PR #15B.1 B2a/b/c — 6bgk-3dad corrections per Stage 1 probes:
+      • B2a: WHERE clause uses ``boro = '<numeric>'`` (BIS code via
+        _BIS_BORO_CODES); PR #15B's ``borough = ...`` returned 400.
+      • B2b: SELECT uses ``ecb_violation_number`` (PR #15B's
+        ``ecb_number`` doesn't exist on this dataset).
+      • B2c: server-side ``issue_date > 'YYYYMMDD'`` filter — verified
+        safe at Probe E.2 because YYYYMMDD lex-sorts correctly
+        (unlike MM/DD/YYYY per PR #14F).
+
+    rbx6-tga4 denominator query unchanged — that dataset uses full
+    uppercase borough names per PR #14I.
     """
+    from lib.statistical_engine.socrata_client import (
+        borough_to_boro_code,
+    )
     cur_now = now or datetime.now(timezone.utc)
     cut_start = cur_now - timedelta(days=365)
+    cutoff_yyyymmdd = cut_start.strftime("%Y%m%d")
 
     # ── Numerator: severe ECB violations in last 12 months ─
+    # PR #15B.1 B2a: convert borough to BIS numeric code. If we
+    # can't resolve a code, log + return 0.0 (avoid sending a
+    # query that we know will 400).
+    boro_code = borough_to_boro_code(borough)
+    if boro_code is None:
+        logger.warning(
+            "[pr15b] borough actuarial: cannot map borough=%r to BIS "
+            "boro code; skipping 6bgk-3dad query (returns 0.0)",
+            borough,
+        )
+        return 0.0
+
+    severities_clause = ", ".join(
+        f"'{s}'" for s in _SEVERE_ECB_SEVERITIES
+    )
+    ecb_where = (
+        f"boro = '{boro_code}' "
+        f"AND severity IN ({severities_clause}) "
+        f"AND issue_date > '{cutoff_yyyymmdd}'"
+    )
     try:
         ecb_rows = await socrata.query(
             "6bgk-3dad",
-            where=f"borough = '{borough}'",
-            select=["bin", "ecb_number", "severity", "issue_date"],
+            where=ecb_where,
+            select=["bin", "ecb_violation_number", "severity", "issue_date"],
             limit=5000,
         )
     except Exception as e:
         logger.warning(
             "[pr15b] borough actuarial ECB fetch failed for "
-            "borough=%s: %r", borough, e,
+            "borough=%s (boro=%s): %r", borough, boro_code, e,
         )
         return 0.0
+    # B2c: server-side filter narrowed to ~12mo window. Still apply
+    # a defensive client-side date check (handles MockSocrata that
+    # may not understand the server-side WHERE perfectly, and
+    # belt-and-suspenders against malformed issue_date values).
     n_severe = 0
     for r in ecb_rows:
         sev = r.get("severity")
@@ -825,7 +976,7 @@ async def fit_project_panel(
     try:
         import numpy as np
         from sklearn.linear_model import LogisticRegression
-        from sklearn.metrics import log_loss
+        from sklearn.metrics import brier_score_loss, log_loss
     except ImportError:
         logger.error(
             "[pr15b] scikit-learn not installed — fit_project_panel "
@@ -886,7 +1037,10 @@ async def fit_project_panel(
     sigma_dict = {k: float(sigma_arr[i]) for i, k in enumerate(STATE_VECTOR_FEATURES)}
 
     p_pred = clf.predict_proba(X_std)[:, 1]
-    training_brier = float(np.mean((p_pred - y_arr) ** 2))
+    # PR #15B.1 T3 — sklearn.metrics.brier_score_loss (math identical
+    # to np.mean((p_pred - y_arr) ** 2) for binary, but more
+    # semantically clear + library-validated for edge cases).
+    training_brier = float(brier_score_loss(y_arr, p_pred))
     try:
         training_log_loss = float(log_loss(y_arr, p_pred, labels=[0, 1]))
     except Exception:
@@ -942,12 +1096,17 @@ async def refit_project_cold_start(
     """
     cur_now = now or datetime.now(timezone.utc)
     project_id = str(project.get("_id") or project.get("id") or "")
-    borough = project.get("borough") or "BROOKLYN"
-    project_type = (
-        project.get("dob_type_classification")
-        or project.get("project_type")
-        or "New Building"
-    )
+    # PR #15B.1 B6 — derive borough from pluto/bbl, NOT top-level
+    # which is NULL on all 5 production projects.
+    borough = derive_borough(project)
+    if not borough:
+        logger.warning(
+            "[pr15b] refit_cold_start: borough unresolvable for "
+            "project=%s; defaulting to BROOKLYN", project_id,
+        )
+        borough = "BROOKLYN"
+    # PR #15B.1 B3 — read dob_project_type, NOT dob_type_classification.
+    project_type = _extract_project_type(project)
 
     p_7d  = await compute_borough_actuarial_hazard(
         socrata, borough=borough, project_type=project_type,
@@ -1041,12 +1200,16 @@ async def predict_for_project_nightly(
     sample_size = _read_cohort_sample_size(project)
     use_cold_start = should_use_cold_start_fallback(cache)
 
-    borough = project.get("borough") or "BROOKLYN"
-    project_type = (
-        project.get("dob_type_classification")
-        or project.get("project_type")
-        or "New Building"
-    )
+    # PR #15B.1 B6 — derive borough from pluto/bbl, not top-level.
+    borough = derive_borough(project)
+    if not borough:
+        logger.warning(
+            "[pr15b] predict_nightly: borough unresolvable for %s; "
+            "defaulting to BROOKLYN", project_id,
+        )
+        borough = "BROOKLYN"
+    # PR #15B.1 B3 — read dob_project_type (top-level then nested).
+    project_type = _extract_project_type(project)
 
     if use_cold_start:
         model_doc = await refit_project_cold_start(
@@ -1066,6 +1229,37 @@ async def predict_for_project_nightly(
         )
         x_now = None
     else:
+        # PR #15B.1 B1 inline backstop — if daily_panels is empty for
+        # this project, build the panel inline before fitting. The
+        # 1:30 AM ET pr15a_nightly_panel_build cron is the primary
+        # producer; this backstop is defense-in-depth so a per-project
+        # build failure in that cron doesn't cascade into a wrong
+        # cold-start fallback here.
+        try:
+            existing_panels = await db.daily_panels.count_documents(
+                {"project_id": project_id}
+            )
+        except Exception:
+            existing_panels = 0
+        if existing_panels == 0:
+            logger.info(
+                "[pr15b] backstop fired — building panel inline for "
+                "project=%s (daily_panels empty)", project_id,
+            )
+            try:
+                # daily_panel.compute_daily_panel signature is
+                # (project, db, socrata, ...) — argument order flipped
+                # from this function's (db, socrata, project) convention.
+                from lib.statistical_engine.daily_panel import (
+                    compute_daily_panel,
+                )
+                await compute_daily_panel(project, db, socrata, now=cur_now)
+            except Exception as e:
+                logger.warning(
+                    "[pr15b] backstop compute_daily_panel failed for "
+                    "%s: %r — proceeding to cold-start fallback",
+                    project_id, e,
+                )
         model_doc = await fit_project_panel(db, project, now=cur_now)
         if not model_doc:
             # Fall back to cold-start if fit fails (insufficient
@@ -1098,27 +1292,25 @@ async def predict_for_project_nightly(
                 model_doc["panel_sigma"],
             )
             beta = model_doc["beta_coefficients"]
-            prob_7d  = _apply_beta_to_x_now(beta, x_std)
-            # PR #15B.1 follow-up: replace Poisson extrapolation with
-            # true discrete-time hazard math:
-            #     prob_n = 1 - (1 - daily_hazard) ** n
-            # Current Poisson approximation overestimates for high-
-            # risk projects (prob_7 > 0.3) — clamps to 1.0 instead of
-            # asymptoting correctly. Acceptable for v1 UX; revisit
-            # before any operational alerting is wired to prob_30d.
-            prob_14d = min(1.0, prob_7d * (14.0 / 7.0))
-            prob_30d = min(1.0, prob_7d * (30.0 / 7.0))
+            prob_7d_raw = _apply_beta_to_x_now(beta, x_std)
+            # PR #15B.1 T1 — discrete-time hazard math replaces
+            # Poisson extrapolation. See _discrete_time_hazard_horizons
+            # docstring for the formula + edge-case handling.
+            prob_7d, prob_14d, prob_30d = _discrete_time_hazard_horizons(
+                prob_7d_raw,
+            )
 
-            # PR #15B.1 follow-up: replace training_brier_score with
-            # cohort mean outcome rate as anchored_baseline_prob_14d.
-            # Brier score measures prediction accuracy, not base rate —
-            # current value is semantically wrong but produces a
-            # plausible-magnitude number for the UX anchor while the
-            # cohort base-rate computation is being designed.
+            # PR #15B.1 T2 — anchored baseline = cohort mean outcome
+            # rate (NOT training_brier_score which measures accuracy
+            # not base rate). Read panel rows used for fitting and
+            # compute the empirical rate.
             try:
-                anchored_baseline = float(model_doc.get("training_brier_score") or 0.05)
+                _train_rows = await db.daily_panels.find(
+                    {"project_id": project_id}
+                ).to_list(length=None)
             except Exception:
-                anchored_baseline = 0.05
+                _train_rows = []
+            anchored_baseline = compute_cohort_baseline_rate(_train_rows)
 
             label = format_anchored_baseline_label(borough, project_type)
             cache_doc = build_prediction_cache(
@@ -1247,11 +1439,12 @@ async def predict_for_project_live(
     clipped, _fields_clipped = winsorize_x_now(x_now, mu, sigma)
     x_std = _standardize(clipped, mu, sigma)
     beta = model_doc["beta_coefficients"]
-    prob_7d  = _apply_beta_to_x_now(beta, x_std)
-    # PR #15B.1 follow-up: Poisson extrapolation — see
-    # predict_for_project_nightly above for the same caveat.
-    prob_14d = min(1.0, prob_7d * (14.0 / 7.0))
-    prob_30d = min(1.0, prob_7d * (30.0 / 7.0))
+    prob_7d_raw = _apply_beta_to_x_now(beta, x_std)
+    # PR #15B.1 T1 — discrete-time hazard math (same as
+    # predict_for_project_nightly above).
+    prob_7d, prob_14d, prob_30d = _discrete_time_hazard_horizons(
+        prob_7d_raw,
+    )
 
     # Update prediction_cache in place — mutate the relevant fields,
     # preserving the rest.
