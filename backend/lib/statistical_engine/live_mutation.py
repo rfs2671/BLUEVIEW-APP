@@ -945,13 +945,20 @@ async def fit_project_panel(
     cohort_segment="legacy" → 0.4. Anything else → 1.0 default.
     """
     cur_now = now or datetime.now(timezone.utc)
-    project_id = str(project.get("_id") or project.get("id") or "")
+    raw_pid = project.get("_id") or project.get("id")
+    project_id = str(raw_pid) if raw_pid else ""
     if not project_id or getattr(db, "daily_panels", None) is None:
         return None
 
+    # PR #15B.2 — daily_panels rows are written by PR #15A's
+    # compute_daily_panel with project_id = project["_id"] (ObjectId).
+    # PR #15B's read sites used str() which matched 0 rows in
+    # production. $in filter matches both shapes; backward-compatible
+    # with any future write that uses the string form.
+    pid_filter = {"$in": [raw_pid, project_id]} if raw_pid else project_id
     try:
         rows = await db.daily_panels.find({
-            "project_id": project_id,
+            "project_id": pid_filter,
         }).to_list(length=None)
     except Exception as e:
         logger.warning(
@@ -1235,9 +1242,16 @@ async def predict_for_project_nightly(
         # producer; this backstop is defense-in-depth so a per-project
         # build failure in that cron doesn't cascade into a wrong
         # cold-start fallback here.
+        #
+        # PR #15B.2 — $in filter handles both ObjectId-keyed rows
+        # (PR #15A's actual write shape) and string-keyed rows.
+        _raw_pid = project.get("_id") or project.get("id")
+        _pid_filter = (
+            {"$in": [_raw_pid, project_id]} if _raw_pid else project_id
+        )
         try:
             existing_panels = await db.daily_panels.count_documents(
-                {"project_id": project_id}
+                {"project_id": _pid_filter}
             )
         except Exception:
             existing_panels = 0
@@ -1304,9 +1318,16 @@ async def predict_for_project_nightly(
             # rate (NOT training_brier_score which measures accuracy
             # not base rate). Read panel rows used for fitting and
             # compute the empirical rate.
+            #
+            # PR #15B.2 — $in filter handles both ObjectId-keyed
+            # rows (PR #15A's write shape) and string-keyed rows.
+            _raw_pid = project.get("_id") or project.get("id")
+            _pid_filter = (
+                {"$in": [_raw_pid, project_id]} if _raw_pid else project_id
+            )
             try:
                 _train_rows = await db.daily_panels.find(
-                    {"project_id": project_id}
+                    {"project_id": _pid_filter}
                 ).to_list(length=None)
             except Exception:
                 _train_rows = []

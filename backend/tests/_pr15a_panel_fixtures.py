@@ -70,19 +70,25 @@ class _StubDailyPanels:
     def find(self, filter_, projection=None):
         """Synchronous returning an iterable. PR #15A's panel reader
         is expected to use ``.to_list()`` patterns or ``async for``;
-        this stub returns ``_AsyncFindResult`` to support both."""
+        this stub returns ``_AsyncFindResult`` to support both.
+
+        PR #15B.2 — upgraded to use ``_match_doc`` so ``$in`` filters
+        work. The fix for the ObjectId/string project_id mismatch
+        uses ``$in: [ObjectId, str]`` to match either shape.
+        """
         matched = [
             dict(d) for d in self.docs
-            if all(d.get(k) == v for k, v in (filter_ or {}).items())
+            if _match_doc(d, filter_ or {})
         ]
         return _AsyncFindResult(matched)
 
     async def count_documents(self, filter_=None):
+        """PR #15B.2 — upgraded to ``_match_doc`` for ``$in`` support."""
         if not filter_:
             return len(self.docs)
         return sum(
             1 for d in self.docs
-            if all(d.get(k) == v for k, v in filter_.items())
+            if _match_doc(d, filter_)
         )
 
     async def find_one(self, filter_, projection=None):
