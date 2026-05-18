@@ -53,6 +53,7 @@ import RenewalAlertCard from '../../src/components/RenewalAlertCard';
 // RiskScoreCard.jsx is kept as a deprecated reference until the
 // redesign is verified, then deleted in a follow-up.
 import RiskScoreCircle from '../../src/components/RiskScoreCircle';
+import CompliancePanel from '../../src/components/CompliancePanel';
 import NotificationsList from '../../src/components/NotificationsList';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
@@ -618,6 +619,17 @@ export default function ProjectDetailScreen() {
               />
             </View>
           </GlassCard>
+
+          {/* PR #15D — Compliance Risk forecast panel.
+              Consumes GET /api/projects/{id}/prediction. Self-gates:
+              renders a graceful unavailable card if the project has
+              no fit yet (prediction_available=false) OR a muted error
+              line if the API call fails. Lives directly below the
+              header card so it sits adjacent to the RiskScoreCircle
+              — the two together give the operator a same-glance view
+              of "current state" (risk score) + "near-term forecast"
+              (this panel). */}
+          <CompliancePanel projectId={projectId} />
 
           {/* Stats Row */}
           <View style={s.statsRow}>

@@ -218,6 +218,17 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // PR #15D — Compliance Risk forecast. Returns the
+  // PredictionResponse shape from server.serialize_prediction_cache
+  // _to_response: { prediction_available, horizons, anchored_baseline,
+  // confidence, metadata }. Consumed by CompliancePanel.
+  getPrediction: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/prediction`
+    );
+    return response.data;
+  },
+
   addNfcTag: async (projectId, tagData) => {
     const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, tagData);
     return response.data;

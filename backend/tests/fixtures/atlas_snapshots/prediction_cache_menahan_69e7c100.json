@@ -1,0 +1,28 @@
+{
+  "_id": {
+    "$oid": "69e7c10013506cc459fcd046"
+  },
+  "name": "9 Menahan Street, Brooklyn, NY, USA",
+  "dob_project_type": "major_alt_with_enlargement",
+  "prediction_cache": {
+    "prob_violation_7d": 0.0018184443887405513,
+    "prob_violation_14d": 0.003633582037486427,
+    "prob_violation_30d": 0.00777008318379202,
+    "anchored_baseline_prob_14d": 0.0013905749917227678,
+    "anchored_baseline_label": "BROOKLYN major_alt_with_enlargement macro baseline",
+    "cohort_tier_utilized": "low_confidence",
+    "cohort_sample_size": 85,
+    "low_confidence_flag": true,
+    "is_cold_start": false,
+    "lifecycle_stage_pct": 0.2,
+    "district_caseload_proxy_days": 0.0,
+    "model_coefficients_hash": "0f8081829b294d8bce049bc692d313dcdeb1eb1a",
+    "fit_at": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "last_validated_timestamp": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}
