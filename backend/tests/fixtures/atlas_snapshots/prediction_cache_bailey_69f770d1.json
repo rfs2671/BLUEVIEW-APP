@@ -1,0 +1,28 @@
+{
+  "_id": {
+    "$oid": "69f770d17e96889844310e69"
+  },
+  "name": "3846 Bailey Avenue, The Bronx, NY, USA",
+  "dob_project_type": "minor_alt",
+  "prediction_cache": {
+    "prob_violation_7d": 0.010867673738591531,
+    "prob_violation_14d": 0.0216172411446941,
+    "prob_violation_30d": 0.045751041030908435,
+    "anchored_baseline_prob_14d": 0.014650113767913456,
+    "anchored_baseline_label": "BRONX minor_alt macro baseline",
+    "cohort_tier_utilized": "high_confidence",
+    "cohort_sample_size": 141,
+    "low_confidence_flag": false,
+    "is_cold_start": false,
+    "lifecycle_stage_pct": 0.2,
+    "district_caseload_proxy_days": 0.0,
+    "model_coefficients_hash": "3caa6a757cba2269e9799c5db79cbaeb069f1d2f",
+    "fit_at": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "last_validated_timestamp": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}

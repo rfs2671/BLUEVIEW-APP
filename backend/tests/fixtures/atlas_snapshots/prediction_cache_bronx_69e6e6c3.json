@@ -1,0 +1,26 @@
+{
+  "_id": {
+    "$oid": "69e6e6c30b6e05f281e5bb66"
+  },
+  "name": "852 East 176th Street, The Bronx, NY, USA",
+  "dob_project_type": "full_demo",
+  "prediction_cache": {
+    "prob_violation_7d": 0.09346043953109563,
+    "prob_violation_14d": 0.18692087906219126,
+    "prob_violation_30d": 0.4993425323324289,
+    "anchored_baseline_prob_14d": 0.18692087906219126,
+    "anchored_baseline_label": "BRONX full_demo macro baseline",
+    "cohort_tier_utilized": "borough_baseline",
+    "cohort_sample_size": 253,
+    "low_confidence_flag": true,
+    "is_cold_start": true,
+    "lifecycle_stage_pct": null,
+    "district_caseload_proxy_days": null,
+    "model_coefficients_hash": null,
+    "fit_at": null,
+    "last_validated_timestamp": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}

@@ -217,6 +217,85 @@ def _discrete_time_hazard_horizons(
     )
 
 
+# ── PR #15D — UX hazard ratio + confidence badge helpers ─────────
+
+
+def hazard_ratio_to_color_tier(
+    ratio: Optional[float],
+) -> str:
+    """PR #15D L6, T8' — map a per-horizon hazard ratio to a
+    5-tier color tier. Returns one of: 'green', 'yellow', 'amber',
+    'orange', 'red', 'neutral'.
+
+    Hazard ratio = project_prob_<horizon> / cohort_baseline_prob_<horizon>.
+
+    Tier thresholds (Lock L6):
+      ratio < 0.75       → 'green'    (below cohort risk)
+      0.75 <= r < 1.5    → 'yellow'   (around cohort risk)
+      1.5  <= r < 3.0    → 'amber'    (elevated risk)
+      3.0  <= r < 4.0    → 'orange'   (high risk)
+      ratio >= 4.0       → 'red'      (critical risk)
+
+    Null / NaN / inf / non-numeric / negative → 'neutral' (frontend
+    renders a neutral grey when the ratio can't be computed).
+
+    F2 + T8' locks: the frontend ports this logic byte-for-byte in
+    ``frontend/src/utils/hazardRatioColor.js``. Backend stays the
+    canonical source; frontend mirrors. Tests live on backend side
+    per F2 (no frontend test infrastructure in this repo).
+    """
+    if ratio is None:
+        return "neutral"
+    try:
+        r = float(ratio)
+    except (TypeError, ValueError):
+        return "neutral"
+    if math.isnan(r) or math.isinf(r):
+        return "neutral"
+    if r < 0:
+        return "neutral"  # mathematically impossible — defensive
+    if r < 0.75:
+        return "green"
+    if r < 1.5:
+        return "yellow"
+    if r < 3.0:
+        return "amber"
+    if r < 4.0:
+        return "orange"
+    return "red"
+
+
+def compute_confidence_badge(
+    prediction_cache: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """PR #15D L8, B-SERIALIZE, Q3 — derive confidence badge from
+    prediction_cache flags.
+
+    Returns: 'cold_start' | 'limited_peer_sample' | None
+
+    Precedence (L8):
+      is_cold_start = True            → 'cold_start'
+      low_confidence_flag = True      → 'limited_peer_sample'
+      otherwise                       → None
+
+    Q3 lock: missing flags default to False (conservative — no badge
+    surfaced when the cache schema is incomplete OR flags carry
+    explicit None values). Only ``is True`` matches trigger a badge.
+
+    B-SERIALIZE lock: computed at API serialization time
+    (server.serialize_prediction_cache_to_response). NOT persisted
+    in prediction_cache itself — derivable from existing flags, so
+    no schema migration needed.
+    """
+    if not prediction_cache or not isinstance(prediction_cache, dict):
+        return None
+    if prediction_cache.get("is_cold_start") is True:
+        return "cold_start"
+    if prediction_cache.get("low_confidence_flag") is True:
+        return "limited_peer_sample"
+    return None
+
+
 # ── Pure helpers (PR #15B) ────────────────────────────────────────
 
 
@@ -496,6 +575,13 @@ def build_prediction_cache(
     prob_14d: Optional[float] = None,
     prob_30d: Optional[float] = None,
     anchored_baseline_prob_14d: Optional[float] = None,
+    # PR #15D G2 — 7d + 30d anchored baselines. Computed server-side
+    # via DTH math from anchored_baseline_prob_14d so the frontend
+    # can render per-horizon hazard-ratio coloring without re-doing
+    # the math. Default None for legacy fits pre-G2; serializer
+    # handles missing fields gracefully.
+    anchored_baseline_prob_7d: Optional[float] = None,
+    anchored_baseline_prob_30d: Optional[float] = None,
     anchored_baseline_label: Optional[str] = None,
     cohort_tier_utilized: str = "low_confidence",
     cohort_sample_size: int = 0,
@@ -533,6 +619,10 @@ def build_prediction_cache(
 
         # UX anchor
         "anchored_baseline_prob_14d":  anchored_baseline_prob_14d,
+        # PR #15D G2 — 7d + 30d horizon baselines (DTH-derived
+        # from 14d). May be None for legacy fits pre-G2 write.
+        "anchored_baseline_prob_7d":   anchored_baseline_prob_7d,
+        "anchored_baseline_prob_30d":  anchored_baseline_prob_30d,
         "anchored_baseline_label":     anchored_baseline_label,
 
         # Cohort context
@@ -582,6 +672,13 @@ def build_cold_start_prediction_cache(
         prob_14d= borough_baseline_probs.get("14d"),
         prob_30d= borough_baseline_probs.get("30d"),
         anchored_baseline_prob_14d=  borough_baseline_probs.get("14d"),
+        # PR #15D G2 — cold-start case: predicted prob IS the
+        # borough baseline (hazard ratio = 1.0 by definition).
+        # Forward all 3 horizons so the frontend renders a yellow
+        # "at cohort average" tier; the disclaimer explains the
+        # absolute-risk caveat.
+        anchored_baseline_prob_7d=   borough_baseline_probs.get("7d"),
+        anchored_baseline_prob_30d=  borough_baseline_probs.get("30d"),
         anchored_baseline_label=     label,
         cohort_tier_utilized="borough_baseline",
         cohort_sample_size=cohort_sample_size,
@@ -1429,10 +1526,28 @@ async def predict_for_project_nightly(
                 _train_rows = []
             anchored_baseline = compute_cohort_baseline_rate(_train_rows)
 
+            # PR #15D G2 — expand 14d cohort baseline into 7d + 30d
+            # via DTH math. Same daily hazard used as the underlying
+            # quantity, then re-projected per horizon. Keeps frontend
+            # stateless: hazard ratio = project_prob_<n>d /
+            # anchored_baseline_prob_<n>d for each horizon.
+            if anchored_baseline is None or anchored_baseline <= 0.0:
+                anchored_baseline_p7  = 0.0
+                anchored_baseline_p30 = 0.0
+            elif anchored_baseline >= 1.0:
+                anchored_baseline_p7  = 1.0
+                anchored_baseline_p30 = 1.0
+            else:
+                _daily = 1.0 - (1.0 - anchored_baseline) ** (1.0 / 14.0)
+                anchored_baseline_p7  = 1.0 - (1.0 - _daily) ** 7
+                anchored_baseline_p30 = 1.0 - (1.0 - _daily) ** 30
+
             label = format_anchored_baseline_label(borough, project_type)
             cache_doc = build_prediction_cache(
                 prob_7d=prob_7d, prob_14d=prob_14d, prob_30d=prob_30d,
                 anchored_baseline_prob_14d=anchored_baseline,
+                anchored_baseline_prob_7d=anchored_baseline_p7,
+                anchored_baseline_prob_30d=anchored_baseline_p30,
                 anchored_baseline_label=label,
                 cohort_tier_utilized=cohort_confidence_tier(sample_size),
                 cohort_sample_size=sample_size,

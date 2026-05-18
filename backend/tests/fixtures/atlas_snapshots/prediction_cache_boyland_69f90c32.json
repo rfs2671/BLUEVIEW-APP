@@ -1,0 +1,26 @@
+{
+  "_id": {
+    "$oid": "69f90c3209947c4967c8074f"
+  },
+  "name": "588 Thomas S Boyland Street, Brooklyn, NY, USA",
+  "dob_project_type": "full_demo",
+  "prediction_cache": {
+    "prob_violation_7d": 0.09167343303910527,
+    "prob_violation_14d": 0.18334686607821055,
+    "prob_violation_30d": 0.3928861415961654,
+    "anchored_baseline_prob_14d": 0.18334686607821055,
+    "anchored_baseline_label": "BROOKLYN full_demo macro baseline",
+    "cohort_tier_utilized": "borough_baseline",
+    "cohort_sample_size": 0,
+    "low_confidence_flag": true,
+    "is_cold_start": true,
+    "lifecycle_stage_pct": null,
+    "district_caseload_proxy_days": null,
+    "model_coefficients_hash": null,
+    "fit_at": null,
+    "last_validated_timestamp": {
+      "$date": "2026-05-17T16:43:20.827Z"
+    },
+    "schema_version": "pr15b_v1"
+  }
+}

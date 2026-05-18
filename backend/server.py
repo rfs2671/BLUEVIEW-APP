@@ -3759,6 +3759,161 @@ async def calculate_project_risk_score(
     return {"score": serialize_id(doc)}
 
 
+# ── PR #15D — Compliance Risk forecast endpoint ──────────────────
+#
+# Q1 lock: Pydantic models live INLINE here (matches codebase
+# precedent: 100+ inline BaseModel classes elsewhere in server.py).
+# NOT extracted to a separate models.py module.
+
+class HorizonProbabilities(BaseModel):
+    """PR #15D — 3-horizon probability shape for the response.
+    Mirrors prediction_cache.prob_violation_{7,14,30}d fields."""
+    model_config = ConfigDict(extra="forbid")
+    prob_7d:  Optional[float] = None
+    prob_14d: Optional[float] = None
+    prob_30d: Optional[float] = None
+
+
+class AnchoredBaseline(BaseModel):
+    """PR #15D — cohort baseline shape.
+    Mirrors prediction_cache.anchored_baseline_prob_{7,14,30}d +
+    anchored_baseline_label + cohort_sample_size."""
+    model_config = ConfigDict(extra="forbid")
+    prob_7d:     Optional[float] = None  # G2 — may be None for legacy fits
+    prob_14d:    Optional[float] = None
+    prob_30d:    Optional[float] = None  # G2 — may be None for legacy fits
+    label:       Optional[str]   = None
+    cohort_size: Optional[int]   = None
+
+
+class ConfidenceInfo(BaseModel):
+    """PR #15D L8 + B-SERIALIZE — confidence + badge.
+    badge is computed from prediction_cache flags at serialization
+    time; not persisted in prediction_cache."""
+    model_config = ConfigDict(extra="forbid")
+    tier:          Optional[str]  = None
+    sample_size:   Optional[int]  = None
+    is_cold_start: Optional[bool] = None
+    # null | "limited_peer_sample" | "cold_start" — see
+    # lib.statistical_engine.live_mutation.compute_confidence_badge
+    badge:         Optional[str]  = None
+
+
+class PredictionMetadata(BaseModel):
+    """PR #15D — timing + schema info. fit_at may be None for
+    cold-start projects per Stage 1 Probe E receipts; L7 staleness
+    is computed on last_validated_timestamp (always populated)."""
+    model_config = ConfigDict(extra="forbid")
+    fit_at:                   Optional[datetime] = None
+    last_validated_timestamp: Optional[datetime] = None
+    schema_version:           Optional[str]      = None
+
+
+class PredictionResponse(BaseModel):
+    """PR #15D — top-level response model for
+    GET /api/projects/{project_id}/prediction."""
+    model_config = ConfigDict(extra="forbid")
+    prediction_available: bool
+    horizons:             HorizonProbabilities
+    anchored_baseline:    AnchoredBaseline
+    confidence:           ConfidenceInfo
+    metadata:             PredictionMetadata
+
+
+def serialize_prediction_cache_to_response(
+    project: Dict[str, Any],
+) -> PredictionResponse:
+    """PR #15D — transform ``project.prediction_cache`` into the
+    API response shape. Handles:
+
+      • Missing cache → ``prediction_available=False`` + all
+        nested sub-models with default null fields.
+      • ``fit_at=None`` (cold-start per Stage 1 Probe E) → preserved
+        as null; ``last_validated_timestamp`` always populated.
+      • Legacy fits without G2 baselines (anchored_baseline_prob_7d
+        / _30d) → null in response (graceful degradation).
+      • ``confidence.badge`` computed via
+        ``compute_confidence_badge`` per B-SERIALIZE lock —
+        NOT persisted in prediction_cache.
+    """
+    from lib.statistical_engine.live_mutation import (
+        compute_confidence_badge as _badge,
+    )
+
+    cache = project.get("prediction_cache") or {}
+
+    if not cache:
+        return PredictionResponse(
+            prediction_available=False,
+            horizons=HorizonProbabilities(),
+            anchored_baseline=AnchoredBaseline(),
+            confidence=ConfidenceInfo(),
+            metadata=PredictionMetadata(),
+        )
+
+    return PredictionResponse(
+        prediction_available=True,
+        horizons=HorizonProbabilities(
+            prob_7d=cache.get("prob_violation_7d"),
+            prob_14d=cache.get("prob_violation_14d"),
+            prob_30d=cache.get("prob_violation_30d"),
+        ),
+        anchored_baseline=AnchoredBaseline(
+            prob_7d=cache.get("anchored_baseline_prob_7d"),
+            prob_14d=cache.get("anchored_baseline_prob_14d"),
+            prob_30d=cache.get("anchored_baseline_prob_30d"),
+            label=cache.get("anchored_baseline_label"),
+            cohort_size=cache.get("cohort_sample_size"),
+        ),
+        confidence=ConfidenceInfo(
+            tier=cache.get("cohort_tier_utilized"),
+            sample_size=cache.get("cohort_sample_size"),
+            is_cold_start=cache.get("is_cold_start"),
+            badge=_badge(cache),
+        ),
+        metadata=PredictionMetadata(
+            fit_at=cache.get("fit_at"),
+            last_validated_timestamp=cache.get("last_validated_timestamp"),
+            schema_version=cache.get("schema_version"),
+        ),
+    )
+
+
+@api_router.get(
+    "/projects/{project_id}/prediction",
+    response_model=PredictionResponse,
+)
+async def get_project_prediction(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    """PR #15D — Compliance Risk forecast endpoint.
+
+    Returns 3-horizon probability + anchored cohort baseline +
+    confidence metadata for the user-facing Compliance Risk panel.
+    Mirrors get_project at server.py:6950 for auth pattern:
+      1. 404 on missing or soft-deleted project
+      2. 403 on cross-company access
+      3. 200 + PredictionResponse JSON on authorized read
+
+    The frontend CompliancePanel consumes this; see
+    frontend/src/components/CompliancePanel.jsx.
+    """
+    project = await db.projects.find_one(
+        {"_id": to_query_id(project_id), "is_deleted": {"$ne": True}}
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(
+            status_code=403, detail="Access denied to this project",
+        )
+
+    return serialize_prediction_cache_to_response(project)
+
+
 # ──────────────── V2.2 admin endpoints ────────────────────────────
 #
 # V2.3 Commit 1: the admin backfill endpoint was removed (it served

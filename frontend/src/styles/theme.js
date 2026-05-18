@@ -53,6 +53,18 @@ const _dark = {
     errorBg:   'rgba(248, 113, 113, 0.1)',
     warning:   '#fbbf24',
     warningBg: 'rgba(251, 191, 36, 0.2)',
+    // ── PR #15D D1 — 5-tier hazard-ratio palette (dark) ────────
+    // L6 maps the backend hazard_ratio_to_color_tier output to:
+    //   green   → status.success    (existing, ratio < 0.75)
+    //   yellow  → status.caution    (NEW, 0.75 ≤ r < 1.5)
+    //   amber   → status.warning    (existing, 1.5 ≤ r < 3.0)
+    //   orange  → status.elevated   (NEW, 3.0 ≤ r < 4.0)
+    //   red     → status.error      (existing, r ≥ 4.0)
+    //   neutral → text.muted        (fallback when ratio invalid)
+    caution:    '#facc15',                       // yellow-400
+    cautionBg:  'rgba(250, 204, 21, 0.20)',
+    elevated:   '#fb923c',                       // orange-400
+    elevatedBg: 'rgba(251, 146, 60, 0.20)',
   },
 
   white:       '#ffffff',
@@ -126,6 +138,15 @@ const _light = {
     errorBg:   'rgba(198, 40, 40, 0.08)',
     warning:   '#E65100',
     warningBg: 'rgba(230, 81, 0, 0.10)',
+    // ── PR #15D D1 — 5-tier hazard-ratio palette (light) ────────
+    // See _dark.status.caution comment for the L6 mapping. Light
+    // values are Material amber-300 (#FFD54F) for caution and
+    // Material deep-orange-800 (#EF6C00) for elevated — these are
+    // pinned in the PR #15D Stage 5 spec.
+    caution:    '#FFD54F',                       // amber-300
+    cautionBg:  'rgba(255, 213, 79, 0.18)',
+    elevated:   '#EF6C00',                       // deep-orange-800
+    elevatedBg: 'rgba(239, 108, 0, 0.10)',
   },
 
   white:       '#ffffff',
