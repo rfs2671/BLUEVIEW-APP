@@ -57,6 +57,7 @@ import GlassButton from './GlassButton';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
 import { bandFor, RISK_SCORE_TITLE } from './RiskScoreCircle';
+import { titleCase } from '../utils/displayHelpers';
 
 // V2.3 — per-factor labels + descriptions. Replaces the V2.0-era
 // FACTOR_LABELS (which keyed off legacy field names that no longer
@@ -102,23 +103,6 @@ function _ordinalSuffix(n) {
   }
 }
 
-// Title-case helper for display normalization. PLUTO ships
-// borough names in UPPER-CASE ("BROOKLYN") and project_class
-// values in lower_underscore ("major_a"); both render badly in
-// prose. This collapses underscores and whitespace into single
-// spaces and capitalizes each word: "BROOKLYN" → "Brooklyn",
-// "STATEN ISLAND" → "Staten Island", "major_a" → "Major A",
-// "residential" → "Residential".
-function _titleCase(s) {
-  if (s === null || s === undefined) return '';
-  return String(s)
-    .toLowerCase()
-    .split(/[\s_]+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
-}
-
 // Tier-phrase resolver for the peer-comparison context narrative.
 // peer_set.tier is one of the four strings emitted by baselines.py's
 // fallback ladder. Anything outside the known set falls back to
@@ -128,10 +112,10 @@ function _peerTierPhrase(peerSet) {
   const tier        = peerSet.tier || '';
   // Display-normalize the three interpolated fields. PLUTO stores
   // borough in all-caps and project_class in lower_underscore;
-  // _titleCase collapses both into readable prose.
-  const borough     = _titleCase(peerSet.borough);
-  const projectClass = _titleCase(peerSet.project_class);
-  const useType     = _titleCase(peerSet.use_type);
+  // titleCase collapses both into readable prose.
+  const borough     = titleCase(peerSet.borough);
+  const projectClass = titleCase(peerSet.project_class);
+  const useType     = titleCase(peerSet.use_type);
   if (tier === 'borough_class_use' && borough && projectClass && useType) {
     return `in ${borough} (class ${projectClass}, use type ${useType})`;
   }

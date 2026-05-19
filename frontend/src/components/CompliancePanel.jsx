@@ -1,10 +1,18 @@
 /**
- * PR #15D — Compliance Risk panel.
+ * PR #15D / PR #15D.1 — DOB Enforcement Forecast panel.
  *
  * Renders the Phase 1 Predictive Inference Engine output for a
- * single project: 3-horizon violation probabilities (7d / 14d / 30d)
+ * single project: 3-horizon violation forecasts (7d / 14d / 30d)
  * with cohort-baseline comparisons, colour-coded by hazard ratio
  * (Lock L6 — 5-tier mapping via hazardRatioToColorTier).
+ *
+ * PR #15D.1 — copy rewrite to GC-readable vocabulary (no absolute
+ * percentages on the surface; 5-tier verdict labels via
+ * tierToVerdictLabel; hazard-ratio chips with directional arrows;
+ * borough/project-type humanisation via the shared displayHelpers
+ * util). Cohort baseline label is parsed client-side via
+ * parseBaselineLabel — see Stage 1 Probe E for the Option X
+ * justification.
  *
  * Hard rules pinned by Stage 5 spot-check spec + PR #15D locks:
  *   • Feature flag — useFeatureFlag('pr15d_prediction') is the
@@ -45,7 +53,10 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { Shield, AlertTriangle, Clock, Info } from 'lucide-react-native';
+import {
+  Shield, AlertTriangle, Clock, Info,
+  ArrowUp, ArrowDown, Minus,
+} from 'lucide-react-native';
 import { GlassCard, IconPod } from './GlassCard';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { useTheme } from '../context/ThemeContext';
@@ -54,7 +65,14 @@ import { projectsAPI } from '../utils/api';
 import {
   hazardRatioToColorTier,
   tierToStatusColor,
+  hazardRatioToDirection,
+  tierToVerdictLabel,
 } from '../utils/hazardRatioColor';
+import {
+  projectTypeLabel,
+  boroughLabel,
+  parseBaselineLabel,
+} from '../utils/displayHelpers';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -85,56 +103,77 @@ function _hoursSince(isoOrDate) {
   return (Date.now() - t) / 3_600_000;
 }
 
-// Title-case helper for borough names ("BROOKLYN" → "Brooklyn")
-// and project types ("full_demo" → "Full Demo"). Same idiom as
-// RiskScoreDrawer._titleCase but inlined to avoid cross-component
-// coupling.
-function _titleCase(s) {
-  if (s === null || s === undefined) return '';
-  return String(s)
-    .toLowerCase()
-    .split(/[\s_]+/)
-    .filter(Boolean)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(' ');
-}
+// PR #15D.1 — titleCase + parseBaselineLabel moved to
+// frontend/src/utils/displayHelpers.js (shared with RiskScoreDrawer).
 
-// anchored_baseline.label format from backend:
-//   "<BOROUGH> <project_type> macro baseline"
-//   e.g. "BROOKLYN full_demo macro baseline"
-// Parse defensively — if the format changes, fall back to a
-// generic disclaimer with no placeholders.
-function _parseBaselineLabel(label) {
-  if (!label || typeof label !== 'string') {
-    return { borough: null, projectType: null };
+// PR #15D.1 lock C8 + D7 — badge resolver. Reads ONLY
+// confidence.badge from the server response (no client-side
+// sample_size logic; the server already encodes that decision via
+// B-SERIALIZE in compute_confidence_badge). Returns both a short
+// chip label and a one-line inline tooltip text rendered as muted
+// secondary copy under the header (D5 — no native hover idiom on
+// React Native, so we surface the explanation inline rather than
+// in a popover).
+function _badgeInfo(badge) {
+  if (badge === 'cold_start') {
+    return {
+      label:   'Calibrating',
+      tooltip: 'Personalized forecast not yet available. Showing '
+             + 'baseline for similar projects.',
+    };
   }
-  const parts = label.trim().split(/\s+/);
-  if (parts.length < 2) return { borough: null, projectType: null };
-  return {
-    borough:     _titleCase(parts[0]),
-    projectType: _titleCase(parts[1]),
-  };
-}
-
-// L8 — badge label localisation. Server returns the machine value;
-// we display a short human label inline.
-function _badgeLabel(badge) {
-  if (badge === 'cold_start')         return 'COLD START';
-  if (badge === 'limited_peer_sample') return 'LIMITED SAMPLE';
-  return null;
+  if (badge === 'limited_peer_sample') {
+    return {
+      label:   'Smaller peer group',
+      tooltip: 'Based on fewer than 100 similar projects. Forecast '
+             + 'still calibrating.',
+    };
+  }
+  return { label: null, tooltip: null };
 }
 
 // ── HorizonRow ───────────────────────────────────────────────────
-// One row per horizon. Renders the project prob, baseline prob, and
-// a hazard-ratio chip coloured via L6.
+// PR #15D.1 lock D6 — one row per horizon, restructured to drop the
+// absolute probability + 'vs N%' from the surface. Renders:
+//   • verdict label (lock C3 — 'Below typical' / 'Tracking normal' /
+//     'Elevated' / 'Watch closely' / 'High risk this period' / '—')
+//     coloured per the 5-tier L6 palette.
+//   • hazard-ratio chip (lock C4 — '{N.N}× typical' with directional
+//     lucide arrow per hazardRatioToDirection's ±10% dead-band).
+// Per Q1 + Q3 locks: ratios below 0.1× render as '< 0.1× typical'
+// (parallel to _formatPct's <0.5% floor); null/unavailable ratios
+// render only '—' with no chip suffix or arrow icon.
 
 function HorizonRow({ label, prob, baseline, colors }) {
   const ratio = _safeRatio(prob, baseline);
   const tier = hazardRatioToColorTier(ratio);
   const { fg, bg } = tierToStatusColor(tier);
-  const ratioLabel = ratio === null
-    ? '—'
-    : `${ratio.toFixed(2)}×`;
+  const verdict = tierToVerdictLabel(tier);
+  const direction = hazardRatioToDirection(ratio);
+
+  // Q1 / Q3 — chip body. Null ratio → bare em-dash, no '× typical'.
+  // Ratios below 0.1× hit a '<0.1× typical' floor (parallel to the
+  // existing percentage floor at _formatPct).
+  let chipText;
+  let showArrow;
+  if (ratio === null) {
+    chipText = '—';
+    showArrow = false;
+  } else if (ratio < 0.1) {
+    chipText = '< 0.1× typical';
+    showArrow = true;
+  } else {
+    chipText = `${ratio.toFixed(1)}× typical`;
+    showArrow = true;
+  }
+
+  // Lucide icon selection — only rendered when the ratio is numeric.
+  let ArrowIcon = null;
+  if (showArrow) {
+    if (direction === 'up')        ArrowIcon = ArrowUp;
+    else if (direction === 'down') ArrowIcon = ArrowDown;
+    else                           ArrowIcon = Minus;
+  }
 
   return (
     <View style={styles.row}>
@@ -142,31 +181,42 @@ function HorizonRow({ label, prob, baseline, colors }) {
         {label}
       </Text>
       <View style={styles.rowRight}>
-        <Text style={[styles.probValue, { color: colors.text.primary }]}>
-          {_formatPct(prob)}
-        </Text>
-        <Text style={[styles.baselineValue, { color: colors.text.muted }]}>
-          vs {_formatPct(baseline)}
+        <Text style={[styles.verdictLabel, { color: fg }]}>
+          {verdict}
         </Text>
         <View style={[styles.ratioChip, { backgroundColor: bg }]}>
-          <Text style={[styles.ratioChipText, { color: fg }]}>
-            {ratioLabel}
-          </Text>
+          <View style={styles.ratioChipRow}>
+            {ArrowIcon && (
+              <ArrowIcon size={11} strokeWidth={2} color={fg} />
+            )}
+            <Text style={[styles.ratioChipText, { color: fg }]}>
+              {chipText}
+            </Text>
+          </View>
         </View>
       </View>
     </View>
   );
 }
 
-// ── Cold-start educational disclaimer (Q3 / Q5 lock) ─────────────
-// Pinned by the PR #15D Stage 5 spec. Two paragraphs:
-//   1. Explains why no personalised prediction exists yet.
-//   2. Explains why the cohort baseline can show high probabilities
-//      without that meaning "this project is high risk".
+// ── Cold-start educational disclaimer (lock C6) ──────────────────
+// Two paragraphs:
+//   1. Explains why no personalised prediction exists yet, naming
+//      the borough + project-type cohort the baseline is drawn from.
+//   2. Explains that a 1.0× hazard ratio means "matches typical" —
+//      defuses the common misread of a high absolute prob_30d.
+// Interpolation uses boroughLabel + projectTypeLabel so 'BROOKLYN'
+// renders as 'Brooklyn' and 'major_alt_with_enlargement' as
+// 'major alteration' (C5 mapping table).
 
 function ColdStartDisclaimer({ borough, projectType, colors }) {
-  const cohort = (borough && projectType)
-    ? `${borough} ${projectType.toLowerCase()}`
+  const boroughText = boroughLabel(borough);
+  const projectTypeText = projectTypeLabel(projectType);
+  // If both pieces parsed cleanly, build the qualified cohort phrase
+  // ('Brooklyn full demolition'); else fall back to the generic
+  // 'similar' so the sentence still reads naturally.
+  const cohortPhrase = (boroughText && projectTypeText)
+    ? `${boroughText} ${projectTypeText}`
     : 'similar';
   return (
     <View style={[
@@ -180,21 +230,21 @@ function ColdStartDisclaimer({ borough, projectType, colors }) {
           styles.disclaimerTitle,
           { color: colors.status.caution },
         ]}>
-          Personalised forecast not yet available
+          Personalized forecast not yet available
         </Text>
       </View>
       <Text style={[styles.disclaimerBody, { color: colors.text.secondary }]}>
-        The values below are the cohort baseline for {cohort}
-        {' '}projects citywide. As this project accrues filings and
-        time, a personalised forecast will replace these baseline
+        Personalized forecast unavailable for this project. The
+        values shown are the citywide baseline for similar
+        {' '}{cohortPhrase} projects. As this project accrues filings
+        and time, a personalized forecast will replace these baseline
         values.
       </Text>
       <Text style={[styles.disclaimerBody, { color: colors.text.muted }]}>
-        Note: the cohort baseline can show high probabilities when
-        the underlying borough + project-type combination has
-        historically high violation rates. A hazard ratio of 1.0
-        means this project matches the cohort average — not that
-        risk is low.
+        Note: baseline rates can appear high when the project type
+        historically draws frequent DOB enforcement. A 1.0× hazard
+        ratio means this project matches the typical rate for
+        similar projects — it is not necessarily a warning.
       </Text>
     </View>
   );
@@ -246,7 +296,7 @@ export default function CompliancePanel({ projectId }) {
             <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
           </IconPod>
           <Text style={[styles.title, { color: colors.text.primary }]}>
-            Compliance Risk
+            DOB Enforcement Forecast
           </Text>
         </View>
         <View style={styles.center}>
@@ -265,7 +315,7 @@ export default function CompliancePanel({ projectId }) {
             <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
           </IconPod>
           <Text style={[styles.title, { color: colors.text.primary }]}>
-            Compliance Risk
+            DOB Enforcement Forecast
           </Text>
         </View>
         <Text style={[styles.muted, { color: colors.text.muted }]}>
@@ -293,13 +343,13 @@ export default function CompliancePanel({ projectId }) {
             <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
           </IconPod>
           <Text style={[styles.title, { color: colors.text.primary }]}>
-            Compliance Risk
+            DOB Enforcement Forecast
           </Text>
         </View>
         <Text style={[styles.muted, { color: colors.text.muted }]}>
-          A risk forecast for this project is still being prepared.
-          New projects typically have a forecast within 24 hours of
-          the first nightly refit cycle.
+          A forecast for this project is still being prepared. New
+          projects typically have one ready within 24 hours of being
+          added.
         </Text>
       </GlassCard>
     );
@@ -310,11 +360,24 @@ export default function CompliancePanel({ projectId }) {
   const isHardStale = hoursStale !== null && hoursStale > 48;
   const isSoftStale = hoursStale !== null && hoursStale > 24 && !isHardStale;
 
-  const badge = _badgeLabel(confidence?.badge);
+  const badgeInfo = _badgeInfo(confidence?.badge);
   const sampleSize = confidence?.sample_size;
   const baselineLabel = anchoredBaseline?.label;
   const isColdStart = confidence?.badge === 'cold_start';
-  const parsedLabel = _parseBaselineLabel(baselineLabel);
+  const parsedLabel = parseBaselineLabel(baselineLabel);
+
+  // C5 + Q2 — cohort footer text. Render only when both borough +
+  // projectType extracted AND sample_size is a non-negative number;
+  // otherwise suppress the whole footer line (Q2 lock — missing N
+  // alongside a present label is unusual data, render nothing).
+  const hasSampleSize =
+    typeof sampleSize === 'number' && sampleSize >= 0;
+  const showCohortFooter =
+    hasSampleSize && parsedLabel.borough && parsedLabel.projectType;
+  const cohortFooterText = showCohortFooter
+    ? `Based on ${sampleSize} similar ${boroughLabel(parsedLabel.borough)} `
+      + `${projectTypeLabel(parsedLabel.projectType)} projects`
+    : null;
 
   // ── State 5/6 — ready (cold_start OR standard) ───────────────
   return (
@@ -324,9 +387,9 @@ export default function CompliancePanel({ projectId }) {
           <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
         </IconPod>
         <Text style={[styles.title, { color: colors.text.primary }]}>
-          Compliance Risk
+          DOB Enforcement Forecast
         </Text>
-        {badge && (
+        {badgeInfo.label && (
           <View style={[
             styles.badge,
             { backgroundColor: colors.status.cautionBg },
@@ -335,13 +398,22 @@ export default function CompliancePanel({ projectId }) {
               styles.badgeText,
               { color: colors.status.caution },
             ]}>
-              {badge}
+              {badgeInfo.label}
             </Text>
           </View>
         )}
       </View>
 
-      {/* Q3/Q5 — cold-start gets the educational disclaimer above
+      {/* C8 + D5 — inline tooltip rendered below the header in
+          muted secondary copy (no native hover idiom on React
+          Native). Only renders when a badge is shown. */}
+      {badgeInfo.tooltip && (
+        <Text style={[styles.badgeTooltip, { color: colors.text.muted }]}>
+          {badgeInfo.tooltip}
+        </Text>
+      )}
+
+      {/* C6 — cold-start gets the educational disclaimer above
           the horizon rows. Standard fits skip this. */}
       {isColdStart && (
         <ColdStartDisclaimer
@@ -351,37 +423,36 @@ export default function CompliancePanel({ projectId }) {
         />
       )}
 
-      {/* Three horizon rows */}
+      {/* C2 — three horizon rows, Title Case per the lock copy. */}
       <HorizonRow
-        label="Next 7 days"
+        label="Next 7 Days"
         prob={horizons?.prob_7d}
         baseline={anchoredBaseline?.prob_7d}
         colors={colors}
       />
       <HorizonRow
-        label="Next 14 days"
+        label="Next 14 Days"
         prob={horizons?.prob_14d}
         baseline={anchoredBaseline?.prob_14d}
         colors={colors}
       />
       <HorizonRow
-        label="Next 30 days"
+        label="Next 30 Days"
         prob={horizons?.prob_30d}
         baseline={anchoredBaseline?.prob_30d}
         colors={colors}
       />
 
-      {/* Footer — baseline label + sample size + staleness chip */}
+      {/* Footer — cohort baseline phrase (C5) + staleness chip (L7).
+          Cohort phrase suppressed entirely when sample_size or the
+          parsed label is missing (Q2 lock). */}
       <View style={[
         styles.footer,
         { borderTopColor: colors.border.subtle },
       ]}>
-        {!!baselineLabel && (
+        {cohortFooterText && (
           <Text style={[styles.footerLabel, { color: colors.text.muted }]}>
-            Compared to: {baselineLabel}
-            {typeof sampleSize === 'number' && sampleSize >= 0
-              ? `  ·  n=${sampleSize}`
-              : ''}
+            {cohortFooterText}
           </Text>
         )}
         {(isSoftStale || isHardStale) && (
@@ -450,29 +521,42 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
   },
-  probValue: {
+  // PR #15D.1 — verdict label (lock C3) replaces the prior
+  // probValue + baselineValue styles. Coloured per L6 tier at the
+  // call site; falls back to text.muted when ratio is null.
+  verdictLabel: {
     ...typography.body,
     fontWeight: '600',
-    minWidth: 56,
-    textAlign: 'right',
-  },
-  baselineValue: {
-    ...typography.small,
-    minWidth: 64,
+    flexShrink: 1,
     textAlign: 'right',
   },
   ratioChip: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: borderRadius.sm,
-    minWidth: 56,
     alignItems: 'center',
+  },
+  // C4 — flex row inside the chip for the lucide arrow icon +
+  // ratio text. Small gap keeps the arrow visually attached.
+  ratioChipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   ratioChipText: {
     ...typography.label,
     fontSize: 11,
     letterSpacing: 0.5,
     textTransform: 'none',
+  },
+  // C8 + D5 — inline tooltip below the header badge. Sits in the
+  // muted secondary tone so it reads as supplementary copy, not as
+  // a separate data row.
+  badgeTooltip: {
+    ...typography.small,
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: spacing.sm,
   },
   footer: {
     marginTop: spacing.sm,
