@@ -134,8 +134,6 @@ from lib.statistical_engine.baselines import (  # noqa: F401
 # predict_for_project_nightly, predict_for_project_live, etc.).
 from lib.statistical_engine.live_mutation import (  # noqa: F401
     winsorize_x_now,
-    should_fire_ensemble,
-    combine_ensemble_probs,
     is_prediction_cache_valid,
     is_prediction_cache_stale,
     should_use_cold_start_fallback,
@@ -147,7 +145,6 @@ from lib.statistical_engine.live_mutation import (  # noqa: F401
     PR15B_PREDICTION_CACHE_SCHEMA_VERSION,
     PREDICTION_CACHE_STALE_THRESHOLD_SECONDS,
     COLD_START_SAMPLE_SIZE_FLOOR,
-    ENSEMBLE_BRIER_DIVERGENCE_THRESHOLD,
     SAMPLE_WEIGHT_MODERN,
     SAMPLE_WEIGHT_LEGACY,
     STATE_VECTOR_FEATURES,

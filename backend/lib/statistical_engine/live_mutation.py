@@ -27,8 +27,7 @@ Locked design (Stage 2.A):
 
 Stage 3.A scope:
   • Pure helpers (no I/O, no async): winsorize_x_now, sigmoid,
-    model_coefficients_hash, should_fire_ensemble,
-    combine_ensemble_probs, is_prediction_cache_valid,
+    model_coefficients_hash, is_prediction_cache_valid,
     is_prediction_cache_stale, should_use_cold_start_fallback,
     cohort_confidence_tier, format_anchored_baseline_label,
     build_prediction_cache, build_cold_start_prediction_cache.
@@ -77,13 +76,14 @@ COLD_START_SAMPLE_SIZE_FLOOR = 30
 LOW_CONFIDENCE_SAMPLE_SIZE_FLOOR  = 30
 HIGH_CONFIDENCE_SAMPLE_SIZE_FLOOR = 100
 
-# L6 — ensemble divergence threshold. Pure ratio > 0.15 (strict);
-# below or at 15% the ensemble does NOT fire.
-ENSEMBLE_BRIER_DIVERGENCE_THRESHOLD = 0.15
-
-# Ensemble blend weights (Spec v1.0 + Lock B upgrade trigger).
-ENSEMBLE_MODERN_WEIGHT = 0.7
-ENSEMBLE_LEGACY_WEIGHT = 0.3
+# PR #15D.2 — removed unused ensemble scaffolding (ENSEMBLE_MODERN_WEIGHT,
+# ENSEMBLE_LEGACY_WEIGHT, ENSEMBLE_BRIER_DIVERGENCE_THRESHOLD plus the
+# matching should_fire_ensemble / combine_ensemble_probs helpers). Spec
+# audit §3.5 confirmed they were exported but never called from
+# fit_project_panel / predict_for_project_nightly / predict_for_project_live.
+# Phase 1 inference uses a single sklearn LogisticRegression over rows
+# weighted by SAMPLE_WEIGHT_MODERN / SAMPLE_WEIGHT_LEGACY — no separate
+# legacy fit, no p_legacy, no legacy_brier.
 
 # Lock B — sample weights threaded through sklearn fit at Stage 3.B.
 # Exposed here as constants so tests can pin the values.
@@ -394,48 +394,6 @@ def winsorize_x_now(
         else:
             clipped[key] = val
     return clipped, fields_clipped
-
-
-def should_fire_ensemble(
-    modern_brier: float,
-    legacy_brier: float,
-) -> bool:
-    """L6 lock — ensemble fires when modern fit is materially worse
-    than legacy fit by Brier score divergence:
-
-        (modern_brier - legacy_brier) / legacy_brier > 0.15
-
-    Strict > comparison: 15.0% exactly does NOT fire (T7 boundary
-    pin). At zero or near-zero legacy_brier, returns False — the
-    ratio is undefined and we'd rather miss an edge case than
-    fire on a degenerate division. Negative or zero values for
-    either Brier also return False (defensive — Brier scores are
-    non-negative).
-    """
-    if legacy_brier is None or legacy_brier <= 1e-9:
-        return False
-    if modern_brier is None or modern_brier < 0:
-        return False
-    divergence = (modern_brier - legacy_brier) / legacy_brier
-    return divergence > ENSEMBLE_BRIER_DIVERGENCE_THRESHOLD
-
-
-def combine_ensemble_probs(
-    p_modern: float,
-    p_legacy: float,
-) -> float:
-    """L6 combination formula —
-    P_final = 0.7 * P_modern + 0.3 * P_legacy.
-
-    Returns a value clipped to [0, 1] to keep downstream rendering
-    sane against floating-point precision quirks.
-    """
-    raw = ENSEMBLE_MODERN_WEIGHT * p_modern + ENSEMBLE_LEGACY_WEIGHT * p_legacy
-    if raw < 0:
-        return 0.0
-    if raw > 1:
-        return 1.0
-    return float(raw)
 
 
 def is_prediction_cache_valid(
@@ -1912,7 +1870,7 @@ async def validation_audit_sweep(
             ecb_rows = await socrata.query(
                 "6bgk-3dad",
                 where=f"bin = '{bin_}'",
-                select=["bin", "ecb_number", "severity", "issue_date"],
+                select=["bin", "ecb_violation_number", "severity", "issue_date"],
                 limit=200,
             )
         except Exception as e:

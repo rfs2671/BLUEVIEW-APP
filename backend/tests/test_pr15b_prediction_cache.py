@@ -1,11 +1,15 @@
-"""PR #15B — prediction_cache sub-document shape + ensemble logic.
+"""PR #15B — prediction_cache sub-document shape + label format.
 
-5 tests in TestPredictionCache:
+3 tests in TestPredictionCache:
   1. test_prediction_cache_shape_matches_spec
   2. test_prediction_cache_schema_version_invalidation
-  3. test_ensemble_trigger_at_brier_divergence_14_9_pct_no_fire (L6, T7)
-  4. test_ensemble_trigger_at_brier_divergence_15_1_pct_fires (L6, T7)
-  5. test_prediction_cache_anchored_baseline_label_format (L8)
+  3. test_prediction_cache_anchored_baseline_label_format (L8)
+
+PR #15D.2 — the L6/T7 ensemble-trigger tests were removed alongside the
+should_fire_ensemble + combine_ensemble_probs helpers, which were never
+called from any production inference path (spec audit §3.5). The deployed
+fit pipeline is a single sklearn LogisticRegression over weighted rows
+(modern=1.0, legacy=0.4) — no separate legacy fit, no p_legacy.
 """
 
 from __future__ import annotations
@@ -129,61 +133,6 @@ class TestPredictionCache(unittest.TestCase):
                 "model_coefficients_hash": "abc",
             }),
             msg="Current schema_version='pr15b_v1' must be valid.",
-        )
-
-    def test_ensemble_trigger_at_brier_divergence_14_9_pct_no_fire(self):
-        """L6 + T7 — divergence < 15% must NOT trigger ensemble.
-
-        modern_brier=0.1, legacy_brier=0.087 → divergence=14.94%."""
-        try:
-            from lib.statistical_engine.live_mutation import (
-                should_fire_ensemble,
-            )
-        except ImportError:
-            self.fail(
-                "Stage 3 PR #15B: implement should_fire_ensemble("
-                "modern_brier: float, legacy_brier: float) -> bool. "
-                "Returns True iff (modern_brier - legacy_brier) / "
-                "legacy_brier > 0.15. Lock L6 formula."
-            )
-        # divergence = (0.1 - 0.087) / 0.087 = 0.1494
-        self.assertFalse(
-            should_fire_ensemble(0.1, 0.087),
-            msg=(
-                "T7 boundary: divergence=14.94% must NOT fire. "
-                "Stage 3 L6: strict > comparison, not >=."
-            ),
-        )
-
-    def test_ensemble_trigger_at_brier_divergence_15_1_pct_fires(self):
-        """L6 + T7 — divergence > 15% triggers ensemble.
-
-        modern_brier=0.1, legacy_brier=0.0868 → divergence=15.21%."""
-        try:
-            from lib.statistical_engine.live_mutation import (
-                should_fire_ensemble,
-                combine_ensemble_probs,
-            )
-        except ImportError:
-            self.fail(
-                "Stage 3 PR #15B: implement should_fire_ensemble + "
-                "combine_ensemble_probs(p_modern, p_legacy) -> float. "
-                "L6: divergence > 15%. Combination formula: "
-                "P_final = 0.7 * P_modern + 0.3 * P_legacy."
-            )
-        # divergence = (0.1 - 0.0868) / 0.0868 = 0.1521
-        self.assertTrue(
-            should_fire_ensemble(0.1, 0.0868),
-            msg="T7 boundary: divergence=15.21% MUST fire ensemble.",
-        )
-        # Combination check: 0.7 * 0.4 + 0.3 * 0.6 = 0.46
-        combined = combine_ensemble_probs(0.4, 0.6)
-        self.assertAlmostEqual(
-            combined, 0.46, delta=1e-6,
-            msg=(
-                f"Ensemble formula must be 0.7 * P_modern + 0.3 * "
-                f"P_legacy. Expected 0.46, got {combined}."
-            ),
         )
 
     def test_prediction_cache_anchored_baseline_label_format(self):
