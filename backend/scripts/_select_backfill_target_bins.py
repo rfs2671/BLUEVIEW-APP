@@ -84,7 +84,8 @@ OUTPUT_PATH = _HERE / "_backfill_target_bins.json"
 
 TARGET_TOTAL = 5_000
 RECENT_COMPLETION_WINDOW_DAYS = 18 * 30  # ~18 months
-SUPPLEMENTAL_SAMPLE_CAP = 3_000          # don't oversample tier C
+SUPPLEMENTAL_SAMPLE_CAP = 18_000         # ~16k needed at 31% dedupe ratio
+                                         # + 12% margin to reach 5k unique BINs
 
 
 def _normalize_bin(value: Any) -> Optional[str]:
