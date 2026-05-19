@@ -62,8 +62,56 @@ export function hazardRatioToStatusColor(ratio) {
   return tierToStatusColor(hazardRatioToColorTier(ratio));
 }
 
+// ── PR #15D.1 — presentation-layer helpers ───────────────────────
+//
+// Note for future maintainers: the helpers below are FRONTEND
+// presentation concerns (arrow direction + GC-readable verdict
+// prose). They do NOT have a backend mirror — the T8' lock that
+// pins hazardRatioToColorTier byte-for-byte against
+// hazard_ratio_to_color_tier in backend/lib/statistical_engine/
+// live_mutation.py:223 applies ONLY to that original color-tier
+// function. Diverging behavior here is intentional: the 1.10/0.90
+// dead-band below is a UI affordance for the directional arrow,
+// not a model parameter.
+
+// ── Direction indicator (lock C4) ─────────────────────────────────
+//   ratio > 1.10  → 'up'    (↑ — meaningfully above cohort)
+//   ratio < 0.90  → 'down'  (↓ — meaningfully below cohort)
+//   else / null / NaN / inf / negative → 'flat' (─)
+//
+// The ±10% dead-band around 1.0× prevents the arrow from flickering
+// up/down on essentially-equal ratios. Wider than typical rounding
+// noise; narrower than the L6 color-tier boundaries.
+export function hazardRatioToDirection(ratio) {
+  if (ratio === null || ratio === undefined) return 'flat';
+  const r = Number(ratio);
+  if (Number.isNaN(r) || !Number.isFinite(r)) return 'flat';
+  if (r < 0) return 'flat';   // defensive — impossible mathematically
+  if (r > 1.10) return 'up';
+  if (r < 0.90) return 'down';
+  return 'flat';
+}
+
+// ── Tier → GC-readable verdict label (lock C3) ───────────────────
+// Maps the 5-tier output from hazardRatioToColorTier to the operator-
+// approved verdict prose. 'neutral' renders as an em-dash so the row
+// stays visually balanced when the ratio is unavailable.
+export function tierToVerdictLabel(tier) {
+  switch (tier) {
+    case 'green':   return 'Below typical';
+    case 'yellow':  return 'Tracking normal';
+    case 'amber':   return 'Elevated';
+    case 'orange':  return 'Watch closely';
+    case 'red':     return 'High risk this period';
+    case 'neutral':
+    default:        return '—';
+  }
+}
+
 export default {
   hazardRatioToColorTier,
   tierToStatusColor,
   hazardRatioToStatusColor,
+  hazardRatioToDirection,
+  tierToVerdictLabel,
 };
