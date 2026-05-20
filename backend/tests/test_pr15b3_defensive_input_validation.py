@@ -15,7 +15,7 @@ Production Stage 10 (post-PR-#15B.2) surfaced 3 remaining issues:
   • Sigmoid saturated to exactly 1.0 for extreme β · x_now logits →
     UI displayed 100% risk, an unhelpful and misleading signal.
   • Live x_now compute occasionally returned None/NaN/inf for the
-    derived_lifecycle_stage_pct feature (PR #15A bug carried
+    schedule_position_ratio feature (PR #15A bug carried
     forward; surfacing as numeric exception in predict_for_live).
 
 Defensive Site fixes:
@@ -128,7 +128,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
                 "active_swo_flag":               (0.0, 1.0),
                 "complaint_velocity_14d":        (1.5, 1.5),
                 "days_since_last_violation":     (40.0, 25.0),
-                "derived_lifecycle_stage_pct":   (50.0, 25.0),
+                "schedule_position_ratio":   (50.0, 25.0),
                 "district_caseload_proxy_days":  (7.0, 0.0),   # ← ZERO sigma
             },
         )
@@ -185,7 +185,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":               20.0,
             "complaint_velocity_14d":        10.0,
             "days_since_last_violation":      5.0,
-            "derived_lifecycle_stage_pct":    5.0,
+            "schedule_position_ratio":    5.0,
             "district_caseload_proxy_days":   5.0,
         }
         # All x_std values positive → logit massively positive (sum ~ 100+)
@@ -193,7 +193,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":               5.0,
             "complaint_velocity_14d":        5.0,
             "days_since_last_violation":     5.0,
-            "derived_lifecycle_stage_pct":   5.0,
+            "schedule_position_ratio":   5.0,
             "district_caseload_proxy_days":  5.0,
         }
         result = _apply_beta_to_x_now(beta, x_std)
@@ -220,14 +220,14 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":              -20.0,
             "complaint_velocity_14d":       -10.0,
             "days_since_last_violation":     -5.0,
-            "derived_lifecycle_stage_pct":   -5.0,
+            "schedule_position_ratio":   -5.0,
             "district_caseload_proxy_days":  -5.0,
         }
         x_std = {
             "active_swo_flag":               5.0,
             "complaint_velocity_14d":        5.0,
             "days_since_last_violation":     5.0,
-            "derived_lifecycle_stage_pct":   5.0,
+            "schedule_position_ratio":   5.0,
             "district_caseload_proxy_days":  5.0,
         }
         result = _apply_beta_to_x_now(beta, x_std)
@@ -285,7 +285,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":               0.0,
             "complaint_velocity_14d":        None,  # ← invalid
             "days_since_last_violation":     45.0,
-            "derived_lifecycle_stage_pct":   50.0,
+            "schedule_position_ratio":   50.0,
             "district_caseload_proxy_days":  7.0,
         }
         project, db, socrata, now = self._setup_for_x_now_test(bad_x_now)
@@ -339,7 +339,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":               0.0,
             "complaint_velocity_14d":        1.5,
             "days_since_last_violation":     float("nan"),  # ← invalid
-            "derived_lifecycle_stage_pct":   50.0,
+            "schedule_position_ratio":   50.0,
             "district_caseload_proxy_days":  7.0,
         }
         project, db, socrata, now = self._setup_for_x_now_test(bad_x_now)
@@ -384,7 +384,7 @@ class TestDefensiveInputValidation(unittest.TestCase):
             "active_swo_flag":               0.0,
             "complaint_velocity_14d":        float("inf"),  # ← invalid
             "days_since_last_violation":     40.0,
-            "derived_lifecycle_stage_pct":   50.0,
+            "schedule_position_ratio":   50.0,
             "district_caseload_proxy_days":  7.0,
         }
         project, db, socrata, now = self._setup_for_x_now_test(bad_x_now)

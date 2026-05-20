@@ -1,8 +1,17 @@
 """PR #15A Stage 2.B — Cohort-derived milestone calibration tests.
 
-Lock 1.2: derived_lifecycle_stage_pct uses cohort-median time-to-
-milestone ratios (foundation_pct, structural_pct, c_of_o_final_pct)
-rather than hardcoded _MILESTONE_COMPLETION_PCT defaults.
+Lock 1.2 (PR #15A original): derived_lifecycle_stage_pct used cohort-
+median time-to-milestone ratios (foundation_pct, structural_pct,
+c_of_o_final_pct) rather than hardcoded _MILESTONE_COMPLETION_PCT
+defaults.
+
+Phase 1 Week 2 supersedes Lock 1.2: the cohort-constant lifecycle
+feature was replaced by per-(member, day) schedule_position_ratio =
+max(0, elapsed_days_since_initial_permit) / cohort_median_duration_
+days, clamped at 1.5. The cohort_derived_milestone_pct calibration
+tested here remains in the codebase as a separate diagnostic surface
+but no longer feeds the state vector. These tests pin the calibration
+math itself, which is still used by lifecycle telemetry.
 
 Fallback: when cohort has <30 contributing members for a given
 milestone, the hardcoded baselines._MILESTONE_COMPLETION_PCT values

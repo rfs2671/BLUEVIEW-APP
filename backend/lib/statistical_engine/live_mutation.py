@@ -97,7 +97,7 @@ STATE_VECTOR_FEATURES: Tuple[str, ...] = (
     "active_swo_flag",
     "complaint_velocity_14d",
     "days_since_last_violation",
-    "derived_lifecycle_stage_pct",
+    "schedule_position_ratio",
     "district_caseload_proxy_days",
 )
 
@@ -545,7 +545,7 @@ def build_prediction_cache(
     cohort_sample_size: int = 0,
     low_confidence_flag: bool = False,
     is_cold_start: bool = False,
-    lifecycle_stage_pct: Optional[float] = None,
+    schedule_position_ratio: Optional[float] = None,
     district_caseload_proxy_days: Optional[float] = None,
     model_coefficients_hash: Optional[str] = None,
     fit_at: Optional[datetime] = None,
@@ -590,7 +590,7 @@ def build_prediction_cache(
         "is_cold_start":         is_cold_start,
 
         # Lifecycle + caseload proxy snapshots
-        "lifecycle_stage_pct":           lifecycle_stage_pct,
+        "schedule_position_ratio":       schedule_position_ratio,
         "district_caseload_proxy_days":  district_caseload_proxy_days,
 
         # Validation linkage
@@ -609,7 +609,7 @@ def build_cold_start_prediction_cache(
     project_type: str,
     borough_baseline_probs: Dict[str, float],
     cohort_sample_size: int = 0,
-    lifecycle_stage_pct: Optional[float] = None,
+    schedule_position_ratio: Optional[float] = None,
     district_caseload_proxy_days: Optional[float] = None,
     fit_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
@@ -642,7 +642,7 @@ def build_cold_start_prediction_cache(
         cohort_sample_size=cohort_sample_size,
         low_confidence_flag=True,
         is_cold_start=True,
-        lifecycle_stage_pct=lifecycle_stage_pct,
+        schedule_position_ratio=schedule_position_ratio,
         district_caseload_proxy_days=district_caseload_proxy_days,
         model_coefficients_hash=None,
         fit_at=fit_at,
@@ -667,6 +667,114 @@ _SWO_CLOSED_STATES: Tuple[str, ...] = (
 _SEVERE_ECB_SEVERITIES: Tuple[str, ...] = (
     "CLASS - 1", "CLASS - 2", "Hazardous",
 )
+
+
+async def _compute_schedule_position_live(
+    db: Any,
+    project: Dict[str, Any],
+    cur_now: datetime,
+) -> Optional[float]:
+    """Phase 1 Week 2 — compute schedule_position_ratio for the
+    active project at request time.
+
+    Reads earliest Initial Permit from socrata_permits_historical
+    (Phase 1 Week 1 backfill) and cohort_median_duration_days from
+    the latest prediction_models doc. Returns None when either
+    lookup is empty, when the project's BIN isn't in the 5k-BIN
+    backfill scope, or when the helper's guards kick in.
+
+    Caller (compute_x_now_for_project) chains the fallback:
+      live compute → prediction_cache.schedule_position_ratio →
+      panel_mu (via existing _substitute_panel_mu_for_nones path).
+    """
+    # Lazy import to avoid module-level cycle.
+    from lib.statistical_engine.baselines import (
+        _schedule_position_for_member_on_day,
+    )
+
+    bin_ = project.get("nyc_bin")
+    if not bin_:
+        return None
+
+    permits_coll = getattr(db, "socrata_permits_historical", None)
+    if permits_coll is None:
+        return None
+
+    try:
+        rows = await permits_coll.find(
+            {"bin": str(bin_), "filing_reason": "Initial Permit"},
+            {"bin": 1, "issued_date": 1},
+        ).to_list(length=None)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[phase1w2] permits_historical lookup failed for bin=%r: %r",
+            bin_, e,
+        )
+        return None
+
+    earliest: Optional[datetime] = None
+    for r in rows or []:
+        issued_raw = r.get("issued_date")
+        issued_dt: Optional[datetime] = None
+        if isinstance(issued_raw, datetime):
+            issued_dt = (issued_raw if issued_raw.tzinfo
+                         else issued_raw.replace(tzinfo=timezone.utc))
+        elif isinstance(issued_raw, str) and len(issued_raw) >= 10:
+            # ISO "YYYY-MM-DDTHH:MM:SS..." or "YYYY-MM-DD"
+            try:
+                issued_dt = datetime(
+                    int(issued_raw[0:4]),
+                    int(issued_raw[5:7]),
+                    int(issued_raw[8:10]),
+                    tzinfo=timezone.utc,
+                )
+            except (ValueError, TypeError):
+                issued_dt = None
+        if issued_dt is None:
+            continue
+        if earliest is None or issued_dt < earliest:
+            earliest = issued_dt
+
+    if earliest is None:
+        return None
+
+    # Read cohort_median_duration_days from the latest prediction_models
+    # doc. If absent (cold-start projects), the helper returns None.
+    cohort_median: Optional[float] = None
+    models_coll = getattr(db, "prediction_models", None)
+    if models_coll is not None:
+        project_id = str(project.get("_id") or project.get("id") or "")
+        try:
+            doc = await models_coll.find_one(
+                {"project_id": project_id},
+                sort=[("fit_at", -1)],
+            )
+            if doc:
+                v = doc.get("cohort_median_duration_days")
+                if isinstance(v, (int, float)):
+                    cohort_median = float(v)
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning(
+                "[phase1w2] prediction_models lookup failed for "
+                "project=%r: %r", project_id, e,
+            )
+
+    # Fall back to peer_stats_cache.peer_criteria if prediction_models
+    # path didn't yield a value (e.g., project never fit yet).
+    if cohort_median is None:
+        criteria = (
+            (project.get("peer_stats_cache") or {})
+            .get("peer_criteria") or {}
+        )
+        v = criteria.get("cohort_median_duration_days")
+        if isinstance(v, (int, float)):
+            cohort_median = float(v)
+
+    return _schedule_position_for_member_on_day(
+        earliest_issued=earliest,
+        cohort_median_duration_days=cohort_median,
+        target_date=cur_now,
+    )
 
 
 def _yyyymmdd(dt: datetime) -> str:
@@ -800,9 +908,18 @@ async def compute_x_now_for_project(
                                     last 14 days
       • days_since_last_violation — max(violation_date) clamped
                                     [0, 90]
-      • derived_lifecycle_stage_pct → cached on project.prediction_cache
-                                       (from nightly refit). 0.0 when
-                                       no prior fit available.
+      • schedule_position_ratio → Phase 1 Week 2: per-project
+                                   elapsed-progress ratio computed
+                                   live from project.nyc_bin's
+                                   earliest Initial Permit (Mongo
+                                   socrata_permits_historical) and
+                                   prediction_models.cohort_median_
+                                   duration_days. Falls back to
+                                   prediction_cache.schedule_position_
+                                   ratio (last nightly value) if the
+                                   live lookup yields None, then to
+                                   panel_mu via the existing
+                                   _substitute_panel_mu_for_nones path.
       • district_caseload_proxy_days → cached on project.prediction_cache.
                                        0.0 when absent.
 
@@ -813,11 +930,29 @@ async def compute_x_now_for_project(
     project_id = str(project.get("_id") or project.get("id") or "")
     cache = project.get("prediction_cache") or {}
 
+    # Phase 1 Week 2 — live schedule_position_ratio. Read the
+    # project's earliest Initial Permit from socrata_permits_historical
+    # (Phase 1 Week 1 backfill), then divide by cohort_median_duration_
+    # days from the latest prediction_models doc. Fall back to the
+    # cache value if the live lookup misses (BIN outside 5k backfill
+    # scope, no Initial Permit row, missing duration). Final fallback
+    # to panel_mu happens in _substitute_panel_mu_for_nones downstream.
+    schedule_position_live = await _compute_schedule_position_live(
+        db, project, cur_now,
+    )
+    if schedule_position_live is None:
+        cached_sp = cache.get("schedule_position_ratio")
+        schedule_position_value = (
+            float(cached_sp) if cached_sp is not None else 0.0
+        )
+    else:
+        schedule_position_value = schedule_position_live
+
     out: Dict[str, float] = {
         "active_swo_flag":              0.0,
         "complaint_velocity_14d":       0.0,
         "days_since_last_violation":    90.0,
-        "derived_lifecycle_stage_pct":  float(cache.get("lifecycle_stage_pct") or 0.0),
+        "schedule_position_ratio":      schedule_position_value,
         "district_caseload_proxy_days": float(cache.get("district_caseload_proxy_days") or 0.0),
     }
 
@@ -1511,9 +1646,9 @@ async def predict_for_project_nightly(
                 cohort_sample_size=sample_size,
                 low_confidence_flag=(sample_size < HIGH_CONFIDENCE_SAMPLE_SIZE_FLOOR),
                 is_cold_start=False,
-                lifecycle_stage_pct=(
+                schedule_position_ratio=(
                     (cache.get("peer_criteria") or {})
-                    .get("derived_lifecycle_stage_pct")
+                    .get("schedule_position_ratio")
                 ),
                 district_caseload_proxy_days=(x_now or {}).get(
                     "district_caseload_proxy_days"

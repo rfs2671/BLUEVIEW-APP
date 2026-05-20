@@ -172,7 +172,7 @@ class TestLiveMutationEngine(unittest.TestCase):
                 "active_swo_flag",
                 "complaint_velocity_14d",
                 "days_since_last_violation",
-                "derived_lifecycle_stage_pct",
+                "schedule_position_ratio",
                 "district_caseload_proxy_days",
             },
             msg=(
@@ -284,21 +284,21 @@ class TestLiveMutationEngine(unittest.TestCase):
             "active_swo_flag": 0.0,
             "complaint_velocity_14d": 50.0,  # 30σ above mean → clip
             "days_since_last_violation": 40.0,
-            "derived_lifecycle_stage_pct": 50.0,
+            "schedule_position_ratio": 50.0,
             "district_caseload_proxy_days": 7.0,
         }
         mu = {
             "active_swo_flag": 0.2,
             "complaint_velocity_14d": 5.0,
             "days_since_last_violation": 40.0,
-            "derived_lifecycle_stage_pct": 50.0,
+            "schedule_position_ratio": 50.0,
             "district_caseload_proxy_days": 7.0,
         }
         sigma = {
             "active_swo_flag": 0.4,
             "complaint_velocity_14d": 2.0,
             "days_since_last_violation": 25.0,
-            "derived_lifecycle_stage_pct": 25.0,
+            "schedule_position_ratio": 25.0,
             "district_caseload_proxy_days": 3.0,
         }
         clipped, fields_clipped = winsorize_x_now(x_raw, mu, sigma, k=3.0)
@@ -343,7 +343,7 @@ class TestLiveMutationEngine(unittest.TestCase):
                 "intercept": -2.5, "active_swo_flag": 1.2,
                 "complaint_velocity_14d": 0.3,
                 "days_since_last_violation": -0.02,
-                "derived_lifecycle_stage_pct": 0.01,
+                "schedule_position_ratio": 0.01,
                 "district_caseload_proxy_days": 0.05,
             },
         )
@@ -422,7 +422,7 @@ class TestLiveMutationEngine(unittest.TestCase):
                 "intercept": -2.5, "active_swo_flag": 1.2,
                 "complaint_velocity_14d": 0.3,
                 "days_since_last_violation": -0.02,
-                "derived_lifecycle_stage_pct": 0.01,
+                "schedule_position_ratio": 0.01,
                 "district_caseload_proxy_days": 0.05,
             },
         )
@@ -466,7 +466,7 @@ class TestLiveMutationEngine(unittest.TestCase):
                 "intercept": -2.5, "active_swo_flag": 1.2,
                 "complaint_velocity_14d": 0.3,
                 "days_since_last_violation": -0.02,
-                "derived_lifecycle_stage_pct": 0.01,
+                "schedule_position_ratio": 0.01,
                 "district_caseload_proxy_days": 0.05,
             },
         )

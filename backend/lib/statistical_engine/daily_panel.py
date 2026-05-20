@@ -11,7 +11,10 @@ active project's peer cohort. Each row carries:
         x[0] active_swo_flag                  (int 0|1, BIN-keyed)
         x[1] complaint_velocity_14d           (raw count, BIN+BBL)
         x[2] days_since_last_violation        (clamped [0, 90])
-        x[3] derived_lifecycle_stage_pct      (cohort-calibrated)
+        x[3] schedule_position_ratio          (per-(member, day):
+                                               max(0, elapsed) /
+                                               cohort_median_duration,
+                                               clamped at 1.5)
         x[4] district_caseload_proxy_days     (CD-keyed rolling 30d)
 
   • Outcome columns
@@ -74,6 +77,7 @@ from lib.statistical_engine.baselines import (
     _parse_pkdm_date,
     _parse_socrata_dt,
     _parse_socrata_yyyymmdd,
+    _schedule_position_for_member_on_day,
     _soql_in,
     _soql_quote,
     _chunk,
@@ -656,6 +660,76 @@ def _earliest_initial_permit_date(
     return min(candidates) if candidates else None
 
 
+async def _fetch_earliest_initial_permit_per_bin(
+    db: Any,
+    cohort_bins: List[str],
+) -> Dict[str, Optional[datetime]]:
+    """Phase 1 Week 2 — pre-fetch each cohort BIN's earliest Initial
+    Permit ``issued_date`` from ``socrata_permits_historical``.
+
+    Returns ``{bin: earliest_issued_datetime}``. BINs without any
+    Initial Permit row (e.g., BINs outside the Phase 1 Week 1
+    5k-BIN backfill scope) are ABSENT from the returned dict so
+    callers use ``dict.get(bin_id)`` for None-on-miss semantics.
+
+    The lookup is a single Motor ``find()`` with the BINs IN-listed;
+    Python-side reduce picks the min issued_date per BIN. The Mongo
+    compound index ``(bin, ...)`` from Phase 1 Week 1 Gate 2 covers
+    the WHERE clause.
+
+    Defensive: empty cohort_bins → empty dict. db.socrata_permits_
+    historical absent → empty dict (panel rows fall through to
+    None ratio → panel_mu fallback in live inference).
+    """
+    if not cohort_bins:
+        return {}
+    permits_coll = getattr(db, "socrata_permits_historical", None)
+    if permits_coll is None:
+        return {}
+
+    bin_list = [b for b in cohort_bins if b]
+    if not bin_list:
+        return {}
+
+    try:
+        rows = await permits_coll.find(
+            {"bin": {"$in": bin_list}, "filing_reason": "Initial Permit"},
+            {"bin": 1, "issued_date": 1},
+        ).to_list(length=None)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[daily_panel] permits_historical pre-fetch failed: %r", e,
+        )
+        return {}
+
+    out: Dict[str, Optional[datetime]] = {}
+    for r in rows or []:
+        bin_id = r.get("bin")
+        if not bin_id:
+            continue
+        issued_raw = r.get("issued_date")
+        issued_dt: Optional[datetime] = None
+        if isinstance(issued_raw, datetime):
+            issued_dt = (issued_raw if issued_raw.tzinfo
+                         else issued_raw.replace(tzinfo=timezone.utc))
+        elif isinstance(issued_raw, str) and len(issued_raw) >= 10:
+            try:
+                issued_dt = datetime(
+                    int(issued_raw[0:4]),
+                    int(issued_raw[5:7]),
+                    int(issued_raw[8:10]),
+                    tzinfo=timezone.utc,
+                )
+            except (ValueError, TypeError):
+                issued_dt = None
+        if issued_dt is None:
+            continue
+        cur = out.get(bin_id)
+        if cur is None or issued_dt < cur:
+            out[bin_id] = issued_dt
+    return out
+
+
 def _earliest_permit_date_for_work_type(
     permits: List[Dict[str, Any]],
     work_type: str,
@@ -974,7 +1048,7 @@ async def compute_daily_panel(
          outcome_violation_d_to_d_plus_7 (T5).
       10. Bulk insert into db.daily_panels.
       11. Persist provenance_checksum + cohort_derived_milestone_pct
-          + derived_lifecycle_stage_pct hint back to project
+          + schedule_position_ratio hint back to project
           peer_stats_cache via db.projects.update_one.
       12. Return inserted rows (caller can assert + telemetry).
     """
@@ -1032,7 +1106,7 @@ async def compute_daily_panel(
                 "source": "hardcoded_fallback",
                 **_MILESTONE_COMPLETION_PCT,
             },
-            derived_lifecycle_stage_pct=None,
+            schedule_position_ratio=None,
         )
         return []
 
@@ -1045,6 +1119,19 @@ async def compute_daily_panel(
     cohort_bins = [
         e.get("bin") for e in filtered_provenance if e.get("bin")
     ]
+
+    # Step 5.5 — Phase 1 Week 2: pre-fetch earliest Initial Permit
+    # date per cohort BIN from socrata_permits_historical (Phase 1
+    # Week 1 backfill). Cached for the run; consumed by B6 panel-row
+    # emission to compute per-(member, day) schedule_position_ratio.
+    #
+    # Cohort BINs outside the 5k-BIN backfill scope return None
+    # (dict.get(bin_id) miss); panel row emits ratio=None for those
+    # members; live inference falls back via
+    # _substitute_panel_mu_for_nones.
+    earliest_issued_by_bin: Dict[str, Optional[datetime]] = (
+        await _fetch_earliest_initial_permit_per_bin(db, cohort_bins)
+    )
 
     # Step 6 — Event histories (parallel).
     ecb_task = _fetch_ecb_violations_for_cohort_bins(
@@ -1089,11 +1176,12 @@ async def compute_daily_panel(
     lifecycle_start = cur_now - timedelta(days=panel_window_days - 1)
     panel_rows: List[Dict[str, Any]] = []
     target_class = (criteria.get("target_state") or {}).get("bldgclass")
-    foundation_pct_value = (
-        milestone_pct.get("foundation")
-        if isinstance(milestone_pct.get("foundation"), (int, float))
-        else _MILESTONE_COMPLETION_PCT.get("foundation", 0.20)
-    )
+
+    # Phase 1 Week 2 — cohort_median_duration_days is the denominator
+    # for schedule_position_ratio. Already stored on the project's
+    # peer_criteria by compute_peer_stats_full; None for cold-start
+    # cohorts (helper returns None for those rows).
+    cohort_median_duration_days = criteria.get("cohort_median_duration_days")
 
     for entry in filtered_provenance:
         bbl_n = normalize_bbl(entry.get("bbl"))
@@ -1110,6 +1198,11 @@ async def compute_daily_panel(
         swo_transitions = _compute_active_swo_timeline_per_bin(
             bin_swo_events, lifecycle_start, cur_now,
         )
+
+        # Phase 1 Week 2 — per-member earliest Initial Permit anchor.
+        # None for cohort BINs outside the Phase 1 Week 1 backfill
+        # scope; helper returns None → panel_mu fallback in inference.
+        member_earliest_issued = earliest_issued_by_bin.get(bin_id)
 
         for day_offset in range(panel_window_days):
             day_dt = lifecycle_start + timedelta(days=day_offset)
@@ -1140,6 +1233,17 @@ async def compute_daily_panel(
                     day_dt < v <= window_end for v in bin_violations
                 )
 
+            # Phase 1 Week 2 — per-(member, day) schedule_position_ratio.
+            # Replaces the cohort-constant foundation_pct_value broadcast
+            # of the old derived_lifecycle_stage_pct. Returns None when
+            # the member's BIN isn't in socrata_permits_historical or
+            # the cohort has no duration data.
+            schedule_position = _schedule_position_for_member_on_day(
+                earliest_issued=member_earliest_issued,
+                cohort_median_duration_days=cohort_median_duration_days,
+                target_date=day_dt,
+            )
+
             row = {
                 "project_id":           project_id,
                 "cohort_member_bbl":    bbl_n,
@@ -1152,7 +1256,7 @@ async def compute_daily_panel(
                     "active_swo_flag":              int(active_swo),
                     "complaint_velocity_14d":       int(velocity),
                     "days_since_last_violation":    int(days_since_violation),
-                    "derived_lifecycle_stage_pct":  float(foundation_pct_value),
+                    "schedule_position_ratio":      schedule_position,
                     "district_caseload_proxy_days": float(caseload_proxy_value),
                 },
                 "outcome_violation_d":              bool(outcome_d),
@@ -1175,11 +1279,15 @@ async def compute_daily_panel(
             )
 
     # Step 11 — Persist provenance meta on project (peer_stats_cache).
+    # Phase 1 Week 2 — schedule_position_ratio is computed live per
+    # request (see compute_x_now_for_project._compute_schedule_position_live)
+    # so the persisted cache value is just a None placeholder. The
+    # live path is the source of truth.
     await _persist_panel_meta(
         db, project,
         provenance_checksum=incoming_checksum,
         cohort_derived_milestone_pct=milestone_pct,
-        derived_lifecycle_stage_pct=foundation_pct_value,
+        schedule_position_ratio=None,
     )
 
     return panel_rows
@@ -1284,7 +1392,7 @@ async def _persist_panel_meta(
     *,
     provenance_checksum: str,
     cohort_derived_milestone_pct: Dict[str, Any],
-    derived_lifecycle_stage_pct: Optional[float],
+    schedule_position_ratio: Optional[float],
 ) -> None:
     """Write the 3 new peer_criteria keys back to the project doc
     via db.projects.update_one. Defensive on missing _id / db /
@@ -1300,7 +1408,7 @@ async def _persist_panel_meta(
     criteria = cache.setdefault("peer_criteria", {}) or {}
     cache["peer_criteria"] = criteria
     criteria["daily_panel_provenance_checksum"] = provenance_checksum
-    criteria["derived_lifecycle_stage_pct"] = derived_lifecycle_stage_pct
+    criteria["schedule_position_ratio"] = schedule_position_ratio
     criteria["cohort_derived_milestone_pct"] = cohort_derived_milestone_pct
 
     if project_id is None or db is None:
@@ -1315,7 +1423,7 @@ async def _persist_panel_meta(
                 "peer_stats_cache.peer_criteria."
                 "daily_panel_provenance_checksum": provenance_checksum,
                 "peer_stats_cache.peer_criteria."
-                "derived_lifecycle_stage_pct": derived_lifecycle_stage_pct,
+                "schedule_position_ratio": schedule_position_ratio,
                 "peer_stats_cache.peer_criteria."
                 "cohort_derived_milestone_pct": cohort_derived_milestone_pct,
             }},

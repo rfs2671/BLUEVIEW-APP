@@ -202,7 +202,7 @@ class TestPredictionValidationLedger(unittest.TestCase):
                     "active_swo_flag":              0,
                     "complaint_velocity_14d":       i,
                     "days_since_last_violation":    90 - i,
-                    "derived_lifecycle_stage_pct":  0.20,
+                    "schedule_position_ratio":  0.20,
                     "district_caseload_proxy_days": 7.0,
                 },
                 model_coefficients_hash="sha1-canon-test",

@@ -724,7 +724,7 @@ def make_daily_panel_fixture(
                     "active_swo_flag":              0,
                     "complaint_velocity_14d":       0,
                     "days_since_last_violation":    90,
-                    "derived_lifecycle_stage_pct":  0.20,
+                    "schedule_position_ratio":  0.20,
                     "district_caseload_proxy_days": 7.0,
                 },
                 "outcome_violation_d":              outcome_d,
@@ -896,7 +896,7 @@ def seed_daily_panels_fixture(
       active_swo_flag                 =  1.2
       complaint_velocity_14d          =  0.30
       days_since_last_violation       = -0.02
-      derived_lifecycle_stage_pct     =  0.01
+      schedule_position_ratio     =  0.01
       district_caseload_proxy_days    =  0.05
 
     Returns count inserted. Outcomes are right-censored for trailing
@@ -909,14 +909,14 @@ def seed_daily_panels_fixture(
         "active_swo_flag":               1.2,
         "complaint_velocity_14d":        0.30,
         "days_since_last_violation":    -0.02,
-        "derived_lifecycle_stage_pct":   0.01,
+        "schedule_position_ratio":   0.01,
         "district_caseload_proxy_days":  0.05,
     }
     dist = feature_dist or {
         "active_swo_flag":               (0.0, 1.0),     # bernoulli p=0.2 below
         "complaint_velocity_14d":        (1.5, 1.5),     # mean, sigma
         "days_since_last_violation":     (40.0, 25.0),   # mean, sigma; clamp [0, 90]
-        "derived_lifecycle_stage_pct":   (50.0, 25.0),   # mean, sigma; clamp [0, 100]
+        "schedule_position_ratio":   (0.5, 0.3),     # mean, sigma; clamp [0, 1.5]
         "district_caseload_proxy_days":  (7.0, 3.0),     # mean, sigma
     }
     bbl_pool = cohort_bbls or [f"3010{i:06d}" for i in range(20)]
@@ -928,14 +928,14 @@ def seed_daily_panels_fixture(
             swo = 1 if rng.random() < 0.2 else 0
             vel = max(0, rng.gauss(*dist["complaint_velocity_14d"]))
             dsv = max(0, min(90, rng.gauss(*dist["days_since_last_violation"])))
-            lcp = max(0, min(100, rng.gauss(*dist["derived_lifecycle_stage_pct"])))
+            lcp = max(0, min(1.5, rng.gauss(*dist["schedule_position_ratio"])))
             cdp = max(0, rng.gauss(*dist["district_caseload_proxy_days"]))
             # logistic outcome
             z = (beta["intercept"]
                  + beta["active_swo_flag"] * swo
                  + beta["complaint_velocity_14d"] * vel
                  + beta["days_since_last_violation"] * dsv
-                 + beta["derived_lifecycle_stage_pct"] * lcp
+                 + beta["schedule_position_ratio"] * lcp
                  + beta["district_caseload_proxy_days"] * cdp)
             p = 1.0 / (1.0 + 2.718281828 ** (-z))
             # outcome_d_to_d_plus_7: censor trailing 7 days
@@ -951,7 +951,7 @@ def seed_daily_panels_fixture(
                     "active_swo_flag":              swo,
                     "complaint_velocity_14d":       vel,
                     "days_since_last_violation":    dsv,
-                    "derived_lifecycle_stage_pct":  lcp,
+                    "schedule_position_ratio":  lcp,
                     "district_caseload_proxy_days": cdp,
                 },
                 "outcome_violation_d_to_d_plus_7": outcome,
@@ -988,14 +988,14 @@ def seed_prediction_models_fixture(
         "active_swo_flag":               0.20,
         "complaint_velocity_14d":        1.50,
         "days_since_last_violation":     40.0,
-        "derived_lifecycle_stage_pct":   50.0,
+        "schedule_position_ratio":       0.50,
         "district_caseload_proxy_days":  7.0,
     }
     sigma = sigma or {
         "active_swo_flag":               0.40,
         "complaint_velocity_14d":        1.50,
         "days_since_last_violation":     25.0,
-        "derived_lifecycle_stage_pct":   25.0,
+        "schedule_position_ratio":       0.30,
         "district_caseload_proxy_days":  3.0,
     }
     serialized = (
@@ -1054,7 +1054,7 @@ def mock_sklearn_fit_predict(
     weights = sample_weights or {"modern": 1.0, "legacy": 0.4}
     feature_keys = (
         "active_swo_flag", "complaint_velocity_14d",
-        "days_since_last_violation", "derived_lifecycle_stage_pct",
+        "days_since_last_violation", "schedule_position_ratio",
         "district_caseload_proxy_days",
     )
 
@@ -1091,7 +1091,7 @@ def mock_sklearn_fit_predict(
         "active_swo_flag":              float(clf.coef_[0][0]),
         "complaint_velocity_14d":       float(clf.coef_[0][1]),
         "days_since_last_violation":    float(clf.coef_[0][2]),
-        "derived_lifecycle_stage_pct":  float(clf.coef_[0][3]),
+        "schedule_position_ratio":  float(clf.coef_[0][3]),
         "district_caseload_proxy_days": float(clf.coef_[0][4]),
     }
     mu = {k: float(scaler.mean_[i]) for i, k in enumerate(feature_keys)}

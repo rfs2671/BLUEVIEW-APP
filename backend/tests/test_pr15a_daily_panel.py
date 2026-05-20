@@ -828,6 +828,243 @@ class TestDailyPanel(unittest.TestCase):
         self.assertEqual(segments.get("modern_count"), 80)
         self.assertEqual(segments.get("legacy_count"), 40)
 
+    # ──────────────────────────────────────────────────────────
+    # Phase 1 Week 2 — schedule_position_ratio per-(member, day)
+    # ──────────────────────────────────────────────────────────
+
+    def _build_db_with_permits(self, permit_rows):
+        """Attach a minimal socrata_permits_historical stub onto
+        the standard _StubDb. The B3 prefetch reads via
+        db.socrata_permits_historical.find({...}, {...}); the stub
+        below supports that single query shape."""
+        db = _StubDb()
+        db.socrata_permits_historical = _StubPermitsHistorical(permit_rows)
+        return db
+
+    def test_earliest_issued_prefetch_returns_per_bin_dict(self):
+        """Phase 1 Week 2 D4 — B3 pre-fetch step builds per-BIN
+        earliest_issued dict from socrata_permits_historical.
+
+        Seed 3 cohort BINs × 2 permits each with different dates;
+        panel-row emission should use each BIN's MIN issued_date as
+        the start anchor for that member's schedule_position_ratio.
+        """
+        self._require_panel_helper()
+        socrata = MockSocrataClient()
+        cur_now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = _build_project_with_provenance(n_modern=3, n_legacy=0)
+        # Cohort BINs: 5001000000, 5001000001, 5001000002
+        project["peer_stats_cache"]["peer_criteria"][
+            "cohort_median_duration_days"
+        ] = 365.0  # 1-year expected duration
+
+        # Seed permits with KNOWN earliest_issued per BIN.
+        # BIN 5001000000 → 2025-11-21 (180 days before cur_now)
+        # BIN 5001000001 → 2026-02-19 (90 days before cur_now)
+        # BIN 5001000002 → 2026-05-05 (15 days before cur_now)
+        permit_rows = [
+            {"bin": "5001000000", "filing_reason": "Initial Permit",
+             "issued_date": "2025-11-21T00:00:00.000"},
+            {"bin": "5001000000", "filing_reason": "Initial Permit",
+             "issued_date": "2026-01-15T00:00:00.000"},   # later — dropped
+            {"bin": "5001000001", "filing_reason": "Initial Permit",
+             "issued_date": "2026-02-19T00:00:00.000"},
+            {"bin": "5001000001", "filing_reason": "Initial Permit",
+             "issued_date": "2026-03-30T00:00:00.000"},   # later — dropped
+            {"bin": "5001000002", "filing_reason": "Initial Permit",
+             "issued_date": "2026-05-05T00:00:00.000"},
+            {"bin": "5001000002", "filing_reason": "Initial Permit",
+             "issued_date": "2026-05-10T00:00:00.000"},   # later — dropped
+        ]
+
+        socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [])
+        socrata.seed(DATASET_DOB_COMPLAINTS, [])
+        socrata.seed(DATASET_311, [])
+
+        db = self._build_db_with_permits(permit_rows)
+        rows = _run(compute_daily_panel(
+            project=project, db=db, socrata=socrata,
+            panel_window_days=1, now=cur_now,
+        ))
+
+        # Trailing day_dt = cur_now. For BIN ...000 elapsed = 180,
+        # for ...001 elapsed = 90, for ...002 elapsed = 15. Ratio
+        # vs 365-day expected → ~0.493, ~0.247, ~0.041.
+        by_bin = {r["cohort_member_bin"]: r for r in rows}
+        self.assertEqual(set(by_bin), {
+            "5001000000", "5001000001", "5001000002",
+        })
+        r0 = by_bin["5001000000"]["x_features"]["schedule_position_ratio"]
+        r1 = by_bin["5001000001"]["x_features"]["schedule_position_ratio"]
+        r2 = by_bin["5001000002"]["x_features"]["schedule_position_ratio"]
+        self.assertAlmostEqual(r0, 180.0 / 365.0, places=2)
+        self.assertAlmostEqual(r1,  90.0 / 365.0, places=2)
+        self.assertAlmostEqual(r2,  15.0 / 365.0, places=2)
+
+    def test_earliest_issued_prefetch_skips_bins_without_initial_permit(self):
+        """Phase 1 Week 2 D4 — BINs with no Initial Permit rows in
+        socrata_permits_historical produce schedule_position_ratio =
+        None on every panel row. Downstream _substitute_panel_mu_for_nones
+        handles fallback. Backfill scope is 5k BINs; the cohort may
+        include BINs outside that scope, and those land here."""
+        self._require_panel_helper()
+        socrata = MockSocrataClient()
+        cur_now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = _build_project_with_provenance(n_modern=2, n_legacy=0)
+        project["peer_stats_cache"]["peer_criteria"][
+            "cohort_median_duration_days"
+        ] = 365.0
+
+        # Seed permits for only ONE of the two cohort BINs, and only
+        # with non-Initial Permit filing_reason for the other (must
+        # be skipped by the WHERE clause).
+        permit_rows = [
+            {"bin": "5001000000", "filing_reason": "Initial Permit",
+             "issued_date": "2025-11-21T00:00:00.000"},
+            {"bin": "5001000001", "filing_reason": "Renewal Permit",
+             "issued_date": "2026-01-15T00:00:00.000"},
+            # BIN 5001000001 has NO Initial Permit row.
+        ]
+
+        socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [])
+        socrata.seed(DATASET_DOB_COMPLAINTS, [])
+        socrata.seed(DATASET_311, [])
+
+        db = self._build_db_with_permits(permit_rows)
+        rows = _run(compute_daily_panel(
+            project=project, db=db, socrata=socrata,
+            panel_window_days=1, now=cur_now,
+        ))
+
+        by_bin = {r["cohort_member_bin"]: r for r in rows}
+        r0 = by_bin["5001000000"]["x_features"]["schedule_position_ratio"]
+        r1 = by_bin["5001000001"]["x_features"]["schedule_position_ratio"]
+        # BIN with Initial Permit row gets a real value.
+        self.assertIsNotNone(r0)
+        self.assertGreater(r0, 0.0)
+        # BIN without Initial Permit row gets None.
+        self.assertIsNone(r1)
+
+    def test_panel_row_schedule_position_uses_per_member_per_day_value(self):
+        """Phase 1 Week 2 — regression test for the cohort-constant
+        bug. Two cohort members with DIFFERENT earliest_issued dates,
+        sampled across multiple panel days, must produce DIFFERENT
+        ratios per day. The OLD derived_lifecycle_stage_pct returned
+        the same cohort-median value for every (member, day) tuple —
+        this test pins the new per-(member, day) behavior."""
+        self._require_panel_helper()
+        socrata = MockSocrataClient()
+        cur_now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = _build_project_with_provenance(n_modern=2, n_legacy=0)
+        project["peer_stats_cache"]["peer_criteria"][
+            "cohort_median_duration_days"
+        ] = 365.0
+
+        permit_rows = [
+            # Member A — permit 365 days ago → ratio rises 0.00→1.00
+            # across a 30-day panel window (day_offset 0 = ~335 days
+            # since permit, ratio ≈ 0.918; day_offset 29 = ~365 days,
+            # ratio ≈ 1.0).
+            {"bin": "5001000000", "filing_reason": "Initial Permit",
+             "issued_date": "2025-05-20T00:00:00.000"},
+            # Member B — permit 100 days ago → ratio ≈ 0.19 → 0.27
+            # across the window.
+            {"bin": "5001000001", "filing_reason": "Initial Permit",
+             "issued_date": "2026-02-09T00:00:00.000"},
+        ]
+
+        socrata.seed(DATASET_DOB_ECB_VIOLATIONS, [])
+        socrata.seed(DATASET_DOB_COMPLAINTS, [])
+        socrata.seed(DATASET_311, [])
+
+        db = self._build_db_with_permits(permit_rows)
+        rows = _run(compute_daily_panel(
+            project=project, db=db, socrata=socrata,
+            panel_window_days=30, now=cur_now,
+        ))
+
+        # 2 peers × 30 days = 60 rows.
+        self.assertEqual(len(rows), 60)
+
+        # Same-member, different-day rows must vary in ratio (the
+        # core fix — cohort-constant was the bug).
+        by_bin = {}
+        for r in rows:
+            by_bin.setdefault(r["cohort_member_bin"], []).append(r)
+
+        a_ratios = [
+            r["x_features"]["schedule_position_ratio"]
+            for r in sorted(by_bin["5001000000"],
+                            key=lambda r: r["day_in_lifecycle"])
+        ]
+        b_ratios = [
+            r["x_features"]["schedule_position_ratio"]
+            for r in sorted(by_bin["5001000001"],
+                            key=lambda r: r["day_in_lifecycle"])
+        ]
+
+        # Per-day variation within member A — last day strictly
+        # greater than first day (time advanced 29 days).
+        self.assertGreater(a_ratios[-1], a_ratios[0])
+        self.assertGreater(b_ratios[-1], b_ratios[0])
+
+        # Cross-member variation on the same day — member A's ratio
+        # should be larger than B's at every day (A's permit is older).
+        for day_idx in range(30):
+            self.assertGreater(
+                a_ratios[day_idx], b_ratios[day_idx],
+                f"day_idx={day_idx}: A's older permit must yield "
+                f"higher ratio than B's newer permit. "
+                f"a={a_ratios[day_idx]!r} b={b_ratios[day_idx]!r}",
+            )
+
+
+# ─── Stub for Phase 1 Week 2 D4 — socrata_permits_historical ──────
+
+
+class _StubPermitsHistorical:
+    """Minimal stub matching the production Motor collection's
+    `find(filter, projection)` surface used by the new B3 prefetch
+    step. Filter shape supported:
+
+      {"bin": {"$in": [...]}, "filing_reason": "Initial Permit"}
+
+    Projection shape supported:
+
+      {"bin": 1, "issued_date": 1}
+
+    Returns an _AsyncCursorList compatible with `.to_list(length=None)`.
+    """
+
+    def __init__(self, rows):
+        self._rows = list(rows or [])
+
+    def find(self, filter_=None, projection=None):
+        filter_ = filter_ or {}
+        bin_filter = filter_.get("bin") or {}
+        in_list = bin_filter.get("$in") if isinstance(bin_filter, dict) else None
+        filing_reason = filter_.get("filing_reason")
+
+        out = []
+        for r in self._rows:
+            if in_list is not None and r.get("bin") not in in_list:
+                continue
+            if filing_reason is not None and r.get("filing_reason") != filing_reason:
+                continue
+            out.append(r)
+        return _AsyncCursorList(out)
+
+
+class _AsyncCursorList:
+    """Tiny shim mimicking Motor cursors' `.to_list(length=None)`."""
+    def __init__(self, items):
+        self._items = items
+
+    async def to_list(self, length=None):
+        if length is None:
+            return list(self._items)
+        return list(self._items[:length])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -866,7 +866,7 @@
         }
       ],
       "daily_panel_provenance_checksum": null,
-      "derived_lifecycle_stage_pct": null,
+      "schedule_position_ratio": null,
       "cohort_derived_milestone_pct": {},
       "borough": null,
       "bbl": "3033040024",
@@ -1168,7 +1168,7 @@
     "cohort_sample_size": 85,
     "low_confidence_flag": true,
     "is_cold_start": true,
-    "lifecycle_stage_pct": null,
+    "schedule_position_ratio": null,
     "district_caseload_proxy_days": null,
     "model_coefficients_hash": null,
     "fit_at": null,
