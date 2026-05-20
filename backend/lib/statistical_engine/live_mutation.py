@@ -1646,9 +1646,14 @@ async def predict_for_project_nightly(
                 cohort_sample_size=sample_size,
                 low_confidence_flag=(sample_size < HIGH_CONFIDENCE_SAMPLE_SIZE_FLOOR),
                 is_cold_start=False,
-                schedule_position_ratio=(
-                    (cache.get("peer_criteria") or {})
-                    .get("schedule_position_ratio")
+                # Phase 1 Week 2 — read live-computed value from x_now,
+                # NOT cohort-cached peer_criteria value. daily_panel.py
+                # persists None at peer_criteria because the live path
+                # is the source of truth (Stage 2.A D3). Initial Stage 3
+                # implementation read from peer_criteria, silently
+                # discarding the live-computed value.
+                schedule_position_ratio=(x_now or {}).get(
+                    "schedule_position_ratio"
                 ),
                 district_caseload_proxy_days=(x_now or {}).get(
                     "district_caseload_proxy_days"
