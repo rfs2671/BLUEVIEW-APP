@@ -165,8 +165,8 @@ DATASETS: Dict[str, DatasetConfig] = {
         # live data, switch to composite via --permit-natural-key
         # composite at next run; the upsert filter changes shape but
         # the rest of the pipeline is identical.
-        natural_key="permit_si_no",
-        natural_key_is_composite=False,
+        natural_key="tracking_number,work_permit,sequence_number,work_type",
+        natural_key_is_composite=True,
         date_field="issued_date",
         use_date_windows=False,
         bin_field="bin",
