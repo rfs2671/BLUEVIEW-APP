@@ -14,7 +14,7 @@
     "cohort_sample_size": 141,
     "low_confidence_flag": false,
     "is_cold_start": false,
-    "lifecycle_stage_pct": 0.2,
+    "schedule_position_ratio": 0.2,
     "district_caseload_proxy_days": 0.0,
     "model_coefficients_hash": "3caa6a757cba2269e9799c5db79cbaeb069f1d2f",
     "fit_at": {

@@ -246,7 +246,7 @@ class TestPR15BMenahanCanary(unittest.TestCase):
             "anchored_baseline_prob_14d", "anchored_baseline_label",
             "cohort_tier_utilized", "cohort_sample_size",
             "low_confidence_flag", "is_cold_start",
-            "lifecycle_stage_pct", "district_caseload_proxy_days",
+            "schedule_position_ratio", "district_caseload_proxy_days",
             "model_coefficients_hash", "last_validated_timestamp",
             "fit_at", "schema_version",
         }

@@ -953,7 +953,7 @@ async def compute_peer_stats_full(
         # Tests (test_v2_3_baselines.TestComputePeerStatsFull) assert
         # the keys are present (not the values) at cache write time.
         "daily_panel_provenance_checksum": None,
-        "derived_lifecycle_stage_pct":     None,
+        "schedule_position_ratio":         None,
         "cohort_derived_milestone_pct":    {},
         # PR #15B Stage 2.A — Predictive Inference Engine forwarding.
         # ``prediction_cache_compatible`` is the boolean pre-flight
@@ -1112,8 +1112,8 @@ def _assemble_cache(
         "daily_panel_provenance_checksum": peer_meta.get(
             "daily_panel_provenance_checksum",
         ),
-        "derived_lifecycle_stage_pct": peer_meta.get(
-            "derived_lifecycle_stage_pct",
+        "schedule_position_ratio": peer_meta.get(
+            "schedule_position_ratio",
         ),
         "cohort_derived_milestone_pct": peer_meta.get(
             "cohort_derived_milestone_pct",
@@ -2166,6 +2166,43 @@ def _compute_completion_pct(
     if pct > 1.0:
         return 1.0
     return pct
+
+
+def _schedule_position_for_member_on_day(
+    earliest_issued: Optional[datetime],
+    cohort_median_duration_days: Optional[float],
+    target_date: datetime,
+) -> Optional[float]:
+    """Phase 1 Week 2 — per-(member, day) schedule_position_ratio.
+
+    Returns the ratio of elapsed days since the member's initial
+    permit to the cohort's median project duration, with two clamps:
+      • max(0, elapsed) — future-dated permits read as not-yet-started
+      • min(ratio, 1.5) — overrun sites cap at 1.5 (high-signal value,
+        not saturated at 1.0 like _compute_completion_pct)
+
+    Returns None when either input is missing or duration is non-
+    positive; the live-inference layer falls back to panel_mu via
+    the existing _substitute_panel_mu_for_nones path.
+
+    Replaces the cohort-constant derived_lifecycle_stage_pct, which
+    was a single Foundation-milestone fraction broadcast to every
+    panel row of every cohort member of every day. The new per-
+    (member, day) computation lets the predictor learn from where
+    each cohort member actually is in its lifecycle.
+    """
+    if earliest_issued is None or cohort_median_duration_days is None:
+        return None
+    if cohort_median_duration_days <= 0:
+        return None
+    if target_date.tzinfo is None:
+        target_date = target_date.replace(tzinfo=timezone.utc)
+    if earliest_issued.tzinfo is None:
+        earliest_issued = earliest_issued.replace(tzinfo=timezone.utc)
+    elapsed_days = (target_date - earliest_issued).total_seconds() / 86400.0
+    elapsed_days = max(0.0, elapsed_days)
+    ratio = elapsed_days / float(cohort_median_duration_days)
+    return min(ratio, 1.5)
 
 
 def _cohort_duration_median(cohort_records: List[Dict[str, Any]]) -> Optional[float]:

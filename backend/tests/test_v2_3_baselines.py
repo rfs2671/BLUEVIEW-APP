@@ -544,9 +544,9 @@ class TestComputePeerStatsFull(unittest.TestCase):
             "compute_peer_stats_full Step 7 addition.",
         )
         self.assertIn(
-            "derived_lifecycle_stage_pct", criteria,
+            "schedule_position_ratio", criteria,
             "PR #15A Lock 1.2 — peer_criteria must carry "
-            "``derived_lifecycle_stage_pct`` (initially None) so "
+            "``schedule_position_ratio`` (initially None) so "
             "the nightly milestone calibration can populate. Stage "
             "3 PR #15A compute_peer_stats_full Step 7 addition.",
         )
@@ -1845,6 +1845,15 @@ except ImportError:
     _cohort_duration_median = None  # type: ignore
     HAS_LIFECYCLE_HELPERS = False
 
+try:
+    from lib.statistical_engine.baselines import (  # noqa: E402
+        _schedule_position_for_member_on_day,
+    )
+    HAS_SCHEDULE_POSITION_HELPER = True
+except ImportError:
+    _schedule_position_for_member_on_day = None  # type: ignore
+    HAS_SCHEDULE_POSITION_HELPER = False
+
 
 # PR #14B fixture helpers (in tests/_pr14b_fixtures.py).
 from _pr14b_fixtures import (  # noqa: E402
@@ -2716,6 +2725,98 @@ class TestLifecycleNormalization(unittest.TestCase):
         self.assertEqual(
             result.get("lifecycle_skip_reason"), "no_duration_data",
         )
+
+    # ─── Phase 1 Week 2 — schedule_position_ratio helper ──────
+
+    def _require_schedule_position_helper(self):
+        if not HAS_SCHEDULE_POSITION_HELPER:
+            self.fail(
+                "lib.statistical_engine.baselines."
+                "_schedule_position_for_member_on_day not implemented. "
+                "Phase 1 Week 2: add per D5 spec — "
+                "max(0, elapsed_days) / cohort_median_duration, "
+                "clamped at min(ratio, 1.5)."
+            )
+
+    def test_schedule_position_returns_none_for_missing_earliest_issued(self):
+        """Phase 1 Week 2 D5 — None propagation when initial permit
+        unknown. Live path falls back to panel_mu via existing
+        _substitute_panel_mu_for_nones."""
+        self._require_schedule_position_helper()
+        target = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=None,
+            cohort_median_duration_days=300.0,
+            target_date=target,
+        )
+        self.assertIsNone(result)
+
+    def test_schedule_position_returns_none_for_missing_cohort_duration(self):
+        """Phase 1 Week 2 D5 — None propagation when cohort has no
+        completed projects to measure duration against."""
+        self._require_schedule_position_helper()
+        target = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            cohort_median_duration_days=None,
+            target_date=target,
+        )
+        self.assertIsNone(result)
+
+    def test_schedule_position_returns_none_for_zero_cohort_duration(self):
+        """Phase 1 Week 2 D5 — zero-duration guard avoids div-by-zero.
+        Defensive against pathological cohort with all permits issued
+        same day as C of O."""
+        self._require_schedule_position_helper()
+        target = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            cohort_median_duration_days=0.0,
+            target_date=target,
+        )
+        self.assertIsNone(result)
+
+    def test_schedule_position_clamps_negative_elapsed_to_zero(self):
+        """Phase 1 Week 2 D5 — future-dated permit (earliest_issued >
+        target_date) clamps elapsed to 0, returning ratio of 0.0.
+        Edge case: panel-build day_dt for an early cohort-member day
+        may precede that member's earliest permit. Negative elapsed
+        is semantically "not yet started" → 0.0, never negative."""
+        self._require_schedule_position_helper()
+        # Permit "issued" in the future (defensive against bad data).
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=datetime(2026, 12, 1, tzinfo=timezone.utc),
+            cohort_median_duration_days=300.0,
+            target_date=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result, 0.0)
+
+    def test_schedule_position_caps_at_1_5_for_overrun_projects(self):
+        """Phase 1 Week 2 D5 — 1.5 ceiling. ~4 years elapsed against
+        200-day expected duration yields raw ratio ~7.3; clamped to
+        exactly 1.5. The cap surfaces stalled / overrun sites as
+        high-signal feature values rather than saturating at 1.0."""
+        self._require_schedule_position_helper()
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=datetime(2022, 1, 1, tzinfo=timezone.utc),
+            cohort_median_duration_days=200.0,
+            target_date=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result, 1.5)
+
+    def test_schedule_position_returns_typical_ratio_for_on_schedule_project(self):
+        """Phase 1 Week 2 D5 — typical-case ratio. Project ~9 months
+        into a 900-day-expected cohort → ~273 / 900 ≈ 0.303. Confirms
+        the linear-elapsed math fires before clamping."""
+        self._require_schedule_position_helper()
+        result = _schedule_position_for_member_on_day(
+            earliest_issued=datetime(2025, 8, 20, tzinfo=timezone.utc),
+            cohort_median_duration_days=900.0,
+            target_date=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        )
+        self.assertIsNotNone(result)
+        # 2025-08-20 → 2026-05-20 = 273 days; 273/900 = 0.30333...
+        self.assertAlmostEqual(result, 273.0 / 900.0, places=3)
 
 
 class TestPlutoSelectExtensionPR14B(unittest.TestCase):
