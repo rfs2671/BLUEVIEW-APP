@@ -177,7 +177,15 @@ DATASETS: Dict[str, DatasetConfig] = {
         collection="socrata_complaints_historical",
         natural_key="complaint_number",
         natural_key_is_composite=False,
-        date_field="date_entered",
+        # date_entered is stored as MM/DD/YYYY text on eabe-havv (not a
+        # calendar_date column). Reorder to ISO so SoQL's lexicographic
+        # comparison against ISO literals becomes chronological. Trailing
+        # 'T00:00:00' pads to 19 chars to match the WHERE-builder format.
+        date_field=(
+            "(substring(date_entered, 7, 4) || '-' || "
+            "substring(date_entered, 1, 2) || '-' || "
+            "substring(date_entered, 4, 2) || 'T00:00:00')"
+        ),
         use_date_windows=True,
         bin_field="bin",
     ),
