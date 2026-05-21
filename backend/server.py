@@ -1849,6 +1849,19 @@ class CausalLiftEntry(BaseModel):
     computed_at: str                       # ISO UTC
 
 
+# Phase 1 Week 13-19 PR-B — recent complaint bucket rollup. Per-project
+# 90-day complaint distribution feeding the Tactical Recommendations UI.
+# Consumed by frontend src/components/TacticalRecommendations.jsx to
+# decide which complaint buckets to query /api/causal-lift for.
+class RecentComplaintBucket(BaseModel):
+    bucket: str
+    n_complaints: int
+
+
+class RecentComplaintBucketsResponse(BaseModel):
+    buckets: List[RecentComplaintBucket]
+
+
 # ==================== DOB COMPLIANCE MODELS ====================
 
 class DOBLogResponse(BaseModel):
@@ -3908,6 +3921,34 @@ async def get_project_defcon_status(
     from lib.statistical_engine.defcon import compute_defcon_status
     result = await compute_defcon_status(db, project)
     return DefconStatusResponse(**result)
+
+
+# Phase 1 Week 13-19 PR-B — recent complaint buckets rollup endpoint.
+# Returns the project's complaints from the last 90 days, classified
+# into the 10 violation_taxonomy buckets and sorted by count DESC.
+# The Tactical Recommendations FE component uses this to decide which
+# complaint buckets to fan out into /api/causal-lift queries.
+@api_router.get(
+    "/projects/{project_id}/recent-complaint-buckets",
+    response_model=RecentComplaintBucketsResponse,
+)
+async def get_project_recent_complaint_buckets(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    bin_id = project.get("nyc_bin")
+    if not bin_id:
+        return RecentComplaintBucketsResponse(buckets=[])
+    from lib.statistical_engine.causal_lift import (
+        _resolve_recent_complaint_buckets,
+    )
+    rows = await _resolve_recent_complaint_buckets(db, str(bin_id))
+    return RecentComplaintBucketsResponse(buckets=[
+        RecentComplaintBucket(**r) for r in rows
+    ])
 
 
 # ── PR #15D — Compliance Risk forecast endpoint ──────────────────
