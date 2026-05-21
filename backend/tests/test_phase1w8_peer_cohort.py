@@ -716,9 +716,10 @@ class TestPeerCohort(unittest.TestCase):
         result = _run(compute_peer_cohort(db, project, now=now))
         self.assertEqual(result["layer_used"], 1)
         text = result["disclosure_text"]
-        self.assertIn("BROOKLYN", text)
+        # Borough title-cased + MEP acronym per casing hotfix.
+        self.assertIn("Brooklyn", text)
         self.assertIn("General Construction", text)
-        self.assertIn("mep", text)
+        self.assertIn("MEP", text)
         self.assertIn("safety_hazards", text)
 
     def test_disclosure_text_l2(self):
@@ -755,8 +756,9 @@ class TestPeerCohort(unittest.TestCase):
         result = _run(compute_peer_cohort(db, project, now=now))
         self.assertEqual(result["layer_used"], 2)
         text = result["disclosure_text"]
-        self.assertIn("BROOKLYN", text)
-        self.assertIn("mep", text)
+        # Borough title-cased + MEP acronym per casing hotfix.
+        self.assertIn("Brooklyn", text)
+        self.assertIn("MEP", text)
         self.assertNotIn("safety_hazards", text)
 
     def test_disclosure_text_l3(self):
@@ -837,6 +839,201 @@ class TestPeerCohort(unittest.TestCase):
         # No permits at all — project's work_type undefinable.
         result = _run(compute_peer_cohort(db, project, now=now))
         self.assertEqual(result["n_matches"], 0)
+
+    # ──────────────────────────────────────────────────────────
+    # Hotfix — disclosure_text casing (Phase 1 Week 8 PR-B hotfix)
+    # Production storage is ALL-CAPS for borough (PLUTO convention)
+    # and lowercase for phase enum. disclosure_text is pre-rendered
+    # for direct FE insertion per Stage 2.A L8 — must be GC-readable
+    # per PR #15D.1 C5 lock.
+    # ──────────────────────────────────────────────────────────
+
+    def _seed_full_cohort(self, db, *, project, n_peers=20,
+                          peer_borough="BROOKLYN",
+                          peer_work_type="General Construction"):
+        """Helper: seed an L1-friendly cohort so disclosure_text renders
+        with all the bells (borough + work_type + phase + bucket).
+
+        Active + peers all get a recent crane violation so L1's
+        recent_violation_bucket filter fires with bucket=safety_hazards
+        rather than bucket=None (which would render the ugly 'with
+        recent None violations' substring)."""
+        # Active project permit + crane violation
+        db.socrata_permits_historical.docs.append(
+            _seed_permit(project["nyc_bin"], peer_borough,
+                         peer_work_type, "2026-04-15T00:00:00.000")
+        )
+        db.socrata_ecb_violations_historical.docs.append(
+            _seed_violation(project["nyc_bin"], "20260510",
+                            violation_description="Crane unsafe operation"),
+        )
+        # 20 peers in same cohort with matching violations
+        for i in range(n_peers):
+            bin_id = f"3{i+1:06d}"
+            db.socrata_permits_historical.docs.append(
+                _seed_permit(bin_id, peer_borough,
+                             peer_work_type, "2026-04-10T00:00:00.000")
+            )
+            db.socrata_ecb_violations_historical.docs.append(
+                _seed_violation(bin_id, "20260512",
+                                violation_description="Crane unsafe operation"),
+            )
+
+    def test_disclosure_text_borough_title_cased(self):
+        """BROOKLYN storage → 'Brooklyn' in disclosure_text. Mirrors
+        the existing frontend boroughLabel() convention so backend-
+        pre-rendered prose matches frontend-rendered prose elsewhere."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "3000000", "borough": "BROOKLYN",
+            "prediction_cache": {"schedule_position_ratio": 0.5},
+        }
+        self._seed_full_cohort(db, project=project)
+        result = _run(compute_peer_cohort(db, project, now=now))
+        text = result["disclosure_text"]
+        self.assertIn("Brooklyn", text,
+                      msg=f"Borough must render as 'Brooklyn' "
+                          f"(title-case) in disclosure. Got: {text!r}")
+        self.assertNotIn(
+            "BROOKLYN", text,
+            msg=f"BROOKLYN (uppercase storage form) must NOT appear "
+                f"in disclosure. Got: {text!r}",
+        )
+
+    def test_disclosure_text_staten_island_title_cased(self):
+        """Multi-word borough — 'STATEN ISLAND' → 'Staten Island'.
+        Both words capitalized per title-case rule."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "5000000", "borough": "STATEN ISLAND",
+            "prediction_cache": {"schedule_position_ratio": 0.5},
+        }
+        self._seed_full_cohort(db, project=project,
+                               peer_borough="STATEN ISLAND")
+        result = _run(compute_peer_cohort(db, project, now=now))
+        text = result["disclosure_text"]
+        self.assertIn("Staten Island", text,
+                      msg=f"Multi-word borough must render as "
+                          f"'Staten Island' (title-case both words). "
+                          f"Got: {text!r}")
+        self.assertNotIn("STATEN ISLAND", text)
+
+    def test_disclosure_text_mep_phase_uppercased(self):
+        """The 'mep' phase enum (lowercase storage) renders as 'MEP'
+        (acronym uppercase per PR #37 L7 lock). Other phase enums
+        stay lowercase. Requires strict-match peers so the L1 phase-
+        naming branch fires (the wildcard variant says 'phase data
+        limited' and elides the phase name)."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "3000000", "borough": "BROOKLYN",
+            "prediction_cache": {"schedule_position_ratio": 0.7},
+        }
+        # Active + 20 peers with matching phase=mep + crane violations
+        db.projects.docs = [
+            {"_id": "P_A", "nyc_bin": "3000000", "is_deleted": False},
+        ]
+        db.daily_logs.docs = [
+            {"project_id": "P_A", "date": "2026-05-19",
+             "phase": "mep", "is_deleted": False},
+        ]
+        db.socrata_permits_historical.docs.append(
+            _seed_permit("3000000", "BROOKLYN", "General Construction",
+                         "2026-04-15T00:00:00.000")
+        )
+        db.socrata_ecb_violations_historical.docs.append(
+            _seed_violation("3000000", "20260510",
+                            violation_description="Crane unsafe"),
+        )
+        for i in range(20):
+            pid = f"P_{i+1}"
+            bin_id = f"3{i+1:06d}"
+            db.projects.docs.append({
+                "_id": pid, "nyc_bin": bin_id, "is_deleted": False,
+            })
+            db.daily_logs.docs.append({
+                "project_id": pid, "date": "2026-05-15",
+                "phase": "mep", "is_deleted": False,
+            })
+            db.socrata_permits_historical.docs.append(
+                _seed_permit(bin_id, "BROOKLYN", "General Construction",
+                             "2026-04-10T00:00:00.000")
+            )
+            db.socrata_ecb_violations_historical.docs.append(
+                _seed_violation(bin_id, "20260512",
+                                violation_description="Crane unsafe"),
+            )
+        result = _run(compute_peer_cohort(db, project, now=now))
+        text = result["disclosure_text"]
+        self.assertIn(
+            "MEP", text,
+            msg=f"phase=mep must render as 'MEP' (acronym uppercase). "
+                f"Got: {text!r}",
+        )
+
+    def test_disclosure_text_foundation_phase_lowercased(self):
+        """Non-acronym phase enums stay lowercase ('foundation',
+        'superstructure', etc.). Only MEP gets the special-case
+        uppercase treatment. Same strict-match cohort setup as the
+        MEP test so the phase-naming L1 branch fires."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "3000000", "borough": "BROOKLYN",
+            "prediction_cache": {"schedule_position_ratio": 0.1},
+        }
+        db.projects.docs = [
+            {"_id": "P_A", "nyc_bin": "3000000", "is_deleted": False},
+        ]
+        db.daily_logs.docs = [
+            {"project_id": "P_A", "date": "2026-05-19",
+             "phase": "foundation", "is_deleted": False},
+        ]
+        db.socrata_permits_historical.docs.append(
+            _seed_permit("3000000", "BROOKLYN", "General Construction",
+                         "2026-04-15T00:00:00.000")
+        )
+        db.socrata_ecb_violations_historical.docs.append(
+            _seed_violation("3000000", "20260510",
+                            violation_description="Crane unsafe"),
+        )
+        for i in range(20):
+            pid = f"P_{i+1}"
+            bin_id = f"3{i+1:06d}"
+            db.projects.docs.append({
+                "_id": pid, "nyc_bin": bin_id, "is_deleted": False,
+            })
+            db.daily_logs.docs.append({
+                "project_id": pid, "date": "2026-05-15",
+                "phase": "foundation", "is_deleted": False,
+            })
+            db.socrata_permits_historical.docs.append(
+                _seed_permit(bin_id, "BROOKLYN", "General Construction",
+                             "2026-04-10T00:00:00.000")
+            )
+            db.socrata_ecb_violations_historical.docs.append(
+                _seed_violation(bin_id, "20260512",
+                                violation_description="Crane unsafe"),
+            )
+        result = _run(compute_peer_cohort(db, project, now=now))
+        text = result["disclosure_text"]
+        self.assertIn(
+            "foundation", text,
+            msg=f"phase=foundation must render as 'foundation' "
+                f"(lowercase, NOT 'Foundation'). Got: {text!r}",
+        )
+        self.assertNotIn(
+            "Foundation", text,
+            msg=f"Non-acronym phases must stay lowercase. 'Foundation' "
+                f"(title-cased) must NOT appear. Got: {text!r}",
+        )
 
 
 if __name__ == "__main__":
