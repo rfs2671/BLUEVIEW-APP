@@ -1806,6 +1806,30 @@ class PeerCohortResponse(BaseModel):
     matched_at: str
 
 
+# Phase 1 Week 11-12 PR-A — Defcon 3-tier urgency endpoint response.
+# Shape locked at Stage 2.A L8. Consumed by Phase 1 Week 11-12 PR-B
+# (CompliancePanel header card + project-list dot + Defcon detail screen).
+class DefconContributingFactor(BaseModel):
+    factor: str
+    weight: float
+    evidence: str
+
+
+class DefconCohortContext(BaseModel):
+    cohort_baseline_rate: Optional[float] = None
+    project_rate_ratio:   Optional[float] = None
+    n_peer_matches:       Optional[int]   = None
+
+
+class DefconStatusResponse(BaseModel):
+    tier: str                              # NORMAL | ELEVATED | IMMEDIATE
+    tier_color: str                        # green | amber | red
+    primary_reason: str
+    contributing_factors: List[DefconContributingFactor]
+    last_evaluated_at: str                 # ISO UTC
+    cohort_context: DefconCohortContext
+
+
 # ==================== DOB COMPLIANCE MODELS ====================
 
 class DOBLogResponse(BaseModel):
@@ -3844,6 +3868,27 @@ async def get_project_peer_cohort(
     from lib.statistical_engine.peer_cohort import compute_peer_cohort
     result = await compute_peer_cohort(db, project)
     return PeerCohortResponse(**result)
+
+
+# Phase 1 Week 11-12 PR-A — Defcon 3-tier urgency endpoint.
+# Computes tier from prediction_cache HR + active SWO + recent
+# violations + complaint clustering. Pre-renders primary_reason for
+# direct FE display. No caching — per-request recompute is sub-100ms
+# and SWO freshness matters intra-day.
+@api_router.get(
+    "/projects/{project_id}/defcon-status",
+    response_model=DefconStatusResponse,
+)
+async def get_project_defcon_status(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    from lib.statistical_engine.defcon import compute_defcon_status
+    result = await compute_defcon_status(db, project)
+    return DefconStatusResponse(**result)
 
 
 # ── PR #15D — Compliance Risk forecast endpoint ──────────────────
@@ -7027,12 +7072,36 @@ async def get_projects(
     skip: int = Query(0, ge=0),
 ):
     company_id = get_user_company_id(current_user)
-    
+
     query = {"is_deleted": {"$ne": True}}
     if company_id:
         query["company_id"] = company_id
-    
-    result = await paginated_query(db.projects, query, sort_field="name", sort_dir=1, limit=limit, skip=skip)
+
+    result = await paginated_query(
+        db.projects, query, sort_field="name", sort_dir=1,
+        limit=limit, skip=skip,
+    )
+
+    # Phase 1 Week 11-12 PR-A — augment each project with defcon_tier
+    # for the project-list colored-dot rendering. Avoids N+1 calls
+    # from the frontend. Failures per-project are swallowed (tier
+    # field defaults to None) — list rendering must not break on a
+    # single project's defcon compute failure.
+    from lib.statistical_engine.defcon import compute_defcon_status
+    items = result.get("items") if isinstance(result, dict) else None
+    if items is None and isinstance(result, list):
+        items = result
+    if items:
+        for p in items:
+            try:
+                ds = await compute_defcon_status(db, p)
+                p["defcon_tier"] = ds.get("tier")
+            except Exception as _e:
+                logger.warning(
+                    "[phase1w11] defcon tier compute failed for "
+                    "project=%r: %r", p.get("_id"), _e,
+                )
+                p["defcon_tier"] = None
     return result
 
 @api_router.post("/projects", response_model=ProjectResponse)
