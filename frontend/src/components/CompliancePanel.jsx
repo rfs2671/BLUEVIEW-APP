@@ -53,11 +53,13 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import {
   Shield, AlertTriangle, Clock, Info,
   ArrowUp, ArrowDown, Minus,
 } from 'lucide-react-native';
 import { GlassCard, IconPod } from './GlassCard';
+import DefconHeader from './DefconHeader';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -259,9 +261,14 @@ export default function CompliancePanel({ projectId }) {
   // so v1 users never trigger the prediction fetch.
   const flagOn = useFeatureFlag('pr15d_prediction');
   const { colors } = useTheme();
+  const router = useRouter();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Phase 1 Week 11-12 PR-B — Defcon status fetched in parallel with
+  // the prediction. Render is non-blocking: if the call fails the
+  // header simply doesn't appear; the horizon-row UI still loads.
+  const [defcon, setDefcon] = useState(null);
 
   useEffect(() => {
     if (!flagOn || !projectId) return;
@@ -281,6 +288,18 @@ export default function CompliancePanel({ projectId }) {
         setData(null);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [flagOn, projectId]);
+
+  // Phase 1 Week 11-12 PR-B — Defcon status fetch (independent of the
+  // prediction call so a Defcon failure doesn't break the forecast UI
+  // and vice-versa).
+  useEffect(() => {
+    if (!flagOn || !projectId) return;
+    let cancelled = false;
+    projectsAPI.getDefconStatus(projectId)
+      .then((resp) => { if (!cancelled) setDefcon(resp); })
+      .catch(() => { if (!cancelled) setDefcon(null); });
     return () => { cancelled = true; };
   }, [flagOn, projectId]);
 
@@ -382,6 +401,17 @@ export default function CompliancePanel({ projectId }) {
   // ── State 5/6 — ready (cold_start OR standard) ───────────────
   return (
     <GlassCard style={styles.card}>
+      {/* Phase 1 Week 11-12 PR-B — Defcon tier header. Only renders
+          when the defcon-status endpoint returned a tier; failures
+          and missing data degrade silently to the existing UI. */}
+      {defcon?.tier && (
+        <DefconHeader
+          tier={defcon.tier}
+          primaryReason={defcon.primary_reason}
+          lastEvaluatedAt={defcon.last_evaluated_at}
+          onPressWhy={() => router.push(`/project/${projectId}/defcon`)}
+        />
+      )}
       <View style={styles.header}>
         <IconPod>
           <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />

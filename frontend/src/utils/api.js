@@ -229,6 +229,18 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // Phase 1 Week 11-12 PR-A — Defcon 3-tier urgency status. Returns
+  // DefconStatusResponse: { tier, tier_color, primary_reason,
+  // contributing_factors, last_evaluated_at, cohort_context }.
+  // Consumed by CompliancePanel (DefconHeader) and the
+  // /project/{id}/defcon detail screen.
+  getDefconStatus: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/defcon-status`
+    );
+    return response.data;
+  },
+
   addNfcTag: async (projectId, tagData) => {
     const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, tagData);
     return response.data;
