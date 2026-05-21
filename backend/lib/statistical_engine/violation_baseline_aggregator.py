@@ -114,8 +114,17 @@ async def compute_baseline_aggregates(
     if window_end.tzinfo is None:
         window_end = window_end.replace(tzinfo=timezone.utc)
     window_start = window_end - timedelta(days=window_days)
+    # rbx6-tga4 permits store issued_date as ISO ("2026-05-13T00:00:00.000")
+    # from Socrata's calendar_date type → ISO filter works.
     window_start_iso = window_start.strftime("%Y-%m-%dT%H:%M:%S")
     window_end_iso = window_end.strftime("%Y-%m-%dT%H:%M:%S")
+    # 6bgk-3dad ECB violations store issue_date as YYYYMMDD text
+    # ("20260518") from Socrata's text type → need YYYYMMDD bounds.
+    # Lex comparison fails against ISO ("20260518" > "2026-05-21T..." at
+    # position 4: '0' > '-'). 30-day baseline cron at 3am ET doesn't
+    # need sub-day precision so whole-day-aligned bounds are fine.
+    window_start_yyyymmdd = window_start.strftime("%Y%m%d")
+    window_end_yyyymmdd = window_end.strftime("%Y%m%d")
 
     # Step 1 — pull violations in window.
     violations_by_bin: Dict[str, int] = defaultdict(int)
@@ -123,8 +132,8 @@ async def compute_baseline_aggregates(
         vrows = await db.socrata_ecb_violations_historical.find(
             {
                 "issue_date": {
-                    "$gte": window_start_iso,
-                    "$lt":  window_end_iso,
+                    "$gte": window_start_yyyymmdd,
+                    "$lt":  window_end_yyyymmdd,
                 },
             },
             {"bin": 1, "issue_date": 1},
