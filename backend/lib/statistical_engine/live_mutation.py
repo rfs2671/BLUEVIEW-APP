@@ -102,6 +102,23 @@ STATE_VECTOR_FEATURES: Tuple[str, ...] = (
 )
 
 
+# Phase 1 Week 3 PR-A — manual phase enum → schedule_position_ratio
+# mapping. Values are finer-grained cousins of the existing
+# _MILESTONE_COMPLETION_PCT constants from baselines.py.
+#
+# Note: closeout caps at 0.97, NOT 1.0. Only INFERRED ratios can exceed
+# 1.0 (up to the 1.5 cap) to surface overruns. Manual closeout means
+# "C of O pending" — bounded below 1.0 by design.
+PHASE_TO_RATIO: Dict[str, float] = {
+    "foundation":     0.10,
+    "superstructure": 0.35,
+    "interior":       0.55,
+    "mep":            0.70,
+    "finishes":       0.85,
+    "closeout":       0.97,
+}
+
+
 # ── PR #15B.1 — pure helpers (B3, B6, T1, T2) ─────────────────────
 
 
@@ -777,6 +794,66 @@ async def _compute_schedule_position_live(
     )
 
 
+async def _resolve_schedule_position(
+    db: Any,
+    project: Dict[str, Any],
+    cur_now: datetime,
+) -> Optional[float]:
+    """Phase 1 Week 3 PR-A — resolve schedule_position_ratio with
+    priority chain:
+
+      1. Most recent daily_log.phase → PHASE_TO_RATIO lookup
+         (manual signal — highest confidence)
+      2. Live inferred ratio (Phase 1 Week 2 path:
+         _compute_schedule_position_live)
+      3. None — downstream paths (cache fallback + panel_mu)
+         handle the substitution
+
+    The manual phase value dominates because field crews report
+    on-site state directly; the inferred ratio is a cohort-derived
+    proxy that's accurate but less authoritative.
+
+    Defensive guards:
+      • Deleted logs (is_deleted=True) excluded.
+      • Phase values not in PHASE_TO_RATIO (typos, future enum
+        additions) fall through to inferred path rather than
+        crashing or defaulting to 0.0.
+      • Missing project_id falls through directly to inferred.
+    """
+    project_id = str(project.get("_id") or project.get("id") or "")
+    if project_id and getattr(db, "daily_logs", None) is not None:
+        try:
+            log = await db.daily_logs.find_one(
+                {
+                    "project_id": project_id,
+                    "phase": {"$nin": [None, ""]},
+                    "is_deleted": {"$ne": True},
+                },
+                sort=[("date", -1)],
+                projection={"phase": 1},
+            )
+        except Exception as e:  # pragma: no cover — defensive
+            logger.warning(
+                "[phase1w3] daily_logs lookup failed for project=%r: %r",
+                project_id, e,
+            )
+            log = None
+        if log:
+            phase = log.get("phase")
+            if phase in PHASE_TO_RATIO:
+                return PHASE_TO_RATIO[phase]
+            # Unknown phase value — log a one-time-ish warning and
+            # fall through to inferred. Helps surface frontend bugs
+            # or stale enum values without crashing inference.
+            logger.info(
+                "[phase1w3] unknown daily_log.phase=%r for project=%r; "
+                "falling back to inferred ratio.",
+                phase, project_id,
+            )
+
+    return await _compute_schedule_position_live(db, project, cur_now)
+
+
 def _yyyymmdd(dt: datetime) -> str:
     """Format a datetime as YYYYMMDD for the dob_logs violation_date
     field (numeric text). Mirrors triggers.py:_yyyymmdd."""
@@ -908,18 +985,16 @@ async def compute_x_now_for_project(
                                     last 14 days
       • days_since_last_violation — max(violation_date) clamped
                                     [0, 90]
-      • schedule_position_ratio → Phase 1 Week 2: per-project
-                                   elapsed-progress ratio computed
-                                   live from project.nyc_bin's
-                                   earliest Initial Permit (Mongo
-                                   socrata_permits_historical) and
-                                   prediction_models.cohort_median_
-                                   duration_days. Falls back to
-                                   prediction_cache.schedule_position_
-                                   ratio (last nightly value) if the
-                                   live lookup yields None, then to
-                                   panel_mu via the existing
-                                   _substitute_panel_mu_for_nones path.
+      • schedule_position_ratio → Phase 1 Week 3 PR-A: resolved with
+                                   priority chain — (1) most recent
+                                   daily_log.phase mapped via
+                                   PHASE_TO_RATIO, (2) Phase 1 Week 2
+                                   inferred ratio (earliest Initial
+                                   Permit / cohort_median_duration_days),
+                                   (3) prediction_cache.schedule_position_
+                                   ratio (last nightly value), (4)
+                                   panel_mu via _substitute_panel_mu_
+                                   for_nones downstream.
       • district_caseload_proxy_days → cached on project.prediction_cache.
                                        0.0 when absent.
 
@@ -930,14 +1005,12 @@ async def compute_x_now_for_project(
     project_id = str(project.get("_id") or project.get("id") or "")
     cache = project.get("prediction_cache") or {}
 
-    # Phase 1 Week 2 — live schedule_position_ratio. Read the
-    # project's earliest Initial Permit from socrata_permits_historical
-    # (Phase 1 Week 1 backfill), then divide by cohort_median_duration_
-    # days from the latest prediction_models doc. Fall back to the
-    # cache value if the live lookup misses (BIN outside 5k backfill
-    # scope, no Initial Permit row, missing duration). Final fallback
-    # to panel_mu happens in _substitute_panel_mu_for_nones downstream.
-    schedule_position_live = await _compute_schedule_position_live(
+    # Phase 1 Week 3 PR-A — resolve schedule_position_ratio with
+    # priority chain: manual daily_log.phase → inferred ratio →
+    # cache → panel_mu. _resolve_schedule_position handles the
+    # first two; cache + panel_mu fallback happens below + at
+    # _substitute_panel_mu_for_nones downstream.
+    schedule_position_live = await _resolve_schedule_position(
         db, project, cur_now,
     )
     if schedule_position_live is None:
