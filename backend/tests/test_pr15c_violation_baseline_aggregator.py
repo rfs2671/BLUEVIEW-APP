@@ -232,7 +232,7 @@ class TestViolationBaselineAggregator(unittest.TestCase):
         # Violation issued 5 days before run_date (inside window).
         db.socrata_ecb_violations_historical.docs = [{
             "bin": "3000001", "boro": "3",
-            "issue_date": "2026-05-15T00:00:00.000",
+            "issue_date": "20260515",
         }]
         result = _run(compute_baseline_aggregates(db, run_date=run_date))
         self.assertEqual(result["n_rows_written"], 1)
@@ -355,13 +355,13 @@ class TestViolationBaselineAggregator(unittest.TestCase):
         db.socrata_ecb_violations_historical.docs = [
             # 5 days ago — inside window.
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-05-15T00:00:00.000"},
+             "issue_date": "20260515"},
             # 60 days ago — outside window.
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-03-21T00:00:00.000"},
+             "issue_date": "20260321"},
             # 120 days ago — outside window.
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-01-20T00:00:00.000"},
+             "issue_date": "20260120"},
         ]
         result = _run(compute_baseline_aggregates(db, run_date=run_date))
         self.assertEqual(result["n_rows_written"], 1)
@@ -396,17 +396,17 @@ class TestViolationBaselineAggregator(unittest.TestCase):
         # 6 violations split across the 2 BINs (3 each).
         db.socrata_ecb_violations_historical.docs = [
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-05-12T00:00:00.000"},
+             "issue_date": "20260512"},
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-05-13T00:00:00.000"},
+             "issue_date": "20260513"},
             {"bin": "3000001", "boro": "3",
-             "issue_date": "2026-05-14T00:00:00.000"},
+             "issue_date": "20260514"},
             {"bin": "3000002", "boro": "3",
-             "issue_date": "2026-05-15T00:00:00.000"},
+             "issue_date": "20260515"},
             {"bin": "3000002", "boro": "3",
-             "issue_date": "2026-05-16T00:00:00.000"},
+             "issue_date": "20260516"},
             {"bin": "3000002", "boro": "3",
-             "issue_date": "2026-05-17T00:00:00.000"},
+             "issue_date": "20260517"},
         ]
         result = _run(compute_baseline_aggregates(db, run_date=run_date))
         self.assertEqual(result["n_rows_written"], 1)
