@@ -1775,6 +1775,37 @@ class BaselineAggregateResponse(BaseModel):
     computed_at: datetime
 
 
+# Phase 1 Week 8 PR-B — peer-cohort endpoint response models.
+# Shape locked per Stage 2.A L8. Consumed by Phase 1 Week 11-12
+# Defcon UX directly — disclosure_text is pre-rendered to avoid
+# frontend logic drift.
+class PeerCohortPeerEntry(BaseModel):
+    bin: str
+    bbl: Optional[str] = None
+    work_type: str
+    phase: Optional[str] = None
+    schedule_position_ratio: Optional[float] = None
+    n_violations_30d: int
+
+
+class PeerCohortSummary(BaseModel):
+    borough: str
+    work_type: str
+    phase: Optional[str] = None
+    phase_wildcard_expanded: bool
+    violation_bucket: Optional[str] = None
+    pool_size: int
+
+
+class PeerCohortResponse(BaseModel):
+    layer_used: int
+    n_matches: int
+    cohort_summary: PeerCohortSummary
+    peers: List[PeerCohortPeerEntry]
+    disclosure_text: str
+    matched_at: str
+
+
 # ==================== DOB COMPLIANCE MODELS ====================
 
 class DOBLogResponse(BaseModel):
@@ -3793,6 +3824,26 @@ async def calculate_project_risk_score(
     if not doc:
         raise HTTPException(status_code=422, detail="Score not produced")
     return {"score": serialize_id(doc)}
+
+
+# Phase 1 Week 8 PR-B — peer cohort endpoint.
+# Returns the 14 nearest peer BINs via the 3-layer cascade in
+# lib/statistical_engine/peer_cohort.py. Used by the Phase 1 Week 11-12
+# Defcon UX for the "Based on N similar projects..." disclosure.
+@api_router.get(
+    "/projects/{project_id}/peer-cohort",
+    response_model=PeerCohortResponse,
+)
+async def get_project_peer_cohort(
+    project_id: str,
+    current_user = Depends(get_current_user),
+):
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    from lib.statistical_engine.peer_cohort import compute_peer_cohort
+    result = await compute_peer_cohort(db, project)
+    return PeerCohortResponse(**result)
 
 
 # ── PR #15D — Compliance Risk forecast endpoint ──────────────────
