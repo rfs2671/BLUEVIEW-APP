@@ -51,6 +51,17 @@ except ImportError:
     winsorize_x_now = None            # type: ignore
     HAS_LIVE_HELPERS = False
 
+try:
+    from lib.statistical_engine.live_mutation import (  # type: ignore
+        _resolve_schedule_position,
+        PHASE_TO_RATIO,
+    )
+    HAS_RESOLVER = True
+except ImportError:
+    _resolve_schedule_position = None   # type: ignore
+    PHASE_TO_RATIO = None               # type: ignore
+    HAS_RESOLVER = False
+
 
 from _pr14b_fixtures import seed_prediction_models_fixture  # noqa: E402
 from _pr15a_panel_fixtures import (  # noqa: E402
@@ -516,6 +527,195 @@ class TestLiveMutationEngine(unittest.TestCase):
             result,
             msg="Live mutation on uncached project must return None.",
         )
+
+    # ──────────────────────────────────────────────────────────
+    # Phase 1 Week 3 PR-A — _resolve_schedule_position priority chain
+    # ──────────────────────────────────────────────────────────
+
+    def _require_resolver(self):
+        if not HAS_RESOLVER:
+            self.fail(
+                "lib.statistical_engine.live_mutation."
+                "_resolve_schedule_position or PHASE_TO_RATIO not "
+                "implemented. Phase 1 Week 3 PR-A: add per L1/L2/L4 spec — "
+                "priority chain (manual phase → inferred ratio → None) + "
+                "PHASE_TO_RATIO mapping for 6 enum values."
+            )
+
+    def test_resolve_returns_phase_ratio_when_daily_log_has_phase(self):
+        """Phase 1 Week 3 PR-A — L4 priority 1: most recent
+        daily_log.phase wins. superstructure → 0.35."""
+        self._require_resolver()
+        project = {"_id": "P-PHASE-1", "nyc_bin": "3325703"}
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        # Inject one daily_log with phase=superstructure.
+        db.daily_logs = _StubDailyLogs([
+            {"project_id": "P-PHASE-1", "date": "2026-05-19",
+             "phase": "superstructure", "is_deleted": False},
+        ])
+        result = _run(_resolve_schedule_position(db, project, now))
+        self.assertEqual(
+            result, 0.35,
+            msg="superstructure → 0.35 per PHASE_TO_RATIO L2 mapping. "
+                "Got {}.".format(result),
+        )
+
+    def test_resolve_ignores_deleted_daily_logs(self):
+        """Phase 1 Week 3 PR-A — is_deleted logs must not contribute
+        phase. Deleted phase='closeout' log + no live inferred =>
+        helper falls through to inferred path; mocked inferred=None →
+        returns None."""
+        self._require_resolver()
+        project = {"_id": "P-DEL", "nyc_bin": "0000000"}  # No permits
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        db.daily_logs = _StubDailyLogs([
+            {"project_id": "P-DEL", "date": "2026-05-19",
+             "phase": "closeout", "is_deleted": True},
+        ])
+        # No socrata_permits_historical seeded → inferred path returns
+        # None; resolver returns None (downstream substitutes panel_mu).
+        result = _run(_resolve_schedule_position(db, project, now))
+        self.assertIsNone(
+            result,
+            msg="Deleted daily_log must not contribute phase. With no "
+                "inferred fallback either, expected None. Got: {}".format(
+                    result,
+                ),
+        )
+
+    def test_resolve_uses_most_recent_daily_log(self):
+        """Phase 1 Week 3 PR-A — when multiple non-deleted phase logs
+        exist, the most recent (by `date` field, descending) wins.
+        Older phase='foundation' (0.10) + newer phase='mep' (0.70)
+        → expect 0.70."""
+        self._require_resolver()
+        project = {"_id": "P-RECENT", "nyc_bin": "3325703"}
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        db.daily_logs = _StubDailyLogs([
+            {"project_id": "P-RECENT", "date": "2026-01-10",
+             "phase": "foundation", "is_deleted": False},
+            {"project_id": "P-RECENT", "date": "2026-05-15",
+             "phase": "mep", "is_deleted": False},
+            {"project_id": "P-RECENT", "date": "2026-03-22",
+             "phase": "interior", "is_deleted": False},
+        ])
+        result = _run(_resolve_schedule_position(db, project, now))
+        self.assertEqual(
+            result, 0.70,
+            msg="Most-recent phase 'mep' (2026-05-15) wins. Expected "
+                "0.70 from PHASE_TO_RATIO. Got: {}".format(result),
+        )
+
+    def test_resolve_ignores_unknown_phase_values(self):
+        """Phase 1 Week 3 PR-A — defensive: unknown enum values
+        (typos, frontend bugs, future enum additions not in
+        PHASE_TO_RATIO) fall through to inferred path rather than
+        crashing or returning a default."""
+        self._require_resolver()
+        project = {"_id": "P-BOGUS", "nyc_bin": "0000000"}
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        db.daily_logs = _StubDailyLogs([
+            {"project_id": "P-BOGUS", "date": "2026-05-19",
+             "phase": "bogus_value", "is_deleted": False},
+        ])
+        # Bogus phase + no inferred (no permits) → resolver returns None.
+        result = _run(_resolve_schedule_position(db, project, now))
+        self.assertIsNone(
+            result,
+            msg="Unknown phase value must fall through to inferred path, "
+                "NOT return a default 0.0 or crash. With no inferred "
+                "either, expected None. Got: {}".format(result),
+        )
+
+    def test_resolve_falls_back_when_no_daily_logs_have_phase(self):
+        """Phase 1 Week 3 PR-A — daily_log exists but phase is None
+        (the common pre-PR-B state where backend supports the field
+        but UI doesn't write it yet). Resolver must skip and proceed
+        to inferred path."""
+        self._require_resolver()
+        project = {"_id": "P-NOPH", "nyc_bin": "0000000"}
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        db.daily_logs = _StubDailyLogs([
+            {"project_id": "P-NOPH", "date": "2026-05-19",
+             "phase": None, "is_deleted": False},
+        ])
+        result = _run(_resolve_schedule_position(db, project, now))
+        # No inferred either → None.
+        self.assertIsNone(
+            result,
+            msg=(
+                "phase=None must not match the resolver's $nin "
+                "[None, ''] filter. Expected fall-through to inferred; "
+                f"with no inferred either, expected None. Got: {result!r}"
+            ),
+        )
+
+    def test_resolve_returns_none_when_no_logs_and_no_inferred(self):
+        """Phase 1 Week 3 PR-A — empty daily_logs + no inferred ratio
+        (no permits in socrata_permits_historical, no
+        cohort_median_duration_days) → None. Downstream
+        _substitute_panel_mu_for_nones handles fallback at inference
+        time."""
+        self._require_resolver()
+        project = {"_id": "P-EMPTY", "nyc_bin": "0000000"}
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        db = _StubDb(projects=_StubProjectsForCache([project]))
+        db.daily_logs = _StubDailyLogs([])  # empty
+        result = _run(_resolve_schedule_position(db, project, now))
+        self.assertIsNone(
+            result,
+            msg="Empty daily_logs + no inferred ratio → None (caller's "
+                "_substitute_panel_mu_for_nones substitutes panel_mu "
+                "downstream). Got: {}".format(result),
+        )
+
+
+# Phase 1 Week 3 PR-A — minimal daily_logs stub supporting the
+# resolver's find_one(filter, sort, projection) shape.
+
+class _StubDailyLogs:
+    """Minimal stub for db.daily_logs collection. Supports the exact
+    query shape _resolve_schedule_position emits:
+      find_one({"project_id": ..., "phase": {"$nin": [None, ""]},
+                "is_deleted": {"$ne": True}},
+               sort=[("date", -1)], projection={"phase": 1})
+    """
+
+    def __init__(self, docs):
+        self._docs = list(docs or [])
+
+    async def find_one(self, filter_, sort=None, projection=None):
+        # Apply filter.
+        out = []
+        for d in self._docs:
+            ok = True
+            for k, v in (filter_ or {}).items():
+                if isinstance(v, dict):
+                    if "$nin" in v:
+                        if d.get(k) in v["$nin"]:
+                            ok = False
+                            break
+                    if "$ne" in v:
+                        if d.get(k) == v["$ne"]:
+                            ok = False
+                            break
+                elif d.get(k) != v:
+                    ok = False
+                    break
+            if ok:
+                out.append(d)
+        if not out:
+            return None
+        if sort:
+            field, direction = sort[0]
+            out.sort(key=lambda d: d.get(field) or "",
+                     reverse=(direction == -1))
+        return out[0]
 
 
 if __name__ == "__main__":

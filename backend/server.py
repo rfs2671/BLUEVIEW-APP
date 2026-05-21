@@ -1707,6 +1707,15 @@ class DailyLogCreate(BaseModel):
     weather_temp: Optional[str] = None
     weather_wind: Optional[str] = None
     weather_condition: Optional[str] = None
+    # Phase 1 Week 3 PR-A — manual project phase signal. Feeds the
+    # schedule_position_ratio resolver in live_mutation.py with higher
+    # confidence than the cohort-median inferred ratio. Six locked enum
+    # values; None means "not specified" (resolver falls back to
+    # inferred path).
+    phase: Optional[Literal[
+        "foundation", "superstructure", "interior",
+        "mep", "finishes", "closeout",
+    ]] = None
     is_locked: bool = False
     locked_at: Optional[str] = None
     locked_by: Optional[str] = None
@@ -1735,6 +1744,13 @@ class DailyLogResponse(BaseModel):
     weather_temp: Optional[str] = None
     weather_wind: Optional[str] = None
     weather_condition: Optional[str] = None
+    # Phase 1 Week 3 PR-A — see DailyLogCreate.phase for spec.
+    # Optional; existing daily_logs without the field deserialize
+    # as None via Pydantic's default (schema-on-read).
+    phase: Optional[Literal[
+        "foundation", "superstructure", "interior",
+        "mep", "finishes", "closeout",
+    ]] = None
     is_locked: bool = False
     locked_at: Optional[str] = None
     locked_by: Optional[str] = None
@@ -2258,7 +2274,7 @@ WATERMELON_COLUMNS = {
     "workers": {"id", "name", "phone", "trade", "company", "osha_number", "certifications", "backend_id", "created_at", "updated_at", "is_deleted"},
     "projects": {"id", "name", "address", "status", "start_date", "end_date", "backend_id", "created_at", "updated_at", "is_deleted"},
     "check_ins": {"id", "worker_id", "project_id", "worker_name", "worker_trade", "worker_company", "project_name", "check_in_time", "check_out_time", "nfc_tag_id", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
-    "daily_logs": {"id", "project_id", "project_name", "date", "weather", "notes", "work_performed", "materials_used", "issues", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
+    "daily_logs": {"id", "project_id", "project_name", "date", "weather", "notes", "work_performed", "materials_used", "issues", "phase", "backend_id", "created_at", "updated_at", "is_deleted", "sync_status"},
     "nfc_tags": {"id", "tag_id", "project_id", "project_name", "location", "backend_id", "created_at", "updated_at", "is_deleted"},
 }
 
