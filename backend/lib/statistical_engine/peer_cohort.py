@@ -545,6 +545,45 @@ def _l3_filter_and_rank(
     return matches
 
 
+# ── Display helpers for disclosure_text (PR-B hotfix) ─────────────
+#
+# Pre-rendered disclosure_text is dropped verbatim into the FE per
+# Stage 2.A L8 — must be GC-readable. Mirrors the conventions of
+# frontend/src/utils/displayHelpers.js (titleCase / boroughLabel)
+# so backend-rendered prose matches frontend-rendered prose elsewhere
+# in the app. PR #15D.1 C5 lock + PR #37 L7 lock for MEP acronym.
+
+
+def _borough_label(raw: str) -> str:
+    """ALL-CAPS borough storage → title-case for prose.
+    'BROOKLYN' → 'Brooklyn'. 'STATEN ISLAND' → 'Staten Island'.
+    Empty/None safe — returns ''."""
+    if not raw:
+        return ""
+    # Same idiom as frontend's titleCase(): lowercase, split on
+    # whitespace, capitalize each word.
+    return " ".join(
+        w.capitalize() for w in str(raw).lower().split() if w
+    )
+
+
+def _phase_label(raw: Optional[str]) -> str:
+    """Phase enum storage (lowercase) → display form.
+
+    Special case: 'mep' renders as 'MEP' (acronym; PR #37 L7 lock).
+    All other phase enums stay lowercase per the locked enum
+    convention ('foundation', 'superstructure', 'interior', 'finishes',
+    'closeout'). The 'unknown' sentinel also stays lowercase as it
+    reads naturally in prose ('... in unknown phase').
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip().lower()
+    if s == "mep":
+        return "MEP"
+    return s
+
+
 # ── Disclosure text (Stage 2.A L10) ────────────────────────────────
 
 
@@ -558,7 +597,10 @@ def _format_disclosure(
     phase_wildcard_expanded: bool,
     violation_bucket: Optional[str],
 ) -> str:
-    """Pre-rendered disclosure text per L10 tiering."""
+    """Pre-rendered disclosure text per L10 tiering. Applies display
+    casing helpers so output is GC-readable per PR #15D.1 C5 lock."""
+    borough = _borough_label(borough)
+    phase = _phase_label(phase) if phase else phase
     if layer == 1:
         if phase_wildcard_expanded:
             return (
