@@ -977,6 +977,90 @@ class TestPeerCohort(unittest.TestCase):
                 f"Got: {text!r}",
         )
 
+    def test_phase_wildcard_flag_when_both_phases_unknown(self):
+        """Phase 1 Week 8 PR-B hotfix — when project.phase = 'unknown'
+        AND peer.phase = 'unknown' (both sides — Menahan's actual case
+        in production), the wildcard tracker must still set
+        phase_wildcard_expanded = True. The L4 wildcard clause fires
+        because both sides are 'unknown'; the prior tracker missed this
+        because `phase != entry['phase']` is False when both equal
+        'unknown' → wildcard_used stayed False."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "3000000", "borough": "BROOKLYN",
+            "prediction_cache": {"schedule_position_ratio": 0.5},
+        }
+        # No daily_log for active → project.phase resolves to "unknown".
+        # Peers have no daily_logs either → peer.phase = "unknown" default.
+        # 20 peers in same borough/work_type, no violations → L1 fires
+        # with project bucket=None and peer bucket=None.
+        db.socrata_permits_historical.docs = [
+            _seed_permit("3000000", "BROOKLYN", "General Construction",
+                         "2026-04-15T00:00:00.000"),
+        ]
+        for i in range(20):
+            db.socrata_permits_historical.docs.append(
+                _seed_permit(f"3{i+1:06d}", "BROOKLYN",
+                             "General Construction",
+                             "2026-04-10T00:00:00.000")
+            )
+        result = _run(compute_peer_cohort(db, project, now=now))
+        # Either L1 or L2 should fire; either way, wildcard expanded
+        # because BOTH sides are the 'unknown' sentinel.
+        self.assertTrue(
+            result["cohort_summary"]["phase_wildcard_expanded"],
+            msg=(
+                "Both project.phase='unknown' AND peer.phase='unknown' "
+                "is a wildcard match per L4 (cannot meaningfully say "
+                "they 'strictly match' on phase). Flag must be True. "
+                f"Got: {result['cohort_summary']!r}"
+            ),
+        )
+
+    def test_phase_wildcard_flag_when_project_phase_unknown_peer_specific(self):
+        """When project.phase = 'unknown' but peer.phase is a specific
+        enum ('mep'), L4 wildcard fires via the 'unknown'-clause.
+        Tracker must record this even though the OTHER side (peer) has
+        a real phase value."""
+        self._require()
+        db = _StubDb()
+        now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+        project = {
+            "_id": "P_A", "nyc_bin": "3000000", "borough": "BROOKLYN",
+            "prediction_cache": {"schedule_position_ratio": 0.7},
+        }
+        # No daily_log for active → project.phase = "unknown".
+        db.socrata_permits_historical.docs = [
+            _seed_permit("3000000", "BROOKLYN", "General Construction",
+                         "2026-04-15T00:00:00.000"),
+        ]
+        # 20 peers WITH phase=mep daily_logs → peer.phase = "mep"
+        for i in range(20):
+            pid = f"P_{i+1}"
+            bin_id = f"3{i+1:06d}"
+            db.projects.docs.append({
+                "_id": pid, "nyc_bin": bin_id, "is_deleted": False,
+            })
+            db.daily_logs.docs.append({
+                "project_id": pid, "date": "2026-05-15",
+                "phase": "mep", "is_deleted": False,
+            })
+            db.socrata_permits_historical.docs.append(
+                _seed_permit(bin_id, "BROOKLYN", "General Construction",
+                             "2026-04-10T00:00:00.000")
+            )
+        result = _run(compute_peer_cohort(db, project, now=now))
+        self.assertTrue(
+            result["cohort_summary"]["phase_wildcard_expanded"],
+            msg=(
+                "project.phase='unknown' + peer.phase='mep' matches via "
+                "L4 wildcard ('unknown' clause). Flag must be True. "
+                f"Got: {result['cohort_summary']!r}"
+            ),
+        )
+
     def test_disclosure_text_foundation_phase_lowercased(self):
         """Non-acronym phase enums stay lowercase ('foundation',
         'superstructure', etc.). Only MEP gets the special-case

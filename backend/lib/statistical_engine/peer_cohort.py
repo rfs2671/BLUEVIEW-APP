@@ -91,6 +91,31 @@ def _phase_matches(
     return project_phase == peer_phase
 
 
+def _is_wildcard_match(
+    project_phase: Optional[str],
+    peer_phase: Optional[str],
+) -> bool:
+    """Phase 1 Week 8 PR-B hotfix — tracks whether a _phase_matches()
+    match relied on the wildcard branch (either side None or
+    'unknown') vs strict equality on a real phase enum.
+
+    Returns True for ANY wildcard scenario, including both sides
+    being 'unknown' or one side None. The earlier tracker incorrectly
+    excluded the both-'unknown' case via a 'phase != entry.phase'
+    guard that fails when they're equal — meaning Menahan's
+    (project.phase='unknown', peer.phase='unknown') match was
+    reported as strict equality when it's actually a wildcard.
+
+    "cannot meaningfully say they strictly match" is the rule —
+    'unknown' is a sentinel for missing data, not a phase value.
+    """
+    if project_phase is None or peer_phase is None:
+        return True
+    if project_phase == "unknown" or peer_phase == "unknown":
+        return True
+    return False
+
+
 def _parse_yyyymmdd(s: Optional[str]) -> Optional[datetime]:
     """Parse a YYYYMMDD text date (from ECB violations) to UTC datetime.
     Returns None on malformed input."""
@@ -476,10 +501,11 @@ def _l1_filter(
             pass  # matches
         else:
             continue
-        # Track wildcard usage
-        if phase != entry["phase"] and (
-            phase == "unknown" or entry["phase"] == "unknown"
-        ):
+        # Track wildcard usage via the dedicated _is_wildcard_match
+        # helper. This correctly flags the both-'unknown' case
+        # (Menahan's actual production scenario) which the prior
+        # `phase != entry.phase AND ...` guard incorrectly skipped.
+        if _is_wildcard_match(phase, entry["phase"]):
             wildcard_used = True
         matches.append(entry)
     return matches, wildcard_used
@@ -502,9 +528,7 @@ def _l2_filter(
             continue
         if not _phase_matches(phase, entry["phase"]):
             continue
-        if phase != entry["phase"] and (
-            phase == "unknown" or entry["phase"] == "unknown"
-        ):
+        if _is_wildcard_match(phase, entry["phase"]):
             wildcard_used = True
         matches.append(entry)
     return matches, wildcard_used
