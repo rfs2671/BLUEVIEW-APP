@@ -1755,8 +1755,28 @@ class DailyLogResponse(BaseModel):
     locked_at: Optional[str] = None
     locked_by: Optional[str] = None
 
+
+# Phase 1 Week 3 PR-C — read-only response model for the baseline-
+# aggregates endpoint. Shape mirrors the violation_baseline_aggregates
+# Mongo doc produced by compute_baseline_aggregates(); see
+# lib/statistical_engine/violation_baseline_aggregator.py docstring
+# for field semantics.
+class BaselineAggregateResponse(BaseModel):
+    borough: str
+    work_type: str
+    phase: str
+    window_start: datetime
+    window_end: datetime
+    n_violations: int
+    n_active_projects: int
+    n_projects_known_phase: int
+    n_projects_unknown_phase: int
+    rate_per_project_day: float
+    computed_at: datetime
+
+
 # ==================== DOB COMPLIANCE MODELS ====================
- 
+
 class DOBLogResponse(BaseModel):
     id: str
     project_id: str
@@ -8598,6 +8618,60 @@ async def get_today_project_checkins(project_id: str, current_user = Depends(get
                 s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
         results.append(s)
     return results
+
+
+# ==================== BASELINE AGGREGATES (Phase 1 Week 3 PR-C) ====================
+
+@api_router.get(
+    "/baseline-aggregates",
+    response_model=List[BaselineAggregateResponse],
+)
+async def get_baseline_aggregates(
+    borough:   Optional[str] = None,
+    work_type: Optional[str] = None,
+    phase:     Optional[str] = None,
+    since:     Optional[str] = None,  # ISO datetime; filters window_end >= since
+    limit:     int = Query(200, ge=1, le=1000),
+    current_user = Depends(get_current_user),
+):
+    """Phase 1 Week 3 PR-C — read-only cohort baseline rates.
+
+    Returns the most-recent rows from violation_baseline_aggregates
+    matching the supplied (borough, work_type, phase, since) filters.
+    Sorted by window_end DESC so the freshest cohort baselines come
+    first.
+
+    Empty result set is valid (no aggregator runs yet, or filter
+    matches no cohort).
+    """
+    query: Dict[str, Any] = {}
+    if borough:
+        query["borough"] = borough
+    if work_type:
+        query["work_type"] = work_type
+    if phase:
+        query["phase"] = phase
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+            query["window_end"] = {"$gte": since_dt}
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "`since` must be an ISO-8601 datetime (e.g., "
+                    "'2026-05-20T00:00:00Z')"
+                ),
+            )
+
+    cursor = db.violation_baseline_aggregates.find(query).sort(
+        "window_end", -1,
+    ).limit(limit)
+    rows = await cursor.to_list(length=limit)
+    return [BaselineAggregateResponse(**r) for r in rows]
+
 
 # ==================== DAILY LOGS ====================
 
@@ -25300,6 +25374,43 @@ async def startup_event():
     logger.info(
         "🔮 PR #15B prediction engine crons scheduled "
         "(refit 2:45 AM ET, audit 4:15 AM ET)"
+    )
+
+    # Phase 1 Week 3 PR-C — weekly cohort baseline aggregator. Reads
+    # the Phase 1 Week 1 backfilled historical data + the PR-A/PR-B
+    # phase tracking, writes per-cohort 30d violation rates to
+    # violation_baseline_aggregates. Mondays at 3:00 AM ET — off-peak,
+    # downstream of the nightly panel build + refit so the most recent
+    # daily_log.phase values are visible to the aggregator.
+    async def _phase1w3_weekly_baseline_aggregator_tick():
+        try:
+            from lib.statistical_engine.violation_baseline_aggregator import (
+                compute_baseline_aggregates,
+            )
+            result = await compute_baseline_aggregates(db)
+            logger.info(
+                f"[phase1w3_baseline_aggregator] tick complete: {result!r}",
+            )
+        except Exception as e:
+            logger.error(
+                f"[phase1w3_baseline_aggregator] tick crashed: {e!r}",
+                exc_info=True,
+            )
+
+    scheduler.add_job(
+        _phase1w3_weekly_baseline_aggregator_tick,
+        CronTrigger(
+            day_of_week="mon", hour=3, minute=0,
+            timezone="America/New_York",
+        ),
+        id="phase1w3_weekly_baseline_aggregator",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "📊 Phase 1 Week 3 baseline aggregator cron scheduled "
+        "(Mondays 3:00 AM ET)"
     )
 
     # V2.3 Commit 5 — compound index on peer_stats_cache for the
