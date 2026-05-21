@@ -1830,6 +1830,25 @@ class DefconStatusResponse(BaseModel):
     cohort_context: DefconCohortContext
 
 
+# Phase 1 Week 13-19 PR-A — causal lift matrix response.
+# Shape locked at Stage 2.A L5. One row per
+# (complaint_bucket, violation_bucket, window_days) cell of the
+# 10 × 10 × 3 = 300-row matrix written by
+# lib.statistical_engine.causal_lift.compute_causal_lift_matrix.
+# Consumed by Phase 1 Week 13-19 PR-B (Defcon detail screen
+# "Tactical Recommendations" section).
+class CausalLiftEntry(BaseModel):
+    complaint_bucket: str
+    violation_bucket: str
+    window_days: int
+    n_bins_with_complaint: int
+    n_bins_with_subsequent_violation: int
+    lift_ratio: float
+    confidence: str                        # HIGH | MEDIUM | LOW
+    sample_size: int
+    computed_at: str                       # ISO UTC
+
+
 # ==================== DOB COMPLIANCE MODELS ====================
 
 class DOBLogResponse(BaseModel):
@@ -8791,6 +8810,77 @@ async def get_baseline_aggregates(
     ).limit(limit)
     rows = await cursor.to_list(length=limit)
     return [BaselineAggregateResponse(**r) for r in rows]
+
+
+# ==================== CAUSAL LIFT (Phase 1 Week 13-19 PR-A) ====================
+
+# Default API filter per Stage 2.A L5:
+#   lift_ratio >= 1.5 AND confidence ∈ {HIGH, MEDIUM}.
+# Bypassed by ?include_all=true to surface the full 300-row matrix for
+# debugging or operator-side analysis.
+_CAUSAL_LIFT_DEFAULT_MIN = 1.5
+_CAUSAL_LIFT_DEFAULT_CONFIDENCE = ("HIGH", "MEDIUM")
+
+
+@api_router.get(
+    "/causal-lift",
+    response_model=List[CausalLiftEntry],
+)
+async def get_causal_lift(
+    complaint_bucket: Optional[str] = None,
+    window_days:      Optional[int] = None,
+    include_all:      bool          = False,
+    limit:            int           = Query(50, ge=1, le=300),
+    current_user = Depends(get_current_user),
+):
+    """Phase 1 Week 13-19 PR-A — causal lift matrix readout.
+
+    Returns rows from ``causal_lift_matrix`` sorted by ``lift_ratio``
+    DESC. By default filters to ``lift_ratio >= 1.5 AND confidence ∈
+    {HIGH, MEDIUM}`` (L5). Pass ``include_all=true`` to bypass the
+    default filter (returns LOW-confidence rows + sub-1.5 ratios — full
+    300-row matrix view, useful for debugging).
+
+    Caller scopes by ``complaint_bucket`` + ``window_days`` to get the
+    top recommendations for a specific complaint pattern.
+    """
+    query: Dict[str, Any] = {}
+    if complaint_bucket:
+        query["complaint_bucket"] = complaint_bucket
+    if window_days is not None:
+        query["window_days"] = int(window_days)
+    if not include_all:
+        query["lift_ratio"] = {"$gte": _CAUSAL_LIFT_DEFAULT_MIN}
+        query["confidence"] = {"$in": list(_CAUSAL_LIFT_DEFAULT_CONFIDENCE)}
+
+    cursor = db.causal_lift_matrix.find(query).sort(
+        "lift_ratio", -1,
+    ).limit(limit)
+    rows = await cursor.to_list(length=limit)
+
+    # computed_at is stored as a datetime; serialize to ISO for the
+    # response model. Mirrors the defcon-status pattern.
+    out: List[CausalLiftEntry] = []
+    for r in rows:
+        computed_at = r.get("computed_at")
+        if isinstance(computed_at, datetime):
+            computed_at_str = computed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            computed_at_str = str(computed_at) if computed_at else ""
+        out.append(CausalLiftEntry(
+            complaint_bucket=r.get("complaint_bucket", ""),
+            violation_bucket=r.get("violation_bucket", ""),
+            window_days=int(r.get("window_days") or 0),
+            n_bins_with_complaint=int(r.get("n_bins_with_complaint") or 0),
+            n_bins_with_subsequent_violation=int(
+                r.get("n_bins_with_subsequent_violation") or 0,
+            ),
+            lift_ratio=float(r.get("lift_ratio") or 0.0),
+            confidence=r.get("confidence", "LOW"),
+            sample_size=int(r.get("sample_size") or 0),
+            computed_at=computed_at_str,
+        ))
+    return out
 
 
 # ==================== DAILY LOGS ====================
@@ -25531,6 +25621,43 @@ async def startup_event():
     logger.info(
         "📊 Phase 1 Week 3 baseline aggregator cron scheduled "
         "(Mondays 3:00 AM ET)"
+    )
+
+    # Phase 1 Week 13-19 PR-A — weekly causal lift matrix computation.
+    # Reads the Phase 1 Week 1 backfilled complaints + violations data,
+    # writes the 300-cell (10 buckets × 10 buckets × 3 windows)
+    # causal_lift_matrix collection. Mondays at 3:30 AM ET — 30 minutes
+    # after baseline_aggregator so the two run sequentially, not
+    # concurrently (both read from the same historical collections).
+    async def _phase1w13_weekly_causal_lift_tick():
+        try:
+            from lib.statistical_engine.causal_lift import (
+                compute_causal_lift_matrix,
+            )
+            result = await compute_causal_lift_matrix(db)
+            logger.info(
+                f"[phase1w13_causal_lift] tick complete: {result!r}",
+            )
+        except Exception as e:
+            logger.error(
+                f"[phase1w13_causal_lift] tick crashed: {e!r}",
+                exc_info=True,
+            )
+
+    scheduler.add_job(
+        _phase1w13_weekly_causal_lift_tick,
+        CronTrigger(
+            day_of_week="mon", hour=3, minute=30,
+            timezone="America/New_York",
+        ),
+        id="phase1w13_weekly_causal_lift",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "🔗 Phase 1 Week 13-19 causal lift cron scheduled "
+        "(Mondays 3:30 AM ET — 30 min after baseline aggregator)"
     )
 
     # V2.3 Commit 5 — compound index on peer_stats_cache for the
