@@ -15,6 +15,11 @@ export default class DailyLog extends Model {
   @field('work_performed') workPerformed;
   @field('materials_used') materialsUsed;
   @field('issues') issues;
+  // Phase 1 Week 3 PR-B — manual project phase. Enum values mirror
+  // backend Pydantic Literal[...] in server.py:DailyLogCreate.
+  // Schema-on-read default is null (older logs migrated v1→v2 receive
+  // null for this column).
+  @field('phase') phase;
   @field('backend_id') backendId;
   @field('is_deleted') isDeleted;
   @field('sync_status') syncStatus; // 'synced', 'pending', 'failed'

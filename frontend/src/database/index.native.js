@@ -6,6 +6,7 @@ if (Platform.OS !== 'web') {
   const { Database } = require('@nozbe/watermelondb');
   const LokiJSAdapter = require('@nozbe/watermelondb/adapters/lokijs').default;
   const schema = require('./schema').default;
+  const migrations = require('./migrations').default;
   const Worker = require('./models/Worker').default;
   const Project = require('./models/Project').default;
   const CheckIn = require('./models/CheckIn').default;
@@ -14,6 +15,10 @@ if (Platform.OS !== 'web') {
 
   const adapter = new LokiJSAdapter({
     schema,
+    // Phase 1 Week 3 PR-B — apply v1 → v2 migration on app reload
+    // (adds daily_logs.phase column). WatermelonDB compares on-device
+    // schema version to schema.version and runs missing steps.
+    migrations,
     useWebWorker: false,
     useIncrementalIndexedDB: true,
     dbName: 'blueview',

@@ -1,7 +1,7 @@
 import { appSchema, tableSchema } from '@nozbe/watermelondb';
 
 export default appSchema({
-  version: 1,
+  version: 2,
   tables: [
     // Workers table
     tableSchema({
@@ -69,6 +69,12 @@ export default appSchema({
         { name: 'work_performed', type: 'string', isOptional: true },
         { name: 'materials_used', type: 'string', isOptional: true },
         { name: 'issues', type: 'string', isOptional: true },
+        // Phase 1 Week 3 PR-B — manual project phase signal. Mirrors
+        // backend Pydantic Optional[Literal[...]] field in
+        // server.py:DailyLogCreate. Enum values:
+        // foundation, superstructure, interior, mep, finishes, closeout.
+        // Sync allowlist (server.py:2261) propagates this on GETs.
+        { name: 'phase', type: 'string', isOptional: true },
         { name: 'backend_id', type: 'string', isIndexed: true },
         { name: 'created_at', type: 'number' },
         { name: 'updated_at', type: 'number' },
