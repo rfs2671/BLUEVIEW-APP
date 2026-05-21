@@ -39,6 +39,8 @@ import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import HeaderBrand from '../../src/components/HeaderBrand';
+// Phase 1 Week 11-12 PR-B — Defcon dot color mapping (NORMAL hidden).
+import { tierToTheme } from '../../src/utils/defconHelpers';
 
 export default function ProjectsScreen() {
   const { colors, isDark } = useTheme();
@@ -213,9 +215,25 @@ export default function ProjectsScreen() {
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
                   style={s.projectCard}
                 >
-                  <IconPod>
-                    <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
-                  </IconPod>
+                  {/* Phase 1 Week 11-12 PR-B — Defcon dot.
+                      When project.defcon_tier is ELEVATED or
+                      IMMEDIATE we overlay a small colored dot on the
+                      IconPod corner. NORMAL / null tiers render the
+                      stock IconPod with no dot. */}
+                  <View style={s.iconPodWrap}>
+                    <IconPod>
+                      <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
+                    </IconPod>
+                    {project.defcon_tier && project.defcon_tier !== 'NORMAL' && (
+                      <View
+                        style={[
+                          s.defconDot,
+                          { backgroundColor: tierToTheme(project.defcon_tier).fg },
+                        ]}
+                        accessibilityLabel={`Defcon ${project.defcon_tier.toLowerCase()}`}
+                      />
+                    )}
+                  </View>
 
                   <View style={s.projectInfo}>
                     <Text style={[s.projectName, { color: colors.text.primary }]}>{project.name}</Text>
@@ -438,6 +456,22 @@ function buildStyles(colors, isDark) {
   },
   projectCard: {
     gap: spacing.md,
+  },
+  // Phase 1 Week 11-12 PR-B — Defcon dot overlay container. Wraps the
+  // IconPod so the dot can be positioned absolutely without disturbing
+  // the existing flex layout of the list row.
+  iconPodWrap: {
+    position: 'relative',
+  },
+  defconDot: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: colors.background.middle,
   },
   projectInfo: {
     flex: 1,
