@@ -36,11 +36,13 @@ import {
   Users,
   Activity,
   Clock,
+  Target,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../../src/components/GlassCard';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import FloatingNav from '../../../src/components/FloatingNav';
+import TacticalRecommendations from '../../../src/components/TacticalRecommendations';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '../../../src/context/ThemeContext';
 import { projectsAPI } from '../../../src/utils/api';
@@ -285,6 +287,27 @@ export default function DefconScreen() {
                     {data.cohort_context?.n_peer_matches ?? '—'}
                   </Text>
                 </View>
+              </GlassCard>
+
+              {/* ── 4b. Tactical Recommendations (Phase 1 Week 13-19 PR-B) ──
+                  Fans out from the project's last-90-day complaint
+                  buckets into per-bucket causal_lift_matrix queries.
+                  Empty state when 0 recent complaints or 0 qualifying
+                  recommendations — silent failure on network error. */}
+              <GlassCard style={styles.card}>
+                <View style={styles.sectionHeader}>
+                  <IconPod>
+                    <Target
+                      size={18}
+                      strokeWidth={1.5}
+                      color={colors.iconPod.iconColor}
+                    />
+                  </IconPod>
+                  <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+                    Tactical Recommendations
+                  </Text>
+                </View>
+                <TacticalRecommendations projectId={projectId} />
               </GlassCard>
 
               {/* ── 5. Last evaluated ── */}

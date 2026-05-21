@@ -432,3 +432,77 @@ async def compute_causal_lift_matrix(
         "window_end":       complaint_window_end,
         "elapsed_seconds":  elapsed,
     }
+
+
+# ── Per-project recent-complaint rollup (Phase 1 Week 13-19 PR-B) ──
+
+
+# Tactical Recommendations support endpoint:
+# GET /api/projects/{id}/recent-complaint-buckets returns the project's
+# complaints from the last 90 days, classified into the 10 violation
+# taxonomy buckets and sorted by count DESC. The FE component fans out
+# from this rollup into per-bucket /api/causal-lift queries to surface
+# the top recommendation cards.
+_RECENT_COMPLAINTS_WINDOW_DAYS = 90
+
+
+async def _resolve_recent_complaint_buckets(
+    db: Any,
+    bin_id: Optional[str],
+    *,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Return ``[{bucket, n_complaints}, ...]`` sorted by count DESC.
+
+    Pulls all complaints for ``bin_id`` (cheap — per-BIN result set is
+    small, served by the existing ``complaints_bin_1_date_entered_1``
+    index), filters in Python because ``date_entered`` is MM/DD/YYYY
+    text (PR #33 lesson — can't lex-compare against ISO bounds), and
+    classifies each via ``classify_complaint``.
+
+    Per-complaint accumulation (not per-BIN). 3 complaints with the
+    same bucket on the same BIN → ``n_complaints = 3``. Distinct from
+    the BIN-level dedup used by ``compute_causal_lift_matrix``.
+
+    Empty / null ``bin_id`` → empty list. Defensive against the
+    project-without-BIN case (new projects, projects added before BIN
+    resolution lands).
+    """
+    from collections import Counter
+    from lib.statistical_engine.violation_taxonomy import classify_complaint
+
+    if not bin_id:
+        return []
+    coll = getattr(db, "socrata_complaints_historical", None)
+    if coll is None:
+        return []
+
+    cur_now = now or datetime.now(timezone.utc)
+    if cur_now.tzinfo is None:
+        cur_now = cur_now.replace(tzinfo=timezone.utc)
+    cutoff = cur_now - timedelta(days=_RECENT_COMPLAINTS_WINDOW_DAYS)
+
+    try:
+        rows = await coll.find(
+            {"bin": bin_id},
+            {"complaint_category": 1, "date_entered": 1},
+        ).to_list(length=None)
+    except Exception as e:  # pragma: no cover
+        logger.warning(
+            "[phase1w13b] complaints lookup failed for bin=%r: %r",
+            bin_id, e,
+        )
+        return []
+
+    counter: "Counter[str]" = Counter()
+    for r in rows or []:
+        dt = _parse_mmddyyyy(r.get("date_entered"))
+        if dt is None or dt < cutoff:
+            continue
+        bucket = classify_complaint(r.get("complaint_category"))
+        counter[bucket] += 1
+
+    return [
+        {"bucket": b, "n_complaints": int(n)}
+        for b, n in counter.most_common()
+    ]

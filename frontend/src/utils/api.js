@@ -241,6 +241,18 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // Phase 1 Week 13-19 PR-B — recent complaint buckets rollup.
+  // Returns { buckets: [{bucket, n_complaints}, ...] } sorted by
+  // count DESC for the project's last-90-day complaint distribution.
+  // Feeds the Tactical Recommendations component which fans out into
+  // per-bucket /api/causal-lift queries.
+  getRecentComplaintBuckets: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/${projectId}/recent-complaint-buckets`
+    );
+    return response.data;
+  },
+
   addNfcTag: async (projectId, tagData) => {
     const response = await apiClient.post(`/api/projects/${projectId}/nfc-tags`, tagData);
     return response.data;
@@ -278,6 +290,26 @@ export const projectsAPI = {
 
   getRequiredLogbooks: async (projectId) => {
     const response = await apiClient.get(`/api/projects/${projectId}/required-logbooks`);
+    return response.data;
+  },
+};
+
+/**
+ * Phase 1 Week 13-19 PR-A + PR-B — causal lift readout.
+ * Returns the top recommendations from the causal_lift_matrix
+ * collection, filtered by complaint_bucket + window_days. By default
+ * the backend filters to lift_ratio >= 1.5 AND confidence ∈
+ * {HIGH, MEDIUM}; pass { includeAll: true } to bypass.
+ */
+export const causalLiftAPI = {
+  getByBucket: async (bucket, { windowDays = 90, includeAll = false, limit = 50 } = {}) => {
+    const params = {
+      complaint_bucket: bucket,
+      window_days: windowDays,
+      limit,
+    };
+    if (includeAll) params.include_all = true;
+    const response = await apiClient.get('/api/causal-lift', { params });
     return response.data;
   },
 };
