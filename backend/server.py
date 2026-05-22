@@ -1835,6 +1835,11 @@ class DefconStatusResponse(BaseModel):
     tier_color: str                        # green | amber | red
     primary_reason: str
     contributing_factors: List[DefconContributingFactor]
+    # PR #50 — GC-voice pre-rendered strings. The frontend renders these
+    # directly; the raw contributing_factors + cohort_context above stay
+    # in the response for engineering debug only.
+    contributing_factors_text: List[str] = []
+    cohort_comparison_text: str = "Comparison not yet available"
     last_evaluated_at: str                 # ISO UTC
     cohort_context: DefconCohortContext
 

@@ -181,11 +181,11 @@ export default function DefconScreen() {
                 </Text>
               </View>
 
-              {/* ── 2. Primary reason ── */}
+              {/* ── 2. What this means (PR #50 — was "Primary reason") ── */}
               {data.primary_reason ? (
                 <GlassCard style={styles.card}>
                   <Text style={[styles.sectionLabel, { color: colors.text.muted }]}>
-                    PRIMARY REASON
+                    WHAT THIS MEANS
                   </Text>
                   <Text style={[styles.reason, { color: colors.text.primary }]}>
                     {data.primary_reason}
@@ -193,63 +193,45 @@ export default function DefconScreen() {
                 </GlassCard>
               ) : null}
 
-              {/* ── 3. Contributing factors ── */}
-              <GlassCard style={styles.card}>
-                <View style={styles.sectionHeader}>
-                  <IconPod>
-                    <Activity
-                      size={18}
-                      strokeWidth={1.5}
-                      color={colors.iconPod.iconColor}
-                    />
-                  </IconPod>
-                  <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
-                    Contributing Factors
-                  </Text>
-                </View>
-                {Array.isArray(data.contributing_factors)
-                  && data.contributing_factors.length > 0 ? (
-                  data.contributing_factors.map((f, i) => (
+              {/* ── 3. Why this matters (PR #50 — GC-voice sentences) ──
+                  Renders backend-prerendered contributing_factors_text.
+                  The raw {factor, weight, evidence} dicts are still in
+                  the API response for engineering debug but no longer
+                  surfaced. */}
+              {Array.isArray(data.contributing_factors_text)
+                && data.contributing_factors_text.length > 0 ? (
+                <GlassCard style={styles.card}>
+                  <View style={styles.sectionHeader}>
+                    <IconPod>
+                      <Activity
+                        size={18}
+                        strokeWidth={1.5}
+                        color={colors.iconPod.iconColor}
+                      />
+                    </IconPod>
+                    <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+                      Why this matters
+                    </Text>
+                  </View>
+                  {data.contributing_factors_text.map((line, i) => (
                     <View
-                      key={`${f.factor || 'factor'}-${i}`}
-                      style={[
-                        styles.factorRow,
-                        { borderTopColor: colors.border.subtle },
-                      ]}
+                      key={`cf-${i}`}
+                      style={styles.bulletRow}
                     >
-                      <View style={styles.factorRowTop}>
-                        <Text style={[styles.factorName, { color: colors.text.primary }]}>
-                          {(f.factor || '').replace(/_/g, ' ')}
-                        </Text>
-                        {typeof f.weight === 'number' && (
-                          <View
-                            style={[
-                              styles.weightChip,
-                              { backgroundColor: colors.glass.background },
-                            ]}
-                          >
-                            <Text style={[styles.weightText, { color: colors.text.secondary }]}>
-                              {f.weight > 0 ? '+' : ''}{f.weight.toFixed(1)}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                      {f.evidence ? (
-                        <Text style={[styles.factorEvidence, { color: colors.text.secondary }]}>
-                          {f.evidence}
-                        </Text>
-                      ) : null}
+                      <Text style={[styles.bulletDot, { color: colors.text.muted }]}>
+                        {'•'}
+                      </Text>
+                      <Text style={[styles.bulletText, { color: colors.text.primary }]}>
+                        {line}
+                      </Text>
                     </View>
-                  ))
-                ) : (
-                  <Text style={[styles.muted, { color: colors.text.muted }]}>
-                    No contributing factors recorded. All indicators
-                    within typical range.
-                  </Text>
-                )}
-              </GlassCard>
+                  ))}
+                </GlassCard>
+              ) : null}
 
-              {/* ── 4. Cohort context ── */}
+              {/* ── 4. Compared to similar sites (PR #50 — was "Cohort
+                  Context"). One GC-voice sentence; raw numbers
+                  (baseline rate, ratio, peer count) no longer shown. */}
               <GlassCard style={styles.card}>
                 <View style={styles.sectionHeader}>
                   <IconPod>
@@ -260,33 +242,12 @@ export default function DefconScreen() {
                     />
                   </IconPod>
                   <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
-                    Cohort Context
+                    Compared to similar sites
                   </Text>
                 </View>
-                <View style={styles.kvRow}>
-                  <Text style={[styles.kvKey, { color: colors.text.muted }]}>
-                    Cohort baseline (14d)
-                  </Text>
-                  <Text style={[styles.kvVal, { color: colors.text.primary }]}>
-                    {_formatPct(data.cohort_context?.cohort_baseline_rate)}
-                  </Text>
-                </View>
-                <View style={styles.kvRow}>
-                  <Text style={[styles.kvKey, { color: colors.text.muted }]}>
-                    Project rate vs cohort
-                  </Text>
-                  <Text style={[styles.kvVal, { color: colors.text.primary }]}>
-                    {_formatRatio(data.cohort_context?.project_rate_ratio)}
-                  </Text>
-                </View>
-                <View style={styles.kvRow}>
-                  <Text style={[styles.kvKey, { color: colors.text.muted }]}>
-                    Peer matches
-                  </Text>
-                  <Text style={[styles.kvVal, { color: colors.text.primary }]}>
-                    {data.cohort_context?.n_peer_matches ?? '—'}
-                  </Text>
-                </View>
+                <Text style={[styles.reason, { color: colors.text.primary }]}>
+                  {data.cohort_comparison_text || 'Comparison not yet available'}
+                </Text>
               </GlassCard>
 
               {/* ── 4b. Tactical Recommendations (Phase 1 Week 13-19 PR-B) ──
@@ -310,11 +271,11 @@ export default function DefconScreen() {
                 <TacticalRecommendations projectId={projectId} />
               </GlassCard>
 
-              {/* ── 5. Last evaluated ── */}
+              {/* ── 6. Last checked (PR #50 — GC voice) ── */}
               <View style={styles.footerRow}>
                 <Clock size={12} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={[styles.footerText, { color: colors.text.muted }]}>
-                  Last evaluated {timeAgo || '—'}
+                  Last checked {timeAgo || '—'}
                 </Text>
               </View>
             </>
@@ -407,6 +368,24 @@ function buildStyles(colors) {
       ...typography.body,
       fontSize: 16,
       lineHeight: 22,
+    },
+    // PR #50 — "Why this matters" GC-voice bullet list.
+    bulletRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      gap: spacing.sm,
+      paddingVertical: spacing.xs,
+    },
+    bulletDot: {
+      ...typography.body,
+      fontSize: 16,
+      lineHeight: 22,
+    },
+    bulletText: {
+      ...typography.body,
+      fontSize: 15,
+      lineHeight: 21,
+      flex: 1,
     },
     factorRow: {
       borderTopWidth: StyleSheet.hairlineWidth,

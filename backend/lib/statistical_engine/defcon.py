@@ -102,6 +102,113 @@ def _bucket_label(bucket: Optional[str]) -> str:
     return str(bucket).replace("_", " ").rstrip("s") or "violation"
 
 
+# ── PR #50 — GC-voice pre-rendering ───────────────────────────────
+#
+# The Defcon detail screen must read plain-English strings only; no
+# engineering vocabulary (hazard ratio, cohort, n_peer_matches) reaches
+# the GC. These helpers pre-render the strings backend-side, matching
+# the PR #15D.1 disclosure_text single-source-of-truth pattern.
+
+
+def _cohort_comparison_text(
+    hazard_ratio: Optional[float],
+    borough: Optional[str],
+    work_type: Optional[str],
+) -> str:
+    """Map the 14-day hazard ratio to a GC-voice comparison sentence.
+
+    Thresholds mirror the PR #15D.1 C3/C4 5-tier verdict mapping. The
+    raw ratio is NEVER surfaced — only the plain-English band. None /
+    non-numeric ratio → "Comparison not yet available".
+    """
+    if hazard_ratio is None or not isinstance(hazard_ratio, (int, float)):
+        return "Comparison not yet available"
+
+    borough_label = _borough_label(borough or "")
+    work_type_label = (work_type or "").strip()
+    # Build the site descriptor. Avoid the "projects projects" double
+    # when work_type is the default sentinel.
+    if borough_label and work_type_label and work_type_label != "projects":
+        site_descriptor = f"{borough_label} {work_type_label} projects"
+    elif borough_label:
+        site_descriptor = f"{borough_label} projects"
+    else:
+        site_descriptor = "similar sites"
+
+    if hazard_ratio < 0.75:
+        return f"Lower than typical for {site_descriptor}"
+    if hazard_ratio < 1.10:
+        return f"Tracking with {site_descriptor}"
+    if hazard_ratio < 1.50:
+        return f"Slightly above typical for {site_descriptor}"
+    if hazard_ratio < 3.00:
+        return f"Above typical for {site_descriptor}"
+    if hazard_ratio < 4.00:
+        return f"Notably elevated compared to {site_descriptor}"
+    return f"Significantly above typical for {site_descriptor}"
+
+
+def _contributing_factors_to_text(
+    factors: List[Dict[str, Any]],
+) -> List[str]:
+    """Translate the internal {factor, weight, evidence} dicts into
+    GC-voice sentences (one per factor, order preserved).
+
+    Hazard-ratio factors are rendered ratio-free — their evidence
+    strings carry "N.N× cohort baseline (threshold: ...)" which must
+    not reach the GC, so they get fixed plain-English sentences instead.
+    Other factors reuse their evidence (already GC-readable) with a
+    GC-voice override for the SWO + violation cases.
+    """
+    sentences: List[str] = []
+    for f in factors or []:
+        factor_type = f.get("factor", "")
+        evidence = f.get("evidence", "") or ""
+
+        if factor_type == "swo_demolition_phase":
+            sentences.append(
+                "An active stop-work order is open during demolition"
+            )
+        elif factor_type == "swo_long_running":
+            sentences.append(
+                "A stop-work order has been open more than 30 days"
+            )
+        elif factor_type == "swo_active":
+            sentences.append("An active stop-work order is open")
+        elif factor_type == "class_1_violation_recent":
+            sentences.append(
+                "A serious DOB violation (Class 1) was issued in the "
+                "last 7 days"
+            )
+        elif factor_type == "class_2_violation_recent":
+            sentences.append(
+                "A DOB violation (Class 2) was issued in the last 14 days"
+            )
+        elif factor_type in ("hazard_ratio_immediate", "hazard_ratio_elevated"):
+            # Ratio-free — never leak the multiplier or "cohort baseline".
+            sentences.append(
+                "DOB violations here are happening more often than at "
+                "similar sites"
+            )
+        elif factor_type == "complaint_clustering":
+            # Evidence is already GC-readable ("4 complaints filed in
+            # last 30 days"); reuse it, else a generic fallback.
+            sentences.append(evidence or "Multiple complaints filed recently")
+        elif factor_type == "closeout_phase_demotion":
+            sentences.append(
+                "Adjusted down — elevated readings reflect closeout "
+                "inspections, not active site risk"
+            )
+        else:
+            # Unknown factor type — fall back to evidence only if it's
+            # free of engineering tokens; otherwise skip silently.
+            low = evidence.lower()
+            if evidence and "×" not in evidence and "cohort" not in low \
+                    and "baseline" not in low and "threshold" not in low:
+                sentences.append(evidence)
+    return sentences
+
+
 # ── Pure logic: tier precedence ───────────────────────────────────
 
 
@@ -736,11 +843,21 @@ async def compute_defcon_status(
     tier, factors = _apply_tier_precedence(inputs)
     primary_reason = _format_primary_reason(tier, factors, inputs)
 
+    # PR #50 — pre-render GC-voice strings. The frontend renders these
+    # directly; the raw contributing_factors + cohort_context dicts stay
+    # in the response for engineering debug only.
+    cohort_comparison_text = _cohort_comparison_text(
+        hr_14d, borough, work_type,
+    )
+    contributing_factors_text = _contributing_factors_to_text(factors)
+
     return {
         "tier":               tier,
         "tier_color":         TIER_TO_COLOR.get(tier, "green"),
         "primary_reason":     primary_reason,
         "contributing_factors": factors,
+        "contributing_factors_text": contributing_factors_text,
+        "cohort_comparison_text":    cohort_comparison_text,
         "last_evaluated_at":  cur_now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cohort_context": {
             "cohort_baseline_rate": cache.get("anchored_baseline_prob_14d"),
