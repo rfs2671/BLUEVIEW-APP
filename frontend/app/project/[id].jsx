@@ -585,26 +585,30 @@ export default function ProjectDetailScreen() {
           <GlassCard style={s.projectHeader}>
             <View style={s.projectTitleRow}>
               <View style={s.projectInfo}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <Text style={s.projectName}>{project?.name || 'Project'}</Text>
-                  {project?.project_class && project.project_class !== 'regular' && (
-                    <View style={{
-                      paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6,
-                      backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
-                    }}>
-                      <Text style={{
-                        fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
-                        color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
-                      }}>
-                        {project.project_class === 'major_b' ? 'MAJOR B · SSM' : 'MAJOR A · SSC'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
+                {/* PR #51 L2 — title on its own row (flexShrink so a
+                    long name never pushes into the risk donut). The
+                    project_class badge moved OUT of the inline title row
+                    to its own line below the address — it was
+                    overlapping the size-84 RiskScoreCircle. */}
+                <Text style={s.projectName} numberOfLines={2}>
+                  {project?.name || 'Project'}
+                </Text>
                 <View style={s.locationRow}>
                   <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                   <Text style={s.locationText}>{project?.location || project?.address || 'No location'}</Text>
                 </View>
+                {project?.project_class && project.project_class !== 'regular' && (
+                  <View style={[s.projectClassBadge, {
+                    backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
+                  }]}>
+                    <Text style={{
+                      fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
+                      color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
+                    }}>
+                      {project.project_class === 'major_b' ? 'MAJOR B · SSM' : 'MAJOR A · SSC'}
+                    </Text>
+                  </View>
+                )}
               </View>
               {/* Phase V2.1.2 — compact risk score gauge in the
                   project header right cluster. Self-gates on
@@ -1407,6 +1411,7 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+    gap: spacing.md,
   },
   projectInfo: {
     flex: 1,
@@ -1416,6 +1421,16 @@ function buildStyles(colors, isDark) {
     fontWeight: '300',
     color: colors.text.primary,
     marginBottom: spacing.xs,
+    flexShrink: 1,
+  },
+  // PR #51 L2 — project_class badge on its own line below the address,
+  // left-aligned, so it never overlaps the risk-score donut.
+  projectClassBadge: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.sm,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
   locationRow: {
     flexDirection: 'row',
