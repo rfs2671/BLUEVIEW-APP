@@ -52,11 +52,13 @@ import {
   Text,
   StyleSheet,
   ActivityIndicator,
+  Pressable,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import {
   Shield, AlertTriangle, Clock, Info,
   ArrowUp, ArrowDown, Minus,
+  ChevronDown, ChevronUp,
 } from 'lucide-react-native';
 import { GlassCard, IconPod } from './GlassCard';
 import DefconHeader from './DefconHeader';
@@ -269,6 +271,10 @@ export default function CompliancePanel({ projectId }) {
   // the prediction. Render is non-blocking: if the call fails the
   // header simply doesn't appear; the horizon-row UI still loads.
   const [defcon, setDefcon] = useState(null);
+  // PR #49 — "Show details" expandable. Default collapsed: the panel
+  // shows ONE primary forecast above-fold; the 7/14/30 grid + the long
+  // cold-start disclaimer live behind this toggle.
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (!flagOn || !projectId) return;
@@ -398,6 +404,43 @@ export default function CompliancePanel({ projectId }) {
       + `${projectTypeLabel(parsedLabel.projectType)} projects`
     : null;
 
+  // ── PR #49 — single adaptive primary forecast ────────────────
+  // Horizon adapts to SWO state: 30 days when a recent SWO suppresses
+  // near-term enforcement, else 14. Backend computes the field; default
+  // to 14 if it's absent (legacy response / older backend).
+  const primaryHorizon = data.recommended_primary_horizon || 14;
+  const isThirty = primaryHorizon === 30;
+  const primaryProb = isThirty ? horizons?.prob_30d : horizons?.prob_14d;
+  const primaryBaseline = isThirty
+    ? anchoredBaseline?.prob_30d
+    : anchoredBaseline?.prob_14d;
+  const primaryRatio = _safeRatio(primaryProb, primaryBaseline);
+  const primaryTier = hazardRatioToColorTier(primaryRatio);
+  const { fg: primaryFg, bg: primaryBg } = tierToStatusColor(primaryTier);
+  const primaryVerdict = tierToVerdictLabel(primaryTier);
+  const primaryDirection = hazardRatioToDirection(primaryRatio);
+  const primaryHorizonLabel = isThirty ? 'Next 30 Days' : 'Next 14 Days';
+
+  // Chip body — mirrors HorizonRow's Q1/Q3 floor logic.
+  let primaryChipText;
+  let primaryShowArrow;
+  if (primaryRatio === null) {
+    primaryChipText = '—';
+    primaryShowArrow = false;
+  } else if (primaryRatio < 0.1) {
+    primaryChipText = '< 0.1× typical';
+    primaryShowArrow = true;
+  } else {
+    primaryChipText = `${primaryRatio.toFixed(1)}× typical`;
+    primaryShowArrow = true;
+  }
+  let PrimaryArrowIcon = null;
+  if (primaryShowArrow) {
+    if (primaryDirection === 'up')        PrimaryArrowIcon = ArrowUp;
+    else if (primaryDirection === 'down') PrimaryArrowIcon = ArrowDown;
+    else                                  PrimaryArrowIcon = Minus;
+  }
+
   // ── State 5/6 — ready (cold_start OR standard) ───────────────
   return (
     <GlassCard style={styles.card}>
@@ -412,14 +455,24 @@ export default function CompliancePanel({ projectId }) {
           onPressWhy={() => router.push(`/project/${projectId}/defcon`)}
         />
       )}
+      {/* PR #49 L3 — header restructured to a vertical stack so the
+          title never wraps mid-word competing with the badge. Title on
+          its own full-width row; badge (if any) on the line below. */}
       <View style={styles.header}>
         <IconPod>
           <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
         </IconPod>
-        <Text style={[styles.title, { color: colors.text.primary }]}>
+        <Text
+          style={[styles.title, { color: colors.text.primary }]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.85}
+        >
           DOB Enforcement Forecast
         </Text>
-        {badgeInfo.label && (
+      </View>
+      {badgeInfo.label && (
+        <View style={styles.badgeRow}>
           <View style={[
             styles.badge,
             { backgroundColor: colors.status.cautionBg },
@@ -431,8 +484,8 @@ export default function CompliancePanel({ projectId }) {
               {badgeInfo.label}
             </Text>
           </View>
-        )}
-      </View>
+        </View>
+      )}
 
       {/* C8 + D5 — inline tooltip rendered below the header in
           muted secondary copy (no native hover idiom on React
@@ -443,35 +496,95 @@ export default function CompliancePanel({ projectId }) {
         </Text>
       )}
 
-      {/* C6 — cold-start gets the educational disclaimer above
-          the horizon rows. Standard fits skip this. */}
+      {/* PR #49 — cold-start short disclaimer (1 sentence). The full
+          educational copy lives behind "Show details". */}
       {isColdStart && (
-        <ColdStartDisclaimer
-          borough={parsedLabel.borough}
-          projectType={parsedLabel.projectType}
-          colors={colors}
-        />
+        <Text style={[styles.coldStartShort, { color: colors.text.muted }]}>
+          Personalized forecast not yet available — showing the citywide
+          baseline for similar projects.
+        </Text>
       )}
 
-      {/* C2 — three horizon rows, Title Case per the lock copy. */}
-      <HorizonRow
-        label="Next 7 Days"
-        prob={horizons?.prob_7d}
-        baseline={anchoredBaseline?.prob_7d}
-        colors={colors}
-      />
-      <HorizonRow
-        label="Next 14 Days"
-        prob={horizons?.prob_14d}
-        baseline={anchoredBaseline?.prob_14d}
-        colors={colors}
-      />
-      <HorizonRow
-        label="Next 30 Days"
-        prob={horizons?.prob_30d}
-        baseline={anchoredBaseline?.prob_30d}
-        colors={colors}
-      />
+      {/* PR #49 — single primary forecast (one horizon, one verdict,
+          one hazard-ratio chip). L1 adaptive horizon. */}
+      <View style={styles.primaryBlock}>
+        <Text style={[styles.primaryHorizonLabel, { color: colors.text.muted }]}>
+          {primaryHorizonLabel.toUpperCase()}
+        </Text>
+        <Text style={[styles.primaryVerdict, { color: primaryFg }]}>
+          {primaryVerdict}
+        </Text>
+        <View style={[
+          styles.ratioChip,
+          { backgroundColor: primaryBg, alignSelf: 'flex-start' },
+        ]}>
+          <View style={styles.ratioChipRow}>
+            {PrimaryArrowIcon && (
+              <PrimaryArrowIcon size={12} strokeWidth={2} color={primaryFg} />
+            )}
+            <Text style={[styles.ratioChipText, { color: primaryFg }]}>
+              {primaryChipText}
+            </Text>
+          </View>
+        </View>
+        {/* SWO suppression note — only when the 30-day window is in
+            effect because of a recent stop-work order. */}
+        {isThirty && (
+          <Text style={[styles.suppressionNote, { color: colors.text.muted }]}>
+            A recent stop-work order suppresses near-term enforcement, so
+            this forecast uses a 30-day window.
+          </Text>
+        )}
+      </View>
+
+      {/* PR #49 L2 — "Show details" reveals the full 7/14/30 grid (and
+          the long cold-start disclaimer). Collapsed by default. */}
+      <Pressable
+        onPress={() => setExpanded((v) => !v)}
+        style={styles.detailsToggle}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? 'Hide forecast details' : 'Show forecast details'}
+        hitSlop={8}
+      >
+        <Text style={[styles.detailsToggleText, { color: colors.text.secondary }]}>
+          {expanded ? 'Hide details' : 'Show details'}
+        </Text>
+        {expanded
+          ? <ChevronUp size={14} strokeWidth={1.5} color={colors.text.secondary} />
+          : <ChevronDown size={14} strokeWidth={1.5} color={colors.text.secondary} />}
+      </Pressable>
+
+      {expanded && (
+        <View style={styles.detailsBody}>
+          {/* C6 — full educational disclaimer for cold-start fits. */}
+          {isColdStart && (
+            <ColdStartDisclaimer
+              borough={parsedLabel.borough}
+              projectType={parsedLabel.projectType}
+              colors={colors}
+            />
+          )}
+          {/* C2 — three horizon rows, Title Case per the lock copy. */}
+          <HorizonRow
+            label="Next 7 Days"
+            prob={horizons?.prob_7d}
+            baseline={anchoredBaseline?.prob_7d}
+            colors={colors}
+          />
+          <HorizonRow
+            label="Next 14 Days"
+            prob={horizons?.prob_14d}
+            baseline={anchoredBaseline?.prob_14d}
+            colors={colors}
+          />
+          <HorizonRow
+            label="Next 30 Days"
+            prob={horizons?.prob_30d}
+            baseline={anchoredBaseline?.prob_30d}
+            colors={colors}
+          />
+        </View>
+      )}
 
       {/* Footer — cohort baseline phrase (C5) + staleness chip (L7).
           Cohort phrase suppressed entirely when sample_size or the
@@ -521,11 +634,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
   title: {
     ...typography.h3,
     flex: 1,
+  },
+  // PR #49 L3 — badge moved onto its own line below the title so it
+  // never competes for horizontal space (the cause of the mid-word
+  // wrap). Left-aligned chip directly under the header row.
+  badgeRow: {
+    flexDirection: 'row',
+    marginBottom: spacing.sm,
   },
   badge: {
     paddingHorizontal: spacing.sm,
@@ -587,6 +707,50 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     marginBottom: spacing.sm,
+  },
+  // PR #49 — short cold-start line shown above the primary forecast.
+  // The full educational disclaimer is revealed via "Show details".
+  coldStartShort: {
+    ...typography.small,
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: spacing.sm,
+  },
+  // PR #49 — single primary forecast block. Horizon sub-label +
+  // prominent verdict + hazard-ratio chip, stacked.
+  primaryBlock: {
+    paddingVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  primaryHorizonLabel: {
+    ...typography.label,
+    fontSize: 11,
+    letterSpacing: 1.5,
+  },
+  primaryVerdict: {
+    ...typography.h2,
+    fontWeight: '600',
+  },
+  suppressionNote: {
+    ...typography.small,
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: spacing.xs,
+  },
+  // PR #49 — "Show details" expandable toggle row.
+  detailsToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+  },
+  detailsToggleText: {
+    ...typography.label,
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  detailsBody: {
+    marginTop: spacing.xs,
   },
   footer: {
     marginTop: spacing.sm,

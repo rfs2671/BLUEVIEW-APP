@@ -119,6 +119,49 @@ PHASE_TO_RATIO: Dict[str, float] = {
 }
 
 
+# ── PR #49 — adaptive primary forecast horizon ────────────────────
+#
+# The CompliancePanel restructure surfaces ONE primary forecast horizon
+# instead of the 7/14/30 grid. The horizon adapts to SWO state:
+#
+#   • Default: 14 days — most actionable for GCs.
+#   • SWO suppression: when an active SWO was issued within the last 7
+#     days, the primary horizon shifts to 30 days. Operator insight from
+#     smoke verification: "after a stop-work order it's more rare that
+#     DOB will show up the next week since they were just on site giving
+#     the SWO." Short-term re-enforcement is statistically suppressed
+#     during the cool-off, so a 14-day forecast would over-state
+#     near-term risk; the 30-day horizon is the honest window.
+
+DEFAULT_PRIMARY_HORIZON = 14
+SWO_SUPPRESSED_HORIZON = 30
+SWO_COOLOFF_DAYS = 7
+
+
+def _recommended_primary_horizon(swo_state: Optional[Dict[str, Any]]) -> int:
+    """Return the recommended primary forecast horizon in days.
+
+    30 when an active SWO was issued within the last SWO_COOLOFF_DAYS
+    days (cool-off acknowledged); 14 otherwise.
+
+    Reads the SWO age from ``days_since_open`` (canonical) or
+    ``days_open`` (the alias emitted by defcon._resolve_swo_state).
+    Missing / None state, an inactive SWO, or an active SWO with no
+    age info all fall back to the 14-day default — we only suppress
+    when we can positively confirm a recent, still-open SWO.
+    """
+    if not swo_state:
+        return DEFAULT_PRIMARY_HORIZON
+    if not swo_state.get("is_active"):
+        return DEFAULT_PRIMARY_HORIZON
+    days = swo_state.get("days_since_open")
+    if days is None:
+        days = swo_state.get("days_open")
+    if days is not None and days <= SWO_COOLOFF_DAYS:
+        return SWO_SUPPRESSED_HORIZON
+    return DEFAULT_PRIMARY_HORIZON
+
+
 # ── PR #15B.1 — pure helpers (B3, B6, T1, T2) ─────────────────────
 
 

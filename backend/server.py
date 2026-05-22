@@ -4019,6 +4019,13 @@ class PredictionResponse(BaseModel):
     anchored_baseline:    AnchoredBaseline
     confidence:           ConfidenceInfo
     metadata:             PredictionMetadata
+    # PR #49 — adaptive primary forecast horizon (days). 14 by default;
+    # 30 when an active SWO was issued within the last 7 days (cool-off
+    # suppression). Computed live in the endpoint from SWO state;
+    # defaults to 14 in the pure serializer (no DB access there). Literal
+    # default mirrors live_mutation.DEFAULT_PRIMARY_HORIZON (kept inline
+    # to avoid a heavy top-level import at class-definition time).
+    recommended_primary_horizon: int = 14
 
 
 def serialize_prediction_cache_to_response(
@@ -4112,7 +4119,32 @@ async def get_project_prediction(
             status_code=403, detail="Access denied to this project",
         )
 
-    return serialize_prediction_cache_to_response(project)
+    response = serialize_prediction_cache_to_response(project)
+
+    # PR #49 — compute the adaptive primary horizon live from SWO state.
+    # 30-day window when an active SWO was issued within 7 days (cool-off
+    # suppression), else 14. Computed per-request (no schema change) so
+    # the panel reflects intra-day SWO changes. Defensive: any failure
+    # leaves the serializer's 14-day default in place.
+    try:
+        from lib.statistical_engine.defcon import _resolve_swo_state
+        from lib.statistical_engine.live_mutation import (
+            _recommended_primary_horizon,
+        )
+        project_id_str = str(project.get("_id") or "")
+        swo_state = await _resolve_swo_state(
+            db, project_id_str, datetime.now(timezone.utc),
+        )
+        response.recommended_primary_horizon = _recommended_primary_horizon(
+            swo_state,
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "[pr49] recommended_primary_horizon compute failed for "
+            "%s: %r", project.get("_id"), e,
+        )
+
+    return response
 
 
 # ──────────────── V2.2 admin endpoints ────────────────────────────
