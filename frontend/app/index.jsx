@@ -199,12 +199,8 @@ export default function DashboardScreen() {
     );
   }
 
-  // Stat labels differ between modes
-  const statItems = [
-    { icon: Users,     value: stats.totalWorkers,  label: isDark ? 'Workers' : 'Active Workers', path: '/workers'  },
-    { icon: Building2, value: stats.activeProjects, label: isDark ? 'Projects' : 'Live Projects',  path: '/projects' },
-    { icon: MapPin,    value: stats.onSiteNow,      label: isDark ? 'On Site' : 'On Site Now',    path: '/workers'  },
-  ];
+  // PR #48 L9 — the 3-metric strip (Workers / Projects / On Site Now)
+  // was removed from the dashboard. statItems + renderStats deleted.
 
   // ── Phase B3: empty state for owners/admins with no projects ────────
   // Surfaces a CTA + welcome copy when the dashboard has nothing to
@@ -331,33 +327,6 @@ export default function DashboardScreen() {
     );
   };
 
-  // ── Shared stats row ────────────────────────────────────────────────────────
-  const renderStats = () => (
-    <View style={s.statsGrid}>
-      {statItems.map((stat) => {
-        const Icon = stat.icon;
-        return (
-          <Pressable key={stat.label} onPress={() => router.push(stat.path)} style={{ flex: 1 }}>
-            <StatCard style={s.statCard}>
-              <IconPod size={36} style={s.statIcon}>
-                <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
-              </IconPod>
-              <Text style={[s.statValue, { color: colors.text.primary }]}>{stat.value}</Text>
-              <Text
-                style={[s.statLabel, { color: colors.text.muted }]}
-                numberOfLines={1}
-                adjustsFontSizeToFit
-                minimumFontScale={0.85}
-              >
-                {stat.label.toUpperCase()}
-              </Text>
-            </StatCard>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -397,9 +366,7 @@ export default function DashboardScreen() {
               {/* B3: 24h first-poll banner */}
               {renderFirstPollBanner()}
 
-              <GlassCard style={s.darkStatsCard}>
-                {renderStats()}
-              </GlassCard>
+              {/* PR #48 L9 — 3-metric strip removed. */}
 
               {/* B3: empty state when no projects */}
               {renderProjectsEmptyState()}
@@ -421,14 +388,16 @@ export default function DashboardScreen() {
                 <Text style={[s.heroDay, { color: colors.text.muted }]}>{dayName.toUpperCase()}</Text>
                 <Text style={[s.heroDate, { color: colors.text.secondary }]}>{fullDate}</Text>
 
-                {/* Big name */}
-                <Text style={[s.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
-
-                {/* Email */}
-                <Text style={[s.heroEmail, { color: colors.text.muted }]}>{getUserEmail()}</Text>
-
-                {/* Stats inside the card */}
-                {renderStats()}
+                {/* PR #48 L9 — identity compressed to a single line
+                    (name + muted email) and the 3-metric strip removed. */}
+                <View style={s.heroIdentityRow}>
+                  <Text style={[s.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
+                  {getUserEmail() ? (
+                    <Text style={[s.heroEmailInline, { color: colors.text.muted }]} numberOfLines={1}>
+                      {getUserEmail()}
+                    </Text>
+                  ) : null}
+                </View>
               </GlassCard>
 
               {/* B3: empty state when no projects */}
@@ -585,6 +554,20 @@ function buildStyles(colors, isDark) {
     fontSize: 14,
     color: colors.text.muted,
     marginBottom: spacing.xl,
+  },
+  // PR #48 L9 — compressed identity line. Name + email share one row,
+  // baseline-aligned; email wraps to its own line on narrow widths.
+  heroIdentityRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+    columnGap: spacing.sm,
+  },
+  heroEmailInline: {
+    fontFamily: typography.regular,
+    fontSize: 14,
+    color: colors.text.muted,
+    flexShrink: 1,
   },
 
   /* ── Stats row ─────────────────────────────────────────────────────────── */
