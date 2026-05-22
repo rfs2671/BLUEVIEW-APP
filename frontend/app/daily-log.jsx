@@ -38,13 +38,6 @@ import {
   PenTool,
   Clock,
   Eye,
-  // Phase 1 Week 3 PR-B — phase card icons
-  Hammer,
-  Home,
-  Wrench,
-  Paintbrush,
-  ClipboardCheck,
-  CircleSlash,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -70,20 +63,12 @@ const weatherOptions = [
   { value: 'windy', label: 'Windy', icon: Wind },
 ];
 
-// Phase 1 Week 3 PR-B — project phase options. Values match backend
-// Pydantic Literal[...] enum in server.py:DailyLogCreate. The
-// 'mep' value renders as 'MEP' (abbreviation, not titlecase). The
-// 7th 'Not specified' card explicitly sets phase=null and is used
-// when the user wants to clear a selection.
-const phaseOptions = [
-  { value: 'foundation',     label: 'Foundation',     icon: Hammer },
-  { value: 'superstructure', label: 'Superstructure', icon: Building2 },
-  { value: 'interior',       label: 'Interior',       icon: Home },
-  { value: 'mep',            label: 'MEP',            icon: Wrench },
-  { value: 'finishes',       label: 'Finishes',       icon: Paintbrush },
-  { value: 'closeout',       label: 'Closeout',       icon: ClipboardCheck },
-  { value: null,             label: 'Not specified',  icon: CircleSlash },
-];
+// PR #48 — the manual phase dropdown was removed. Project phase is now
+// inferred weekly by Gemini (lib/ai/phase_inference.py) from the daily
+// log fields below; GCs no longer maintain it by hand. The backend
+// DailyLogCreate.phase field + WatermelonDB column remain for
+// backward-compat on the read path (existing logs with manual phase
+// data still resolve).
 
 const SAFETY_CHECKLIST_ITEMS = [
   { id: 'fall_protection', label: 'Fall Protection' },
@@ -113,9 +98,6 @@ export default function DailyLogScreen() {
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
-    // Phase 1 Week 3 PR-B — manual project phase. null means
-    // "not specified"; backend resolver falls back to inferred ratio.
-    phase: null,
     notes: '',
     worker_count: 0,
     subcontractor_cards: [],
@@ -217,7 +199,6 @@ export default function DailyLogScreen() {
   const populateFormFromLog = (log) => {
     setFormData({
       weather: log.weather || 'sunny',
-      phase: log.phase ?? null,
       notes: log.notes || '',
       worker_count: log.worker_count || 0,
       subcontractor_cards: log.subcontractor_cards || [],
@@ -236,7 +217,6 @@ export default function DailyLogScreen() {
   const resetForm = () => {
     setFormData({
       weather: 'sunny',
-      phase: null,
       notes: '',
       worker_count: 0,
       subcontractor_cards: [],
@@ -297,9 +277,6 @@ export default function DailyLogScreen() {
         project_id: selectedProject._id || selectedProject.id,
         date: today,
         weather: formData.weather,
-        // Phase 1 Week 3 PR-B — manual project phase. Backend Pydantic
-        // model accepts null when "not specified" is selected.
-        phase: formData.phase,
         notes: formData.notes,
         worker_count: parseInt(formData.worker_count) || 0,
         subcontractor_cards: formData.subcontractor_cards,
@@ -639,40 +616,9 @@ export default function DailyLogScreen() {
                 </View>
               </GlassCard>
 
-              {/* Phase 1 Week 3 PR-B — project phase card grid.
-                  Mirrors weather Pressable styling. Tapping a card
-                  sets formData.phase to the enum value (or null for
-                  "Not specified"). Backend resolver in PR-A
-                  consumes most-recent daily_log.phase via
-                  PHASE_TO_RATIO lookup. */}
-              <GlassCard style={s.section}>
-                <Text style={s.sectionTitle}>Project Phase</Text>
-                <View style={s.weatherGrid}>
-                  {phaseOptions.map((option) => {
-                    const Icon = option.icon;
-                    const isSelected = formData.phase === option.value;
-                    // option.value can be null ("Not specified"); use
-                    // the label as the React key to avoid a null-key
-                    // collision warning.
-                    return (
-                      <Pressable
-                        key={option.label}
-                        onPress={() => setFormData({ ...formData, phase: option.value })}
-                        style={[s.weatherOption, isSelected && s.weatherOptionSelected]}
-                      >
-                        <Icon
-                          size={24}
-                          strokeWidth={1.5}
-                          color={isSelected ? '#4ade80' : colors.text.muted}
-                        />
-                        <Text style={[s.weatherLabel, isSelected && s.weatherLabelSelected]}>
-                          {option.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              </GlassCard>
+              {/* PR #48 — the manual "Project Phase" card grid was
+                  removed. Phase is now inferred weekly by Gemini from
+                  the work/notes/trades fields above. */}
 
               <GlassCard style={s.section}>
                 <Text style={s.sectionTitle}>Worker Count</Text>

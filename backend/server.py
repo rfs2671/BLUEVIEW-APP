@@ -169,6 +169,15 @@ QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
 QWEN_API_BASE = os.environ.get("QWEN_API_BASE", "https://api.together.xyz/v1")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
 
+# PR #48 — Gemini for weekly project-phase inference. google-genai SDK
+# (already pinned in requirements.txt). gemini-2.5-flash-lite chosen for
+# the structured-output task: low cost, low latency, JSON-schema enum
+# constraint. Read by lib/ai/phase_inference.py at module import; the
+# constant lives there, this mirror keeps the env contract documented
+# alongside the other LLM keys.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
 SCREENSHOT_ENABLED = False
 
 scheduler = AsyncIOScheduler()
@@ -8922,6 +8931,20 @@ async def get_causal_lift(
             computed_at=computed_at_str,
         ))
     return out
+
+
+# PR #48 — manual trigger for the weekly Gemini phase-inference cron.
+# Admin/owner only. Fires run_weekly_phase_inference synchronously and
+# returns the summary so operators can validate the job without waiting
+# for Sunday 4am ET. No-op (n_phase_updated=0) when GEMINI_API_KEY is
+# unset — each per-project infer call returns None.
+@api_router.post("/admin/run-phase-inference")
+async def admin_run_phase_inference(
+    current_user = Depends(get_admin_user),
+):
+    from lib.ai.phase_inference import run_weekly_phase_inference
+    result = await run_weekly_phase_inference(db)
+    return result
 
 
 # ==================== DAILY LOGS ====================
@@ -25699,6 +25722,40 @@ async def startup_event():
     logger.info(
         "🔗 Phase 1 Week 13-19 causal lift cron scheduled "
         "(Mondays 3:30 AM ET — 30 min after baseline aggregator)"
+    )
+
+    # PR #48 — weekly Gemini phase inference. Iterates active projects,
+    # infers each project's current lifecycle phase from the last 7 days
+    # of daily logs, persists to db.projects.ai_inferred_phase. Sunday
+    # 4:00 AM ET — ~23h before the Monday 3:00 AM baseline_aggregator so
+    # the downstream resolver (live_mutation._resolve_schedule_position)
+    # reads fresh phase signals. Per-project failure tolerant.
+    async def _weekly_phase_inference_tick():
+        try:
+            from lib.ai.phase_inference import run_weekly_phase_inference
+            result = await run_weekly_phase_inference(db)
+            logger.info(
+                f"[pr48_phase_inference] tick complete: {result!r}",
+            )
+        except Exception as e:
+            logger.exception(
+                f"[pr48_phase_inference] tick crashed: {e!r}",
+            )
+
+    scheduler.add_job(
+        _weekly_phase_inference_tick,
+        CronTrigger(
+            day_of_week="sun", hour=4, minute=0,
+            timezone="America/New_York",
+        ),
+        id="weekly_phase_inference",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info(
+        "🤖 PR #48 weekly phase inference cron scheduled "
+        "(Sundays 4:00 AM ET — day before baseline aggregator)"
     )
 
     # V2.3 Commit 5 — compound index on peer_stats_cache for the

@@ -799,27 +799,46 @@ async def _resolve_schedule_position(
     project: Dict[str, Any],
     cur_now: datetime,
 ) -> Optional[float]:
-    """Phase 1 Week 3 PR-A — resolve schedule_position_ratio with
-    priority chain:
+    """Phase 1 Week 3 PR-A + PR #48 — resolve schedule_position_ratio
+    with a 4-tier priority chain:
 
-      1. Most recent daily_log.phase → PHASE_TO_RATIO lookup
-         (manual signal — highest confidence)
-      2. Live inferred ratio (Phase 1 Week 2 path:
+      1. ai_inferred_phase.phase → PHASE_TO_RATIO lookup
+         (PR #48 — weekly Gemini inference, highest confidence)
+      2. Most recent daily_log.phase → PHASE_TO_RATIO lookup
+         (legacy manual signal — backward-compat for projects with
+         existing manually-entered phase data)
+      3. Live inferred ratio (Phase 1 Week 2 path:
          _compute_schedule_position_live)
-      3. None — downstream paths (cache fallback + panel_mu)
+      4. None — downstream paths (cache fallback + panel_mu)
          handle the substitution
 
-    The manual phase value dominates because field crews report
-    on-site state directly; the inferred ratio is a cohort-derived
-    proxy that's accurate but less authoritative.
+    The AI-inferred phase dominates because it's recomputed weekly from
+    the full last-7-days log corpus; the legacy manual daily_log.phase
+    is kept as a fallback so projects entered before PR #48 still
+    resolve. The inferred ratio is a cohort-derived proxy that's
+    accurate but least authoritative.
 
     Defensive guards:
       • Deleted logs (is_deleted=True) excluded.
       • Phase values not in PHASE_TO_RATIO (typos, future enum
-        additions) fall through to inferred path rather than
-        crashing or defaulting to 0.0.
+        additions, stale AI output) fall through to the next tier
+        rather than crashing or defaulting to 0.0.
       • Missing project_id falls through directly to inferred.
     """
+    # Tier 1 — PR #48 AI-inferred phase. Read from the project doc
+    # directly (persisted by the weekly cron); no extra DB round-trip.
+    ai_inferred = project.get("ai_inferred_phase")
+    if isinstance(ai_inferred, dict):
+        ai_phase = ai_inferred.get("phase")
+        if ai_phase in PHASE_TO_RATIO:
+            return PHASE_TO_RATIO[ai_phase]
+        if ai_phase:
+            logger.info(
+                "[pr48] unknown ai_inferred_phase.phase=%r for "
+                "project=%r; falling back to daily_log.phase.",
+                ai_phase, project.get("_id"),
+            )
+
     project_id = str(project.get("_id") or project.get("id") or "")
     if project_id and getattr(db, "daily_logs", None) is not None:
         try:
