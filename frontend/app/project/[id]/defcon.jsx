@@ -209,7 +209,7 @@ export default function DefconScreen() {
                         color={colors.iconPod.iconColor}
                       />
                     </IconPod>
-                    <Text style={[styles.sectionTitle, { color: colors.text.primary }]}>
+                    <Text style={[styles.sectionTitle, { color: colors.text.primary }]} numberOfLines={1} ellipsizeMode="tail">
                       Why this matters
                     </Text>
                   </View>
