@@ -432,7 +432,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
             last_refreshed_at=self.now - timedelta(days=5),
         ))
         db = _StubDb(projects=[proj])
-        stats = _run(refresh_stale_peer_stats_caches(db))
+        stats = _run(refresh_stale_peer_stats_caches(db, now=self.now))
         self.assertEqual(stats["checked"], 0)
 
     def test_failed_cache_under_24h_skipped(self):
@@ -441,7 +441,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
             failed_at=self.now - timedelta(hours=2),
         ))
         db = _StubDb(projects=[proj])
-        stats = _run(refresh_stale_peer_stats_caches(db))
+        stats = _run(refresh_stale_peer_stats_caches(db, now=self.now))
         self.assertEqual(stats["checked"], 0)
 
     def test_failed_cache_over_24h_recovered_via_full_compute(self):
@@ -475,7 +475,7 @@ class TestRefreshCronEligibility(unittest.TestCase):
             started_at=self.now - timedelta(minutes=5),
         ))
         db = _StubDb(projects=[proj])
-        stats = _run(refresh_stale_peer_stats_caches(db))
+        stats = _run(refresh_stale_peer_stats_caches(db, now=self.now))
         self.assertEqual(stats["checked"], 0)
 
     def test_pending_over_15min_recovered_via_full_compute(self):
