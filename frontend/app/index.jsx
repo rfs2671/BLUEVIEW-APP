@@ -391,7 +391,7 @@ export default function DashboardScreen() {
                 {/* PR #48 L9 — identity compressed to a single line
                     (name + muted email) and the 3-metric strip removed. */}
                 <View style={s.heroIdentityRow}>
-                  <Text style={[s.heroName, { color: colors.text.primary }]}>{getUserFirstName()}</Text>
+                  <Text style={[s.heroName, { color: colors.text.primary }]} numberOfLines={1} ellipsizeMode="tail">{getUserFirstName()}</Text>
                   {getUserEmail() ? (
                     <Text style={[s.heroEmailInline, { color: colors.text.muted }]} numberOfLines={1}>
                       {getUserEmail()}

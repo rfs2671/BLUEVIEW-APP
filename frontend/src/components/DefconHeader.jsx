@@ -59,17 +59,32 @@ export default function DefconHeader({
     >
       <View style={styles.row}>
         <Icon size={18} strokeWidth={1.5} color={fg} />
-        <Text style={[styles.tierLabel, { color: fg }]}>
+        {/* PR #52 — single-line tier label + timestamp; tier label
+            shrinks before the timestamp so neither overflows the row. */}
+        <Text
+          style={[styles.tierLabel, { color: fg }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
           {tierToLabel(safeTier).toUpperCase()}
         </Text>
         {timeAgo && (
-          <Text style={[styles.timeAgo, { color: colors.text.muted }]}>
+          <Text
+            style={[styles.timeAgo, { color: colors.text.muted }]}
+            numberOfLines={1}
+          >
             {timeAgo}
           </Text>
         )}
       </View>
       {primaryReason ? (
-        <Text style={[styles.reason, { color: colors.text.primary }]}>
+        // PR #52 — reason is prose; allow up to 3 lines then ellipsize
+        // rather than letting it run unbounded on small screens.
+        <Text
+          style={[styles.reason, { color: colors.text.primary }]}
+          numberOfLines={3}
+          ellipsizeMode="tail"
+        >
           {primaryReason}
         </Text>
       ) : null}

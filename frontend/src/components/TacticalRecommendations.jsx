@@ -110,7 +110,11 @@ function RecommendationCard({ recommendation }) {
             {recommendation.confidence}
           </Text>
         </View>
-        <Text style={[styles.sampleText, { color: colors.text.muted }]}>
+        <Text
+          style={[styles.sampleText, { color: colors.text.muted }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
           Based on {recommendation.n_bins_with_complaint || 0} similar sites
         </Text>
       </View>

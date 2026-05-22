@@ -41,6 +41,8 @@ import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import HeaderBrand from '../../src/components/HeaderBrand';
 // Phase 1 Week 11-12 PR-B — Defcon dot color mapping (NORMAL hidden).
 import { tierToTheme } from '../../src/utils/defconHelpers';
+// PR #52 — shared text-overflow helpers (no mid-word breaks).
+import { clampLines, textOverflowDefaults } from '../../src/utils/textHelpers';
 
 export default function ProjectsScreen() {
   const { colors, isDark } = useTheme();
@@ -236,11 +238,22 @@ export default function ProjectsScreen() {
                   </View>
 
                   <View style={s.projectInfo}>
-                    <Text style={[s.projectName, { color: colors.text.primary }]}>{project.name}</Text>
+                    {/* PR #52 L3 — title caps at 2 lines + ellipsis so a
+                        long name never breaks mid-word into uneven rows
+                        or crowds the IconPod. */}
+                    <Text
+                      style={[s.projectName, { color: colors.text.primary }]}
+                      {...clampLines(2)}
+                    >
+                      {project.name}
+                    </Text>
                     <View style={s.projectLocation}>
                       <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
                       {/* ── FIX #3: Show address first, fall back to location ── */}
-                      <Text style={[s.projectLocationText, { color: colors.text.muted }]}>
+                      <Text
+                        style={[s.projectLocationText, { color: colors.text.muted }]}
+                        {...textOverflowDefaults}
+                      >
                         {project.address || project.location || 'No location'}
                       </Text>
                     </View>
@@ -460,8 +473,15 @@ function buildStyles(colors, isDark) {
   // Phase 1 Week 11-12 PR-B — Defcon dot overlay container. Wraps the
   // IconPod so the dot can be positioned absolutely without disturbing
   // the existing flex layout of the list row.
+  // PR #52 L3 — marginRight gives the title breathing room from the
+  // IconPod (GlassCard.listItemContent has no `gap`, so the title was
+  // sitting flush against the building logo — "too close" feedback).
+  // flexShrink:0 keeps the logo at a fixed size while the title column
+  // absorbs the remaining width.
   iconPodWrap: {
     position: 'relative',
+    flexShrink: 0,
+    marginRight: spacing.md,
   },
   defconDot: {
     position: 'absolute',
@@ -473,22 +493,34 @@ function buildStyles(colors, isDark) {
     borderWidth: 2,
     borderColor: colors.background.middle,
   },
+  // PR #52 L3 — title column takes the remaining width and is allowed to
+  // shrink below its content size (minWidth:0) so the title/address
+  // ellipsis can engage instead of overflowing into the right cluster.
   projectInfo: {
     flex: 1,
+    minWidth: 0,
+    marginRight: spacing.sm,
   },
   projectName: {
     fontSize: 17,
     fontWeight: '500',
     marginBottom: spacing.xs,
+    flexShrink: 1,
   },
   projectLocation: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+    flexShrink: 1,
+    minWidth: 0,
   },
   projectLocationText: {
     fontSize: 14,
+    flexShrink: 1,
   },
+  // PR #52 L3 — the right-side cluster (badges + risk donut + delete)
+  // keeps intrinsic width (flexShrink:0) so it never squeezes the title
+  // column, which is what forced the mid-word wraps.
   nfcBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -498,6 +530,7 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.full,
     borderWidth: 1,
     borderColor: colors.glass.border,
+    flexShrink: 0,
   },
   nfcText: {
     fontSize: 12,
@@ -508,6 +541,7 @@ function buildStyles(colors, isDark) {
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    flexShrink: 0,
   },
   statusActive: {
     backgroundColor: 'rgba(74, 222, 128, 0.15)',
@@ -524,6 +558,7 @@ function buildStyles(colors, isDark) {
     padding: spacing.sm,
     borderRadius: borderRadius.md,
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    flexShrink: 0,
   },
   emptyState: {
     alignItems: 'center',
@@ -637,6 +672,7 @@ function buildStyles(colors, isDark) {
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
     backgroundColor: 'rgba(59,130,246,0.15)',
+    flexShrink: 0,
   },
   classificationMajor: {
     backgroundColor: 'rgba(245,158,11,0.15)',
