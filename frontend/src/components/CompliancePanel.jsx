@@ -496,15 +496,24 @@ export default function CompliancePanel({ projectId }) {
         </Text>
       )}
 
-      {/* PR #49 — cold-start short disclaimer (1 sentence). The full
-          educational copy lives behind "Show details". */}
+      {/* PR #51 — cold-start one-liner (operator: "personalized message
+          way too long, need to be one liner"). L1: the full educational
+          copy + per-horizon grid are no longer shown for cold-start at
+          all — that data is the cohort baseline, not a personalized
+          prediction, so surfacing it ("Tracking -1 1.0× typical") was
+          engineer-voice leak. */}
       {isColdStart && (
         <Text style={[styles.coldStartShort, { color: colors.text.muted }]}>
-          Personalized forecast not yet available — showing the citywide
-          baseline for similar projects.
+          Not enough project history yet for a personalized forecast.
         </Text>
       )}
 
+      {/* PR #51 L1 — the primary forecast + hazard-ratio chip +
+          expandable 7/14/30 grid + footer render ONLY for non-cold-start
+          projects. Cold-start shows just the one-liner above (plus the
+          header + Calibrating badge + Defcon header). */}
+      {!isColdStart && (
+        <>
       {/* PR #49 — single primary forecast (one horizon, one verdict,
           one hazard-ratio chip). L1 adaptive horizon. */}
       <View style={styles.primaryBlock}>
@@ -619,6 +628,8 @@ export default function CompliancePanel({ projectId }) {
           </View>
         )}
       </View>
+        </>
+      )}
     </GlassCard>
   );
 }
