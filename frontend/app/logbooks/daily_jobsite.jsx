@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
 } from 'react-native';
@@ -105,6 +105,7 @@ export default function DailyJobsiteLog() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [cameraActive, setCameraActive] = useState(false); // guard against double-tap only
+  const cameraPermissionGranted = useRef(false); // cache native camera grant; avoid re-prompting every shutter
   const [existingLogId, setExistingLogId] = useState(null);
 
   const [projectAddress, setProjectAddress] = useState('');
@@ -269,20 +270,28 @@ export default function DailyJobsiteLog() {
         return;
       }
 
-      // Native: open camera directly
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        toast.error('Permission Denied', 'Allow camera access in device settings.');
-        return;
+      // Native: open camera directly. Permission grant is cached in a
+      // ref so we don't fire a fresh native permission check on every
+      // shutter (repeated bridge call contributed to the capture freeze).
+      if (!cameraPermissionGranted.current) {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          toast.error('Permission Denied', 'Allow camera access in device settings.');
+          return;
+        }
+        cameraPermissionGranted.current = true;
       }
       const result = await ImagePicker.launchCameraAsync({
-        quality: 0.5,
-        base64: false,
-        exif: false,
+        quality: 0.4,            // was 0.5 — camera path only
+        base64: false,           // unchanged
+        exif: false,             // unchanged
       });
       if (!result || result.canceled) return;
       const asset = result.assets?.[0];
       if (!asset) return;
+      // Yield to the event loop so the native camera thread releases
+      // post-shutter before we commit the photo into React state.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       setActivities(prev => prev.map((a, i) => {
         if (i !== activityIndex) return a;
         return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
@@ -315,21 +324,29 @@ export default function DailyJobsiteLog() {
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
-      // Convert any URI-only photos to base64 before saving
-      const activitiesWithBase64 = await Promise.all(
-        activities.map(async (act) => {
-          if (!act.photos || act.photos.length === 0) return act;
-          const convertedPhotos = await Promise.all(
-            act.photos.map(async (photo) => {
-              if (photo.base64) return photo; // already has base64
-              if (!photo.uri) return photo; // no URI either, skip
-              const b64 = await uriToBase64(photo.uri);
-              return { ...photo, base64: b64 };
-            })
-          );
-          return { ...act, photos: convertedPhotos };
-        })
-      );
+      // Convert any URI-only photos to base64 before saving. Encode
+      // sequentially with a setTimeout(0) yield between photos so the
+      // native thread is released between encodes — the old Promise.all
+      // burst held the UI thread and froze submit. Payload shape
+      // unchanged (base64 still inlined under data.activities).
+      const activitiesWithBase64 = [];
+      for (const act of activities) {
+        if (!act.photos || act.photos.length === 0) {
+          activitiesWithBase64.push(act);
+          continue;
+        }
+        const convertedPhotos = [];
+        for (const photo of act.photos) {
+          if (photo.base64 || !photo.uri) {
+            convertedPhotos.push(photo); // already encoded, or nothing to encode
+            continue;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 0)); // yield before each encode
+          const b64 = await uriToBase64(photo.uri);
+          convertedPhotos.push({ ...photo, base64: b64 });
+        }
+        activitiesWithBase64.push({ ...act, photos: convertedPhotos });
+      }
 
       const payload = {
         project_id: projectId,
