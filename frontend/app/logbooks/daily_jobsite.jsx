@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
 } from 'react-native';
@@ -95,7 +95,9 @@ const EMPTY_OBSERVATION = () => ({
 
 export default function DailyJobsiteLog() {
   const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
+  // Memoized so a re-render (e.g. the camera tap) doesn't rebuild the
+  // entire StyleSheet on the critical path.
+  const s = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -104,7 +106,11 @@ export default function DailyJobsiteLog() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [cameraActive, setCameraActive] = useState(false); // guard against double-tap only
+  // Double-tap guard as a ref, NOT state: a setState here would
+  // re-render the whole activities/photos tree at the exact moment the
+  // native camera intent fires, stalling launch. Refs also update
+  // synchronously, so the guard is more reliable against fast taps.
+  const capturingRef = useRef(false);
   const cameraPermissionGranted = useRef(false); // cache native camera grant; avoid re-prompting every shutter
   const [existingLogId, setExistingLogId] = useState(null);
 
@@ -126,6 +132,24 @@ export default function DailyJobsiteLog() {
   useEffect(() => {
     fetchData();
   }, [projectId, date]);
+
+  useEffect(() => {
+    // Pre-warm on mount: silently check (don't prompt) the camera
+    // permission. This loads the expo-image-picker native module ahead
+    // of the first shutter tap and, when already granted, primes the
+    // permission ref so the first capture skips the request round-trip
+    // — attacks the first-open cold-init latency. Non-intrusive: uses
+    // getCameraPermissionsAsync (no dialog), never requests here.
+    if (Platform.OS === 'web') return;
+    (async () => {
+      try {
+        const { status } = await ImagePicker.getCameraPermissionsAsync();
+        if (status === 'granted') cameraPermissionGranted.current = true;
+      } catch (e) {
+        // Non-fatal — first tap will request normally.
+      }
+    })();
+  }, []);
 
   const fetchData = async () => {
     setLoading(true);
@@ -250,8 +274,8 @@ export default function DailyJobsiteLog() {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
       return;
     }
-    if (cameraActive) return;
-    setCameraActive(true);
+    if (capturingRef.current) return;
+    capturingRef.current = true;
     try {
       // Web: camera API isn't available, use gallery
       if (Platform.OS === 'web') {
@@ -300,7 +324,7 @@ export default function DailyJobsiteLog() {
       console.error('Camera launch failed:', err);
       toast.error('Camera Error', 'Could not open camera. Check permissions in device settings.');
     } finally {
-      setCameraActive(false);
+      capturingRef.current = false;
     }
   };
 
