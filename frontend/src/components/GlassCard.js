@@ -88,12 +88,26 @@ export const GlassCard = ({
           style={StyleSheet.absoluteFillObject}
         />
       )}
-      {/* Layer 2: blur on top of gradient */}
-      <BlurView
-        intensity={blurIntensity}
-        tint={isDark ? 'dark' : 'light'}
-        style={StyleSheet.absoluteFillObject}
-      />
+      {/* Layer 2: frosted blur on web; on native we fall back to a
+          plain semi-opaque View. expo-blur's native BlurView was
+          throwing a render exception on device (the web JS shim is
+          unaffected), and a plain View cannot crash. The fill is
+          opaque enough to keep dark cards readable since the Layer-1
+          dark gradient is near-transparent. Reversible. */}
+      {Platform.OS === 'web' ? (
+        <BlurView
+          intensity={blurIntensity}
+          tint={isDark ? 'dark' : 'light'}
+          style={StyleSheet.absoluteFillObject}
+        />
+      ) : (
+        <View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { backgroundColor: isDark ? 'rgba(17, 24, 39, 0.6)' : 'rgba(255, 255, 255, 0.5)' },
+          ]}
+        />
+      )}
       {/* Layer 3: content */}
       <View style={styles.cardContent}>{children}</View>
       {/* Layer 4: border overlay — dark only */}
