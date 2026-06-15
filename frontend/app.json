@@ -12,7 +12,9 @@
     "updates": {
       "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51"
     },
-    "runtimeVersion": "1.0.0",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
