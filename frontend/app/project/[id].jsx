@@ -595,7 +595,9 @@ export default function ProjectDetailScreen() {
                 </Text>
                 <View style={s.locationRow}>
                   <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
-                  <Text style={s.locationText}>{project?.location || project?.address || 'No location'}</Text>
+                  <Text style={s.locationText} numberOfLines={1} ellipsizeMode="tail">
+                    {project?.location || project?.address || 'No location'}
+                  </Text>
                 </View>
                 {project?.project_class && project.project_class !== 'regular' && (
                   <View style={[s.projectClassBadge, {
@@ -1415,6 +1417,10 @@ function buildStyles(colors, isDark) {
   },
   projectInfo: {
     flex: 1,
+    // minWidth:0 lets this column shrink below its content width so the
+    // address ellipsis engages instead of wrapping per-character when
+    // the size-84 risk ring takes its fixed slice of the row.
+    minWidth: 0,
   },
   projectName: {
     fontSize: 28,
@@ -1436,8 +1442,11 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
+    minWidth: 0,
   },
   locationText: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 14,
     color: colors.text.muted,
   },

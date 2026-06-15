@@ -25,7 +25,7 @@ import {
   CheckCircle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
-import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
+import { GlassCard, StatCard, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import RiskScoreCircle from '../../src/components/RiskScoreCircle';
 import GlassInput from '../../src/components/GlassInput';
@@ -217,39 +217,34 @@ export default function ProjectsScreen() {
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
                   style={s.projectCard}
                 >
-                  {/* Phase 1 Week 11-12 PR-B — Defcon dot.
-                      When project.defcon_tier is ELEVATED or
-                      IMMEDIATE we overlay a small colored dot on the
-                      IconPod corner. NORMAL / null tiers render the
-                      stock IconPod with no dot. */}
-                  <View style={s.iconPodWrap}>
-                    <IconPod>
-                      <Building2 size={20} strokeWidth={1.5} color={colors.text.secondary} />
-                    </IconPod>
-                    {project.defcon_tier && project.defcon_tier !== 'NORMAL' && (
-                      <View
-                        style={[
-                          s.defconDot,
-                          { backgroundColor: tierToTheme(project.defcon_tier).fg },
-                        ]}
-                        accessibilityLabel={`Defcon ${project.defcon_tier.toLowerCase()}`}
-                      />
-                    )}
-                  </View>
+                  {/* Card redesign: Building2 logo removed. Left zone
+                      takes all remaining width (flex:1 + minWidth:0) so
+                      the address can never be starved into a per-char
+                      wrap; badges sit BELOW the text instead of competing
+                      for horizontal room. */}
+                  <View style={s.cardMain}>
+                    <View style={s.titleRow}>
+                      {/* Defcon urgency marker — leading dot, top-left of
+                          the card. Real tier signal (not decoration);
+                          bordered so it stays legible. NORMAL/null hide. */}
+                      {project.defcon_tier && project.defcon_tier !== 'NORMAL' && (
+                        <View
+                          style={[s.defconDot, { backgroundColor: tierToTheme(project.defcon_tier).fg }]}
+                          accessibilityLabel={`Defcon ${project.defcon_tier.toLowerCase()}`}
+                        />
+                      )}
+                      <Text
+                        style={[s.projectName, { color: colors.text.primary }]}
+                        {...clampLines(2)}
+                      >
+                        {project.name}
+                      </Text>
+                    </View>
 
-                  <View style={s.projectInfo}>
-                    {/* PR #52 L3 — title caps at 2 lines + ellipsis so a
-                        long name never breaks mid-word into uneven rows
-                        or crowds the IconPod. */}
-                    <Text
-                      style={[s.projectName, { color: colors.text.primary }]}
-                      {...clampLines(2)}
-                    >
-                      {project.name}
-                    </Text>
                     <View style={s.projectLocation}>
-                      <MapPin size={14} strokeWidth={1.5} color={colors.text.muted} />
-                      {/* ── FIX #3: Show address first, fall back to location ── */}
+                      <MapPin size={13} strokeWidth={1.5} color={colors.text.muted} />
+                      {/* Address first, location fallback. Single-line
+                          ellipsis (textOverflowDefaults) — never wraps. */}
                       <Text
                         style={[s.projectLocationText, { color: colors.text.muted }]}
                         {...textOverflowDefaults}
@@ -257,64 +252,62 @@ export default function ProjectsScreen() {
                         {project.address || project.location || 'No location'}
                       </Text>
                     </View>
+
+                    {/* Badge strip below the text — frees the address
+                        column's width (was the starvation root cause). */}
+                    {(project.nfc_tags?.length > 0
+                      || (project.project_class && project.project_class !== 'regular')
+                      || project.status) && (
+                      <View style={s.badgeStrip}>
+                        {project.nfc_tags?.length > 0 && (
+                          <View style={s.nfcBadge}>
+                            <Wifi size={12} strokeWidth={1.5} color={colors.text.muted} />
+                            <Text style={s.nfcText}>{project.nfc_tags.length} NFC</Text>
+                          </View>
+                        )}
+                        {project.project_class && project.project_class !== 'regular' && (
+                          <View style={[s.classificationBadge, {
+                            backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
+                          }]}>
+                            <Text style={[s.classificationText, {
+                              color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
+                            }]}>
+                              {project.project_class === 'major_b' ? 'MAJOR B' : 'MAJOR A'}
+                            </Text>
+                          </View>
+                        )}
+                        {project.status && (
+                          <View style={[s.statusBadge, project.status === 'active' && s.statusActive]}>
+                            <Text style={[s.statusText, project.status === 'active' && s.statusTextActive]}>
+                              {project.status.toUpperCase()}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
                   </View>
 
-                  {project.nfc_tags?.length > 0 && (
-                    <View style={s.nfcBadge}>
-                      <Wifi size={14} strokeWidth={1.5} color={colors.text.muted} />
-                      <Text style={s.nfcText}>{project.nfc_tags.length} NFC</Text>
-                    </View>
-                  )}
+                  {/* Right zone — risk ring only now (no badge
+                      competitors). flexShrink:0 keeps its width fixed so
+                      the left text column absorbs the rest. */}
+                  <View style={s.cardRight}>
+                    <RiskScoreCircle
+                      projectId={getProjectId(project)}
+                      isAdmin={false}
+                      size={52}
+                    />
+                  </View>
 
-                  {project.project_class && project.project_class !== 'regular' && (
-                    <View style={[s.classificationBadge, {
-                      backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
-                    }]}>
-                      <Text style={[s.classificationText, {
-                        color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
-                      }]}>
-                        {project.project_class === 'major_b' ? 'MAJOR B' : 'MAJOR A'}
-                      </Text>
-                    </View>
-                  )}
-
-                  {project.status && (
-                    <View
-                      style={[
-                        s.statusBadge,
-                        project.status === 'active' && s.statusActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          s.statusText,
-                          project.status === 'active' && s.statusTextActive,
-                        ]}
-                      >
-                        {project.status.toUpperCase()}
-                      </Text>
-                    </View>
-                  )}
-
-                  {/* Phase V2.1.2 — compact risk score gauge.
-                      Self-gates on v2_risk_score flag; renders
-                      nothing for v1 customers when off. Click
-                      opens the side drawer with full breakdown. */}
-                  <RiskScoreCircle
-                    projectId={getProjectId(project)}
-                    isAdmin={false}
-                    size={56}
-                  />
-
+                  {/* Delete — small, pinned to the card's top-right
+                      corner (out of the badge row), sitting in the empty
+                      corner above the ring's arc. */}
                   <Pressable
                     onPress={() => handleDeleteProject(getProjectId(project))}
-                    onHoverIn={(e) => { e.currentTarget._trashHover = true; e.currentTarget.setNativeProps && e.currentTarget.setNativeProps({}); }}
-                    onHoverOut={(e) => { e.currentTarget._trashHover = false; e.currentTarget.setNativeProps && e.currentTarget.setNativeProps({}); }}
-                    style={({ hovered }) => [s.deleteButton, hovered && { backgroundColor: 'rgba(239,68,68,0.1)', borderRadius: 20 }]}
+                    style={({ hovered }) => [s.trashCorner, hovered && { backgroundColor: 'rgba(239,68,68,0.12)' }]}
                     hitSlop={10}
                   >
                     {({ hovered }) => (
-                      <Trash2 size={16} strokeWidth={1.5} color={hovered ? '#ef4444' : colors.text.muted} />
+                      <Trash2 size={15} strokeWidth={1.5} color={hovered ? '#ef4444' : colors.text.muted} />
                     )}
                   </Pressable>
                 </GlassListItem>
@@ -470,53 +463,72 @@ function buildStyles(colors, isDark) {
   projectCard: {
     gap: spacing.md,
   },
-  // Phase 1 Week 11-12 PR-B — Defcon dot overlay container. Wraps the
-  // IconPod so the dot can be positioned absolutely without disturbing
-  // the existing flex layout of the list row.
-  // PR #52 L3 — marginRight gives the title breathing room from the
-  // IconPod (GlassCard.listItemContent has no `gap`, so the title was
-  // sitting flush against the building logo — "too close" feedback).
-  // flexShrink:0 keeps the logo at a fixed size while the title column
-  // absorbs the remaining width.
-  iconPodWrap: {
-    position: 'relative',
-    flexShrink: 0,
-    marginRight: spacing.md,
-  },
-  defconDot: {
-    position: 'absolute',
-    top: -2,
-    right: -2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    borderWidth: 2,
-    borderColor: colors.background.middle,
-  },
-  // PR #52 L3 — title column takes the remaining width and is allowed to
-  // shrink below its content size (minWidth:0) so the title/address
-  // ellipsis can engage instead of overflowing into the right cluster.
-  projectInfo: {
+  // Card redesign — left text zone owns the remaining width so the
+  // address can never be starved into a per-character wrap.
+  // (GlassCard.listItemContent has no `gap`, so marginRight provides the
+  // separation from the risk ring.)
+  cardMain: {
     flex: 1,
     minWidth: 0,
-    marginRight: spacing.sm,
+    marginRight: spacing.md,
+    gap: spacing.xs,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  // Defcon urgency dot — leading marker on the title row (top-left).
+  // Bordered in the card bg so it stays legible against any tier color.
+  defconDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: colors.background.middle,
+    flexShrink: 0,
   },
   projectName: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 17,
     fontWeight: '500',
-    marginBottom: spacing.xs,
-    flexShrink: 1,
   },
   projectLocation: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    flexShrink: 1,
     minWidth: 0,
   },
   projectLocationText: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 14,
     flexShrink: 1,
+  },
+  // Badge strip below the text (NFC · MAJOR · ACTIVE). Wraps instead of
+  // squeezing the address column.
+  badgeStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginTop: 2,
+  },
+  // Right zone holds only the risk ring now; fixed width.
+  cardRight: {
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Delete pinned to the card's top-right corner.
+  trashCorner: {
+    position: 'absolute',
+    top: spacing.sm,
+    right: spacing.sm,
+    padding: spacing.xs,
+    borderRadius: borderRadius.md,
+    zIndex: 2,
   },
   // PR #52 L3 — the right-side cluster (badges + risk donut + delete)
   // keeps intrinsic width (flexShrink:0) so it never squeezes the title
