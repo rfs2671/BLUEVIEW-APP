@@ -88,19 +88,24 @@ export default function LogBooksScreen() {
     try {
       const projectsData = await projectsAPI.getAll().catch(() => []);
       const projectList = Array.isArray(projectsData) ? projectsData : [];
-      setProjects(projectList);
+
+      // CP picker scope (defense-in-depth; backend is the real gate):
+      // a CP only sees the project(s) they're assigned to, so they
+      // can't navigate to an unassigned project's logbook. Other roles
+      // (admin/owner/superintendent) see all company projects.
+      const isCP = user?.role === 'cp';
+      const visibleProjects = isCP
+        ? projectList.filter(p => (user?.assigned_projects || []).includes(p.id || p._id))
+        : projectList;
+      setProjects(visibleProjects);
 
       cpProfileAPI.getProfile()
         .then(p => { if (p?.cp_name) setCpName(p.cp_name); })
         .catch(() => {});
 
-      const assigned = projectList.filter(p =>
-        !user?.assigned_projects?.length ||
-        user.assigned_projects.includes(p.id || p._id)
-      );
-      if (assigned.length > 0) {
-        setSelectedProject(assigned[0]);
-        await fetchProjectData(assigned[0]._id || assigned[0].id);
+      if (visibleProjects.length > 0) {
+        setSelectedProject(visibleProjects[0]);
+        await fetchProjectData(visibleProjects[0]._id || visibleProjects[0].id);
       }
     } catch (error) {
       console.error('Failed to fetch logbooks data:', error);
