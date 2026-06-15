@@ -133,24 +133,6 @@ export default function DailyJobsiteLog() {
     fetchData();
   }, [projectId, date]);
 
-  useEffect(() => {
-    // Pre-warm on mount: silently check (don't prompt) the camera
-    // permission. This loads the expo-image-picker native module ahead
-    // of the first shutter tap and, when already granted, primes the
-    // permission ref so the first capture skips the request round-trip
-    // — attacks the first-open cold-init latency. Non-intrusive: uses
-    // getCameraPermissionsAsync (no dialog), never requests here.
-    if (Platform.OS === 'web') return;
-    (async () => {
-      try {
-        const { status } = await ImagePicker.getCameraPermissionsAsync();
-        if (status === 'granted') cameraPermissionGranted.current = true;
-      } catch (e) {
-        // Non-fatal — first tap will request normally.
-      }
-    })();
-  }, []);
-
   const fetchData = async () => {
     setLoading(true);
     try {
