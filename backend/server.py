@@ -12163,6 +12163,16 @@ async def get_logbook(logbook_id: str, current_user = Depends(get_current_user))
 @api_router.post("/logbooks")
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
+    # CP write-scope gate: a Competent Person may only create/upsert
+    # logbooks for a project they're assigned to. Checked before the
+    # project lookup so an unassigned CP can't probe project existence.
+    # Other roles (admin/owner/superintendent/site_device) are
+    # unaffected and retain their existing broader access.
+    if current_user.get("role") == "cp":
+        assigned = current_user.get("assigned_projects", []) or []
+        if data.project_id not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+
     company_id = get_user_company_id(current_user)
     now = datetime.now(timezone.utc)
 
@@ -12221,6 +12231,19 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
 @api_router.put("/logbooks/{logbook_id}")
 async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = Depends(get_current_user)):
     """Update an existing logbook entry"""
+    # CP write-scope gate: load the target doc first so we can assert
+    # the requesting CP is assigned to its project before mutating.
+    # Other roles are unaffected (existing broader access retained).
+    if current_user.get("role") == "cp":
+        existing_lb = await db.logbooks.find_one(
+            {"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}}
+        )
+        if not existing_lb:
+            raise HTTPException(status_code=404, detail="Logbook not found")
+        assigned = current_user.get("assigned_projects", []) or []
+        if existing_lb.get("project_id") not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
     if data.data is not None:
