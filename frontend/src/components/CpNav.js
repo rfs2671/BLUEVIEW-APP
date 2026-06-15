@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { View, StyleSheet, Pressable, Text } from 'react-native';
+import { View, StyleSheet, Pressable, Text, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { BlurView } from 'expo-blur';
 import { LayoutDashboard, FolderOpen, Settings } from 'lucide-react-native';
@@ -40,30 +40,44 @@ const CpNav = () => {
   const pathname = usePathname();
   const { isDark, colors: c } = useTheme();
 
+  // blurContent already carries a near-opaque background, so the nav
+  // reads fine without the blur layer.
+  const navInner = (
+    <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : 'rgba(255,255,255,0.90)' }]}>
+      <View style={styles.nav}>
+        {CP_NAV_ITEMS.map((item) => {
+          const isActive =
+            pathname === item.path ||
+            (item.path === '/logbooks' &&
+             pathname.startsWith('/logbooks/'));
+          return (
+            <NavItem
+              key={item.path}
+              item={item}
+              isActive={isActive}
+              onPress={() => router.push(item.path)}
+              colors={c}
+            />
+          );
+        })}
+      </View>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.innerContainer}>
-        <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
-          <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : 'rgba(255,255,255,0.90)' }]}>
-            <View style={styles.nav}>
-              {CP_NAV_ITEMS.map((item) => {
-                const isActive =
-                  pathname === item.path ||
-                  (item.path === '/logbooks' &&
-                   pathname.startsWith('/logbooks/'));
-                return (
-                  <NavItem
-                    key={item.path}
-                    item={item}
-                    isActive={isActive}
-                    onPress={() => router.push(item.path)}
-                    colors={c}
-                  />
-                );
-              })}
-            </View>
-          </View>
-        </BlurView>
+        {/* Web keeps expo-blur; native falls back to a plain View —
+            the native BlurView was throwing a render exception on
+            device, and blurContent's near-opaque fill already covers
+            the look. Reversible. */}
+        {Platform.OS === 'web' ? (
+          <BlurView intensity={40} tint={isDark ? 'dark' : 'light'} style={styles.blur}>
+            {navInner}
+          </BlurView>
+        ) : (
+          <View style={styles.blur}>{navInner}</View>
+        )}
         <View style={[styles.border, { borderColor: colors.glass.border }]} />
       </View>
     </View>
