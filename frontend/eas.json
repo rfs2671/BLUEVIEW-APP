@@ -41,7 +41,7 @@
   "submit": {
     "production": {
       "android": {
-        "track": "production"
+        "track": "alpha"
       },
       "ios": {
         "appleId": "REPLACE_WITH_APPLE_ID_EMAIL",
