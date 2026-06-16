@@ -7,6 +7,7 @@ import { Camera, useCameraDevice, useCameraPermission } from 'react-native-visio
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { X, RefreshCw } from 'lucide-react-native';
+import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 /**
  * In-process jobsite camera (react-native-vision-camera).
@@ -74,6 +75,9 @@ function CameraSurface({ onCapture, onClose }) {
   const [position, setPosition] = useState('back'); // 'back' | 'front'
   const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide' — default ultra-wide
   const [capturing, setCapturing] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const currentZoomRef = useRef(1); // live committed zoom (base for next pinch)
+  const baseZoomRef = useRef(1);    // zoom snapshot at pinch start
 
   // Requesting a single physical device returns the best match; on phones
   // without an ultra-wide it falls back to the wide lens (so the returned
@@ -94,6 +98,30 @@ function CameraSurface({ onCapture, onClose }) {
   useEffect(() => {
     if (!hasPermission) requestPermission();
   }, [hasPermission]);
+
+  // Keep a live ref of the committed zoom for the next pinch's base.
+  useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
+
+  // Reset zoom to the lens's neutral framing whenever the lens/device
+  // changes (toggle or flip) — so switching to ultra-wide shows the full
+  // 0.5× field, not a leftover zoomed-in crop from the previous lens.
+  useEffect(() => {
+    const n = device?.neutralZoom ?? 1;
+    currentZoomRef.current = n;
+    setZoom(n);
+  }, [device]);
+
+  // Pinch-to-zoom WITHIN the active lens, clamped to the device range.
+  // State-driven (no reanimated/worklets): snapshot the base zoom at
+  // gesture start, multiply by pinch scale, clamp to [minZoom, maxZoom].
+  // Lens SWITCH stays on the 0.5×/1× toggle; this is zoom within a lens.
+  const pinch = useMemo(() => Gesture.Pinch()
+    .onBegin(() => { baseZoomRef.current = currentZoomRef.current; })
+    .onUpdate((e) => {
+      const min = device?.minZoom ?? 1;
+      const max = device?.maxZoom ?? 1;
+      setZoom(Math.min(max, Math.max(min, baseZoomRef.current * e.scale)));
+    }), [device]);
 
   const showLensToggle = position === 'back' && hasUltraWide;
 
@@ -136,6 +164,7 @@ function CameraSurface({ onCapture, onClose }) {
   }
 
   return (
+    <GestureDetector gesture={pinch}>
     <View style={styles.container}>
       <Camera
         ref={camera}
@@ -143,8 +172,11 @@ function CameraSurface({ onCapture, onClose }) {
         device={device}
         isActive={true}
         photo={true}
+        zoom={zoom}
       />
-      <SafeAreaView style={styles.overlay} edges={['top', 'bottom']}>
+      {/* box-none lets 2-finger pinch reach the camera/GestureDetector
+          through empty areas while the buttons still receive taps. */}
+      <SafeAreaView style={styles.overlay} edges={['top', 'bottom']} pointerEvents="box-none">
         <View style={styles.topBar}>
           <Pressable style={styles.iconBtn} onPress={onClose} hitSlop={12}>
             <X size={26} strokeWidth={2} color="#fff" />
@@ -189,17 +221,20 @@ function CameraSurface({ onCapture, onClose }) {
         </View>
       </SafeAreaView>
     </View>
+    </GestureDetector>
   );
 }
 
 export default function CameraCaptureModal({ visible, onClose, onCapture }) {
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.container}>
+      {/* GestureHandlerRootView is required for gestures to work inside a
+          RN Modal (the Modal is a separate native root). */}
+      <GestureHandlerRootView style={styles.container}>
         {visible && Platform.OS !== 'web' ? (
           <CameraSurface onCapture={onCapture} onClose={onClose} />
         ) : null}
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
