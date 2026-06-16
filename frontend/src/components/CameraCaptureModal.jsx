@@ -10,56 +10,36 @@ import { X, RefreshCw } from 'lucide-react-native';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 
 /**
- * In-process jobsite camera (react-native-vision-camera).
+ * In-process jobsite camera (react-native-vision-camera). <Camera> is a
+ * MOUNTED native view — no external Activity handoff — so the app never
+ * backgrounds and the process-kill / cold-boot defect stays fixed.
  *
- * Why vision-camera and not the OS picker: launchCameraAsync hands off to
- * an external camera Activity, which backgrounds our app; under memory
- * pressure Android kills the process and the return forces a full React
- * Native cold boot (the 20-30s "slow camera"). <Camera> is a MOUNTED,
- * in-process native view — the app never leaves the foreground, so the
- * kill/cold-boot root cause stays fixed. Capture is instant.
- *
- * Lens: a user-facing toggle (0.5× ultra-wide ↔ 1× wide) on the back
- * camera, shown ONLY where a real ultra-wide lens exists; single-lens
- * phones just use the wide lens with no toggle. Default = ultra-wide.
- *
- * Output: every photo is downscaled + compressed to <= 150KB (expo-image-
- * manipulator) before onCapture(uri) — keeps the inline-base64 save flow
- * fast and protects the PR #54 fix from payload bloat.
- *
- * Contract unchanged: onCapture(uri) gets a file:// URI, fed into the
- * exact same setActivities append in daily_jobsite.jsx.
- *
- * vision-camera has no web support, so the camera surface only mounts on
- * native when visible (the web photo path uses expo-image-picker and
- * never opens this modal).
+ * Lens: a 0.5× ultra-wide ⇄ 1× wide toggle on the back camera, shown only
+ * where ultra-wide genuinely exists. Pinch-to-zoom adjusts WITHIN the
+ * active lens. Output is downscaled/compressed to <= 150KB per photo.
  */
 
-const MAX_BYTES = 150 * 1024; // hard cap per photo
+// TEMP — on-screen + logcat lens diagnostics for the Pixel/OEM device
+// investigation. Set false (or remove the block) before production.
+const SHOW_CAMERA_DEBUG = true;
 
-// Resize to a sensible width and compress until the JPEG lands <= 150KB.
-// One quality pass rarely guarantees the cap, so we recompress: drop
-// quality first, then shrink dimensions, until under cap or out of tries.
+const MAX_BYTES = 150 * 1024;
+
 async function compressUnderCap(srcUri) {
   let width = 1280;
   let quality = 0.6;
   let out = await ImageManipulator.manipulateAsync(
-    srcUri,
-    [{ resize: { width } }],
+    srcUri, [{ resize: { width } }],
     { compress: quality, format: ImageManipulator.SaveFormat.JPEG },
   );
   let info = await FileSystem.getInfoAsync(out.uri);
   let tries = 0;
   while ((info?.size ?? 0) > MAX_BYTES && tries < 5) {
     tries += 1;
-    if (quality > 0.3) {
-      quality = Math.max(0.3, quality - 0.15);
-    } else {
-      width = Math.round(width * 0.8); // dimensions once quality floor is hit
-    }
+    if (quality > 0.3) quality = Math.max(0.3, quality - 0.15);
+    else width = Math.round(width * 0.8);
     out = await ImageManipulator.manipulateAsync(
-      srcUri,
-      [{ resize: { width } }],
+      srcUri, [{ resize: { width } }],
       { compress: quality, format: ImageManipulator.SaveFormat.JPEG },
     );
     info = await FileSystem.getInfoAsync(out.uri);
@@ -67,8 +47,6 @@ async function compressUnderCap(srcUri) {
   return out.uri;
 }
 
-// The vision-camera surface. Extracted so its hooks only run when the
-// modal is open on native — never on web, never while closed.
 function CameraSurface({ onCapture, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -76,51 +54,70 @@ function CameraSurface({ onCapture, onClose }) {
   const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide' — default ultra-wide
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const currentZoomRef = useRef(1); // live committed zoom (base for next pinch)
-  const baseZoomRef = useRef(1);    // zoom snapshot at pinch start
+  const currentZoomRef = useRef(1);
+  const baseZoomRef = useRef(1);
 
-  // Requesting a single physical device returns the best match; on phones
-  // without an ultra-wide it falls back to the wide lens (so the returned
-  // device's physicalDevices won't actually include ultra-wide).
   const uwDevice = useCameraDevice('back', { physicalDevices: ['ultra-wide-angle-camera'] });
   const wideDevice = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
   const frontDevice = useCameraDevice('front');
 
-  // Genuine ultra-wide only — definitive check against the returned device.
-  const hasUltraWide = !!uwDevice?.physicalDevices?.includes('ultra-wide-angle-camera');
+  // Two ways a phone exposes ultra-wide:
+  //   A) a DISTINCT physical ultra-wide device (different id from the wide)
+  //   B) ZOOM below 1× on the main back multi-cam device (minZoom < 1)
+  const uwIsDistinct = !!(uwDevice && wideDevice && uwDevice.id !== wideDevice.id
+    && uwDevice.physicalDevices?.includes('ultra-wide-angle-camera'));
+  const backBase = wideDevice ?? uwDevice;
+  const uwViaZoom = !uwIsDistinct && (backBase?.minZoom ?? 1) < 0.99;
+  const hasUltraWide = uwIsDistinct || uwViaZoom;
 
-  const device = useMemo(() => {
-    if (position === 'front') return frontDevice;
-    if (backLens === 'ultra' && hasUltraWide) return uwDevice;
-    return wideDevice ?? uwDevice;
-  }, [position, backLens, hasUltraWide, uwDevice, wideDevice, frontDevice]);
+  const device = position === 'front'
+    ? frontDevice
+    : (uwIsDistinct && backLens === 'ultra' ? uwDevice : backBase);
 
   useEffect(() => {
     if (!hasPermission) requestPermission();
   }, [hasPermission]);
 
-  // Keep a live ref of the committed zoom for the next pinch's base.
+  // Dump what the device actually exposes — read on-screen or via
+  // `adb logcat | grep CameraDebug`.
+  useEffect(() => {
+    if (!SHOW_CAMERA_DEBUG) return;
+    const d = (x) => x && {
+      id: x.id, name: x.name, phys: x.physicalDevices,
+      min: x.minZoom, max: x.maxZoom, neutral: x.neutralZoom, multi: x.isMultiCam,
+    };
+    // eslint-disable-next-line no-console
+    console.log('[CameraDebug]', JSON.stringify({
+      uw: d(uwDevice), wide: d(wideDevice),
+      uwIsDistinct, uwViaZoom, hasUltraWide,
+    }));
+  }, [uwDevice, wideDevice]);
+
+  // Framing for the current lens: distinct-device UW → device neutral;
+  // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
+  useEffect(() => {
+    let z;
+    if (position === 'front') z = frontDevice?.neutralZoom ?? 1;
+    else if (uwIsDistinct) z = device?.neutralZoom ?? 1;
+    else if (uwViaZoom) z = backLens === 'ultra' ? (backBase?.minZoom ?? 1) : (backBase?.neutralZoom ?? 1);
+    else z = device?.neutralZoom ?? 1;
+    if (Number.isFinite(z)) { currentZoomRef.current = z; setZoom(z); }
+  }, [device, position, backLens, uwIsDistinct, uwViaZoom]);
+
   useEffect(() => { currentZoomRef.current = zoom; }, [zoom]);
 
-  // Reset zoom to the lens's neutral framing whenever the lens/device
-  // changes (toggle or flip) — so switching to ultra-wide shows the full
-  // 0.5× field, not a leftover zoomed-in crop from the previous lens.
-  useEffect(() => {
-    const n = device?.neutralZoom ?? 1;
-    currentZoomRef.current = n;
-    setZoom(n);
-  }, [device]);
-
-  // Pinch-to-zoom WITHIN the active lens, clamped to the device range.
-  // State-driven (no reanimated/worklets): snapshot the base zoom at
-  // gesture start, multiply by pinch scale, clamp to [minZoom, maxZoom].
-  // Lens SWITCH stays on the 0.5×/1× toggle; this is zoom within a lens.
+  // Pinch-to-zoom within the active lens. runOnJS(true) forces the callback
+  // onto the JS thread — without it, reanimated's babel plugin workletizes
+  // the callback and calling setZoom from the UI thread crashes the app.
   const pinch = useMemo(() => Gesture.Pinch()
+    .runOnJS(true)
     .onBegin(() => { baseZoomRef.current = currentZoomRef.current; })
     .onUpdate((e) => {
       const min = device?.minZoom ?? 1;
       const max = device?.maxZoom ?? 1;
-      setZoom(Math.min(max, Math.max(min, baseZoomRef.current * e.scale)));
+      const next = baseZoomRef.current * e.scale;
+      if (!Number.isFinite(next)) return;
+      setZoom(Math.min(max, Math.max(min, next)));
     }), [device]);
 
   const showLensToggle = position === 'back' && hasUltraWide;
@@ -174,14 +171,22 @@ function CameraSurface({ onCapture, onClose }) {
         photo={true}
         zoom={zoom}
       />
-      {/* box-none lets 2-finger pinch reach the camera/GestureDetector
-          through empty areas while the buttons still receive taps. */}
       <SafeAreaView style={styles.overlay} edges={['top', 'bottom']} pointerEvents="box-none">
         <View style={styles.topBar}>
           <Pressable style={styles.iconBtn} onPress={onClose} hitSlop={12}>
             <X size={26} strokeWidth={2} color="#fff" />
           </Pressable>
         </View>
+
+        {SHOW_CAMERA_DEBUG && (
+          <View style={styles.debugBox} pointerEvents="none">
+            <Text style={styles.debugText} selectable>
+              UW id={String(uwDevice?.id)} phys={JSON.stringify(uwDevice?.physicalDevices)} z=[{uwDevice?.minZoom}..{uwDevice?.maxZoom}] n={uwDevice?.neutralZoom} multi={String(uwDevice?.isMultiCam)}
+              {'\n'}WIDE id={String(wideDevice?.id)} phys={JSON.stringify(wideDevice?.physicalDevices)} z=[{wideDevice?.minZoom}..{wideDevice?.maxZoom}] n={wideDevice?.neutralZoom}
+              {'\n'}distinct={String(uwIsDistinct)} viaZoom={String(uwViaZoom)} hasUW={String(hasUltraWide)} sel={String(device?.id)} zoom={zoom.toFixed(2)} lens={backLens}
+            </Text>
+          </View>
+        )}
 
         <View style={styles.bottomStack}>
           {showLensToggle && (
@@ -253,6 +258,13 @@ const styles = StyleSheet.create({
 
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', backgroundColor: 'transparent' },
   topBar: { flexDirection: 'row', justifyContent: 'flex-start', paddingHorizontal: 20, paddingTop: 8 },
+
+  debugBox: {
+    position: 'absolute', top: 64, left: 8, right: 8,
+    backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 6, padding: 6,
+  },
+  debugText: { color: '#7CFC00', fontSize: 10, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
+
   bottomStack: { alignItems: 'center', gap: 16, paddingBottom: 24 },
   lensRow: {
     flexDirection: 'row', gap: 8,
