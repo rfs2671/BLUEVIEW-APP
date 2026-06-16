@@ -44,6 +44,23 @@ cloudflared/credentials.json
 Thumbs.db
 *.pem
 
+# Store-submission & signing secrets — NEVER commit
+# Google Play service account key (eas submit -p android)
+*service-account*.json
+*play-service*.json
+google-play-*.json
+# Apple App Store Connect API key
+*.p8
+AuthKey_*.p8
+# Signing material
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+# Stray local TLS material (e.g. tailscale device certs)
+*.ts.net.crt
+*.ts.net.key
+
 # Python
 __pycache__/
 *.py[cod]

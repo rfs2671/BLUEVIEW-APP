@@ -19,6 +19,7 @@ import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
+import CameraCaptureModal from '../../src/components/CameraCaptureModal';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -111,7 +112,12 @@ export default function DailyJobsiteLog() {
   // native camera intent fires, stalling launch. Refs also update
   // synchronously, so the guard is more reliable against fast taps.
   const capturingRef = useRef(false);
-  const cameraPermissionGranted = useRef(false); // cache native camera grant; avoid re-prompting every shutter
+  // In-process camera modal (CameraCaptureModal) — replaces launchCameraAsync
+  // on native so the app is never backgrounded/killed by the OS camera
+  // handoff. cameraTargetIndex remembers which activity the capture
+  // belongs to while the modal is open.
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
   const [existingLogId, setExistingLogId] = useState(null);
 
   const [projectAddress, setProjectAddress] = useState('');
@@ -276,38 +282,30 @@ export default function DailyJobsiteLog() {
         return;
       }
 
-      // Native: open camera directly. Permission grant is cached in a
-      // ref so we don't fire a fresh native permission check on every
-      // shutter (repeated bridge call contributed to the capture freeze).
-      if (!cameraPermissionGranted.current) {
-        const { status } = await ImagePicker.requestCameraPermissionsAsync();
-        if (status !== 'granted') {
-          toast.error('Permission Denied', 'Allow camera access in device settings.');
-          return;
-        }
-        cameraPermissionGranted.current = true;
-      }
-      const result = await ImagePicker.launchCameraAsync({
-        quality: 0.4,            // was 0.5 — camera path only
-        base64: false,           // unchanged
-        exif: false,             // unchanged
-      });
-      if (!result || result.canceled) return;
-      const asset = result.assets?.[0];
-      if (!asset) return;
-      // Yield to the event loop so the native camera thread releases
-      // post-shutter before we commit the photo into React state.
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      setActivities(prev => prev.map((a, i) => {
-        if (i !== activityIndex) return a;
-        return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-      }));
+      // Native: open the in-app camera modal. Capture happens
+      // IN-PROCESS (CameraCaptureModal) so the app is never backgrounded
+      // and killed by the OS camera handoff — the root cause of the
+      // 20-30s cold-boot reload. The photo is appended in
+      // handleCameraCapture once the shutter fires.
+      setCameraTargetIndex(activityIndex);
+      setCameraVisible(true);
     } catch (err) {
       console.error('Camera launch failed:', err);
       toast.error('Camera Error', 'Could not open camera. Check permissions in device settings.');
     } finally {
       capturingRef.current = false;
     }
+  };
+
+  // onCapture from CameraCaptureModal. Appends the captured file:// URI
+  // into the target activity — identical shape/flow to the old
+  // launchCameraAsync path (URI in state, base64 deferred to handleSave).
+  const handleCameraCapture = (uri) => {
+    if (cameraTargetIndex == null || !uri) return;
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== cameraTargetIndex) return a;
+      return { ...a, photos: [...(a.photos || []), { uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+    }));
   };
 
   const removeActivityPhoto = (activityIndex, photoIndex) => {
@@ -712,6 +710,11 @@ export default function DailyJobsiteLog() {
           </View>
         </ScrollView>
         <FloatingNav />
+        <CameraCaptureModal
+          visible={cameraVisible}
+          onClose={() => setCameraVisible(false)}
+          onCapture={handleCameraCapture}
+        />
       </SafeAreaView>
     </AnimatedBackground>
   );

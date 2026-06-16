@@ -3,7 +3,7 @@
     "name": "LeveLog",
     "slug": "levelog",
     "owner": "rfs2671",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "levelog",
@@ -12,7 +12,9 @@
     "updates": {
       "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51"
     },
-    "runtimeVersion": "1.0.0",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -144,10 +146,21 @@
         "expo-build-properties",
         {
           "android": {
+            "minSdkVersion": 26,
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0"
           }
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "This app needs camera access to take jobsite photos for daily logs.",
+          "enableMicrophonePermission": false,
+          "enableCodeScanner": false,
+          "enableLocation": false,
+          "enableFrameProcessors": false
         }
       ]
     ],
