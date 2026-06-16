@@ -146,10 +146,21 @@
         "expo-build-properties",
         {
           "android": {
+            "minSdkVersion": 26,
             "compileSdkVersion": 35,
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0"
           }
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "This app needs camera access to take jobsite photos for daily logs.",
+          "enableMicrophonePermission": false,
+          "enableCodeScanner": false,
+          "enableLocation": false,
+          "enableFrameProcessors": false
         }
       ]
     ],

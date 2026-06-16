@@ -112,7 +112,7 @@ export default function DailyJobsiteLog() {
   // native camera intent fires, stalling launch. Refs also update
   // synchronously, so the guard is more reliable against fast taps.
   const capturingRef = useRef(false);
-  // In-process camera (expo-camera) modal — replaces launchCameraAsync
+  // In-process camera modal (CameraCaptureModal) — replaces launchCameraAsync
   // on native so the app is never backgrounded/killed by the OS camera
   // handoff. cameraTargetIndex remembers which activity the capture
   // belongs to while the modal is open.
@@ -282,7 +282,7 @@ export default function DailyJobsiteLog() {
         return;
       }
 
-      // Native: open the in-app expo-camera modal. Capture happens
+      // Native: open the in-app camera modal. Capture happens
       // IN-PROCESS (CameraCaptureModal) so the app is never backgrounded
       // and killed by the OS camera handoff — the root cause of the
       // 20-30s cold-boot reload. The photo is appended in
