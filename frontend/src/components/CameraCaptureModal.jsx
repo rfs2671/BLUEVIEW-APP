@@ -19,10 +19,6 @@ import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-g
  * active lens. Output is downscaled/compressed to <= 150KB per photo.
  */
 
-// TEMP — on-screen + logcat lens diagnostics for the Pixel/OEM device
-// investigation. Set false (or remove the block) before production.
-const SHOW_CAMERA_DEBUG = true;
-
 const MAX_BYTES = 150 * 1024;
 
 async function compressUnderCap(srcUri) {
@@ -77,21 +73,6 @@ function CameraSurface({ onCapture, onClose }) {
   useEffect(() => {
     if (!hasPermission) requestPermission();
   }, [hasPermission]);
-
-  // Dump what the device actually exposes — read on-screen or via
-  // `adb logcat | grep CameraDebug`.
-  useEffect(() => {
-    if (!SHOW_CAMERA_DEBUG) return;
-    const d = (x) => x && {
-      id: x.id, name: x.name, phys: x.physicalDevices,
-      min: x.minZoom, max: x.maxZoom, neutral: x.neutralZoom, multi: x.isMultiCam,
-    };
-    // eslint-disable-next-line no-console
-    console.log('[CameraDebug]', JSON.stringify({
-      uw: d(uwDevice), wide: d(wideDevice),
-      uwIsDistinct, uwViaZoom, hasUltraWide,
-    }));
-  }, [uwDevice, wideDevice]);
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
@@ -170,6 +151,14 @@ function CameraSurface({ onCapture, onClose }) {
         isActive={true}
         photo={true}
         zoom={zoom}
+        onError={(err) => {
+          console.warn('vision-camera error:', err?.message);
+          // Untested-OEM safety net: if a DISTINCT ultra-wide device
+          // fails to start, drop to the wide lens so the user never sees
+          // a dead/black camera. (The zoom-based UW path is unaffected —
+          // it stays on the one back device.)
+          if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
+        }}
       />
       <SafeAreaView style={styles.overlay} edges={['top', 'bottom']} pointerEvents="box-none">
         <View style={styles.topBar}>
@@ -177,16 +166,6 @@ function CameraSurface({ onCapture, onClose }) {
             <X size={26} strokeWidth={2} color="#fff" />
           </Pressable>
         </View>
-
-        {SHOW_CAMERA_DEBUG && (
-          <View style={styles.debugBox} pointerEvents="none">
-            <Text style={styles.debugText} selectable>
-              UW id={String(uwDevice?.id)} phys={JSON.stringify(uwDevice?.physicalDevices)} z=[{uwDevice?.minZoom}..{uwDevice?.maxZoom}] n={uwDevice?.neutralZoom} multi={String(uwDevice?.isMultiCam)}
-              {'\n'}WIDE id={String(wideDevice?.id)} phys={JSON.stringify(wideDevice?.physicalDevices)} z=[{wideDevice?.minZoom}..{wideDevice?.maxZoom}] n={wideDevice?.neutralZoom}
-              {'\n'}distinct={String(uwIsDistinct)} viaZoom={String(uwViaZoom)} hasUW={String(hasUltraWide)} sel={String(device?.id)} zoom={zoom.toFixed(2)} lens={backLens}
-            </Text>
-          </View>
-        )}
 
         <View style={styles.bottomStack}>
           {showLensToggle && (
@@ -258,12 +237,6 @@ const styles = StyleSheet.create({
 
   overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', backgroundColor: 'transparent' },
   topBar: { flexDirection: 'row', justifyContent: 'flex-start', paddingHorizontal: 20, paddingTop: 8 },
-
-  debugBox: {
-    position: 'absolute', top: 64, left: 8, right: 8,
-    backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 6, padding: 6,
-  },
-  debugText: { color: '#7CFC00', fontSize: 10, fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' },
 
   bottomStack: { alignItems: 'center', gap: 16, paddingBottom: 24 },
   lensRow: {
