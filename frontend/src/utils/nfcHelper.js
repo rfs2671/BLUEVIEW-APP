@@ -1,4 +1,15 @@
+import { Platform } from 'react-native';
 import NfcManager, { NfcTech, Ndef } from 'react-native-nfc-manager';
+
+// Under the iOS 26 SDK, Apple disallows the `NDEF` reader-session entitlement
+// value (ITMS-90778), so on iOS we run a TAG session (NFCTagReaderSession)
+// instead of NFCNDEFReaderSession. Our check-in tags are NXP ICODE SLIX2 =
+// ISO15693, so the iOS tag tech is Iso15693IOS. NDEF read/write still works:
+// the native module casts the ISO15693 tag to NFCNDEFTag (NfcManager.m
+// getNDEFTagHandle handles NFCTagTypeISO15693), and we only read tag.id +
+// writeNdefMessage on the tag handle. Android keeps Ndef (no entitlement
+// restriction; it handles ISO15693/NfcV fine).
+const NFC_TECH = Platform.OS === 'ios' ? NfcTech.Iso15693IOS : NfcTech.Ndef;
 
 /**
  * Initialize NFC Manager
@@ -20,7 +31,7 @@ export async function initNfc() {
  */
 export async function readNfcTag() {
   try {
-    await NfcManager.requestTechnology(NfcTech.Ndef);
+    await NfcManager.requestTechnology(NFC_TECH);
     
     const tag = await NfcManager.getTag();
     
@@ -55,7 +66,7 @@ export async function readNfcTag() {
 export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.com') {
   try {
     // Request NDEF technology for writing
-    await NfcManager.requestTechnology(NfcTech.Ndef);
+    await NfcManager.requestTechnology(NFC_TECH);
     
     // Create the check-in URL
     const url = `${baseUrl}/checkin/${projectId}/${tagId}`;
@@ -94,7 +105,7 @@ export async function writeNfcTag(projectId, tagId, baseUrl = 'https://levelog.c
 export async function registerNfcTag(projectId, baseUrl = 'https://levelog.com') {
   try {
     // Step 1: Request NDEF technology
-    await NfcManager.requestTechnology(NfcTech.Ndef);
+    await NfcManager.requestTechnology(NFC_TECH);
     
     // Step 2: Read the tag to get its ID
     const tag = await NfcManager.getTag();

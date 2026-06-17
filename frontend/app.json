@@ -139,7 +139,8 @@
       [
         "react-native-nfc-manager",
         {
-          "nfcPermission": "This app uses NFC to scan worker check-in tags."
+          "nfcPermission": "This app uses NFC to scan worker check-in tags.",
+          "includeNdefEntitlement": false
         }
       ],
       [
@@ -152,7 +153,7 @@
             "buildToolsVersion": "35.0.0"
           },
           "ios": {
-            "deploymentTarget": "17.0",
+            "deploymentTarget": "15.1",
             "extraPods": [
               {
                 "name": "simdjson",
