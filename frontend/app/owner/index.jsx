@@ -145,6 +145,11 @@ export default function OwnerPortalScreen() {
   const webScrollMaxHeight = isWeb
     ? Math.max(240, Math.round(winHeight * 0.85) - 212)
     : null;
+  // Create Admin modal body cap — applied on EVERY platform (not gated on
+  // web) so the field list is always bounded and scrolls. Sized so the
+  // modal card's own maxHeight (90%) can never clip it first, which is what
+  // left Password + the Create button cut off below the fold.
+  const adminModalScrollMaxHeight = Math.max(220, Math.round(winHeight * 0.75) - 120);
 
   // Auth state
   const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
@@ -939,10 +944,10 @@ export default function OwnerPortalScreen() {
                 </View>
 
                 <ScrollView
-                  style={[styles.modalScroll, isWeb && { maxHeight: webScrollMaxHeight }]}
+                  style={[styles.modalScroll, { maxHeight: adminModalScrollMaxHeight }]}
                   contentContainerStyle={styles.modalFormScroll}
                   keyboardShouldPersistTaps="handled"
-                  showsVerticalScrollIndicator={false}
+                  showsVerticalScrollIndicator
                   nestedScrollEnabled
                 >
                   <View style={styles.inputGroup}>
