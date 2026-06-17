@@ -2347,7 +2347,9 @@ async def get_current_user(
             _sentry_set_user_context(device_data)
             return device_data
 
-        user = await db.users.find_one({"_id": to_query_id(user_id)})
+        # Soft-deleted users must not authenticate — reject their tokens so
+        # removing an admin in the owner portal revokes access immediately.
+        user = await db.users.find_one({"_id": to_query_id(user_id), "is_deleted": {"$ne": True}})
         if not user:
             logger.error(f"❌ AUTH FAIL: User not found - {user_id}")
             raise HTTPException(status_code=401, detail="User not found")
@@ -2642,8 +2644,9 @@ async def sync_timestamp():
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login(credentials: UserLogin, request: Request = None, _rate=Depends(check_auth_rate_limit)):
-    # First try regular user login
-    user = await db.users.find_one({"email": credentials.email})
+    # First try regular user login. Exclude soft-deleted users so a removed
+    # admin can't re-authenticate with their old credentials.
+    user = await db.users.find_one({"email": credentials.email, "is_deleted": {"$ne": True}})
     if user and verify_password(credentials.password, user.get("password", "")):
         token = create_token(
             str(user["_id"]), 
