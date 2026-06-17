@@ -195,6 +195,9 @@ export default function OwnerPortalScreen() {
   const [formAdminPhone, setFormAdminPhone] = useState('');
   const [formAdminPassword, setFormAdminPassword] = useState('');
   const [formAdminCompanyId, setFormAdminCompanyId] = useState('');
+  // Collapsible company picker — closed by default so the company list
+  // can't capture the modal's scroll and hide the Email/Password fields.
+  const [showAdminCompanyDropdown, setShowAdminCompanyDropdown] = useState(false);
 
   // Migration state
   const [migrationAssignments, setMigrationAssignments] = useState({});
@@ -524,6 +527,7 @@ export default function OwnerPortalScreen() {
     setFormAdminPhone('');
     setFormAdminPassword('');
     setFormAdminCompanyId('');
+    setShowAdminCompanyDropdown(false);
   };
 
   // If not authenticated with owner password
@@ -944,7 +948,7 @@ export default function OwnerPortalScreen() {
                   <View style={styles.inputGroup}>
                     <Text style={styles.inputLabel}>COMPANY</Text>
                     <Pressable
-                      onPress={() => {}} // Will be dropdown
+                      onPress={() => setShowAdminCompanyDropdown(v => !v)}
                       style={styles.selectInput}
                     >
                       <Text style={styles.selectText}>
@@ -952,21 +956,31 @@ export default function OwnerPortalScreen() {
                           ? companies.find(c => c.id === formAdminCompanyId)?.name
                           : 'Select company'}
                       </Text>
+                      <ChevronDown
+                        size={18}
+                        color={colors.text.muted}
+                        style={{ transform: [{ rotate: showAdminCompanyDropdown ? '180deg' : '0deg' }] }}
+                      />
                     </Pressable>
-                    <ScrollView style={styles.dropdown} nestedScrollEnabled>
-                      {companies.map(company => (
-                        <Pressable
-                          key={company.id}
-                          onPress={() => setFormAdminCompanyId(company.id)}
-                          style={[
-                            styles.dropdownItem,
-                            formAdminCompanyId === company.id && styles.dropdownItemSelected,
-                          ]}
-                        >
-                          <Text style={styles.dropdownText}>{company.name}</Text>
-                        </Pressable>
-                      ))}
-                    </ScrollView>
+                    {showAdminCompanyDropdown && (
+                      <ScrollView style={styles.dropdown} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                        {companies.map(company => (
+                          <Pressable
+                            key={company.id}
+                            onPress={() => {
+                              setFormAdminCompanyId(company.id);
+                              setShowAdminCompanyDropdown(false);
+                            }}
+                            style={[
+                              styles.dropdownItem,
+                              formAdminCompanyId === company.id && styles.dropdownItemSelected,
+                            ]}
+                          >
+                            <Text style={styles.dropdownText}>{company.name}</Text>
+                          </Pressable>
+                        ))}
+                      </ScrollView>
+                    )}
                   </View>
 
                   <View style={styles.inputGroup}>
@@ -1751,6 +1765,9 @@ const styles = StyleSheet.create({
     color: colors.text.muted,
   },
   selectInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     backgroundColor: colors.glass.background,
     borderWidth: 1,
     borderColor: colors.glass.border,
