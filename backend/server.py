@@ -1624,7 +1624,7 @@ class CheckInResponse(BaseModel):
 # NFC Tag Models
 class NfcTagCreate(BaseModel):
     tag_id: str
-    location_description: str
+    location_description: Optional[str] = ""
 
 class NfcTagResponse(BaseModel):
     tag_id: str
@@ -7493,8 +7493,12 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
     
+    # Location is optional; fall back to a sensible default so the UI never shows a blank label
+    if not (tag_data.location_description or "").strip():
+        tag_data.location_description = "Check-In Point"
+
     now = datetime.now(timezone.utc)
-    
+
     # Check if this tag_id exists ANYWHERE (including soft-deleted) due to unique index on tag_id
     existing_tag = await db.nfc_tags.find_one({"tag_id": tag_data.tag_id})
     
