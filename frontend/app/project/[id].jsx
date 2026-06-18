@@ -43,6 +43,7 @@ import {
   MessageCircle,
   ListChecks,
   Activity,
+  AlertTriangle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
@@ -517,13 +518,21 @@ export default function ProjectDetailScreen() {
     }
   };
 
+  // No valid BIN flag — mirrors backend _is_placeholder_bin: a BIN must
+  // be 7 digits, borough-prefixed (1–5), and not a X000000 placeholder.
+  // When false, DOB scans silently return nothing, so we flag it on the
+  // DOB Compliance action card (the dob-logs screen has the full
+  // "No BIN on File" remediation flow).
+  const binStr = String(project?.nyc_bin || '').trim();
+  const hasValidBin = /^[1-5]\d{6}$/.test(binStr) && binStr.slice(1) !== '000000';
+
   const quickActions = [
     { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/construction-plans`, color: '#3b82f6' },
     { title: 'Daily Log', icon: ClipboardList, path: `/daily-log?projectId=${projectId}`, color: '#8b5cf6' },
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444' },
+    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#10b981' },
   ];
@@ -680,6 +689,12 @@ export default function ProjectDetailScreen() {
                     <Icon size={24} strokeWidth={1.5} color={action.color} />
                   </View>
                   <Text style={s.actionTitle}>{action.title}</Text>
+                  {action.warn && (
+                    <View style={s.actionWarnBadge}>
+                      <AlertTriangle size={12} strokeWidth={2} color="#f59e0b" />
+                      <Text style={s.actionWarnText}>No BIN</Text>
+                    </View>
+                  )}
                 </Pressable>
               );
             })}
@@ -1532,6 +1547,23 @@ function buildStyles(colors, isDark) {
     fontSize: 14,
     fontWeight: '500',
     color: colors.text.primary,
+  },
+  actionWarnBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.full || 999,
+    backgroundColor: 'rgba(245,158,11,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.4)',
+  },
+  actionWarnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    color: '#f59e0b',
   },
   itemsList: {
     gap: spacing.sm,

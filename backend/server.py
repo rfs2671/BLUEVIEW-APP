@@ -1084,6 +1084,53 @@ def _is_placeholder_bin(bin_str: str) -> bool:
     return str(bin_str)[1:] == "000000"
 
 
+async def _resolve_bin_from_bbl(bbl: str) -> Optional[str]:
+    """Secondary BIN lookup keyed off the BBL.
+
+    When GeoSearch resolves an address to a borough *placeholder* BIN
+    (e.g. 2000000) — common for "street without borough" inputs like
+    "852 East 176th Street" — it still returns the exact 10-digit BBL
+    (Borough-Block-Lot). The BBL is an unambiguous key, so a DOB-dataset
+    lookup on it deterministically recovers the real 7-digit BIN, where
+    fragile address-string matching against DOB's canonical street forms
+    ("EAST 176 STREET") would miss.
+
+    Uses DOB NOW: Build – Job Application Filings (ic3t-wcy2), which
+    carries both `bbl` and `bin__`. Returns the majority-vote real BIN,
+    or None on any miss/error so callers fall through to the existing
+    address-based heal and the "No BIN on File" UI (no regression).
+    """
+    bbl = (bbl or "").strip()
+    if len(bbl) != 10 or not bbl.isdigit():
+        return None
+    try:
+        async with ServerHttpClient(timeout=10.0) as http_client:
+            resp = await http_client.get(
+                "https://data.cityofnewyork.us/resource/ic3t-wcy2.json",
+                params={"bbl": bbl, "$limit": "50"},
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    f"BBL->BIN lookup returned {resp.status_code} for bbl={bbl}"
+                )
+                return None
+            rows = resp.json() or []
+    except Exception as e:
+        logger.warning(f"BBL->BIN lookup error for bbl={bbl}: {e}")
+        return None
+
+    # DOB rows expose BIN as `bin__` (DOB NOW) or `bin`. Majority-vote a
+    # real BIN across rows; ignore placeholders/blanks.
+    votes: Dict[str, int] = {}
+    for row in rows:
+        cand = str(row.get("bin__") or row.get("bin") or "").strip()
+        if cand and not _is_placeholder_bin(cand):
+            votes[cand] = votes.get(cand, 0) + 1
+    if not votes:
+        return None
+    return max(votes, key=votes.get)
+
+
 async def fetch_nyc_bin_from_address(address: str) -> dict:
     """
     Query NYC GeoSearch to resolve an address into a BIN + BBL and a
@@ -1175,6 +1222,22 @@ async def fetch_nyc_bin_from_address(address: str) -> dict:
 
                 if pad_bbl:
                     result["bbl"] = str(pad_bbl)
+
+                # BBL->BIN recovery: GeoSearch handed back a borough
+                # placeholder (or no) BIN but a real BBL. Resolve the
+                # real BIN from the exact BBL before giving up — this is
+                # what auto-heals "street without borough" addresses at
+                # creation/config time instead of leaving them in the
+                # "No BIN on File" state.
+                if not result["nyc_bin"] and result["bbl"]:
+                    recovered = await _resolve_bin_from_bbl(result["bbl"])
+                    if recovered:
+                        result["nyc_bin"] = recovered
+                        result["track_dob_status"] = True
+                        logger.info(
+                            f"BBL->BIN recovery: '{address}' "
+                            f"bbl={result['bbl']} -> BIN={recovered}"
+                        )
 
                 logger.info(
                     f"GeoSearch resolved '{address}' -> BIN={result['nyc_bin']} "
