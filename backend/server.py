@@ -15920,13 +15920,19 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
 async def run_dob_sync_for_project(project: dict) -> list:
     """Core sync logic: fetch, dedupe, extract fields, save, alert. Used by cron + manual.
 
-    BIN auto-heal: if the project has no stored BIN (or a placeholder
-    like 2000000) and the first address-based pass returns ANY record
-    with a real BIN in its `bin` field, we backfill that BIN to the
-    project AND re-run the queries with the real BIN. This is the
-    auto-reverse-lookup path — lets us find complete records across
-    all four DOB datasets (some of which are BIN-only, no address
-    variant) when GeoSearch alone couldn't resolve the BIN.
+    BIN auto-heal runs in two layers, cheapest/most-reliable first:
+
+    1. BBL pre-heal — if the stored BIN is missing/placeholder but the
+       project carries a real BBL, resolve the real BIN deterministically
+       from the exact BBL BEFORE any address query. This auto-heals
+       projects created while the placeholder-BIN bug was live, without a
+       manual override.
+    2. Record-harvest heal (fallback) — if the BIN is still missing/
+       placeholder and the address-based pass returns ANY record with a
+       real BIN, backfill the most-common real BIN and re-run the queries.
+       Lets us find complete records across all four DOB datasets (some
+       BIN-only, no address variant) when GeoSearch alone couldn't
+       resolve the BIN.
     """
     project_id = str(project["_id"])
     company_id = project.get("company_id", "")
@@ -15935,6 +15941,36 @@ async def run_dob_sync_for_project(project: dict) -> list:
 
     if not nyc_bin and not project_address:
         return []
+
+    # --- Layer 1: BBL pre-heal (deterministic) ---
+    # If the stored BIN is missing/placeholder but a real BBL was captured
+    # at creation (by fetch_nyc_bin_from_address), resolve the real BIN
+    # from the exact BBL before falling back to fragile address matching.
+    # Backfill so future syncs hit BIN-only endpoints directly. If this
+    # resolves, nyc_bin becomes real and the Layer-2 harvest below is
+    # skipped automatically (should_heal turns False). No regression when
+    # there's no BBL or the lookup misses — nyc_bin is left untouched.
+    if (not nyc_bin) or _is_placeholder_bin(nyc_bin):
+        stored_bbl = (project.get("bbl") or project.get("nyc_bbl") or "").strip()
+        if stored_bbl:
+            bbl_bin = await _resolve_bin_from_bbl(stored_bbl)
+            if bbl_bin:
+                logger.info(
+                    f"DOB BBL->BIN pre-heal for project {project_id}: "
+                    f"stored={nyc_bin!r} bbl={stored_bbl} -> {bbl_bin}"
+                )
+                try:
+                    await db.projects.update_one(
+                        {"_id": to_query_id(project_id)},
+                        {"$set": {
+                            "nyc_bin": bbl_bin,
+                            "track_dob_status": True,
+                            "updated_at": datetime.now(timezone.utc),
+                        }},
+                    )
+                except Exception as e:
+                    logger.warning(f"BBL->BIN pre-heal write failed: {e}")
+                nyc_bin = bbl_bin
 
     raw_records = await _query_dob_apis(nyc_bin, project_address)
 
