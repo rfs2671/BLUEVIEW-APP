@@ -1,5 +1,3 @@
-// OTA pipeline verification (2026-06-18): confirms the EAS Update CI run
-// publishes under the build-matching fingerprint after the npm ci fix (#69).
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
@@ -381,17 +379,17 @@ export default function ReportsScreen() {
                         <GlassCard style={s.summaryCard}>
                           <Users size={18} strokeWidth={1.5} color="#3b82f6" />
                           <Text style={s.summaryValue}>{preview.checkin_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Workers On Site</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1}>Workers</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard}>
                           <ClipboardList size={18} strokeWidth={1.5} color="#8b5cf6" />
                           <Text style={s.summaryValue}>{preview.logbooks?.length || 0}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Logbooks Filed</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1}>Logbooks</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard}>
                           <Building2 size={18} strokeWidth={1.5} color="#f59e0b" />
                           <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Subcontractors</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1}>Subs</Text>
                         </GlassCard>
                       </View>
 
@@ -711,11 +709,11 @@ function buildStyles(colors, isDark) {
     },
     summaryLabel: {
       alignSelf: 'stretch',
-      fontSize: 10,
+      fontSize: 12,
       fontWeight: '600',
       color: colors.text.muted,
       textTransform: 'uppercase',
-      letterSpacing: 0.5,
+      letterSpacing: 0.3,
       textAlign: 'center',
     },
 

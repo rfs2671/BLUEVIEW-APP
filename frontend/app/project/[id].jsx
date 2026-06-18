@@ -698,7 +698,7 @@ export default function ProjectDetailScreen() {
               standalone route page. The unread count flows up via
               onUnreadCountChange for the section heading badge. */}
           <View style={s.sectionHeader}>
-            <Text style={s.sectionLabel}>NOTIFICATIONS</Text>
+            <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NOTIFICATIONS</Text>
             {notificationsUnreadCount > 0 && (
               <View style={s.notificationsBadge}>
                 <Text style={s.notificationsBadgeText}>
@@ -783,7 +783,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={s.sectionLabel}>NFC CHECK-IN TAGS</Text>
+                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>NFC CHECK-IN TAGS</Text>
                 <Pressable
                   onPress={() => setShowAddNfcModal(true)}
                   style={s.headerAddBtn}
@@ -828,7 +828,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={s.sectionLabel}>SITE DEVICES</Text>
+                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>SITE DEVICES</Text>
                 <Pressable
                   onPress={() => setShowAddDeviceModal(true)}
                   style={s.headerAddBtn}
@@ -888,7 +888,7 @@ export default function ProjectDetailScreen() {
           {isAdmin && (
             <>
               <View style={s.sectionHeader}>
-                <Text style={s.sectionLabel}>DROPBOX INTEGRATION</Text>
+                <Text style={[s.sectionLabel, s.sectionHeaderLabel]}>DROPBOX INTEGRATION</Text>
                 {!isDropboxConnected && (
                   <GlassButton
                     title="Link Folder"
@@ -1481,8 +1481,17 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginTop: spacing.lg,
     marginBottom: spacing.md,
     paddingHorizontal: spacing.xs,
+  },
+  // sectionLabel carries its own marginBottom + paddingHorizontal for
+  // standalone use; inside the centered sectionHeader row those throw off
+  // vertical centering (text jams to the top) and double the left inset.
+  // Strip them when the label lives in a header.
+  sectionHeaderLabel: {
+    marginBottom: 0,
+    paddingHorizontal: 0,
   },
   headerAddBtn: {
     width: 32,
