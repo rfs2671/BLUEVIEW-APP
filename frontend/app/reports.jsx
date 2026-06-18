@@ -379,17 +379,17 @@ export default function ReportsScreen() {
                         <GlassCard style={s.summaryCard}>
                           <Users size={18} strokeWidth={1.5} color="#3b82f6" />
                           <Text style={s.summaryValue}>{preview.checkin_count}</Text>
-                          <Text style={s.summaryLabel}>Workers On Site</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Workers On Site</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard}>
                           <ClipboardList size={18} strokeWidth={1.5} color="#8b5cf6" />
                           <Text style={s.summaryValue}>{preview.logbooks?.length || 0}</Text>
-                          <Text style={s.summaryLabel}>Logbooks Filed</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Logbooks Filed</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard}>
                           <Building2 size={18} strokeWidth={1.5} color="#f59e0b" />
                           <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
-                          <Text style={s.summaryLabel}>Subcontractors</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Subcontractors</Text>
                         </GlassCard>
                       </View>
 
@@ -708,6 +708,7 @@ function buildStyles(colors, isDark) {
       color: colors.text.primary,
     },
     summaryLabel: {
+      alignSelf: 'stretch',
       fontSize: 10,
       fontWeight: '600',
       color: colors.text.muted,
