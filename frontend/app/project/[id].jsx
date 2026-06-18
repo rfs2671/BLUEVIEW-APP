@@ -126,7 +126,6 @@ export default function ProjectDetailScreen() {
   // NFC management
   const [showAddNfcModal, setShowAddNfcModal] = useState(false);
   const [nfcTagId, setNfcTagId] = useState('');
-  const [nfcLocation, setNfcLocation] = useState('');
   const [addingNfc, setAddingNfc] = useState(false);
   const [scanningNfc, setScanningNfc] = useState(false);
   const [nfcSupported, setNfcSupported] = useState(false);
@@ -308,10 +307,6 @@ export default function ProjectDetailScreen() {
   };
 
   const handleScanNfcTag = async () => {
-    if (!nfcLocation.trim()) {
-      toast.warning('Location Required', 'Please enter the tag location first');
-      return;
-    }
     if (!nfcEnabled) {
       toast.error('NFC Disabled', 'Please enable NFC in your device settings');
       return;
@@ -330,7 +325,6 @@ export default function ProjectDetailScreen() {
         try {
           const response = await projectsAPI.addNfcTag(projectId, {
             tag_id: result.tagId,
-            location_description: nfcLocation,
           });
           
           if (response.project) {
@@ -338,7 +332,6 @@ export default function ProjectDetailScreen() {
           }
           
           toast.success('Success!', 'NFC tag registered to project');
-          setNfcLocation('');
           setShowAddNfcModal(false);
           await fetchData();
         } catch (error) {
@@ -360,8 +353,8 @@ export default function ProjectDetailScreen() {
   };
 
   const handleAddNfcTag = async () => {
-    if (!nfcTagId.trim() || !nfcLocation.trim()) {
-      toast.error('Error', 'Please enter tag ID and location');
+    if (!nfcTagId.trim()) {
+      toast.error('Error', 'Please enter a tag ID');
       return;
     }
 
@@ -369,12 +362,10 @@ export default function ProjectDetailScreen() {
     try {
       await projectsAPI.addNfcTag(projectId, {
         tag_id: nfcTagId,
-        location_description: nfcLocation,
       });
 
       toast.success('Added', 'NFC tag registered successfully');
       setNfcTagId('');
-      setNfcLocation('');
       setShowAddNfcModal(false);
       await fetchData();
     } catch (error) {
@@ -778,11 +769,14 @@ export default function ProjectDetailScreen() {
             <>
               <View style={s.sectionHeader}>
                 <Text style={s.sectionLabel}>NFC CHECK-IN TAGS</Text>
-                <GlassButton
-                  title="Add Tag"
-                  icon={<Plus size={16} color={colors.text.primary} />}
+                <Pressable
                   onPress={() => setShowAddNfcModal(true)}
-                />
+                  style={s.headerAddBtn}
+                  hitSlop={8}
+                  accessibilityLabel="Add NFC tag"
+                >
+                  <Plus size={18} strokeWidth={2} color={colors.text.primary} />
+                </Pressable>
               </View>
               
               {nfcTags.length > 0 ? (
@@ -820,11 +814,14 @@ export default function ProjectDetailScreen() {
             <>
               <View style={s.sectionHeader}>
                 <Text style={s.sectionLabel}>SITE DEVICES</Text>
-                <GlassButton
-                  title="Add Device"
-                  icon={<Plus size={16} color={colors.text.primary} />}
+                <Pressable
                   onPress={() => setShowAddDeviceModal(true)}
-                />
+                  style={s.headerAddBtn}
+                  hitSlop={8}
+                  accessibilityLabel="Add site device"
+                >
+                  <Plus size={18} strokeWidth={2} color={colors.text.primary} />
+                </Pressable>
               </View>
               
               {siteDevices.length > 0 ? (
@@ -1102,19 +1099,6 @@ export default function ProjectDetailScreen() {
                 </Text>
 
                 <View style={s.modalForm}>
-                  <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>LOCATION *</Text>
-                    <GlassInput
-                      value={nfcLocation}
-                      onChangeText={setNfcLocation}
-                      placeholder="e.g., Main Entrance, Building A Gate"
-                      editable={!scanningNfc && !addingNfc}
-                    />
-                    <Text style={s.inputHint}>
-                      Where is this NFC tag located?
-                    </Text>
-                  </View>
-
                   {nfcSupported && (
                     <>
                       <View style={s.scanSection}>
@@ -1142,7 +1126,7 @@ export default function ProjectDetailScreen() {
                           }
                           onPress={handleScanNfcTag}
                           loading={scanningNfc}
-                          disabled={!nfcLocation.trim() || !nfcEnabled || addingNfc}
+                          disabled={!nfcEnabled || addingNfc}
                           style={[
                             s.scanButton,
                             scanningNfc && s.scanButtonActive,
@@ -1184,7 +1168,7 @@ export default function ProjectDetailScreen() {
                       title={addingNfc ? 'Adding...' : 'Add Manually'}
                       onPress={handleAddNfcTag}
                       loading={addingNfc}
-                      disabled={!nfcTagId.trim() || !nfcLocation.trim() || scanningNfc}
+                      disabled={!nfcTagId.trim() || scanningNfc}
                       style={s.manualButton}
                     />
                   </View>
@@ -1484,6 +1468,16 @@ function buildStyles(colors, isDark) {
     justifyContent: 'space-between',
     marginBottom: spacing.md,
     paddingHorizontal: spacing.xs,
+  },
+  headerAddBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.glass.background,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
   },
   notificationsBadge: {
     minWidth: 22,
