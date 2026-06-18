@@ -1,4 +1,4 @@
-name: Build APK
+name: Build Android (production)
 
 on:
   workflow_dispatch:
@@ -22,8 +22,15 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./frontend
-        run: npm install
+        # `npm ci` (lockfile-exact), NOT `npm install`. Keeps the native
+        # fingerprint this build computes consistent with the OTA workflow
+        # so EAS Update RVs match the build's runtimeVersion.
+        run: npm ci
 
-      - name: Build Android APK via EAS
+      - name: Build Android app bundle via EAS
         working-directory: ./frontend
-        run: eas build --platform android --profile preview --non-interactive --wait
+        # production profile → .aab on the `production` channel (store
+        # distribution, autoIncrement versionCode), which is what the
+        # Google Play alpha track wants and what receives production OTAs.
+        # The preview profile (APK, `preview` channel) was wrong for this.
+        run: eas build --platform android --profile production --non-interactive --wait
