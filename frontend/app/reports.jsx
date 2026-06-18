@@ -1,3 +1,5 @@
+// OTA pipeline verification (2026-06-18): confirms the EAS Update CI run
+// publishes under the build-matching fingerprint after the npm ci fix (#69).
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
