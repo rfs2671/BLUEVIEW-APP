@@ -30,7 +30,15 @@ jobs:
 
       - name: Install dependencies
         working-directory: ./frontend
-        run: npm install
+        # MUST be `npm ci` (deterministic, from package-lock.json), NOT
+        # `npm install`. EAS Build installs from the lockfile, so the
+        # native fingerprint it computes (the build's runtimeVersion)
+        # is locked to the resolved tree. `npm install` here can resolve
+        # different transitive versions, changing the node_modules files
+        # that feed @expo/fingerprint — which made `eas update` publish
+        # under a DIFFERENT runtimeVersion than the build, so no installed
+        # build ever matched the OTA. `npm ci` aligns CI with EAS Build.
+        run: npm ci
 
       - name: Publish update
         working-directory: ./frontend
