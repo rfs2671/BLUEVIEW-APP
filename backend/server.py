@@ -20110,6 +20110,24 @@ def _pdf_pages_render_and_text(pdf_bytes: bytes, dpi: int = _PLAN_RENDER_DPI,
         yield page_num, text, jpeg_bytes
 
 
+async def _auto_aggregate_project_model(project_id: str) -> None:
+    """Fire-and-forget rebuild of the project's ProjectModel after a file's plan
+    indexing completes. Defensive by contract: an aggregation failure is logged
+    and swallowed so it can never fail or roll back the upload/indexing that
+    triggered it. The aggregator's merge (PR #74) preserves operator-confirmed
+    fields and never downgrades confirmed->proposed, so this is safe to fire on
+    every upload/re-sync. Deferred import keeps the indexing path independent of
+    the app.scheduling package at module load."""
+    try:
+        from app.scheduling.aggregator import aggregate_project_model
+        await aggregate_project_model(db, project_id)
+        logger.info(f"Auto-aggregated ProjectModel for project {project_id}")
+    except Exception as e:
+        logger.warning(
+            f"Auto-aggregate ProjectModel failed for project {project_id}: {e!r}"
+        )
+
+
 async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
     """Download a PDF from R2 and index each page into document_page_index.
 
@@ -20204,6 +20222,14 @@ async def _index_pdf_file(project_id: str, company_id: str, file_record: dict):
             logger.info(f"Plan index: {file_name}: {end}/{total}")
 
         logger.info(f"Plan index complete: {file_name} ({total} pages)")
+
+        # Auto-rebuild the project's ProjectModel now that this file's pages are
+        # fully indexed. Shared completion point for ALL indexing entry points
+        # (upload, Dropbox sync, single re-index, reindex-all — they all spawn
+        # _index_pdf_file). Fire-and-forget so indexing never waits on, or fails
+        # because of, aggregation. Fires once per completed file; the aggregator
+        # is per-project + merge-safe, so re-runs preserve confirmed fields.
+        asyncio.create_task(_auto_aggregate_project_model(project_id))
 
 
 async def _project_has_full_index(project_id: str) -> bool:
