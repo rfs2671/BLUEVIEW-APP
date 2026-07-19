@@ -24859,6 +24859,84 @@ except Exception as _card_router_err:
     logger.error(f"card_audit router mount failed: {_card_router_err!r}")
 
 
+# ── ProjectModel aggregator (app/scheduling) ─────────────────────────
+# Produces/persists the typed per-project model the scheduler will consume by
+# aggregating already-extracted document_page_index rows. No scheduler, no LLM,
+# no WhatsApp here. Imported after sys.path.insert (top of file) so `app.*`
+# resolves in both Railway deploy modes.
+from app.scheduling.project_model import (  # noqa: E402
+    ProjectModel as _ProjectModel,
+    ModelConfirmRequest as _ModelConfirmRequest,
+)
+from app.scheduling import aggregator as _pm_aggregator  # noqa: E402
+
+
+async def _pm_load_project_or_403(project_id: str, current_user):
+    project = await db.projects.find_one(
+        {"_id": to_query_id(project_id), "is_deleted": {"$ne": True}}
+    )
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    company_id = get_user_company_id(current_user)
+    if company_id and project.get("company_id") != company_id:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+    return project
+
+
+@api_router.post("/projects/{project_id}/model/aggregate", response_model=_ProjectModel)
+async def aggregate_project_model_endpoint(
+    project_id: str, current_user = Depends(get_current_user)
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    return await _pm_aggregator.aggregate_project_model(db, project_id)
+
+
+@api_router.get("/projects/{project_id}/model", response_model=_ProjectModel)
+async def get_project_model_endpoint(
+    project_id: str, current_user = Depends(get_current_user)
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    model = await _pm_aggregator.load_project_model(db, project_id)
+    if model is None:
+        raise HTTPException(
+            status_code=404, detail="No ProjectModel yet — run aggregate first"
+        )
+    return model
+
+
+@api_router.patch("/projects/{project_id}/model/confirm", response_model=_ProjectModel)
+async def confirm_project_model_endpoint(
+    project_id: str, body: _ModelConfirmRequest,
+    current_user = Depends(get_current_user),
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    try:
+        updated = await _pm_aggregator.confirm_project_model(
+            db, project_id, body, user_id=user_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if updated is None:
+        raise HTTPException(
+            status_code=404, detail="No ProjectModel yet — run aggregate first"
+        )
+    return updated
+
+
+@api_router.get("/projects/{project_id}/model/unconfirmed")
+async def unconfirmed_project_model_endpoint(
+    project_id: str, current_user = Depends(get_current_user)
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    model = await _pm_aggregator.load_project_model(db, project_id)
+    if model is None:
+        raise HTTPException(
+            status_code=404, detail="No ProjectModel yet — run aggregate first"
+        )
+    return _pm_aggregator.unconfirmed_view(model)
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
