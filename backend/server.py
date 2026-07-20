@@ -1277,6 +1277,9 @@ class UserResponse(BaseModel):
     trade: Optional[str] = None
     assigned_projects: List[str] = []
     created_at: Optional[datetime] = None
+    # Account activation gating: "pending" (new self-serve signups, read-only
+    # demo) or "approved" (full access). Server-controlled — never set by client.
+    account_status: Optional[str] = None
 
 class TokenResponse(BaseModel):
     token: str
@@ -2436,6 +2439,92 @@ async def get_admin_user(current_user = Depends(get_current_user)):
     if current_user.get("role") not in ["admin", "owner"]:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+
+# ── Account activation gating ────────────────────────────────────────
+# LOAD-BEARING server-side cost control. Self-serve signup is open, but new
+# accounts are "pending" and blocked from every cost-bearing endpoint (AI,
+# uploads, live external APIs) until an admin approves them. The UI lock alone
+# is NOT sufficient — this dependency is the real gate.
+async def require_approved(current_user = Depends(get_current_user)):
+    """Reject pending accounts BEFORE any AI/storage/API spend. Applied as a
+    route dependency on cost-bearing endpoints. Site devices (provisioned by an
+    approved admin) bypass. Legacy accounts missing the field are grandfathered
+    — the startup backfill (run_account_status_startup_migration) sets them to
+    'approved', and only an EXPLICIT 'pending' is blocked, so no existing user
+    is ever locked out even if the backfill hasn't run yet."""
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        return current_user
+    if current_user.get("account_status") == "pending":
+        raise HTTPException(status_code=403, detail={"error": "account_pending"})
+    return current_user
+
+
+# Static, canned demo project — ZERO external calls (no AI, Socrata, R2,
+# indexing). Lets a pending user see what the app does at no backend cost.
+_DEMO_PROJECT = {
+    "is_demo": True,
+    "id": "demo",
+    "name": "Sample Project — 852 East 176th Street",
+    "address": "852 East 176th Street, Bronx, NY 10460",
+    "nyc_bin": "2115914",
+    "project_class": "major_a",
+    "status": "active",
+    "dob_summary": {"permits": 5, "violations": 2, "complaints": 1, "inspections": 8},
+    "recent_activity": [
+        {"type": "permit", "title": "New Building — ALT-1", "status": "ISSUED", "date": "2026-05-14"},
+        {"type": "violation", "title": "Work without permit", "status": "RESOLVED", "date": "2026-04-02"},
+        {"type": "inspection", "title": "Foundation — passed", "status": "PASSED", "date": "2026-03-19"},
+    ],
+    "special_inspections": [
+        {"inspection_type": "firestopping", "status": "proposed"},
+        {"inspection_type": "structural_steel", "status": "proposed"},
+        {"inspection_type": "energy_nycecc", "status": "proposed"},
+    ],
+    "note": "This is a read-only demo. Contact us to activate full access.",
+}
+
+
+@api_router.get("/demo/project")
+async def get_demo_project(current_user = Depends(get_current_user)):
+    """Read-only seeded demo. Open to pending users; makes NO external calls."""
+    return _DEMO_PROJECT
+
+
+@api_router.patch(
+    "/admin/users/{user_id}/approve",
+    dependencies=[Depends(require_approved)],
+)
+async def admin_approve_user(user_id: str, current_user = Depends(get_admin_user)):
+    """Flip a user pending -> approved. Admin/owner only, and the caller must
+    themselves be approved (require_approved on the route) so a pending
+    self-signup admin cannot self-approve. Upsert-style update; never drops."""
+    res = await db.users.update_one(
+        {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+        {"$set": {"account_status": "approved",
+                  "updated_at": datetime.now(timezone.utc)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+    updated = await db.users.find_one({"_id": to_query_id(user_id)})
+    return {"user_id": user_id, "account_status": (updated or {}).get("account_status")}
+
+
+async def run_account_status_startup_migration():
+    """Idempotent one-time backfill: existing users predate account_status and
+    must NOT be locked out. Set any user missing the field to 'approved'. New
+    signups are created 'pending' by /auth/register. update_many only — never
+    drop, and only touches docs missing the field, so re-runs are no-ops."""
+    try:
+        res = await db.users.update_many(
+            {"account_status": {"$exists": False}},
+            {"$set": {"account_status": "approved"}},
+        )
+        logger.info(
+            f"account_status backfill: {res.modified_count} legacy users -> approved"
+        )
+    except Exception as e:
+        logger.warning(f"run_account_status_startup_migration failed: {e}")
 	
 def get_user_company_id(current_user):
     """Get the company_id from current user"""
@@ -2780,6 +2869,13 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # see the flow.
     user_dict["onboarding_step"] = "1"
     user_dict["onboarding_completed_at"] = None
+
+    # Account activation gating (server-controlled): self-serve signup stays
+    # fully OPEN, but every new account lands PENDING. Cost-bearing endpoints
+    # (AI, uploads, live external APIs) are gated server-side on this flag via
+    # require_approved, so a pending account can cost nothing. Never read from
+    # the client payload — always forced here.
+    user_dict["account_status"] = "pending"
 
     # If no company_id provided, this is invalid (except for testing)
     if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
@@ -6717,7 +6813,7 @@ class CoiConfirmRequest(BaseModel):
     expiration_date: Optional[str] = None   # MM/DD/YYYY
 
 
-@api_router.post("/admin/company/insurance/upload-coi")
+@api_router.post("/admin/company/insurance/upload-coi", dependencies=[Depends(require_approved)])
 async def admin_upload_coi(
     insurance_type: str = Form(...),
     file: UploadFile = File(...),
@@ -6887,7 +6983,7 @@ async def admin_upload_coi(
     }
 
 
-@api_router.put("/admin/company/insurance/upload-coi/confirm")
+@api_router.put("/admin/company/insurance/upload-coi/confirm", dependencies=[Depends(require_approved)])
 async def admin_confirm_coi(
     body: CoiConfirmRequest,
     current_user=Depends(get_admin_user),
@@ -7276,7 +7372,7 @@ async def get_projects(
                 p["defcon_tier"] = None
     return result
 
-@api_router.post("/projects", response_model=ProjectResponse)
+@api_router.post("/projects", response_model=ProjectResponse, dependencies=[Depends(require_approved)])
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
 
@@ -9045,7 +9141,7 @@ async def get_causal_lift(
 # returns the summary so operators can validate the job without waiting
 # for Sunday 4am ET. No-op (n_phase_updated=0) when GEMINI_API_KEY is
 # unset — each per-project infer call returns None.
-@api_router.post("/admin/run-phase-inference")
+@api_router.post("/admin/run-phase-inference", dependencies=[Depends(require_approved)])
 async def admin_run_phase_inference(
     current_user = Depends(get_admin_user),
 ):
@@ -10962,7 +11058,7 @@ def _dropbox_api_path(stored: str) -> str:
     return s.rstrip("/")
 
 
-@api_router.post("/projects/{project_id}/link-dropbox")
+@api_router.post("/projects/{project_id}/link-dropbox", dependencies=[Depends(require_approved)])
 async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
     """Link or unlink a Dropbox folder for a project.
 
@@ -11293,7 +11389,7 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
         logger.error(f"Background sync failed for project {project_id}: {e}")
 
 
-@api_router.post("/projects/{project_id}/sync-dropbox")
+@api_router.post("/projects/{project_id}/sync-dropbox", dependencies=[Depends(require_approved)])
 async def sync_project_dropbox(project_id: str, current_user = Depends(get_current_user)):
     """Sync/refresh project files from Dropbox — returns immediately, runs sync in background"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
@@ -11415,7 +11511,7 @@ async def _log_upload_attempt(record: dict):
         pass  # never let logging break the request
 
 
-@api_router.post("/projects/{project_id}/upload-file")
+@api_router.post("/projects/{project_id}/upload-file", dependencies=[Depends(require_approved)])
 async def upload_project_file(project_id: str, request: Request, file: UploadFile = File(...), current_user = Depends(get_current_user)):
     """Upload a file directly to R2 storage for a project (PDF only, max 100 MB)."""
     _log_base = {
@@ -16834,7 +16930,7 @@ async def check_permit_expirations():
  
 # ==================== DOB COMPLIANCE ENDPOINTS ====================
  
-@api_router.put("/projects/{project_id}/dob-config")
+@api_router.put("/projects/{project_id}/dob-config", dependencies=[Depends(require_approved)])
 async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depends(get_admin_user)):
     """Manual override: update BIN/BBL and toggle DOB tracking."""
     project = await db.projects.find_one({
@@ -17276,7 +17372,7 @@ async def mark_all_dob_logs_read(
     }
 
 
-@api_router.post("/projects/{project_id}/dob-sync")
+@api_router.post("/projects/{project_id}/dob-sync", dependencies=[Depends(require_approved)])
 async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user)):
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
     import traceback as _tb
@@ -22693,7 +22789,7 @@ async def whatsapp_debug_webhook_log(current_user=Depends(get_current_user)):
 
 # ---------- group linking flow (auth required) ----------
 
-@api_router.post("/whatsapp/group-link/initiate")
+@api_router.post("/whatsapp/group-link/initiate", dependencies=[Depends(require_approved)])
 async def whatsapp_group_link_initiate(
     body: dict,
     current_user=Depends(get_current_user),
@@ -22807,7 +22903,7 @@ async def whatsapp_debug_pending_codes(current_user=Depends(get_current_user)):
     return {"codes": out}
 
 
-@api_router.post("/whatsapp/group-link/verify")
+@api_router.post("/whatsapp/group-link/verify", dependencies=[Depends(require_approved)])
 async def whatsapp_group_link_verify(
     body: dict,
     current_user=Depends(get_current_user),
@@ -23068,7 +23164,7 @@ async def whatsapp_unlink_group(group_doc_id: str, current_user=Depends(get_curr
     return {"status": "unlinked"}
 
 
-@api_router.post("/whatsapp/activate")
+@api_router.post("/whatsapp/activate", dependencies=[Depends(require_approved)])
 async def whatsapp_activate(current_user=Depends(get_current_user)):
     """Activate WhatsApp for the company. Auto-populate contacts from users."""
     company_id = get_user_company_id(current_user)
@@ -23198,7 +23294,7 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
     return {"repaired_count": len(repaired), "repaired": repaired, "debug": debug_info}
 
 
-@api_router.post("/projects/{project_id}/reindex-document")
+@api_router.post("/projects/{project_id}/reindex-document", dependencies=[Depends(require_approved)])
 async def reindex_project_document(
     project_id: str,
     body: dict,
@@ -23254,7 +23350,7 @@ async def reindex_project_document(
     }
 
 
-@api_router.post("/projects/{project_id}/reindex-all")
+@api_router.post("/projects/{project_id}/reindex-all", dependencies=[Depends(require_approved)])
 async def reindex_all_project_files(
     project_id: str,
     current_user=Depends(get_admin_user),
@@ -24909,7 +25005,7 @@ async def _pm_load_project_or_403(project_id: str, current_user):
     return project
 
 
-@api_router.post("/projects/{project_id}/model/aggregate", response_model=_ProjectModel)
+@api_router.post("/projects/{project_id}/model/aggregate", response_model=_ProjectModel, dependencies=[Depends(require_approved)])
 async def aggregate_project_model_endpoint(
     project_id: str, current_user = Depends(get_current_user)
 ):
@@ -26195,6 +26291,10 @@ async def startup_event():
 
     # WhatsApp startup migrations — bot_config backfill, indexes, TTL
     await run_whatsapp_startup_migrations()
+
+    # Account activation gating — backfill existing users to "approved" so the
+    # new pending-by-default gate never locks out current accounts.
+    await run_account_status_startup_migration()
     
     # DOB collection indexes
     await db.dob_logs.create_index([("project_id", 1), ("detected_at", -1)])
