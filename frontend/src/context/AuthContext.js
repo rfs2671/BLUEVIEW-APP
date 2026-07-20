@@ -178,12 +178,19 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // Account activation gating: pending accounts get the read-only demo. The
+  // server is authoritative (cost-bearing endpoints 403 with account_pending);
+  // this flag just routes the UI. Site-mode devices are never "pending".
+  const isPending =
+    isAuthenticated && !siteMode && user?.account_status === 'pending';
+
   return (
     <AuthContext.Provider
       value={{
         user,
         isLoading,
         isAuthenticated,
+        isPending,
         siteMode,
         siteProject,
         login,

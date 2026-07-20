@@ -68,7 +68,7 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { user, isAuthenticated, isLoading: authLoading } = useAuth();
+  const { user, isAuthenticated, isPending, isLoading: authLoading } = useAuth();
   const { isDark, colors } = useTheme();
   const s = buildStyles(colors, isDark);
   const toast = useToast();
@@ -102,14 +102,17 @@ export default function DashboardScreen() {
     if (!layoutReady) return;
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
+    } else if (!authLoading && isPending) {
+      // Pending accounts land in the read-only demo, not the real dashboard.
+      router.replace('/demo');
     }
-  }, [layoutReady, isAuthenticated, authLoading]);
+  }, [layoutReady, isAuthenticated, isPending, authLoading]);
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isAuthenticated && !isPending) {
       fetchData();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isPending]);
 
   // Phase C1.3 — first-poll banner: AsyncStorage hydration on
   // mount. Hoisted alongside the other useEffects above the early

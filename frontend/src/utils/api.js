@@ -166,6 +166,17 @@ export const onboardingAPI = {
 };
 
 /**
+ * Read-only seeded demo for pending (unapproved) accounts. Static server data,
+ * no external cost. Open to pending users.
+ */
+export const demoAPI = {
+  getProject: async () => {
+    const response = await apiClient.get('/api/demo/project');
+    return response.data;
+  },
+};
+
+/**
  * Authentication APIs
  */
 export const authAPI = {
