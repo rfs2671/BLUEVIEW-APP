@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react-native';
@@ -92,6 +92,12 @@ export default function LoginScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container}>
+        <ScrollView
+          style={s.scroll}
+          contentContainerStyle={s.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
         <View style={s.content}>
           {/* Logo */}
           <View style={s.logoContainer}>
@@ -186,6 +192,7 @@ export default function LoginScreen() {
             </Text>
           </Pressable>
         </View>
+        </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -194,9 +201,15 @@ export default function LoginScreen() {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
     container: { flex: 1 },
-  content: {
-    flex: 1,
+  scroll: { flex: 1 },
+  // flexGrow lets the stack vertically center when the viewport is tall
+  // enough, and SCROLL when it's taller than the viewport — so the signup
+  // link is always reachable (~768px screens included), not just full-screen.
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
+  },
+  content: {
     padding: spacing.lg,
     maxWidth: 440,
     width: '100%',

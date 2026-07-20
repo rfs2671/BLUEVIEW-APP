@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Image, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Mail, Lock, Eye, EyeOff, User, Building2, ArrowRight } from 'lucide-react-native';
@@ -84,6 +84,12 @@ export default function RegisterScreen() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container}>
+        <ScrollView
+          style={s.scroll}
+          contentContainerStyle={s.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
         <View style={s.content}>
           <View style={s.logoContainer}>
             <Image source={require('../assets/logo-header.png')} style={s.logoImage} resizeMode="contain" />
@@ -191,6 +197,7 @@ export default function RegisterScreen() {
             </Text>
           </Pressable>
         </View>
+        </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -199,9 +206,12 @@ export default function RegisterScreen() {
 function buildStyles(colors, isDark) {
   return StyleSheet.create({
     container: { flex: 1 },
+    scroll: { flex: 1 },
+    // flexGrow centers when the viewport has room and scrolls when the taller
+    // signup stack exceeds it, so the submit button + "Sign in" link are always
+    // reachable on a standard (~768px) viewport.
+    scrollContent: { flexGrow: 1, justifyContent: 'center' },
     content: {
-      flex: 1,
-      justifyContent: 'center',
       padding: spacing.lg,
       maxWidth: 440,
       width: '100%',
