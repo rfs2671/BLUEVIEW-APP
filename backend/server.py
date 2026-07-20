@@ -24937,6 +24937,51 @@ async def unconfirmed_project_model_endpoint(
     return _pm_aggregator.unconfirmed_view(model)
 
 
+# ── Scheduling spine (app/scheduling) ────────────────────────────────
+# Deterministic construction sequence from the confirmed ProjectModel via the
+# graph_v1 seed. No scheduler heuristics/LLM here beyond the engine's layering.
+from app.scheduling import engine as _sched_engine  # noqa: E402
+from app.scheduling.graph_v1 import build_graph_v1 as _build_graph_v1  # noqa: E402
+
+
+@api_router.post("/projects/{project_id}/schedule/generate")
+async def generate_schedule_endpoint(
+    project_id: str, current_user = Depends(get_current_user)
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    project = await _pm_aggregator.load_project_model(db, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=404, detail="No ProjectModel yet — run aggregate first"
+        )
+    graph = _build_graph_v1()
+    await _sched_engine.upsert_seed_graph(db, graph)  # record the seed (upsert)
+    try:
+        schedule = _sched_engine.generate_schedule(db, project=project, graph=graph)
+    except _sched_engine.ScheduleCycleError as e:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "schedule_cycle", "nodes": e.node_ids},
+        )
+    await _sched_engine.persist_schedule(db, schedule)
+    # Unconfirmed gate-critical input is surfaced, NOT blocked.
+    warnings = _sched_engine.schedule_input_warnings(project)
+    return {"schedule": schedule.model_dump(mode="json"), "warnings": warnings}
+
+
+@api_router.get("/projects/{project_id}/schedule")
+async def get_schedule_endpoint(
+    project_id: str, current_user = Depends(get_current_user)
+):
+    await _pm_load_project_or_403(project_id, current_user)
+    latest = await _sched_engine.load_latest_schedule(db, project_id)
+    if latest is None:
+        raise HTTPException(
+            status_code=404, detail="No schedule yet — run schedule/generate first"
+        )
+    return latest
+
+
 # Include the router in the main app
 app.include_router(api_router)
 
