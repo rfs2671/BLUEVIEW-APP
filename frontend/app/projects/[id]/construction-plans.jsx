@@ -672,6 +672,8 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     paddingVertical: spacing.xxl,
     gap: spacing.md,
+    // Gap before the search bar below so the empty-state card isn't cramped.
+    marginBottom: spacing.lg,
   },
   notLinkedTitle: {
     fontSize: 20,
