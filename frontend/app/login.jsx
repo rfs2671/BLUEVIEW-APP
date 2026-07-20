@@ -171,6 +171,20 @@ export default function LoginScreen() {
               ) : formContent;
             })()}
           </GlassCard>
+
+          {/* Signup affordance — a first-time, unauthenticated visitor must be
+              able to reach registration on first paint (App Store reviewers
+              self-register here). Reachable directly at /register too. */}
+          <Pressable
+            onPress={() => router.push('/register')}
+            style={s.signupRow}
+            accessibilityRole="link"
+            accessibilityLabel="Create an account"
+          >
+            <Text style={s.signupText}>
+              Don't have an account? <Text style={s.signupLink}>Sign up</Text>
+            </Text>
+          </Pressable>
         </View>
       </SafeAreaView>
     </AnimatedBackground>
@@ -228,6 +242,18 @@ function buildStyles(colors, isDark) {
   },
   submitBtn: {
     marginTop: spacing.sm,
+  },
+  signupRow: {
+    marginTop: spacing.lg,
+    alignItems: 'center',
+  },
+  signupText: {
+    fontSize: 14,
+    color: colors.text.muted,
+  },
+  signupLink: {
+    color: colors.primary,
+    fontWeight: '600',
   },
 });
 }

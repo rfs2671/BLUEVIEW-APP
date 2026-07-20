@@ -194,6 +194,13 @@ export const authAPI = {
     return response.data;
   },
 
+  // Self-serve signup. The backend forces new accounts to a pending state and
+  // does not return a token, so callers register then call login() to sign in.
+  register: async (payload) => {
+    const response = await apiClient.post('/api/auth/register', payload);
+    return response.data;
+  },
+
   getMe: async () => {
     const response = await apiClient.get('/api/auth/me');
     return response.data;

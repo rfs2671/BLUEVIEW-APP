@@ -1474,6 +1474,10 @@ function buildStyles(colors, isDark) {
   sectionLabel: {
     ...typography.label,
     color: colors.text.muted,
+    // Standalone section headers (QUICK ACTIONS, ON-SITE WORKERS, CHECKLISTS)
+    // get the same top breathing room as the sectionHeader rows (NOTIFICATIONS,
+    // etc.) so every section header is spaced consistently below the card above.
+    marginTop: spacing.lg,
     marginBottom: spacing.md,
     paddingHorizontal: spacing.xs,
   },
@@ -1490,6 +1494,9 @@ function buildStyles(colors, isDark) {
   // vertical centering (text jams to the top) and double the left inset.
   // Strip them when the label lives in a header.
   sectionHeaderLabel: {
+    // The sectionHeader row already supplies marginTop; zero it on the label
+    // inside so in-header labels don't double the top margin.
+    marginTop: 0,
     marginBottom: 0,
     paddingHorizontal: 0,
   },
