@@ -169,7 +169,12 @@ select option{background:#1e293b;color:#f1f5f9}
 /* Phone input for returning */
 .phone-entry{margin:20px 0}
 
-/* Manual card entry hint + no-trades notice */
+/* Retake prompt + manual card entry hint + no-trades notice */
+.retake-prompt{
+  margin-top:14px;padding:12px 14px;border-radius:var(--radius-sm);
+  background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);
+  color:#fbbf24;font-size:14px;line-height:1.5;
+}
 .manual-note{
   margin-bottom:12px;padding:10px 12px;border-radius:var(--radius-sm);
   background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.35);
@@ -271,6 +276,10 @@ select option{background:#1e293b;color:#f1f5f9}
         </div>
         <input type="file" id="selfieInput" accept="image/*" capture="user" onchange="handleSelfiePhoto(this)">
 
+        <!-- Retake prompt: shown when OCR couldn't read a critical field and
+             the worker still has retake attempts left. -->
+        <div id="retakePrompt" class="hidden retake-prompt"></div>
+
         <div id="ocrResults" class="hidden" style="margin-top:16px">
           <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned — review &amp; correct below</div>
         </div>
@@ -283,8 +292,12 @@ select option{background:#1e293b;color:#f1f5f9}
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
           </div>
-          <!-- FIX 2: a photo is optional — these fields alone are enough to
-               check in, so no camera / a damaged card is never a dead-end. -->
+          <!-- Card fields stay ALWAYS VISIBLE (from the photo-optional fix):
+               a worker with no camera / a damaged card must be able to type
+               these without first producing a photo. #82's retake loop layers
+               on top — it prompts for a better photo up to 3 times, but never
+               hides these fields, so there is no dead-end and no duplicate
+               "manual entry" surface. -->
           <div class="manual-note" data-i18n="manualEntryLink">Can't photograph the card? Enter the details below instead</div>
           <div class="input-group">
             <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
@@ -419,6 +432,12 @@ const TRANSLATIONS = {
     oshaDesc: "Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.",
     camText: 'Tap to take photo',
     camHint: 'or choose from gallery',
+    camRetake: 'Tap to retake photo',
+    retakeLead: "Couldn't read the card clearly.",
+    retakeMissing: 'missing',
+    retakeAction: 'Tap above to retake the photo.',
+    retakeLeft: 'attempt(s) left.',
+    manualNote: "We couldn't read the card automatically — enter your card details manually below.",
     selfieText: 'Tap to take a selfie',
     selfieHint: 'Optional — used for site verification only',
     cardNumberLabel: 'Card / SST Number',
@@ -500,6 +519,12 @@ const TRANSLATIONS = {
     oshaDesc: 'Tome una foto de su tarjeta OSHA-10/30 o SST. La leeremos automáticamente.',
     camText: 'Toque para tomar foto',
     camHint: 'o elija de la galería',
+    camRetake: 'Toque para volver a tomar la foto',
+    retakeLead: 'No se pudo leer la tarjeta con claridad.',
+    retakeMissing: 'falta',
+    retakeAction: 'Toque arriba para volver a tomar la foto.',
+    retakeLeft: 'intento(s) restante(s).',
+    manualNote: 'No pudimos leer la tarjeta automáticamente — ingrese los datos manualmente abajo.',
     selfieText: 'Toque para tomar una selfie',
     selfieHint: 'Opcional — solo para verificación en el sitio',
     cardNumberLabel: 'Número de Tarjeta / SST',
@@ -662,6 +687,18 @@ let companies = [];
 let oshaImage = null;
 let oshaData = null;
 let selfieImage = null;  // base64 selfie, stored inline for spot-check only
+
+// ── OCR retake / manual-entry fallback ──
+// If OCR can't read a critical field we ask the worker to retake the photo,
+// but only a BOUNDED number of times. Once the cap is hit we fall through to
+// manual entry so the worker can always finish check-in. No dead-ends.
+const OCR_MAX_ATTEMPTS = 3;
+const OCR_CRITICAL_FIELDS = [
+  { key: 'name', label: 'name' },
+  { key: 'sst_number', label: 'card number' },
+  { key: 'expiration', label: 'expiration date' },
+];
+let ocrAttempts = 0;
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
@@ -972,11 +1009,15 @@ async function handleOshaPhoto(input) {
       oshaData = res;
       if (res.box_2d && res.box_2d.length === 4) {
         oshaImage = await cropImage(oshaImage, res.box_2d);
-        document.querySelector('#cameraZone img').src = oshaImage;
+        const zoneImg = document.querySelector('#cameraZone img');
+        if (zoneImg) zoneImg.src = oshaImage;
       }
       hideLoading();
+      ocrAttempts++;
+      // Pre-fill whatever OCR did manage to read, then decide whether to ask
+      // for a retake or open manual entry.
       showOcrResults(res);
-      document.getElementById('btnStep1Next').disabled = false;
+      handleOcrOutcome(ocrMissingCriticalFields(res));
     } catch (e) {
       hideLoading();
       // Surface the real reason so operators can diagnose — previously
@@ -985,14 +1026,87 @@ async function handleOshaPhoto(input) {
       // failed when in reality the request often never reached it.
       console.error('OSHA OCR upload failed:', e);
       const reason = (e && e.message) ? e.message : 'Unknown error';
-      showError('Could not read card: ' + reason + '. You can fill in your details manually.');
-      oshaData = {};
-      document.getElementById('btnStep1Next').disabled = false;
-      document.getElementById('regName').style.borderColor = '#f59e0b';
-      document.getElementById('regName').focus();
+      showError('Could not read card: ' + reason);
+      oshaData = oshaData || {};
+      ocrAttempts++;
+      // null = the OCR call itself failed (not just missing fields).
+      handleOcrOutcome(null);
     }
   };
   reader.readAsDataURL(file);
+}
+
+// ==================== OCR RETAKE / MANUAL FALLBACK ====================
+function ocrMissingCriticalFields(data) {
+  const d = data || {};
+  return OCR_CRITICAL_FIELDS
+    .filter((f) => !d[f.key] || String(d[f.key]).trim() === '')
+    .map((f) => f.label);
+}
+
+function hideRetakePrompt() {
+  document.getElementById('retakePrompt').classList.add('hidden');
+}
+
+function showRetakePrompt(missing, attemptsLeft) {
+  const el = document.getElementById('retakePrompt');
+  const t = TRANSLATIONS[currentLang];
+  el.textContent =
+    (t.retakeLead || "Couldn't read the card clearly.") +
+    (missing.length ? ' (' + (t.retakeMissing || 'missing') + ': ' + missing.join(', ') + ')' : '') +
+    ' ' + (t.retakeAction || 'Tap above to retake the photo.') +
+    ' ' + attemptsLeft + ' ' + (t.retakeLeft || 'attempt(s) left.');
+  el.classList.remove('hidden');
+}
+
+// Reset the card camera zone so the worker can tap it again for a retake.
+function resetCardCameraZone() {
+  const t = TRANSLATIONS[currentLang];
+  const zone = document.getElementById('cameraZone');
+  zone.innerHTML =
+    '<span class="cam-icon">📸</span>' +
+    '<div class="cam-text">' + (t.camRetake || 'Tap to retake photo') + '</div>' +
+    '<div class="cam-hint">' + (t.camHint || '') + '</div>';
+  // Clear the input so re-selecting the same file still fires onchange.
+  document.getElementById('fileInput').value = '';
+}
+
+// Decide what happens after an OCR attempt (success OR failure).
+// missing=null means the OCR call itself failed.
+function handleOcrOutcome(missing) {
+  const unreadable = missing === null;
+  const missingList = unreadable ? [] : missing;
+  const incomplete = unreadable || missingList.length > 0;
+
+  // The card fields are always visible, so the retake prompt is ADVISORY:
+  // it nudges the worker toward a cleaner photo while attempts remain, but
+  // never disables Next. goStep() is the single gate — it requires a photo
+  // OR manually typed card details — so a worker whose camera can't produce
+  // a readable image can always type their way through. Disabling the button
+  // here would re-create the dead-end the photo-optional fix removed.
+  if (incomplete && ocrAttempts < OCR_MAX_ATTEMPTS) {
+    showRetakePrompt(missingList, OCR_MAX_ATTEMPTS - ocrAttempts);
+    resetCardCameraZone();
+  } else {
+    hideRetakePrompt();
+    if (!incomplete) {
+      document.getElementById('ocrResults').classList.remove('hidden');
+    }
+  }
+
+  document.getElementById('btnStep1Next').disabled = false;
+
+  // Point the worker at the first thing still missing so manual entry is
+  // obvious once OCR has given up.
+  if (incomplete && ocrAttempts >= OCR_MAX_ATTEMPTS) {
+    const firstEmpty = ['regName', 'regCardNumber', 'regExpiration']
+      .map((id) => document.getElementById(id))
+      .find((el) => el && !el.value.trim());
+    if (firstEmpty) {
+      firstEmpty.style.borderColor = '#f59e0b';
+      firstEmpty.focus();
+    }
+  }
 }
 
 // ==================== SELFIE PHOTO ====================
@@ -1015,12 +1129,11 @@ async function handleSelfiePhoto(input) {
 }
 
 function showOcrResults(data) {
-  // Show the "scanned" banner, then PRE-FILL editable inputs from OCR so the
-  // worker/admin can correct any misread field. These are plain inputs (not
-  // read-only display cards) and their values — not the raw OCR blob — are
-  // what get sent on submit, so corrections flow through to the cert logic.
-  document.getElementById('ocrResults').classList.remove('hidden');
-
+  // PRE-FILL the editable inputs from OCR so the worker/admin can correct any
+  // misread field. These are plain inputs (not read-only display cards) and
+  // their values — not the raw OCR blob — are what get sent on submit, so
+  // corrections flow through to the cert logic. The "scanned" banner is
+  // revealed by handleOcrOutcome only when the read was actually complete.
   if (data.name) document.getElementById('regName').value = data.name;
   if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
   if (data.issued) document.getElementById('regIssued').value = data.issued;
