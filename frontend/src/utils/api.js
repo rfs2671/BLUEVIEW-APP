@@ -404,6 +404,16 @@ export const checkinsAPI = {
     return response.data;
   },
 
+  // GET /api/checkins/project/{id}/flagged — check-ins needing a decision:
+  // unreviewed expired-SST, or arrived with no trade assigned. Company-scoped
+  // server-side (unlike the other project-checkins endpoints).
+  getFlagged: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/checkins/project/${projectId}/flagged`,
+    );
+    return response.data;
+  },
+
   // POST /api/checkins/{id}/review — record an admin/CP decision on a flagged
   // (e.g. expired-SST) check-in. decision: "approved" | "sent_home".
   // Attribution (reviewed_by) is derived server-side from the auth token —

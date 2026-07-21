@@ -22,6 +22,7 @@ import {
   ChevronDown,
   Calendar,
   Bell,
+  ShieldAlert,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -370,6 +371,22 @@ export default function LogBooksScreen() {
               />
             </GlassCard>
           )}
+
+          {/* Check-in review entry point. Lives here because /logbooks/* is
+              the only area a CP is allowed on (see the guard in _layout.jsx),
+              so this is how a CP reaches the approve / send-home decision
+              from their own login. */}
+          <Pressable onPress={() => router.push('/logbooks/review')}>
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <ShieldAlert size={16} strokeWidth={1.5} color="#f59e0b" />
+                <Text style={styles.notifTitle}>Check-In Review</Text>
+              </View>
+              <Text style={styles.notifWorker}>
+                Expired SST cards and workers with no trade assigned
+              </Text>
+            </GlassCard>
+          </Pressable>
 
           {/* Log book cards */}
           {loading ? (

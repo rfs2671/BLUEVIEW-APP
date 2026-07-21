@@ -9076,6 +9076,119 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
 
     return {"message": "Check-out successful"}
 
+def user_can_act_on_project(project: dict, project_id: str, current_user: dict) -> bool:
+    """Per-project authorization shared by the check-in review + flagged
+    endpoints. Composed from the two existing idioms, since the codebase has
+    no ready-made per-project guard:
+
+      • admin/owner scoped to the project's company (the company-scope check
+        used by the reports endpoints), OR
+      • a user assigned to this project (the CP write-gate in update_logbook).
+
+    This mirrors how the check-in notifications pick their recipients, so the
+    people who get alerted are exactly the people allowed to act.
+    """
+    role = current_user.get("role")
+    assigned = current_user.get("assigned_projects", []) or []
+    is_company_admin = (
+        role in ("admin", "owner")
+        and project.get("company_id") == current_user.get("company_id")
+    )
+    return bool(is_company_admin or str(project_id) in assigned)
+
+
+@api_router.get("/checkins/project/{project_id}/flagged")
+async def get_flagged_project_checkins(
+    project_id: str,
+    current_user = Depends(get_current_user),
+    limit: int = Query(50, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+):
+    """Check-ins on this project that need a human decision:
+
+      • an expired SST that nobody has approved / sent home yet, or
+      • a check-in that arrived with no trade because the project had no
+        trade_assignments configured.
+
+    Tenant scoping: the sibling project-checkins endpoints filter on
+    `project_id` ALONE with no company check, so any authenticated user can
+    read any project's check-ins. That gap is deliberately NOT inherited —
+    this endpoint authorizes per project before returning anything.
+
+    Payload note: the worker's card image is attached inline (base64) so the
+    reviewer can see the card they're judging. Flagged lists are short by
+    nature; the default limit is kept low (50) to bound the response size.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view this project",
+        )
+
+    # "Unreviewed" covers rows written before the review feature existed
+    # (field absent) as well as rows explicitly reset to null.
+    unreviewed_expired = {
+        "sst_status": "expired",
+        "$or": [
+            {"review_decision": {"$exists": False}},
+            {"review_decision": None},
+        ],
+    }
+    query = {
+        "project_id": project_id,
+        "is_deleted": {"$ne": True},
+        "$or": [unreviewed_expired, {"needs_trade_assignment": True}],
+    }
+
+    checkins = await db.checkins.find(query).sort(
+        "check_in_time", -1,
+    ).skip(skip).limit(limit).to_list(limit)
+
+    # Batch-fetch the workers so each row can carry the card image + a name
+    # fallback, without an N+1 per row.
+    worker_ids = {c.get("worker_id") for c in checkins if c.get("worker_id")}
+    workers_map = {}
+    if worker_ids:
+        query_ids = [to_query_id(w) for w in worker_ids]
+        workers_list = await db.workers.find({
+            "_id": {"$in": query_ids}, "is_deleted": {"$ne": True},
+        }).to_list(len(query_ids))
+        for w in workers_list:
+            workers_map[str(w["_id"])] = w
+
+    results = []
+    for c in checkins:
+        s = serialize_id(c)
+        worker = workers_map.get(s.get("worker_id")) or {}
+        if not s.get("worker_name"):
+            s["worker_name"] = worker.get("name", "Unknown Worker")
+        s["worker_company"] = s.get("worker_company") or worker.get("company")
+        s["worker_trade"] = s.get("worker_trade") or worker.get("trade")
+        s["osha_card_image"] = worker.get("osha_card_image")
+        s["osha_number"] = s.get("sst_card_number") or worker.get("osha_number")
+        # Explicit reason list so the UI doesn't have to re-derive it.
+        reasons = []
+        if s.get("sst_status") == "expired" and not s.get("review_decision"):
+            reasons.append("expired_sst")
+        if s.get("needs_trade_assignment"):
+            reasons.append("needs_trade")
+        s["flag_reasons"] = reasons
+        results.append(s)
+
+    return {
+        "project_id": project_id,
+        "project_name": project.get("name"),
+        "trade_assignments": project.get("trade_assignments") or [],
+        "items": results,
+        "count": len(results),
+    }
+
+
 @api_router.post("/checkins/{checkin_id}/review")
 async def review_checkin(checkin_id: str, data: dict, current_user = Depends(get_current_user)):
     """Record an admin/CP decision on a flagged (e.g. expired-SST) check-in.
@@ -9112,20 +9225,9 @@ async def review_checkin(checkin_id: str, data: dict, current_user = Depends(get
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Authorization — composed from the two existing idioms, because there is
-    # no ready-made per-project write guard:
-    #   • admin/owner scoped to the project's company (the company-scope check
-    #     used by the reports endpoints), OR
-    #   • a user assigned to this project (the CP write-gate in update_logbook).
-    # This mirrors how the expired-SST notification picks its recipients.
-    role = current_user.get("role")
-    assigned_projects = current_user.get("assigned_projects", []) or []
-    is_company_admin = (
-        role in ("admin", "owner")
-        and project.get("company_id") == current_user.get("company_id")
-    )
-    is_assigned = project_id_str in assigned_projects
-    if not (is_company_admin or is_assigned):
+    # Authorization — shared with the flagged-list endpoint so the people who
+    # get alerted are exactly the people allowed to act. See the helper above.
+    if not user_can_act_on_project(project, project_id_str, current_user):
         raise HTTPException(
             status_code=403,
             detail="Not authorized to review this check-in",
