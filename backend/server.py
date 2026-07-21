@@ -2447,6 +2447,25 @@ async def get_admin_user(current_user = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
+async def get_owner_user(current_user = Depends(get_current_user)):
+    """Owner-ONLY gate. Formalises the `role != "owner" -> 403` idiom already
+    inlined across the owner-portal endpoints, for operations a company admin
+    must never reach — currently the irreversible project hard-delete and the
+    pending-deletion review list."""
+    if current_user.get("role") != "owner":
+        raise HTTPException(status_code=403, detail="Owner access required")
+    return current_user
+
+# A project that has been marked for deletion by an admin is invisible and
+# inert everywhere except the owner's pending-deletion review list: it must
+# not appear in listings, must not be readable by id, and must not be picked
+# up by any background scan (DOB sync, report mailer, prediction sweeps).
+# Spread this into a projects query alongside the is_deleted filter.
+ACTIVE_PROJECT_FILTER = {
+    "is_deleted": {"$ne": True},
+    "marked_for_deletion": {"$ne": True},
+}
+
 
 # ── Account activation gating ────────────────────────────────────────
 # LOAD-BEARING server-side cost control. Self-serve signup is open, but new
@@ -7348,7 +7367,9 @@ async def get_projects(
 ):
     company_id = get_user_company_id(current_user)
 
-    query = {"is_deleted": {"$ne": True}}
+    # Marked-for-deletion projects vanish from the admin list; only the
+    # owner sees them, via GET /projects/pending-deletion.
+    query = dict(ACTIVE_PROJECT_FILTER)
     if company_id:
         query["company_id"] = company_id
 
@@ -7533,9 +7554,44 @@ async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_
 
     return ProjectResponse(**project_dict)
 
+@api_router.get("/projects/pending-deletion")
+async def list_pending_deletion_projects(owner = Depends(get_owner_user)):
+    """Owner-ONLY review list of projects an admin has marked for deletion.
+
+    MUST stay registered ABOVE GET /projects/{project_id} — FastAPI matches
+    in registration order, so declaring it after would make the literal
+    "pending-deletion" bind to {project_id} and 404.
+    """
+    projects = await db.projects.find({
+        "marked_for_deletion": True,
+        "is_deleted": {"$ne": True},
+    }).sort("marked_at", -1).to_list(500)
+
+    items = []
+    for p in projects:
+        pid = str(p["_id"])
+        items.append({
+            "id": pid,
+            "name": p.get("name"),
+            "address": p.get("address"),
+            "company_id": p.get("company_id"),
+            "nyc_bin": p.get("nyc_bin"),
+            "marked_by": p.get("marked_by"),
+            "marked_at": p.get("marked_at"),
+            # Rough scale indicator so the owner sees what a purge destroys.
+            "dob_logs_count": await db.dob_logs.count_documents({"project_id": pid}),
+            "checkins_count": await db.checkins.count_documents({"project_id": pid}),
+        })
+    return {"items": items, "count": len(items)}
+
+
 @api_router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user = Depends(get_current_user)):
-    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    # Marked-for-deletion projects read as 404 to everyone here; the owner
+    # reviews them through GET /projects/pending-deletion instead.
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -7614,8 +7670,18 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
 
 @api_router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
-    # Verify project exists and user has access
-    project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
+    """TIER 1 — mark for deletion (admin or owner).
+
+    Replaces the previous hybrid handler, which soft-deleted the project but
+    HARD-deleted its dob_logs — destroying the compliance history while only
+    hiding the project. Nothing is removed now: the project is flagged, hidden
+    from every admin surface, and its NFC tags are deactivated so no new
+    check-ins land against a closed site. The owner reviews marked projects
+    via GET /projects/pending-deletion and is the only role that can purge.
+    """
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -7623,21 +7689,258 @@ async def delete_project(project_id: str, admin = Depends(get_admin_user)):
     if company_id and project.get("company_id") != company_id:
         raise HTTPException(status_code=403, detail="Access denied to this project")
 
-    # Hard delete all DOB logs for this project
-    dob_result = await db.dob_logs.delete_many({"project_id": project_id})
-    logger.info(f"Deleted {dob_result.deleted_count} dob_logs for project {project_id}")
+    now = datetime.now(timezone.utc)
+    admin_id = str(admin.get("_id", admin.get("id", "")))
 
-    # Soft delete the project
     await db.projects.update_one(
         {"_id": to_query_id(project_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {
+            "marked_for_deletion": True,
+            "marked_by": admin_id,
+            "marked_at": now,
+            "updated_at": now,
+        }},
     )
 
-    await audit_log("project_delete", str(admin.get("_id", admin.get("id", ""))), "project", project_id, {
-        "name": project.get("name"), "dob_logs_deleted": dob_result.deleted_count,
+    # Deactivate the site's NFC tags. register_and_checkin matches
+    # status:"active", so a tap now fails fast with "Invalid check-in point"
+    # instead of passing the tag check and dying on the project lookup.
+    tag_result = await db.nfc_tags.update_many(
+        {"project_id": project_id},
+        {"$set": {"status": "project_closed", "updated_at": now}},
+    )
+
+    await audit_log("project_mark_delete", admin_id, "project", project_id, {
+        "name": project.get("name"),
+        "nfc_tags_deactivated": getattr(tag_result, "modified_count", 0) or 0,
     })
 
-    return {"message": "Project deleted successfully", "dob_logs_deleted": dob_result.deleted_count}
+    return {
+        "message": "Project marked for deletion",
+        "marked_for_deletion": True,
+        "nfc_tags_deactivated": getattr(tag_result, "modified_count", 0) or 0,
+    }
+
+
+# ── TIER 2: owner-only hard delete ───────────────────────────────────────
+#
+# Collections whose documents are OWNED by a project and keyed by a plain
+# `project_id` field. Sourced from the cascade audit. Anything not on this
+# list is either company/user-scoped (companies, users, whatsapp_config,
+# notification_preferences, feature_flags) or needs special handling below
+# (workers, document_page_index).
+_PROJECT_OWNED_COLLECTIONS = [
+    "dob_logs", "checkins", "logbooks", "logbook_entries", "nfc_tags",
+    "project_files", "daily_logs", "daily_log_photos", "checklists",
+    "checklist_assignments", "checklist_completions", "compliance_alerts",
+    "notifications", "signature_events", "material_requests", "report_emails",
+    "reports", "cs_registrations", "safety_staff_registrations",
+    "document_annotations", "upload_attempts_log", "project_models",
+    "project_schedules", "sequence_graph", "risk_scores", "daily_panels",
+    "prediction_models", "prediction_validation_ledger", "eligibility_shadow",
+    "permit_renewals", "renewal_alert_sent", "site_devices", "subcontractors",
+    # card_audit family — the runtime flow is route-shadowed, but rows may
+    # exist from any earlier exercise of it, so sweep them.
+    "worker_enrollments", "sign_ins", "daily_signatures", "pending_enrollments",
+    "card_fraud_flags", "card_audit_log", "unexpected_ndef_hosts",
+    # whatsapp — PROJECT-scoped only. whatsapp_config is COMPANY-scoped and
+    # is deliberately absent.
+    "whatsapp_groups", "whatsapp_checklists", "whatsapp_link_codes",
+    "whatsapp_messages", "whatsapp_send_log", "whatsapp_conversation_state",
+    "whatsapp_voice_events", "whatsapp_audio_probe", "whatsapp_webhook_log",
+]
+
+
+async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
+    """Delete every object under `prefix`. Needed for artefacts that no DB row
+    enumerates (plan page renders, card-audit signatures). Paginates past the
+    1000-key ListObjectsV2 cap. Best-effort: returns the count deleted and
+    never raises, so one storage hiccup can't abort the purge."""
+    if not (client and bucket and prefix):
+        return 0
+    deleted = 0
+    token = None
+    try:
+        while True:
+            kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+            if token:
+                kwargs["ContinuationToken"] = token
+            page = await asyncio.to_thread(client.list_objects_v2, **kwargs)
+            for obj in (page.get("Contents") or []):
+                key = obj.get("Key")
+                if not key:
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        client.delete_object, Bucket=bucket, Key=key,
+                    )
+                    deleted += 1
+                except Exception as e:
+                    logger.error(f"[hard_delete] R2 delete failed key={key}: {e!r}")
+            if page.get("IsTruncated"):
+                token = page.get("NextContinuationToken")
+                if not token:
+                    break
+            else:
+                break
+    except Exception as e:
+        logger.error(
+            f"[hard_delete] R2 prefix sweep failed bucket={bucket} "
+            f"prefix={prefix}: {e!r}"
+        )
+    return deleted
+
+
+@api_router.delete("/projects/{project_id}/hard-delete")
+async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
+    """TIER 2 — irreversible purge. OWNER ONLY.
+
+    Physically removes the project and every document, storage object and
+    config key it owns. Uses delete_many/delete_one exclusively — never
+    drop(). Storage and scheduler cleanup are best-effort so a single
+    failure cannot leave the database half-purged.
+    """
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    owner_id = str(owner.get("_id", owner.get("id", "")))
+    company_id = str(project.get("company_id") or "")
+    report: Dict[str, Any] = {}
+
+    # ── LANDMINE 2: document_page_index is keyed by file_id, NOT project_id.
+    # Collect the project's file ids BEFORE deleting project_files, or the
+    # index rows orphan silently with nothing left to find them by.
+    file_docs = await db.project_files.find(
+        {"project_id": project_id}, {"_id": 1, "r2_key": 1},
+    ).to_list(5000)
+    file_ids = [str(f["_id"]) for f in file_docs]
+    if file_ids:
+        idx_res = await db.document_page_index.delete_many(
+            {"file_id": {"$in": file_ids}},
+        )
+        report["document_page_index"] = getattr(idx_res, "deleted_count", 0) or 0
+
+    # ── R2: per-file keys recorded on project_files rows.
+    r2_deleted = 0
+    if _r2_client and R2_BUCKET_NAME:
+        for f in file_docs:
+            key = f.get("r2_key")
+            if not key:
+                continue
+            try:
+                await asyncio.to_thread(
+                    _r2_client.delete_object, Bucket=R2_BUCKET_NAME, Key=key,
+                )
+                r2_deleted += 1
+            except Exception as e:
+                logger.error(f"[hard_delete] R2 delete failed key={key}: {e!r}")
+
+    # ── R2: prefix sweeps for artefacts with no DB rows.
+    r2_deleted += await _r2_delete_prefix(
+        _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/",
+    )
+    if company_id:
+        r2_deleted += await _r2_delete_prefix(
+            _r2_client, R2_BUCKET_NAME, f"{company_id}/{project_id}/",
+        )
+    try:
+        from card_audit import _r2_client as _ca_client, CARD_AUDIT_BUCKET_NAME, CARD_AUDIT_KEY_PREFIX
+        if _ca_client and CARD_AUDIT_BUCKET_NAME:
+            r2_deleted += await _r2_delete_prefix(
+                _ca_client, CARD_AUDIT_BUCKET_NAME,
+                f"{CARD_AUDIT_KEY_PREFIX}{project_id}/",
+            )
+    except Exception as e:
+        logger.warning(f"[hard_delete] card-audit bucket sweep skipped: {e!r}")
+    report["r2_objects_deleted"] = r2_deleted
+
+    # ── Project-owned collections.
+    for coll in _PROJECT_OWNED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"project_id": project_id})
+            n = getattr(res, "deleted_count", 0) or 0
+            if n:
+                report[coll] = n
+        except Exception as e:
+            logger.error(f"[hard_delete] {coll} delete failed: {e!r}")
+
+    # ── LANDMINE 1: workers are NOT project-scoped — one worker spans many
+    # projects. Their check-ins are already gone above; here we only detach
+    # this project's orientation entry and KEEP the worker document.
+    worker_res = await db.workers.update_many(
+        {"safety_orientations.project_id": project_id},
+        {"$pull": {"safety_orientations": {"project_id": project_id}}},
+    )
+    report["workers_orientations_pulled"] = (
+        getattr(worker_res, "modified_count", 0) or 0
+    )
+
+    # ── User references.
+    user_res = await db.users.update_many(
+        {"assigned_projects": project_id},
+        {"$pull": {"assigned_projects": project_id}},
+    )
+    report["users_unassigned"] = getattr(user_res, "modified_count", 0) or 0
+
+    # ── system_config: four per-project key families, two with unbounded
+    # suffixes. Anchored on the escaped id so a project whose id is a
+    # substring of another's is never caught.
+    pid_re = re.escape(project_id)
+    try:
+        cfg_res = await db.system_config.delete_many({"$or": [
+            {"key": f"dob_sync_last:{project_id}"},
+            {"key": {"$regex": f"^initial_scan_done:.*:{pid_re}$"}},
+            {"key": {"$regex": f"^dob_alert_sent:{pid_re}:"}},
+            {"key": {"$regex": f"^daily_report:{pid_re}:"}},
+        ]})
+        report["system_config"] = getattr(cfg_res, "deleted_count", 0) or 0
+    except Exception as e:
+        logger.error(f"[hard_delete] system_config sweep failed: {e!r}")
+
+    # ── Background work. NOTE: prediction_resolution_check:{pid} and
+    # predict_inspection:{pid}:* are asyncio TASK names (asyncio.create_task
+    # name=...), not APScheduler jobs — they are transient and die on their
+    # own. Cancel any still in flight; there is nothing persistent to remove.
+    cancelled = 0
+    try:
+        for task in asyncio.all_tasks():
+            nm = task.get_name() or ""
+            if nm.startswith(f"prediction_resolution_check:{project_id}") or \
+               nm.startswith(f"predict_inspection:{project_id}:"):
+                task.cancel()
+                cancelled += 1
+    except Exception as e:
+        logger.warning(f"[hard_delete] task cancel sweep failed: {e!r}")
+    report["tasks_cancelled"] = cancelled
+
+    # ── The project's own audit trail (owner's explicit choice: nothing
+    # remains). Done before the final audit_log write so this purge itself
+    # is still recorded.
+    try:
+        al_res = await db.audit_logs.delete_many({
+            "resource_type": "project", "resource_id": project_id,
+        })
+        report["audit_logs"] = getattr(al_res, "deleted_count", 0) or 0
+    except Exception as e:
+        logger.error(f"[hard_delete] audit_logs sweep failed: {e!r}")
+
+    # ── The project document itself.
+    await db.projects.delete_one({"_id": to_query_id(project_id)})
+
+    logger.warning(
+        f"🔥 HARD DELETE project {project_id} ({project.get('name')}) "
+        f"by owner {owner_id}: {report}"
+    )
+    await audit_log("project_hard_delete", owner_id, "project_purged", project_id, {
+        "name": project.get("name"), "deleted": report,
+    })
+
+    return {
+        "message": "Project permanently deleted",
+        "project_id": project_id,
+        "deleted": report,
+    }
 
 # ==================== PROJECT NFC TAGS ====================
 
@@ -12431,7 +12734,7 @@ async def dropbox_webhook_notify(request: Request):
             projects = await db.projects.find({
                 "company_id": cid,
                 "dropbox_folder_path": {"$exists": True, "$ne": ""},
-                "is_deleted": {"$ne": True},
+                **ACTIVE_PROJECT_FILTER,
             }).to_list(500)
 
             for proj in projects:
@@ -15494,7 +15797,7 @@ async def _poll_311_fast_complaints() -> None:
         projects = await db.projects.find({
             "track_dob_status": True,
             "nyc_bin":          {"$exists": True, "$ne": ""},
-            "is_deleted":       {"$ne": True},
+            **ACTIVE_PROJECT_FILTER,
         }).to_list(500)
     except Exception as e:
         logger.error(f"311 poll: project lookup failed: {e}")
@@ -16922,7 +17225,7 @@ async def nightly_compliance_check():
         today = now.strftime("%Y-%m-%d")
 
         projects = await db.projects.find({
-            "status": "active", "is_deleted": {"$ne": True}
+            "status": "active", **ACTIVE_PROJECT_FILTER
         }).to_list(500)
 
         for project in projects:
@@ -17054,7 +17357,7 @@ async def nightly_dob_scan():
             {"nyc_bin": {"$ne": None, "$exists": True}},
             {"address": {"$ne": None, "$ne": "", "$exists": True}},
         ],
-        "is_deleted": {"$ne": True},
+        **ACTIVE_PROJECT_FILTER,
     }).to_list(500)
  
     if not projects:
@@ -17865,9 +18168,10 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
     import traceback as _tb
     try:
+        # A marked project must stop syncing DOB entirely.
         project = await db.projects.find_one({
             "_id": to_query_id(project_id),
-            "is_deleted": {"$ne": True},
+            **ACTIVE_PROJECT_FILTER,
         })
         if not project:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -17943,7 +18247,7 @@ async def check_and_send_reports():
     projects_due = await db.projects.find({
         "report_send_time": current_time,
         "report_email_list": {"$exists": True, "$ne": []},
-        "is_deleted": {"$ne": True},
+        **ACTIVE_PROJECT_FILTER,
     }).to_list(100)
 
     if not projects_due:
