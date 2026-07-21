@@ -77,6 +77,14 @@ const TRANSLATIONS = {
     checkedInAt: 'Checked in',
     refresh: 'Refresh',
     close: 'Close',
+    assignTrade: 'Assign trade',
+    chooseTrade: 'Choose a trade & company',
+    assign: 'Assign',
+    cancel: 'Cancel',
+    assigned: 'Trade assigned',
+    assignedToast: 'Trade assigned to this check-in',
+    assignFailed: 'Could not assign the trade',
+    noRoster: 'This project has no trades configured yet — an admin must add them first.',
   },
   es: {
     title: 'Revisión de Registros',
@@ -103,6 +111,14 @@ const TRANSLATIONS = {
     checkedInAt: 'Registrado',
     refresh: 'Actualizar',
     close: 'Cerrar',
+    assignTrade: 'Asignar oficio',
+    chooseTrade: 'Elija un oficio y empresa',
+    assign: 'Asignar',
+    cancel: 'Cancelar',
+    assigned: 'Oficio asignado',
+    assignedToast: 'Oficio asignado a este registro',
+    assignFailed: 'No se pudo asignar el oficio',
+    noRoster: 'Este proyecto aún no tiene oficios configurados — un administrador debe agregarlos primero.',
   },
 };
 
@@ -126,6 +142,10 @@ export default function CheckInReviewScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [actingId, setActingId] = useState(null);
   const [zoomImage, setZoomImage] = useState(null);
+  // Project's configured trade roster, returned alongside the flagged list.
+  const [roster, setRoster] = useState([]);
+  // Which row currently has its trade picker open.
+  const [assignPickerId, setAssignPickerId] = useState(null);
 
   const s = useMemo(() => buildStyles(colors), [colors]);
 
@@ -164,9 +184,11 @@ export default function CheckInReviewScreen() {
     try {
       const data = await checkinsAPI.getFlagged(projectId);
       setItems(data?.items || []);
+      setRoster(data?.trade_assignments || []);
     } catch (e) {
       toast.error(t('loadError'), e?.response?.data?.detail || '');
       setItems([]);
+      setRoster([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -201,6 +223,40 @@ export default function CheckInReviewScreen() {
       );
     } catch (e) {
       toast.error(t('reviewFailed'), e?.response?.data?.detail || '');
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // Assign a roster trade/company to a check-in that arrived without one.
+  // The backend re-validates the pair against the project roster and clears
+  // needs_trade_assignment.
+  const handleAssign = async (item, assignment) => {
+    const id = item._id || item.id;
+    if (!id || !assignment) return;
+    setActingId(id);
+    try {
+      const res = await checkinsAPI.assignTrade(
+        id, assignment.trade, assignment.company,
+      );
+      setItems((prev) => prev.map((c) =>
+        (c._id || c.id) === id
+          ? {
+              ...c,
+              worker_trade: res.trade,
+              worker_company: res.company,
+              needs_trade_assignment: false,
+              flag_reasons: (c.flag_reasons || [])
+                .filter((r) => r !== 'needs_trade'),
+              trade_assigned_by_name: res.trade_assigned_by_name,
+              trade_assigned_at: res.trade_assigned_at,
+            }
+          : c,
+      ));
+      setAssignPickerId(null);
+      toast.success(t('assigned'), t('assignedToast'));
+    } catch (e) {
+      toast.error(t('assignFailed'), e?.response?.data?.detail || '');
     } finally {
       setActingId(null);
     }
@@ -317,13 +373,61 @@ export default function CheckInReviewScreen() {
                     </View>
                   )}
                   {needsTrade && (
-                    <View style={[s.reasonRow, s.reasonTrade]}>
-                      <Briefcase size={14} color="#93c5fd" />
-                      <View style={{ flex: 1 }}>
-                        <Text style={s.reasonTextBlue}>{t('needsTrade')}</Text>
-                        <Text style={s.reasonHint}>{t('needsTradeHint')}</Text>
+                    <View>
+                      <View style={[s.reasonRow, s.reasonTrade]}>
+                        <Briefcase size={14} color="#93c5fd" />
+                        <View style={{ flex: 1 }}>
+                          <Text style={s.reasonTextBlue}>{t('needsTrade')}</Text>
+                          <Text style={s.reasonHint}>{t('needsTradeHint')}</Text>
+                        </View>
                       </View>
+
+                      {roster.length === 0 ? (
+                        <Text style={s.reasonHint}>{t('noRoster')}</Text>
+                      ) : assignPickerId === id ? (
+                        <View style={s.assignBox}>
+                          <Text style={s.assignPrompt}>{t('chooseTrade')}</Text>
+                          {roster.map((a, i) => (
+                            <Pressable
+                              key={`${a.trade}-${a.company}-${i}`}
+                              onPress={() => handleAssign(item, a)}
+                              disabled={busy}
+                              style={[s.rosterOption, busy && s.btnBusy]}
+                            >
+                              <Text style={s.rosterText}>
+                                {a.trade} — {a.company}
+                              </Text>
+                            </Pressable>
+                          ))}
+                          <Pressable
+                            onPress={() => setAssignPickerId(null)}
+                            style={s.cancelBtn}
+                          >
+                            <Text style={s.cancelText}>{t('cancel')}</Text>
+                          </Pressable>
+                        </View>
+                      ) : (
+                        <Pressable
+                          onPress={() => setAssignPickerId(id)}
+                          disabled={busy}
+                          style={[s.actionBtn, s.assignBtn, busy && s.btnBusy]}
+                        >
+                          <Briefcase size={15} strokeWidth={2} color="#93c5fd" />
+                          <Text style={[s.actionText, s.assignText]}>
+                            {t('assignTrade')}
+                          </Text>
+                        </Pressable>
+                      )}
                     </View>
+                  )}
+
+                  {/* Trade just assigned — show the outcome + attribution. */}
+                  {!needsTrade && item.trade_assigned_at && (
+                    <Text style={s.reviewedText}>
+                      {t('assigned')}: {item.worker_trade} — {item.worker_company}
+                      {item.trade_assigned_by_name
+                        ? ` ${t('by')} ${item.trade_assigned_by_name}` : ''}
+                    </Text>
                   )}
 
                   {/* Card image for the decision */}
@@ -482,6 +586,29 @@ function buildStyles(colors) {
     actionText: { fontSize: 13, fontWeight: '600' },
     approveText: { color: '#4ade80' },
     sendHomeText: { color: '#f87171' },
+    assignBtn: {
+      marginTop: spacing.sm,
+      borderColor: 'rgba(147,197,253,0.4)',
+      backgroundColor: 'rgba(59,130,246,0.08)',
+    },
+    assignText: { color: '#93c5fd' },
+    assignBox: {
+      marginTop: spacing.sm, padding: spacing.sm,
+      borderRadius: borderRadius.lg, borderWidth: 1,
+      borderColor: 'rgba(147,197,253,0.3)',
+      gap: spacing.xs,
+    },
+    assignPrompt: {
+      fontSize: 12, color: colors.text.muted, marginBottom: 2,
+    },
+    rosterOption: {
+      paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+      borderRadius: borderRadius.lg,
+      backgroundColor: 'rgba(255,255,255,0.05)',
+    },
+    rosterText: { fontSize: 14, color: colors.text.primary },
+    cancelBtn: { paddingVertical: spacing.xs, alignItems: 'center' },
+    cancelText: { fontSize: 13, color: colors.text.muted },
     modalBackdrop: {
       flex: 1, backgroundColor: 'rgba(0,0,0,0.9)',
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,

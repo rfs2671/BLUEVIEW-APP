@@ -414,6 +414,17 @@ export const checkinsAPI = {
     return response.data;
   },
 
+  // POST /api/checkins/{id}/assign-trade — assign a trade/company to a
+  // check-in that arrived without one and clear needs_trade_assignment.
+  // The pair must exist on the project's roster; attribution is server-derived.
+  assignTrade: async (checkinId, trade, company) => {
+    const response = await apiClient.post(
+      `/api/checkins/${checkinId}/assign-trade`,
+      { trade, company },
+    );
+    return response.data;
+  },
+
   // POST /api/checkins/{id}/review — record an admin/CP decision on a flagged
   // (e.g. expired-SST) check-in. decision: "approved" | "sent_home".
   // Attribution (reviewed_by) is derived server-side from the auth token —
