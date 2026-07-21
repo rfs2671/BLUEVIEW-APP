@@ -99,7 +99,7 @@ select option{background:#1e293b;color:#f1f5f9}
 .camera-zone .cam-text{font-size:16px;color:var(--text2)}
 .camera-zone .cam-hint{font-size:14px;color:var(--text3);margin-top:6px}
 .camera-zone img{max-width:100%;max-height:220px;border-radius:8px;margin-top:8px}
-#fileInput{display:none}
+#fileInput,#selfieInput{display:none}
 
 /* OCR result */
 .ocr-fields{display:grid;gap:12px}
@@ -249,9 +249,18 @@ select option{background:#1e293b;color:#f1f5f9}
           <div class="cam-hint" data-i18n="camHint">or choose from gallery</div>
         </div>
         <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
+
+        <!-- Selfie capture (mirrors the card capture; front camera). Stored
+             for later human spot-check only — NO face match / liveness / gate. -->
+        <div class="camera-zone" id="selfieZone" onclick="document.getElementById('selfieInput').click()" style="margin-top:14px">
+          <span class="cam-icon">🤳</span>
+          <div class="cam-text" data-i18n="selfieText">Tap to take a selfie</div>
+          <div class="cam-hint" data-i18n="selfieHint">Optional — used for site verification only</div>
+        </div>
+        <input type="file" id="selfieInput" accept="image/*" capture="user" onchange="handleSelfiePhoto(this)">
+
         <div id="ocrResults" class="hidden" style="margin-top:16px">
-          <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned successfully</div>
-          <div class="ocr-fields" id="ocrFields"></div>
+          <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned — review &amp; correct below</div>
         </div>
         <div style="margin-top:16px">
           <div class="input-group">
@@ -261,6 +270,18 @@ select option{background:#1e293b;color:#f1f5f9}
           <div class="input-group">
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
+            <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="issuedLabel">Issued Date</div>
+            <input type="text" id="regIssued" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="expirationLabel">Expiration Date</div>
+            <input type="text" id="regExpiration" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
           </div>
         </div>
         <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled data-i18n="nextCompany">Next: Select Company</button>
@@ -381,6 +402,12 @@ const TRANSLATIONS = {
     oshaDesc: "Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.",
     camText: 'Tap to take photo',
     camHint: 'or choose from gallery',
+    selfieText: 'Tap to take a selfie',
+    selfieHint: 'Optional — used for site verification only',
+    cardNumberLabel: 'Card / SST Number',
+    cardNumberPlaceholder: 'Card number',
+    issuedLabel: 'Issued Date',
+    expirationLabel: 'Expiration Date',
     nextCompany: 'Next: Select Trade & Company',
     companyTitle: '🏗️ Select Your Trade & Company',
     companyDesc: 'Choose your trade and the company you work for on this project. Only trades your site admin has assigned to this project appear below.',
@@ -419,6 +446,12 @@ const TRANSLATIONS = {
     oshaDesc: 'Tome una foto de su tarjeta OSHA-10/30 o SST. La leeremos automáticamente.',
     camText: 'Toque para tomar foto',
     camHint: 'o elija de la galería',
+    selfieText: 'Toque para tomar una selfie',
+    selfieHint: 'Opcional — solo para verificación en el sitio',
+    cardNumberLabel: 'Número de Tarjeta / SST',
+    cardNumberPlaceholder: 'Número de tarjeta',
+    issuedLabel: 'Fecha de Emisión',
+    expirationLabel: 'Fecha de Vencimiento',
     nextCompany: 'Siguiente: Oficio y Empresa',
     companyTitle: '🏗️ Seleccione Su Oficio y Empresa',
     companyDesc: 'Elija su oficio y la empresa para la que trabaja en este proyecto. Solo aparecen los oficios que su administrador ha asignado a este proyecto.',
@@ -512,6 +545,7 @@ let siteInfo = null;
 let companies = [];
 let oshaImage = null;
 let oshaData = null;
+let selfieImage = null;  // base64 selfie, stored inline for spot-check only
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
@@ -845,29 +879,36 @@ async function handleOshaPhoto(input) {
   reader.readAsDataURL(file);
 }
 
+// ==================== SELFIE PHOTO ====================
+// Mirrors handleOshaPhoto exactly, but front camera (capture="user") and NO
+// OCR. The selfie is compressed and held as base64, sent as selfie_image on
+// register-and-checkin, and stored inline for later human spot-check only.
+// It is optional: a missing selfie never blocks the check-in.
+async function handleSelfiePhoto(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const compressed = await compressImage(e.target.result, 1200, 0.7);
+    selfieImage = compressed;
+    const zone = document.getElementById('selfieZone');
+    zone.innerHTML = '<img src="' + compressed + '" alt="Selfie">';
+  };
+  reader.readAsDataURL(file);
+}
+
 function showOcrResults(data) {
-  const container = document.getElementById('ocrFields');
-  container.innerHTML = '';
-  
-  const fields = [
-    { key: 'name', label: 'Name' },
-    { key: 'sst_number', label: 'Card ID #' },
-    { key: 'issued', label: 'Issued' },
-    { key: 'expiration', label: 'Expiration' },
-  ];
-
-  fields.forEach(f => {
-    const val = data[f.key];
-    const div = document.createElement('div');
-    div.className = 'ocr-field';
-    div.innerHTML = '<div class="label">' + f.label + '</div><div class="value ' + (val ? '' : 'empty') + '">' + (val || 'Not detected') + '</div>';
-    container.appendChild(div);
-  });
-
+  // Show the "scanned" banner, then PRE-FILL editable inputs from OCR so the
+  // worker/admin can correct any misread field. These are plain inputs (not
+  // read-only display cards) and their values — not the raw OCR blob — are
+  // what get sent on submit, so corrections flow through to the cert logic.
   document.getElementById('ocrResults').classList.remove('hidden');
-  
-  // Auto-fill name from OCR (trade is NOT on card)
+
   if (data.name) document.getElementById('regName').value = data.name;
+  if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
+  if (data.issued) document.getElementById('regIssued').value = data.issued;
+  if (data.expiration) document.getElementById('regExpiration').value = data.expiration;
 }
 
 // ==================== TRADE & COMPANY (STRICT ROSTER) ====================
@@ -997,7 +1038,19 @@ async function submitRegistration() {
   const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
   const trade = assignment ? assignment.trade : '';
   const company = assignment ? assignment.company : '';
-  const oshaNumber = oshaData?.sst_number || '';
+
+  // Read the (possibly corrected) editable OCR fields. These override the raw
+  // OCR blob so a worker/admin correction — especially expiration, which the
+  // backend parses into the SST cert — actually flows through to register-and-checkin.
+  const cardNumber = document.getElementById('regCardNumber').value.trim();
+  const issued = document.getElementById('regIssued').value.trim();
+  const expiration = document.getElementById('regExpiration').value.trim();
+  const oshaNumber = cardNumber || oshaData?.sst_number || '';
+  const correctedOshaData = Object.assign({}, oshaData || {}, {
+    sst_number: cardNumber || (oshaData ? oshaData.sst_number : null) || null,
+    issued: issued || (oshaData ? oshaData.issued : null) || null,
+    expiration: expiration || (oshaData ? oshaData.expiration : null) || null,
+  });
 
   if (!name) { showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name'); return; }
   if (!assignment) { showError(currentLang === 'es' ? 'Seleccione su oficio y empresa' : 'Please select your trade and company'); return; }
@@ -1022,7 +1075,8 @@ async function submitRegistration() {
       trade: trade,
       company: company,
       osha_card_image: oshaImage,
-      osha_data: oshaData,
+      selfie_image: selfieImage,
+      osha_data: correctedOshaData,
       osha_number: oshaNumber,
       safety_orientation: orientation,
       signature: signatureData,
