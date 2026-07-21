@@ -9189,6 +9189,128 @@ async def get_flagged_project_checkins(
     }
 
 
+@api_router.post("/checkins/{checkin_id}/assign-trade")
+async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depends(get_current_user)):
+    """Assign a trade/company to a check-in that arrived without one, and
+    clear its needs_trade_assignment flag.
+
+    Closes the loop opened when a worker checks in on a project that has no
+    trade_assignments configured: previously the flag was raised and the CP
+    was notified, but NOTHING could clear it — there was no endpoint to set a
+    trade on a check-in, and the project trade-roster screen is admin-only.
+
+    Mirrors review_checkin: same per-project authorization helper, attribution
+    derived SERVER-SIDE from current_user, and an audit_log entry.
+
+    The submitted {trade, company} must be one of the project's configured
+    trade_assignments — the same strict-roster rule the check-in itself
+    enforces, so this cannot introduce a pair the roster doesn't know.
+
+    The worker document is updated too (so their next check-in prefills
+    correctly), but only when it has no trade yet — an assignment on one
+    project must not silently overwrite a trade set elsewhere.
+    """
+    trade = str((data or {}).get("trade") or "").strip()
+    company = str((data or {}).get("company") or "").strip()
+    if not trade or not company:
+        raise HTTPException(
+            status_code=400, detail="trade and company are required",
+        )
+
+    checkin = await db.checkins.find_one({
+        "_id": to_query_id(checkin_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not checkin:
+        raise HTTPException(status_code=404, detail="Check-in record not found")
+
+    project_id_str = str(checkin.get("project_id") or "")
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id_str),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if not user_can_act_on_project(project, project_id_str, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to assign a trade on this check-in",
+        )
+
+    # Strict roster: the pair must exist on the project now that the admin has
+    # configured trades. Prevents the assign action from becoming a back door
+    # around the same validation register_and_checkin applies.
+    allowed_pairs = set()
+    for row in (project.get("trade_assignments") or []):
+        if not isinstance(row, dict):
+            continue
+        rt = str(row.get("trade") or "").strip()
+        rc = str(row.get("company") or "").strip()
+        if rt and rc:
+            allowed_pairs.add((rt, rc))
+    if not allowed_pairs:
+        raise HTTPException(
+            status_code=409,
+            detail="This project has no trades configured yet. Add trades to the project first.",
+        )
+    if (trade, company) not in allowed_pairs:
+        raise HTTPException(
+            status_code=400,
+            detail="Selected trade and company are not assigned to this project.",
+        )
+
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    assigner_name = (
+        current_user.get("full_name")
+        or current_user.get("name")
+        or current_user.get("email")
+        or ""
+    )
+    now = datetime.now(timezone.utc)
+
+    await db.checkins.update_one(
+        {"_id": to_query_id(checkin_id)},
+        {"$set": {
+            "trade": trade,
+            "company": company,
+            "worker_trade": trade,
+            "worker_company": company,
+            "needs_trade_assignment": False,
+            "trade_assigned_by": user_id,
+            "trade_assigned_by_name": assigner_name,
+            "trade_assigned_at": now,
+            "updated_at": now,
+        }},
+    )
+
+    # Keep the worker doc in step, but never clobber an existing trade.
+    worker_id = checkin.get("worker_id")
+    if worker_id:
+        worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
+        if worker and not (worker.get("trade") or "").strip():
+            await db.workers.update_one(
+                {"_id": to_query_id(worker_id)},
+                {"$set": {"trade": trade, "updated_at": now}},
+            )
+
+    await audit_log(
+        "checkin_assign_trade", user_id, "checkin", checkin_id,
+        {"trade": trade, "company": company},
+    )
+
+    return {
+        "success": True,
+        "checkin_id": checkin_id,
+        "trade": trade,
+        "company": company,
+        "needs_trade_assignment": False,
+        "trade_assigned_by": user_id,
+        "trade_assigned_by_name": assigner_name,
+        "trade_assigned_at": now.isoformat(),
+    }
+
+
 @api_router.post("/checkins/{checkin_id}/review")
 async def review_checkin(checkin_id: str, data: dict, current_user = Depends(get_current_user)):
     """Record an admin/CP decision on a flagged (e.g. expired-SST) check-in.

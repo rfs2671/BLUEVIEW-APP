@@ -234,13 +234,24 @@ class FlaggedEndpointTest(unittest.TestCase):
 class SharedAuthHelperTest(unittest.TestCase):
     """review_checkin and the flagged list must share one auth rule."""
 
-    def test_helper_used_by_both(self):
+    def test_helper_used_by_every_per_project_endpoint(self):
+        """Every per-project check-in endpoint must go through the one shared
+        auth helper rather than re-implementing the rule."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         self.assertIn("def user_can_act_on_project", src)
-        self.assertEqual(
-            src.count("user_can_act_on_project("), 3,
-            "expected the helper definition plus two call sites",
+        # Definition + one call site per per-project endpoint (flagged,
+        # review, assign-trade). Grows as endpoints are added; must never
+        # shrink back to inline copies.
+        call_sites = src.count("user_can_act_on_project(") - 1
+        self.assertGreaterEqual(
+            call_sites, 3,
+            f"expected >=3 call sites, found {call_sites}",
         )
+        # And no endpoint should re-inline the rule.
+        self.assertNotIn("is_company_admin = (", src.replace(
+            src[src.index("def user_can_act_on_project"):
+                src.index("def user_can_act_on_project") + 900], "",
+        ), "per-project auth rule re-inlined outside the helper")
 
     def test_helper_logic(self):
         proj = {"company_id": "co_a"}
