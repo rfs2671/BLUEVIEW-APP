@@ -8061,9 +8061,21 @@ async def register_and_checkin(data: dict):
     # found, just create the OSHA_10. Also: accept any uploaded card
     # image as a best-effort OSHA signal even if OCR couldn't pull the
     # number — better than silently blocking the worker for an OCR fail.
-    worker_certs = worker.get("certifications", [])
-    has_existing_osha = any(c.get("type", "").startswith("OSHA") for c in worker_certs)
-    has_existing_sst = any(c.get("type", "").startswith("SST") for c in worker_certs)
+    # Snapshot the ORIGINAL cert list BEFORE appending. The previous code did
+    # `worker_certs = worker.get("certifications", [])`, which ALIASES the very
+    # list it then appends to — so the change-guard below compared that list to
+    # itself, was always equal, and the update_one NEVER fired. Result:
+    # db.workers.certifications stayed [] forever (new AND returning workers)
+    # and the certs were rebuilt from OCR on every single check-in. Copying the
+    # list makes the comparison real so the certs actually persist.
+    existing_certs = list(worker.get("certifications") or [])
+    worker_certs = list(existing_certs)
+    has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
+    has_existing_sst = any(str(c.get("type", "")).startswith("SST") for c in worker_certs)
+
+    # Set when the card carried an expiration string we could not parse. Feeds
+    # the sst_status snapshot written onto the check-in row below.
+    sst_expiration_unparseable = False
 
     if not has_existing_osha and (osha_number or osha_card_image):
         course_str = str(osha_data.get("course", "") if osha_data else "")
@@ -8092,9 +8104,9 @@ async def register_and_checkin(data: dict):
                 "ocr_confidence": osha_data.get("confidence") if osha_data else None,
             })
         except (ValueError, TypeError):
-            pass
+            sst_expiration_unparseable = True
 
-    if len(worker_certs) != len(worker.get("certifications", [])):
+    if len(worker_certs) != len(existing_certs):
         await db.workers.update_one(
             {"_id": worker["_id"]},
             {"$set": {"certifications": worker_certs, "updated_at": now}}
@@ -8113,6 +8125,34 @@ async def register_and_checkin(data: dict):
             "message": "Registration saved but check-in denied — missing certifications.",
         }
     cert_warnings = cert_result.get("warnings", [])
+
+    # ── Cert-validity snapshot (FROZEN onto the immutable check-in row) ──
+    # The worker doc's osha_data.expiration is a mutable raw OCR string that is
+    # overwritten on every visit, so it can never prove what was true on a
+    # given date. These four fields freeze the cert verdict AS OF this
+    # check-in, making "did worker X hold a valid SST on date Y" a single query
+    # against `checkins`. Written once at insert; never updated afterwards.
+    _warning_types = {w.get("type") for w in cert_warnings}
+    _block_types = {b.get("type") for b in (cert_result.get("blocks") or [])}
+    _sst_cert = next(
+        (c for c in worker_certs if str(c.get("type", "")).startswith("SST")),
+        None,
+    )
+    # Parsed date (datetime), NOT the raw OCR string.
+    sst_expiration = _sst_cert.get("expiration_date") if _sst_cert else None
+    sst_card_number = (
+        (_sst_cert.get("card_number") if _sst_cert else None) or osha_number or None
+    )
+    if "EXPIRED_SST" in _warning_types or "EXPIRED_SST" in _block_types:
+        sst_status = "expired"
+    elif "CERT_EXPIRING_SOON" in _warning_types:
+        sst_status = "expiring_soon"
+    elif _sst_cert is None:
+        sst_status = "unparseable" if sst_expiration_unparseable else "missing"
+    elif sst_expiration is None:
+        sst_status = "unparseable"
+    else:
+        sst_status = "valid"
 
     checkin_record = {
         "worker_id": str(worker["_id"]),
@@ -8135,8 +8175,14 @@ async def register_and_checkin(data: dict):
         "updated_at": now,
         "is_deleted": False,
         "cert_warnings": cert_warnings,
+        # Frozen cert-validity snapshot (see comment above) — the durable
+        # per-check-in compliance artifact. Never overwritten.
+        "sst_card_number": sst_card_number,
+        "sst_expiration": sst_expiration,
+        "sst_status": sst_status,
+        "cert_cleared": bool(cert_result.get("cleared")),
     }
-    
+
     result = await db.checkins.insert_one(checkin_record)
 
     # ── Relaxed EXPIRED_SST handling (flag-but-allow) ──
@@ -8181,7 +8227,19 @@ async def register_and_checkin(data: dict):
                 ),
                 source_kind="checkin",
                 source_id=f"{str(worker['_id'])}:{est_today}",
-                deeplink_anchor="workforce",
+                # Point the notification at THIS check-in so an admin/CP taps
+                # through to the check-in detail screen and can record an
+                # Approve / Send-home decision there. The inbox itself stays
+                # display-only — the buttons live on the detail screen.
+                deeplink_anchor=f"checkin-{str(result.inserted_id)}",
+                metadata={
+                    "checkin_id": str(result.inserted_id),
+                    "worker_id": str(worker["_id"]),
+                    "sst_status": sst_status,
+                    "sst_expiration": (
+                        sst_expiration.isoformat() if sst_expiration else None
+                    ),
+                },
             )
         except Exception as e:
             logger.warning(f"[expired_sst] dispatch_notification failed: {e!r}")
@@ -8873,6 +8931,93 @@ async def check_out_worker(checkin_id: str, current_user = Depends(get_current_u
     await audit_log("checkout", str(current_user.get("_id", "")), "checkin", checkin_id)
 
     return {"message": "Check-out successful"}
+
+@api_router.post("/checkins/{checkin_id}/review")
+async def review_checkin(checkin_id: str, data: dict, current_user = Depends(get_current_user)):
+    """Record an admin/CP decision on a flagged (e.g. expired-SST) check-in.
+
+    Mirrors the checkout endpoint above: mutate the check-in row, then write an
+    audit_log entry. Attribution is SERVER-DERIVED from current_user — the
+    client cannot supply reviewed_by.
+
+    "sent_home" RECORDS the decision only: no worker notification and no
+    must-leave enforcement (product decision — logging only).
+
+    Re-review is allowed: the latest decision overwrites the fields on the row,
+    while audit_logs preserves the full history of every decision.
+    """
+    decision = str((data or {}).get("decision") or "").strip()
+    if decision not in ("approved", "sent_home"):
+        raise HTTPException(
+            status_code=400,
+            detail="decision must be 'approved' or 'sent_home'",
+        )
+
+    checkin = await db.checkins.find_one({
+        "_id": to_query_id(checkin_id),
+        "is_deleted": {"$ne": True},
+    })
+    if not checkin:
+        raise HTTPException(status_code=404, detail="Check-in record not found")
+
+    project_id_str = str(checkin.get("project_id") or "")
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id_str),
+        "is_deleted": {"$ne": True},
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Authorization — composed from the two existing idioms, because there is
+    # no ready-made per-project write guard:
+    #   • admin/owner scoped to the project's company (the company-scope check
+    #     used by the reports endpoints), OR
+    #   • a user assigned to this project (the CP write-gate in update_logbook).
+    # This mirrors how the expired-SST notification picks its recipients.
+    role = current_user.get("role")
+    assigned_projects = current_user.get("assigned_projects", []) or []
+    is_company_admin = (
+        role in ("admin", "owner")
+        and project.get("company_id") == current_user.get("company_id")
+    )
+    is_assigned = project_id_str in assigned_projects
+    if not (is_company_admin or is_assigned):
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to review this check-in",
+        )
+
+    user_id = str(current_user.get("_id") or current_user.get("id") or "")
+    reviewer_name = (
+        current_user.get("full_name")
+        or current_user.get("name")
+        or current_user.get("email")
+        or ""
+    )
+    now = datetime.now(timezone.utc)
+    await db.checkins.update_one(
+        {"_id": to_query_id(checkin_id)},
+        {"$set": {
+            "review_decision": decision,
+            "reviewed_by": user_id,
+            "reviewed_by_name": reviewer_name,
+            "reviewed_at": now,
+            "updated_at": now,
+        }},
+    )
+
+    await audit_log(
+        "checkin_review", user_id, "checkin", checkin_id, {"decision": decision},
+    )
+
+    return {
+        "success": True,
+        "checkin_id": checkin_id,
+        "review_decision": decision,
+        "reviewed_by": user_id,
+        "reviewed_by_name": reviewer_name,
+        "reviewed_at": now.isoformat(),
+    }
 
 @api_router.get("/checkins/project/{project_id}")
 async def get_project_checkins(
