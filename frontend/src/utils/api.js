@@ -403,6 +403,18 @@ export const checkinsAPI = {
     const response = await apiClient.post(`/api/checkins/${checkinId}/checkout`);
     return response.data;
   },
+
+  // POST /api/checkins/{id}/review — record an admin/CP decision on a flagged
+  // (e.g. expired-SST) check-in. decision: "approved" | "sent_home".
+  // Attribution (reviewed_by) is derived server-side from the auth token —
+  // it is never sent by the client.
+  review: async (checkinId, decision) => {
+    const response = await apiClient.post(
+      `/api/checkins/${checkinId}/review`,
+      { decision },
+    );
+    return response.data;
+  },
 };
 
 /**
