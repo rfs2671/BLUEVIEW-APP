@@ -169,6 +169,24 @@ select option{background:#1e293b;color:#f1f5f9}
 /* Phone input for returning */
 .phone-entry{margin:20px 0}
 
+/* Manual card entry fallback */
+.manual-link{
+  margin-top:14px;text-align:center;font-size:15px;color:var(--blue);
+  text-decoration:underline;cursor:pointer;padding:10px;
+}
+.manual-link:active{color:#60a5fa}
+.manual-note{
+  margin-bottom:12px;padding:10px 12px;border-radius:var(--radius-sm);
+  background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.35);
+  color:#93c5fd;font-size:14px;line-height:1.5;
+}
+/* No-trades notice (worker still proceeds) */
+.info-note{
+  padding:12px 14px;border-radius:var(--radius-sm);
+  background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.35);
+  color:#93c5fd;font-size:14px;line-height:1.5;margin-top:4px;
+}
+
 /* Hide sections */
 .hidden{display:none!important}
 </style>
@@ -249,6 +267,12 @@ select option{background:#1e293b;color:#f1f5f9}
           <div class="cam-hint" data-i18n="camHint">or choose from gallery</div>
         </div>
         <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
+
+        <!-- FIX 2: manual fallback. The photo above stays the primary path;
+             this affordance lets a worker with no camera / a damaged card
+             still complete check-in. Never a dead-end. -->
+        <div class="manual-link" id="manualEntryLink" onclick="chooseManualEntry()" data-i18n="manualEntryLink">Can't photograph the card? Enter the details manually</div>
+
         <div id="ocrResults" class="hidden" style="margin-top:16px">
           <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned successfully</div>
           <div class="ocr-fields" id="ocrFields"></div>
@@ -261,6 +285,17 @@ select option{background:#1e293b;color:#f1f5f9}
           <div class="input-group">
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
+          </div>
+          <div id="manualCardFields" class="hidden">
+            <div class="manual-note" data-i18n="manualEntryNote">Enter what you can read from your card. A photo is not required.</div>
+            <div class="input-group">
+              <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
+              <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off">
+            </div>
+            <div class="input-group">
+              <div class="input-label" data-i18n="expirationLabel">Expiration Date</div>
+              <input type="text" id="regExpiration" data-i18n-placeholder="datePlaceholder" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
+            </div>
           </div>
         </div>
         <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled data-i18n="nextCompany">Next: Select Company</button>
@@ -278,8 +313,10 @@ select option{background:#1e293b;color:#f1f5f9}
             <option value="" data-i18n="tradeCompanyLoading">Loading trades...</option>
           </select>
         </div>
-        <div id="noAssignmentsMsg" class="hidden" style="padding:10px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;color:#fbbf24;font-size:14px;margin-top:4px">
-          <span data-i18n="noAssignments">This project has no trades configured yet. Ask your site admin to add trades and companies in the project settings.</span>
+        <!-- FIX 1: when no trades are configured the worker is NOT blocked —
+             they continue and the check-in is flagged for the CP. -->
+        <div id="noAssignmentsMsg" class="hidden info-note">
+          <span data-i18n="noTradesProceed">No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.</span>
         </div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn btn-outline" onclick="goStep(1)" style="flex:1" data-i18n="back">Back</button>
@@ -404,6 +441,55 @@ const TRANSLATIONS = {
     sigTitle: '✍️ Signature',
     sigDesc: 'By signing below, I confirm that I have reviewed and understand all safety orientation items above.',
     clearSig: 'Clear',
+    // ── FIX 1: no trades configured — proceed and flag, never block ──
+    noTradesProceed: 'No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.',
+    tradePendingNote: 'Your trade will be assigned by your CP.',
+    // ── FIX 2: manual card entry (no photo required) ──
+    manualEntryLink: "Can't photograph the card? Enter the details manually",
+    manualEntryTitle: 'Card Details (Manual Entry)',
+    manualEntryNote: 'Enter what you can read from your card. A photo is not required.',
+    cardNumberLabel: 'Card / SST Number',
+    cardNumberPlaceholder: 'Card number',
+    expirationLabel: 'Expiration Date',
+    datePlaceholder: 'MM/DD/YYYY',
+    needCardOrManual: 'Take a photo of your card, or tap "Enter the details manually".',
+    manualNeedsValue: 'Enter your card number or expiration date to continue.',
+    // ── FIX 3: previously English-only strings ──
+    tagNotRegistered: 'This NFC tag is not registered to any project.',
+    invalidPhone: 'Enter a valid phone number (10 or more digits).',
+    lookingUp: 'Looking you up...',
+    loadingDefault: 'Loading...',
+    checkingIn: 'Checking you in...',
+    registering: 'Registering and checking in...',
+    readingCard: 'Reading your card...',
+    couldNotReadCard: 'Could not read the card. You can enter your details manually.',
+    orientationNeeded: '⚠ Safety orientation needed for this site',
+    completeOrientation: 'Complete Safety Orientation',
+    enterName: 'Please enter your name',
+    selectTradeCompanyErr: 'Please select your trade and company',
+    completeAllItems: 'Please complete all safety orientation items',
+    signatureRequired: 'Signature required',
+    checkInPoint: 'Check-In Point',
+    workerFallback: 'Worker',
+    notDetected: 'Not detected',
+    ocrName: 'Name',
+    ocrCardId: 'Card ID #',
+    ocrIssued: 'Issued',
+    ocrExpiration: 'Expiration',
+    // Blocked screen
+    blockedTitle: 'CHECK-IN BLOCKED',
+    blockedContact: 'Contact your Site Safety Manager to resolve this before entering the site.',
+    blockedCompliance: 'NYC DOB Local Law 196 Compliance',
+    blockMissingOsha: 'No OSHA card on file',
+    blockExpiredSst: 'SST card expired',
+    blockMissingSst: 'No SST card on file',
+    // Backend-error fallbacks
+    genericError: 'Something went wrong. Please try again, or ask your supervisor for help.',
+    errInvalidPoint: 'This check-in point is not valid. Ask your supervisor.',
+    errRosterMismatch: 'That trade and company are not assigned to this project. Go back and choose another.',
+    errProjectNotFound: 'This project could not be found. Ask your supervisor.',
+    errMissingFields: 'Some required information is missing. Please check the form.',
+    errRateLimited: 'Too many attempts. Please wait a moment and try again.',
   },
   es: {
     title: 'Registro de Trabajador',
@@ -442,8 +528,82 @@ const TRANSLATIONS = {
     sigTitle: '✍️ Firma',
     sigDesc: 'Al firmar abajo, confirmo que he revisado y entiendo todos los elementos de orientación de seguridad mencionados.',
     clearSig: 'Borrar',
+    // ── FIX 1: sin oficios configurados — continuar y marcar, nunca bloquear ──
+    noTradesProceed: 'Este proyecto aún no tiene oficios configurados — usted puede registrarse de todos modos. Su CP le asignará su oficio más adelante.',
+    tradePendingNote: 'Su CP le asignará su oficio.',
+    // ── FIX 2: entrada manual de la tarjeta (sin foto) ──
+    manualEntryLink: '¿No puede fotografiar la tarjeta? Ingrese los datos manualmente',
+    manualEntryTitle: 'Datos de la Tarjeta (Entrada Manual)',
+    manualEntryNote: 'Ingrese lo que pueda leer de su tarjeta. No se requiere foto.',
+    cardNumberLabel: 'Número de Tarjeta / SST',
+    cardNumberPlaceholder: 'Número de tarjeta',
+    expirationLabel: 'Fecha de Vencimiento',
+    datePlaceholder: 'MM/DD/AAAA',
+    needCardOrManual: 'Tome una foto de su tarjeta, o toque "Ingrese los datos manualmente".',
+    manualNeedsValue: 'Ingrese el número de su tarjeta o la fecha de vencimiento para continuar.',
+    // ── FIX 3: textos que antes solo estaban en inglés ──
+    tagNotRegistered: 'Esta etiqueta NFC no está registrada en ningún proyecto.',
+    invalidPhone: 'Ingrese un número de teléfono válido (10 dígitos o más).',
+    lookingUp: 'Buscando su registro...',
+    loadingDefault: 'Cargando...',
+    checkingIn: 'Registrando su entrada...',
+    registering: 'Registrando y marcando entrada...',
+    readingCard: 'Leyendo su tarjeta...',
+    couldNotReadCard: 'No se pudo leer la tarjeta. Puede ingresar sus datos manualmente.',
+    orientationNeeded: '⚠ Se requiere orientación de seguridad para este sitio',
+    completeOrientation: 'Completar Orientación de Seguridad',
+    enterName: 'Ingrese su nombre',
+    selectTradeCompanyErr: 'Seleccione su oficio y empresa',
+    completeAllItems: 'Complete todos los elementos de orientación',
+    signatureRequired: 'Se requiere firma',
+    checkInPoint: 'Punto de Registro',
+    workerFallback: 'Trabajador',
+    notDetected: 'No detectado',
+    ocrName: 'Nombre',
+    ocrCardId: 'N.º de Tarjeta',
+    ocrIssued: 'Emitida',
+    ocrExpiration: 'Vencimiento',
+    // Pantalla de bloqueo
+    blockedTitle: 'REGISTRO BLOQUEADO',
+    blockedContact: 'Comuníquese con su Gerente de Seguridad del Sitio para resolver esto antes de entrar al sitio.',
+    blockedCompliance: 'Cumplimiento de la Ley Local 196 del NYC DOB',
+    blockMissingOsha: 'No hay tarjeta OSHA registrada',
+    blockExpiredSst: 'Tarjeta SST vencida',
+    blockMissingSst: 'No hay tarjeta SST registrada',
+    // Mensajes de respaldo para errores del servidor
+    genericError: 'Algo salió mal. Intente de nuevo o pida ayuda a su supervisor.',
+    errInvalidPoint: 'Este punto de registro no es válido. Consulte a su supervisor.',
+    errRosterMismatch: 'Ese oficio y empresa no están asignados a este proyecto. Regrese y elija otro.',
+    errProjectNotFound: 'No se encontró este proyecto. Consulte a su supervisor.',
+    errMissingFields: 'Falta información requerida. Revise el formulario.',
+    errRateLimited: 'Demasiados intentos. Espere un momento e intente de nuevo.',
   },
 };
+
+// Translation helper — always returns a string in the active language,
+// falling back to English, then to the key itself. Every user-facing
+// string in this page goes through t() so nothing leaks untranslated.
+function t(key, fallback) {
+  const tr = TRANSLATIONS[currentLang] || {};
+  return tr[key] || TRANSLATIONS.en[key] || fallback || key;
+}
+
+// Backend HTTPException detail strings are English-only. Map the ones the
+// worker can actually trigger onto bilingual copy; anything unrecognised
+// falls back to a bilingual generic rather than showing raw English.
+const BACKEND_ERROR_MAP = {
+  'Invalid check-in point': 'errInvalidPoint',
+  'Project not found': 'errProjectNotFound',
+  'Missing required fields': 'errMissingFields',
+  'Selected trade and company are not assigned to this project.': 'errRosterMismatch',
+  'Too many requests. Please wait a moment.': 'errRateLimited',
+};
+
+function translateApiError(e) {
+  const raw = (e && e.message) ? String(e.message).trim() : '';
+  const key = BACKEND_ERROR_MAP[raw];
+  return key ? t(key) : t('genericError');
+}
 
 const SAFETY_ITEMS_I18N = {
   en: [
@@ -512,6 +672,8 @@ let siteInfo = null;
 let companies = [];
 let oshaImage = null;
 let oshaData = null;
+// FIX 2: set when the worker explicitly opts into manual card entry.
+let manualEntryChosen = false;
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
@@ -614,7 +776,7 @@ function cropImage(dataUrl, box) {
       projectId = tagInfo.project_id;
     } catch (e) {
       showScreen('screenError');
-      document.getElementById('errorDesc').textContent = 'This NFC tag is not registered to any project.';
+      document.getElementById('errorDesc').textContent = t('tagNotRegistered');
       return;
     }
   }
@@ -623,7 +785,7 @@ function cropImage(dataUrl, box) {
     const res = await api(`/checkin/${projectId}/${tagId}/info`);
     siteInfo = res;
     document.getElementById('siteName').textContent = res.project_name;
-    document.getElementById('siteLoc').textContent = res.location || 'Check-In Point';
+    document.getElementById('siteLoc').textContent = res.location || t('checkInPoint');
     document.getElementById('siteCo').textContent = res.company_name || '';
   } catch (e) {
     showScreen('screenError');
@@ -678,7 +840,7 @@ function showScreen(id) {
 }
 
 function showLoading(msg) {
-  document.getElementById('loadingMsg').textContent = msg || 'Loading...';
+  document.getElementById('loadingMsg').textContent = msg || t('loadingDefault');
   document.getElementById('loadingOverlay').classList.remove('hidden');
 }
 function hideLoading() {
@@ -695,9 +857,9 @@ function showError(msg) {
 // ==================== PHONE LOOKUP ====================
 async function lookupWorker() {
   const phone = cleanPhone(document.getElementById('phoneInput').value);
-  if (phone.length < 10) { showError('Enter a valid phone number (10+ digits)'); return; }
+  if (phone.length < 10) { showError(t('invalidPhone')); return; }
 
-  showLoading('Looking you up...');
+  showLoading(t('lookingUp'));
   try {
     const res = await api('/checkin/lookup-worker', 'POST', { phone });
     hideLoading();
@@ -719,7 +881,7 @@ async function lookupWorker() {
     }
   } catch (e) {
     hideLoading();
-    showError(e.message);
+    showError(translateApiError(e));
   }
 }
 
@@ -729,13 +891,13 @@ function showReturningScreen(worker, needsOrientation = false) {
   document.getElementById('retInfo').textContent = [worker.trade, worker.company].filter(Boolean).join(' • ');
   
   if (needsOrientation) {
-    document.querySelector('#screenReturning .returning-badge').textContent = '⚠ Safety orientation needed for this site';
+    document.querySelector('#screenReturning .returning-badge').textContent = t('orientationNeeded');
     document.querySelector('#screenReturning .returning-badge').style.background = 'rgba(245,158,11,0.1)';
     document.querySelector('#screenReturning .returning-badge').style.borderColor = 'rgba(245,158,11,0.2)';
     document.querySelector('#screenReturning .returning-badge').style.color = '#f59e0b';
 
     const btn = document.querySelector('#screenReturning .btn-success');
-    btn.textContent = 'Complete Safety Orientation';
+    btn.textContent = t('completeOrientation');
     btn.onclick = function() {
       showScreen('screenRegister');
       // If the worker's prior (trade, company) is already in this
@@ -771,7 +933,7 @@ function notMe() {
 // ==================== QUICK CHECK-IN (returning) ====================
 async function quickCheckIn() {
   if (!returningWorker) return;
-  showLoading('Checking you in...');
+  showLoading(t('checkingIn'));
   try {
     const res = await api('/checkin/register-and-checkin', 'POST', {
       project_id: projectId,
@@ -793,7 +955,7 @@ async function quickCheckIn() {
     showSuccess(res);
   } catch (e) {
     hideLoading();
-    showError(e.message);
+    showError(translateApiError(e));
   }
 }
 
@@ -813,7 +975,7 @@ async function handleOshaPhoto(input) {
     const zone = document.getElementById('cameraZone');
     zone.innerHTML = '<img src="' + compressed + '" alt="OSHA Card">';
 
-    showLoading('Reading your card...');
+    showLoading(t('readingCard'));
     try {
       const res = await api('/checkin/upload-osha', 'POST', {
         image: compressed,
@@ -833,13 +995,14 @@ async function handleOshaPhoto(input) {
       // every failure (401, 413, 502, 503, network) collapsed into a
       // single generic message that made this look like the OCR model
       // failed when in reality the request often never reached it.
+      // Keep the real reason in the console for operators, but show the
+      // worker a bilingual message rather than raw English backend text.
       console.error('OSHA OCR upload failed:', e);
-      const reason = (e && e.message) ? e.message : 'Unknown error';
-      showError('Could not read card: ' + reason + '. You can fill in your details manually.');
+      showError(t('couldNotReadCard'));
       oshaData = {};
+      // Open manual entry so the worker has an obvious way forward.
+      chooseManualEntry();
       document.getElementById('btnStep1Next').disabled = false;
-      document.getElementById('regName').style.borderColor = '#f59e0b';
-      document.getElementById('regName').focus();
     }
   };
   reader.readAsDataURL(file);
@@ -848,26 +1011,61 @@ async function handleOshaPhoto(input) {
 function showOcrResults(data) {
   const container = document.getElementById('ocrFields');
   container.innerHTML = '';
-  
+
   const fields = [
-    { key: 'name', label: 'Name' },
-    { key: 'sst_number', label: 'Card ID #' },
-    { key: 'issued', label: 'Issued' },
-    { key: 'expiration', label: 'Expiration' },
+    { key: 'name', label: t('ocrName') },
+    { key: 'sst_number', label: t('ocrCardId') },
+    { key: 'issued', label: t('ocrIssued') },
+    { key: 'expiration', label: t('ocrExpiration') },
   ];
 
   fields.forEach(f => {
     const val = data[f.key];
     const div = document.createElement('div');
     div.className = 'ocr-field';
-    div.innerHTML = '<div class="label">' + f.label + '</div><div class="value ' + (val ? '' : 'empty') + '">' + (val || 'Not detected') + '</div>';
+    div.innerHTML = '<div class="label">' + f.label + '</div><div class="value ' + (val ? '' : 'empty') + '">' + (val || t('notDetected')) + '</div>';
     container.appendChild(div);
   });
 
   document.getElementById('ocrResults').classList.remove('hidden');
-  
+
   // Auto-fill name from OCR (trade is NOT on card)
   if (data.name) document.getElementById('regName').value = data.name;
+  // Seed the manual fields too, so if the worker opens manual entry to
+  // correct a misread they start from what OCR got rather than blank.
+  if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
+  if (data.expiration) document.getElementById('regExpiration').value = data.expiration;
+}
+
+// ==================== MANUAL CARD ENTRY (FIX 2) ====================
+// A worker with no camera permission, a broken camera, or a damaged card
+// must still be able to check in. Photo stays the default path; this is the
+// escape hatch. Reveals the card fields WITHOUT requiring any photo.
+function chooseManualEntry() {
+  manualEntryChosen = true;
+  document.getElementById('manualCardFields').classList.remove('hidden');
+  document.getElementById('manualEntryLink').classList.add('hidden');
+  document.getElementById('btnStep1Next').disabled = false;
+  const el = document.getElementById('regCardNumber');
+  if (el && !el.value.trim()) el.focus();
+}
+
+function getManualCardValues() {
+  const num = document.getElementById('regCardNumber');
+  const exp = document.getElementById('regExpiration');
+  return {
+    cardNumber: num ? num.value.trim() : '',
+    expiration: exp ? exp.value.trim() : '',
+  };
+}
+
+// True when the worker has supplied enough card detail by hand to stand in
+// for a photo. At least one of (card number, expiration) is required —
+// otherwise the backend cert gate would produce no OSHA/SST cert at all and
+// hard-block them, which would just re-create the dead-end.
+function hasManualCardDetails() {
+  const m = getManualCardValues();
+  return !!(m.cardNumber || m.expiration);
 }
 
 // ==================== TRADE & COMPANY (STRICT ROSTER) ====================
@@ -877,6 +1075,9 @@ function showOcrResults(data) {
 // what work. This also eliminates the free-text trade field that used to
 // let workers type anything.
 let tradeAssignments = [];
+// FIX 1: true when the project has no configured trade_assignments. The
+// worker proceeds without picking a pair and the check-in is flagged.
+let noTradesConfigured = false;
 function loadTradeAssignments() {
   tradeAssignments = (siteInfo && siteInfo.trade_assignments) || [];
   const sel = document.getElementById('tradeAssignmentSelect');
@@ -887,14 +1088,19 @@ function loadTradeAssignments() {
   sel.innerHTML = '';
 
   if (!tradeAssignments.length) {
-    // Admin hasn't set up trades yet. Hide the dropdown, show the warning,
-    // and disable Next so the worker can't submit a blank pair.
+    // FIX 1: the admin hasn't set up trades yet. Previously this disabled
+    // Next and the worker could NEVER check in. Now we hide the dropdown,
+    // explain the situation, and let them continue — the backend flags the
+    // check-in with needs_trade_assignment and notifies the CP to assign
+    // the trade later. Never block a worker at the gate for a config gap.
+    noTradesConfigured = true;
     sel.classList.add('hidden');
     msg.classList.remove('hidden');
-    nextBtn.disabled = true;
+    nextBtn.disabled = false;
     return;
   }
 
+  noTradesConfigured = false;
   sel.classList.remove('hidden');
   msg.classList.add('hidden');
   nextBtn.disabled = false;
@@ -959,20 +1165,33 @@ function goStep(step) {
     // Validate name before leaving step 1
     const name = document.getElementById('regName').value.trim();
     if (!name) {
-      showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name');
+      showError(t('enterName'));
       document.getElementById('regName').style.borderColor = '#f59e0b';
       document.getElementById('regName').focus();
       return;
     }
-    if (!oshaImage && !oshaData) {
-      showError('Please take a photo of your OSHA/SST card');
+    // FIX 2: a photo is no longer mandatory — manually entered card details
+    // satisfy this just as well. If the worker has neither, surface the
+    // manual option instead of leaving them stuck on a disabled button.
+    const hasPhoto = !!(oshaImage || oshaData);
+    if (!hasPhoto && !hasManualCardDetails()) {
+      if (!manualEntryChosen) {
+        chooseManualEntry();
+        showError(t('needCardOrManual'));
+      } else {
+        showError(t('manualNeedsValue'));
+        document.getElementById('regCardNumber').style.borderColor = '#f59e0b';
+        document.getElementById('regCardNumber').focus();
+      }
       return;
     }
   }
   if (step === 3) {
+    // FIX 1: when the project has no trades configured there is nothing to
+    // select — let the worker through; the CP assigns the trade later.
     const assignment = getSelectedAssignment();
-    if (!assignment) {
-      showError(currentLang === 'es' ? 'Seleccione su oficio y empresa' : 'Please select your trade and company');
+    if (!noTradesConfigured && !assignment) {
+      showError(t('selectTradeCompanyErr'));
       return;
     }
   }
@@ -997,12 +1216,21 @@ async function submitRegistration() {
   const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
   const trade = assignment ? assignment.trade : '';
   const company = assignment ? assignment.company : '';
-  const oshaNumber = oshaData?.sst_number || '';
 
-  if (!name) { showError(currentLang === 'es' ? 'Ingrese su nombre' : 'Please enter your name'); return; }
-  if (!assignment) { showError(currentLang === 'es' ? 'Seleccione su oficio y empresa' : 'Please select your trade and company'); return; }
-  if (checkedItems.size < getSafetyItems().length) { showError(currentLang === 'es' ? 'Complete todos los elementos de orientación' : 'Please complete all safety orientation items'); return; }
-  if (!signatureData) { showError(currentLang === 'es' ? 'Se requiere firma' : 'Signature required'); return; }
+  // FIX 2: manually entered card details override / stand in for OCR, so a
+  // worker who never took a photo still sends a card number + expiration.
+  const manual = getManualCardValues();
+  const oshaNumber = manual.cardNumber || (oshaData && oshaData.sst_number) || '';
+  const mergedOshaData = Object.assign({}, oshaData || {}, {
+    sst_number: manual.cardNumber || (oshaData && oshaData.sst_number) || null,
+    expiration: manual.expiration || (oshaData && oshaData.expiration) || null,
+  });
+
+  if (!name) { showError(t('enterName')); return; }
+  // FIX 1: only require a roster pick when the project actually has trades.
+  if (!noTradesConfigured && !assignment) { showError(t('selectTradeCompanyErr')); return; }
+  if (checkedItems.size < getSafetyItems().length) { showError(t('completeAllItems')); return; }
+  if (!signatureData) { showError(t('signatureRequired')); return; }
 
   const orientation = {};
   SAFETY_ITEMS_I18N.en.forEach((item, i) => {
@@ -1012,7 +1240,7 @@ async function submitRegistration() {
     };
   });
 
-  showLoading(currentLang === 'es' ? 'Registrando...' : 'Registering and checking in...');
+  showLoading(t('registering'));
   try {
     const res = await api('/checkin/register-and-checkin', 'POST', {
       project_id: projectId,
@@ -1021,8 +1249,10 @@ async function submitRegistration() {
       phone: phone,
       trade: trade,
       company: company,
+      // May be null when the worker used manual entry — the backend
+      // tolerates a missing card image.
       osha_card_image: oshaImage,
-      osha_data: oshaData,
+      osha_data: mergedOshaData,
       osha_number: oshaNumber,
       safety_orientation: orientation,
       signature: signatureData,
@@ -1053,42 +1283,54 @@ async function submitRegistration() {
     showSuccess(res);
   } catch (e) {
     hideLoading();
-    showError(e.message);
+    showError(translateApiError(e));
   }
 }
 
   // ==================== BLOCKED (CERTIFICATION GATE) ====================
 function showBlockedScreen(data) {
   const blocks = data.blocks || [];
-  const workerName = data.worker_name || 'Worker';
+  const workerName = data.worker_name || t('workerFallback');
 
-  const reasonsHtml = blocks.map(b => `
+  // Map the known block codes onto bilingual copy. `b.detail` /
+  // `b.remediation` come from the backend in English only, so they are NOT
+  // rendered — the translated reason plus the translated contact line is
+  // what the worker sees.
+  const BLOCK_LABELS = {
+    MISSING_OSHA: 'blockMissingOsha',
+    EXPIRED_SST: 'blockExpiredSst',
+    MISSING_SST: 'blockMissingSst',
+  };
+
+  const reasonsHtml = blocks.map(b => {
+    const key = BLOCK_LABELS[b.type];
+    const label = key ? t(key) : t('genericError');
+    return `
     <div style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:12px;padding:16px;margin:8px 0;">
-      <div style="font-weight:700;color:#ef4444;font-size:16px;margin-bottom:4px;">
-        ⛔ ${b.type.replace(/_/g, ' ')}
+      <div style="font-weight:700;color:#ef4444;font-size:16px;">
+        ⛔ ${label}
       </div>
-      <div style="color:#fca5a5;font-size:14px;">${b.detail}</div>
-      ${b.remediation ? `<div style="color:#94a3b8;font-size:13px;margin-top:8px;font-style:italic;">→ ${b.remediation}</div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   document.querySelector('.app').innerHTML = `
     <div style="min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;">
       <div style="width:100px;height:100px;border-radius:50%;background:rgba(239,68,68,0.2);border:3px solid #ef4444;display:flex;align-items:center;justify-content:center;margin-bottom:24px;">
         <span style="font-size:48px;">🚫</span>
       </div>
-      <h1 style="color:#ef4444;font-size:28px;font-weight:800;margin:0 0 8px;">CHECK-IN BLOCKED</h1>
+      <h1 style="color:#ef4444;font-size:28px;font-weight:800;margin:0 0 8px;">${t('blockedTitle')}</h1>
       <p style="color:#f87171;font-size:18px;margin:0 0 24px;">${workerName}</p>
       <div style="width:100%;max-width:400px;text-align:left;">
         ${reasonsHtml}
       </div>
       <div style="margin-top:32px;padding:20px;background:rgba(255,255,255,0.06);border-radius:12px;border:1px solid rgba(255,255,255,0.1);max-width:400px;">
         <p style="color:#94a3b8;font-size:14px;margin:0;">
-          Contact your <strong style="color:#f1f5f9;">Site Safety Manager</strong> to resolve this issue before entering the site.
+          ${t('blockedContact')}
         </p>
       </div>
       <p style="color:#475569;font-size:12px;margin-top:24px;">
-        NYC DOB Local Law 196 Compliance
+        ${t('blockedCompliance')}
       </p>
     </div>
   `;
@@ -1096,8 +1338,8 @@ function showBlockedScreen(data) {
   
 // ==================== SUCCESS ====================
 function showSuccess(res) {
-  document.getElementById('successTitle').textContent = currentLang === 'es' ? '¡Registrado!' : 'Checked In!';
-  document.getElementById('successSub').textContent = (res.worker_name || 'Worker') + '\n' + (res.project_name || '');
+  document.getElementById('successTitle').textContent = t('checkedIn');
+  document.getElementById('successSub').textContent = (res.worker_name || t('workerFallback')) + '\n' + (res.project_name || '');
   document.getElementById('successTime').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   showScreen('screenSuccess');
 }
