@@ -7966,7 +7966,11 @@ async def register_and_checkin(data: dict):
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
     device_info = data.get("device_info")  # FingerprintJS data from checkin.html
 	
-    if not all([project_id, tag_id, name, company]):
+    # FIX 1: `company` is deliberately NOT required here. When a project has
+    # no trade_assignments configured there is nothing for the worker to pick,
+    # so they legitimately submit no company. It is re-required below, but
+    # only for projects that DO have trades configured.
+    if not all([project_id, tag_id, name]):
         raise HTTPException(status_code=400, detail="Missing required fields")
 
     # Format phone number
@@ -8002,16 +8006,24 @@ async def register_and_checkin(data: dict):
         if t and c:
             allowed_pairs.add((t, c))
     submitted_pair = ((trade or "").strip(), (company or "").strip())
+    # FIX 1: a project with NO configured trades used to 409 here, which meant
+    # a worker standing at the gate could never check in — a pure config gap
+    # became a hard block on a real person. Now they proceed, the trade is
+    # marked pending, and the check-in is flagged for the CP. The strict
+    # roster match below is UNCHANGED for projects that DO have trades.
+    needs_trade_assignment = False
     if not allowed_pairs:
-        raise HTTPException(
-            status_code=409,
-            detail="This project has no trades configured. Ask your site admin to add trades before workers can check in.",
-        )
-    if submitted_pair not in allowed_pairs:
-        raise HTTPException(
-            status_code=400,
-            detail="Selected trade and company are not assigned to this project.",
-        )
+        needs_trade_assignment = True
+        trade = trade or "UNASSIGNED"
+        company = company or "UNASSIGNED"
+    else:
+        if not company:
+            raise HTTPException(status_code=400, detail="Missing required fields")
+        if submitted_pair not in allowed_pairs:
+            raise HTTPException(
+                status_code=400,
+                detail="Selected trade and company are not assigned to this project.",
+            )
     
     now = datetime.now(timezone.utc)
     admin_id = project.get("admin_id")
@@ -8231,9 +8243,45 @@ async def register_and_checkin(data: dict):
         "updated_at": now,
         "is_deleted": False,
         "cert_warnings": cert_warnings,
+        # FIX 1: true when the project had no trades configured, so the worker
+        # checked in without one. The CP assigns the real trade later.
+        "needs_trade_assignment": needs_trade_assignment,
     }
-    
+
     result = await db.checkins.insert_one(checkin_record)
+
+    # FIX 1: tell the CP + admins this check-in needs a trade assigned. The
+    # check-in is ALREADY written above; this dispatch is failure-isolated so
+    # a notification problem can never block a worker at the gate.
+    if needs_trade_assignment:
+        try:
+            from zoneinfo import ZoneInfo
+            _nt_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            _nt_today = now.strftime("%Y-%m-%d")
+        try:
+            await _notifications_inbox.dispatch_notification(
+                db,
+                project=project,
+                kind="checkin_needs_trade",
+                severity="warning",
+                title="Check-in needs a trade assigned",
+                message=(
+                    f"{worker.get('name') or 'A worker'} checked in at "
+                    f"{project.get('name') or 'the site'} but this project has no "
+                    f"trades configured, so no trade could be selected. Add the "
+                    f"project's trades and assign this worker."
+                ),
+                source_kind="checkin",
+                source_id=f"needs-trade:{str(worker['_id'])}:{_nt_today}",
+                metadata={
+                    "checkin_id": str(result.inserted_id),
+                    "worker_id": str(worker["_id"]),
+                },
+                deeplink_anchor="workforce",
+            )
+        except Exception as e:
+            logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")
 
     # ── Relaxed EXPIRED_SST handling (flag-but-allow) ──
     # The LL196 hard-block was intentionally relaxed in
