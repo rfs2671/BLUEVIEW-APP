@@ -10,6 +10,9 @@ import {
   MapPin,
   RefreshCw,
   LogOut,
+  AlertTriangle,
+  Check,
+  X,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
@@ -37,6 +40,8 @@ export default function SiteCheckInsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [checkins, setCheckins] = useState([]);
   const [stats, setStats] = useState({ total: 0, active: 0 });
+  // Check-in id currently being reviewed (disables its buttons mid-request).
+  const [reviewingId, setReviewingId] = useState(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -92,6 +97,50 @@ export default function SiteCheckInsScreen() {
       minute: '2-digit',
       hour12: true,
       timeZone: 'America/New_York',
+    });
+  };
+
+  // Record an Approve / Send-home decision on an expired-SST check-in.
+  // The worker is NOT blocked either way — "sent_home" records the decision
+  // only. Attribution (reviewed_by) is derived server-side from the token.
+  const handleReview = async (checkin, decision) => {
+    const id = checkin._id || checkin.id;
+    if (!id) return;
+    setReviewingId(id);
+    try {
+      const res = await checkinsAPI.review(id, decision);
+      // Reflect the recorded decision immediately.
+      setCheckins((prev) => prev.map((c) =>
+        (c._id || c.id) === id
+          ? {
+              ...c,
+              review_decision: res.review_decision,
+              reviewed_by_name: res.reviewed_by_name,
+              reviewed_at: res.reviewed_at,
+            }
+          : c,
+      ));
+      toast.success(
+        decision === 'approved' ? 'Approved' : 'Recorded',
+        decision === 'approved'
+          ? 'Worker approved to stay on site'
+          : 'Sent-home decision recorded',
+      );
+    } catch (error) {
+      const detail = error?.response?.data?.detail;
+      toast.error('Review failed', detail || 'Could not record the decision');
+    } finally {
+      setReviewingId(null);
+    }
+  };
+
+  const formatDateTime = (dateStr) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString('en-US', {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      hour12: true, timeZone: 'America/New_York',
     });
   };
 
@@ -192,9 +241,15 @@ export default function SiteCheckInsScreen() {
                   .join('')
                   .toUpperCase();
 
+                // Expired-SST check-ins are allowed in (flag-but-allow) but
+                // need an admin/CP decision recorded against them.
+                const checkinId = checkin._id || checkin.id;
+                const isExpiredSst = checkin.sst_status === 'expired';
+                const reviewed = checkin.review_decision;
+
                 return (
-                  <GlassListItem 
-                    key={checkin._id || checkin.id || index} 
+                  <View key={checkinId || index}>
+                  <GlassListItem
                     style={s.checkinCard}
                   >
                     {/* Time */}
@@ -246,6 +301,50 @@ export default function SiteCheckInsScreen() {
                       )}
                     </View>
                   </GlassListItem>
+
+                  {isExpiredSst && (
+                    <GlassCard style={s.reviewCard}>
+                      <View style={s.reviewHeader}>
+                        <AlertTriangle size={14} strokeWidth={1.5} color="#fbbf24" />
+                        <Text style={s.reviewTitle}>
+                          Expired SST
+                          {checkin.sst_expiration
+                            ? ` — expired ${String(checkin.sst_expiration).slice(0, 10)}`
+                            : ''}
+                        </Text>
+                      </View>
+
+                      {reviewed ? (
+                        <Text style={s.reviewedText}>
+                          {reviewed === 'approved' ? 'Approved' : 'Sent home'}
+                          {checkin.reviewed_by_name ? ` by ${checkin.reviewed_by_name}` : ''}
+                          {checkin.reviewed_at ? ` • ${formatDateTime(checkin.reviewed_at)}` : ''}
+                        </Text>
+                      ) : (
+                        <View style={s.reviewActions}>
+                          <Pressable
+                            onPress={() => handleReview(checkin, 'approved')}
+                            disabled={reviewingId === checkinId}
+                            style={[s.reviewBtn, s.approveBtn,
+                              reviewingId === checkinId && s.reviewBtnDisabled]}
+                          >
+                            <Check size={14} strokeWidth={2} color="#4ade80" />
+                            <Text style={[s.reviewBtnText, s.approveText]}>Approve</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => handleReview(checkin, 'sent_home')}
+                            disabled={reviewingId === checkinId}
+                            style={[s.reviewBtn, s.sendHomeBtn,
+                              reviewingId === checkinId && s.reviewBtnDisabled]}
+                          >
+                            <X size={14} strokeWidth={2} color="#f87171" />
+                            <Text style={[s.reviewBtnText, s.sendHomeText]}>Send home</Text>
+                          </Pressable>
+                        </View>
+                      )}
+                    </GlassCard>
+                  )}
+                  </View>
                 );
               })}
             </View>
@@ -387,6 +486,63 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
+  },
+  reviewCard: {
+    marginTop: spacing.xs,
+    padding: spacing.md,
+    borderColor: 'rgba(251, 191, 36, 0.35)',
+    borderWidth: 1,
+    gap: spacing.sm,
+  },
+  reviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  reviewTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#fbbf24',
+  },
+  reviewedText: {
+    fontSize: 13,
+    color: colors.text.secondary,
+  },
+  reviewActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  reviewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.lg,
+    borderWidth: 1,
+    flex: 1,
+  },
+  reviewBtnDisabled: {
+    opacity: 0.5,
+  },
+  approveBtn: {
+    borderColor: 'rgba(74, 222, 128, 0.4)',
+    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+  },
+  sendHomeBtn: {
+    borderColor: 'rgba(248, 113, 113, 0.4)',
+    backgroundColor: 'rgba(248, 113, 113, 0.08)',
+  },
+  reviewBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  approveText: {
+    color: '#4ade80',
+  },
+  sendHomeText: {
+    color: '#f87171',
   },
   timeSection: {
     minWidth: 60,
