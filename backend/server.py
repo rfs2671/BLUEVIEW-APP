@@ -16317,13 +16317,28 @@ def _is_dob_now_job(job_num: str) -> bool:
 
 
 def _bis_bin_overview_url(bin_val: str) -> str:
-    """BIS Overview By BIN — the safe BIN-scoped fallback."""
+    """BIS building overview by BIN — the safe BIN-scoped fallback.
+
+    Uses PropertyProfileOverviewServlet with a plain `bin` param. This is the
+    form the frontend's own "verify your BIN" link already uses successfully
+    (frontend/app/project/[id]/dob-logs.jsx), and the form this file's final
+    fallback used, so it is the proven-good shape.
+
+    It replaces an earlier `OverviewByBinServlet?requestid=2&allbin=<bin>
+    &allinquirytype=BXS3OCV4` form which returned BIS "Page not found". The
+    `allinquirytype` value there was a hardcoded opaque token (no record field
+    was ever mapped into it), and no other call site depended on that shape.
+
+    NOTE: this is a deeplink builder — it returns a URL as data for the user's
+    browser. The backend is firewalled from a810-bisweb (see
+    lib/server_http.py AKAMAI_BLOCKED_HOSTS), so this is never fetched
+    server-side and cannot be validated from here.
+    """
     if not bin_val:
         return ""
     return (
-        "https://a810-bisweb.nyc.gov/bisweb/OverviewByBinServlet"
-        f"?requestid=2&allbin={quote_plus(str(bin_val))}"
-        "&allinquirytype=BXS3OCV4"
+        "https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
+        f"?bin={quote_plus(str(bin_val))}"
     )
 
 
@@ -16480,12 +16495,10 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return _bis_bin_overview_url(bin_val)
 
     # ── Final fallback: property profile by BIN. ─────────────────────
-    if bin_val:
-        return (
-            "https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet"
-            f"?bin={quote_plus(bin_val)}"
-        )
-    return ""
+    # Same builder as the per-type fallbacks above — one building-overview
+    # form for the whole file, so the two can no longer drift apart (the
+    # drift is exactly what produced the broken violation link).
+    return _bis_bin_overview_url(bin_val)
 
 
 async def run_dob_sync_for_project(project: dict) -> list:
