@@ -99,7 +99,7 @@ select option{background:#1e293b;color:#f1f5f9}
 .camera-zone .cam-text{font-size:16px;color:var(--text2)}
 .camera-zone .cam-hint{font-size:14px;color:var(--text3);margin-top:6px}
 .camera-zone img{max-width:100%;max-height:220px;border-radius:8px;margin-top:8px}
-#fileInput{display:none}
+#fileInput,#selfieInput{display:none}
 
 /* OCR result */
 .ocr-fields{display:grid;gap:12px}
@@ -169,18 +169,12 @@ select option{background:#1e293b;color:#f1f5f9}
 /* Phone input for returning */
 .phone-entry{margin:20px 0}
 
-/* Manual card entry fallback */
-.manual-link{
-  margin-top:14px;text-align:center;font-size:15px;color:var(--blue);
-  text-decoration:underline;cursor:pointer;padding:10px;
-}
-.manual-link:active{color:#60a5fa}
+/* Manual card entry hint + no-trades notice */
 .manual-note{
   margin-bottom:12px;padding:10px 12px;border-radius:var(--radius-sm);
   background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.35);
   color:#93c5fd;font-size:14px;line-height:1.5;
 }
-/* No-trades notice (worker still proceeds) */
 .info-note{
   padding:12px 14px;border-radius:var(--radius-sm);
   background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.35);
@@ -268,14 +262,17 @@ select option{background:#1e293b;color:#f1f5f9}
         </div>
         <input type="file" id="fileInput" accept="image/*" capture="environment" onchange="handleOshaPhoto(this)">
 
-        <!-- FIX 2: manual fallback. The photo above stays the primary path;
-             this affordance lets a worker with no camera / a damaged card
-             still complete check-in. Never a dead-end. -->
-        <div class="manual-link" id="manualEntryLink" onclick="chooseManualEntry()" data-i18n="manualEntryLink">Can't photograph the card? Enter the details manually</div>
+        <!-- Selfie capture (mirrors the card capture; front camera). Stored
+             for later human spot-check only — NO face match / liveness / gate. -->
+        <div class="camera-zone" id="selfieZone" onclick="document.getElementById('selfieInput').click()" style="margin-top:14px">
+          <span class="cam-icon">🤳</span>
+          <div class="cam-text" data-i18n="selfieText">Tap to take a selfie</div>
+          <div class="cam-hint" data-i18n="selfieHint">Optional — used for site verification only</div>
+        </div>
+        <input type="file" id="selfieInput" accept="image/*" capture="user" onchange="handleSelfiePhoto(this)">
 
         <div id="ocrResults" class="hidden" style="margin-top:16px">
-          <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned successfully</div>
-          <div class="ocr-fields" id="ocrFields"></div>
+          <div style="font-size:15px;font-weight:600;color:var(--green);margin-bottom:10px" data-i18n="ocrSuccess">✓ Card scanned — review &amp; correct below</div>
         </div>
         <div style="margin-top:16px">
           <div class="input-group">
@@ -286,16 +283,20 @@ select option{background:#1e293b;color:#f1f5f9}
             <div class="input-label" data-i18n="phoneLabel">Phone Number</div>
             <input type="tel" id="regPhone" data-i18n-placeholder="phonePlaceholder" placeholder="(555) 123-4567" inputmode="numeric">
           </div>
-          <div id="manualCardFields" class="hidden">
-            <div class="manual-note" data-i18n="manualEntryNote">Enter what you can read from your card. A photo is not required.</div>
-            <div class="input-group">
-              <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
-              <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off">
-            </div>
-            <div class="input-group">
-              <div class="input-label" data-i18n="expirationLabel">Expiration Date</div>
-              <input type="text" id="regExpiration" data-i18n-placeholder="datePlaceholder" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
-            </div>
+          <!-- FIX 2: a photo is optional — these fields alone are enough to
+               check in, so no camera / a damaged card is never a dead-end. -->
+          <div class="manual-note" data-i18n="manualEntryLink">Can't photograph the card? Enter the details below instead</div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="cardNumberLabel">Card / SST Number</div>
+            <input type="text" id="regCardNumber" data-i18n-placeholder="cardNumberPlaceholder" placeholder="Card number" autocomplete="off">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="issuedLabel">Issued Date</div>
+            <input type="text" id="regIssued" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
+          </div>
+          <div class="input-group">
+            <div class="input-label" data-i18n="expirationLabel">Expiration Date</div>
+            <input type="text" id="regExpiration" placeholder="MM/DD/YYYY" autocomplete="off" inputmode="numeric">
           </div>
         </div>
         <button class="btn btn-primary" id="btnStep1Next" onclick="goStep(2)" disabled data-i18n="nextCompany">Next: Select Company</button>
@@ -313,8 +314,8 @@ select option{background:#1e293b;color:#f1f5f9}
             <option value="" data-i18n="tradeCompanyLoading">Loading trades...</option>
           </select>
         </div>
-        <!-- FIX 1: when no trades are configured the worker is NOT blocked —
-             they continue and the check-in is flagged for the CP. -->
+        <!-- FIX 1: no trades configured is NOT a block — the worker continues
+             and the check-in is flagged for the CP to assign the trade. -->
         <div id="noAssignmentsMsg" class="hidden info-note">
           <span data-i18n="noTradesProceed">No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.</span>
         </div>
@@ -418,6 +419,12 @@ const TRANSLATIONS = {
     oshaDesc: "Take a photo of your OSHA-10/30 or SST card. We'll read it automatically.",
     camText: 'Tap to take photo',
     camHint: 'or choose from gallery',
+    selfieText: 'Tap to take a selfie',
+    selfieHint: 'Optional — used for site verification only',
+    cardNumberLabel: 'Card / SST Number',
+    cardNumberPlaceholder: 'Card number',
+    issuedLabel: 'Issued Date',
+    expirationLabel: 'Expiration Date',
     nextCompany: 'Next: Select Trade & Company',
     companyTitle: '🏗️ Select Your Trade & Company',
     companyDesc: 'Choose your trade and the company you work for on this project. Only trades your site admin has assigned to this project appear below.',
@@ -443,18 +450,11 @@ const TRANSLATIONS = {
     clearSig: 'Clear',
     // ── FIX 1: no trades configured — proceed and flag, never block ──
     noTradesProceed: 'No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.',
-    tradePendingNote: 'Your trade will be assigned by your CP.',
-    // ── FIX 2: manual card entry (no photo required) ──
-    manualEntryLink: "Can't photograph the card? Enter the details manually",
-    manualEntryTitle: 'Card Details (Manual Entry)',
+    // ── FIX 2: card photo is optional; manual entry always available ──
+    manualEntryLink: "Can't photograph the card? Enter the details below instead",
     manualEntryNote: 'Enter what you can read from your card. A photo is not required.',
-    cardNumberLabel: 'Card / SST Number',
-    cardNumberPlaceholder: 'Card number',
-    expirationLabel: 'Expiration Date',
-    datePlaceholder: 'MM/DD/YYYY',
-    needCardOrManual: 'Take a photo of your card, or tap "Enter the details manually".',
-    manualNeedsValue: 'Enter your card number or expiration date to continue.',
-    // ── FIX 3: previously English-only strings ──
+    needCardOrManual: 'Take a photo of your card, or fill in the card number or expiration date below.',
+    // ── FIX 3: strings that were previously English-only ──
     tagNotRegistered: 'This NFC tag is not registered to any project.',
     invalidPhone: 'Enter a valid phone number (10 or more digits).',
     lookingUp: 'Looking you up...',
@@ -462,7 +462,7 @@ const TRANSLATIONS = {
     checkingIn: 'Checking you in...',
     registering: 'Registering and checking in...',
     readingCard: 'Reading your card...',
-    couldNotReadCard: 'Could not read the card. You can enter your details manually.',
+    couldNotReadCard: 'Could not read the card. You can enter your details manually below.',
     orientationNeeded: '⚠ Safety orientation needed for this site',
     completeOrientation: 'Complete Safety Orientation',
     enterName: 'Please enter your name',
@@ -471,11 +471,6 @@ const TRANSLATIONS = {
     signatureRequired: 'Signature required',
     checkInPoint: 'Check-In Point',
     workerFallback: 'Worker',
-    notDetected: 'Not detected',
-    ocrName: 'Name',
-    ocrCardId: 'Card ID #',
-    ocrIssued: 'Issued',
-    ocrExpiration: 'Expiration',
     // Blocked screen
     blockedTitle: 'CHECK-IN BLOCKED',
     blockedContact: 'Contact your Site Safety Manager to resolve this before entering the site.',
@@ -505,6 +500,12 @@ const TRANSLATIONS = {
     oshaDesc: 'Tome una foto de su tarjeta OSHA-10/30 o SST. La leeremos automáticamente.',
     camText: 'Toque para tomar foto',
     camHint: 'o elija de la galería',
+    selfieText: 'Toque para tomar una selfie',
+    selfieHint: 'Opcional — solo para verificación en el sitio',
+    cardNumberLabel: 'Número de Tarjeta / SST',
+    cardNumberPlaceholder: 'Número de tarjeta',
+    issuedLabel: 'Fecha de Emisión',
+    expirationLabel: 'Fecha de Vencimiento',
     nextCompany: 'Siguiente: Oficio y Empresa',
     companyTitle: '🏗️ Seleccione Su Oficio y Empresa',
     companyDesc: 'Elija su oficio y la empresa para la que trabaja en este proyecto. Solo aparecen los oficios que su administrador ha asignado a este proyecto.',
@@ -530,17 +531,10 @@ const TRANSLATIONS = {
     clearSig: 'Borrar',
     // ── FIX 1: sin oficios configurados — continuar y marcar, nunca bloquear ──
     noTradesProceed: 'Este proyecto aún no tiene oficios configurados — usted puede registrarse de todos modos. Su CP le asignará su oficio más adelante.',
-    tradePendingNote: 'Su CP le asignará su oficio.',
-    // ── FIX 2: entrada manual de la tarjeta (sin foto) ──
-    manualEntryLink: '¿No puede fotografiar la tarjeta? Ingrese los datos manualmente',
-    manualEntryTitle: 'Datos de la Tarjeta (Entrada Manual)',
+    // ── FIX 2: la foto es opcional; la entrada manual siempre está disponible ──
+    manualEntryLink: '¿No puede fotografiar la tarjeta? Ingrese los datos abajo',
     manualEntryNote: 'Ingrese lo que pueda leer de su tarjeta. No se requiere foto.',
-    cardNumberLabel: 'Número de Tarjeta / SST',
-    cardNumberPlaceholder: 'Número de tarjeta',
-    expirationLabel: 'Fecha de Vencimiento',
-    datePlaceholder: 'MM/DD/AAAA',
-    needCardOrManual: 'Tome una foto de su tarjeta, o toque "Ingrese los datos manualmente".',
-    manualNeedsValue: 'Ingrese el número de su tarjeta o la fecha de vencimiento para continuar.',
+    needCardOrManual: 'Tome una foto de su tarjeta, o complete abajo el número de tarjeta o la fecha de vencimiento.',
     // ── FIX 3: textos que antes solo estaban en inglés ──
     tagNotRegistered: 'Esta etiqueta NFC no está registrada en ningún proyecto.',
     invalidPhone: 'Ingrese un número de teléfono válido (10 dígitos o más).',
@@ -549,7 +543,7 @@ const TRANSLATIONS = {
     checkingIn: 'Registrando su entrada...',
     registering: 'Registrando y marcando entrada...',
     readingCard: 'Leyendo su tarjeta...',
-    couldNotReadCard: 'No se pudo leer la tarjeta. Puede ingresar sus datos manualmente.',
+    couldNotReadCard: 'No se pudo leer la tarjeta. Puede ingresar sus datos manualmente abajo.',
     orientationNeeded: '⚠ Se requiere orientación de seguridad para este sitio',
     completeOrientation: 'Completar Orientación de Seguridad',
     enterName: 'Ingrese su nombre',
@@ -558,11 +552,6 @@ const TRANSLATIONS = {
     signatureRequired: 'Se requiere firma',
     checkInPoint: 'Punto de Registro',
     workerFallback: 'Trabajador',
-    notDetected: 'No detectado',
-    ocrName: 'Nombre',
-    ocrCardId: 'N.º de Tarjeta',
-    ocrIssued: 'Emitida',
-    ocrExpiration: 'Vencimiento',
     // Pantalla de bloqueo
     blockedTitle: 'REGISTRO BLOQUEADO',
     blockedContact: 'Comuníquese con su Gerente de Seguridad del Sitio para resolver esto antes de entrar al sitio.',
@@ -581,14 +570,14 @@ const TRANSLATIONS = {
 };
 
 // Translation helper — always returns a string in the active language,
-// falling back to English, then to the key itself. Every user-facing
-// string in this page goes through t() so nothing leaks untranslated.
+// falling back to English, then to the key. Every user-facing string in this
+// page goes through t() so nothing leaks untranslated.
 function t(key, fallback) {
   const tr = TRANSLATIONS[currentLang] || {};
   return tr[key] || TRANSLATIONS.en[key] || fallback || key;
 }
 
-// Backend HTTPException detail strings are English-only. Map the ones the
+// Backend HTTPException detail strings are English-only. Map the ones a
 // worker can actually trigger onto bilingual copy; anything unrecognised
 // falls back to a bilingual generic rather than showing raw English.
 const BACKEND_ERROR_MAP = {
@@ -672,8 +661,7 @@ let siteInfo = null;
 let companies = [];
 let oshaImage = null;
 let oshaData = null;
-// FIX 2: set when the worker explicitly opts into manual card entry.
-let manualEntryChosen = false;
+let selfieImage = null;  // base64 selfie, stored inline for spot-check only
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
@@ -995,77 +983,57 @@ async function handleOshaPhoto(input) {
       // every failure (401, 413, 502, 503, network) collapsed into a
       // single generic message that made this look like the OCR model
       // failed when in reality the request often never reached it.
-      // Keep the real reason in the console for operators, but show the
-      // worker a bilingual message rather than raw English backend text.
       console.error('OSHA OCR upload failed:', e);
-      showError(t('couldNotReadCard'));
+      const reason = (e && e.message) ? e.message : 'Unknown error';
+      showError('Could not read card: ' + reason + '. You can fill in your details manually.');
       oshaData = {};
-      // Open manual entry so the worker has an obvious way forward.
-      chooseManualEntry();
       document.getElementById('btnStep1Next').disabled = false;
+      document.getElementById('regName').style.borderColor = '#f59e0b';
+      document.getElementById('regName').focus();
     }
   };
   reader.readAsDataURL(file);
 }
 
+// ==================== SELFIE PHOTO ====================
+// Mirrors handleOshaPhoto exactly, but front camera (capture="user") and NO
+// OCR. The selfie is compressed and held as base64, sent as selfie_image on
+// register-and-checkin, and stored inline for later human spot-check only.
+// It is optional: a missing selfie never blocks the check-in.
+async function handleSelfiePhoto(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const compressed = await compressImage(e.target.result, 1200, 0.7);
+    selfieImage = compressed;
+    const zone = document.getElementById('selfieZone');
+    zone.innerHTML = '<img src="' + compressed + '" alt="Selfie">';
+  };
+  reader.readAsDataURL(file);
+}
+
 function showOcrResults(data) {
-  const container = document.getElementById('ocrFields');
-  container.innerHTML = '';
-
-  const fields = [
-    { key: 'name', label: t('ocrName') },
-    { key: 'sst_number', label: t('ocrCardId') },
-    { key: 'issued', label: t('ocrIssued') },
-    { key: 'expiration', label: t('ocrExpiration') },
-  ];
-
-  fields.forEach(f => {
-    const val = data[f.key];
-    const div = document.createElement('div');
-    div.className = 'ocr-field';
-    div.innerHTML = '<div class="label">' + f.label + '</div><div class="value ' + (val ? '' : 'empty') + '">' + (val || t('notDetected')) + '</div>';
-    container.appendChild(div);
-  });
-
+  // Show the "scanned" banner, then PRE-FILL editable inputs from OCR so the
+  // worker/admin can correct any misread field. These are plain inputs (not
+  // read-only display cards) and their values — not the raw OCR blob — are
+  // what get sent on submit, so corrections flow through to the cert logic.
   document.getElementById('ocrResults').classList.remove('hidden');
 
-  // Auto-fill name from OCR (trade is NOT on card)
   if (data.name) document.getElementById('regName').value = data.name;
-  // Seed the manual fields too, so if the worker opens manual entry to
-  // correct a misread they start from what OCR got rather than blank.
   if (data.sst_number) document.getElementById('regCardNumber').value = data.sst_number;
+  if (data.issued) document.getElementById('regIssued').value = data.issued;
   if (data.expiration) document.getElementById('regExpiration').value = data.expiration;
 }
 
-// ==================== MANUAL CARD ENTRY (FIX 2) ====================
-// A worker with no camera permission, a broken camera, or a damaged card
-// must still be able to check in. Photo stays the default path; this is the
-// escape hatch. Reveals the card fields WITHOUT requiring any photo.
-function chooseManualEntry() {
-  manualEntryChosen = true;
-  document.getElementById('manualCardFields').classList.remove('hidden');
-  document.getElementById('manualEntryLink').classList.add('hidden');
-  document.getElementById('btnStep1Next').disabled = false;
-  const el = document.getElementById('regCardNumber');
-  if (el && !el.value.trim()) el.focus();
-}
-
-function getManualCardValues() {
+// FIX 2: true when the worker has typed enough card detail by hand to stand
+// in for a photo. At least one of (card number, expiration) is required so
+// the backend still builds an OSHA/SST cert instead of hard-blocking.
+function hasManualCardDetails() {
   const num = document.getElementById('regCardNumber');
   const exp = document.getElementById('regExpiration');
-  return {
-    cardNumber: num ? num.value.trim() : '',
-    expiration: exp ? exp.value.trim() : '',
-  };
-}
-
-// True when the worker has supplied enough card detail by hand to stand in
-// for a photo. At least one of (card number, expiration) is required —
-// otherwise the backend cert gate would produce no OSHA/SST cert at all and
-// hard-block them, which would just re-create the dead-end.
-function hasManualCardDetails() {
-  const m = getManualCardValues();
-  return !!(m.cardNumber || m.expiration);
+  return !!((num && num.value.trim()) || (exp && exp.value.trim()));
 }
 
 // ==================== TRADE & COMPANY (STRICT ROSTER) ====================
@@ -1075,7 +1043,7 @@ function hasManualCardDetails() {
 // what work. This also eliminates the free-text trade field that used to
 // let workers type anything.
 let tradeAssignments = [];
-// FIX 1: true when the project has no configured trade_assignments. The
+// FIX 1: true when the project has no configured trade_assignments — the
 // worker proceeds without picking a pair and the check-in is flagged.
 let noTradesConfigured = false;
 function loadTradeAssignments() {
@@ -1088,11 +1056,10 @@ function loadTradeAssignments() {
   sel.innerHTML = '';
 
   if (!tradeAssignments.length) {
-    // FIX 1: the admin hasn't set up trades yet. Previously this disabled
-    // Next and the worker could NEVER check in. Now we hide the dropdown,
-    // explain the situation, and let them continue — the backend flags the
-    // check-in with needs_trade_assignment and notifies the CP to assign
-    // the trade later. Never block a worker at the gate for a config gap.
+    // FIX 1: the admin hasn't set up trades yet. This used to disable Next,
+    // so the worker could NEVER check in — a config gap became a hard block
+    // on a person at the gate. Now they continue; the backend flags the row
+    // with needs_trade_assignment and notifies the CP to assign it later.
     noTradesConfigured = true;
     sel.classList.add('hidden');
     msg.classList.remove('hidden');
@@ -1170,25 +1137,21 @@ function goStep(step) {
       document.getElementById('regName').focus();
       return;
     }
-    // FIX 2: a photo is no longer mandatory — manually entered card details
-    // satisfy this just as well. If the worker has neither, surface the
-    // manual option instead of leaving them stuck on a disabled button.
-    const hasPhoto = !!(oshaImage || oshaData);
-    if (!hasPhoto && !hasManualCardDetails()) {
-      if (!manualEntryChosen) {
-        chooseManualEntry();
-        showError(t('needCardOrManual'));
-      } else {
-        showError(t('manualNeedsValue'));
-        document.getElementById('regCardNumber').style.borderColor = '#f59e0b';
-        document.getElementById('regCardNumber').focus();
-      }
+    // FIX 2: a photo is NO LONGER mandatory. A worker with no camera
+    // permission, a broken camera, or a damaged card can type the card
+    // number / expiration into the fields below instead. Requiring at least
+    // one of them keeps the backend cert gate from hard-blocking on
+    // MISSING_OSHA, which would just re-create the dead-end.
+    if (!oshaImage && !oshaData && !hasManualCardDetails()) {
+      showError(t('needCardOrManual'));
+      const el = document.getElementById('regCardNumber');
+      el.style.borderColor = '#f59e0b';
+      el.focus();
       return;
     }
   }
   if (step === 3) {
-    // FIX 1: when the project has no trades configured there is nothing to
-    // select — let the worker through; the CP assigns the trade later.
+    // FIX 1: nothing to select when the project has no trades — let them by.
     const assignment = getSelectedAssignment();
     if (!noTradesConfigured && !assignment) {
       showError(t('selectTradeCompanyErr'));
@@ -1217,13 +1180,17 @@ async function submitRegistration() {
   const trade = assignment ? assignment.trade : '';
   const company = assignment ? assignment.company : '';
 
-  // FIX 2: manually entered card details override / stand in for OCR, so a
-  // worker who never took a photo still sends a card number + expiration.
-  const manual = getManualCardValues();
-  const oshaNumber = manual.cardNumber || (oshaData && oshaData.sst_number) || '';
-  const mergedOshaData = Object.assign({}, oshaData || {}, {
-    sst_number: manual.cardNumber || (oshaData && oshaData.sst_number) || null,
-    expiration: manual.expiration || (oshaData && oshaData.expiration) || null,
+  // Read the (possibly corrected) editable OCR fields. These override the raw
+  // OCR blob so a worker/admin correction — especially expiration, which the
+  // backend parses into the SST cert — actually flows through to register-and-checkin.
+  const cardNumber = document.getElementById('regCardNumber').value.trim();
+  const issued = document.getElementById('regIssued').value.trim();
+  const expiration = document.getElementById('regExpiration').value.trim();
+  const oshaNumber = cardNumber || oshaData?.sst_number || '';
+  const correctedOshaData = Object.assign({}, oshaData || {}, {
+    sst_number: cardNumber || (oshaData ? oshaData.sst_number : null) || null,
+    issued: issued || (oshaData ? oshaData.issued : null) || null,
+    expiration: expiration || (oshaData ? oshaData.expiration : null) || null,
   });
 
   if (!name) { showError(t('enterName')); return; }
@@ -1249,10 +1216,9 @@ async function submitRegistration() {
       phone: phone,
       trade: trade,
       company: company,
-      // May be null when the worker used manual entry — the backend
-      // tolerates a missing card image.
       osha_card_image: oshaImage,
-      osha_data: mergedOshaData,
+      selfie_image: selfieImage,
+      osha_data: correctedOshaData,
       osha_number: oshaNumber,
       safety_orientation: orientation,
       signature: signatureData,
@@ -1292,23 +1258,20 @@ function showBlockedScreen(data) {
   const blocks = data.blocks || [];
   const workerName = data.worker_name || t('workerFallback');
 
-  // Map the known block codes onto bilingual copy. `b.detail` /
-  // `b.remediation` come from the backend in English only, so they are NOT
-  // rendered — the translated reason plus the translated contact line is
-  // what the worker sees.
+  // FIX 3: `b.detail` / `b.remediation` arrive from the backend in English
+  // only, so they are NOT rendered. Known block codes map to bilingual copy;
+  // anything unrecognised falls back to the bilingual generic.
   const BLOCK_LABELS = {
     MISSING_OSHA: 'blockMissingOsha',
     EXPIRED_SST: 'blockExpiredSst',
     MISSING_SST: 'blockMissingSst',
   };
-
   const reasonsHtml = blocks.map(b => {
     const key = BLOCK_LABELS[b.type];
-    const label = key ? t(key) : t('genericError');
     return `
     <div style="background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:12px;padding:16px;margin:8px 0;">
       <div style="font-weight:700;color:#ef4444;font-size:16px;">
-        ⛔ ${label}
+        ⛔ ${key ? t(key) : t('genericError')}
       </div>
     </div>
   `;

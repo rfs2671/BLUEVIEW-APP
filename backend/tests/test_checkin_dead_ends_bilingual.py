@@ -293,7 +293,7 @@ class BilingualCoverageTest(unittest.TestCase):
             "noTradesProceed",
             # FIX 2
             "manualEntryLink", "manualEntryNote", "cardNumberLabel",
-            "expirationLabel", "needCardOrManual", "manualNeedsValue",
+            "expirationLabel", "needCardOrManual",
             # FIX 3 — previously English-only
             "tagNotRegistered", "invalidPhone", "lookingUp", "checkingIn",
             "readingCard", "couldNotReadCard", "orientationNeeded",
@@ -340,9 +340,12 @@ class BilingualCoverageTest(unittest.TestCase):
         self.assertNotIn("showError(e.message)", self.html)
 
     def test_manual_entry_does_not_require_a_photo(self):
-        """The goStep gate accepts manual details in place of an image."""
-        self.assertIn("hasManualCardDetails", self.html)
-        self.assertIn("function chooseManualEntry", self.html)
+        """The goStep gate accepts manually typed card details in place of an
+        image, so no camera / a damaged card is never a dead-end."""
+        self.assertIn("function hasManualCardDetails", self.html)
+        self.assertIn(
+            "!oshaImage && !oshaData && !hasManualCardDetails()", self.html,
+        )
         # The old photo-mandatory gate is gone.
         self.assertNotIn("if (!oshaImage && !oshaData) {", self.html)
 

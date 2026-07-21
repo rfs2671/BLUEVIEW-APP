@@ -1581,12 +1581,19 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
 
     if not has_valid_sst:
         if expired_sst:
-            # Expired is still a hard block — it's a documented event, not
-            # an OCR gap. Keep LL196 enforcement strict here.
-            blocks.append({
+            # LL196 hard-block intentionally relaxed to flag-but-allow per
+            # product decision — expired SST is alerted, not blocked. Emitting
+            # this as a WARNING (not a block) keeps cert_result["cleared"] True
+            # so the worker checks in normally. register_and_checkin detects
+            # this EXPIRED_SST warning after the check-in is written to (a)
+            # write the compliance_alerts row (existing /compliance-alerts
+            # admin screen) and (b) dispatch an in-app notification to the
+            # project's admins + assigned CP.
+            warnings.append({
                 "type": "EXPIRED_SST",
-                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Cannot enter site per NYC LL196.",
-                "remediation": "Worker must complete SST renewal training and present updated card."
+                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Worker allowed in under flag-but-allow policy; SST renewal required.",
+                "cert_type": "SST",
+                "expired_on": expired_sst.strftime('%Y-%m-%d'),
             })
         elif not sst_certs:
             # Downgrade to warning: first-time NFC workers upload a single
@@ -7951,6 +7958,7 @@ async def register_and_checkin(data: dict):
     trade = data.get("trade")
     company = data.get("company")
     osha_card_image = data.get("osha_card_image")  # base64
+    selfie_image = data.get("selfie_image")  # base64 worker selfie — stored inline for later human spot-check ONLY (no face match, no liveness, no gate)
     osha_data = data.get("osha_data")  # OCR results dict
     osha_number = data.get("osha_number")
     safety_orientation = data.get("safety_orientation")  # dict of checked items
@@ -7998,13 +8006,11 @@ async def register_and_checkin(data: dict):
         if t and c:
             allowed_pairs.add((t, c))
     submitted_pair = ((trade or "").strip(), (company or "").strip())
-
     # FIX 1: a project with NO configured trades used to 409 here, which meant
     # a worker standing at the gate could never check in — a pure config gap
-    # became a hard block on a real person. Now we let them through, mark the
-    # trade as pending, and flag the check-in so the CP assigns it later.
-    # The strict-roster match below is UNCHANGED for projects that DO have
-    # trades configured — this bypass applies only when there are none.
+    # became a hard block on a real person. Now they proceed, the trade is
+    # marked pending, and the check-in is flagged for the CP. The strict
+    # roster match below is UNCHANGED for projects that DO have trades.
     needs_trade_assignment = False
     if not allowed_pairs:
         needs_trade_assignment = True
@@ -8042,6 +8048,7 @@ async def register_and_checkin(data: dict):
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
+            "selfie_image": selfie_image,  # inline base64, spot-check only (NOT R2)
             "signature": signature,
             "safety_orientations": [{
                 "project_id": project_id,
@@ -8064,6 +8071,8 @@ async def register_and_checkin(data: dict):
         update_fields = {"updated_at": now}
         if osha_card_image and not worker.get("osha_card_image"):
             update_fields["osha_card_image"] = osha_card_image
+        if selfie_image and not worker.get("selfie_image"):
+            update_fields["selfie_image"] = selfie_image  # inline base64, spot-check only (NOT R2)
         if osha_data:
             update_fields["osha_data"] = osha_data
         if osha_number:
@@ -8241,16 +8250,15 @@ async def register_and_checkin(data: dict):
 
     result = await db.checkins.insert_one(checkin_record)
 
-    # FIX 1: tell the CP + admins that this check-in needs a trade assigned.
-    # The check-in is ALREADY written above — this notification is
-    # failure-isolated so a notification problem can never block a worker who
-    # is standing at the gate.
+    # FIX 1: tell the CP + admins this check-in needs a trade assigned. The
+    # check-in is ALREADY written above; this dispatch is failure-isolated so
+    # a notification problem can never block a worker at the gate.
     if needs_trade_assignment:
         try:
             from zoneinfo import ZoneInfo
-            _est_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            _nt_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         except Exception:
-            _est_today = now.strftime("%Y-%m-%d")
+            _nt_today = now.strftime("%Y-%m-%d")
         try:
             await _notifications_inbox.dispatch_notification(
                 db,
@@ -8265,9 +8273,7 @@ async def register_and_checkin(data: dict):
                     f"project's trades and assign this worker."
                 ),
                 source_kind="checkin",
-                # Keyed on (worker, EST day) so a same-day repeat doesn't
-                # produce a duplicate alert.
-                source_id=f"needs-trade:{str(worker['_id'])}:{_est_today}",
+                source_id=f"needs-trade:{str(worker['_id'])}:{_nt_today}",
                 metadata={
                     "checkin_id": str(result.inserted_id),
                     "worker_id": str(worker["_id"]),
@@ -8276,6 +8282,53 @@ async def register_and_checkin(data: dict):
             )
         except Exception as e:
             logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")
+
+    # ── Relaxed EXPIRED_SST handling (flag-but-allow) ──
+    # The LL196 hard-block was intentionally relaxed in
+    # validate_worker_certifications: an expired SST is now a WARNING, so the
+    # worker has already checked in normally above (no red block). When that
+    # warning is present we still (a) write the compliance_alerts row so the
+    # /compliance-alerts admin screen stays populated, and (b) notify the
+    # project's admins + assigned CP via the in-app inbox. The check-in is
+    # ALREADY written; both side-effects are failure-isolated so a
+    # notification/DB blip can NEVER undo or block the successful check-in.
+    expired_sst_warnings = [w for w in cert_warnings if w.get("type") == "EXPIRED_SST"]
+    if expired_sst_warnings:
+        try:
+            # Reuse the existing compliance_alerts writer so the admin
+            # /compliance-alerts screen keeps surfacing these events.
+            await create_cert_block_alert(worker, project, expired_sst_warnings)
+        except Exception as e:
+            logger.warning(f"[expired_sst] compliance_alerts write failed: {e!r}")
+        try:
+            from zoneinfo import ZoneInfo
+            est_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            est_today = now.strftime("%Y-%m-%d")
+        exp_on = expired_sst_warnings[0].get("expired_on") or "an unknown date"
+        try:
+            # Mirror the inspection-prediction dispatch (predictions.py:559).
+            # source_id keyed on (worker, EST day) so a same-day re-tap does
+            # not double-alert. Wrapped so a dispatch failure NEVER blocks the
+            # already-written check-in (contract: test_v2_2_schema_scaffolding).
+            await _notifications_inbox.dispatch_notification(
+                db,
+                project=project,
+                kind="expired_sst_checkin",
+                severity="warning",
+                title="Expired SST card — worker checked in",
+                message=(
+                    f"{worker.get('name') or 'A worker'} checked in at "
+                    f"{project.get('name') or 'the site'} with an SST card that "
+                    f"expired {exp_on}. Entry allowed under flag-but-allow policy; "
+                    f"SST renewal required."
+                ),
+                source_kind="checkin",
+                source_id=f"{str(worker['_id'])}:{est_today}",
+                deeplink_anchor="workforce",
+            )
+        except Exception as e:
+            logger.warning(f"[expired_sst] dispatch_notification failed: {e!r}")
 
     return {
         "success": True,
