@@ -34,6 +34,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -552,7 +553,7 @@ export default function AdminUsersScreen() {
                   >
                     <Text style={s.projectItemName}>{proj.name}</Text>
                     {assignedProjects.includes(proj.id) && (
-                      <CheckCircle size={18} color="#10b981" />
+                      <CheckCircle size={18} color={semantic.verified} />
                     )}
                   </Pressable>
                 ))}

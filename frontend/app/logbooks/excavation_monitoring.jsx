@@ -13,6 +13,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TYPE = 'excavation_monitoring';
@@ -426,7 +427,7 @@ export default function ExcavationMonitoringLog() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
               onPress={() => handleSave('submitted')}
               loading={saving}
-              style={{ flex: 1, backgroundColor: '#4ade80', borderColor: '#4ade80' }}
+              style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
         </ScrollView>
@@ -460,7 +461,7 @@ function buildStyles(colors, isDark) {
     },
     toggleLabel: { color: colors.text.secondary, fontSize: 14 },
     toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
-    toggleDotActive: { backgroundColor: '#4ade80', borderColor: '#4ade80' },
+    toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
     buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     entryCard: {

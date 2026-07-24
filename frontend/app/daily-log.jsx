@@ -53,6 +53,7 @@ import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 
@@ -356,7 +357,7 @@ export default function DailyLogScreen() {
             <CheckCircle
               size={16}
               strokeWidth={1.5}
-              color={checkData.status === 'checked' ? '#4ade80' : colors.text.muted}
+              color={checkData.status === 'checked' ? semantic.verified : colors.text.muted}
             />
           </Pressable>
           <Pressable
@@ -550,7 +551,7 @@ export default function DailyLogScreen() {
                           </View>
                           {log.superintendent_signature && (
                             <View style={s.signedBadge}>
-                              <PenTool size={10} strokeWidth={1.5} color="#4ade80" />
+                              <PenTool size={10} strokeWidth={1.5} color={semantic.verified} />
                             </View>
                           )}
                         </View>
@@ -1260,8 +1261,8 @@ function buildStyles(colors, isDark) {
     justifyContent: 'center',
   },
   checkboxChecked: {
-    backgroundColor: '#4ade80',
-    borderColor: '#4ade80',
+    backgroundColor: semantic.verified,
+    borderColor: semantic.verified,
   },
   naCheckboxLabel: {
     fontSize: 14,

@@ -43,6 +43,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -454,7 +455,7 @@ export default function WorkerDetailScreen() {
                       >
                         <View style={s.orientationInfo}>
                           <View style={s.orientationBadge}>
-                            <ShieldCheck size={14} color="#22c55e" />
+                            <ShieldCheck size={14} color={semantic.verified} />
                           </View>
                           <View style={{ flex: 1 }}>
                             <Text style={s.orientationProject}>
@@ -899,8 +900,8 @@ function buildStyles(colors, isDark) {
     marginTop: 1,
   },
   checkIconChecked: {
-    backgroundColor: '#22c55e',
-    borderColor: '#22c55e',
+    backgroundColor: semantic.verified,
+    borderColor: semantic.verified,
   },
   checklistItemText: {
     fontSize: 13,

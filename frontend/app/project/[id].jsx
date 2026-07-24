@@ -67,6 +67,7 @@ import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -844,7 +845,7 @@ export default function ProjectDetailScreen() {
                   {siteDevices.map((device) => (
                     <GlassCard key={device.id} style={s.deviceCard}>
                       <View style={s.deviceHeader}>
-                        <Smartphone size={20} strokeWidth={1.5} color={device.is_active ? '#4ade80' : colors.text.muted} />
+                        <Smartphone size={20} strokeWidth={1.5} color={device.is_active ? semantic.verified : colors.text.muted} />
                         <View style={s.deviceInfo}>
                           <Text style={s.deviceName}>{device.device_name}</Text>
                           <Text style={s.deviceUsername}>@{device.username}</Text>
@@ -1004,7 +1005,7 @@ export default function ProjectDetailScreen() {
                         )}
                       </View>
                       {allComplete ? (
-                        <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
+                        <CheckCircle size={24} strokeWidth={1.5} color={semantic.verified} />
                       ) : (
                         <Clock size={24} strokeWidth={1.5} color="#f59e0b" />
                       )}
@@ -1054,7 +1055,7 @@ export default function ProjectDetailScreen() {
                                   </Text>
                                 </View>
                                 {isComplete && (
-                                  <CheckCircle size={14} strokeWidth={1.5} color="#4ade80" />
+                                  <CheckCircle size={14} strokeWidth={1.5} color={semantic.verified} />
                                 )}
                               </View>
                             );
@@ -1325,7 +1326,7 @@ export default function ProjectDetailScreen() {
           <View style={s.modalOverlay}>
             <View style={s.credentialsModal}>
               <View style={s.successIcon}>
-                <CheckCircle size={48} strokeWidth={1.5} color="#4ade80" />
+                <CheckCircle size={48} strokeWidth={1.5} color={semantic.verified} />
               </View>
               <Text style={s.credentialsTitle}>Device Created!</Text>
               <Text style={s.credentialsSubtitle}>
@@ -1640,7 +1641,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   deviceStatusTextActive: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   deviceActions: {
     flexDirection: 'row',
@@ -2030,7 +2031,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
   },
   checklistStatValueComplete: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   checklistStatDivider: {
     width: 1,

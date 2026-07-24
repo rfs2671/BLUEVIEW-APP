@@ -29,6 +29,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { checklistsAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 export default function ChecklistsScreen() {
@@ -221,7 +222,7 @@ export default function ChecklistsScreen() {
                           )}
                         </View>
                         {complete ? (
-                          <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
+                          <CheckCircle size={24} strokeWidth={1.5} color={semantic.verified} />
                         ) : (
                           <ChevronRight size={24} strokeWidth={1.5} color={colors.text.muted} />
                         )}
@@ -293,7 +294,7 @@ export default function ChecklistsScreen() {
                         <View style={s.itemLeft}>
                           <View style={s.checkIconContainer}>
                             {isChecked ? (
-                              <CheckCircle size={24} strokeWidth={1.5} color="#4ade80" />
+                              <CheckCircle size={24} strokeWidth={1.5} color={semantic.verified} />
                             ) : (
                               <Circle size={24} strokeWidth={1.5} color={colors.text.muted} />
                             )}

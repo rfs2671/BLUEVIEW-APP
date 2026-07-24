@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Animated, Pressable, Dimensions, Modal, Platfor
 import { BlurView } from 'expo-blur';
 import { X, AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 
 const { width } = Dimensions.get('window');
 
@@ -14,13 +15,13 @@ const toastConfig = {
     icon: AlertCircle,
     borderColor: 'rgba(248, 113, 113, 0.5)',
     bgColor: '#2a1313',
-    iconColor: '#f87171',
+    iconColor: semantic.critical,
   },
   success: {
     icon: CheckCircle,
     borderColor: 'rgba(74, 222, 128, 0.5)',
     bgColor: '#11261a',
-    iconColor: '#4ade80',
+    iconColor: semantic.verified,
   },
   warning: {
     icon: AlertTriangle,

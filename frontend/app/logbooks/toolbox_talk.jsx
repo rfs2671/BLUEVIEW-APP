@@ -16,6 +16,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const TOPICS = {
@@ -371,7 +372,7 @@ export default function ToolboxTalkLog() {
                   style={[s.signedToggle, attendee.signed && s.signedToggleActive]}
                 >
                   {attendee.signed
-                    ? <CheckCircle size={20} strokeWidth={1.5} color="#4ade80" />
+                    ? <CheckCircle size={20} strokeWidth={1.5} color={semantic.verified} />
                     : <View style={s.unsignedCircle} />
                   }
                 </Pressable>
@@ -582,7 +583,7 @@ function buildStyles(colors, isDark) {
     borderWidth: 1,
     borderColor: 'rgba(74,222,128,0.2)',
   },
-  autoSignText: { fontSize: 12, color: '#4ade80' },
+  autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },

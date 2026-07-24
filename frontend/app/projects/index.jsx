@@ -35,6 +35,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
@@ -564,7 +565,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   statusTextActive: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   deleteButton: {
     padding: spacing.sm,

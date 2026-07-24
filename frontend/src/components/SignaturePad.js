@@ -3,6 +3,7 @@ import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } 
 import { Trash2, Check, PenTool } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -204,7 +205,7 @@ const SignaturePad = ({
               <Text style={styles.signedText}>✓ Signed</Text>
             )}
             <View style={styles.signedBadge}>
-              <Check size={12} strokeWidth={2} color="#4ade80" />
+              <Check size={12} strokeWidth={2} color={semantic.verified} />
               <Text style={styles.signedBadgeText}>VERIFIED</Text>
             </View>
           </View>
@@ -374,7 +375,7 @@ function buildStyles(colors, isDark) {
     signedBadgeText: {
       fontSize: 10,
       fontWeight: '600',
-      color: '#4ade80',
+      color: semantic.verified,
       letterSpacing: 0.5,
     },
     actions: {

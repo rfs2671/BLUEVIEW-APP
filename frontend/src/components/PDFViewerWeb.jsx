@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, ActivityIndicator, TextInput, Scroll
 import { X, Download, FileText, MapPin, Send, Trash2, CheckCircle, Users } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { dropboxAPI, annotationsAPI, usersAPI } from '../utils/api';
+import { semantic } from '../styles/semanticColors';
 
 // Build a stable document identifier for an annotation. Direct-upload files
 // have an empty `path` so `file.path` alone would cause every project's
@@ -189,7 +190,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
   }, [selectedAnnotation, loadAnnotations]);
 
   const getMarkerColor = (annotation) => {
-    if (annotation.status === 'resolved') return '#22c55e';
+    if (annotation.status === 'resolved') return semantic.verified;
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
     if (creatorId === currentUserId) return '#1565C0';
@@ -490,7 +491,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
               <View style={styles.threadActions}>
                 {selectedAnnotation.status !== 'resolved' && (
                   <Pressable style={styles.resolveBtn} onPress={handleResolve}>
-                    <CheckCircle size={16} strokeWidth={1.5} color="#22c55e" />
+                    <CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />
                     <Text style={styles.resolveBtnText}>Mark Resolved</Text>
                   </Pressable>
                 )}
@@ -544,7 +545,7 @@ const styles = StyleSheet.create({
   replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
   threadActions: { flexDirection: 'row', gap: 12, marginTop: 16, paddingTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)' },
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)' },
-  resolveBtnText: { color: '#22c55e', fontSize: 13, fontWeight: '600' },
+  resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(239,68,68,0.12)' },
   deleteBtnText: { color: '#ef4444', fontSize: 13, fontWeight: '600' },
 });

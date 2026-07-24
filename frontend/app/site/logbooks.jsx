@@ -18,6 +18,7 @@ import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, getToken } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TABS = [
@@ -646,7 +647,7 @@ function buildStyles(colors, isDark) {
   statusSubmitted: { backgroundColor: 'rgba(74,222,128,0.12)', borderColor: 'rgba(74,222,128,0.3)' },
   statusDraft: { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: 'rgba(245,158,11,0.3)' },
   statusText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
-  statusTextSubmitted: { color: '#4ade80' },
+  statusTextSubmitted: { color: semantic.verified },
   statusTextDraft: { color: '#f59e0b' },
 
   // Document content
@@ -666,7 +667,7 @@ function buildStyles(colors, isDark) {
   // Signature section
   signatureSection: { marginTop: spacing.md },
   signatureDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.08)', marginBottom: spacing.sm },
-  signedByName: { fontSize: 13, color: '#4ade80', fontWeight: '500', marginTop: spacing.xs },
+  signedByName: { fontSize: 13, color: semantic.verified, fontWeight: '500', marginTop: spacing.xs },
 
   // Topic chips
   topicChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },

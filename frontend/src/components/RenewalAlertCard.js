@@ -28,6 +28,7 @@ import {
 import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 import apiClient from '../utils/api';
 
 const RenewalAlertCard = ({ projectId }) => {
@@ -95,13 +96,13 @@ const RenewalAlertCard = ({ projectId }) => {
     ['draft_ready', 'awaiting_gc'].includes(a.status)
   );
 
-  let accentColor = '#22c55e';
+  let accentColor = semantic.verified;
   let AlertIcon = ShieldCheck;
   let title = 'Renewal Ready';
   let subtitle = `${totalAlerts} permit${totalAlerts > 1 ? 's' : ''} eligible for renewal`;
 
   if (isUrgent) {
-    accentColor = '#ef4444';
+    accentColor = semantic.critical;
     AlertIcon = AlertTriangle;
     title = 'Urgent Renewal';
     // When v2 supplies the limiting_factor label, surface the "why"

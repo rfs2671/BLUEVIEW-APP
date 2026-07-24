@@ -31,6 +31,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, safetyStaffAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -288,10 +289,10 @@ export default function SafetyStaffScreen() {
     if (!dateStr) return null;
     const d = daysUntil(dateStr);
     if (d === null) return null;
-    let color = '#4ade80';
+    let color = semantic.verified;
     let prefix = '';
     if (d < 30) {
-      color = '#ef4444';
+      color = semantic.critical;
       prefix = '🚨 ';
     } else if (d < 90) {
       color = '#f59e0b';

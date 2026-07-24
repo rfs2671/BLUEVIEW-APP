@@ -64,6 +64,7 @@ import {
   ShieldCheck,
 } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
+import { semantic } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
 const formatDate = (value) => {
@@ -129,7 +130,7 @@ const FilingStatusCard = ({
     return (
       <View style={s.card}>
         <View style={[s.banner, s.bannerSuccess]}>
-          <ShieldCheck size={16} color="#10b981" />
+          <ShieldCheck size={16} color={semantic.verified} />
           <Text style={[s.bannerText, s.bannerTextSuccess]}>
             Renewed — DOB stamped the new expiration.
           </Text>
@@ -240,7 +241,7 @@ const FilingStatusCard = ({
           </Text>
           {error && (
             <View style={s.errorBlock}>
-              <AlertCircle size={14} color="#ef4444" />
+              <AlertCircle size={14} color={semantic.critical} />
               <View style={{ flex: 1 }}>
                 <Text style={s.errorMessage}>
                   {error.message || 'Could not start renewal.'}
@@ -446,18 +447,18 @@ function buildStyles(colors) {
     errorMessage: {
       fontFamily: typography.medium,
       fontSize: 12,
-      color: '#ef4444',
+      color: semantic.critical,
     },
     errorBlockerItem: {
       fontFamily: typography.regular,
       fontSize: 12,
-      color: '#ef4444',
+      color: semantic.critical,
       lineHeight: 18,
     },
     errorCode: {
       fontFamily: typography.regular,
       fontSize: 11,
-      color: '#ef4444',
+      color: semantic.critical,
       opacity: 0.8,
       marginTop: 2,
     },

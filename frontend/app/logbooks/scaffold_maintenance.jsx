@@ -17,6 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 // All maintenance questions exactly as per NYC DOB form
 const GENERAL_INFO_FIELDS = [
@@ -191,7 +192,7 @@ export default function ScaffoldMaintenanceLog() {
             onPress={() => setAnswer(questionKey, opt)}
             style={[styles.answerBtn, current === opt && getAnswerActive(opt)]}
           >
-            {opt === 'YES' && <CheckCircle size={14} strokeWidth={2} color={current === 'YES' ? '#4ade80' : colors.text.muted} />}
+            {opt === 'YES' && <CheckCircle size={14} strokeWidth={2} color={current === 'YES' ? semantic.verified : colors.text.muted} />}
             {opt === 'NO' && <XCircle size={14} strokeWidth={2} color={current === 'NO' ? '#ef4444' : colors.text.muted} />}
             {opt === 'N/A' && <MinusCircle size={14} strokeWidth={2} color={current === 'N/A' ? '#94a3b8' : colors.text.muted} />}
             <Text style={[styles.answerBtnText, current === opt && getAnswerTextStyle(opt)]}>{opt}</Text>
@@ -207,7 +208,7 @@ export default function ScaffoldMaintenanceLog() {
     return styles.answerBtnNA;
   };
   const getAnswerTextStyle = (opt) => {
-    if (opt === 'YES') return { color: '#4ade80' };
+    if (opt === 'YES') return { color: semantic.verified };
     if (opt === 'NO') return { color: '#ef4444' };
     return { color: '#94a3b8' };
   };
@@ -455,7 +456,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(74,222,128,0.2)',
   },
-  autoSignText: { fontSize: 12, color: '#4ade80' },
+  autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },

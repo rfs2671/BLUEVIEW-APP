@@ -17,6 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -428,7 +429,7 @@ export default function PreShiftSignIn() {
             />
             <GlassButton
               title={saving ? 'Submitting...' : 'Submit'}
-              icon={<CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />}
+              icon={<CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />}
               onPress={() => handleSave('submitted')}
               loading={saving}
               style={styles.submitBtn}
@@ -586,7 +587,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
-  sigSignedText: { fontSize: 11, color: '#4ade80', fontWeight: '600' },
+  sigSignedText: { fontSize: 11, color: semantic.verified, fontWeight: '600' },
   sigMissing: {
     flex: 1,
     flexDirection: 'row',
@@ -618,10 +619,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
-  ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: '#4ade80' },
+  ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: semantic.verified },
   ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' },
   ynText: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
-  ynTextYes: { color: '#4ade80' },
+  ynTextYes: { color: semantic.verified },
   ynTextNo: { color: '#ef4444' },
 
   addRowBtn: { marginTop: spacing.sm, alignSelf: 'flex-start' },

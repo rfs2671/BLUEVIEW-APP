@@ -30,6 +30,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import apiClient from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 /**
@@ -213,7 +214,7 @@ export default function PublicCheckInScreen() {
             {success ? (
               /* Success State */
               <GlassCard style={s.successCard}>
-                <CheckCircle size={64} strokeWidth={1.5} color="#4ade80" />
+                <CheckCircle size={64} strokeWidth={1.5} color={semantic.verified} />
                 <Text style={s.successTitle}>Check-In Successful!</Text>
                 <Text style={s.successText}>
                   You are now checked in to {projectInfo.project_name}
@@ -599,7 +600,7 @@ function buildStyles(colors, isDark) {
   successTitle: {
     fontSize: 24,
     fontWeight: '500',
-    color: '#4ade80',
+    color: semantic.verified,
     marginTop: spacing.md,
   },
   successText: {

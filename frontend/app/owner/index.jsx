@@ -44,6 +44,7 @@ import apiClient from '../../src/utils/api';
 // monitoring product never holds credentials; the agent_crypto
 // import + the credential modal + the authorization gate are gone.
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 // Owner password
 const OWNER_PASSWORD = 'Asdddfgh1$';
@@ -641,9 +642,9 @@ export default function OwnerPortalScreen() {
                     const d = new Date(expStr);
                     if (isNaN(d.getTime())) return '#6b7280';
                     const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-                    if (daysLeft < 0) return '#ef4444';
+                    if (daysLeft < 0) return semantic.critical;
                     if (daysLeft <= 60) return '#f59e0b';
-                    return '#22c55e';
+                    return semantic.verified;
                   };
                   const insGL = insRecords.find(r => r.insurance_type === 'general_liability');
                   const insWC = insRecords.find(r => r.insurance_type === 'workers_comp');
@@ -693,7 +694,7 @@ export default function OwnerPortalScreen() {
                       {hasGc ? (
                         <View style={styles.gcInfoBlock}>
                           <View style={styles.gcLicenseRow}>
-                            <Text style={[styles.gcLicenseText, { color: gcActive ? '#22c55e' : '#ef4444' }]}>
+                            <Text style={[styles.gcLicenseText, { color: gcActive ? semantic.verified : semantic.critical }]}>
                               GC-{company.gc_license_number} · {gcStatus || 'Unknown'}
                             </Text>
                           </View>
@@ -885,7 +886,7 @@ export default function OwnerPortalScreen() {
                     />
                     {gcSelection ? (
                       <View style={styles.gcLinkedBadge}>
-                        <CheckCircle size={14} color="#22c55e" />
+                        <CheckCircle size={14} color={semantic.verified} />
                         <Text style={styles.gcLinkedText}>
                           GC-{gcSelection.license_number} · {gcSelection.license_status || 'Active'}
                         </Text>
@@ -1135,7 +1136,7 @@ export default function OwnerPortalScreen() {
                           >
                             <Text style={styles.dropdownText}>{company.name}</Text>
                             {migrationAssignments[admin.id] === company.id && (
-                              <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                              <CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />
                             )}
                           </Pressable>
                         ))}
@@ -1609,7 +1610,7 @@ const styles = StyleSheet.create({
   // a v2 filing-automation revisit needs them again.
   modalErrorText: {
     fontSize: 12,
-    color: '#ef4444',
+    color: semantic.critical,
     marginTop: 6,
   },
   filingRepsAddBtn: {
@@ -1675,7 +1676,7 @@ const styles = StyleSheet.create({
   },
   gcLinkedText: {
     fontSize: 12,
-    color: '#22c55e',
+    color: semantic.verified,
     fontWeight: '500',
   },
   gcUnlinkedText: {

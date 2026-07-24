@@ -36,6 +36,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -232,7 +233,7 @@ export default function SiteDevicesScreen() {
                 <GlassCard key={device.id} style={s.deviceCard}>
                   <View style={s.deviceHeader}>
                     <IconPod size={44}>
-                      <Smartphone size={18} strokeWidth={1.5} color={device.is_active ? '#4ade80' : colors.text.muted} />
+                      <Smartphone size={18} strokeWidth={1.5} color={device.is_active ? semantic.verified : colors.text.muted} />
                     </IconPod>
                     <View style={s.deviceInfo}>
                       <Text style={s.deviceName}>{device.device_name}</Text>
@@ -243,7 +244,7 @@ export default function SiteDevicesScreen() {
                     </View>
                     <View style={[s.statusBadge, device.is_active && s.statusActive]}>
                       {device.is_active ? (
-                        <CheckCircle size={12} strokeWidth={1.5} color="#4ade80" />
+                        <CheckCircle size={12} strokeWidth={1.5} color={semantic.verified} />
                       ) : (
                         <XCircle size={12} strokeWidth={1.5} color={colors.text.muted} />
                       )}
@@ -421,7 +422,7 @@ export default function SiteDevicesScreen() {
           <View style={s.modalOverlay}>
             <View style={s.credentialsModal}>
               <View style={s.successIcon}>
-                <CheckCircle size={48} strokeWidth={1.5} color="#4ade80" />
+                <CheckCircle size={48} strokeWidth={1.5} color={semantic.verified} />
               </View>
               <Text style={s.credentialsTitle}>Device Created!</Text>
               <Text style={s.credentialsSubtitle}>
@@ -563,7 +564,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   statusTextActive: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   credentialsRow: {
     flexDirection: 'row',

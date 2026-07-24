@@ -22,6 +22,8 @@
  *   kinds:  array of signal_kind entries.
  */
 
+import { semantic } from '../styles/semanticColors';
+
 export const SIGNAL_FAMILIES = [
   {
     key: 'permits',
@@ -289,5 +291,5 @@ export const TOTAL_SIGNAL_KINDS = Object.keys(SIGNAL_KIND_INDEX).length;
 export const SEVERITY_PALETTE = {
   info: { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', label: 'Info' },
   warning: { color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)', label: 'Warning' },
-  critical: { color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', label: 'Critical' },
+  critical: { color: semantic.critical, bg: 'rgba(239, 68, 68, 0.15)', label: 'Critical' },
 };

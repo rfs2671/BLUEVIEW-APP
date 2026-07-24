@@ -25,6 +25,7 @@ import {
 } from 'react-native';
 import { ChevronDown, ChevronUp, History } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
+import { semantic } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
 // Status palette mirrors FilingStatusCard's STATUS_BADGE — same color
@@ -35,9 +36,9 @@ const STATUS_PALETTE = {
   queued:      { label: 'Queued',           color: '#6b7280' },
   claimed:     { label: 'Claimed',          color: '#3b82f6' },
   in_progress: { label: 'In Progress',      color: '#f59e0b' },
-  filed:       { label: 'Filed',            color: '#10b981' },
-  completed:   { label: 'Completed',        color: '#10b981' },
-  failed:      { label: 'Failed',           color: '#ef4444' },
+  filed:       { label: 'Filed',            color: semantic.verified },
+  completed:   { label: 'Completed',        color: semantic.verified },
+  failed:      { label: 'Failed',           color: semantic.critical },
   cancelled:   { label: 'Cancelled',        color: '#6b7280' },
 };
 
@@ -221,7 +222,7 @@ function buildStyles(colors) {
       color: colors.text.primary,
     },
     detailValueError: {
-      color: '#ef4444',
+      color: semantic.critical,
     },
   });
 }

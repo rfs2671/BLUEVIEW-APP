@@ -28,6 +28,7 @@ import { useProjects } from '../../src/hooks/useProjects';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const WORKER_PROFILE_KEY = 'blueview_worker_profile';
@@ -306,7 +307,7 @@ export default function NfcCheckInScreen() {
         <SafeAreaView style={s.container}>
           <View style={s.centerContent}>
             <View style={s.successIcon}>
-              <CheckCircle size={100} strokeWidth={1.5} color="#10b981" />
+              <CheckCircle size={100} strokeWidth={1.5} color={semantic.verified} />
             </View>
             <Text style={s.successTitle}>Checked In!</Text>
             <Text style={s.successMessage}>All books signed.</Text>
@@ -461,7 +462,7 @@ function buildStyles(colors, isDark) {
   successTitle: {
     fontSize: 42,
     fontWeight: '200',
-    color: '#10b981',
+    color: semantic.verified,
     marginBottom: spacing.xs,
   },
   successMessage: {

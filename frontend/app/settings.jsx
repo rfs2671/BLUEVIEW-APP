@@ -42,6 +42,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import apiClient, { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 
 const INSURANCE_LABELS = {
   general_liability: 'General Liability',
@@ -54,9 +55,9 @@ const getExpirationColor = (dateStr) => {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '#6b7280';
   const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-  if (daysLeft < 0) return '#ef4444';
+  if (daysLeft < 0) return semantic.critical;
   if (daysLeft <= 60) return '#f59e0b';
-  return '#22c55e';
+  return semantic.verified;
 };
 
 const formatDate = (dateStr) => {
@@ -502,19 +503,19 @@ export default function SettingsScreen() {
                   <GlassCard style={s.card}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
                       <IconPod size={44}>
-                        <Building2 size={20} strokeWidth={1.5} color={licenseActive ? '#22c55e' : '#ef4444'} />
+                        <Building2 size={20} strokeWidth={1.5} color={licenseActive ? semantic.verified : semantic.critical} />
                       </IconPod>
                       <View style={{ flex: 1 }}>
                         <Text style={{ fontSize: 16, fontWeight: '600', color: colors.text.primary }}>
                           GC-{insData?.gc_license_number || '--'}
                         </Text>
-                        <Text style={{ fontSize: 12, fontWeight: '500', color: licenseActive ? '#22c55e' : '#ef4444', marginTop: 2 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '500', color: licenseActive ? semantic.verified : semantic.critical, marginTop: 2 }}>
                           {licenseStatus || 'Unknown'}
                         </Text>
                       </View>
                       {licenseActive
-                        ? <CheckCircle size={20} color="#22c55e" />
-                        : <ShieldAlert size={20} color="#ef4444" />}
+                        ? <CheckCircle size={20} color={semantic.verified} />
+                        : <ShieldAlert size={20} color={semantic.critical} />}
                     </View>
                     {!!insData?.gc_business_name && (
                       <Text style={{ fontSize: 13, color: colors.text.muted, marginTop: spacing.sm }}>
@@ -562,7 +563,7 @@ export default function SettingsScreen() {
                               borderColor: isCur ? '#22c55e40' : '#ef444440',
                               backgroundColor: isCur ? '#22c55e10' : '#ef444410',
                             }}>
-                              <Text style={{ fontSize: 10, fontWeight: '600', color: isCur ? '#22c55e' : '#ef4444', textTransform: 'uppercase' }}>
+                              <Text style={{ fontSize: 10, fontWeight: '600', color: isCur ? semantic.verified : semantic.critical, textTransform: 'uppercase' }}>
                                 {isCur ? 'Current' : 'Expired'}
                               </Text>
                             </View>

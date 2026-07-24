@@ -3,6 +3,7 @@ import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native
 import { AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 
 /**
  * Themed confirm dialog for destructive actions.
@@ -42,7 +43,7 @@ export default function ConfirmDialog({
         <View style={[styles.card, { backgroundColor: isDark ? '#0f172a' : '#ffffff', borderColor: isDark ? '#1e293b' : '#e2e8f0' }]}>
           <View style={styles.header}>
             <View style={[styles.iconWrap, { backgroundColor: destructive ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)' }]}>
-              <AlertTriangle size={22} strokeWidth={2} color={destructive ? '#ef4444' : '#3b82f6'} />
+              <AlertTriangle size={22} strokeWidth={2} color={destructive ? semantic.critical : '#3b82f6'} />
             </View>
             <Text style={[styles.title, { color: colors.text.primary }]}>{title}</Text>
           </View>
@@ -55,7 +56,7 @@ export default function ConfirmDialog({
             <View style={styles.details}>
               {details.map((line, i) => (
                 <View key={i} style={styles.detailRow}>
-                  <Text style={[styles.detailBullet, { color: destructive ? '#ef4444' : '#3b82f6' }]}>•</Text>
+                  <Text style={[styles.detailBullet, { color: destructive ? semantic.critical : '#3b82f6' }]}>•</Text>
                   <Text style={[styles.detailText, { color: colors.text.secondary }]}>{line}</Text>
                 </View>
               ))}
@@ -78,7 +79,7 @@ export default function ConfirmDialog({
               style={({ pressed }) => [
                 styles.btn,
                 styles.btnConfirm,
-                { backgroundColor: destructive ? '#dc2626' : '#2563eb', opacity: pressed ? 0.85 : 1 },
+                { backgroundColor: destructive ? semantic.criticalFill : '#2563eb', opacity: pressed ? 0.85 : 1 },
               ]}
             >
               <Text style={styles.btnConfirmText}>{confirmLabel}</Text>

@@ -52,6 +52,7 @@ import {
 import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 import { notificationsAPI } from '../utils/api';
 
 const SEVERITY_ICONS = {
@@ -61,7 +62,7 @@ const SEVERITY_ICONS = {
 };
 
 const SEVERITY_COLORS = {
-  critical: '#f87171',
+  critical: semantic.critical,
   warning: '#fbbf24',
   info: '#94a3b8',
 };

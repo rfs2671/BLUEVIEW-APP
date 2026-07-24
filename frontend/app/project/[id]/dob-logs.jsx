@@ -41,6 +41,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -48,8 +49,8 @@ import InfoTooltip from '../../../src/components/InfoTooltip';
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
   if (severity === 'Action' || severity === 'Critical' || severity === 'Medium')
-    return { color: '#ef4444', label: 'Action Needed' };
-  return { color: '#22c55e', label: 'Good' };
+    return { color: semantic.critical, label: 'Action Needed' };
+  return { color: semantic.verified, label: 'Good' };
 };
 
 const parseAnyDate = (dateStr) => {
@@ -304,7 +305,7 @@ export default function DOBLogsScreen() {
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
               <View style={[s.typeBadge, { borderColor: '#22c55e40' }]}>
-                <Text style={[s.typeText, { color: '#22c55e' }]}>Permit</Text>
+                <Text style={[s.typeText, { color: semantic.verified }]}>Permit</Text>
               </View>
             </View>
             <View style={s.logHeaderRight}>
@@ -338,8 +339,8 @@ export default function DOBLogsScreen() {
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {(isExpired || isExpiring) && (
             <View style={[s.expirationBanner, isExpired ? s.expiredBanner : s.expiringBanner]}>
-              <AlertTriangle size={14} color={isExpired ? '#ef4444' : '#f59e0b'} />
-              <Text style={[s.expirationText, { color: isExpired ? '#ef4444' : '#f59e0b' }]}>
+              <AlertTriangle size={14} color={isExpired ? semantic.critical : '#f59e0b'} />
+              <Text style={[s.expirationText, { color: isExpired ? semantic.critical : '#f59e0b' }]}>
                 {isExpired ? `EXPIRED ${Math.abs(days)} days ago` : `Expires in ${days} day${days !== 1 ? 's' : ''}`}
               </Text>
             </View>
@@ -368,7 +369,7 @@ export default function DOBLogsScreen() {
               {needsRenewal && !isBisLegacy && (
                 <GlassButton
                   title={isPreparing ? 'Preparing...' : 'Prepare Renewal'}
-                  icon={isPreparing ? <ActivityIndicator size={14} color="#22c55e" /> : <FileCheck size={16} strokeWidth={1.5} color="#22c55e" />}
+                  icon={isPreparing ? <ActivityIndicator size={14} color={semantic.verified} /> : <FileCheck size={16} strokeWidth={1.5} color={semantic.verified} />}
                   onPress={() => handlePrepareRenewal(log)}
                   disabled={isPreparing}
                   style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]}
@@ -412,15 +413,15 @@ export default function DOBLogsScreen() {
       NOV: 'VIOLATION',
     };
     const subtypeColors = {
-      SWO_FULL: '#dc2626', SWO_PARTIAL: '#dc2626',
-      VACATE_FULL: '#dc2626', VACATE_PARTIAL: '#dc2626',
-      COMM_ORDER: '#dc2626',
+      SWO_FULL: semantic.critical, SWO_PARTIAL: semantic.critical,
+      VACATE_FULL: semantic.critical, VACATE_PARTIAL: semantic.critical,
+      COMM_ORDER: semantic.critical,
       ECB: '#f97316',
-      NOV: '#ef4444',
+      NOV: semantic.critical,
     };
     const subtype = log.violation_subtype || 'NOV';
     const headerLabel = subtypeLabels[subtype] || 'VIOLATION';
-    const headerColor = subtypeColors[subtype] || '#ef4444';
+    const headerColor = subtypeColors[subtype] || semantic.critical;
     const isSWO = subtype.startsWith('SWO') || subtype.startsWith('VACATE');
     const displayDate = log.violation_date || log.detected_at;
 
@@ -462,8 +463,8 @@ export default function DOBLogsScreen() {
                 const isOverdue = deadlineDays < 0;
                 return (
                   <View style={[s.expirationBanner, { backgroundColor: isOverdue ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)' }]}>
-                    <AlertTriangle size={14} color={isOverdue ? '#ef4444' : '#f59e0b'} />
-                    <Text style={[s.expirationText, { color: isOverdue ? '#ef4444' : '#f59e0b', fontWeight: '600' }]}>
+                    <AlertTriangle size={14} color={isOverdue ? semantic.critical : '#f59e0b'} />
+                    <Text style={[s.expirationText, { color: isOverdue ? semantic.critical : '#f59e0b', fontWeight: '600' }]}>
                       {isOverdue ? `OVERDUE by ${Math.abs(deadlineDays)} days` : `${deadlineDays} days to comply`}
                     </Text>
                   </View>
@@ -482,7 +483,7 @@ export default function DOBLogsScreen() {
                 <View style={{ marginTop: 8 }}>
                   <Text style={{ fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>RESOLUTION STATUS</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ['certified','dismissed','paid','resolved'].includes(log.resolution_state) ? '#22c55e' : ['hearing_scheduled','cure_pending'].includes(log.resolution_state) ? '#f59e0b' : '#ef4444' }} />
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ['certified','dismissed','paid','resolved'].includes(log.resolution_state) ? semantic.verified : ['hearing_scheduled','cure_pending'].includes(log.resolution_state) ? '#f59e0b' : semantic.critical }} />
                     <Text style={{ fontSize: 13, color: colors.text.primary, fontWeight: '600' }}>
                       {{'open':'Open — Unresolved','cure_pending':'Cure Submitted — Awaiting Certification','hearing_scheduled':'ECB Hearing Scheduled','hearing_past':'Hearing Occurred — Awaiting Result','certified':'Certified — Resolved','dismissed':'Dismissed','paid':'Penalty Paid','resolved':'Resolved'}[log.resolution_state] || log.resolution_state}
                     </Text>
@@ -508,10 +509,10 @@ export default function DOBLogsScreen() {
 
     // Risk level color mapping
     const riskColors = {
-      CRITICAL: '#dc2626',
+      CRITICAL: semantic.critical,
       HIGH: '#f97316',
       MEDIUM: '#f59e0b',
-      LOW: '#22c55e',
+      LOW: semantic.verified,
       RESOLVED: '#6b7280',
       PENDING: '#3b82f6',
     };
@@ -541,14 +542,14 @@ export default function DOBLogsScreen() {
           {/* Disposition badges */}
           {isResolved && (
             <View style={[s.expirationBanner, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
-              <CheckCircle size={14} color="#22c55e" />
-              <Text style={[s.expirationText, { color: '#22c55e', fontWeight: '500' }]}>Resolved</Text>
+              <CheckCircle size={14} color={semantic.verified} />
+              <Text style={[s.expirationText, { color: semantic.verified, fontWeight: '500' }]}>Resolved</Text>
             </View>
           )}
           {hasLinkedViolation && (
             <View style={[s.expirationBanner, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
-              <AlertTriangle size={14} color="#ef4444" />
-              <Text style={[s.expirationText, { color: '#ef4444', fontWeight: '600' }]}>Violation Issued</Text>
+              <AlertTriangle size={14} color={semantic.critical} />
+              <Text style={[s.expirationText, { color: semantic.critical, fontWeight: '600' }]}>Violation Issued</Text>
             </View>
           )}
 
@@ -604,8 +605,8 @@ export default function DOBLogsScreen() {
                   if (linked) setExpandedLogId(linked.id);
                 }}>
                   <View style={[s.nextActionBox, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                    <Text style={[s.nextActionLabel, { color: '#ef4444' }]}>VIOLATION ISSUED</Text>
-                    <Text style={[s.nextActionText, { color: '#ef4444' }]}>Violation issued from this complaint — tap to view</Text>
+                    <Text style={[s.nextActionLabel, { color: semantic.critical }]}>VIOLATION ISSUED</Text>
+                    <Text style={[s.nextActionText, { color: semantic.critical }]}>Violation issued from this complaint — tap to view</Text>
                   </View>
                 </Pressable>
               )}
@@ -625,10 +626,10 @@ export default function DOBLogsScreen() {
     const isExpanded = expandedLogId === log.id;
     const result = (log.inspection_result || '').toUpperCase();
     const resultConfig = result.includes('FAIL')
-      ? { color: '#ef4444', label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
+      ? { color: semantic.critical, label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
       : result.includes('PARTIAL')
       ? { color: '#f59e0b', label: 'Partial', bg: 'rgba(245,158,11,0.1)' }
-      : { color: '#22c55e', label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
+      : { color: semantic.verified, label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -786,8 +787,8 @@ export default function DOBLogsScreen() {
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
-                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? '#ef4444' : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: '#ef4444' }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
+                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? semantic.critical : colors.text.muted)} />
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: semantic.critical }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
               </GlassCard>
             </Pressable>
@@ -837,7 +838,7 @@ export default function DOBLogsScreen() {
                 )}
                 {expiredPermits.length > 0 && (
                   <View style={s.renewalStat}>
-                    <Text style={[s.renewalStatNum, { color: '#ef4444' }]}>{expiredPermits.length}</Text>
+                    <Text style={[s.renewalStatNum, { color: semantic.critical }]}>{expiredPermits.length}</Text>
                     <Text style={s.renewalStatLabel}>Expired</Text>
                   </View>
                 )}
@@ -849,7 +850,7 @@ export default function DOBLogsScreen() {
                     <Text style={s.renewalItemText} numberOfLines={1}>
                       {p.work_type || p.permit_type || 'Permit'} ({p.job_number || '—'})
                     </Text>
-                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? '#ef4444' : '#f59e0b' }]}>
+                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.critical : '#f59e0b' }]}>
                       {d !== null ? (d < 0 ? `${Math.abs(d)}d overdue` : `${d}d left`) : 'Expired'}
                     </Text>
                   </View>
@@ -1063,8 +1064,8 @@ function buildStyles(colors, isDark) {
     renewalMore: { fontSize: 11, color: colors.text.muted, marginTop: 4, marginLeft: spacing.lg + spacing.sm },
 
     // Renew bubble on permit cards
-    renewBubble: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22c55e', paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.full },
-    renewBubbleUrgent: { backgroundColor: '#ef4444' },
+    renewBubble: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: semantic.verified, paddingHorizontal: 10, paddingVertical: 4, borderRadius: borderRadius.full },
+    renewBubbleUrgent: { backgroundColor: semantic.critical },
     renewBubbleText: { fontSize: 11, fontWeight: '600', color: '#fff' },
 
     // BIS legacy banner

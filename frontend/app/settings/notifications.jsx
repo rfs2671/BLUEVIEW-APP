@@ -83,6 +83,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { useToast } from '../../src/components/Toast';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
@@ -1413,7 +1414,7 @@ function buildStyles(colors) {
     previewError: {
       fontFamily: typography.regular,
       fontSize: 12,
-      color: '#ef4444',
+      color: semantic.critical,
       lineHeight: 17,
     },
     previewEmpty: {
@@ -1760,7 +1761,7 @@ function buildStyles(colors) {
       flex: 1,
       fontFamily: typography.regular,
       fontSize: 12,
-      color: '#ef4444',
+      color: semantic.critical,
       lineHeight: 17,
     },
 

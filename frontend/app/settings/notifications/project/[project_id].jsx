@@ -64,6 +64,7 @@ import { useTheme } from '../../../../src/context/ThemeContext';
 import { useToast } from '../../../../src/components/Toast';
 import apiClient from '../../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../../src/styles/theme';
+import { semantic } from '../../../../src/styles/semanticColors';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
@@ -1239,7 +1240,7 @@ function buildStyles(colors) {
       borderWidth: 1, borderColor: '#ef444440',
       backgroundColor: '#ef444415', marginTop: spacing.sm,
     },
-    errorBlockText: { flex: 1, fontFamily: typography.regular, fontSize: 12, color: '#ef4444', lineHeight: 17 },
+    errorBlockText: { flex: 1, fontFamily: typography.regular, fontSize: 12, color: semantic.critical, lineHeight: 17 },
 
     mobileStickyBar: {
       position: 'absolute', bottom: 0, left: 0, right: 0,

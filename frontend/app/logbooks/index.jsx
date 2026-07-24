@@ -33,6 +33,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 // Icon mapping for dynamic logbook types from API
@@ -221,7 +222,7 @@ export default function LogBooksScreen() {
     if (status === 'submitted') {
       return (
         <View style={[styles.badge, styles.badgeSubmitted]}>
-          <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
+          <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />
           <Text style={[styles.badgeText, styles.badgeTextSubmitted]}>Done</Text>
         </View>
       );
@@ -315,7 +316,7 @@ export default function LogBooksScreen() {
                   >
                     <Text style={styles.projectOptionText}>{p.name}</Text>
                     {(p._id || p.id) === (selectedProject?._id || selectedProject?.id) && (
-                      <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                      <CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />
                     )}
                   </Pressable>
                 ))}
@@ -587,7 +588,7 @@ function buildStyles(colors, isDark) {
     badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
     badgePending: { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
     badgeText: { fontSize: 11, fontWeight: '500' },
-    badgeTextSubmitted: { color: '#4ade80' },
+    badgeTextSubmitted: { color: semantic.verified },
     badgeTextDraft: { color: '#fbbf24' },
     badgeTextPending: { color: colors.text.muted },
 
@@ -602,7 +603,7 @@ function buildStyles(colors, isDark) {
       backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
       borderRadius: 3, overflow: 'hidden',
     },
-    summaryBarFill: { height: '100%', backgroundColor: '#4ade80', borderRadius: 3 },
+    summaryBarFill: { height: '100%', backgroundColor: semantic.verified, borderRadius: 3 },
     summaryCount: { fontSize: 14, fontWeight: '500', color: colors.text.secondary },
   });
 }

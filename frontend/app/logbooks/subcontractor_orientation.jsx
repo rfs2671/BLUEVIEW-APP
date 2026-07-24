@@ -31,6 +31,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 const LANGUAGE_LABELS = {
   en: 'English',
@@ -310,7 +311,7 @@ export default function SubcontractorOrientation() {
                         newChecklist[item.key] && styles.checkboxActive,
                       ]}>
                         {newChecklist[item.key] && (
-                          <CheckCircle size={14} strokeWidth={2} color="#4ade80" />
+                          <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />
                         )}
                       </View>
                       <Text style={[
@@ -328,7 +329,7 @@ export default function SubcontractorOrientation() {
               <Text style={[styles.sectionTitle, { marginTop: spacing.md }]}>CP Signature</Text>
               {newCpSignature && (
                 <View style={styles.autoSignBadge}>
-                  <CheckCircle size={14} strokeWidth={1.5} color="#4ade80" />
+                  <CheckCircle size={14} strokeWidth={1.5} color={semantic.verified} />
                   <Text style={styles.autoSignText}>Auto-filled from your saved profile</Text>
                 </View>
               )}
@@ -403,7 +404,7 @@ export default function SubcontractorOrientation() {
                       <View style={styles.orientRight}>
                         <View style={[styles.statusBadge, isSigned ? styles.statusSigned : styles.statusPending]}>
                           {isSigned
-                            ? <CheckCircle size={12} strokeWidth={2} color="#4ade80" />
+                            ? <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />
                             : null}
                           <Text style={[styles.statusText, isSigned ? styles.statusTextSigned : styles.statusTextPending]}>
                             {isSigned ? 'Signed' : 'Needs CP sig'}
@@ -472,7 +473,7 @@ export default function SubcontractorOrientation() {
                               return (
                                 <View key={item.key} style={styles.readonlyCheckRow}>
                                   <View style={[styles.checkbox, isChecked && styles.checkboxActive]}>
-                                    {isChecked && <CheckCircle size={12} strokeWidth={2} color="#4ade80" />}
+                                    {isChecked && <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />}
                                   </View>
                                   <Text style={[styles.checkLabel, isChecked && styles.checkLabelActive]}>
                                     {item.label}
@@ -492,7 +493,7 @@ export default function SubcontractorOrientation() {
 
                         {isSigned && (
                           <View style={styles.signedBanner}>
-                            <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                            <CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />
                             <Text style={styles.signedBannerText}>
                               Signed by {orient.cp_name}
                             </Text>
@@ -640,7 +641,7 @@ const styles = StyleSheet.create({
   },
   checkboxActive: {
     backgroundColor: 'rgba(74,222,128,0.1)',
-    borderColor: '#4ade80',
+    borderColor: semantic.verified,
   },
   checkLabel: { flex: 1, fontSize: 13, color: colors.text.muted, lineHeight: 18 },
   checkLabelActive: { color: colors.text.secondary },
@@ -655,7 +656,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(74,222,128,0.2)',
   },
-  autoSignText: { fontSize: 12, color: '#4ade80' },
+  autoSignText: { fontSize: 12, color: semantic.verified },
   formActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
   cancelBtn: { flex: 1 },
   saveBtn: {
@@ -714,7 +715,7 @@ const styles = StyleSheet.create({
   statusSigned: { backgroundColor: 'rgba(74,222,128,0.15)' },
   statusPending: { backgroundColor: 'rgba(245,158,11,0.15)' },
   statusText: { fontSize: 11, fontWeight: '600' },
-  statusTextSigned: { color: '#4ade80' },
+  statusTextSigned: { color: semantic.verified },
   statusTextPending: { color: '#f59e0b' },
   orientDetail: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
   orientDetailDivider: {
@@ -762,5 +763,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(74,222,128,0.2)',
   },
-  signedBannerText: { fontSize: 13, color: '#4ade80', fontWeight: '500' },
+  signedBannerText: { fontSize: 13, color: semantic.verified, fontWeight: '500' },
 });

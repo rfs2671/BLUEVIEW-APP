@@ -32,6 +32,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -341,7 +342,7 @@ export default function SuperintendentScreen() {
                 <GlassCard key={reg.id || reg._id} style={s.card}>
                   <View style={s.cardRow}>
                     <IconPod size={40}>
-                      <HardHat size={18} strokeWidth={1.5} color={reg.is_active ? '#4ade80' : colors.text.muted} />
+                      <HardHat size={18} strokeWidth={1.5} color={reg.is_active ? semantic.verified : colors.text.muted} />
                     </IconPod>
                     <View style={s.cardInfo}>
                       <Text style={s.name}>{reg.full_name}</Text>
@@ -633,7 +634,7 @@ export default function SuperintendentScreen() {
                     value={!!editingReg?.is_active}
                     onValueChange={handleToggleActive}
                     trackColor={{ false: 'rgba(100,116,139,0.4)', true: 'rgba(74,222,128,0.6)' }}
-                    thumbColor={editingReg?.is_active ? '#4ade80' : '#94a3b8'}
+                    thumbColor={editingReg?.is_active ? semantic.verified : '#94a3b8'}
                   />
                 </View>
               </ScrollView>
@@ -778,7 +779,7 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
       letterSpacing: 0.3,
     },
-    statusTextActive: { color: '#4ade80' },
+    statusTextActive: { color: semantic.verified },
     conflictBadgeRow: { marginBottom: spacing.sm },
     conflictBadge: {
       alignSelf: 'flex-start',

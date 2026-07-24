@@ -42,6 +42,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 
@@ -398,7 +399,7 @@ export default function ReportsScreen() {
                         <View style={s.statusHeader}>
                           <IconPod size={44}>
                             {preview.report_already_sent ? (
-                              <CheckCircle size={20} strokeWidth={1.5} color="#4ade80" />
+                              <CheckCircle size={20} strokeWidth={1.5} color={semantic.verified} />
                             ) : (
                               <Clock size={20} strokeWidth={1.5} color="#f59e0b" />
                             )}
@@ -814,7 +815,7 @@ function buildStyles(colors, isDark) {
       fontWeight: '600',
     },
     statusBadgeTextSubmitted: {
-      color: '#4ade80',
+      color: semantic.verified,
     },
     statusBadgeTextDraft: {
       color: '#fbbf24',

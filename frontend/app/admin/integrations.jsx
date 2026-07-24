@@ -33,6 +33,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI, whatsappAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -324,7 +325,7 @@ export default function AdminIntegrationsScreen() {
                     ]}
                   >
                     {dropboxStatus.connected ? (
-                      <CheckCircle size={14} strokeWidth={2} color="#4ade80" />
+                      <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />
                     ) : (
                       <XCircle size={14} strokeWidth={2} color={colors.text.muted} />
                     )}
@@ -440,7 +441,7 @@ export default function AdminIntegrationsScreen() {
                     ]}
                   >
                     {whatsappStatus.company_active ? (
-                      <CheckCircle size={14} strokeWidth={2} color="#4ade80" />
+                      <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />
                     ) : (
                       <XCircle size={14} strokeWidth={2} color={colors.text.muted} />
                     )}
@@ -549,7 +550,7 @@ export default function AdminIntegrationsScreen() {
                               {project.dropbox_folder_path}
                             </Text>
                           </View>
-                          <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
+                          <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
                         </GlassListItem>
                       ))}
                     </View>
@@ -594,7 +595,7 @@ export default function AdminIntegrationsScreen() {
                           </Text>
                         </View>
                         {project.dropbox_folder_path && (
-                          <CheckCircle size={18} strokeWidth={1.5} color="#4ade80" />
+                          <CheckCircle size={18} strokeWidth={1.5} color={semantic.verified} />
                         )}
                       </GlassListItem>
                     ))}
@@ -743,7 +744,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   statusTextConnected: {
-    color: '#4ade80',
+    color: semantic.verified,
   },
   connectedSection: {
     borderTopWidth: 1,

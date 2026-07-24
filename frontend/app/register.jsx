@@ -11,6 +11,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 export default function RegisterScreen() {
@@ -227,7 +228,7 @@ function buildStyles(colors, isDark) {
     form: { gap: spacing.md },
     inputGroup: { gap: spacing.xs },
     inputLabel: { ...typography.label, color: colors.text.muted },
-    errorText: { fontSize: 13, color: colors.error || '#f87171', textAlign: 'center' },
+    errorText: { fontSize: 13, color: colors.error || semantic.critical, textAlign: 'center' },
     submitBtn: { marginTop: spacing.sm },
     signinRow: { marginTop: spacing.lg, alignItems: 'center' },
     signinText: { fontSize: 14, color: colors.text.muted },

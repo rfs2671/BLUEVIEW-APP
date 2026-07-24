@@ -11,6 +11,7 @@ import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
+import { semantic } from '../src/styles/semanticColors';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -123,7 +124,7 @@ const errorStyles = StyleSheet.create({
     width: '100%',
   },
   errorName: {
-    color: '#fca5a5',
+    color: semantic.critical,
     fontSize: 13,
     fontWeight: '600',
     marginBottom: 8,

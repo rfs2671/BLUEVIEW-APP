@@ -41,6 +41,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -283,7 +284,7 @@ export default function SiteDailyLogsScreen() {
             onPress={() => handleSafetyCheckChange(item.id, 'checked')}
             style={[styles.checkOption, checkData.status === 'checked' && styles.checkOptionActive]}
           >
-            <CheckCircle size={14} strokeWidth={1.5} color={checkData.status === 'checked' ? '#4ade80' : colors.text.muted} />
+            <CheckCircle size={14} strokeWidth={1.5} color={checkData.status === 'checked' ? semantic.verified : colors.text.muted} />
           </Pressable>
           <Pressable
             onPress={() => handleSafetyCheckChange(item.id, 'unchecked')}
@@ -507,7 +508,7 @@ export default function SiteDailyLogsScreen() {
                         <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
                         <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
                         <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
-                        {log.superintendent_signature && <PenTool size={12} strokeWidth={1.5} color="#4ade80" />}
+                        {log.superintendent_signature && <PenTool size={12} strokeWidth={1.5} color={semantic.verified} />}
                       </View>
                     </GlassListItem>
                   );
@@ -554,7 +555,7 @@ export default function SiteDailyLogsScreen() {
                         {Object.entries(selectedPreviousLog.safety_checklist).map(([k, v]) => (
                           <View key={k} style={styles.checkReview}>
                             <Text style={styles.checkReviewLabel}>{SAFETY_CHECKLIST_ITEMS.find(i => i.id === k)?.label || k}</Text>
-                            <Text style={[styles.checkReviewStatus, v.status === 'checked' && {color: '#4ade80'},
+                            <Text style={[styles.checkReviewStatus, v.status === 'checked' && {color: semantic.verified},
                               v.status === 'unchecked' && {color: '#ef4444'}]}>{v.status?.toUpperCase()}</Text>
                           </View>
                         ))}
@@ -636,7 +637,7 @@ const styles = StyleSheet.create({
   auditText: { fontSize: 10, color: colors.text.subtle, marginTop: spacing.xs },
   naCheckbox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
   checkbox: { width: 18, height: 18, borderRadius: 4, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
-  checkboxChecked: { backgroundColor: '#4ade80', borderColor: '#4ade80' },
+  checkboxChecked: { backgroundColor: semantic.verified, borderColor: semantic.verified },
   naCheckboxLabel: { fontSize: 13, color: colors.text.secondary },
   signatureSection: { marginBottom: spacing.lg },
   signatureHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md },

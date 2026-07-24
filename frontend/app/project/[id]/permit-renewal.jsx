@@ -37,6 +37,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '../../../src/context/ThemeContext';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import apiClient from '../../../src/utils/api';
 import ManualRenewalPanel from '../../../src/components/permit-renewal/ManualRenewalPanel';
 import FilingHistorySection from '../../../src/components/permit-renewal/FilingHistorySection';
@@ -149,7 +150,7 @@ const formatDate = (dateStr) => {
 const STATUS_CONFIG = {
   eligible: {
     label: 'Renewal Ready',
-    color: '#22c55e',
+    color: semantic.verified,
     bg: '#22c55e15',
     icon: ShieldCheck,
     description: 'This permit is eligible for automated renewal. Tap "Prepare Renewal" to create a draft on DOB NOW.',
@@ -170,7 +171,7 @@ const STATUS_CONFIG = {
   },
   ineligible_license: {
     label: 'License Issue',
-    color: '#ef4444',
+    color: semantic.critical,
     bg: '#ef444415',
     icon: XCircle,
     description: 'GC License issue prevents automated renewal.',
@@ -191,14 +192,14 @@ const STATUS_CONFIG = {
   },
   completed: {
     label: 'Completed',
-    color: '#22c55e',
+    color: semantic.verified,
     bg: '#22c55e15',
     icon: BadgeCheck,
     description: 'Permit renewed successfully.',
   },
   failed: {
     label: 'Failed',
-    color: '#ef4444',
+    color: semantic.critical,
     bg: '#ef444415',
     icon: XCircle,
     description: 'Renewal failed. Manual action may be required on DOB NOW.',
@@ -492,7 +493,7 @@ export default function PermitRenewalScreen() {
         <Text style={s.statLabel}>Awaiting GC</Text>
       </StatCard>
       <StatCard style={s.statCard}>
-        <Text style={[s.statValue, { color: '#22c55e' }]}>
+        <Text style={[s.statValue, { color: semantic.verified }]}>
           {completedCount}
         </Text>
         <Text style={s.statLabel}>Done</Text>
@@ -574,14 +575,14 @@ export default function PermitRenewalScreen() {
                   <Clock
                     size={12}
                     color={
-                      (isUrgent || daysLeft < 0) ? '#ef4444' : colors.text.muted
+                      (isUrgent || daysLeft < 0) ? semantic.critical : colors.text.muted
                     }
                   />
                   <Text
                     style={[
                       s.daysText,
                       (isUrgent || daysLeft < 0) && {
-                        color: '#ef4444',
+                        color: semantic.critical,
                         fontWeight: '700',
                       },
                     ]}
@@ -914,7 +915,7 @@ export default function PermitRenewalScreen() {
                       ) : (
                         <FileCheck
                           size={16}
-                          color="#22c55e"
+                          color={semantic.verified}
                         />
                       )
                     }
@@ -956,7 +957,7 @@ export default function PermitRenewalScreen() {
                   <View style={s.completedBadge}>
                     <BadgeCheck
                       size={16}
-                      color="#22c55e"
+                      color={semantic.verified}
                     />
                     <Text style={s.completedText}>
                       Permit renewed successfully
@@ -966,11 +967,11 @@ export default function PermitRenewalScreen() {
 
                 {renewal.status === 'failed' && (
                   <View style={s.completedBadge}>
-                    <XCircle size={16} color="#ef4444" />
+                    <XCircle size={16} color={semantic.critical} />
                     <Text
                       style={[
                         s.completedText,
-                        { color: '#ef4444' },
+                        { color: semantic.critical },
                       ]}
                     >
                       Manual renewal required on DOB NOW
@@ -1397,7 +1398,7 @@ function buildStyles(colors, isDark) {
     completedText: {
       fontFamily: typography.medium,
       fontSize: 13,
-      color: '#22c55e',
+      color: semantic.verified,
     },
     emptyCard: {
       alignItems: 'center',

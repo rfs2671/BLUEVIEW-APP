@@ -32,6 +32,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 export default function AdminChecklistsScreen() {
@@ -608,7 +609,7 @@ export default function AdminChecklistsScreen() {
                                 )}
                               </View>
                               {isComplete && (
-                                <CheckCircle size={16} strokeWidth={1.5} color="#4ade80" />
+                                <CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />
                               )}
                             </View>
                           );
@@ -709,7 +710,7 @@ function buildStyles(colors, isDark) {
   modalBtn: { flex: 1 },
   selectItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
   checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
-  checkboxChecked: { backgroundColor: '#4ade80', borderColor: '#4ade80' },
+  checkboxChecked: { backgroundColor: semantic.verified, borderColor: semantic.verified },
   selectText: { fontSize: 14, color: colors.text.primary },
   selectSubtext: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
   mt24: { marginTop: spacing.lg },

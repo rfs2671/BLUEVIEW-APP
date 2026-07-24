@@ -17,6 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal from '../../src/components/CameraCaptureModal';
@@ -633,7 +634,7 @@ export default function DailyJobsiteLog() {
               {CHECKLIST_ITEMS.map((item) => (
                 <Pressable key={item.key} onPress={() => toggleChecklist(item.key)}
                   style={[s.chip, checklistItems[item.key] && s.chipActive]}>
-                  {checklistItems[item.key] && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
+                  {checklistItems[item.key] && <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />}
                   <Text style={[s.chipText, checklistItems[item.key] && s.chipTextActive]}>
                     {item.label}
                   </Text>
@@ -790,7 +791,7 @@ function buildStyles(colors, isDark) {
   addBtn: { marginTop: spacing.xs },
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md, marginBottom: spacing.xl },
   draftBtn: { flex: 1 },
-  submitBtn: { flex: 1, backgroundColor: '#4ade80', borderColor: '#4ade80' },
+  submitBtn: { flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified },
   photosSection: { gap: spacing.xs, marginTop: spacing.xs },
   photosHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   photoScroll: { marginTop: spacing.xs, paddingTop: 8, paddingBottom: 4 },

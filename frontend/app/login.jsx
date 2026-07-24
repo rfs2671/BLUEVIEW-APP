@@ -10,6 +10,7 @@ import GlassButton from '../src/components/GlassButton';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 function getRedirectPath(userData) {
@@ -250,7 +251,7 @@ function buildStyles(colors, isDark) {
   },
   errorText: {
     fontSize: 13,
-    color: colors.error || '#f87171',
+    color: colors.error || semantic.critical,
     textAlign: 'center',
   },
   submitBtn: {

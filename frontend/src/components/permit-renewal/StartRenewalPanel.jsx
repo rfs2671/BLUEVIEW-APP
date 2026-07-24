@@ -42,6 +42,7 @@ import {
   AlertCircle,
 } from 'lucide-react-native';
 import { spacing, borderRadius, typography } from '../../styles/theme';
+import { semantic } from '../../styles/semanticColors';
 import { useTheme } from '../../context/ThemeContext';
 
 // ── Field → section assignment ────────────────────────────────────
@@ -200,8 +201,8 @@ const CopyRow = ({ label, value, styles: s, colors }) => {
       >
         {copied ? (
           <>
-            <Check size={12} color="#10b981" />
-            <Text style={[s.copyButtonText, { color: '#10b981' }]}>Copied</Text>
+            <Check size={12} color={semantic.verified} />
+            <Text style={[s.copyButtonText, { color: semantic.verified }]}>Copied</Text>
           </>
         ) : (
           <>
@@ -469,7 +470,7 @@ function buildStyles(colors) {
       backgroundColor: 'transparent',
     },
     copyButtonCopied: {
-      borderColor: '#10b981',
+      borderColor: semantic.verified,
       backgroundColor: '#10b98115',
     },
     copyButtonText: {

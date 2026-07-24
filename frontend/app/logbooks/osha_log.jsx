@@ -17,6 +17,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 
 const CERT_TYPES = ['OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST', 'Flagman', 'Forklift', 'Scaffold', 'Other'];
 
@@ -300,7 +301,7 @@ export default function OshaLogBook() {
                   style={styles.signedRow}
                 >
                   <View style={[styles.signedBox, entry.signed && styles.signedBoxActive]}>
-                    {entry.signed && <CheckCircle size={14} strokeWidth={2} color="#4ade80" />}
+                    {entry.signed && <CheckCircle size={14} strokeWidth={2} color={semantic.verified} />}
                   </View>
                   <Text style={styles.signedLabel}>
                     {entry.signed ? 'Signature on file' : 'Mark signature on file'}
@@ -470,7 +471,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  signedBoxActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: '#4ade80' },
+  signedBoxActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: semantic.verified },
   signedLabel: { fontSize: 12, color: colors.text.muted },
   entryDivider: {
     height: 1,
@@ -489,7 +490,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(74,222,128,0.2)',
   },
-  autoSignText: { fontSize: 12, color: '#4ade80' },
+  autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(6,182,212,0.15)', borderColor: 'rgba(6,182,212,0.3)' },
