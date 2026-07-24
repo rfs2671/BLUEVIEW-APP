@@ -236,3 +236,40 @@ each window under the cap, so fewer of them 429'd, dropping the observed count t
 11. Nothing about the logbook code changed — only where the counter happened to
 be saturated. On clean main, with no such reset, the full 18-failure saturation
 pattern appears, for 21 total.
+
+---
+
+## Follow-ups (appended 2026-07-23)
+
+Surfaced while fixing `test_history_filters_by_statistical_v1` (a rolling-window
+fixture that drifted out of its window). Recorded, not fixed.
+
+- **Three inline-`now()` rolling-window endpoints have NO test coverage** — the
+  same bug class as the history-filter test, but with no test to catch the
+  drift at all:
+  - `get_my_recent_signals` — cutoff at [server.py:5705](../../backend/server.py) (`since = now() - timedelta(days=d)`)
+  - `preview_my_notification_preferences` — cutoff at [server.py:6009](../../backend/server.py)
+  - `mark_all_dob_logs_read` — cutoff at [server.py:17835](../../backend/server.py) (`now() - timedelta(days=30)`)
+
+  Each computes a window from the real clock and has no test exercising that
+  window. Untested rolling-window code is exactly the class that produced the
+  history-filter failure — there is simply no fixture to detonate.
+
+- **`permit_renewal.py` inline-`now()` expiry comparisons have no now-relative
+  test** — `is_current = exp_dt > datetime.now()` ([permit_renewal.py:565](../../backend/permit_renewal.py)
+  and [:896](../../backend/permit_renewal.py)) and
+  `days_left = (exp_date - datetime.now(...)).days` ([permit_renewal.py:1138](../../backend/permit_renewal.py)).
+  No test hardcodes an expiry date and asserts a now-relative outcome against
+  these (the renewal-reminder tests pass `days_until` as an int, and
+  `test_permit_renewal_datetime` only exercises tz-coercion). Correct behavior,
+  but unguarded.
+
+- **`GET /projects/{id}/risk-score/history` is registered and live but not
+  wired to a UI.** The only frontend `/history` caller is reports
+  ([frontend/src/utils/api.js:911](../../frontend/src/utils/api.js)); the risk-score
+  drawer calls `/risk-score`, `/risk-score/calculate`, and
+  `/risk-score/calibration`, never `/history`
+  ([frontend/src/components/RiskScoreDrawer.jsx](../../frontend/src/components/RiskScoreDrawer.jsx)).
+  This is the **second** shipped-but-unwired backend surface found this week,
+  after `score_band` (zero production callers; the frontend
+  `RiskScoreCircle.bandFor` reimplements the same thresholds independently).
