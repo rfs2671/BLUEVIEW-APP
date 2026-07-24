@@ -12,6 +12,8 @@ import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { semantic } from '../src/styles/semanticColors';
+import { useIsDesktop } from '../src/hooks/useIsDesktop';
+import DesktopShell from '../src/components/DesktopShell';
 
 // Phase C1: initialize Sentry at module top-level so any error
 // during AuthProvider / ThemeProvider / DatabaseProvider mounting
@@ -243,6 +245,9 @@ function AppShell() {
   const { isDark, themeKey } = useTheme();
   const toast = useToast();
   const bg = isDark ? '#050a12' : '#D6E4F7';
+  // RN-Web desktop presentation layer. False on native and on web < 1024,
+  // where the tree below is byte-identical to what it was before this hook.
+  const isDesktop = useIsDesktop();
 
   // Phase C2 — bridge 429 responses from api.js's response
   // interceptor to the user-visible toast system. Re-registers
@@ -256,17 +261,23 @@ function AppShell() {
     return () => registerRateLimitToast(null);
   }, [toast]);
 
+  // One Stack element, optionally wrapped. On mobile the rendered tree is
+  // <View><StatusBar/><RouteGuard/><Stack/></View> — exactly as before.
+  const stack = (
+    <Stack
+      screenOptions={{
+        headerShown: false,
+        contentStyle: { backgroundColor: bg },
+        animation: 'fade',
+      }}
+    />
+  );
+
   return (
     <View key={themeKey} style={[styles.container, { backgroundColor: bg }]}>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <RouteGuard />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: bg },
-          animation: 'fade',
-        }}
-      />
+      {isDesktop ? <DesktopShell>{stack}</DesktopShell> : stack}
     </View>
   );
 }

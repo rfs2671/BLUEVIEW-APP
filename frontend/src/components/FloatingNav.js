@@ -31,6 +31,7 @@ import {
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { useIsDesktop } from '../hooks/useIsDesktop';
 import { authAPI } from '../utils/api';
 
 const navItems = [
@@ -371,11 +372,19 @@ const FloatingNav = () => {
   const router = useRouter();
   const pathname = usePathname();
   const { isDark } = useTheme();
+  const isDesktop = useIsDesktop();
 
   // bg-white/90 in light, glass.background in dark
   const navBg = isDark
     ? colors.glass.background
     : 'rgba(255, 255, 255, 0.90)';
+
+  // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
+  // floating tab bar must not render. Suppressed here rather than in each
+  // screen: FloatingNav is mounted by 19 separate screens, and this PR is
+  // additive — no screen component is modified. All hooks above run first, so
+  // this early return is hook-order safe. Native/web <1024 are unaffected.
+  if (isDesktop) return null;
 
   return (
     <>
