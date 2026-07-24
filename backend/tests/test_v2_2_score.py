@@ -680,10 +680,17 @@ class TestGetRiskScoreHistoryFiltersModelVersion(unittest.TestCase):
         from unittest.mock import patch
         import server
 
-        now = datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc)
-        # Older V2.1 rows (still within the 30-day window so the
-        # cutoff doesn't accidentally filter them — the bug is
-        # specifically about model_version, not the time window).
+        # Date the fixture RELATIVE to the real clock. The endpoint computes
+        # its cutoff from datetime.now(timezone.utc) (not patched here), so a
+        # hardcoded literal date would drift out of the 30-day window as
+        # wall-clock time advances and the test would start failing — it did,
+        # ~30 days after the original literal (2026-05-09). Anchoring to now()
+        # keeps every fixture row inside the window forever, so this test
+        # exercises the model_version filter, never the time window.
+        now = datetime.now(timezone.utc)
+        # Older V2.1 rows — still within the 30-day window so the cutoff
+        # doesn't accidentally filter them; the bug under test is specifically
+        # about model_version, not the time window.
         d_minus_15 = now - timedelta(days=15)
         d_minus_12 = now - timedelta(days=12)
         # Newer V2.2 rows.
