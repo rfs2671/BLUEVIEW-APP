@@ -55,6 +55,12 @@ const BAND_GREEN  = { fg: '#22c55e', track: 'rgba(34, 197, 94, 0.18)',  label: '
 const BAND_YELLOW = { fg: '#eab308', track: 'rgba(234, 179, 8, 0.18)',  label: 'MODERATE RISK' };
 const BAND_ORANGE = { fg: '#f97316', track: 'rgba(249, 115, 22, 0.18)', label: 'HIGH RISK' };
 const BAND_RED    = { fg: '#ef4444', track: 'rgba(239, 68, 68, 0.20)',  label: 'CRITICAL RISK' };
+// Pending band — score not yet computed (null / undefined / NaN /
+// fetch-failed). Neutral slate, deliberately NOT green: an uncomputed
+// score must never read as low-risk in a compliance product. These are
+// the same muted values the render already falls back to for no-score,
+// so the pending band is now the single source of truth for that state.
+const BAND_PENDING = { fg: 'rgba(148, 163, 184, 0.55)', track: 'rgba(148, 163, 184, 0.20)', label: 'Scoring' };
 
 // Title shown above the circle. Pinned in tests so an accidental
 // rename surfaces immediately.
@@ -67,8 +73,15 @@ export const PENDING_LABEL = 'PENDING';
 // exactly. A test in test_v2_1_2_risk_score_redesign.py asserts
 // each boundary case (29 / 30 / 31 / 60 / 61 / 80 / 81 / 99).
 export function bandFor(score) {
-  if (score == null) return BAND_GREEN;
+  // Guard missing/uncomputed scores FIRST, before any numeric comparison.
+  // null and undefined (== null), plus anything that isn't a finite number
+  // (NaN, Infinity, non-numeric strings), resolve to the neutral pending
+  // band — NEVER green. Previously null returned BAND_GREEN and NaN fell
+  // through to BAND_RED; both were wrong. Note: 0 is a REAL score and is
+  // finite, so it passes this guard and correctly lands in BAND_GREEN below.
+  if (score == null) return BAND_PENDING;
   const s = Number(score);
+  if (!Number.isFinite(s)) return BAND_PENDING;
   if (s <= 30) return BAND_GREEN;
   if (s <= 60) return BAND_YELLOW;
   if (s <= 80) return BAND_ORANGE;
@@ -129,21 +142,21 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
 
   const hasScore = scoreDoc && typeof scoreDoc.score === 'number';
   const score = hasScore ? Number(scoreDoc.score) : null;
-  const band = hasScore ? bandFor(score) : null;
+  // bandFor is the single source of truth: a real score maps to its risk
+  // band; a missing score maps to BAND_PENDING (neutral, never green).
+  const band = bandFor(hasScore ? score : null);
 
   const fillFraction = hasScore ? Math.max(0, Math.min(1, score / 100)) : 0;
   const dashOffset = circumference * (1 - fillFraction);
 
-  const trackColor = band ? band.track : 'rgba(148, 163, 184, 0.20)';
-  const ringColor  = band ? band.fg    : 'rgba(148, 163, 184, 0.55)';
-  const fgColor    = band ? band.fg    : colors.text.muted;
+  const trackColor = band.track;
+  const ringColor  = band.fg;
+  const fgColor    = band.fg;
   // Band word shown below the circle. Three states:
   //   • has score   → "LOW RISK" / "MODERATE RISK" / etc. (color-matched)
   //   • loading     → blank string (avoids label flicker while fetching)
-  //   • no score    → "PENDING" in neutral muted gray
-  const bandWordText = hasScore
-    ? band.label
-    : (loading ? '' : PENDING_LABEL);
+  //   • no score    → "Scoring" (BAND_PENDING.label) in neutral muted gray
+  const bandWordText = (!hasScore && loading) ? '' : band.label;
   const bandWordColor = hasScore ? fgColor : colors.text.muted;
 
   const ciLow  = hasScore ? Math.round(Number(scoreDoc.confidence_low  || 0)) : null;
