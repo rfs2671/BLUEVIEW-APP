@@ -413,38 +413,20 @@ class TestServerPyV23PrewarmWiring(unittest.TestCase):
             e = min(len(self.text), s + 20000)
         return self.text[s:e]
 
-    def test_create_project_endpoint_spawns_prewarm(self):
-        slice_ = self._slice_endpoint(
-            '@api_router.post("/projects", response_model=ProjectResponse)',
-        )
-        self.assertIn("asyncio.create_task(", slice_)
-        self.assertIn("_stat_engine.prewarm_peer_stats(db, result.inserted_id)",
-                      slice_)
-        self.assertIn(
-            'name=f"prewarm_peer_stats:{result.inserted_id}"',
-            slice_,
-        )
-
-    def test_create_project_endpoint_wraps_spawn_in_try_except(self):
-        """A bug in the prewarm spawn must never fail project
-        creation. Pin the try/except wrapper."""
-        slice_ = self._slice_endpoint(
-            '@api_router.post("/projects", response_model=ProjectResponse)',
-        )
-        # The spawn must be inside a try block whose except logs.
-        spawn_idx = slice_.find("asyncio.create_task(")
-        self.assertGreater(spawn_idx, 0)
-        # Look back from the spawn for the nearest "try:" — must
-        # exist before the next handler-level statement.
-        preceding = slice_[:spawn_idx]
-        last_try = preceding.rfind("try:")
-        self.assertGreater(last_try, 0,
-                           "prewarm spawn not wrapped in try block")
-        # The catch must mention the prewarm task spawn so
-        # operators can grep logs.
-        following = slice_[spawn_idx:]
-        self.assertIn("except Exception", following)
-        self.assertIn("prewarm task spawn failed", following)
+    # NOTE (2026-07-23): the two POST /projects source-text tests that used
+    # to live here — test_create_project_endpoint_spawns_prewarm and
+    # test_create_project_endpoint_wraps_spawn_in_try_except — were removed
+    # and replaced by a BEHAVIORAL test in
+    # tests/test_prewarm_endpoint_wiring.py. Their substring anchor
+    # ('@api_router.post("/projects", response_model=ProjectResponse)')
+    # silently broke on 2026-07-19 when the decorator gained
+    # dependencies=[Depends(require_approved)]; the production spawn was
+    # never touched, yet the anchor stopped matching — and would have failed
+    # identically had the spawn actually been deleted. The behavioral test
+    # drives the endpoint and asserts the task is spawned, so it survives
+    # decorator/formatting churn and fails only on a real regression. The
+    # onboarding source-text tests below still match their anchor and are
+    # left in place; replacing them is a separate decision.
 
     def test_onboarding_create_project_endpoint_spawns_prewarm(self):
         slice_ = self._slice_endpoint(
