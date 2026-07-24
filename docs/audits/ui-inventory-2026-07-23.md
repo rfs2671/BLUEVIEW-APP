@@ -386,3 +386,29 @@ fixed.
   coupling: an unrelated frontend refactor (renaming a variable, reordering
   the guards, changing formatting) can turn CI red in a backend test file with
   no backend change.
+
+## Follow-ups (appended 2026-07-24 — desktop projects table)
+
+Surfaced while building the desktop `ProjectsTable`. Recorded, not fixed.
+
+- **`dob_logs` has no DOB hazard-class field.** Violation records carry
+  `violation_category`, `violation_type` and `violation_subtype`
+  (`SWO_FULL` / `VACATE_*` / `COMM_ORDER` / `ECB` / `NOV`), but **none maps to
+  DOB hazard class 1/2/3**. Any UI that wants to surface a "violation class"
+  (e.g. a column reading `1 open — DOB cl.2`) needs that mapping resolved
+  first — either a field derived at ingestion or a documented decision that
+  `violation_subtype` is the closest available proxy.
+- **No DOB sync timestamp is written to project docs.** There is no
+  `last_dob_sync`-style field anywhere on `projects`; the only `last_synced`
+  in the codebase belongs to `db.gc_licenses`. `bbl_last_synced` is a
+  **creation-time address→BBL lookup**, not a sync, and `updated_at` changes
+  on any write. A "last synced" column or freshness chip therefore requires a
+  **new field written by the sync job** — it cannot be derived from the
+  current project payload.
+- **The desktop projects table fetches risk scores N+1.** `GET /api/projects`
+  carries no score, so `ProjectsTable` issues one
+  `GET /api/projects/{id}/risk-score` per row. Fine at single-digit project
+  counts; past ~20 projects this needs the server-side **dob-summary
+  aggregation** (one request returning score + open-violation +
+  expiring-permit counts per project), which would also unblock the
+  Violations and Permits columns deferred from that PR.

@@ -36,6 +36,8 @@ import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic } from '../../src/styles/semanticColors';
+import { useIsDesktop } from '../../src/hooks/useIsDesktop';
+import ProjectsTable from '../../src/components/ProjectsTable';
 import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
@@ -51,6 +53,9 @@ export default function ProjectsScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
+  // Desktop (RN-Web >=1024) swaps the card list for a sortable table.
+  // Below the breakpoint, and on native, the card list below is unchanged.
+  const isDesktop = useIsDesktop();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
@@ -212,7 +217,13 @@ export default function ProjectsScreen() {
                 <ProjectCardSkeleton />
               </>
             ) : filteredProjects.length > 0 ? (
-              filteredProjects.map((project) => (
+              isDesktop ? (
+                <ProjectsTable
+                  projects={filteredProjects}
+                  onRowPress={(project) => router.push(`/project/${getProjectId(project)}`)}
+                  onDelete={(project) => handleDeleteProject(getProjectId(project))}
+                />
+              ) : filteredProjects.map((project) => (
                 <GlassListItem
                   key={getProjectId(project)}
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
