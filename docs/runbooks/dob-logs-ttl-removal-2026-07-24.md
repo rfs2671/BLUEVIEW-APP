@@ -90,32 +90,13 @@ curl.exe -s https://<your-api-host>/api/health
 
 ## Step 2 — Read-only: list current indexes and confirm both TTL indexes exist
 
-Save as `check_dob_logs_indexes.py`, run it. **Read-only** — `list_indexes` and
-counts only. It never prints the connection string.
-
-```python
-"""READ-ONLY. Lists every index on dob_logs with its TTL settings."""
-import os, asyncio
-from motor.motor_asyncio import AsyncIOMotorClient
-
-async def main():
-    db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
-    print(f"db={os.environ['DB_NAME']}  collection=dob_logs\n")
-    async for ix in db.dob_logs.list_indexes():
-        ttl = ix.get("expireAfterSeconds")
-        line = f"  {ix['name']:<32} key={dict(ix['key'])}"
-        if ttl is not None:
-            line += f"  TTL={ttl}s ({ttl/86400:.0f}d)"
-        if "partialFilterExpression" in ix:
-            line += f"  partial={ix['partialFilterExpression']}"
-        print(line)
-    print(f"\n  total docs: {await db.dob_logs.count_documents({})}")
-
-asyncio.run(main())
-```
+Canonical script — **`backend/scripts/check_dob_logs_indexes.py`**. That is the
+only copy; do not paste it inline anywhere. **Read-only**: `list_indexes`,
+`count_documents`, and one `find(...).sort(...).limit(1)`. No writes, no drops,
+and it never prints the connection string. A read-only Atlas user suffices.
 
 ```powershell
-python check_dob_logs_indexes.py
+python backend/scripts/check_dob_logs_indexes.py
 ```
 
 **Expected before the drop:** both `dob_logs_ttl_short` (`7776000s`) and
@@ -127,35 +108,27 @@ reference.
 
 ## Step 3 — Drop `dob_logs_ttl_short` and `dob_logs_ttl_long`
 
-Requires the read-write URI. Save as `drop_dob_logs_ttl.py`:
+Canonical script — **`backend/scripts/drop_dob_logs_ttl.py`**. That is the only
+copy; do not paste it inline anywhere. Requires the read-**write** URI.
 
-```python
-"""Drops ONLY the two dob_logs TTL indexes. Touches no documents."""
-import os, asyncio
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import OperationFailure
+It drops by **exact name** from an allowlist (`dob_logs_ttl_short`,
+`dob_logs_ttl_long`) — no pattern matching, so no other index can be dropped by
+it. It **refuses to run** (exit 2, nothing dropped) if `dob_logs` carries any
+*other* TTL index, since that is an unexpected state for an operator to judge.
+It is **idempotent**: already-absent indexes report `SKIP`, so it is safe to
+re-run after a partial failure. It never prints the connection string.
 
-TARGETS = ["dob_logs_ttl_short", "dob_logs_ttl_long"]
-
-async def main():
-    db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
-    existing = {ix["name"] async for ix in db.dob_logs.list_indexes()}
-    for name in TARGETS:
-        if name not in existing:
-            print(f"  SKIP  {name} (not present)")
-            continue
-        try:
-            await db.dob_logs.drop_index(name)
-            print(f"  DROPPED  {name}")
-        except OperationFailure as e:
-            print(f"  FAILED   {name}: {e!r}")
-
-asyncio.run(main())
-```
+It is **dry-run by default** (repo convention, cf.
+`scripts/backfill_dob_logs_dates.py`). Run it once to see the plan, then again
+with `--execute`:
 
 ```powershell
-python drop_dob_logs_ttl.py
+python backend/scripts/drop_dob_logs_ttl.py
+python backend/scripts/drop_dob_logs_ttl.py --execute
 ```
+
+Exit codes: `0` ok · `2` refused (unexpected TTL index present) · `3` one or
+more drops failed.
 
 `dropIndex` is a metadata-only operation: it removes the index structure and
 stops the TTL monitor from considering that key. **It does not read, rewrite,
@@ -166,7 +139,7 @@ Atlas.
 ## Step 4 — Verify both are gone
 
 ```powershell
-python check_dob_logs_indexes.py
+python backend/scripts/check_dob_logs_indexes.py
 ```
 
 **Expected:** neither `dob_logs_ttl_short` nor `dob_logs_ttl_long` appears; no
@@ -190,7 +163,7 @@ curl.exe -s https://<your-api-host>/api/health
 3. Re-list the indexes:
 
 ```powershell
-python check_dob_logs_indexes.py
+python backend/scripts/check_dob_logs_indexes.py
 ```
 
 **Expected:** still no `dob_logs_ttl_short` / `dob_logs_ttl_long`, still no
@@ -204,8 +177,8 @@ build still contains the TTL-creating code — go back to step 1.
 
 - **Nothing is lost.** Dropping an index never deletes documents. A partial
   drop leaves the collection in a valid state — one TTL still armed, one not.
-- Re-run `drop_dob_logs_ttl.py`. It is idempotent: it skips indexes that are
-  already gone and retries the ones that remain.
+- Re-run `backend/scripts/drop_dob_logs_ttl.py --execute`. It is idempotent: it
+  skips indexes that are already gone and retries the ones that remain.
 - If a drop keeps failing, capture the `OperationFailure` and stop. The
   remaining TTL is not an emergency — the earliest expiry is ~2026-10-19 for
   the 90-day bucket. There is runway to resolve it.
