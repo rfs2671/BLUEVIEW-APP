@@ -406,7 +406,7 @@ export default function PreShiftSignIn() {
           {/* CP Signature */}
           <GlassCard style={styles.section}>
             <View style={styles.sectionHeaderRow}>
-              <Users size={16} strokeWidth={1.5} color="#4ade80" />
+              <Users size={16} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={styles.sectionTitle}>Competent Person Signature</Text>
             </View>
             <SignaturePad

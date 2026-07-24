@@ -412,7 +412,7 @@ export default function DailyLogScreen() {
             />
             {siteMode ? (
               <View style={s.siteBadge}>
-                <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+                <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
                 <Text style={s.siteBadgeText}>SITE MODE</Text>
               </View>
             ) : isAdmin ? (

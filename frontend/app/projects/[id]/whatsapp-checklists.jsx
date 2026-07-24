@@ -23,11 +23,12 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistAPI, whatsappAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 
 const CATEGORY_COLORS = {
-  safety: '#ef4444',
+  safety: semantic.neutral,
   materials: '#f59e0b',
   coordination: '#3b82f6',
   inspection: '#a855f7',

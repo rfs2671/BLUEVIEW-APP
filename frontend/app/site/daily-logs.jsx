@@ -317,7 +317,7 @@ export default function SiteDailyLogsScreen() {
               onPress={() => router.push('/site')}
             />
             <View style={styles.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={styles.siteBadgeText}>SITE DEVICE</Text>
             </View>
             <Text style={styles.projectName} numberOfLines={1}>

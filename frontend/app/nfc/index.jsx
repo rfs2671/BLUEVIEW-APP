@@ -225,7 +225,7 @@ export default function NfcCheckInScreen() {
             {tagInfo && (
               <GlassCard style={s.siteCard}>
                 <View style={s.siteIcon}>
-                  <MapPin size={24} strokeWidth={1.5} color="#10b981" />
+                  <MapPin size={24} strokeWidth={1.5} color={semantic.neutral} />
                 </View>
                 <Text style={s.siteName}>{tagInfo.project_name || 'Job Site'}</Text>
                 <Text style={s.siteLocation}>{tagInfo.location_description || 'Check-In Point'}</Text>

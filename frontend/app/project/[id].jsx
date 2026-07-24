@@ -524,9 +524,9 @@ export default function ProjectDetailScreen() {
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
+    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.neutral, warn: !hasValidBin },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
-    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#10b981' },
+    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.neutral },
   ];
 
   if (authLoading || loading) {
@@ -606,7 +606,7 @@ export default function ProjectDetailScreen() {
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
-                      color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
+                      color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',
                     }}>
                       {project.project_class === 'major_b' ? 'MAJOR B · SSM' : 'MAJOR A · SSC'}
                     </Text>
@@ -800,7 +800,7 @@ export default function ProjectDetailScreen() {
                   {nfcTags.map((tag) => (
                     <GlassCard key={tag.tag_id} style={s.itemCard}>
                       <View style={s.itemHeader}>
-                        <Wifi size={20} strokeWidth={1.5} color="#10b981" />
+                        <Wifi size={20} strokeWidth={1.5} color={semantic.neutral} />
                         <View style={s.itemInfo}>
                           <Text style={s.itemId}>{tag.tag_id}</Text>
                           <Text style={s.itemLocation}>{tag.location || 'Check-In Point'}</Text>

@@ -31,6 +31,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, workersAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -287,7 +288,7 @@ export default function CheckInScreen() {
               <GlassCard style={s.methodCard}>
                 <View style={s.methodHeader}>
                   <IconPod size={44}>
-                    <Nfc size={20} strokeWidth={1.5} color="#10b981" />
+                    <Nfc size={20} strokeWidth={1.5} color={semantic.neutral} />
                   </IconPod>
                   <View style={s.methodInfo}>
                     <Text style={s.methodTitle}>NFC Tag Scan</Text>

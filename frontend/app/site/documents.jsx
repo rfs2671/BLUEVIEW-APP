@@ -27,6 +27,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 import PDFViewer from '../../src/components/PDFViewer';
@@ -40,9 +41,9 @@ const dropboxAPI = {
 
 const getFileIcon = (filename) => {
   const ext = filename.split('.').pop()?.toLowerCase();
-  if (['pdf'].includes(ext)) return { Icon: FileText, color: '#ef4444' };
+  if (['pdf'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
   if (['doc', 'docx'].includes(ext)) return { Icon: FileText, color: '#3b82f6' };
-  if (['xls', 'xlsx'].includes(ext)) return { Icon: FileText, color: '#22c55e' };
+  if (['xls', 'xlsx'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
   return { Icon: File, color: '#94a3b8' };
 };
 
@@ -122,7 +123,7 @@ export default function SiteDocumentsScreen() {
               onPress={() => router.push('/site')}
             />
             <View style={s.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={s.siteBadgeText}>SITE DEVICE</Text>
             </View>
             <Text style={s.projectName} numberOfLines={1}>

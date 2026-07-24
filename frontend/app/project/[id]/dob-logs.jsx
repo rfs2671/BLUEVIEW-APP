@@ -757,7 +757,7 @@ export default function DOBLogsScreen() {
             <Text style={s.titleText}>{projectName}</Text>
             {nycBin ? (
               <View style={s.binBadge}>
-                <Building2 size={13} strokeWidth={1.5} color="#4ade80" />
+                <Building2 size={13} strokeWidth={1.5} color={semantic.neutral} />
                 <Text style={s.binText}>BIN: {nycBin}</Text>
               </View>
             ) : (

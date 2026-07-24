@@ -179,7 +179,7 @@ export default function ChecklistsScreen() {
         >
           <View style={s.header}>
             <IconPod size={48}>
-              <ClipboardList size={24} strokeWidth={1.5} color="#4ade80" />
+              <ClipboardList size={24} strokeWidth={1.5} color={semantic.neutral} />
             </IconPod>
             <View style={s.headerText}>
               <Text style={s.headerLabel}>MY</Text>

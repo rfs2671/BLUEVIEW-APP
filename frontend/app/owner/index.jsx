@@ -685,7 +685,7 @@ export default function OwnerPortalScreen() {
                             onPress={() => handleDeleteCompany(company)}
                             style={styles.actionBtn}
                           >
-                            <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                            <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                           </Pressable>
                         </View>
                       </View>
@@ -775,7 +775,7 @@ export default function OwnerPortalScreen() {
                                       onPress={() => removeFilingRep(company.id, rep)}
                                       style={styles.filingRepActionBtn}
                                     >
-                                      <Trash2 size={14} color="#ef4444" strokeWidth={1.5} />
+                                      <Trash2 size={14} color={semantic.neutral} strokeWidth={1.5} />
                                     </Pressable>
                                   </View>
                                 </View>
@@ -1076,7 +1076,7 @@ export default function OwnerPortalScreen() {
                           }}
                           style={styles.deleteAdminBtn}
                         >
-                          <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                          <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                         </Pressable>
                       </View>
                     ))

@@ -17,6 +17,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteDeviceHomeScreen() {
@@ -86,7 +87,7 @@ export default function SiteDeviceHomeScreen() {
         <View style={s.header}>
           <View style={s.headerLeft}>
             <View style={s.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={s.siteBadgeText}>SITE DEVICE</Text>
             </View>
             <Text style={s.projectName} numberOfLines={1}>
@@ -156,7 +157,7 @@ export default function SiteDeviceHomeScreen() {
             >
               <GlassCard style={s.buttonInner}>
                 <View style={[s.iconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
-                  <UserCheck size={64} strokeWidth={1.5} color="#4ade80" />
+                  <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
                 </View>
                 <Text style={s.buttonLabel}>Worker Sign In</Text>
                 {!loading && workersOnSite > 0 && (

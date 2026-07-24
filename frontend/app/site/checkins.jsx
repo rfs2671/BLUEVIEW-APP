@@ -22,6 +22,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteCheckInsScreen() {
@@ -165,7 +166,7 @@ export default function SiteCheckInsScreen() {
               onPress={() => router.push('/site')}
             />
             <View style={s.siteBadge}>
-              <Building2 size={14} strokeWidth={1.5} color="#4ade80" />
+              <Building2 size={14} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={s.siteBadgeText}>SITE DEVICE</Text>
             </View>
             <Text style={s.projectName} numberOfLines={1}>

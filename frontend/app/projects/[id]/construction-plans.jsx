@@ -43,6 +43,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { semantic } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
@@ -56,11 +57,11 @@ const getFileTypeInfo = (filename) => {
   const ext = filename.split('.').pop()?.toLowerCase();
   
   const typeMap = {
-    pdf: { icon: FileText, color: '#ef4444', label: 'PDF' },
+    pdf: { icon: FileText, color: semantic.neutral, label: 'PDF' },
     doc: { icon: FileText, color: '#3b82f6', label: 'DOC' },
     docx: { icon: FileText, color: '#3b82f6', label: 'DOCX' },
-    xls: { icon: FileText, color: '#22c55e', label: 'XLS' },
-    xlsx: { icon: FileText, color: '#22c55e', label: 'XLSX' },
+    xls: { icon: FileText, color: semantic.neutral, label: 'XLS' },
+    xlsx: { icon: FileText, color: semantic.neutral, label: 'XLSX' },
     png: { icon: ImageIcon, color: '#8b5cf6', label: 'PNG' },
     jpg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPG' },
     jpeg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPEG' },
@@ -563,7 +564,7 @@ export default function ConstructionPlansScreen() {
                               }}
                               style={s.fileActionBtn}
                             >
-                              <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                              <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                             </Pressable>
                           )}
                         </View>

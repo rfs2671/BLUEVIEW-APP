@@ -43,10 +43,19 @@ const CRITICAL = '#ef4444'; // red-500    (dominant literal; matches RiskScoreCi
 const CRITICAL_FILL = '#dc2626'; // red-600    (AA-contrast fill behind white text)
 const VERIFIED = '#22c55e'; // green-500  (matches RiskScoreCircle BAND_GREEN post-fix)
 
-// State tokens. `neutral` is a live getter so it tracks applyTheme(); the
-// saturated tokens are constants (see THEME BEHAVIOR above).
+// State tokens. `neutral`/`neutralStrong` are live getters so they track
+// applyTheme(); the saturated tokens are constants (see THEME BEHAVIOR above).
+//
+// `neutral` (muted grey, white@0.40 dark) is for decorative ICONS/borders — it
+// clears the 3:1 non-text bar on all surfaces but only 3.6–3.8:1 as text, so it
+// must not carry body text on cards. `neutralStrong` (white@0.60 dark =
+// text.secondary) is the neutral for decorative TEXT: it clears WCAG AA 4.5:1
+// on every dark surface — page 6.96:1, card(6%) 6.39:1, elevated(12%) 5.61:1.
+// Use it wherever a former state COLOR was carrying text (e.g. MAJOR B class
+// badges, role badges, delete/clear button labels).
 export const semantic = {
   get neutral() { return colors.text.muted; },
+  get neutralStrong() { return colors.text.secondary; },
   get attention() { return ATTENTION; },
   get critical() { return CRITICAL; },
   get criticalFill() { return CRITICAL_FILL; },

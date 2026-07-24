@@ -289,7 +289,7 @@ export default function CraneOperationsLog() {
                   <Text style={[s.inputLabel, { marginBottom: 0 }]}>Lift #{i + 1}</Text>
                   {loadEntries.length > 1 && (
                     <Pressable onPress={() => removeLoadEntry(i)}>
-                      <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                      <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
                     </Pressable>
                   )}
                 </View>

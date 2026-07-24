@@ -277,7 +277,7 @@ export default function SiteDevicesScreen() {
                     />
                     <GlassButton
                       variant="icon"
-                      icon={<Trash2 size={18} strokeWidth={1.5} color="#ef4444" />}
+                      icon={<Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />}
                       onPress={() => handleDeleteDevice(device.id)}
                     />
                   </View>

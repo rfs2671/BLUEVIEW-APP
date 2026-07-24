@@ -224,7 +224,7 @@ const SignaturePad = ({
         <View style={styles.actions}>
           {isSigned ? (
             <Pressable onPress={handleClear} style={styles.clearBtn}>
-              <Trash2 size={16} strokeWidth={1.5} color="#ef4444" />
+              <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={styles.clearText}>Clear & Re-sign</Text>
             </Pressable>
           ) : (
@@ -426,7 +426,7 @@ function buildStyles(colors, isDark) {
     },
     clearText: {
       fontSize: 14,
-      color: '#ef4444',
+      color: semantic.neutralStrong,
     },
     hintText: {
       fontSize: 12,

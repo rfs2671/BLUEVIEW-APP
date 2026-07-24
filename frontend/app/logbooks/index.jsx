@@ -43,8 +43,8 @@ const ICON_MAP = {
 
 // Fallback LOG_TYPES for when API hasn't loaded yet
 const FALLBACK_LOG_TYPES = [
-  { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', color: '#ef4444', frequency: 'daily' },
-  { key: 'preshift_signin', label: 'Pre-Shift Safety Meeting', subtitle: 'Daily sign-in', icon: 'Users', color: '#4ade80', frequency: 'daily' },
+  { key: 'daily_jobsite', label: 'Daily Jobsite Log', subtitle: 'NYC DOB 3301-02', icon: 'Building2', color: semantic.neutral, frequency: 'daily' },
+  { key: 'preshift_signin', label: 'Pre-Shift Safety Meeting', subtitle: 'Daily sign-in', icon: 'Users', color: semantic.neutral, frequency: 'daily' },
   { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', color: '#3b82f6', frequency: 'weekly' },
   { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', color: '#8b5cf6', frequency: 'as_needed' },
   { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', color: '#06b6d4', frequency: 'daily' },

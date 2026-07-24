@@ -306,7 +306,7 @@ export default function AdminChecklistsScreen() {
           <View style={s.header}>
             <View style={s.headerLeft}>
               <IconPod size={48}>
-                <ClipboardList size={24} strokeWidth={1.5} color="#4ade80" />
+                <ClipboardList size={24} strokeWidth={1.5} color={semantic.neutral} />
               </IconPod>
               <View>
                 <Text style={s.headerLabel}>ADMIN</Text>
@@ -368,7 +368,7 @@ export default function AdminChecklistsScreen() {
                       onPress={() => handleAssignChecklist(checklist)}
                       style={s.actionButton}
                     >
-                      <Send size={18} strokeWidth={1.5} color="#4ade80" />
+                      <Send size={18} strokeWidth={1.5} color={semantic.neutral} />
                     </Pressable>
                     <Pressable
                       onPress={() => handleEditChecklist(checklist)}
@@ -380,7 +380,7 @@ export default function AdminChecklistsScreen() {
                       onPress={() => handleDeleteChecklist(checklist)}
                       style={s.actionButton}
                     >
-                      <Trash2 size={18} strokeWidth={1.5} color="#ef4444" />
+                      <Trash2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                     </Pressable>
                   </View>
                 </GlassCard>
@@ -450,7 +450,7 @@ export default function AdminChecklistsScreen() {
                     />
                     {formData.items.length > 1 && (
                       <Pressable onPress={() => removeItem(index)} style={s.removeBtn}>
-                        <X size={18} strokeWidth={1.5} color="#ef4444" />
+                        <X size={18} strokeWidth={1.5} color={semantic.neutral} />
                       </Pressable>
                     )}
                   </View>
@@ -640,7 +640,7 @@ export default function AdminChecklistsScreen() {
           <View style={s.modalOverlay}>
             <View style={s.deleteModal}>
               <View style={s.deleteIcon}>
-                <Trash2 size={32} strokeWidth={1.5} color="#ef4444" />
+                <Trash2 size={32} strokeWidth={1.5} color={semantic.neutral} />
               </View>
               <Text style={s.deleteTitle}>Delete Checklist?</Text>
               <Text style={s.deleteText}>

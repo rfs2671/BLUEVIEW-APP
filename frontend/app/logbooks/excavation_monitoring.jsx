@@ -293,7 +293,7 @@ export default function ExcavationMonitoringLog() {
                     <Text style={[s.inputLabel, { marginBottom: 0 }]}>Building #{i + 1}</Text>
                     {adjacentBuildings.length > 1 && (
                       <Pressable onPress={() => removeAdjacentBuilding(i)}>
-                        <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                        <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
                       </Pressable>
                     )}
                   </View>

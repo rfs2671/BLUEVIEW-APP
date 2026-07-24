@@ -37,7 +37,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
-  major_b: { label: 'MAJOR B', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: 'rgba(239,68,68,0.15)' },
   major_a: { label: 'MAJOR A', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
 };
@@ -390,7 +390,7 @@ export default function SuperintendentScreen() {
                       hitSlop={10}
                       style={s.iconBtn}
                     >
-                      <Trash2 size={16} strokeWidth={1.5} color="#ef4444" />
+                      <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
                     </Pressable>
                   </View>
                 </GlassCard>

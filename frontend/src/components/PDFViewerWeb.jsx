@@ -497,7 +497,7 @@ export default function PDFViewerWeb({ visible, file, projectId, onClose }) {
                 )}
                 {canDelete(selectedAnnotation) && (
                   <Pressable style={styles.deleteBtn} onPress={handleDelete}>
-                    <Trash2 size={16} strokeWidth={1.5} color="#ef4444" />
+                    <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
                     <Text style={styles.deleteBtnText}>Delete</Text>
                   </Pressable>
                 )}
@@ -547,5 +547,5 @@ const styles = StyleSheet.create({
   resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)' },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
   deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(239,68,68,0.12)' },
-  deleteBtnText: { color: '#ef4444', fontSize: 13, fontWeight: '600' },
+  deleteBtnText: { color: semantic.neutralStrong, fontSize: 13, fontWeight: '600' },
 });

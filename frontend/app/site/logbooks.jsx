@@ -259,11 +259,11 @@ export default function SiteLogbooksViewer() {
         )}
 
         {equipList ? (<><DocSectionLabel icon={Wrench} label="Equipment on Site" color="#f59e0b" /><Text style={s.docParagraph}>{equipList}</Text></>) : null}
-        {checkList ? (<><DocSectionLabel icon={ShieldCheck} label="Inspected" color="#4ade80" /><Text style={s.docParagraph}>{checkList}</Text></>) : null}
+        {checkList ? (<><DocSectionLabel icon={ShieldCheck} label="Inspected" color={semantic.neutral} /><Text style={s.docParagraph}>{checkList}</Text></>) : null}
 
         {observations.length > 0 && observations.some(o => o.description?.trim()) && (
           <>
-            <DocSectionLabel icon={AlertTriangle} label="Safety Observations" color="#ef4444" />
+            <DocSectionLabel icon={AlertTriangle} label="Safety Observations" color={semantic.neutral} />
             <DocTableRow isHeader cells={[{ text: 'Description', flex: 2 }, { text: 'Responsible', flex: 1 }, { text: 'Remedy', flex: 1.5 }]} />
             {observations.filter(o => o.description?.trim()).map((obs, i) => (
               <DocTableRow key={i} cells={[{ text: obs.description || '', flex: 2 }, { text: obs.responsible_party || '', flex: 1 }, { text: obs.remedy || '', flex: 1.5 }]} />
@@ -322,7 +322,7 @@ export default function SiteLogbooksViewer() {
 
         {attendees.some(a => a.worker_signature || a.signature) && (
           <>
-            <DocSectionLabel icon={Pen} label="Worker Signatures" color="#4ade80" />
+            <DocSectionLabel icon={Pen} label="Worker Signatures" color={semantic.neutral} />
             <View style={s.workerSigGrid}>
               {attendees.filter(a => a.worker_signature || a.signature).map((a, i) => (
                 <View key={i} style={s.workerSigCard}>
@@ -377,7 +377,7 @@ export default function SiteLogbooksViewer() {
 
         {workers.some(w => w.worker_signature) && (
           <>
-            <DocSectionLabel icon={Pen} label="Worker Signatures" color="#4ade80" />
+            <DocSectionLabel icon={Pen} label="Worker Signatures" color={semantic.neutral} />
             <View style={s.workerSigGrid}>
               {workers.filter(w => w.worker_signature).map((w, i) => (
                 <View key={i} style={s.workerSigCard}>

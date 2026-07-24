@@ -29,6 +29,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { semantic } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
@@ -43,10 +44,10 @@ const getFileIcon = (fileName) => {
     return { Icon: Image, color: '#f472b6' };
   }
   if (['pdf'].includes(ext)) {
-    return { Icon: FileText, color: '#ef4444' };
+    return { Icon: FileText, color: semantic.neutral };
   }
   if (['xls', 'xlsx', 'csv'].includes(ext)) {
-    return { Icon: FileSpreadsheet, color: '#22c55e' };
+    return { Icon: FileSpreadsheet, color: semantic.neutral };
   }
   if (['doc', 'docx', 'txt', 'rtf'].includes(ext)) {
     return { Icon: FileText, color: '#3b82f6' };

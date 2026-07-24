@@ -299,7 +299,7 @@ export default function ConcreteOperationsLog() {
                   </View>
                   {slumpTests.length > 1 && (
                     <Pressable onPress={() => removeSlumpTest(i)} style={{ paddingTop: 16 }}>
-                      <Trash2 size={16} strokeWidth={1.5} color="#f87171" />
+                      <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
                     </Pressable>
                   )}
                 </View>

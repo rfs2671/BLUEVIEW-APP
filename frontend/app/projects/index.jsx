@@ -271,7 +271,7 @@ export default function ProjectsScreen() {
                             backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
                           }]}>
                             <Text style={[s.classificationText, {
-                              color: project.project_class === 'major_b' ? '#ef4444' : '#f59e0b',
+                              color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',
                             }]}>
                               {project.project_class === 'major_b' ? 'MAJOR B' : 'MAJOR A'}
                             </Text>
@@ -308,7 +308,7 @@ export default function ProjectsScreen() {
                     hitSlop={10}
                   >
                     {({ hovered }) => (
-                      <Trash2 size={15} strokeWidth={1.5} color={hovered ? '#ef4444' : colors.text.muted} />
+                      <Trash2 size={15} strokeWidth={1.5} color={hovered ? semantic.neutral : colors.text.muted} />
                     )}
                   </Pressable>
                 </GlassListItem>
