@@ -172,6 +172,7 @@ const STATUS_CONFIG = {
   ineligible_license: {
     label: 'License Issue',
     color: semantic.critical,
+    textColor: semantic.criticalText,
     bg: '#ef444415',
     icon: XCircle,
     description: 'GC License issue prevents automated renewal.',
@@ -200,6 +201,7 @@ const STATUS_CONFIG = {
   failed: {
     label: 'Failed',
     color: semantic.critical,
+    textColor: semantic.criticalText,
     bg: '#ef444415',
     icon: XCircle,
     description: 'Renewal failed. Manual action may be required on DOB NOW.',
@@ -557,7 +559,7 @@ export default function PermitRenewalScreen() {
                 <Text
                   style={[
                     s.statusLabel,
-                    { color: statusCfg.color },
+                    { color: statusCfg.textColor || statusCfg.color },
                   ]}
                 >
                   {statusCfg.label}
@@ -582,7 +584,7 @@ export default function PermitRenewalScreen() {
                     style={[
                       s.daysText,
                       (isUrgent || daysLeft < 0) && {
-                        color: semantic.critical,
+                        color: semantic.criticalText,
                         fontWeight: '700',
                       },
                     ]}
@@ -971,7 +973,7 @@ export default function PermitRenewalScreen() {
                     <Text
                       style={[
                         s.completedText,
-                        { color: semantic.critical },
+                        { color: semantic.criticalText },
                       ]}
                     >
                       Manual renewal required on DOB NOW

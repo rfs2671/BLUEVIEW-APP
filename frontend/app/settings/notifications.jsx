@@ -259,7 +259,7 @@ const SeverityBadge = ({ severity, styles }) => {
         { backgroundColor: palette.bg, borderColor: `${palette.color}80` },
       ]}
     >
-      <Text style={[styles.sevBadgeText, { color: palette.color }]}>
+      <Text style={[styles.sevBadgeText, { color: palette.textColor || palette.color }]}>
         {palette.label}
       </Text>
     </View>
@@ -1414,7 +1414,7 @@ function buildStyles(colors) {
     previewError: {
       fontFamily: typography.regular,
       fontSize: 12,
-      color: semantic.critical,
+      color: semantic.criticalText,
       lineHeight: 17,
     },
     previewEmpty: {
@@ -1761,7 +1761,7 @@ function buildStyles(colors) {
       flex: 1,
       fontFamily: typography.regular,
       fontSize: 12,
-      color: semantic.critical,
+      color: semantic.criticalText,
       lineHeight: 17,
     },
 

@@ -40,6 +40,11 @@ import { colors } from './theme';
 // replace, so semantic call-site migration produces no visual change.
 const ATTENTION = '#fbbf24'; // amber-400  (matches theme warning / current literals)
 const CRITICAL = '#ef4444'; // red-500    (dominant literal; matches RiskScoreCircle BAND_RED)
+const CRITICAL_TEXT = '#f87171'; // red-400 — critical for TEXT. #ef4444 as text on
+// glass cards is 4.03:1 (surface-1) / 3.33:1 (surface-2), below WCAG AA 4.5:1.
+// #f87171 clears it — page 6.41:1, card 5.48:1, elevated 4.53:1 — same hue,
+// one step lighter. Use for red TEXT; keep `critical` for icons/borders/dots
+// (they only need 3:1 and pass).
 const CRITICAL_FILL = '#dc2626'; // red-600    (AA-contrast fill behind white text)
 const VERIFIED = '#22c55e'; // green-500  (matches RiskScoreCircle BAND_GREEN post-fix)
 
@@ -65,6 +70,7 @@ export const semantic = {
   get neutralBg() { return NEUTRAL_BG; },
   get attention() { return ATTENTION; },
   get critical() { return CRITICAL; },
+  get criticalText() { return CRITICAL_TEXT; },
   get criticalFill() { return CRITICAL_FILL; },
   get verified() { return VERIFIED; },
 };

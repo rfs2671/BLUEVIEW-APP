@@ -509,7 +509,7 @@ export default function SettingsScreen() {
                         <Text style={{ fontSize: 16, fontWeight: '600', color: colors.text.primary }}>
                           GC-{insData?.gc_license_number || '--'}
                         </Text>
-                        <Text style={{ fontSize: 12, fontWeight: '500', color: licenseActive ? semantic.verified : semantic.critical, marginTop: 2 }}>
+                        <Text style={{ fontSize: 12, fontWeight: '500', color: licenseActive ? semantic.verified : semantic.criticalText, marginTop: 2 }}>
                           {licenseStatus || 'Unknown'}
                         </Text>
                       </View>
@@ -563,7 +563,7 @@ export default function SettingsScreen() {
                               borderColor: isCur ? '#22c55e40' : '#ef444440',
                               backgroundColor: isCur ? '#22c55e10' : '#ef444410',
                             }}>
-                              <Text style={{ fontSize: 10, fontWeight: '600', color: isCur ? semantic.verified : semantic.critical, textTransform: 'uppercase' }}>
+                              <Text style={{ fontSize: 10, fontWeight: '600', color: isCur ? semantic.verified : semantic.criticalText, textTransform: 'uppercase' }}>
                                 {isCur ? 'Current' : 'Expired'}
                               </Text>
                             </View>

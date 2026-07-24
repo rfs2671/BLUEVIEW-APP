@@ -228,7 +228,7 @@ function buildStyles(colors, isDark) {
     form: { gap: spacing.md },
     inputGroup: { gap: spacing.xs },
     inputLabel: { ...typography.label, color: colors.text.muted },
-    errorText: { fontSize: 13, color: colors.error || semantic.critical, textAlign: 'center' },
+    errorText: { fontSize: 13, color: colors.error || semantic.criticalText, textAlign: 'center' },
     submitBtn: { marginTop: spacing.sm },
     signinRow: { marginTop: spacing.lg, alignItems: 'center' },
     signinText: { fontSize: 14, color: colors.text.muted },

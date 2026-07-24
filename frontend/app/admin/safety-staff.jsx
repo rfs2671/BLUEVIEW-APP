@@ -292,7 +292,7 @@ export default function SafetyStaffScreen() {
     let color = semantic.verified;
     let prefix = '';
     if (d < 30) {
-      color = semantic.critical;
+      color = semantic.criticalText;
       prefix = '🚨 ';
     } else if (d < 90) {
       color = '#f59e0b';

@@ -38,7 +38,7 @@ const STATUS_PALETTE = {
   in_progress: { label: 'In Progress',      color: '#f59e0b' },
   filed:       { label: 'Filed',            color: semantic.verified },
   completed:   { label: 'Completed',        color: semantic.verified },
-  failed:      { label: 'Failed',           color: semantic.critical },
+  failed:      { label: 'Failed',           color: semantic.critical, textColor: semantic.criticalText },
   cancelled:   { label: 'Cancelled',        color: '#6b7280' },
 };
 
@@ -95,7 +95,7 @@ const FilingHistorySection = ({ filingJobs = [] }) => {
                       { backgroundColor: `${palette.color}20`, borderColor: palette.color },
                     ]}
                   >
-                    <Text style={[s.statusPillText, { color: palette.color }]}>
+                    <Text style={[s.statusPillText, { color: palette.textColor || palette.color }]}>
                       {palette.label}
                     </Text>
                   </View>
@@ -222,7 +222,7 @@ function buildStyles(colors) {
       color: colors.text.primary,
     },
     detailValueError: {
-      color: semantic.critical,
+      color: semantic.criticalText,
     },
   });
 }

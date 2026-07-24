@@ -251,7 +251,7 @@ function buildStyles(colors, isDark) {
   },
   errorText: {
     fontSize: 13,
-    color: colors.error || semantic.critical,
+    color: colors.error || semantic.criticalText,
     textAlign: 'center',
   },
   submitBtn: {

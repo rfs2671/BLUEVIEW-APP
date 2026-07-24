@@ -642,7 +642,7 @@ export default function OwnerPortalScreen() {
                     const d = new Date(expStr);
                     if (isNaN(d.getTime())) return '#6b7280';
                     const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-                    if (daysLeft < 0) return semantic.critical;
+                    if (daysLeft < 0) return semantic.criticalText;
                     if (daysLeft <= 60) return '#f59e0b';
                     return semantic.verified;
                   };
@@ -694,7 +694,7 @@ export default function OwnerPortalScreen() {
                       {hasGc ? (
                         <View style={styles.gcInfoBlock}>
                           <View style={styles.gcLicenseRow}>
-                            <Text style={[styles.gcLicenseText, { color: gcActive ? semantic.verified : semantic.critical }]}>
+                            <Text style={[styles.gcLicenseText, { color: gcActive ? semantic.verified : semantic.criticalText }]}>
                               GC-{company.gc_license_number} · {gcStatus || 'Unknown'}
                             </Text>
                           </View>
@@ -1610,7 +1610,7 @@ const styles = StyleSheet.create({
   // a v2 filing-automation revisit needs them again.
   modalErrorText: {
     fontSize: 12,
-    color: semantic.critical,
+    color: semantic.criticalText,
     marginTop: 6,
   },
   filingRepsAddBtn: {

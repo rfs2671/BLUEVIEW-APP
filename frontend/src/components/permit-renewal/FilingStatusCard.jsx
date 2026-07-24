@@ -447,18 +447,18 @@ function buildStyles(colors) {
     errorMessage: {
       fontFamily: typography.medium,
       fontSize: 12,
-      color: semantic.critical,
+      color: semantic.criticalText,
     },
     errorBlockerItem: {
       fontFamily: typography.regular,
       fontSize: 12,
-      color: semantic.critical,
+      color: semantic.criticalText,
       lineHeight: 18,
     },
     errorCode: {
       fontFamily: typography.regular,
       fontSize: 11,
-      color: semantic.critical,
+      color: semantic.criticalText,
       opacity: 0.8,
       marginTop: 2,
     },

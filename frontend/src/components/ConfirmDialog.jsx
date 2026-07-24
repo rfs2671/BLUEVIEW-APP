@@ -56,7 +56,7 @@ export default function ConfirmDialog({
             <View style={styles.details}>
               {details.map((line, i) => (
                 <View key={i} style={styles.detailRow}>
-                  <Text style={[styles.detailBullet, { color: destructive ? semantic.critical : '#3b82f6' }]}>•</Text>
+                  <Text style={[styles.detailBullet, { color: destructive ? semantic.criticalText : '#3b82f6' }]}>•</Text>
                   <Text style={[styles.detailText, { color: colors.text.secondary }]}>{line}</Text>
                 </View>
               ))}

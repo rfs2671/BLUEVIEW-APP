@@ -148,7 +148,7 @@ const RenewalAlertCard = ({ projectId }) => {
             />
           </View>
           <View style={s.textBlock}>
-            <Text style={[s.title, { color: accentColor }]}>
+            <Text style={[s.title, { color: accentColor === semantic.critical ? semantic.criticalText : accentColor }]}>
               {title}
             </Text>
             <Text style={s.subtitle}>{subtitle}</Text>

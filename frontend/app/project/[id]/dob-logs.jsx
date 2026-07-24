@@ -340,7 +340,7 @@ export default function DOBLogsScreen() {
           {(isExpired || isExpiring) && (
             <View style={[s.expirationBanner, isExpired ? s.expiredBanner : s.expiringBanner]}>
               <AlertTriangle size={14} color={isExpired ? semantic.critical : '#f59e0b'} />
-              <Text style={[s.expirationText, { color: isExpired ? semantic.critical : '#f59e0b' }]}>
+              <Text style={[s.expirationText, { color: isExpired ? semantic.criticalText : '#f59e0b' }]}>
                 {isExpired ? `EXPIRED ${Math.abs(days)} days ago` : `Expires in ${days} day${days !== 1 ? 's' : ''}`}
               </Text>
             </View>
@@ -432,7 +432,7 @@ export default function DOBLogsScreen() {
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
               <View style={[s.typeBadge, { borderColor: headerColor + '40' }]}>
-                <Text style={[s.typeText, { color: headerColor }]}>{headerLabel}</Text>
+                <Text style={[s.typeText, { color: semantic.criticalText }]}>{headerLabel}</Text>
               </View>
             </View>
             <View style={s.logHeaderRight}>
@@ -464,7 +464,7 @@ export default function DOBLogsScreen() {
                 return (
                   <View style={[s.expirationBanner, { backgroundColor: isOverdue ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)' }]}>
                     <AlertTriangle size={14} color={isOverdue ? semantic.critical : '#f59e0b'} />
-                    <Text style={[s.expirationText, { color: isOverdue ? semantic.critical : '#f59e0b', fontWeight: '600' }]}>
+                    <Text style={[s.expirationText, { color: isOverdue ? semantic.criticalText : '#f59e0b', fontWeight: '600' }]}>
                       {isOverdue ? `OVERDUE by ${Math.abs(deadlineDays)} days` : `${deadlineDays} days to comply`}
                     </Text>
                   </View>
@@ -517,6 +517,7 @@ export default function DOBLogsScreen() {
       PENDING: '#3b82f6',
     };
     const riskColor = riskColors[(log.risk_level || '').toUpperCase()] || '#3b82f6';
+    const riskTextColor = (log.risk_level || '').toUpperCase() === 'CRITICAL' ? semantic.criticalText : riskColor;
 
     const complaintSource = log.complaint_source || '311 Complaint';
     const isResolved = !!log.closed_date || (log.complaint_status || '').toUpperCase().includes('CLOSE');
@@ -549,7 +550,7 @@ export default function DOBLogsScreen() {
           {hasLinkedViolation && (
             <View style={[s.expirationBanner, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
               <AlertTriangle size={14} color={semantic.critical} />
-              <Text style={[s.expirationText, { color: semantic.critical, fontWeight: '600' }]}>Violation Issued</Text>
+              <Text style={[s.expirationText, { color: semantic.criticalText, fontWeight: '600' }]}>Violation Issued</Text>
             </View>
           )}
 
@@ -572,7 +573,7 @@ export default function DOBLogsScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                     <Text style={[s.nextActionText, { flex: 1 }]}>{log.disposition_label}</Text>
                     <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: riskColor + '20' }}>
-                      <Text style={{ fontSize: 10, fontWeight: '600', color: riskColor }}>{log.risk_level || 'PENDING'}</Text>
+                      <Text style={{ fontSize: 10, fontWeight: '600', color: riskTextColor }}>{log.risk_level || 'PENDING'}</Text>
                     </View>
                   </View>
                 </View>
@@ -605,8 +606,8 @@ export default function DOBLogsScreen() {
                   if (linked) setExpandedLogId(linked.id);
                 }}>
                   <View style={[s.nextActionBox, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
-                    <Text style={[s.nextActionLabel, { color: semantic.critical }]}>VIOLATION ISSUED</Text>
-                    <Text style={[s.nextActionText, { color: semantic.critical }]}>Violation issued from this complaint — tap to view</Text>
+                    <Text style={[s.nextActionLabel, { color: semantic.criticalText }]}>VIOLATION ISSUED</Text>
+                    <Text style={[s.nextActionText, { color: semantic.criticalText }]}>Violation issued from this complaint — tap to view</Text>
                   </View>
                 </Pressable>
               )}
@@ -626,7 +627,7 @@ export default function DOBLogsScreen() {
     const isExpanded = expandedLogId === log.id;
     const result = (log.inspection_result || '').toUpperCase();
     const resultConfig = result.includes('FAIL')
-      ? { color: semantic.critical, label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
+      ? { color: semantic.critical, textColor: semantic.criticalText, label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
       : result.includes('PARTIAL')
       ? { color: '#f59e0b', label: 'Partial', bg: 'rgba(245,158,11,0.1)' }
       : { color: semantic.verified, label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
@@ -641,7 +642,7 @@ export default function DOBLogsScreen() {
                 <Text style={[s.typeText, { color: '#3b82f6' }]}>Inspection</Text>
               </View>
               <View style={[s.typeBadge, { borderColor: resultConfig.color + '40', backgroundColor: resultConfig.bg }]}>
-                <Text style={[s.typeText, { color: resultConfig.color }]}>{resultConfig.label}</Text>
+                <Text style={[s.typeText, { color: resultConfig.textColor || resultConfig.color }]}>{resultConfig.label}</Text>
               </View>
             </View>
             <View style={s.logHeaderRight}>
@@ -788,7 +789,7 @@ export default function DOBLogsScreen() {
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
                 <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (violationCount > 0 ? semantic.critical : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: semantic.critical }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
               </GlassCard>
             </Pressable>
@@ -838,7 +839,7 @@ export default function DOBLogsScreen() {
                 )}
                 {expiredPermits.length > 0 && (
                   <View style={s.renewalStat}>
-                    <Text style={[s.renewalStatNum, { color: semantic.critical }]}>{expiredPermits.length}</Text>
+                    <Text style={[s.renewalStatNum, { color: semantic.criticalText }]}>{expiredPermits.length}</Text>
                     <Text style={s.renewalStatLabel}>Expired</Text>
                   </View>
                 )}
@@ -850,7 +851,7 @@ export default function DOBLogsScreen() {
                     <Text style={s.renewalItemText} numberOfLines={1}>
                       {p.work_type || p.permit_type || 'Permit'} ({p.job_number || '—'})
                     </Text>
-                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.critical : '#f59e0b' }]}>
+                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.criticalText : '#f59e0b' }]}>
                       {d !== null ? (d < 0 ? `${Math.abs(d)}d overdue` : `${d}d left`) : 'Expired'}
                     </Text>
                   </View>

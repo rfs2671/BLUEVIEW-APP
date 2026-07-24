@@ -124,7 +124,7 @@ const errorStyles = StyleSheet.create({
     width: '100%',
   },
   errorName: {
-    color: semantic.critical,
+    color: semantic.criticalText,
     fontSize: 13,
     fontWeight: '600',
     marginBottom: 8,
