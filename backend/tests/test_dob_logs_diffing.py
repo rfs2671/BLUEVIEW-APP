@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -146,39 +147,87 @@ class TestInsertionPathsCarryNewSchemaFields(unittest.TestCase):
         self.assertIn('"current_status"', self.text)
 
 
-# ── TTL index static check ────────────────────────────────────────
+# ── TTL retention removed — guard against reintroduction ──────────
 
 
-class TestTtlIndexStaticCheck(unittest.TestCase):
-    """Static check that both TTL indexes (90d default + 365d for
-    violation/swo) are wired in startup. The actual createIndex
-    behavior runs against live Mongo at boot; this test pins the
-    code-level intent so a future commit that drops one of them
-    fails loudly."""
+class TestDobLogsTtlRemoved(unittest.TestCase):
+    """TTL retention on dob_logs was REMOVED 2026-07-24 (replacing the
+    MR.14 commit-2a indexes ``dob_logs_ttl_short`` 90d and
+    ``dob_logs_ttl_long`` 365d).
+
+    Both were keyed on ``detected_at``, which is a BACKFILL / SYNC
+    timestamp — the moment this app first saw a record — not the date the
+    event occurred. Production verification found every record on both
+    tracked projects stamped with that project's first-sync date, so the
+    TTL clock measured time-since-first-sync: it would have physically
+    deleted a project's entire DOB history 90/365 days after onboarding,
+    and re-sync could not restore it ($limit=50 per endpoint; re-inserted
+    rows reset previous_status and can re-fire Action alerts).
+
+    See docs/runbooks/dob-logs-ttl-removal-2026-07-24.md.
+
+    This guard inspects _ensure_index_resilient CALL bodies, not raw
+    source text, so the explanatory comment in server.py that names the
+    old indexes does NOT satisfy it (the previous static check would
+    have been fooled by exactly that).
+    """
 
     def setUp(self):
         path = _BACKEND / "server.py"
         self.text = path.read_text(encoding="utf-8", errors="ignore")
 
-    def test_ttl_short_index_present(self):
-        # 90 days = 90 * 86400 = 7776000 seconds.
-        self.assertIn("dob_logs_ttl_short", self.text)
-        self.assertIn("90 * 24 * 60 * 60", self.text)
+    def _call_bodies(self, pattern):
+        """Every balanced-paren call body whose opening matches `pattern`."""
+        bodies = []
+        for m in re.finditer(pattern, self.text):
+            i, depth = m.end(), 1
+            while i < len(self.text) and depth:
+                if self.text[i] == "(":
+                    depth += 1
+                elif self.text[i] == ")":
+                    depth -= 1
+                i += 1
+            bodies.append(self.text[m.end():i])
+        return bodies
 
-    def test_ttl_long_index_present(self):
-        # 365 days = 31536000 seconds.
-        self.assertIn("dob_logs_ttl_long", self.text)
-        self.assertIn("365 * 24 * 60 * 60", self.text)
+    def _dob_logs_index_calls(self):
+        """Every _ensure_index_resilient(...) call body targeting db.dob_logs."""
+        return [
+            b for b in self._call_bodies(r"_ensure_index_resilient\(")
+            if "db.dob_logs" in b
+        ]
 
-    def test_ttl_long_partial_filter_covers_violation_and_swo(self):
-        """The longer-retention index must match exactly the
-        operator-specified record_types (violation, swo)."""
-        # Cheap: confirm both strings appear within ~200 chars of the
-        # ttl_long index name.
-        idx = self.text.index("dob_logs_ttl_long")
-        window = self.text[idx:idx + 600]
-        self.assertIn('"violation"', window)
-        self.assertIn('"swo"', window)
+    def test_no_direct_ttl_create_index_on_dob_logs(self):
+        """Also guard the direct ``db.dob_logs.create_index(...)`` form —
+        it bypasses _ensure_index_resilient entirely, so checking only that
+        helper would leave a hole."""
+        for body in self._call_bodies(r"db\.dob_logs\.create_index\("):
+            self.assertNotIn(
+                "expireAfterSeconds", body,
+                "A TTL index was reintroduced on dob_logs via a direct "
+                "create_index call. See "
+                "docs/runbooks/dob-logs-ttl-removal-2026-07-24.md",
+            )
+
+    def test_no_ttl_index_created_on_dob_logs(self):
+        for body in self._dob_logs_index_calls():
+            self.assertNotIn(
+                "expireAfterSeconds", body,
+                "A TTL index was reintroduced on dob_logs. detected_at is a "
+                "sync timestamp, not an event date — any retention policy must "
+                "key on a real event date AND carry a documented legal "
+                "rationale. See "
+                "docs/runbooks/dob-logs-ttl-removal-2026-07-24.md",
+            )
+
+    def test_detected_at_diffing_index_retained(self):
+        """The (raw_dob_id, detected_at) diffing index is unrelated to
+        retention and must stay — the diffing logic sorts on it to pick the
+        most recent row per raw_dob_id."""
+        self.assertIn(
+            'create_index([("raw_dob_id", 1), ("detected_at", -1)])',
+            self.text,
+        )
 
 
 # ── Drop-unique-index static check ────────────────────────────────

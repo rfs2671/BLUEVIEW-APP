@@ -26810,32 +26810,38 @@ async def startup_event():
     # to pick the most recent doc for status comparison.
     await db.dob_logs.create_index([("raw_dob_id", 1), ("detected_at", -1)])
 
-    # MR.14 (commit 2a) — TTL retention (operator F8):
-    #   • 90 days for record_type in {permit, complaint, inspection, job_status}
-    #   • 365 days for record_type in {violation, swo}
-    # Two TTL indexes with partialFilterExpression. MongoDB requires
-    # the indexed field to be a Date for TTL to fire — `detected_at`
-    # is set to datetime.now(timezone.utc) on every insert above, so
-    # this works without a backfill. Existing docs without
-    # `detected_at` set won't be expired (TTL skips non-Date values).
-    await _ensure_index_resilient(
-        db.dob_logs,
-        keys=[("detected_at", 1)],
-        name="dob_logs_ttl_short",
-        expireAfterSeconds=90 * 24 * 60 * 60,  # 90 days
-        partialFilterExpression={
-            "record_type": {"$in": ["permit", "complaint", "inspection", "job_status"]},
-        },
-    )
-    await _ensure_index_resilient(
-        db.dob_logs,
-        keys=[("detected_at", 1)],
-        name="dob_logs_ttl_long",
-        expireAfterSeconds=365 * 24 * 60 * 60,  # 365 days
-        partialFilterExpression={
-            "record_type": {"$in": ["violation", "swo"]},
-        },
-    )
+    # ── TTL retention REMOVED 2026-07-24 ──────────────────────────────
+    # Was MR.14 (commit 2a) "operator F8": two TTL indexes keyed on
+    # `detected_at` — 90 days for {permit, complaint, inspection,
+    # job_status} (dob_logs_ttl_short) and 365 days for {violation, swo}
+    # (dob_logs_ttl_long).
+    #
+    # `detected_at` is a BACKFILL / SYNC timestamp — the moment this app
+    # first saw a record — NOT the date the event occurred. Every record
+    # on a project carries that project's first-sync time, so a 2019
+    # violation and a 2026 violation shared one expiry. The TTL clock
+    # therefore measured time-since-first-sync, and would have physically
+    # deleted every permit/complaint/inspection/job_status row ~90 days
+    # after a project's first sync and every violation/swo row ~365 days
+    # after. Re-sync could not restore them: each Socrata endpoint fetches
+    # $limit=50, and a re-inserted row resets previous_status and can
+    # re-fire Action-severity alerts.
+    #
+    # `detected_at` MUST NEVER be used as a retention clock. It stays —
+    # deliberately — as the activity feed's ordering/date_range field and
+    # as the diffing sort key of the (raw_dob_id, detected_at) index above.
+    #
+    # Any FUTURE retention policy must (1) key on a REAL EVENT DATE
+    # (violation_date / complaint_date / expiration_date / inspection_date
+    # — today stored as strings, so a BSON-Date field + backfill is
+    # required), and (2) carry a documented legal rationale. dob_logs is
+    # compliance history: a GC may need to produce a violation record years
+    # later. Compare docs/coi-retention-guarantee.md — this product's one
+    # deliberate retention decision (7 years, with a written justification).
+    #
+    # Dropping the two live Atlas indexes is an operational step, not a
+    # code one; this removal only stops them being re-created at startup.
+    # Runbook: docs/runbooks/dob-logs-ttl-removal-2026-07-24.md
 
     # MR.14 (commit 3) — index for the activity feed's "unread for me"
     # query. read_by_user is an array of {user_id, read_at} dicts;
