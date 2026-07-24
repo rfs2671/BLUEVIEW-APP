@@ -301,8 +301,26 @@ export const projectsAPI = {
     return response.data;
   },
 
+  // TIER 1 — mark for deletion (admin or owner). Nothing is removed: the
+  // project is flagged, hidden from admin surfaces, and its NFC tags are
+  // deactivated. Only the owner can purge it afterwards.
   delete: async (projectId) => {
     const response = await apiClient.delete(`/api/projects/${projectId}`);
+    return response.data;
+  },
+
+  // Owner-ONLY: projects an admin has marked for deletion, awaiting purge.
+  pendingDeletion: async () => {
+    const response = await apiClient.get('/api/projects/pending-deletion');
+    return response.data;
+  },
+
+  // TIER 2 — owner-ONLY irreversible purge. Removes the project and every
+  // document, storage object and config key it owns.
+  hardDelete: async (projectId) => {
+    const response = await apiClient.delete(
+      `/api/projects/${projectId}/hard-delete`,
+    );
     return response.data;
   },
 
