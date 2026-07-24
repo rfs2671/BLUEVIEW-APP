@@ -41,7 +41,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, chrome } from '../../src/styles/semanticColors';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -290,7 +290,7 @@ export default function SiteDailyLogsScreen() {
             onPress={() => handleSafetyCheckChange(item.id, 'unchecked')}
             style={[styles.checkOption, checkData.status === 'unchecked' && styles.checkOptionUnchecked]}
           >
-            <XCircle size={14} strokeWidth={1.5} color={checkData.status === 'unchecked' ? '#ef4444' : colors.text.muted} />
+            <XCircle size={14} strokeWidth={1.5} color={checkData.status === 'unchecked' ? semantic.neutral : colors.text.muted} />
           </Pressable>
           <Pressable
             onPress={() => handleSafetyCheckChange(item.id, 'na')}
@@ -338,14 +338,14 @@ export default function SiteDailyLogsScreen() {
             onPress={() => setActiveTab('today')}
             style={[styles.tab, activeTab === 'today' && styles.tabActive]}
           >
-            <ClipboardList size={16} strokeWidth={1.5} color={activeTab === 'today' ? '#4ade80' : colors.text.muted} />
+            <ClipboardList size={16} strokeWidth={1.5} color={activeTab === 'today' ? chrome.brand : colors.text.muted} />
             <Text style={[styles.tabText, activeTab === 'today' && styles.tabTextActive]}>Today</Text>
           </Pressable>
           <Pressable
             onPress={() => setActiveTab('previous')}
             style={[styles.tab, activeTab === 'previous' && styles.tabActive]}
           >
-            <History size={16} strokeWidth={1.5} color={activeTab === 'previous' ? '#4ade80' : colors.text.muted} />
+            <History size={16} strokeWidth={1.5} color={activeTab === 'previous' ? chrome.brand : colors.text.muted} />
             <Text style={[styles.tabText, activeTab === 'previous' && styles.tabTextActive]}>Previous</Text>
             {previousLogs.length > 0 && (
               <View style={styles.badge}><Text style={styles.badgeText}>{previousLogs.length}</Text></View>
@@ -387,7 +387,7 @@ export default function SiteDailyLogsScreen() {
                     return (
                       <Pressable key={opt.value} onPress={() => setFormData({...formData, weather: opt.value})}
                         style={[styles.weatherOption, isSelected && styles.weatherOptionSelected]}>
-                        <Icon size={20} strokeWidth={1.5} color={isSelected ? '#4ade80' : colors.text.muted} />
+                        <Icon size={20} strokeWidth={1.5} color={isSelected ? chrome.brand : colors.text.muted} />
                         <Text style={[styles.weatherLabel, isSelected && styles.weatherLabelSelected]}>{opt.label}</Text>
                       </Pressable>
                     );
@@ -429,7 +429,7 @@ export default function SiteDailyLogsScreen() {
               {/* Corrective Actions */}
               <GlassCard style={styles.section}>
                 <View style={styles.sectionHeader}>
-                  <AlertTriangle size={18} strokeWidth={1.5} color="#ef4444" />
+                  <AlertTriangle size={18} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={styles.sectionTitle}>Corrective Actions</Text>
                 </View>
                 <Pressable onPress={() => setFormData({...formData, corrective_actions_na: !formData.corrective_actions_na})}
@@ -556,7 +556,7 @@ export default function SiteDailyLogsScreen() {
                           <View key={k} style={styles.checkReview}>
                             <Text style={styles.checkReviewLabel}>{SAFETY_CHECKLIST_ITEMS.find(i => i.id === k)?.label || k}</Text>
                             <Text style={[styles.checkReviewStatus, v.status === 'checked' && {color: semantic.verified},
-                              v.status === 'unchecked' && {color: '#ef4444'}]}>{v.status?.toUpperCase()}</Text>
+                              v.status === 'unchecked' && {color: semantic.neutral}]}>{v.status?.toUpperCase()}</Text>
                           </View>
                         ))}
                       </View>
@@ -599,7 +599,7 @@ const styles = StyleSheet.create({
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, paddingVertical: spacing.md, backgroundColor: colors.glass.background, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border },
   tabActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: 'rgba(74,222,128,0.3)' },
   tabText: { fontSize: 14, fontWeight: '500', color: colors.text.muted },
-  tabTextActive: { color: '#4ade80' },
+  tabTextActive: { color: chrome.brand },
   badge: { backgroundColor: '#4ade80', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
   badgeText: { fontSize: 11, fontWeight: '600', color: '#fff' },
   scrollView: { flex: 1 },
@@ -617,9 +617,9 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 16, fontWeight: '500', color: colors.text.primary },
   weatherGrid: { flexDirection: 'row', gap: spacing.sm },
   weatherOption: { flex: 1, alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.md, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border },
-  weatherOptionSelected: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: '#4ade80' },
+  weatherOptionSelected: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: chrome.brand },
   weatherLabel: { fontSize: 11, color: colors.text.muted },
-  weatherLabelSelected: { color: '#4ade80' },
+  weatherLabelSelected: { color: chrome.brand },
   workerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   workerInput: { fontSize: 28, fontWeight: '200', color: colors.text.primary, minWidth: 50, textAlign: 'center' },
   workerLabel: { fontSize: 14, color: colors.text.muted },
@@ -629,8 +629,8 @@ const styles = StyleSheet.create({
   checklistLabel: { fontSize: 14, color: colors.text.primary, marginBottom: spacing.sm },
   checklistOptions: { flexDirection: 'row', gap: spacing.sm },
   checkOption: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border },
-  checkOptionActive: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: '#4ade80' },
-  checkOptionUnchecked: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' },
+  checkOptionActive: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: chrome.brand },
+  checkOptionUnchecked: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: semantic.neutral },
   checkOptionNA: { backgroundColor: 'rgba(100,116,139,0.2)', borderColor: colors.text.muted },
   naText: { fontSize: 11, fontWeight: '500', color: colors.text.muted },
   naTextActive: { color: colors.text.primary },

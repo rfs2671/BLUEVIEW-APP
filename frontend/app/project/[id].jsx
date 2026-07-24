@@ -602,7 +602,7 @@ export default function ProjectDetailScreen() {
                 </View>
                 {project?.project_class && project.project_class !== 'regular' && (
                   <View style={[s.projectClassBadge, {
-                    backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
+                    backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : 'rgba(245,158,11,0.2)',
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,

@@ -36,7 +36,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
-  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: 'rgba(239,68,68,0.15)' },
+  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
   major_a: { label: 'MAJOR A', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
 };
 
@@ -394,7 +394,7 @@ export default function SafetyStaffScreen() {
               )}
               {needsSSM && (
                 <View style={s.redBanner}>
-                  <AlertTriangle size={18} strokeWidth={1.5} color="#ef4444" />
+                  <AlertTriangle size={18} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.redBannerText}>
                     No SSM registered — required by NYC BC §3310.5 for Major B projects
                   </Text>
@@ -789,7 +789,7 @@ function buildStyles(colors, isDark) {
       padding: 16,
       marginBottom: 16,
     },
-    redBannerText: { flex: 1, fontSize: 13, color: '#ef4444', lineHeight: 18 },
+    redBannerText: { flex: 1, fontSize: 13, color: semantic.attention, lineHeight: 18 },
     list: { gap: spacing.md },
     card: { padding: spacing.lg },
     cardRow: {
@@ -832,7 +832,7 @@ function buildStyles(colors, isDark) {
       alignSelf: 'center',
     },
     roleBadgeSSC: { backgroundColor: 'rgba(245,158,11,0.15)' },
-    roleBadgeSSM: { backgroundColor: 'rgba(239,68,68,0.15)' },
+    roleBadgeSSM: { backgroundColor: semantic.neutralBg },
     roleBadgeText: {
       fontSize: 11,
       fontWeight: '700',

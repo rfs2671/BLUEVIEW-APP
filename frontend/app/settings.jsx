@@ -42,7 +42,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import apiClient, { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, chrome } from '../src/styles/semanticColors';
 
 const INSURANCE_LABELS = {
   general_liability: 'General Liability',
@@ -760,7 +760,7 @@ export default function SettingsScreen() {
                               borderColor: selectedProjectId === p.id ? '#4ade8040' : 'rgba(255,255,255,0.1)',
                             }}
                           >
-                            <Text style={{ fontSize: 12, color: selectedProjectId === p.id ? '#4ade80' : colors.text.muted }}>
+                            <Text style={{ fontSize: 12, color: selectedProjectId === p.id ? chrome.brand : colors.text.muted }}>
                               {p.name || p.address || 'Project'}
                             </Text>
                           </Pressable>

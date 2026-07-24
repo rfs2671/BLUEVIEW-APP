@@ -44,7 +44,7 @@ import apiClient from '../../src/utils/api';
 // monitoring product never holds credentials; the agent_crypto
 // import + the credential modal + the authorization gate are gone.
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, chrome } from '../../src/styles/semanticColors';
 
 // Owner password
 const OWNER_PASSWORD = 'Asdddfgh1$';
@@ -1167,7 +1167,7 @@ export default function OwnerPortalScreen() {
             <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.confirmCard}>
                 <IconPod size={64}>
-                  <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
+                  <AlertTriangle size={28} strokeWidth={1.5} color={semantic.attention} />
                 </IconPod>
                 <Text style={styles.confirmTitle}>Delete Company?</Text>
                 <Text style={styles.confirmText}>
@@ -1202,7 +1202,7 @@ export default function OwnerPortalScreen() {
             <View style={[styles.modalContent, isWeb && { maxHeight: webModalContentMaxHeight }]}>
               <GlassCard variant="modal" style={styles.confirmCard}>
                 <IconPod size={64}>
-                  <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
+                  <AlertTriangle size={28} strokeWidth={1.5} color={semantic.attention} />
                 </IconPod>
                 <Text style={styles.confirmTitle}>Delete Admin?</Text>
                 <Text style={styles.confirmText}>
@@ -1800,7 +1800,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   dropdownItemSelected: {
-    borderColor: '#4ade80',
+    borderColor: chrome.brand,
     backgroundColor: 'rgba(74, 222, 128, 0.1)',
   },
   dropdownText: {

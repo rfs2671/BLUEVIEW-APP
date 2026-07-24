@@ -41,7 +41,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic } from '../../../src/styles/semanticColors';
+import { semantic, chrome } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -780,28 +780,28 @@ export default function DOBLogsScreen() {
           >
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
-                <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? '#4ade80' : colors.text.muted} />
+                <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? chrome.brand : colors.text.muted} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
-                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? '#4ade80' : (violationCount > 0 ? semantic.critical : colors.text.muted)} />
+                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (violationCount > 0 ? semantic.critical : colors.text.muted)} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: semantic.critical }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
-                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? '#4ade80' : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
+                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'inspection' && s.navCardActive]}>
-                <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? '#4ade80' : colors.text.muted} />
+                <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? chrome.brand : colors.text.muted} />
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
                 <Text numberOfLines={1} style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
               </GlassCard>
@@ -1041,13 +1041,13 @@ function buildStyles(colors, isDark) {
     navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: 4 },
     navCardActive: { borderColor: 'rgba(74,222,128,0.4)', backgroundColor: 'rgba(74,222,128,0.06)' },
     navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
-    navCountActive: { color: '#4ade80' },
+    navCountActive: { color: chrome.brand },
     navLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
-    navLabelActive: { color: '#4ade80' },
+    navLabelActive: { color: chrome.brand },
 
     // Filter banner
     filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: 'rgba(74,222,128,0.08)', borderWidth: 1, borderColor: 'rgba(74,222,128,0.2)' },
-    filterText: { fontSize: 13, color: '#4ade80', fontWeight: '500' },
+    filterText: { fontSize: 13, color: chrome.brand, fontWeight: '500' },
     filterClear: { fontSize: 12, color: colors.text.muted, textDecorationLine: 'underline' },
 
     // Renewal status banner

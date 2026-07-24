@@ -268,7 +268,7 @@ export default function ProjectsScreen() {
                         )}
                         {project.project_class && project.project_class !== 'regular' && (
                           <View style={[s.classificationBadge, {
-                            backgroundColor: project.project_class === 'major_b' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)',
+                            backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : 'rgba(245,158,11,0.2)',
                           }]}>
                             <Text style={[s.classificationText, {
                               color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',

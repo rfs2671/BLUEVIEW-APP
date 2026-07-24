@@ -312,7 +312,7 @@ const StartRenewalPanel = ({ visible, fieldMap, onClose, onReopenDob }) => {
         {criticalUnmappable.length > 0 && (
           <View style={[s.section, s.warnSection]}>
             <View style={s.warnHeader}>
-              <AlertCircle size={14} color="#ef4444" />
+              <AlertCircle size={14} color={semantic.attention} />
               <Text style={s.warnTitle}>Missing required fields</Text>
             </View>
             <Text style={s.warnDescription}>
@@ -511,7 +511,7 @@ function buildStyles(colors) {
     warnTitle: {
       fontFamily: typography.semibold,
       fontSize: 12,
-      color: '#ef4444',
+      color: semantic.attention,
     },
     warnDescription: {
       fontFamily: typography.regular,
@@ -523,7 +523,7 @@ function buildStyles(colors) {
     warnItem: {
       fontFamily: typography.regular,
       fontSize: 11,
-      color: '#ef4444',
+      color: semantic.attention,
       lineHeight: 17,
       marginLeft: spacing.xs,
     },

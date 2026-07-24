@@ -409,7 +409,7 @@ function buildStyles(colors, isDark) {
     toggleLabel: { color: colors.text.secondary, fontSize: 14 },
     toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
     toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    toggleDotFail: { backgroundColor: '#f87171', borderColor: '#f87171' },
+    toggleDotFail: { backgroundColor: semantic.attention, borderColor: semantic.attention },
     buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     entryCard: {

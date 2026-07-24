@@ -53,7 +53,7 @@ import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, chrome } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 
@@ -370,7 +370,7 @@ export default function DailyLogScreen() {
             <XCircle
               size={16}
               strokeWidth={1.5}
-              color={checkData.status === 'unchecked' ? '#ef4444' : colors.text.muted}
+              color={checkData.status === 'unchecked' ? semantic.neutral : colors.text.muted}
             />
           </Pressable>
           <Pressable
@@ -439,7 +439,7 @@ export default function DailyLogScreen() {
               <ClipboardList
                 size={16}
                 strokeWidth={1.5}
-                color={activeTab === 'today' ? '#4ade80' : colors.text.muted}
+                color={activeTab === 'today' ? chrome.brand : colors.text.muted}
               />
               <Text style={[s.tabText, activeTab === 'today' && s.tabTextActive]}>
                 Today's Log
@@ -452,7 +452,7 @@ export default function DailyLogScreen() {
               <History
                 size={16}
                 strokeWidth={1.5}
-                color={activeTab === 'previous' ? '#4ade80' : colors.text.muted}
+                color={activeTab === 'previous' ? chrome.brand : colors.text.muted}
               />
               <Text style={[s.tabText, activeTab === 'previous' && s.tabTextActive]}>
                 Previous Days
@@ -606,7 +606,7 @@ export default function DailyLogScreen() {
                         <Icon
                           size={24}
                           strokeWidth={1.5}
-                          color={isSelected ? '#4ade80' : colors.text.muted}
+                          color={isSelected ? chrome.brand : colors.text.muted}
                         />
                         <Text style={[s.weatherLabel, isSelected && s.weatherLabelSelected]}>
                           {option.label}
@@ -665,7 +665,7 @@ export default function DailyLogScreen() {
 
               <GlassCard style={s.section}>
                 <View style={s.sectionHeader}>
-                  <AlertTriangle size={20} strokeWidth={1.5} color="#ef4444" />
+                  <AlertTriangle size={20} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.sectionTitle}>Corrective Actions</Text>
                 </View>
                 <Text style={s.sectionSubtitle}>
@@ -996,7 +996,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   tabTextActive: {
-    color: '#4ade80',
+    color: chrome.brand,
   },
   badge: {
     backgroundColor: '#4ade80',
@@ -1154,14 +1154,14 @@ function buildStyles(colors, isDark) {
   },
   weatherOptionSelected: {
     backgroundColor: 'rgba(74, 222, 128, 0.1)',
-    borderColor: '#4ade80',
+    borderColor: chrome.brand,
   },
   weatherLabel: {
     fontSize: 12,
     color: colors.text.muted,
   },
   weatherLabelSelected: {
-    color: '#4ade80',
+    color: chrome.brand,
   },
   workerCountRow: {
     flexDirection: 'row',
@@ -1221,11 +1221,11 @@ function buildStyles(colors, isDark) {
   },
   checkOptionActive: {
     backgroundColor: 'rgba(74, 222, 128, 0.15)',
-    borderColor: '#4ade80',
+    borderColor: chrome.brand,
   },
   checkOptionUnchecked: {
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderColor: '#ef4444',
+    borderColor: semantic.neutral,
   },
   checkOptionNA: {
     backgroundColor: 'rgba(100, 116, 139, 0.2)',

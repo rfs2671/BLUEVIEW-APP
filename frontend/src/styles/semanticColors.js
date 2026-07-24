@@ -53,9 +53,16 @@ const VERIFIED = '#22c55e'; // green-500  (matches RiskScoreCircle BAND_GREEN po
 // on every dark surface — page 6.96:1, card(6%) 6.39:1, elevated(12%) 5.61:1.
 // Use it wherever a former state COLOR was carrying text (e.g. MAJOR B class
 // badges, role badges, delete/clear button labels).
+// Neutral pill/chip background tint. Slate-400 (#94a3b8) at 18% — the same
+// neutral family as the RiskScoreCircle "pending" band — so an identity badge
+// (MAJOR B, role) reads as neutral chrome, not an alarm. Theme-insensitive
+// (mirrors the theme-blind rgba() badge fills it replaces).
+const NEUTRAL_BG = 'rgba(148, 163, 184, 0.18)';
+
 export const semantic = {
   get neutral() { return colors.text.muted; },
   get neutralStrong() { return colors.text.secondary; },
+  get neutralBg() { return NEUTRAL_BG; },
   get attention() { return ATTENTION; },
   get critical() { return CRITICAL; },
   get criticalFill() { return CRITICAL_FILL; },

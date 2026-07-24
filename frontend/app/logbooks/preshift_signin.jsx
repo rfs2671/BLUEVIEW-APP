@@ -620,10 +620,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.04)',
   },
   ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: semantic.verified },
-  ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: '#ef4444' },
+  ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: semantic.attention },
   ynText: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
   ynTextYes: { color: semantic.verified },
-  ynTextNo: { color: '#ef4444' },
+  ynTextNo: { color: semantic.attention },
 
   addRowBtn: { marginTop: spacing.sm, alignSelf: 'flex-start' },
   totalRow: {

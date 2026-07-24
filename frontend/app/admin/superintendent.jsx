@@ -37,7 +37,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
-  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: 'rgba(239,68,68,0.15)' },
+  major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
   major_a: { label: 'MAJOR A', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
 };
@@ -323,7 +323,7 @@ export default function SuperintendentScreen() {
 
           {anyConflict && (
             <View style={s.conflictBanner}>
-              <AlertTriangle size={18} strokeWidth={1.5} color="#ef4444" />
+              <AlertTriangle size={18} strokeWidth={1.5} color={semantic.attention} />
               <Text style={s.conflictBannerText}>
                 One or more superintendents are registered on multiple active projects.
                 NYC DOB one-job rule violation — resolve before next inspection.
@@ -666,7 +666,7 @@ export default function SuperintendentScreen() {
           <View style={s.modalOverlay}>
             <GlassCard style={s.conflictModal}>
               <View style={s.conflictIconRow}>
-                <AlertTriangle size={28} strokeWidth={1.5} color="#ef4444" />
+                <AlertTriangle size={28} strokeWidth={1.5} color={semantic.attention} />
               </View>
               <Text style={s.conflictTitle}>⚠ One-Job Rule Conflict Detected</Text>
               <Text style={s.conflictBody}>
@@ -733,7 +733,7 @@ function buildStyles(colors, isDark) {
     conflictBannerText: {
       flex: 1,
       fontSize: 13,
-      color: '#ef4444',
+      color: semantic.attention,
       lineHeight: 18,
     },
     list: { gap: spacing.md },
@@ -791,7 +791,7 @@ function buildStyles(colors, isDark) {
     conflictBadgeText: {
       fontSize: 11,
       fontWeight: '700',
-      color: '#ef4444',
+      color: semantic.attention,
     },
     cardActions: {
       flexDirection: 'row',
@@ -937,7 +937,7 @@ function buildStyles(colors, isDark) {
     conflictTitle: {
       fontSize: 18,
       fontWeight: '600',
-      color: '#ef4444',
+      color: semantic.attention,
       textAlign: 'center',
       marginBottom: spacing.md,
     },

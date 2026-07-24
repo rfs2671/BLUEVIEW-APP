@@ -273,7 +273,7 @@ export default function AdminUsersScreen() {
 
   const getRoleBadgeStyle = (role) => {
     switch (role) {
-      case 'admin': return { bg: 'rgba(239, 68, 68, 0.2)', color: semantic.neutralStrong };
+      case 'admin': return { bg: semantic.neutralBg, color: semantic.neutralStrong };
       case 'cp': return { bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' };
       default: return { bg: 'rgba(156, 163, 175, 0.2)', color: '#9ca3af' };
     }

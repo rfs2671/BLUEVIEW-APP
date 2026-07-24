@@ -17,7 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, chrome } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal from '../../src/components/CameraCaptureModal';
@@ -783,7 +783,7 @@ function buildStyles(colors, isDark) {
   },
   chipActive: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: 'rgba(74,222,128,0.4)' },
   chipText: { fontSize: 13, color: colors.text.muted },
-  chipTextActive: { color: '#4ade80', fontWeight: '500' },
+  chipTextActive: { color: chrome.brand, fontWeight: '500' },
   observationCard: {
     borderWidth: 1, borderColor: 'rgba(245,158,11,0.15)', borderRadius: borderRadius.lg,
     padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,

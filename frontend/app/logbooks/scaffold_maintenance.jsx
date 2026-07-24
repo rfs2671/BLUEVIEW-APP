@@ -193,7 +193,7 @@ export default function ScaffoldMaintenanceLog() {
             style={[styles.answerBtn, current === opt && getAnswerActive(opt)]}
           >
             {opt === 'YES' && <CheckCircle size={14} strokeWidth={2} color={current === 'YES' ? semantic.verified : colors.text.muted} />}
-            {opt === 'NO' && <XCircle size={14} strokeWidth={2} color={current === 'NO' ? '#ef4444' : colors.text.muted} />}
+            {opt === 'NO' && <XCircle size={14} strokeWidth={2} color={current === 'NO' ? semantic.attention : colors.text.muted} />}
             {opt === 'N/A' && <MinusCircle size={14} strokeWidth={2} color={current === 'N/A' ? '#94a3b8' : colors.text.muted} />}
             <Text style={[styles.answerBtnText, current === opt && getAnswerTextStyle(opt)]}>{opt}</Text>
           </Pressable>
@@ -209,7 +209,7 @@ export default function ScaffoldMaintenanceLog() {
   };
   const getAnswerTextStyle = (opt) => {
     if (opt === 'YES') return { color: semantic.verified };
-    if (opt === 'NO') return { color: '#ef4444' };
+    if (opt === 'NO') return { color: semantic.attention };
     return { color: '#94a3b8' };
   };
 
