@@ -48,6 +48,8 @@ Schema notes
 
 from __future__ import annotations
 
+import math
+
 # ── Collection names ──────────────────────────────────────────────
 #
 # V2.3 Commit 1: the NYC_* mirror collection constants and
@@ -96,10 +98,14 @@ PREDICTION_MODELS_COLLECTION             = "prediction_models"
 
 MODEL_VERSION = "statistical-v1"
 
-SCORE_BAND_GREEN  = "green"
-SCORE_BAND_YELLOW = "yellow"
-SCORE_BAND_ORANGE = "orange"
-SCORE_BAND_RED    = "red"
+SCORE_BAND_GREEN   = "green"
+SCORE_BAND_YELLOW  = "yellow"
+SCORE_BAND_ORANGE  = "orange"
+SCORE_BAND_RED     = "red"
+# Distinct band for a missing/uncomputed/invalid score. Never green — an
+# uncomputed score must not read as low-risk. Mirrors the frontend's
+# BAND_PENDING in RiskScoreCircle.jsx.
+SCORE_BAND_PENDING = "pending"
 
 
 def score_band(score):
@@ -109,10 +115,21 @@ def score_band(score):
     classification didn't change between versions. The frontend
     `bandFor` helper in RiskScoreCircle.jsx is pinned against
     this function via the V2.1.2 boundary tests.
+
+    A missing/uncomputed/invalid score (None, non-numeric, NaN, or any
+    non-finite value) returns "pending", NOT "green" — an uncomputed score
+    must never read as low-risk in a compliance product. This is guarded
+    FIRST, before any numeric comparison. 0 is a real, finite score and
+    correctly lands in the green band below.
     """
     if score is None:
-        return SCORE_BAND_GREEN
-    s = float(score)
+        return SCORE_BAND_PENDING
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return SCORE_BAND_PENDING
+    if not math.isfinite(s):  # NaN / +inf / -inf
+        return SCORE_BAND_PENDING
     if s <= 30:
         return SCORE_BAND_GREEN
     if s <= 60:

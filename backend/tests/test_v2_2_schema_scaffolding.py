@@ -96,8 +96,14 @@ class TestVersionAndThresholds(unittest.TestCase):
         self.assertEqual(se_schema.score_band(80),  "orange")
         self.assertEqual(se_schema.score_band(81),  "red")
         self.assertEqual(se_schema.score_band(100), "red")
-        # None defaults to green (defensive).
-        self.assertEqual(se_schema.score_band(None), "green")
+        # 0 is a REAL score — it must stay green, never pending.
+        self.assertEqual(se_schema.score_band(0),   "green")
+        # Missing / uncomputed / invalid scores return "pending", NOT
+        # green — an uncomputed score must not read as low-risk. Guarded
+        # before any numeric comparison.
+        self.assertEqual(se_schema.score_band(None),        "pending")
+        self.assertEqual(se_schema.score_band(float("nan")), "pending")
+        self.assertEqual(se_schema.score_band("abc"),       "pending")
 
     def test_min_peer_sample_size(self):
         # Spec §peer matching: "Fallback only if sample < 20."
