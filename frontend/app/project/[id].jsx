@@ -67,7 +67,8 @@ import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, chrome, border, surface, text as tokenText } from '../../src/styles/semanticColors';
+import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -105,6 +106,52 @@ const dropboxAPI = {
   },
 };
 
+// ── Desktop 2-column layout (RN-Web >=1024). Layout only; colors come from
+//    semantic tokens inline so they stay theme-aware. Mobile never renders any
+//    of this. ─────────────────────────────────────────────────────────────
+const deskStyles = StyleSheet.create({
+  header: {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: spacing.sm,
+    borderWidth: 1, borderRadius: borderRadius.lg,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.lg, marginBottom: spacing.lg,
+  },
+  headerTitle: { fontSize: typography.sizes.lg, fontWeight: '600' },
+  headerMeta: { fontSize: typography.sizes.sm },
+  headerDot: { fontSize: typography.sizes.sm },
+  chip: { paddingHorizontal: spacing.sm, paddingVertical: 2, borderRadius: borderRadius.full, borderWidth: 1 },
+  chipText: { fontSize: 10, fontWeight: '600', letterSpacing: 0.5 },
+  cols: { flexDirection: 'row', gap: spacing.lg, alignItems: 'flex-start' },
+  colLeft: { flex: 2, minWidth: 0, gap: spacing.md },
+  colRight: { flex: 1, minWidth: 240, gap: spacing.sm },
+  sectionLabel: { ...typography.label, marginBottom: spacing.xs, marginTop: spacing.sm },
+  tileRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
+  tile: {
+    flex: 1, minWidth: 150, borderWidth: 1, borderRadius: borderRadius.lg,
+    paddingVertical: spacing.md, paddingHorizontal: spacing.md,
+  },
+  tileNumber: { fontSize: 32, fontWeight: '300', letterSpacing: -0.5 },
+  tileLabel: { fontSize: typography.sizes.sm, marginTop: 2 },
+  qaItem: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 44,
+    paddingHorizontal: spacing.md, borderWidth: 1, borderRadius: borderRadius.md,
+  },
+  qaLabel: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
+});
+
+// One stat tile. For the DOB exception tiles a zero (or loading) renders
+// neutral — a 0 is good news, not painted with a state color. Operational
+// tiles pass token=primary so their number stays legible at any value.
+function DeskTile({ value, label, token, loading }) {
+  const isZero = !loading && (value == null || value === 0);
+  const numColor = loading || isZero ? semantic.neutral : (token || semantic.neutral);
+  return (
+    <View style={[deskStyles.tile, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+      <Text style={[deskStyles.tileNumber, { color: numColor }]}>{loading ? '—' : (value ?? 0)}</Text>
+      <Text style={[deskStyles.tileLabel, { color: tokenText.secondary }]}>{label}</Text>
+    </View>
+  );
+}
+
 export default function ProjectDetailScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -112,10 +159,17 @@ export default function ProjectDetailScreen() {
   const { id: projectId } = useLocalSearchParams();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  // Desktop (RN-Web >=1024) renders the 2-column triage layout; mobile renders
+  // exactly what it does today. Called unconditionally (hooks rule).
+  const isDesktop = useIsDesktop();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [project, setProject] = useState(null);
+  // DOB standing-open exposure for THIS project, one call to dob-summary
+  // (?project_id). Desktop-only; fetch is gated on isDesktop below.
+  const [dobExposure, setDobExposure] = useState(null);
+  const [dobExpLoading, setDobExpLoading] = useState(true);
   const { getProjectById } = useProjects();
   const { getActiveCheckIns } = useCheckIns();
   const [stats, setStats] = useState({
@@ -176,6 +230,27 @@ export default function ProjectDetailScreen() {
       fetchData();
     }
   }, [isAuthenticated, projectId]);
+
+  // DOB exposure rollup for the desktop tiles — ONE GET
+  // /api/projects/dob-summary?project_id={id}. Desktop only; degrades to
+  // muted "—" tiles on failure and never blocks the page.
+  useEffect(() => {
+    if (!isDesktop || !isAuthenticated || !projectId) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        setDobExpLoading(true);
+        const r = await apiClient.get(`/api/projects/dob-summary?project_id=${projectId}`);
+        const row = r?.data?.by_project?.[projectId] || null;
+        if (!cancelled) setDobExposure(row);
+      } catch (_e) {
+        if (!cancelled) setDobExposure(null);
+      } finally {
+        if (!cancelled) setDobExpLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isDesktop, isAuthenticated, projectId]);
 
   // Check NFC capability
   useEffect(() => {
@@ -532,6 +607,90 @@ export default function ProjectDetailScreen() {
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.neutral },
   ];
 
+  // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
+  //    quick-actions block; the lower detail sections (notifications, NFC,
+  //    devices, files) render unchanged below for both. Risk gauge is hidden
+  //    on desktop (mobile keeps it); the drawer + mobile path are untouched.
+  const renderDesktopTop = () => {
+    const addr = project?.address || project?.location || '';
+    const title = project?.name || addr || 'Project';
+    const showAddr = addr && addr !== title;           // address ONCE, no dup
+    const neverSynced = !project?.first_poll_completed_at;
+    const exp = dobExposure || {};
+    const cls = project?.project_class;
+    const clsLabel = cls === 'major_b' ? 'MAJOR B' : cls === 'major_a' ? 'MAJOR A' : null;
+    const Dot = () => <Text style={[deskStyles.headerDot, { color: tokenText.muted }]}>·</Text>;
+    return (
+      <>
+        {/* Compressed single-row header — address once, no risk gauge. */}
+        <View style={[deskStyles.header, { backgroundColor: surface.glass, borderColor: border.subtle }]}>
+          <Text style={[deskStyles.headerTitle, { color: tokenText.primary }]} numberOfLines={1}>{title}</Text>
+          {showAddr ? (<><Dot /><Text style={[deskStyles.headerMeta, { color: tokenText.secondary }]} numberOfLines={1}>{addr}</Text></>) : null}
+          {project?.nyc_bin ? (<><Dot /><Text style={[deskStyles.headerMeta, { color: tokenText.secondary }]}>BIN {project.nyc_bin}</Text></>) : null}
+          {project?.status ? (<><Dot /><Text style={[deskStyles.headerMeta, { color: tokenText.secondary }]}>{project.status}</Text></>) : null}
+          {clsLabel ? (
+            <View style={[deskStyles.chip, { backgroundColor: semantic.neutralBg, borderColor: border.subtle }]}>
+              <Text style={[deskStyles.chipText, { color: semantic.neutralStrong }]}>{clsLabel}</Text>
+            </View>
+          ) : null}
+          {neverSynced ? (
+            <View style={[deskStyles.chip, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+              <Text style={[deskStyles.chipText, { color: tokenText.muted }]}>NEVER SYNCED</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={deskStyles.cols}>
+          {/* LEFT (primary) — DOB exposure, forecast, operational tiles. */}
+          <View style={deskStyles.colLeft}>
+            <Text style={deskStyles.sectionLabel}>DOB EXPOSURE</Text>
+            <View style={deskStyles.tileRow}>
+              <DeskTile loading={dobExpLoading} value={exp.open_violations} label="Open violations" token={semantic.criticalText} />
+              <DeskTile loading={dobExpLoading} value={exp.permits_expiring} label="Permits expiring <30d" token={semantic.attention} />
+              <DeskTile loading={dobExpLoading} value={exp.open_complaints} label="Open complaints" token={semantic.attention} />
+            </View>
+
+            <CompliancePanel projectId={projectId} />
+
+            <Text style={deskStyles.sectionLabel}>ON SITE</Text>
+            <View style={deskStyles.tileRow}>
+              <DeskTile value={stats.onSiteWorkers} label="On site" token={tokenText.primary} />
+              <DeskTile value={nfcTags.length} label="NFC tags" token={tokenText.primary} />
+              <DeskTile value={siteDevices.length} label="Devices" token={tokenText.primary} />
+            </View>
+          </View>
+
+          {/* RIGHT (secondary) — quick actions as a compact list. */}
+          <View style={deskStyles.colRight}>
+            <Text style={deskStyles.sectionLabel}>QUICK ACTIONS</Text>
+            {quickActions.map((action) => {
+              const Icon = action.icon;
+              return (
+                <Pressable
+                  key={action.title}
+                  onPress={() => router.push(action.path)}
+                  accessibilityRole="link"
+                  accessibilityLabel={action.title}
+                  style={({ hovered }) => [
+                    deskStyles.qaItem,
+                    { backgroundColor: surface.glass, borderColor: border.subtle },
+                    hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
+                  ]}
+                >
+                  <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
+                  <Text style={[deskStyles.qaLabel, { color: tokenText.primary }]} numberOfLines={1}>{action.title}</Text>
+                  {action.warn ? (
+                    <Text style={{ fontSize: 10, fontWeight: '600', color: semantic.attention }}>No BIN</Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </>
+    );
+  };
+
   if (authLoading || loading) {
     return (
       <AnimatedBackground>
@@ -585,6 +744,8 @@ export default function ProjectDetailScreen() {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text.primary} />
           }
         >
+          {isDesktop ? renderDesktopTop() : (
+          <>
           {/* Project Header */}
           <GlassCard style={s.projectHeader}>
             <View style={s.projectTitleRow}>
@@ -694,6 +855,8 @@ export default function ProjectDetailScreen() {
               );
             })}
           </View>
+          </>
+          )}
 
           {/* V2.3 Commit 7 — Notifications inbox inline preview.
               Up to 3 most-recent unread items + a "See all →" link
