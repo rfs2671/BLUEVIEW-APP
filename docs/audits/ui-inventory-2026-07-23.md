@@ -412,3 +412,26 @@ Surfaced while building the desktop `ProjectsTable`. Recorded, not fixed.
   aggregation** (one request returning score + open-violation +
   expiring-permit counts per project), which would also unblock the
   Violations and Permits columns deferred from that PR.
+
+## Follow-ups (appended 2026-07-25 — dob-summary endpoint)
+
+Surfaced while building + verifying `GET /api/projects/dob-summary`. Recorded,
+not fixed.
+
+- **`dob_logs.expiration_date` has mixed formats.** Permit rows store the
+  expiration date as ISO-with-time, MDY (`"02/21/2027"`), and null, all
+  coexisting. `dob-summary` parses via `$dateFromString` with
+  `onError:null / onNull:null`, so unparseable rows drop out (undercount,
+  never miscount) — **3 of 588 Boyland's 10 permit rows** are MDY/null and
+  fall out of the expiring-permits count. Normalize `expiration_date` to ISO
+  at ingestion, the same fix already applied to complaints' MDY dates
+  (`_normalize_dob_date_to_iso`). Until then, `permits_expiring` is a lower
+  bound.
+- **The DOB Compliance screen's record-type tiles are resolution-blind.** The
+  "N VIOLATION / COMPLAINT / …" tab counts on `project/[id]/dob-logs.jsx` are
+  raw row counts by `record_type` with no `resolution_state` / `closed_date`
+  filter and no `raw_dob_id` dedup — so a **certified/closed** violation still
+  shows as "1 VIOLATION" (confirmed on 588 Boyland: its sole violation is
+  certified, yet the tile reads 1). These tiles should move to the
+  `dob-summary` open-state counts; the current numbers overstate live
+  exposure. (Same class as the Part 5 "lifetime unfiltered totals" finding.)

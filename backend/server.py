@@ -7400,6 +7400,204 @@ async def get_projects(
                 p["defcon_tier"] = None
     return result
 
+
+# NOTE: this route MUST stay defined before GET /projects/{project_id}
+# (the 2-segment catch-all below) or Starlette would match
+# "/projects/dob-summary" as project_id="dob-summary".
+@api_router.get("/projects/dob-summary")
+async def get_projects_dob_summary(
+    project_id: Optional[str] = Query(
+        None,
+        description=(
+            "Restrict to a single project. Omit for the whole "
+            "company portfolio."
+        ),
+    ),
+    current_user=Depends(get_current_user),
+):
+    """DIAGNOSTIC cross-project DOB exposure rollup.
+
+    Reports STANDING OPEN exposure computed server-side in Mongo from
+    facts already in db.dob_logs. Serves the desktop dashboard rollup
+    (portfolio totals) and the projects table (per-row) from one call,
+    replacing the N+1 per-row risk fetch.
+
+    This endpoint makes NO prediction and computes NO risk score. It
+    counts currently-open records and reuses existing risk_scores rows
+    only to report PRESENCE (has_risk_score / "Scoring").
+
+    Correctness invariants:
+      • Dedup by raw_dob_id — a status change INSERTS a new row, so
+        counting rows overcounts. The pipeline keeps the latest row per
+        raw_dob_id (status_changed_at desc, then detected_at desc).
+      • NO detected_at FILTER anywhere. detected_at is a backfill/sync
+        stamp; filtering on it is the tile-decay bug this endpoint
+        exists to avoid. It is used only as the final dedup tiebreaker.
+      • "open" is derived from per-record STATUS fields, never an
+        event-date window — so a violation issued years ago that is
+        still open is counted.
+
+    Response:
+      { "by_project": { "<pid>": { "open_violations", "open_complaints",
+                                   "permits_expiring", "has_risk_score" } },
+        "totals":     { "open_violations", "open_complaints",
+                        "permits_expiring", "projects_without_score",
+                        "projects_total" } }
+
+    Violations are count-only: dob_logs has no field mapping to DOB
+    hazard class 1/2/3 (see docs/audits/ui-inventory-2026-07-23.md
+    Follow-ups). Permit expiry uses $dateFromString because
+    expiration_date is mixed-format (ISO-with-time, MDY, null);
+    unparseable rows drop out (undercount, never miscount) — normalizing
+    expiration_date at ingestion is a logged follow-up.
+    """
+    company_id = get_user_company_id(current_user)
+
+    # Resolve the in-scope project set (company-scoped, active).
+    proj_query = dict(ACTIVE_PROJECT_FILTER)
+    if company_id:
+        proj_query["company_id"] = company_id
+    if project_id:
+        proj_query["_id"] = to_query_id(project_id)
+    proj_docs = await db.projects.find(proj_query, {"_id": 1}).to_list(length=1000)
+    project_ids = [str(p["_id"]) for p in proj_docs]
+
+    if not project_ids:
+        return {
+            "by_project": {},
+            "totals": {
+                "open_violations": 0, "open_complaints": 0,
+                "permits_expiring": 0,
+                "projects_without_score": 0, "projects_total": 0,
+            },
+        }
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    t30 = today_start + timedelta(days=30)
+
+    # Match prefix leads with company_id (the dob_logs_summary_dedup
+    # index prefix). Fall back to the resolved project set for the
+    # no-company superadmin path; narrow to one project when asked.
+    match: Dict[str, Any] = {
+        "is_deleted": {"$ne": True},
+        "is_seed_transition": {"$ne": True},
+        "record_type": {"$in": ["violation", "swo", "complaint", "permit"]},
+    }
+    if company_id:
+        match["company_id"] = company_id
+    else:
+        match["project_id"] = {"$in": project_ids}
+    if project_id:
+        match["project_id"] = project_id
+
+    # Dedup: newest state per raw_dob_id wins. detected_at is ONLY a
+    # tiebreaker here — never a filter.
+    dedup_sort = {"raw_dob_id": 1, "status_changed_at": -1, "detected_at": -1}
+
+    pipeline = [
+        {"$match": match},
+        {"$facet": {
+            "open_violations": [
+                {"$match": {"record_type": {"$in": ["violation", "swo"]}}},
+                {"$sort": dedup_sort},
+                {"$group": {
+                    "_id": "$raw_dob_id",
+                    "project_id": {"$first": "$project_id"},
+                    "resolution_state": {"$first": "$resolution_state"},
+                }},
+                # open = resolution_state NOT in the closed set. null /
+                # absent counts as open (conservative for compliance).
+                {"$match": {"resolution_state": {
+                    "$nin": ["certified", "dismissed", "paid", "resolved"]}}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+            "open_complaints": [
+                {"$match": {"record_type": "complaint"}},
+                {"$sort": dedup_sort},
+                {"$group": {
+                    "_id": "$raw_dob_id",
+                    "project_id": {"$first": "$project_id"},
+                    "closed_date": {"$first": "$closed_date"},
+                    "complaint_status": {"$first": "$complaint_status"},
+                }},
+                # open = no closed_date AND status not matching /closed/i.
+                {"$match": {"$and": [
+                    {"$or": [
+                        {"closed_date": None},
+                        {"closed_date": {"$exists": False}},
+                        {"closed_date": ""},
+                    ]},
+                    {"$or": [
+                        {"complaint_status": None},
+                        {"complaint_status": {
+                            "$not": {"$regex": "closed", "$options": "i"}}},
+                    ]},
+                ]}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+            "permits_expiring": [
+                {"$match": {"record_type": "permit"}},
+                {"$sort": dedup_sort},
+                {"$group": {
+                    "_id": "$raw_dob_id",
+                    "project_id": {"$first": "$project_id"},
+                    "expiration_date": {"$first": "$expiration_date"},
+                }},
+                # Mixed-format expiration_date (ISO-with-time / MDY /
+                # null): ISO parses; MDY + null fail -> onError/onNull
+                # null -> excluded by the range below (null is not
+                # >= a date). Undercount, never miscount.
+                {"$addFields": {"_exp": {"$dateFromString": {
+                    "dateString": "$expiration_date",
+                    "onError": None, "onNull": None,
+                }}}},
+                # Expiring within 30 days AND not already expired.
+                {"$match": {"_exp": {"$gte": today_start, "$lte": t30}}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+        }},
+    ]
+
+    agg = await db.dob_logs.aggregate(pipeline).to_list(length=1)
+    facets = agg[0] if agg else {}
+
+    def _by_pid(bucket):
+        return {r["_id"]: r["n"] for r in facets.get(bucket, []) if r.get("_id")}
+
+    ov = _by_pid("open_violations")
+    oc = _by_pid("open_complaints")
+    pe = _by_pid("permits_expiring")
+
+    # Risk-score PRESENCE only — separate collection, string project_id
+    # (projects._id is ObjectId; recompute_and_persist stores
+    # str(project["_id"])), current model_version. No score is computed
+    # or written here.
+    scored = set(await db.risk_scores.distinct(
+        "project_id",
+        {"model_version": _stat_engine.MODEL_VERSION,
+         "project_id": {"$in": project_ids}},
+    ))
+
+    by_project = {
+        pid: {
+            "open_violations": int(ov.get(pid, 0)),
+            "open_complaints": int(oc.get(pid, 0)),
+            "permits_expiring": int(pe.get(pid, 0)),
+            "has_risk_score": pid in scored,
+        }
+        for pid in project_ids
+    }
+    totals = {
+        "open_violations": sum(v["open_violations"] for v in by_project.values()),
+        "open_complaints": sum(v["open_complaints"] for v in by_project.values()),
+        "permits_expiring": sum(v["permits_expiring"] for v in by_project.values()),
+        "projects_without_score": sum(1 for pid in project_ids if pid not in scored),
+        "projects_total": len(project_ids),
+    }
+    return {"by_project": by_project, "totals": totals}
+
+
 @api_router.post("/projects", response_model=ProjectResponse, dependencies=[Depends(require_approved)])
 async def create_project(project_data: ProjectCreate, admin = Depends(get_admin_user)):
     project_dict = project_data.model_dump()
@@ -27164,6 +27362,20 @@ async def startup_event():
         ("is_seed_transition", 1),
         ("status_changed_at", -1),
     ])
+
+    # 2026-07-25 — dob-summary aggregation dedup index. GET
+    # /projects/dob-summary matches on (company_id, record_type) then
+    # dedups by raw_dob_id via a (status_changed_at desc, detected_at
+    # desc) sort. This compound covers the match prefix AND the dedup
+    # sort so the aggregation runs index-ordered instead of a blocking
+    # in-memory sort on every dashboard load.
+    await db.dob_logs.create_index([
+        ("company_id", 1),
+        ("record_type", 1),
+        ("raw_dob_id", 1),
+        ("status_changed_at", -1),
+        ("detected_at", -1),
+    ], name="dob_logs_summary_dedup")
 
     # Card audit module init — injects db + R2 + VLM adapter. Must run
     # AFTER _r2_client is initialized (which happens at module import
