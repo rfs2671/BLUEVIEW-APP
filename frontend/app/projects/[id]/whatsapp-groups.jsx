@@ -38,6 +38,7 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import GroupConfigPanel, { isConfigNonDefault } from '../../../src/components/whatsapp/GroupConfigPanel';
+import { withAlpha } from '../../../src/styles/semanticColors';
 
 const WHATSAPP_GREEN = '#25D366';
 const COUNTDOWN_SECONDS = 300; // 5 minutes
@@ -603,7 +604,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+      borderBottomColor: withAlpha('#ffffff', 0.08),
     },
     headerLeft: {
       flexDirection: 'row',
@@ -662,7 +663,7 @@ function buildStyles(colors, isDark) {
       width: 44,
       height: 44,
       borderRadius: borderRadius.full,
-      backgroundColor: 'rgba(37, 211, 102, 0.1)',
+      backgroundColor: 'rgba(37, 211, 102, 0.1)', /* brand: WhatsApp - intentional, not a token */
       alignItems: 'center',
       justifyContent: 'center',
     },
@@ -723,7 +724,7 @@ function buildStyles(colors, isDark) {
     // Modal styles
     modalOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.6)',
+      backgroundColor: withAlpha('#000000', 0.6),
       justifyContent: 'center',
       alignItems: 'center',
       padding: spacing.lg,

@@ -32,13 +32,13 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
-  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
+  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: withAlpha('#94a3b8', 0.15) },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
 };
 
@@ -272,7 +272,7 @@ export default function SuperintendentScreen() {
       <View
         style={[
           s.classBadge,
-          spec.bg ? { backgroundColor: spec.bg } : { backgroundColor: 'rgba(100,116,139,0.2)' },
+          spec.bg ? { backgroundColor: spec.bg } : { backgroundColor: withAlpha('#64748b', 0.2) },
         ]}
       >
         <Text
@@ -633,7 +633,7 @@ export default function SuperintendentScreen() {
                   <Switch
                     value={!!editingReg?.is_active}
                     onValueChange={handleToggleActive}
-                    trackColor={{ false: 'rgba(100,116,139,0.4)', true: 'rgba(74,222,128,0.6)' }}
+                    trackColor={{ false: withAlpha('#64748b', 0.4), true: 'rgba(74,222,128,0.6)' }}
                     thumbColor={editingReg?.is_active ? semantic.verified : '#94a3b8'}
                   />
                 </View>
@@ -699,7 +699,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+      borderBottomColor: withAlpha('#ffffff', 0.08),
     },
     headerLeft: {
       flexDirection: 'row',
@@ -723,9 +723,9 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'flex-start',
       gap: spacing.sm,
-      backgroundColor: 'rgba(239,68,68,0.1)',
+      backgroundColor: semantic.criticalBg,
       borderWidth: 1,
-      borderColor: 'rgba(239,68,68,0.3)',
+      borderColor: semantic.criticalBorder,
       borderRadius: 12,
       padding: 16,
       marginBottom: 16,
@@ -770,9 +770,9 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.sm,
       paddingVertical: 4,
       borderRadius: borderRadius.full,
-      backgroundColor: 'rgba(100,116,139,0.2)',
+      backgroundColor: withAlpha('#64748b', 0.2),
     },
-    statusActive: { backgroundColor: 'rgba(74,222,128,0.15)' },
+    statusActive: { backgroundColor: semantic.verifiedBg },
     statusText: {
       fontSize: 11,
       fontWeight: '600',
@@ -786,7 +786,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: 8,
       paddingVertical: 3,
       borderRadius: 6,
-      backgroundColor: 'rgba(239,68,68,0.15)',
+      backgroundColor: semantic.criticalBg,
     },
     conflictBadgeText: {
       fontSize: 11,
@@ -830,7 +830,7 @@ function buildStyles(colors, isDark) {
     },
     modalOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.7)',
+      backgroundColor: withAlpha('#000000', 0.7),
       justifyContent: 'center',
       alignItems: 'center',
       padding: spacing.lg,
@@ -897,7 +897,7 @@ function buildStyles(colors, isDark) {
       padding: spacing.md,
       gap: spacing.sm,
     },
-    dropdownItemActive: { backgroundColor: 'rgba(255,255,255,0.1)' },
+    dropdownItemActive: { backgroundColor: withAlpha('#ffffff', 0.1) },
     dropdownText: { fontSize: 15, color: colors.text.secondary, flex: 1 },
     readonlyBox: {
       backgroundColor: colors.glass.background,
@@ -930,7 +930,7 @@ function buildStyles(colors, isDark) {
       maxWidth: 420,
       alignItems: 'center',
       borderWidth: 1,
-      borderColor: 'rgba(239,68,68,0.3)',
+      borderColor: semantic.criticalBorder,
       backgroundColor: '#1a1a2e',
     },
     conflictIconRow: { marginBottom: spacing.md },

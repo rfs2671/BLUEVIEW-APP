@@ -36,7 +36,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -473,7 +473,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -552,11 +552,11 @@ function buildStyles(colors, isDark) {
     gap: 4,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    backgroundColor: withAlpha('#64748b', 0.2),
     borderRadius: borderRadius.full,
   },
   statusActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
   },
   statusText: {
     fontSize: 11,
@@ -614,7 +614,7 @@ function buildStyles(colors, isDark) {
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: withAlpha('#000000', 0.7),
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.lg,
@@ -684,7 +684,7 @@ function buildStyles(colors, isDark) {
     padding: spacing.md,
   },
   dropdownItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: withAlpha('#ffffff', 0.1),
   },
   dropdownText: {
     fontSize: 15,
@@ -694,11 +694,11 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.sm,
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: semantic.attentionBorder,
   },
   infoText: {
     flex: 1,

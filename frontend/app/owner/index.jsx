@@ -44,7 +44,7 @@ import apiClient from '../../src/utils/api';
 // monitoring product never holds credentials; the agent_crypto
 // import + the credential modal + the authorization gate are gone.
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, chrome } from '../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 
 // Owner password
 const OWNER_PASSWORD = 'Asdddfgh1$';
@@ -1424,9 +1424,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: semantic.attentionBorder,
     borderRadius: borderRadius.xl,
     padding: spacing.lg,
     marginBottom: spacing.lg,
@@ -1502,7 +1502,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: withAlpha('#ffffff', 0.06),
   },
   gcLicenseRow: {
     marginBottom: 4,
@@ -1522,7 +1522,7 @@ const styles = StyleSheet.create({
   },
   gcInsSep: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.2)',
+    color: withAlpha('#ffffff', 0.2),
   },
   gcNoInsurance: {
     fontSize: 11,
@@ -1536,7 +1536,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: withAlpha('#ffffff', 0.06),
   },
   gcUnverifiedText: {
     fontSize: 11,
@@ -1550,7 +1550,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     paddingTop: spacing.sm,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: withAlpha('#ffffff', 0.06),
   },
   filingRepsToggleText: {
     flex: 1,
@@ -1574,11 +1574,11 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   filingRepRow: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.md,
     padding: spacing.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: withAlpha('#ffffff', 0.06),
     gap: 4,
   },
   filingRepRowHeader: {
@@ -1620,10 +1620,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 8,
     borderRadius: borderRadius.sm,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     alignSelf: 'flex-start',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: withAlpha('#ffffff', 0.08),
   },
   filingRepsAddBtnText: {
     fontSize: 12,
@@ -1641,8 +1641,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.10)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.03),
   },
   filingRepClassChipActive: {
     borderColor: '#3b82f680',
@@ -1702,9 +1702,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: semantic.attentionBorder,
     borderRadius: borderRadius.lg,
     padding: spacing.md,
   },
@@ -1720,7 +1720,7 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: withAlpha('#000000', 0.7),
   },
   modalContent: {
     width: '90%',
@@ -1801,7 +1801,7 @@ const styles = StyleSheet.create({
   },
   dropdownItemSelected: {
     borderColor: chrome.brand,
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    backgroundColor: semantic.verifiedBg,
   },
   dropdownText: {
     fontSize: 14,
@@ -1908,7 +1908,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   deleteButton: {
-    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    backgroundColor: semantic.criticalBg,
     borderColor: '#ef4444',
   },
 });

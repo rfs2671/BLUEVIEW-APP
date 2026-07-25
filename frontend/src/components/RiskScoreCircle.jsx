@@ -43,6 +43,7 @@ import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
 import RiskScoreDrawer from './RiskScoreDrawer';
+import { withAlpha } from '../styles/semanticColors';
 
 // Color tokens — duplicated from RiskScoreCard so the new card can
 // stand alone. Tests pin these against backend schema.py::score_band.
@@ -60,7 +61,7 @@ const BAND_RED    = { fg: '#ef4444', track: 'rgba(239, 68, 68, 0.20)',  label: '
 // score must never read as low-risk in a compliance product. These are
 // the same muted values the render already falls back to for no-score,
 // so the pending band is now the single source of truth for that state.
-const BAND_PENDING = { fg: 'rgba(148, 163, 184, 0.55)', track: 'rgba(148, 163, 184, 0.20)', label: 'Scoring' };
+const BAND_PENDING = { fg: withAlpha('#94a3b8', 0.55), track: withAlpha('#94a3b8', 0.2), label: 'Scoring' };
 
 // Title shown above the circle. Pinned in tests so an accidental
 // rename surfaces immediately.
@@ -340,7 +341,7 @@ function buildStyles(colors, isDark) {
       top: -22,
       paddingHorizontal: 8,
       paddingVertical: 3,
-      backgroundColor: isDark ? 'rgba(0,0,0,0.85)' : 'rgba(15, 23, 42, 0.92)',
+      backgroundColor: isDark ? withAlpha('#000000', 0.85) : withAlpha('#0f172a', 0.92),
       borderRadius: borderRadius.sm,
     },
     tooltipText: {

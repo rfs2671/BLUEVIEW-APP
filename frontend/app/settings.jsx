@@ -42,7 +42,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import apiClient, { authAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic, chrome } from '../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 
 const INSURANCE_LABELS = {
   general_liability: 'General Liability',
@@ -489,7 +489,7 @@ export default function SettingsScreen() {
                   </View>
                 </GlassCard>
               ) : !gcResolved ? (
-                <GlassCard style={[s.card, { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)' }]}>
+                <GlassCard style={[s.card, { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
                     <AlertTriangle size={18} color="#f59e0b" />
                     <Text style={{ fontSize: 13, color: '#f59e0b', flex: 1, lineHeight: 18 }}>
@@ -560,8 +560,8 @@ export default function SettingsScreen() {
                             <View style={{
                               paddingHorizontal: 8, paddingVertical: 2, borderRadius: borderRadius.full,
                               borderWidth: 1,
-                              borderColor: isCur ? '#22c55e40' : '#ef444440',
-                              backgroundColor: isCur ? '#22c55e10' : '#ef444410',
+                              borderColor: isCur ? semantic.verifiedBorder : semantic.criticalBorder,
+                              backgroundColor: isCur ? semantic.verifiedBg : semantic.criticalBg,
                             }}>
                               <Text style={{ fontSize: 10, fontWeight: '600', color: isCur ? semantic.verified : semantic.criticalText, textTransform: 'uppercase' }}>
                                 {isCur ? 'Current' : 'Expired'}
@@ -585,7 +585,7 @@ export default function SettingsScreen() {
 
                   {/* Inline manual-entry form */}
                   {showInsuranceForm && (
-                    <GlassCard style={[s.card, { borderColor: 'rgba(245,158,11,0.3)' }]}>
+                    <GlassCard style={[s.card, { borderColor: semantic.attentionBorder }]}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md }}>
                         <CalendarDays size={18} strokeWidth={1.5} color="#f59e0b" />
                         <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary, flex: 1 }}>
@@ -755,9 +755,9 @@ export default function SettingsScreen() {
                               paddingVertical: 6,
                               borderRadius: 8,
                               marginRight: 8,
-                              backgroundColor: selectedProjectId === p.id ? 'rgba(74,222,128,0.2)' : 'rgba(255,255,255,0.05)',
+                              backgroundColor: selectedProjectId === p.id ? semantic.verifiedBg : withAlpha('#ffffff', 0.05),
                               borderWidth: 1,
-                              borderColor: selectedProjectId === p.id ? '#4ade8040' : 'rgba(255,255,255,0.1)',
+                              borderColor: selectedProjectId === p.id ? semantic.verifiedBorder : withAlpha('#ffffff', 0.1),
                             }}
                           >
                             <Text style={{ fontSize: 12, color: selectedProjectId === p.id ? chrome.brand : colors.text.muted }}>
@@ -863,6 +863,6 @@ function buildStyles(colors) {
     hintText:     { fontSize: 11, color: colors.text.subtle, marginTop: spacing.xs },
 
     saveBtn:    { marginTop: spacing.md },
-    signOutBtn: { borderColor: 'rgba(248,113,113,0.3)' },
+    signOutBtn: { borderColor: semantic.criticalBorder },
   });
 }

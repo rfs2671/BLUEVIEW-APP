@@ -64,7 +64,7 @@ import { useTheme } from '../../../../src/context/ThemeContext';
 import { useToast } from '../../../../src/components/Toast';
 import apiClient from '../../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../../src/styles/theme';
-import { semantic } from '../../../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../../../src/styles/semanticColors';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
@@ -896,7 +896,7 @@ const PreviewCard = ({ preview, loading, project, styles, colors }) => {
     { key: 'i', Icon: Mail, c: '#ef4444', bg: 'rgba(239,68,68,0.10)', count: summary.immediate_emails || 0, label: 'immediate emails' },
     { key: 'd', Icon: Mailbox, c: '#f59e0b', bg: 'rgba(245,158,11,0.10)', count: summary.digest_daily_signals || 0, label: 'daily digest' },
     { key: 'w', Icon: Mailbox, c: '#3b82f6', bg: 'rgba(59,130,246,0.10)', count: summary.digest_weekly_signals || 0, label: 'weekly digest' },
-    { key: 'f', Icon: Inbox, c: '#6b7280', bg: 'rgba(107,114,128,0.10)', count: summary.suppressed_signals || 0, label: 'feed-only' },
+    { key: 'f', Icon: Inbox, c: '#6b7280', bg: withAlpha('#6b7280', 0.1), count: summary.suppressed_signals || 0, label: 'feed-only' },
   ];
   return (
     <GlassCard style={styles.previewCard}>
@@ -1237,8 +1237,8 @@ function buildStyles(colors) {
     errorBlock: {
       flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
       padding: spacing.sm, borderRadius: borderRadius.md,
-      borderWidth: 1, borderColor: '#ef444440',
-      backgroundColor: '#ef444415', marginTop: spacing.sm,
+      borderWidth: 1, borderColor: semantic.criticalBorder,
+      backgroundColor: semantic.criticalBg, marginTop: spacing.sm,
     },
     errorBlockText: { flex: 1, fontFamily: typography.regular, fontSize: 12, color: semantic.criticalText, lineHeight: 17 },
 
@@ -1247,7 +1247,7 @@ function buildStyles(colors) {
       flexDirection: 'row', gap: spacing.sm,
       padding: spacing.md,
       borderTopWidth: 1, borderTopColor: colors.glass.border,
-      backgroundColor: colors.background?.start || 'rgba(5,10,18,0.95)',
+      backgroundColor: colors.background?.start || withAlpha('#050a12', 0.95),
     },
     mobilePrimaryBtn: {
       flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',

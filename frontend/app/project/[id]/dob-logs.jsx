@@ -41,7 +41,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic, chrome } from '../../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -304,7 +304,7 @@ export default function DOBLogsScreen() {
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: sevConfig.color }]} />
-              <View style={[s.typeBadge, { borderColor: '#22c55e40' }]}>
+              <View style={[s.typeBadge, { borderColor: semantic.verifiedBorder }]}>
                 <Text style={[s.typeText, { color: semantic.verified }]}>Permit</Text>
               </View>
             </View>
@@ -372,7 +372,7 @@ export default function DOBLogsScreen() {
                   icon={isPreparing ? <ActivityIndicator size={14} color={semantic.verified} /> : <FileCheck size={16} strokeWidth={1.5} color={semantic.verified} />}
                   onPress={() => handlePrepareRenewal(log)}
                   disabled={isPreparing}
-                  style={[s.dobLinkBtn, { borderColor: '#22c55e40' }]}
+                  style={[s.dobLinkBtn, { borderColor: semantic.verifiedBorder }]}
                 />
               )}
               {needsRenewal && (
@@ -442,7 +442,7 @@ export default function DOBLogsScreen() {
           </View>
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {log.penalty_amount && subtype === 'ECB' && (
-            <View style={{ backgroundColor: 'rgba(249,115,22,0.1)', borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={{ backgroundColor: semantic.criticalBg, borderRadius: 8, padding: 10, marginTop: 8, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 18, fontWeight: '700', color: '#f97316' }}>${log.penalty_amount}</Text>
               <Text style={{ fontSize: 12, color: '#f97316', opacity: 0.8 }}>Penalty Amount</Text>
             </View>
@@ -451,7 +451,7 @@ export default function DOBLogsScreen() {
             <View style={s.expandedSection}>
               <View style={s.divider} />
               {log.notice_type && (
-                <View style={[s.typeBadge, { borderColor: '#f5920b40', marginTop: 4, alignSelf: 'flex-start' }]}>
+                <View style={[s.typeBadge, { borderColor: semantic.attentionBorder, marginTop: 4, alignSelf: 'flex-start' }]}>
                   <Text style={[s.typeText, { color: '#f59e0b' }]}>
                     {{'commissioners_order': "COMMISSIONER'S ORDER", 'padlock_order': 'PADLOCK ORDER', 'emergency_declaration': 'EMERGENCY DECLARATION', 'notice_of_deficiency': 'NOTICE OF DEFICIENCY', 'letter_of_deficiency': 'LETTER OF DEFICIENCY'}[log.notice_type] || log.notice_type}
                   </Text>
@@ -462,7 +462,7 @@ export default function DOBLogsScreen() {
                 if (deadlineDays === null) return null;
                 const isOverdue = deadlineDays < 0;
                 return (
-                  <View style={[s.expirationBanner, { backgroundColor: isOverdue ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)' }]}>
+                  <View style={[s.expirationBanner, { backgroundColor: isOverdue ? semantic.criticalBg : semantic.attentionBg }]}>
                     <AlertTriangle size={14} color={isOverdue ? semantic.critical : '#f59e0b'} />
                     <Text style={[s.expirationText, { color: isOverdue ? semantic.criticalText : '#f59e0b', fontWeight: '600' }]}>
                       {isOverdue ? `OVERDUE by ${Math.abs(deadlineDays)} days` : `${deadlineDays} days to comply`}
@@ -529,7 +529,7 @@ export default function DOBLogsScreen() {
           <View style={s.logHeader}>
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: riskColor }]} />
-              <View style={[s.typeBadge, { borderColor: 'rgba(245,158,11,0.4)' }]}>
+              <View style={[s.typeBadge, { borderColor: semantic.attentionBorder }]}>
                 <Text style={[s.typeText, { color: '#f59e0b' }]}>{complaintSource}</Text>
               </View>
             </View>
@@ -542,13 +542,13 @@ export default function DOBLogsScreen() {
 
           {/* Disposition badges */}
           {isResolved && (
-            <View style={[s.expirationBanner, { backgroundColor: 'rgba(34,197,94,0.08)' }]}>
+            <View style={[s.expirationBanner, { backgroundColor: semantic.verifiedBg }]}>
               <CheckCircle size={14} color={semantic.verified} />
               <Text style={[s.expirationText, { color: semantic.verified, fontWeight: '500' }]}>Resolved</Text>
             </View>
           )}
           {hasLinkedViolation && (
-            <View style={[s.expirationBanner, { backgroundColor: 'rgba(239,68,68,0.1)' }]}>
+            <View style={[s.expirationBanner, { backgroundColor: semantic.criticalBg }]}>
               <AlertTriangle size={14} color={semantic.critical} />
               <Text style={[s.expirationText, { color: semantic.criticalText, fontWeight: '600' }]}>Violation Issued</Text>
             </View>
@@ -605,7 +605,7 @@ export default function DOBLogsScreen() {
                   const linked = allLogs.find(l => l.id === log.linked_violation_id || l.raw_dob_id === log.linked_violation_id);
                   if (linked) setExpandedLogId(linked.id);
                 }}>
-                  <View style={[s.nextActionBox, { backgroundColor: 'rgba(239,68,68,0.08)' }]}>
+                  <View style={[s.nextActionBox, { backgroundColor: semantic.criticalBg }]}>
                     <Text style={[s.nextActionLabel, { color: semantic.criticalText }]}>VIOLATION ISSUED</Text>
                     <Text style={[s.nextActionText, { color: semantic.criticalText }]}>Violation issued from this complaint — tap to view</Text>
                   </View>
@@ -1019,7 +1019,7 @@ function buildStyles(colors, isDark) {
     container: { flex: 1 },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: spacing.md },
     loadingText: { ...typography.body, color: colors.text.muted },
-    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.08)' },
+    header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.08) },
     headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     logoText: { ...typography.label, color: colors.text.muted },
@@ -1040,19 +1040,19 @@ function buildStyles(colors, isDark) {
     // side). 118px leaves ~70px usable which comfortably fits both.
     navCardWrap: { minWidth: 118 },
     navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: 4 },
-    navCardActive: { borderColor: 'rgba(74,222,128,0.4)', backgroundColor: 'rgba(74,222,128,0.06)' },
+    navCardActive: { borderColor: semantic.verifiedBorder, backgroundColor: semantic.verifiedBg },
     navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
     navCountActive: { color: chrome.brand },
     navLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
     navLabelActive: { color: chrome.brand },
 
     // Filter banner
-    filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: 'rgba(74,222,128,0.08)', borderWidth: 1, borderColor: 'rgba(74,222,128,0.2)' },
+    filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: semantic.verifiedBg, borderWidth: 1, borderColor: semantic.verifiedBorder },
     filterText: { fontSize: 13, color: chrome.brand, fontWeight: '500' },
     filterClear: { fontSize: 12, color: colors.text.muted, textDecorationLine: 'underline' },
 
     // Renewal status banner
-    renewalBanner: { backgroundColor: 'rgba(245,158,11,0.08)', borderColor: 'rgba(245,158,11,0.25)', marginBottom: spacing.lg },
+    renewalBanner: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder, marginBottom: spacing.lg },
     renewalBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     renewalBannerTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
     renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
@@ -1070,7 +1070,7 @@ function buildStyles(colors, isDark) {
     renewBubbleText: { fontSize: 11, fontWeight: '600', color: '#fff' },
 
     // BIS legacy banner
-    bisLegacyBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: 'rgba(245,158,11,0.08)', borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)' },
+    bisLegacyBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: semantic.attentionBg, borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: semantic.attentionBorder },
     bisLegacyText: { fontSize: 13, color: '#f59e0b', flex: 1, lineHeight: 18 },
 
     // Full-width sync button
@@ -1081,7 +1081,7 @@ function buildStyles(colors, isDark) {
 
     logsList: { gap: spacing.md },
     logCard: { gap: spacing.sm },
-    swoCard: { borderColor: 'rgba(220, 38, 38, 0.3)', borderWidth: 1 },
+    swoCard: { borderColor: semantic.criticalBorder, borderWidth: 1 },
     // Header wraps on narrow viewports so date chips drop below
     // badges instead of pushing them off-screen.
     logHeader: {
@@ -1119,8 +1119,8 @@ function buildStyles(colors, isDark) {
       flexShrink: 1,
     },
     expirationBanner: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: borderRadius.lg },
-    expiredBanner: { backgroundColor: 'rgba(239,68,68,0.1)' },
-    expiringBanner: { backgroundColor: 'rgba(245,158,11,0.1)' },
+    expiredBanner: { backgroundColor: semantic.criticalBg },
+    expiringBanner: { backgroundColor: semantic.attentionBg },
     expirationText: { fontSize: 12, fontWeight: '600' },
     expandedSection: { gap: spacing.xs },
     divider: { height: 1, backgroundColor: colors.glass.border, marginVertical: spacing.sm },
@@ -1132,7 +1132,7 @@ function buildStyles(colors, isDark) {
     emptyCard: { alignItems: 'center', gap: spacing.md, paddingVertical: spacing.xl },
     emptyTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
     emptySubtitle: { fontSize: 14, color: colors.text.muted, textAlign: 'center' },
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
+    modalOverlay: { flex: 1, backgroundColor: withAlpha('#000000', 0.6), justifyContent: 'center', alignItems: 'center' },
     modalContent: { width: '90%', maxWidth: 400 },
     modalCard: { gap: spacing.md },
     modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
@@ -1142,8 +1142,8 @@ function buildStyles(colors, isDark) {
     inputHint: { fontSize: 11, color: colors.text.subtle },
     toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.sm },
     toggleLabel: { fontSize: 15, color: colors.text.primary },
-    toggle: { width: 48, height: 28, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.1)', justifyContent: 'center', paddingHorizontal: 3 },
-    toggleOn: { backgroundColor: 'rgba(74,222,128,0.3)' },
+    toggle: { width: 48, height: 28, borderRadius: 14, backgroundColor: withAlpha('#ffffff', 0.1), justifyContent: 'center', paddingHorizontal: 3 },
+    toggleOn: { backgroundColor: semantic.verifiedBg },
     toggleDot: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.text.muted },
     toggleDotOn: { backgroundColor: '#4ade80', alignSelf: 'flex-end' },
     saveBtn: { marginTop: spacing.sm },

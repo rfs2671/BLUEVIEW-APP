@@ -30,7 +30,7 @@ import GlassButton from '../../../src/components/GlassButton';
 import { useToast } from '../../../src/components/Toast';
 import apiClient from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic } from '../../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 /**
@@ -494,7 +494,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   input: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.lg,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -535,7 +535,7 @@ function buildStyles(colors, isDark) {
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: withAlpha('#000000', 0.6),
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.lg,
@@ -571,7 +571,7 @@ function buildStyles(colors, isDark) {
     borderBottomColor: colors.glass.border,
   },
   tradeOptionSelected: {
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    backgroundColor: semantic.verifiedBg,
   },
   tradeOptionText: {
     fontSize: 15,

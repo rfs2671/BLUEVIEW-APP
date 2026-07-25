@@ -17,7 +17,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 const CERT_TYPES = ['OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST', 'Flagman', 'Forklift', 'Scaffold', 'Other'];
 
@@ -369,7 +369,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
   headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
@@ -411,7 +411,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.sm,
     marginBottom: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   colHeader: {
     fontSize: 10,
@@ -427,18 +427,18 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: withAlpha('#ffffff', 0.08),
   },
   entryInputText: { fontSize: 13, color: colors.text.primary },
   entryPlaceholder: { fontSize: 13, color: colors.text.subtle },
   certPicker: {
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: withAlpha('#000000', 0.6),
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: withAlpha('#ffffff', 0.1),
     marginBottom: spacing.xs,
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -450,7 +450,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: withAlpha('#ffffff', 0.1),
   },
   certOptionActive: { backgroundColor: 'rgba(6,182,212,0.2)', borderColor: '#06b6d4' },
   certOptionText: { fontSize: 12, color: colors.text.muted },
@@ -466,16 +466,16 @@ const styles = StyleSheet.create({
     height: 22,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: withAlpha('#ffffff', 0.15),
+    backgroundColor: withAlpha('#ffffff', 0.04),
     alignItems: 'center',
     justifyContent: 'center',
   },
-  signedBoxActive: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: semantic.verified },
+  signedBoxActive: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verified },
   signedLabel: { fontSize: 12, color: colors.text.muted },
   entryDivider: {
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     marginTop: spacing.sm,
   },
   addBtn: { marginTop: spacing.md },
@@ -485,10 +485,10 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     marginBottom: spacing.md,
     padding: spacing.sm,
-    backgroundColor: 'rgba(74,222,128,0.08)',
+    backgroundColor: semantic.verifiedBg,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.2)',
+    borderColor: semantic.verifiedBorder,
   },
   autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },

@@ -13,7 +13,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TYPE = 'concrete_operations';
@@ -397,9 +397,9 @@ function buildStyles(colors, isDark) {
     inputGroup: { marginBottom: spacing.md },
     inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
     input: {
-      backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md,
+      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
       padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
     },
     textArea: { minHeight: 80, textAlignVertical: 'top' },
     toggleRow: {
@@ -413,14 +413,14 @@ function buildStyles(colors, isDark) {
     buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     entryCard: {
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
       padding: spacing.md, marginBottom: spacing.sm,
     },
     entryRow: { flexDirection: 'row', gap: spacing.sm, alignItems: 'flex-end' },
     chip: {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-      backgroundColor: 'rgba(255,255,255,0.04)',
+      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+      backgroundColor: withAlpha('#ffffff', 0.04),
     },
     chipActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
     chipText: { fontSize: 13, color: colors.text.muted },

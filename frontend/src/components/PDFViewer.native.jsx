@@ -16,7 +16,7 @@ function documentKeyFor(file) {
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
-import { semantic } from '../styles/semanticColors';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
@@ -267,7 +267,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 <Text style={styles.actionText}>Open Externally</Text>
               </Pressable>
             )}
-            <Pressable style={[styles.actionBtn, { backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => { setError(false); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
+            <Pressable style={[styles.actionBtn, { backgroundColor: withAlpha('#ffffff', 0.1) }]} onPress={() => { setError(false); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
               <Text style={styles.actionText}>Try Again</Text>
             </Pressable>
           </View>
@@ -371,8 +371,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 onPress={() => setShowRecipientPicker((v) => !v)}
                 style={{
                   flexDirection: 'row', alignItems: 'center',
-                  backgroundColor: 'rgba(255,255,255,0.06)',
-                  borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+                  backgroundColor: withAlpha('#ffffff', 0.06),
+                  borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12),
                   borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12,
                 }}
               >
@@ -391,7 +391,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 <View
                   style={{
                     marginTop: 6, maxHeight: 180,
-                    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+                    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
                     borderRadius: 8, backgroundColor: '#0b1220',
                   }}
                 >
@@ -401,7 +401,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                       style={{
                         flexDirection: 'row', alignItems: 'center',
                         paddingHorizontal: 10, paddingVertical: 9,
-                        borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)',
+                        borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06),
                       }}
                     >
                       <View style={{
@@ -421,7 +421,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                           style={{
                             flexDirection: 'row', alignItems: 'center',
                             paddingHorizontal: 10, paddingVertical: 9,
-                            borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.04)',
+                            borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.04),
                           }}
                         >
                           <View style={{
@@ -540,8 +540,8 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingBottom: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.1)', gap: 12 },
-  iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center' },
+  topBar: { flexDirection: 'row', alignItems: 'center', paddingTop: 50, paddingBottom: 12, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.1), gap: 12 },
+  iconBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: withAlpha('#ffffff', 0.1), alignItems: 'center', justifyContent: 'center' },
   fileName: { color: '#e2e8f0', fontSize: 15, fontWeight: '600', maxWidth: 250 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 },
   loadingText: { color: '#94a3b8', marginTop: 12, fontSize: 14 },
@@ -558,7 +558,7 @@ const styles = StyleSheet.create({
     paddingBottom: 32,
     zIndex: 10,
   },
-  pinInstruction: { backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
+  pinInstruction: { backgroundColor: withAlpha('#000000', 0.75), borderRadius: 8, paddingHorizontal: 20, paddingVertical: 10 },
   pinInstructionText: { color: '#fff', fontSize: 14 },
 
   // Annotation marker
@@ -577,7 +577,7 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 0, right: 0, bottom: 0,
     backgroundColor: '#0f172a',
     borderTopLeftRadius: 16, borderTopRightRadius: 16,
-    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)',
+    borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.1),
     padding: 20,
     maxHeight: '50%',
     zIndex: 50,
@@ -587,25 +587,25 @@ const styles = StyleSheet.create({
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   sheetTitle: { color: '#e2e8f0', fontSize: 17, fontWeight: '700', marginBottom: 4 },
   sheetSubtitle: { color: '#94a3b8', fontSize: 13, marginBottom: 12 },
-  sheetInput: { backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 70, textAlignVertical: 'top' },
+  sheetInput: { backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 12, color: '#e2e8f0', fontSize: 14, minHeight: 70, textAlignVertical: 'top' },
   sheetActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
   sheetSendBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#3b82f6', paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8 },
   sheetSendText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  sheetCancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: 'rgba(255,255,255,0.08)' },
+  sheetCancelBtn: { paddingHorizontal: 18, paddingVertical: 10, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.08) },
   sheetCancelText: { color: '#94a3b8', fontSize: 14, fontWeight: '600' },
 
   // Thread
   threadScroll: { maxHeight: 180, marginVertical: 8 },
-  threadEntry: { marginBottom: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)' },
+  threadEntry: { marginBottom: 12, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.06) },
   threadAuthor: { color: '#93c5fd', fontSize: 13, fontWeight: '600', marginBottom: 3 },
   threadMessage: { color: '#e2e8f0', fontSize: 14, lineHeight: 20 },
   threadTime: { color: '#475569', fontSize: 11, marginTop: 3 },
   replyRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  replyInput: { flex: 1, backgroundColor: 'rgba(255,255,255,0.06)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
+  replyInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.06), borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12), borderRadius: 8, padding: 10, color: '#e2e8f0', fontSize: 14 },
   replyBtn: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#3b82f6', alignItems: 'center', justifyContent: 'center' },
-  threadActions: { flexDirection: 'row', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.08)' },
-  resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(34,197,94,0.12)' },
+  threadActions: { flexDirection: 'row', gap: 12, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.08) },
+  resolveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.verifiedBg },
   resolveBtnText: { color: semantic.verified, fontSize: 13, fontWeight: '600' },
-  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(239,68,68,0.12)' },
+  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, backgroundColor: semantic.criticalBg },
   deleteBtnText: { color: semantic.neutralStrong, fontSize: 13, fontWeight: '600' },
 });

@@ -3,7 +3,7 @@ import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } 
 import { Trash2, Check, PenTool } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
-import { semantic } from '../styles/semanticColors';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -300,7 +300,7 @@ function buildStyles(colors, isDark) {
       marginBottom: spacing.xs,
     },
     nameDisplay: {
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      backgroundColor: isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.04),
       borderRadius: borderRadius.md,
       padding: spacing.sm,
     },
@@ -312,7 +312,7 @@ function buildStyles(colors, isDark) {
       fontWeight: '500',
     },
     nameTextInput: {
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      backgroundColor: isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.04),
       borderRadius: borderRadius.md,
       padding: spacing.sm,
       fontSize: 15,
@@ -331,7 +331,7 @@ function buildStyles(colors, isDark) {
       position: 'relative',
     },
     signatureAreaSigned: {
-      borderColor: 'rgba(0,0,0,0.2)',
+      borderColor: withAlpha('#000000', 0.2),
       backgroundColor: '#ffffff',
       borderStyle: 'solid',
     },
@@ -367,7 +367,7 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
-      backgroundColor: 'rgba(74, 222, 128, 0.15)',
+      backgroundColor: semantic.verifiedBg,
       paddingHorizontal: spacing.sm,
       paddingVertical: 4,
       borderRadius: borderRadius.full,
@@ -390,7 +390,7 @@ function buildStyles(colors, isDark) {
       justifyContent: 'center',
       gap: spacing.xs,
       paddingVertical: spacing.md,
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)',
+      backgroundColor: isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.04),
       borderRadius: borderRadius.lg,
       borderWidth: 1,
       borderColor: colors.glass.border,
@@ -419,10 +419,10 @@ function buildStyles(colors, isDark) {
       justifyContent: 'center',
       gap: spacing.xs,
       paddingVertical: spacing.md,
-      backgroundColor: 'rgba(239, 68, 68, 0.1)',
+      backgroundColor: semantic.criticalBg,
       borderRadius: borderRadius.lg,
       borderWidth: 1,
-      borderColor: 'rgba(239, 68, 68, 0.3)',
+      borderColor: semantic.criticalBorder,
     },
     clearText: {
       fontSize: 14,

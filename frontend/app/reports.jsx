@@ -42,7 +42,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 
@@ -468,7 +468,7 @@ export default function ReportsScreen() {
                         )}
 
                         {/* Daily Log Status */}
-                        <View style={[s.logbookRow, { marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: spacing.sm }]}>
+                        <View style={[s.logbookRow, { marginTop: spacing.sm, borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.06), paddingTop: spacing.sm }]}>
                           <View style={s.logbookInfo}>
                             <Text style={s.logbookType}>Daily Site Log</Text>
                             {preview.daily_log_weather && (
@@ -535,7 +535,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+      borderBottomColor: withAlpha('#ffffff', 0.08),
     },
     headerLeft: {
       flexDirection: 'row',
@@ -612,7 +612,7 @@ function buildStyles(colors, isDark) {
     dropdownItem: {
       padding: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255,255,255,0.05)',
+      borderBottomColor: withAlpha('#ffffff', 0.05),
     },
     dropdownItemActive: {
       backgroundColor: 'rgba(59, 130, 246, 0.15)',
@@ -677,12 +677,12 @@ function buildStyles(colors, isDark) {
       color: colors.text.primary,
     },
     liveBadge: {
-      backgroundColor: 'rgba(74, 222, 128, 0.2)',
+      backgroundColor: semantic.verifiedBg,
       borderRadius: borderRadius.full,
       paddingHorizontal: spacing.sm,
       paddingVertical: 2,
       borderWidth: 1,
-      borderColor: 'rgba(74, 222, 128, 0.3)',
+      borderColor: semantic.verifiedBorder,
     },
     liveBadgeText: {
       fontSize: 10,
@@ -743,7 +743,7 @@ function buildStyles(colors, isDark) {
       marginTop: 2,
     },
     recipientsList: {
-      backgroundColor: 'rgba(255,255,255,0.03)',
+      backgroundColor: withAlpha('#ffffff', 0.03),
       borderRadius: borderRadius.md,
       padding: spacing.sm,
     },
@@ -805,10 +805,10 @@ function buildStyles(colors, isDark) {
       borderRadius: borderRadius.sm,
     },
     statusBadgeSubmitted: {
-      backgroundColor: 'rgba(74, 222, 128, 0.15)',
+      backgroundColor: semantic.verifiedBg,
     },
     statusBadgeDraft: {
-      backgroundColor: 'rgba(251, 191, 36, 0.15)',
+      backgroundColor: semantic.attentionBg,
     },
     statusBadgeText: {
       fontSize: 11,
@@ -880,7 +880,7 @@ function buildStyles(colors, isDark) {
       gap: spacing.md,
       padding: spacing.lg,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255,255,255,0.06)',
+      borderBottomColor: withAlpha('#ffffff', 0.06),
     },
     historyTitle: {
       fontSize: 16,
@@ -899,7 +899,7 @@ function buildStyles(colors, isDark) {
       padding: spacing.md,
       paddingLeft: spacing.lg,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255,255,255,0.04)',
+      borderBottomColor: withAlpha('#ffffff', 0.04),
     },
     historyItemLeft: {
       flexDirection: 'row',

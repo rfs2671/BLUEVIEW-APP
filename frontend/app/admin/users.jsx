@@ -34,7 +34,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -275,7 +275,7 @@ export default function AdminUsersScreen() {
     switch (role) {
       case 'admin': return { bg: semantic.neutralBg, color: semantic.neutralStrong };
       case 'cp': return { bg: 'rgba(59, 130, 246, 0.2)', color: '#60a5fa' };
-      default: return { bg: 'rgba(156, 163, 175, 0.2)', color: '#9ca3af' };
+      default: return { bg: withAlpha('#9ca3af', 0.2), color: '#9ca3af' };
     }
   };
 
@@ -610,7 +610,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -820,8 +820,8 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   projectItemSelected: {
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    backgroundColor: semantic.verifiedBg,
+    borderColor: semantic.verifiedBorder,
   },
   projectItemName: {
     fontSize: 14,

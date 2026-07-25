@@ -43,7 +43,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic } from '../../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 import PDFViewer from '../../../src/components/PDFViewer';
@@ -393,8 +393,8 @@ export default function ConstructionPlansScreen() {
                       disabled={syncing}
                       style={({ pressed }) => [
                         { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                          paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
-                          borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+                          paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha('#ffffff', 0.05),
+                          borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
                         pressed && { opacity: 0.7 },
                         syncing && { opacity: 0.5 },
                       ]}
@@ -409,8 +409,8 @@ export default function ConstructionPlansScreen() {
                       onPress={() => router.push(`/projects/${projectId}/dropbox-settings`)}
                       style={({ pressed }) => [
                         { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-                          paddingVertical: 14, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)',
-                          borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+                          paddingVertical: 14, borderRadius: 12, backgroundColor: withAlpha('#ffffff', 0.05),
+                          borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
                         pressed && { opacity: 0.7 },
                       ]}
                     >
@@ -631,7 +631,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -710,18 +710,18 @@ function buildStyles(colors, isDark) {
     width: 36,
     height: 36,
     borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(0, 97, 255, 0.1)',
+    backgroundColor: 'rgba(0, 97, 255, 0.1)', /* brand: Dropbox - intentional, not a token */
     alignItems: 'center',
     justifyContent: 'center',
   },
   syncIndicatorSyncing: {
-    backgroundColor: 'rgba(0, 97, 255, 0.2)',
+    backgroundColor: 'rgba(0, 97, 255, 0.2)', /* brand: Dropbox - intentional, not a token */
   },
   syncIndicatorSuccess: {
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
+    backgroundColor: semantic.verifiedBg,
   },
   syncIndicatorError: {
-    backgroundColor: 'rgba(248, 113, 113, 0.2)',
+    backgroundColor: semantic.criticalBg,
   },
   syncLabel: {
     fontSize: 14,
@@ -754,8 +754,8 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   filterTabActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    borderColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: withAlpha('#ffffff', 0.15),
+    borderColor: withAlpha('#ffffff', 0.3),
   },
   filterTabText: {
     fontSize: 13,
@@ -785,7 +785,7 @@ function buildStyles(colors, isDark) {
     transition: 'all 0.2s ease',
   },
   fileItemPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: withAlpha('#ffffff', 0.12),
   },
   fileIconContainer: {
     width: 56,

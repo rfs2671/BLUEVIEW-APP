@@ -33,6 +33,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { authAPI } from '../utils/api';
+import { withAlpha } from '../styles/semanticColors';
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -267,7 +268,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
 
 const modalStyles = StyleSheet.create({
   overlay:   { flex: 1, justifyContent: 'flex-end' },
-  backdrop:  { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  backdrop:  { ...StyleSheet.absoluteFillObject, backgroundColor: withAlpha('#000000', 0.5) },
   sheet:     { maxHeight: '80%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
   blurFill:  { padding: spacing.lg },
   handle:    { width: 36, height: 4, borderRadius: 2, alignSelf: 'center', marginBottom: spacing.md },
@@ -293,8 +294,8 @@ const NavItem = ({ item, isActive, onPress }) => {
   const Icon = item.icon;
 
   // active: bg-blue-50 (#EFF6FF) in light, rgba(255,255,255,0.15) in dark
-  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
-  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
+  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
+  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -331,8 +332,8 @@ const SettingsNavItem = ({ onPress, isActive }) => {
   const [isHovered, setIsHovered] = useState(false);
   const { isDark } = useTheme();
 
-  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
-  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
+  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
+  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -377,7 +378,7 @@ const FloatingNav = () => {
   // bg-white/90 in light, glass.background in dark
   const navBg = isDark
     ? colors.glass.background
-    : 'rgba(255, 255, 255, 0.90)';
+    : withAlpha('#ffffff', 0.9);
 
   // Desktop (RN-Web >= 1024) navigates via DesktopShell's left rail, so the
   // floating tab bar must not render. Suppressed here rather than in each
@@ -482,7 +483,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)',
+    borderColor: withAlpha('#ffffff', 0.15),
     pointerEvents: 'none',
   },
   navItem: {
@@ -497,7 +498,7 @@ const styles = StyleSheet.create({
   navLabel: {
     fontSize: 13,
     fontWeight: '500',
-    color: 'rgba(255, 255, 255, 0.4)',
+    color: withAlpha('#ffffff', 0.4),
     transition: 'color 0.2s ease',
   },
   navLabelActive: {

@@ -18,7 +18,7 @@ import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, getToken } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TABS = [
@@ -149,7 +149,7 @@ export default function SiteLogbooksViewer() {
         {base64Data && typeof base64Data === 'string' ? (
           <Image
             source={{ uri: base64Data.startsWith('data:') ? base64Data : `data:image/png;base64,${base64Data}` }}
-            style={{ width: 200, height: 60, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', backgroundColor: 'rgba(255,255,255,0.05)' }}
+            style={{ width: 200, height: 60, borderRadius: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1), backgroundColor: withAlpha('#ffffff', 0.05) }}
             resizeMode="contain"
           />
         ) : signerName ? (
@@ -177,9 +177,9 @@ export default function SiteLogbooksViewer() {
     <View style={{
       flexDirection: 'row',
       borderBottomWidth: 1,
-      borderBottomColor: isHeader ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)',
+      borderBottomColor: isHeader ? withAlpha('#ffffff', 0.12) : withAlpha('#ffffff', 0.04),
       paddingVertical: isHeader ? 6 : spacing.xs,
-      backgroundColor: isHeader ? 'rgba(255,255,255,0.04)' : 'transparent',
+      backgroundColor: isHeader ? withAlpha('#ffffff', 0.04) : 'transparent',
     }}>
       {cells.map((cell, i) => (
         <Text key={i} style={{
@@ -619,7 +619,7 @@ function buildStyles(colors, isDark) {
   dateText: { flex: 1, fontSize: 15, fontWeight: '500', color: colors.text.primary },
   dateBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
-    backgroundColor: 'rgba(74,222,128,0.12)', paddingHorizontal: spacing.sm, paddingVertical: 2,
+    backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 2,
     borderRadius: borderRadius.full,
   },
   dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#4ade80' },
@@ -644,8 +644,8 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.sm, paddingVertical: 2,
     borderRadius: borderRadius.full, borderWidth: 1,
   },
-  statusSubmitted: { backgroundColor: 'rgba(74,222,128,0.12)', borderColor: 'rgba(74,222,128,0.3)' },
-  statusDraft: { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: 'rgba(245,158,11,0.3)' },
+  statusSubmitted: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
+  statusDraft: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
   statusText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
   statusTextSubmitted: { color: semantic.verified },
   statusTextDraft: { color: '#f59e0b' },
@@ -653,8 +653,8 @@ function buildStyles(colors, isDark) {
   // Document content
   docContent: { gap: 2 },
   docInfoBox: {
-    backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: borderRadius.md,
-    padding: spacing.sm, gap: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: withAlpha('#ffffff', 0.03), borderRadius: borderRadius.md,
+    padding: spacing.sm, gap: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06),
   },
   docInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   docInfoText: { fontSize: 13, color: colors.text.secondary, flex: 1 },
@@ -662,11 +662,11 @@ function buildStyles(colors, isDark) {
 
   // Photo row
   photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },
-  activityPhoto: { width: 80, height: 60, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  activityPhoto: { width: 80, height: 60, borderRadius: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1) },
 
   // Signature section
   signatureSection: { marginTop: spacing.md },
-  signatureDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.08)', marginBottom: spacing.sm },
+  signatureDivider: { height: 1, backgroundColor: withAlpha('#ffffff', 0.08), marginBottom: spacing.sm },
   signedByName: { fontSize: 13, color: semantic.verified, fontWeight: '500', marginTop: spacing.xs },
 
   // Topic chips
@@ -681,11 +681,11 @@ function buildStyles(colors, isDark) {
   // Worker signatures grid
   workerSigGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   workerSigCard: {
-    width: '47%', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: borderRadius.md,
-    padding: spacing.xs, borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', alignItems: 'center',
+    width: '47%', backgroundColor: withAlpha('#ffffff', 0.03), borderRadius: borderRadius.md,
+    padding: spacing.xs, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), alignItems: 'center',
   },
   workerSigName: { fontSize: 11, fontWeight: '600', color: colors.text.muted, marginBottom: 4 },
-  workerSigImage: { width: 120, height: 36, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.05)' },
+  workerSigImage: { width: 120, height: 36, borderRadius: 4, backgroundColor: withAlpha('#ffffff', 0.05) },
 
   // Unsigned workers
   unsignedBlock: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: spacing.xs, paddingLeft: 2 },
@@ -697,7 +697,7 @@ function buildStyles(colors, isDark) {
   pdfBtn: { backgroundColor: 'rgba(59,130,246,0.1)', borderColor: 'rgba(59,130,246,0.25)' },
   pdfActions: {
     flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.sm,
-    borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.06),
   },
   pdfActionBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,

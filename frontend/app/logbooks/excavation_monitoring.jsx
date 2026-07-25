@@ -13,7 +13,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TYPE = 'excavation_monitoring';
@@ -447,12 +447,12 @@ function buildStyles(colors, isDark) {
     inputGroup: { marginBottom: spacing.md },
     inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
     input: {
-      backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md,
+      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
       padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
     },
     inputWarning: {
-      borderColor: 'rgba(245,158,11,0.6)', borderWidth: 2,
+      borderColor: semantic.attentionBorder, borderWidth: 2,
     },
     textArea: { minHeight: 80, textAlignVertical: 'top' },
     toggleRow: {
@@ -465,22 +465,22 @@ function buildStyles(colors, isDark) {
     buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     entryCard: {
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', borderRadius: borderRadius.lg,
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
       padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
     },
     chip: {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-      backgroundColor: 'rgba(255,255,255,0.04)',
+      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+      backgroundColor: withAlpha('#ffffff', 0.04),
     },
     chipActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
     chipText: { fontSize: 13, color: colors.text.muted },
     chipTextActive: { color: '#3b82f6', fontWeight: '600' },
     warningBanner: {
       flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
-      backgroundColor: 'rgba(245,158,11,0.12)', borderRadius: borderRadius.md,
+      backgroundColor: semantic.attentionBg, borderRadius: borderRadius.md,
       padding: spacing.md, marginTop: spacing.sm,
-      borderWidth: 1, borderColor: 'rgba(245,158,11,0.3)',
+      borderWidth: 1, borderColor: semantic.attentionBorder,
     },
     warningText: { color: '#f59e0b', fontSize: 13, fontWeight: '500', flex: 1 },
   });

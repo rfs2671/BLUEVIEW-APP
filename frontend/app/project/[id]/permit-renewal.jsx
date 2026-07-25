@@ -151,21 +151,21 @@ const STATUS_CONFIG = {
   eligible: {
     label: 'Renewal Ready',
     color: semantic.verified,
-    bg: '#22c55e15',
+    bg: semantic.verifiedBg,
     icon: ShieldCheck,
     description: 'This permit is eligible for automated renewal. Tap "Prepare Renewal" to create a draft on DOB NOW.',
   },
   needs_insurance: {
     label: 'Insurance Required',
     color: '#f59e0b',
-    bg: '#f59e0b15',
+    bg: semantic.attentionBg,
     icon: ShieldAlert,
     description: 'Enter your certificate of insurance dates in Settings to enable renewal eligibility.',
   },
   ineligible_insurance: {
     label: 'Insurance Update Required',
     color: '#f59e0b',
-    bg: '#f59e0b15',
+    bg: semantic.attentionBg,
     icon: ShieldAlert,
     description: 'Insurance must be updated before renewal can proceed. See details below.',
   },
@@ -173,7 +173,7 @@ const STATUS_CONFIG = {
     label: 'License Issue',
     color: semantic.critical,
     textColor: semantic.criticalText,
-    bg: '#ef444415',
+    bg: semantic.criticalBg,
     icon: XCircle,
     description: 'GC License issue prevents automated renewal.',
   },
@@ -194,7 +194,7 @@ const STATUS_CONFIG = {
   completed: {
     label: 'Completed',
     color: semantic.verified,
-    bg: '#22c55e15',
+    bg: semantic.verifiedBg,
     icon: BadgeCheck,
     description: 'Permit renewed successfully.',
   },
@@ -202,7 +202,7 @@ const STATUS_CONFIG = {
     label: 'Failed',
     color: semantic.critical,
     textColor: semantic.criticalText,
-    bg: '#ef444415',
+    bg: semantic.criticalBg,
     icon: XCircle,
     description: 'Renewal failed. Manual action may be required on DOB NOW.',
   },
@@ -232,19 +232,19 @@ const ACTION_BADGE_OVERRIDES = {
   manual_renewal_dob_now: {
     label: 'Manual Renewal',
     color: '#f59e0b',
-    bg: '#f59e0b15',
+    bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
   manual_renewal_lapsed: {
     label: 'Permit Lapsed',
     color: '#f59e0b',
-    bg: '#f59e0b15',
+    bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
   shed_renewal: {
     label: 'Shed Renewal',
     color: '#f59e0b',
-    bg: '#f59e0b15',
+    bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
 };
@@ -784,8 +784,8 @@ export default function PermitRenewalScreen() {
               {renewal.status === 'needs_insurance' && (
                 <GlassCard
                   style={{
-                    backgroundColor: '#f59e0b15',
-                    borderColor: '#f59e0b40',
+                    backgroundColor: semantic.attentionBg,
+                    borderColor: semantic.attentionBorder,
                     borderWidth: 1,
                     marginBottom: 12,
                     padding: 14,
@@ -859,7 +859,7 @@ export default function PermitRenewalScreen() {
 
               {/* BIS Legacy Banner */}
               {(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
-                <GlassCard style={{ backgroundColor: '#f59e0b15', borderColor: '#f59e0b40', borderWidth: 1, marginBottom: 12, padding: 14 }}>
+                <GlassCard style={{ backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder, borderWidth: 1, marginBottom: 12, padding: 14 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
                     <AlertTriangle size={18} color="#f59e0b" style={{ marginTop: 2 }} />
                     <View style={{ flex: 1 }}>
@@ -925,7 +925,7 @@ export default function PermitRenewalScreen() {
                     disabled={preparing === renewal.id}
                     style={[
                       s.actionBtn,
-                      { borderColor: '#22c55e40' },
+                      { borderColor: semantic.verifiedBorder },
                     ]}
                   />
                 )}
@@ -1244,7 +1244,7 @@ function buildStyles(colors, isDark) {
       borderRadius: borderRadius.sm,
       backgroundColor: colors.glass.background,
     },
-    daysChipUrgent: { backgroundColor: '#ef444415' },
+    daysChipUrgent: { backgroundColor: semantic.criticalBg },
     daysText: {
       fontFamily: typography.medium,
       fontSize: 12,
@@ -1340,13 +1340,13 @@ function buildStyles(colors, isDark) {
       color: colors.text.primary,
     },
     blockingBlock: {
-      backgroundColor: '#f59e0b10',
+      backgroundColor: semantic.attentionBg,
       borderRadius: borderRadius.lg,
       padding: spacing.md,
       marginBottom: spacing.md,
       gap: spacing.xs,
       borderWidth: 1,
-      borderColor: '#f59e0b30',
+      borderColor: semantic.attentionBorder,
     },
     actionBlock: {
       backgroundColor: '#3b82f610',

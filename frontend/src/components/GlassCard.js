@@ -4,6 +4,7 @@ import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { withAlpha } from '../styles/semanticColors';
 
 /**
  * Platform shadow helper.
@@ -31,12 +32,12 @@ function glassShadow() {
    Light: white → blue-100 tint
    ────────────────────────────────────────────────────────────────────────── */
 const DARK_GRADIENT = [
-  'rgba(255, 255, 255, 0.10)',   // brighter at top
-  'rgba(255, 255, 255, 0.04)',   // fades toward bottom
+  withAlpha('#ffffff', 0.1),   // brighter at top
+  withAlpha('#ffffff', 0.04),   // fades toward bottom
 ];
 
 const LIGHT_GRADIENT = [
-  'rgba(255, 255, 255, 0.92)',   // white at top
+  withAlpha('#ffffff', 0.92),   // white at top
   'rgba(219, 234, 254, 0.65)',   // blue-100 at bottom
 ];
 
@@ -104,7 +105,7 @@ export const GlassCard = ({
         <View
           style={[
             StyleSheet.absoluteFillObject,
-            { backgroundColor: isDark ? 'rgba(17, 24, 39, 0.6)' : 'rgba(255, 255, 255, 0.5)' },
+            { backgroundColor: isDark ? withAlpha('#111827', 0.6) : withAlpha('#ffffff', 0.5) },
           ]}
         />
       )}

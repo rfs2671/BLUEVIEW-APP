@@ -58,6 +58,7 @@ import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
 import { bandFor, RISK_SCORE_TITLE } from './RiskScoreCircle';
 import { titleCase } from '../utils/displayHelpers';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 // V2.3 — per-factor labels + descriptions. Replaces the V2.0-era
 // FACTOR_LABELS (which keyed off legacy field names that no longer
@@ -564,7 +565,7 @@ function buildStyles(colors, isDark) {
   return StyleSheet.create({
     backdrop: {
       flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.45)',
+      backgroundColor: withAlpha('#000000', 0.45),
       // Drawer slides in from the right; aligning to flex-end
       // achieves "right side of viewport".
       flexDirection: 'row',
@@ -769,7 +770,7 @@ function buildStyles(colors, isDark) {
     },
     reviewBackdrop: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.5)',
+      backgroundColor: withAlpha('#000000', 0.5),
       justifyContent: 'center',
       alignItems: 'center',
       padding: spacing.lg,
@@ -809,7 +810,7 @@ function buildStyles(colors, isDark) {
       borderColor: colors.text.muted,
     },
     reviewChoiceActive: {
-      backgroundColor: 'rgba(34, 197, 94, 0.15)',
+      backgroundColor: semantic.verifiedBg,
       borderColor: '#22c55e',
     },
     reviewChoiceText: {

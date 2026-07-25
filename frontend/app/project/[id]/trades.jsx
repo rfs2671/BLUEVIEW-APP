@@ -29,6 +29,7 @@ import { projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { withAlpha } from '../../../src/styles/semanticColors';
 
 /**
  * Per-project subcontractor roster editor.
@@ -392,7 +393,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+      borderBottomColor: withAlpha('#ffffff', 0.08),
     },
     headerLeft: {
       flexDirection: 'row',
@@ -467,7 +468,7 @@ function buildStyles(colors, isDark) {
       color: colors.text.muted,
     },
     input: {
-      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+      backgroundColor: withAlpha('#ffffff', 0.05),
       borderRadius: borderRadius.lg,
       borderWidth: 1,
       borderColor: colors.glass.border,
@@ -488,7 +489,7 @@ function buildStyles(colors, isDark) {
       paddingVertical: spacing.sm + 2,
       paddingHorizontal: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: colors.border?.subtle || 'rgba(255,255,255,0.05)',
+      borderBottomColor: colors.border?.subtle || withAlpha('#ffffff', 0.05),
     },
     suggestItemText: {
       fontSize: 14,
@@ -531,7 +532,7 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'center',
       gap: spacing.md,
-      backgroundColor: 'rgba(255,255,255,0.04)',
+      backgroundColor: withAlpha('#ffffff', 0.04),
       borderRadius: borderRadius.lg,
       borderWidth: 1,
       borderColor: colors.glass.border,

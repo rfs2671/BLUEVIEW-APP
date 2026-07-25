@@ -38,12 +38,13 @@ import { useAuth } from '../../../src/context/AuthContext';
 import { useFeatureFlag } from '../../../src/hooks/useFeatureFlag';
 import apiClient from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
+import { withAlpha } from '../../../src/styles/semanticColors';
 
 const COLOR_MAP = {
   green:  { bg: 'rgba(34, 197, 94, 0.18)',  border: 'rgba(34, 197, 94, 0.7)',  label: 'OK' },
   yellow: { bg: 'rgba(234, 179, 8, 0.18)',  border: 'rgba(234, 179, 8, 0.7)',  label: 'Deficient' },
   red:    { bg: 'rgba(239, 68, 68, 0.18)',  border: 'rgba(239, 68, 68, 0.7)',  label: 'Missing' },
-  grey:   { bg: 'rgba(148, 163, 184, 0.10)', border: 'rgba(148, 163, 184, 0.4)', label: '—' },
+  grey:   { bg: withAlpha('#94a3b8', 0.1), border: withAlpha('#94a3b8', 0.4), label: '—' },
 };
 
 export default function ComplianceAuditScreen() {

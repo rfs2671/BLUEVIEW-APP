@@ -33,7 +33,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI, whatsappAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -398,7 +398,7 @@ export default function AdminIntegrationsScreen() {
                         <>
                           <Cloud size={22} strokeWidth={2} color="#fff" />
                           <Text style={s.dropboxButtonText}>Connect to Dropbox</Text>
-                          <ExternalLink size={16} strokeWidth={2} color="rgba(255,255,255,0.7)" />
+                          <ExternalLink size={16} strokeWidth={2} color={withAlpha('#ffffff', 0.7)} />
                         </>
                       )}
                     </Pressable>
@@ -421,7 +421,7 @@ export default function AdminIntegrationsScreen() {
               {/* WhatsApp Integration Card */}
               <GlassCard style={s.integrationCard}>
                 <View style={s.integrationHeader}>
-                  <View style={[s.integrationIcon, { backgroundColor: 'rgba(37, 211, 102, 0.1)' }]}>
+                  <View style={[s.integrationIcon, { backgroundColor: 'rgba(37, 211, 102, 0.1)' /* brand: WhatsApp - intentional, not a token */ }]}>
                     <MessageCircle size={28} strokeWidth={1.5} color={WHATSAPP_GREEN} />
                   </View>
                   <View style={s.integrationInfo}>
@@ -631,7 +631,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -706,7 +706,7 @@ function buildStyles(colors, isDark) {
     width: 56,
     height: 56,
     borderRadius: borderRadius.lg,
-    backgroundColor: 'rgba(0, 97, 255, 0.1)',
+    backgroundColor: 'rgba(0, 97, 255, 0.1)', /* brand: Dropbox - intentional, not a token */
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -735,8 +735,8 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   statusConnected: {
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    backgroundColor: semantic.verifiedBg,
+    borderColor: semantic.verifiedBorder,
   },
   statusText: {
     fontSize: 12,
@@ -765,7 +765,7 @@ function buildStyles(colors, isDark) {
   },
   disconnectButton: {
     marginTop: spacing.md,
-    borderColor: 'rgba(248, 113, 113, 0.3)',
+    borderColor: semantic.criticalBorder,
   },
   disconnectText: {
     color: colors.status.error,

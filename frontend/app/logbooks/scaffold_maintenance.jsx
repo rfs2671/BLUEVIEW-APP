@@ -17,7 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 // All maintenance questions exactly as per NYC DOB form
 const GENERAL_INFO_FIELDS = [
@@ -357,7 +357,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
   headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
@@ -396,7 +396,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: withAlpha('#ffffff', 0.05),
     gap: spacing.md,
   },
   fieldLabel: { flex: 1, fontSize: 13, color: colors.text.secondary },
@@ -406,7 +406,7 @@ const styles = StyleSheet.create({
     color: colors.text.primary,
     textAlign: 'right',
     padding: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.sm,
   },
   shedTypeRow: { flexDirection: 'row', gap: spacing.xs },
@@ -415,7 +415,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: withAlpha('#ffffff', 0.1),
   },
   shedTypeBtnActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: '#3b82f6' },
   shedTypeBtnText: { fontSize: 12, color: colors.text.muted },
@@ -426,7 +426,7 @@ const styles = StyleSheet.create({
   },
   questionBorder: {
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: withAlpha('#ffffff', 0.05),
   },
   questionText: { fontSize: 13, color: colors.text.secondary, lineHeight: 18 },
   answerRow: { flexDirection: 'row', gap: spacing.xs },
@@ -438,12 +438,12 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
-  answerBtnYes: { backgroundColor: 'rgba(74,222,128,0.1)', borderColor: 'rgba(74,222,128,0.3)' },
-  answerBtnNo: { backgroundColor: 'rgba(239,68,68,0.1)', borderColor: 'rgba(239,68,68,0.3)' },
-  answerBtnNA: { backgroundColor: 'rgba(148,163,184,0.1)', borderColor: 'rgba(148,163,184,0.3)' },
+  answerBtnYes: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
+  answerBtnNo: { backgroundColor: semantic.criticalBg, borderColor: semantic.criticalBorder },
+  answerBtnNA: { backgroundColor: withAlpha('#94a3b8', 0.1), borderColor: withAlpha('#94a3b8', 0.3) },
   answerBtnText: { fontSize: 12, color: colors.text.muted, fontWeight: '500' },
   autoSignBadge: {
     flexDirection: 'row',
@@ -451,10 +451,10 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     marginBottom: spacing.md,
     padding: spacing.sm,
-    backgroundColor: 'rgba(74,222,128,0.08)',
+    backgroundColor: semantic.verifiedBg,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.2)',
+    borderColor: semantic.verifiedBorder,
   },
   autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },

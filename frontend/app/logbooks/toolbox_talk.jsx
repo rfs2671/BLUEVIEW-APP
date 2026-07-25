@@ -16,7 +16,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const TOPICS = {
@@ -436,7 +436,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
   headerTitle: { fontSize: 15, fontWeight: '600', color: colors.text.primary },
@@ -477,7 +477,7 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: withAlpha('#ffffff', 0.05),
     gap: spacing.md,
   },
   fieldLabel: { flex: 1, fontSize: 13, color: colors.text.secondary },
@@ -487,7 +487,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
     textAlign: 'right',
     padding: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.sm,
   },
   topicCategory: { marginBottom: spacing.md },
@@ -508,8 +508,8 @@ function buildStyles(colors, isDark) {
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
   topicItemActive: {
     backgroundColor: 'rgba(59,130,246,0.15)',
@@ -520,8 +520,8 @@ function buildStyles(colors, isDark) {
     height: 18,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderColor: withAlpha('#ffffff', 0.2),
+    backgroundColor: withAlpha('#ffffff', 0.05),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -532,7 +532,7 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     paddingBottom: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
     marginBottom: spacing.xs,
   },
   tableHeaderText: {
@@ -548,13 +548,13 @@ function buildStyles(colors, isDark) {
     gap: spacing.sm,
     paddingVertical: spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    borderBottomColor: withAlpha('#ffffff', 0.04),
   },
   attendeeInput: {
     fontSize: 13,
     color: colors.text.primary,
     padding: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.sm,
   },
   signedToggle: {
@@ -569,7 +569,7 @@ function buildStyles(colors, isDark) {
     height: 20,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    borderColor: withAlpha('#ffffff', 0.2),
   },
   addWorkerBtn: { marginTop: spacing.md, borderStyle: 'dashed' },
   autoSignBadge: {
@@ -578,10 +578,10 @@ function buildStyles(colors, isDark) {
     gap: spacing.xs,
     marginBottom: spacing.md,
     padding: spacing.sm,
-    backgroundColor: 'rgba(74,222,128,0.08)',
+    backgroundColor: semantic.verifiedBg,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(74,222,128,0.2)',
+    borderColor: semantic.verifiedBorder,
   },
   autoSignText: { fontSize: 12, color: semantic.verified },
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },

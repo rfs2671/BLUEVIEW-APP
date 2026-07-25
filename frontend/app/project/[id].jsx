@@ -67,7 +67,7 @@ import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/
 import apiClient from '../../src/utils/api';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, chrome, border, surface, text as tokenText } from '../../src/styles/semanticColors';
+import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -766,7 +766,7 @@ export default function ProjectDetailScreen() {
                 </View>
                 {project?.project_class && project.project_class !== 'regular' && (
                   <View style={[s.projectClassBadge, {
-                    backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : 'rgba(245,158,11,0.2)',
+                    backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : semantic.attentionBg,
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
@@ -887,8 +887,8 @@ export default function ProjectDetailScreen() {
               onPress={() => router.push(`/projects/${projectId}/whatsapp-groups`)}
               style={({ pressed }) => [
                 { flexDirection: 'row', alignItems: 'center', padding: spacing.md,
-                  borderRadius: 12, backgroundColor: 'rgba(37,211,102,0.08)',
-                  borderWidth: 1, borderColor: 'rgba(37,211,102,0.2)',
+                  borderRadius: 12, backgroundColor: 'rgba(37,211,102,0.08)', /* brand: WhatsApp - intentional, not a token */
+                  borderWidth: 1, borderColor: 'rgba(37,211,102,0.2)', /* brand: WhatsApp - intentional, not a token */
                   marginBottom: spacing.md },
                 pressed && { opacity: 0.7 },
               ]}
@@ -1549,7 +1549,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerRight: {
     flexDirection: 'row',
@@ -1732,9 +1732,9 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: borderRadius.full || 999,
-    backgroundColor: 'rgba(245,158,11,0.15)',
+    backgroundColor: semantic.attentionBg,
     borderWidth: 1,
-    borderColor: 'rgba(245,158,11,0.4)',
+    borderColor: semantic.attentionBorder,
   },
   actionWarnText: {
     fontSize: 11,
@@ -1795,11 +1795,11 @@ function buildStyles(colors, isDark) {
   deviceStatusBadge: {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    backgroundColor: withAlpha('#64748b', 0.2),
     borderRadius: borderRadius.full,
   },
   deviceStatusActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
   },
   deviceStatusText: {
     fontSize: 11,
@@ -1938,7 +1938,7 @@ function buildStyles(colors, isDark) {
     gap: spacing.sm,
   },
   workerTag: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -1958,7 +1958,7 @@ function buildStyles(colors, isDark) {
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    backgroundColor: withAlpha('#000000', 0.85),
   },
   modalContent: {
     padding: spacing.lg,
@@ -1998,11 +1998,11 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: spacing.sm,
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: semantic.attentionBorder,
   },
   infoText: {
     flex: 1,
@@ -2099,11 +2099,11 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
   },
   warningBox: {
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderColor: semantic.attentionBorder,
     marginBottom: spacing.md,
   },
   warningText: {
@@ -2116,8 +2116,8 @@ function buildStyles(colors, isDark) {
     borderColor: 'rgba(59, 130, 246, 0.3)',
   },
   scanButtonActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    backgroundColor: semantic.verifiedBg,
+    borderColor: semantic.verifiedBorder,
   },
   divider: {
     flexDirection: 'row',
@@ -2177,7 +2177,7 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     paddingVertical: spacing.md,
     marginBottom: spacing.md,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: withAlpha('#ffffff', 0.03),
     borderRadius: borderRadius.md,
   },
   checklistStatItem: {

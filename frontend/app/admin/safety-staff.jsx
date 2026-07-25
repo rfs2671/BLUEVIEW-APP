@@ -31,13 +31,13 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, safetyStaffAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
-  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
+  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: withAlpha('#94a3b8', 0.15) },
 };
 
 const ROLE_HELPER = {
@@ -724,7 +724,7 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
       borderBottomWidth: 1,
-      borderBottomColor: 'rgba(255,255,255,0.08)',
+      borderBottomColor: withAlpha('#ffffff', 0.08),
     },
     headerLeft: {
       flexDirection: 'row',
@@ -770,9 +770,9 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'flex-start',
       gap: spacing.sm,
-      backgroundColor: 'rgba(245,158,11,0.1)',
+      backgroundColor: semantic.attentionBg,
       borderWidth: 1,
-      borderColor: 'rgba(245,158,11,0.3)',
+      borderColor: semantic.attentionBorder,
       borderRadius: 12,
       padding: 16,
       marginBottom: 16,
@@ -782,9 +782,9 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row',
       alignItems: 'flex-start',
       gap: spacing.sm,
-      backgroundColor: 'rgba(239,68,68,0.1)',
+      backgroundColor: semantic.criticalBg,
       borderWidth: 1,
-      borderColor: 'rgba(239,68,68,0.3)',
+      borderColor: semantic.criticalBorder,
       borderRadius: 12,
       padding: 16,
       marginBottom: 16,
@@ -831,7 +831,7 @@ function buildStyles(colors, isDark) {
       borderRadius: 6,
       alignSelf: 'center',
     },
-    roleBadgeSSC: { backgroundColor: 'rgba(245,158,11,0.15)' },
+    roleBadgeSSC: { backgroundColor: withAlpha('#94a3b8', 0.15) },
     roleBadgeSSM: { backgroundColor: semantic.neutralBg },
     roleBadgeText: {
       fontSize: 11,
@@ -867,7 +867,7 @@ function buildStyles(colors, isDark) {
     },
     modalOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.7)',
+      backgroundColor: withAlpha('#000000', 0.7),
       justifyContent: 'center',
       alignItems: 'center',
       padding: spacing.lg,

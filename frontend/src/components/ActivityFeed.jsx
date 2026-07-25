@@ -59,6 +59,7 @@ import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { dobAPI } from '../utils/api';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 // ── Severity palette helper ───────────────────────────────────────
 //
@@ -1108,7 +1109,7 @@ function buildStyles(colors, isDark) {
     errorBanner: {
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.sm + 2,
-      backgroundColor: colors.status?.errorBg || 'rgba(239, 68, 68, 0.10)',
+      backgroundColor: colors.status?.errorBg || semantic.criticalBg,
       borderBottomWidth: 1,
       borderBottomColor: `${colors.error}40`,
     },
@@ -1120,7 +1121,7 @@ function buildStyles(colors, isDark) {
     // ── Modal ────────────────────────────────────────────────────
     modalOverlay: {
       flex: 1,
-      backgroundColor: 'rgba(0, 0, 0, 0.55)',
+      backgroundColor: withAlpha('#000000', 0.55),
       justifyContent: 'flex-end',
       alignItems: 'center',
       padding: spacing.md,

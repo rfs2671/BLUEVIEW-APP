@@ -5,6 +5,7 @@ import { BlurView } from 'expo-blur';
 import { LayoutDashboard, Users, FileText } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { withAlpha } from '../styles/semanticColors';
 
 const siteNavItems = [
   { path: '/site', icon: LayoutDashboard, label: 'Dashboard' },
@@ -17,8 +18,8 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
   const { isDark } = useTheme();
   const Icon = item.icon;
 
-  const activeBg = isDark ? 'rgba(255, 255, 255, 0.15)' : '#EFF6FF';
-  const hoverBg  = isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(191, 219, 254, 0.30)';
+  const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
+  const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
 
   return (
     <Pressable
@@ -57,7 +58,7 @@ const SiteNav = () => {
   const pathname = usePathname();
   const { isDark } = useTheme();
 
-  const navBg = isDark ? colors.glass.background : 'rgba(255, 255, 255, 0.90)';
+  const navBg = isDark ? colors.glass.background : withAlpha('#ffffff', 0.9);
 
   return (
     <View style={styles.container}>

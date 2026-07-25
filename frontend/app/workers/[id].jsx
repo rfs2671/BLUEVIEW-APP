@@ -43,7 +43,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -690,7 +690,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -810,7 +810,7 @@ function buildStyles(colors, isDark) {
     width: '100%',
     height: 200,
     borderRadius: borderRadius.md,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: withAlpha('#ffffff', 0.03),
   },
   oshaCardTapHint: {
     fontSize: 11,
@@ -820,7 +820,7 @@ function buildStyles(colors, isDark) {
   },
   oshaFields: {
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: withAlpha('#ffffff', 0.06),
     paddingTop: spacing.md,
     gap: spacing.sm,
   },
@@ -864,7 +864,7 @@ function buildStyles(colors, isDark) {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(34,197,94,0.15)',
+    backgroundColor: semantic.verifiedBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -880,7 +880,7 @@ function buildStyles(colors, isDark) {
   },
   checklistExpanded: {
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: withAlpha('#ffffff', 0.06),
     padding: spacing.md,
     gap: 8,
   },
@@ -894,7 +894,7 @@ function buildStyles(colors, isDark) {
     height: 20,
     borderRadius: 4,
     borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.15)',
+    borderColor: withAlpha('#ffffff', 0.15),
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 1,
@@ -991,7 +991,7 @@ function buildStyles(colors, isDark) {
   },
   signatureCanvas: {
     height: 150,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -1011,7 +1011,7 @@ function buildStyles(colors, isDark) {
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.9)',
+    backgroundColor: withAlpha('#000000', 0.9),
     justifyContent: 'center',
     alignItems: 'center',
   },

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Image, View, Text, StyleSheet } from 'react-native';
 import { signaturesAPI } from '../utils/api';
+import { withAlpha } from '../styles/semanticColors';
 
 /**
  * SignatureImage — renders a worker's stored signature.
@@ -162,7 +163,7 @@ const s = StyleSheet.create({
   placeholder: {
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.03)',
+    backgroundColor: withAlpha('#000000', 0.03),
     borderRadius: 6,
     paddingHorizontal: 10,
     paddingVertical: 12,

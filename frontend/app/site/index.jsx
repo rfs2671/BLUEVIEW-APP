@@ -17,7 +17,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteDeviceHomeScreen() {
@@ -144,7 +144,7 @@ export default function SiteDeviceHomeScreen() {
               onPress={() => handleNavigate('/site/documents')}
             >
               <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
+                <View style={[s.iconContainer, { backgroundColor: semantic.attentionBg }]}>
                   <FolderOpen size={64} strokeWidth={1.5} color="#f59e0b" />
                 </View>
                 <Text style={s.buttonLabel}>Documents</Text>
@@ -156,7 +156,7 @@ export default function SiteDeviceHomeScreen() {
               onPress={() => handleNavigate('/site/checkins')}
             >
               <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: 'rgba(74, 222, 128, 0.2)' }]}>
+                <View style={[s.iconContainer, { backgroundColor: semantic.verifiedBg }]}>
                   <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
                 </View>
                 <Text style={s.buttonLabel}>Worker Sign In</Text>
@@ -195,7 +195,7 @@ function buildStyles(colors, isDark) {
     logoutBtn: {
       padding: 8,
       borderRadius: 8,
-      backgroundColor: 'rgba(255,255,255,0.05)',
+      backgroundColor: withAlpha('#ffffff', 0.05),
     },
     siteBadge: {
       flexDirection: 'row',
@@ -203,10 +203,10 @@ function buildStyles(colors, isDark) {
       gap: spacing.xs,
       paddingHorizontal: spacing.sm,
       paddingVertical: spacing.xs,
-      backgroundColor: 'rgba(74, 222, 128, 0.15)',
+      backgroundColor: withAlpha('#94a3b8', 0.15),
       borderRadius: borderRadius.full,
       borderWidth: 1,
-      borderColor: 'rgba(74, 222, 128, 0.3)',
+      borderColor: withAlpha('#94a3b8', 0.3),
     },
     siteBadgeText: {
       ...typography.label,

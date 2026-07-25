@@ -36,6 +36,7 @@ import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 
 const DROPBOX_BLUE = '#0061FF';
 
@@ -575,7 +576,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -646,7 +647,7 @@ function buildStyles(colors, isDark) {
     width: 48,
     height: 48,
     borderRadius: borderRadius.lg,
-    backgroundColor: 'rgba(0, 97, 255, 0.1)',
+    backgroundColor: 'rgba(0, 97, 255, 0.1)', /* brand: Dropbox - intentional, not a token */
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -690,7 +691,7 @@ function buildStyles(colors, isDark) {
     transition: 'all 0.2s ease',
   },
   selectedFolderPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: withAlpha('#ffffff', 0.12),
   },
   folderInfo: {
     flex: 1,
@@ -838,15 +839,15 @@ function buildStyles(colors, isDark) {
     justifyContent: 'center',
     gap: spacing.sm,
     padding: spacing.md,
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    backgroundColor: semantic.verifiedBg,
     borderRadius: borderRadius.lg,
     borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    borderColor: semantic.verifiedBorder,
     marginBottom: spacing.md,
     transition: 'all 0.2s ease',
   },
   selectCurrentBtnPressed: {
-    backgroundColor: 'rgba(74, 222, 128, 0.2)',
+    backgroundColor: semantic.verifiedBg,
   },
   selectCurrentText: {
     fontSize: 14,
@@ -869,7 +870,7 @@ function buildStyles(colors, isDark) {
     transition: 'all 0.2s ease',
   },
   folderItemPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: withAlpha('#ffffff', 0.12),
   },
   folderName: {
     flex: 1,

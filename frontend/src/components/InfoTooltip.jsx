@@ -38,6 +38,7 @@ import { Info } from 'lucide-react-native';
 import { GlassCard } from './GlassCard';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { withAlpha } from '../styles/semanticColors';
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -141,7 +142,7 @@ function buildStyles(colors, isDark) {
     },
     overlay: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.45)',
+      backgroundColor: withAlpha('#000000', 0.45),
       justifyContent: 'center',
       alignItems: 'center',
       paddingHorizontal: spacing.lg,

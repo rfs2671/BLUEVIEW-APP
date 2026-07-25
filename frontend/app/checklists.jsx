@@ -29,7 +29,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { checklistsAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 export default function ChecklistsScreen() {
@@ -353,7 +353,7 @@ function buildStyles(colors, isDark) {
   assignmentsList: { gap: spacing.md },
   assignmentCard: { marginBottom: 0 },
   card: { padding: spacing.lg },
-  cardComplete: { borderColor: 'rgba(74,222,128,0.3)', borderWidth: 1 },
+  cardComplete: { borderColor: semantic.verifiedBorder, borderWidth: 1 },
   cardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: spacing.md },
   cardInfo: { flex: 1, marginRight: spacing.md },
   cardTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary, marginBottom: spacing.xs },
@@ -365,23 +365,23 @@ function buildStyles(colors, isDark) {
   progressInfo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: spacing.xs },
   progressText: { fontSize: 13, color: colors.text.secondary },
   progressPercent: { fontSize: 13, fontWeight: '600', color: '#4ade80' },
-  progressBar: { height: 6, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 3, overflow: 'hidden' },
+  progressBar: { height: 6, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: 3, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: '#4ade80', borderRadius: 3 },
   progressComplete: { backgroundColor: '#4ade80' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  modalOverlay: { flex: 1, backgroundColor: withAlpha('#000000', 0.7), justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1a1a2e', borderTopLeftRadius: borderRadius.xxl, borderTopRightRadius: borderRadius.xxl, height: '90%', borderTopWidth: 1, borderColor: colors.glass.border },
   modalHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
   modalHeaderLeft: { flex: 1, marginRight: spacing.md },
   modalTitle: { fontSize: 20, fontWeight: '500', color: colors.text.primary, marginBottom: spacing.xs },
   modalSubtitle: { fontSize: 14, color: colors.text.muted },
   modalScroll: { flex: 1, padding: spacing.lg },
-  checklistItem: { marginBottom: spacing.lg, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: borderRadius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.glass.border },
+  checklistItem: { marginBottom: spacing.lg, backgroundColor: withAlpha('#ffffff', 0.03), borderRadius: borderRadius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.glass.border },
   itemHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   itemLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
   checkIconContainer: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   itemText: { fontSize: 15, color: colors.text.primary, flex: 1 },
   itemTextChecked: { textDecorationLine: 'line-through', color: colors.text.muted },
-  noteInput: { marginTop: spacing.md, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14, minHeight: 60, textAlignVertical: 'top' },
+  noteInput: { marginTop: spacing.md, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14, minHeight: 60, textAlignVertical: 'top' },
   modalFooter: { padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.glass.border },
 });
 }

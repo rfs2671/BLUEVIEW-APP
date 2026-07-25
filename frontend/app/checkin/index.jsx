@@ -31,7 +31,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, workersAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
@@ -384,7 +384,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -429,7 +429,7 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     gap: spacing.md,
     padding: spacing.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.lg,
   },
   projectInfo: {
@@ -464,7 +464,7 @@ function buildStyles(colors, isDark) {
     borderRadius: borderRadius.md,
   },
   projectItemPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    backgroundColor: withAlpha('#ffffff', 0.12),
   },
   projectItemName: {
     fontSize: 15,
@@ -558,7 +558,7 @@ function buildStyles(colors, isDark) {
     fontWeight: '600',
   },
   nfcBtn: {
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderColor: semantic.verifiedBorder,
   },
   workerPicker: {
     marginTop: spacing.lg,
@@ -588,7 +588,7 @@ function buildStyles(colors, isDark) {
     marginBottom: spacing.sm,
   },
   workerItemPressed: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: withAlpha('#ffffff', 0.1),
   },
   workerItemAvatar: {
     width: 40,

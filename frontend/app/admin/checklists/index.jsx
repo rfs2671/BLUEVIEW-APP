@@ -32,7 +32,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic } from '../../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 
 export default function AdminChecklistsScreen() {
@@ -694,8 +694,8 @@ function buildStyles(colors, isDark) {
   metaText: { fontSize: 12, color: colors.text.muted },
   metaDot: { fontSize: 12, color: colors.text.subtle },
   checklistActions: { flexDirection: 'row', gap: spacing.sm },
-  actionButton: { padding: spacing.sm, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
+  actionButton: { padding: spacing.sm, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md },
+  modalOverlay: { flex: 1, backgroundColor: withAlpha('#000000', 0.7), justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
   modalContent: { backgroundColor: '#1a1a2e', borderRadius: borderRadius.xxl, width: '100%', maxWidth: 500, maxHeight: '80%', borderWidth: 1, borderColor: colors.glass.border },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
   modalTitle: { fontSize: 20, fontWeight: '500', color: colors.text.primary },
@@ -703,13 +703,13 @@ function buildStyles(colors, isDark) {
   input: { marginBottom: spacing.md },
   sectionLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
   itemRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  itemInput: { flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14 },
+  itemInput: { flex: 1, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14 },
   removeBtn: { padding: spacing.sm },
   addItemBtn: { marginTop: spacing.sm },
   modalActions: { flexDirection: 'row', gap: spacing.md, padding: spacing.lg, borderTopWidth: 1, borderTopColor: colors.glass.border },
   modalBtn: { flex: 1 },
   selectItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
-  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center' },
+  checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: withAlpha('#ffffff', 0.05), alignItems: 'center', justifyContent: 'center' },
   checkboxChecked: { backgroundColor: semantic.verified, borderColor: semantic.verified },
   selectText: { fontSize: 14, color: colors.text.primary },
   selectSubtext: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
@@ -723,7 +723,7 @@ function buildStyles(colors, isDark) {
   userProgress: { fontSize: 12, color: colors.text.muted },
   closeBtn: { margin: spacing.lg },
   deleteModal: { backgroundColor: '#1a1a2e', borderRadius: borderRadius.xxl, padding: spacing.xl, width: '90%', maxWidth: 400, borderWidth: 1, borderColor: colors.glass.border, alignItems: 'center' },
-  deleteIcon: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(239,68,68,0.1)', alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
+  deleteIcon: { width: 64, height: 64, borderRadius: 32, backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg },
   deleteTitle: { fontSize: 20, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.sm },
   deleteText: { fontSize: 14, color: colors.text.secondary, textAlign: 'center', marginBottom: spacing.xl },
   deleteActions: { flexDirection: 'row', gap: spacing.md, width: '100%' },

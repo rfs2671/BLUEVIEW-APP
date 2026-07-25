@@ -309,8 +309,8 @@ function buildStyles(colors) {
       borderWidth: 1,
     },
     bannerSuccess: {
-      backgroundColor: '#10b98115',
-      borderColor: '#10b98140',
+      backgroundColor: semantic.verifiedBg,
+      borderColor: semantic.verifiedBorder,
     },
     bannerInfo: {
       backgroundColor: '#3b82f615',
@@ -341,10 +341,10 @@ function buildStyles(colors) {
     confirmationRow: {
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
-      backgroundColor: '#10b98115',
+      backgroundColor: semantic.verifiedBg,
       borderRadius: borderRadius.md,
       borderWidth: 1,
-      borderColor: '#10b98140',
+      borderColor: semantic.verifiedBorder,
     },
     confirmationLabel: {
       fontFamily: typography.regular,
@@ -400,10 +400,10 @@ function buildStyles(colors) {
     // ── blockers (readiness fail) ────────────────────────────────
     blockersBlock: {
       padding: spacing.sm,
-      backgroundColor: '#f59e0b15',
+      backgroundColor: semantic.attentionBg,
       borderRadius: borderRadius.md,
       borderWidth: 1,
-      borderColor: '#f59e0b40',
+      borderColor: semantic.attentionBorder,
       gap: 4,
     },
     blockersHeader: {
@@ -439,10 +439,10 @@ function buildStyles(colors) {
       alignItems: 'flex-start',
       gap: 8,
       padding: spacing.sm,
-      backgroundColor: '#ef444415',
+      backgroundColor: semantic.criticalBg,
       borderRadius: borderRadius.md,
       borderWidth: 1,
-      borderColor: '#ef444440',
+      borderColor: semantic.criticalBorder,
     },
     errorMessage: {
       fontFamily: typography.medium,

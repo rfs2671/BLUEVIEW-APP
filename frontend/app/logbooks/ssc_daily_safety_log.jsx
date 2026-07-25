@@ -12,7 +12,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const LOG_TYPE = 'ssc_daily_safety_log';
@@ -399,9 +399,9 @@ function buildStyles(colors, isDark) {
     inputGroup: { marginBottom: spacing.md },
     inputLabel: { ...typography.label, color: colors.text.muted, marginBottom: 4 },
     input: {
-      backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md,
+      backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
       padding: spacing.sm, color: colors.text.primary,
-      borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
+      borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
     },
     textArea: { minHeight: 80, textAlignVertical: 'top' },
     toggleRow: {
@@ -415,8 +415,8 @@ function buildStyles(colors, isDark) {
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     chip: {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-      backgroundColor: 'rgba(255,255,255,0.04)',
+      borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+      backgroundColor: withAlpha('#ffffff', 0.04),
     },
     chipActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
     chipText: { fontSize: 13, color: colors.text.muted },

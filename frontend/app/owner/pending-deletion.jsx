@@ -41,6 +41,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 export default function PendingDeletionScreen() {
   const { colors } = useTheme();
@@ -278,12 +279,12 @@ function buildStyles(colors) {
       flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
       gap: spacing.xs, marginTop: spacing.sm,
       paddingVertical: spacing.sm, borderRadius: borderRadius.lg,
-      borderWidth: 1, borderColor: 'rgba(248,113,113,0.4)',
-      backgroundColor: 'rgba(248,113,113,0.08)',
+      borderWidth: 1, borderColor: semantic.criticalBorder,
+      backgroundColor: semantic.criticalBg,
     },
     purgeText: { fontSize: 13, fontWeight: '600', color: '#f87171' },
     modalBackdrop: {
-      flex: 1, backgroundColor: 'rgba(0,0,0,0.7)',
+      flex: 1, backgroundColor: withAlpha('#000000', 0.7),
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
     },
     modalCard: { padding: spacing.lg, gap: spacing.sm, width: '100%', maxWidth: 440 },

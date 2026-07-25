@@ -22,7 +22,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 export default function SiteCheckInsScreen() {
@@ -379,7 +379,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -390,18 +390,18 @@ function buildStyles(colors, isDark) {
   logoutBtn: {
     padding: 8,
     borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
   },
   siteBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: withAlpha('#94a3b8', 0.15),
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    borderColor: withAlpha('#94a3b8', 0.3),
   },
   siteBadgeText: {
     fontSize: 10,
@@ -491,7 +491,7 @@ function buildStyles(colors, isDark) {
   reviewCard: {
     marginTop: spacing.xs,
     padding: spacing.md,
-    borderColor: 'rgba(251, 191, 36, 0.35)',
+    borderColor: semantic.attentionBorder,
     borderWidth: 1,
     gap: spacing.sm,
   },
@@ -528,12 +528,12 @@ function buildStyles(colors, isDark) {
     opacity: 0.5,
   },
   approveBtn: {
-    borderColor: 'rgba(74, 222, 128, 0.4)',
-    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+    borderColor: semantic.verifiedBorder,
+    backgroundColor: semantic.verifiedBg,
   },
   sendHomeBtn: {
-    borderColor: 'rgba(248, 113, 113, 0.4)',
-    backgroundColor: 'rgba(248, 113, 113, 0.08)',
+    borderColor: semantic.criticalBorder,
+    backgroundColor: semantic.criticalBg,
   },
   reviewBtnText: {
     fontSize: 13,
@@ -577,7 +577,7 @@ function buildStyles(colors, isDark) {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: withAlpha('#ffffff', 0.1),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -618,11 +618,11 @@ function buildStyles(colors, isDark) {
     gap: 4,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    backgroundColor: withAlpha('#64748b', 0.2),
     borderRadius: borderRadius.full,
   },
   statusActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
   },
   statusDot: {
     width: 6,

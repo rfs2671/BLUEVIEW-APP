@@ -471,7 +471,7 @@ function buildStyles(colors) {
     },
     copyButtonCopied: {
       borderColor: semantic.verified,
-      backgroundColor: '#10b98115',
+      backgroundColor: semantic.verifiedBg,
     },
     copyButtonText: {
       fontFamily: typography.medium,

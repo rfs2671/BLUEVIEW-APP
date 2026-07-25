@@ -53,7 +53,7 @@ import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic, chrome } from '../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 
@@ -928,7 +928,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -948,12 +948,12 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: withAlpha('#94a3b8', 0.15),
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
     borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    borderColor: withAlpha('#94a3b8', 0.3),
   },
   viewOnlyBadge: {
     backgroundColor: 'rgba(59, 130, 246, 0.15)',
@@ -987,8 +987,8 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   tabActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    backgroundColor: semantic.verifiedBg,
+    borderColor: semantic.verifiedBorder,
   },
   tabText: {
     fontSize: 14,
@@ -1072,7 +1072,7 @@ function buildStyles(colors, isDark) {
     padding: spacing.md,
   },
   dropdownItemActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: withAlpha('#ffffff', 0.1),
   },
   dropdownText: {
     fontSize: 15,
@@ -1109,7 +1109,7 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
     paddingHorizontal: spacing.sm,
     paddingVertical: 4,
     borderRadius: borderRadius.full,
@@ -1147,13 +1147,13 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     gap: spacing.sm,
     paddingVertical: spacing.lg,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.lg,
     borderWidth: 1,
     borderColor: colors.glass.border,
   },
   weatherOptionSelected: {
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
+    backgroundColor: semantic.verifiedBg,
     borderColor: chrome.brand,
   },
   weatherLabel: {
@@ -1180,7 +1180,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   notesInput: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.lg,
     borderWidth: 1,
     borderColor: colors.glass.border,
@@ -1194,7 +1194,7 @@ function buildStyles(colors, isDark) {
     gap: spacing.sm,
   },
   checklistItem: {
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: withAlpha('#ffffff', 0.03),
     borderRadius: borderRadius.lg,
     padding: spacing.md,
     borderWidth: 1,
@@ -1214,21 +1214,21 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: spacing.sm,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.md,
     borderWidth: 1,
     borderColor: colors.glass.border,
   },
   checkOptionActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
     borderColor: chrome.brand,
   },
   checkOptionUnchecked: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: semantic.criticalBg,
     borderColor: semantic.neutral,
   },
   checkOptionNA: {
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    backgroundColor: withAlpha('#64748b', 0.2),
     borderColor: colors.text.muted,
   },
   naText: {
@@ -1256,7 +1256,7 @@ function buildStyles(colors, isDark) {
     borderRadius: 4,
     borderWidth: 1,
     borderColor: colors.glass.border,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1319,7 +1319,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.muted,
   },
   signedBadge: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
     padding: 4,
     borderRadius: borderRadius.full,
   },
@@ -1342,7 +1342,7 @@ function buildStyles(colors, isDark) {
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: withAlpha('#000000', 0.7),
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.lg,
@@ -1403,13 +1403,13 @@ function buildStyles(colors, isDark) {
     backgroundColor: colors.glass.background,
   },
   statusChecked: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
   },
   statusUnchecked: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: semantic.criticalBg,
   },
   statusNA: {
-    backgroundColor: 'rgba(100, 116, 139, 0.2)',
+    backgroundColor: withAlpha('#64748b', 0.2),
   },
   statusText: {
     fontSize: 10,

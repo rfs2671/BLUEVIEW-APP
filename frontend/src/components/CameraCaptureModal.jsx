@@ -8,6 +8,7 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system';
 import { X, RefreshCw } from 'lucide-react-native';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { withAlpha } from '../styles/semanticColors';
 
 /**
  * In-process jobsite camera (react-native-vision-camera). <Camera> is a
@@ -241,13 +242,13 @@ const styles = StyleSheet.create({
   bottomStack: { alignItems: 'center', gap: 16, paddingBottom: 24 },
   lensRow: {
     flexDirection: 'row', gap: 8,
-    backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 999, padding: 4,
+    backgroundColor: withAlpha('#000000', 0.4), borderRadius: 999, padding: 4,
   },
   lensChip: {
     minWidth: 44, paddingHorizontal: 12, paddingVertical: 6,
     borderRadius: 999, alignItems: 'center',
   },
-  lensChipActive: { backgroundColor: 'rgba(255,255,255,0.9)' },
+  lensChipActive: { backgroundColor: withAlpha('#ffffff', 0.9) },
   lensText: { color: '#fff', fontSize: 13, fontWeight: '600' },
   lensTextActive: { color: '#000' },
   bottomBar: {
@@ -257,11 +258,11 @@ const styles = StyleSheet.create({
   iconBtn: {
     width: 50, height: 50, borderRadius: 25,
     alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.35)',
+    backgroundColor: withAlpha('#000000', 0.35),
   },
   shutter: {
     width: 72, height: 72, borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.25)',
+    backgroundColor: withAlpha('#ffffff', 0.25),
     borderWidth: 4, borderColor: '#fff',
     alignItems: 'center', justifyContent: 'center',
   },

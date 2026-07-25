@@ -11,6 +11,7 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { demoAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
+import { withAlpha } from '../src/styles/semanticColors';
 
 // Contact/email only — deliberately NOT a web page that sells or processes
 // payment (App Store 3.1.1). Change this address to your activation inbox.
@@ -148,7 +149,7 @@ function buildStyles(colors, isDark) {
     ctaCard: { alignItems: 'center', paddingVertical: spacing.xl, marginBottom: spacing.lg },
     ctaIcon: {
       width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center',
-      backgroundColor: 'rgba(245,158,11,0.15)', marginBottom: spacing.md,
+      backgroundColor: withAlpha('#94a3b8', 0.15), marginBottom: spacing.md,
     },
     ctaTitle: { fontSize: 18, fontWeight: '600', color: colors.text.primary, textAlign: 'center', marginBottom: spacing.sm },
     ctaBody: { fontSize: 14, lineHeight: 20, color: colors.text.secondary, textAlign: 'center', maxWidth: 420, marginBottom: spacing.lg },

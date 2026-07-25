@@ -64,6 +64,35 @@ const VERIFIED = '#22c55e'; // green-500  (matches RiskScoreCircle BAND_GREEN po
 // (mirrors the theme-blind rgba() badge fills it replaces).
 const NEUTRAL_BG = 'rgba(148, 163, 184, 0.18)';
 
+// ── withAlpha — the anti-drift primitive ──────────────────────────────────────
+// Derive an `rgba()` string from a hex base + opacity. The base is ALWAYS a
+// canonical hex — a semantic state token (CRITICAL/ATTENTION/VERIFIED) for
+// state tints, or a pinned neutral (#ffffff/#000000/#94a3b8/…) for decorative
+// chrome. Because the tint is computed from the base, it can NEVER drift from
+// it: change the token, every fill/border derived from it follows. This
+// replaces hand-written `rgba(239,68,68,0.1)` literals that silently forked
+// into 11 different reds at 14 different opacities (see the 2026-07-25 audit).
+//
+// Accepts #rgb, #rrggbb, or #rrggbbaa (any hex alpha is dropped; the `opacity`
+// argument is authoritative). Returns e.g. 'rgba(239, 68, 68, 0.12)'.
+export function withAlpha(hex, opacity) {
+  let h = String(hex).replace('#', '');
+  if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+  if (h.length === 8) h = h.slice(0, 6);
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+// ── Canonical state-tint opacities ────────────────────────────────────────────
+// The WHOLE app collapses its state fills/borders to exactly these two steps.
+// Chosen as the modes of prior usage: fills clustered at 0.10–0.15 (0.12 is the
+// balancing midpoint), borders were dominated by 0.30. A state card is a FILL
+// (criticalBg) with a matching BORDER (criticalBorder) one step stronger.
+const STATE_FILL = 0.12;
+const STATE_BORDER = 0.3;
+
 export const semantic = {
   get neutral() { return colors.text.muted; },
   get neutralStrong() { return colors.text.secondary; },
@@ -73,6 +102,19 @@ export const semantic = {
   get criticalText() { return CRITICAL_TEXT; },
   get criticalFill() { return CRITICAL_FILL; },
   get verified() { return VERIFIED; },
+
+  // ── Derived state tints (fill + border), from the base tokens above via
+  //    withAlpha. These fix the theme drift the audit found: they are built on
+  //    the SEMANTIC bases (#ef4444 / #fbbf24 / #22c55e), NOT theme.status's
+  //    stale successBg/errorBg bases (#4ade80 / #f87171). Migrating a call site
+  //    to these therefore shifts both hue (green #4ade80→#22c55e, red
+  //    #f87171→#ef4444) and opacity to the canonical steps.
+  get criticalBg() { return withAlpha(CRITICAL, STATE_FILL); },
+  get criticalBorder() { return withAlpha(CRITICAL, STATE_BORDER); },
+  get attentionBg() { return withAlpha(ATTENTION, STATE_FILL); },
+  get attentionBorder() { return withAlpha(ATTENTION, STATE_BORDER); },
+  get verifiedBg() { return withAlpha(VERIFIED, STATE_FILL); },
+  get verifiedBorder() { return withAlpha(VERIFIED, STATE_BORDER); },
 };
 
 // ── Non-state groupings (theme-aware, re-exported for one-import ergonomics) ───

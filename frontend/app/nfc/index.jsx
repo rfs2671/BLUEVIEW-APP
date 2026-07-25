@@ -28,7 +28,7 @@ import { useProjects } from '../../src/hooks/useProjects';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 
 const WORKER_PROFILE_KEY = 'blueview_worker_profile';
@@ -386,7 +386,7 @@ function buildStyles(colors, isDark) {
     width: 56,
     height: 56,
     borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    backgroundColor: withAlpha('#94a3b8', 0.2),
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: spacing.md,

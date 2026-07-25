@@ -14,6 +14,7 @@ import { BlurView } from 'expo-blur';
 import { LayoutDashboard, FolderOpen, Settings } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { withAlpha } from '../styles/semanticColors';
 
 const CP_NAV_ITEMS = [
   { path: '/logbooks',  icon: LayoutDashboard, label: 'Dashboard' },
@@ -43,7 +44,7 @@ const CpNav = () => {
   // blurContent already carries a near-opaque background, so the nav
   // reads fine without the blur layer.
   const navInner = (
-    <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : 'rgba(255,255,255,0.90)' }]}>
+    <View style={[styles.blurContent, { backgroundColor: isDark ? colors.glass.background : withAlpha('#ffffff', 0.9) }]}>
       <View style={styles.nav}>
         {CP_NAV_ITEMS.map((item) => {
           const isActive =
@@ -105,7 +106,7 @@ const styles = StyleSheet.create({
     gap: spacing.xs, paddingVertical: spacing.sm + 4, paddingHorizontal: spacing.xs,
     borderRadius: borderRadius.lg,
   },
-  navItemActive: { backgroundColor: 'rgba(128,128,128,0.20)' },
+  navItemActive: { backgroundColor: withAlpha('#808080', 0.2) },
   navLabel: { fontSize: 11, fontWeight: '500' },
   border: {
     ...StyleSheet.absoluteFillObject,

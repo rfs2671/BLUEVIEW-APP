@@ -50,6 +50,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 const TRANSLATIONS = {
   en: {
@@ -547,8 +548,8 @@ function buildStyles(colors) {
       marginTop: spacing.xs,
     },
     reasonExpired: {
-      borderColor: 'rgba(251,191,36,0.35)',
-      backgroundColor: 'rgba(251,191,36,0.10)',
+      borderColor: semantic.attentionBorder,
+      backgroundColor: semantic.attentionBg,
     },
     reasonTrade: {
       borderColor: 'rgba(147,197,253,0.35)',
@@ -559,7 +560,7 @@ function buildStyles(colors) {
     reasonHint: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
     cardImage: {
       width: '100%', height: 150, borderRadius: borderRadius.lg,
-      marginTop: spacing.xs, backgroundColor: 'rgba(255,255,255,0.04)',
+      marginTop: spacing.xs, backgroundColor: withAlpha('#ffffff', 0.04),
     },
     cardHint: {
       fontSize: 11, color: colors.text.muted, textAlign: 'center',
@@ -576,12 +577,12 @@ function buildStyles(colors) {
     },
     btnBusy: { opacity: 0.5 },
     approveBtn: {
-      borderColor: 'rgba(74,222,128,0.4)',
-      backgroundColor: 'rgba(74,222,128,0.08)',
+      borderColor: semantic.verifiedBorder,
+      backgroundColor: semantic.verifiedBg,
     },
     sendHomeBtn: {
-      borderColor: 'rgba(248,113,113,0.4)',
-      backgroundColor: 'rgba(248,113,113,0.08)',
+      borderColor: semantic.criticalBorder,
+      backgroundColor: semantic.criticalBg,
     },
     actionText: { fontSize: 13, fontWeight: '600' },
     approveText: { color: '#4ade80' },
@@ -604,13 +605,13 @@ function buildStyles(colors) {
     rosterOption: {
       paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
       borderRadius: borderRadius.lg,
-      backgroundColor: 'rgba(255,255,255,0.05)',
+      backgroundColor: withAlpha('#ffffff', 0.05),
     },
     rosterText: { fontSize: 14, color: colors.text.primary },
     cancelBtn: { paddingVertical: spacing.xs, alignItems: 'center' },
     cancelText: { fontSize: 13, color: colors.text.muted },
     modalBackdrop: {
-      flex: 1, backgroundColor: 'rgba(0,0,0,0.9)',
+      flex: 1, backgroundColor: withAlpha('#000000', 0.9),
       alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
     },
     modalImage: { width: '100%', height: '70%' },

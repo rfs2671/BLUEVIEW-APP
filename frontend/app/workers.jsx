@@ -27,6 +27,7 @@ import OfflineIndicator from '../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
+import { withAlpha } from '../src/styles/semanticColors';
 
 export default function WorkersScreen() {
   const { colors, isDark } = useTheme();
@@ -314,7 +315,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -508,7 +509,7 @@ function buildStyles(colors, isDark) {
     borderColor: colors.glass.border,
   },
   statusActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    backgroundColor: withAlpha('#ffffff', 0.1),
   },
   statusDot: {
     width: 6,

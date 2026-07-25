@@ -4,6 +4,7 @@ import { WifiOff, Wifi } from 'lucide-react-native';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { colors, spacing, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 
 export default function OfflineIndicator() {
   const { isOnline } = useNetworkStatus();
@@ -56,14 +57,14 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   containerOffline: {
-    backgroundColor: 'rgba(251, 191, 36, 0.1)',
+    backgroundColor: semantic.attentionBg,
     borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.3)',
+    borderColor: semantic.attentionBorder,
   },
   containerOnline: {
-    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+    backgroundColor: semantic.verifiedBg,
     borderWidth: 1,
-    borderColor: 'rgba(34, 197, 94, 0.3)',
+    borderColor: semantic.verifiedBorder,
   },
   text: {
     fontSize: typography.small.fontSize,

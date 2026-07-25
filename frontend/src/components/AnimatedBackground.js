@@ -3,6 +3,7 @@ import { View, StyleSheet, Animated, Dimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
+import { withAlpha } from '../styles/semanticColors';
 
 const { height } = Dimensions.get('window');
 
@@ -29,7 +30,7 @@ const AnimatedBackground = ({ children }) => {
   // Light: subtle primary-blue scanline mimicking the CSS radial-gradient accents
   //   radial-gradient(ellipse at top, rgba(21,101,192,0.08) …)
   const scanlineColor = isDark
-    ? 'rgba(255, 255, 255, 0.02)'
+    ? withAlpha('#ffffff', 0.02)
     : 'rgba(21, 101, 192, 0.04)';
 
   return (

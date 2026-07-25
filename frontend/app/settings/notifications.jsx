@@ -83,7 +83,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import { useToast } from '../../src/components/Toast';
 import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import {
   SIGNAL_FAMILIES,
   SIGNAL_KIND_INDEX,
@@ -1072,7 +1072,7 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
       key: 'feed',
       Icon: Inbox,
       iconColor: '#6b7280',
-      bg: 'rgba(107, 114, 128, 0.10)',
+      bg: withAlpha('#6b7280', 0.1),
       count: summary.suppressed_signals || 0,
       label: 'feed-only',
       tip: 'Visible in the activity feed; no email.',
@@ -1753,8 +1753,8 @@ function buildStyles(colors) {
       padding: spacing.sm,
       borderRadius: borderRadius.md,
       borderWidth: 1,
-      borderColor: '#ef444440',
-      backgroundColor: '#ef444415',
+      borderColor: semantic.criticalBorder,
+      backgroundColor: semantic.criticalBg,
       marginTop: spacing.sm,
     },
     errorBlockText: {
@@ -1776,7 +1776,7 @@ function buildStyles(colors) {
       padding: spacing.md,
       borderTopWidth: 1,
       borderTopColor: colors.glass.border,
-      backgroundColor: colors.background?.start || 'rgba(5,10,18,0.95)',
+      backgroundColor: colors.background?.start || withAlpha('#050a12', 0.95),
     },
     mobilePrimaryBtn: {
       flex: 1,

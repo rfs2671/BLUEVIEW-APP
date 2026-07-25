@@ -17,7 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, chrome } from '../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal from '../../src/components/CameraCaptureModal';
@@ -743,49 +743,49 @@ function buildStyles(colors, isDark) {
   fieldLabel: { fontSize: 13, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
   fieldValueReadonly: { fontSize: 15, color: colors.text.primary, fontWeight: '500', flex: 1, textAlign: 'right' },
   fieldInput: {
-    backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
     padding: spacing.sm, fontSize: 14, color: colors.text.primary,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', marginTop: spacing.xs,
+    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.08), marginTop: spacing.xs,
   },
   textArea: {
-    backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md,
     padding: spacing.md, fontSize: 14, color: colors.text.primary,
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)', minHeight: 80, textAlignVertical: 'top',
+    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.08), minHeight: 80, textAlignVertical: 'top',
   },
   weatherHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   weatherAuto: { fontSize: 13, color: colors.primary, fontWeight: '500' },
   weatherRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   weatherBtn: {
     paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
   weatherBtnActive: { backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.5)' },
   weatherBtnText: { fontSize: 13, color: colors.text.muted },
   weatherBtnTextActive: { color: '#3b82f6', fontWeight: '600' },
   activityCard: {
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)', borderRadius: borderRadius.lg,
+    borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
     padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
   },
   activityRow: { flexDirection: 'row', gap: spacing.sm },
   activityField: { flex: 1, gap: 2 },
   activityLabel: { fontSize: 10, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
   activityInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: borderRadius.sm,
+    backgroundColor: withAlpha('#ffffff', 0.04), borderRadius: borderRadius.sm,
     padding: spacing.xs, fontSize: 14, color: colors.text.primary,
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   chip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
-  chipActive: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: 'rgba(74,222,128,0.4)' },
+  chipActive: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
   chipText: { fontSize: 13, color: colors.text.muted },
   chipTextActive: { color: chrome.brand, fontWeight: '500' },
   observationCard: {
-    borderWidth: 1, borderColor: 'rgba(245,158,11,0.15)', borderRadius: borderRadius.lg,
+    borderWidth: 1, borderColor: semantic.attentionBorder, borderRadius: borderRadius.lg,
     padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
   },
   addBtn: { marginTop: spacing.xs },
@@ -799,7 +799,7 @@ function buildStyles(colors, isDark) {
   photoImage: { width: 80, height: 80, borderRadius: borderRadius.md },
   photoRemove: {
     position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
-    backgroundColor: 'rgba(248,113,113,0.9)', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center',
   },
   photoActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
   photoBtn: {

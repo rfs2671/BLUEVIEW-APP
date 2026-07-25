@@ -33,7 +33,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
 
 // Icon mapping for dynamic logbook types from API
@@ -481,7 +481,7 @@ export default function LogBooksScreen() {
 }
 
 function buildStyles(colors, isDark) {
-  const divider = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.06)';
+  const divider = isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.06);
 
   return StyleSheet.create({
     container: { flex: 1 },
@@ -541,18 +541,18 @@ function buildStyles(colors, isDark) {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
       borderRadius: borderRadius.md,
       borderWidth: 1, borderColor: colors.border.medium,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)',
+      backgroundColor: isDark ? withAlpha('#ffffff', 0.05) : withAlpha('#000000', 0.04),
     },
     toggleBtnActive: {
-      backgroundColor: 'rgba(245, 158, 11, 0.2)',
-      borderColor: 'rgba(245, 158, 11, 0.5)',
+      backgroundColor: semantic.attentionBg,
+      borderColor: semantic.attentionBorder,
     },
     toggleBtnText: { fontSize: 12, fontWeight: '600', color: colors.text.muted },
     toggleBtnTextActive: { color: '#f59e0b' },
 
     notifCard: {
       marginBottom: spacing.md, padding: spacing.md,
-      backgroundColor: 'rgba(245, 158, 11, 0.08)', borderColor: 'rgba(245, 158, 11, 0.25)',
+      backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder,
     },
     notifHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
     notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
@@ -584,9 +584,9 @@ function buildStyles(colors, isDark) {
       flexDirection: 'row', alignItems: 'center', gap: 4,
       paddingHorizontal: spacing.sm, paddingVertical: 3, borderRadius: borderRadius.full,
     },
-    badgeSubmitted: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
-    badgeDraft: { backgroundColor: 'rgba(251, 191, 36, 0.15)' },
-    badgePending: { backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
+    badgeSubmitted: { backgroundColor: semantic.verifiedBg },
+    badgeDraft: { backgroundColor: semantic.attentionBg },
+    badgePending: { backgroundColor: isDark ? withAlpha('#ffffff', 0.06) : withAlpha('#000000', 0.04) },
     badgeText: { fontSize: 11, fontWeight: '500' },
     badgeTextSubmitted: { color: semantic.verified },
     badgeTextDraft: { color: '#fbbf24' },
@@ -600,7 +600,7 @@ function buildStyles(colors, isDark) {
     summaryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     summaryBar: {
       flex: 1, height: 6,
-      backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
+      backgroundColor: isDark ? withAlpha('#ffffff', 0.08) : withAlpha('#000000', 0.06),
       borderRadius: 3, overflow: 'hidden',
     },
     summaryBarFill: { height: '100%', backgroundColor: semantic.verified, borderRadius: 3 },

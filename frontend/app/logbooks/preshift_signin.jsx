@@ -17,7 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 /**
  * EMPTY_WORKER now includes all fields that come from a worker's sign-in record.
@@ -486,7 +486,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: spacing.sm,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: withAlpha('#ffffff', 0.05),
     gap: spacing.md,
   },
   fieldLabel: { flex: 1, fontSize: 13, color: colors.text.secondary },
@@ -495,16 +495,16 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text.primary,
     padding: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.sm,
   },
 
   // Worker card layout — one card per worker instead of a flat table row
   workerCard: {
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: withAlpha('#ffffff', 0.03),
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.07)',
+    borderColor: withAlpha('#ffffff', 0.07),
     padding: spacing.md,
     marginBottom: spacing.sm,
   },
@@ -539,7 +539,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: spacing.xs,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    borderBottomColor: withAlpha('#ffffff', 0.04),
     gap: spacing.sm,
     minHeight: 36,
   },
@@ -565,7 +565,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text.primary,
     padding: spacing.xs,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.sm,
   },
 
@@ -579,7 +579,7 @@ const styles = StyleSheet.create({
   sigImage: {
     width: 120,
     height: 36,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     borderRadius: borderRadius.sm,
   },
   sigSignedBadge: {
@@ -614,13 +614,13 @@ const styles = StyleSheet.create({
     height: 26,
     borderRadius: borderRadius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
+    borderColor: withAlpha('#ffffff', 0.1),
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
-  ynBtnYes: { backgroundColor: 'rgba(74,222,128,0.15)', borderColor: semantic.verified },
-  ynBtnNo: { backgroundColor: 'rgba(239,68,68,0.15)', borderColor: semantic.attention },
+  ynBtnYes: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verified },
+  ynBtnNo: { backgroundColor: semantic.criticalBg, borderColor: semantic.attention },
   ynText: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
   ynTextYes: { color: semantic.verified },
   ynTextNo: { color: semantic.attention },
@@ -633,7 +633,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.md,
     paddingTop: spacing.md,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.1)',
+    borderTopColor: withAlpha('#ffffff', 0.1),
   },
   totalLabel: { fontSize: 11, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
   totalValue: { fontSize: 22, fontWeight: '800', color: colors.text.primary },

@@ -3,7 +3,7 @@ import { Modal, View, Text, Pressable, StyleSheet, Platform } from 'react-native
 import { AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
-import { semantic } from '../styles/semanticColors';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 /**
  * Themed confirm dialog for destructive actions.
@@ -42,7 +42,7 @@ export default function ConfirmDialog({
       <View style={styles.backdrop}>
         <View style={[styles.card, { backgroundColor: isDark ? '#0f172a' : '#ffffff', borderColor: isDark ? '#1e293b' : '#e2e8f0' }]}>
           <View style={styles.header}>
-            <View style={[styles.iconWrap, { backgroundColor: destructive ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)' }]}>
+            <View style={[styles.iconWrap, { backgroundColor: destructive ? semantic.criticalBg : 'rgba(59,130,246,0.15)' }]}>
               <AlertTriangle size={22} strokeWidth={2} color={destructive ? semantic.critical : '#3b82f6'} />
             </View>
             <Text style={[styles.title, { color: colors.text.primary }]}>{title}</Text>
@@ -94,7 +94,7 @@ export default function ConfirmDialog({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(2, 6, 23, 0.65)',
+    backgroundColor: withAlpha('#020617', 0.65),
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.lg,

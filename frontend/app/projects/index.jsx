@@ -35,7 +35,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic } from '../../src/styles/semanticColors';
+import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
 import ProjectsTable from '../../src/components/ProjectsTable';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -279,7 +279,7 @@ export default function ProjectsScreen() {
                         )}
                         {project.project_class && project.project_class !== 'regular' && (
                           <View style={[s.classificationBadge, {
-                            backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : 'rgba(245,158,11,0.2)',
+                            backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : semantic.attentionBg,
                           }]}>
                             <Text style={[s.classificationText, {
                               color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',
@@ -315,7 +315,7 @@ export default function ProjectsScreen() {
                       corner above the ring's arc. */}
                   <Pressable
                     onPress={() => handleDeleteProject(getProjectId(project))}
-                    style={({ hovered }) => [s.trashCorner, hovered && { backgroundColor: 'rgba(239,68,68,0.12)' }]}
+                    style={({ hovered }) => [s.trashCorner, hovered && { backgroundColor: semantic.criticalBg }]}
                     hitSlop={10}
                   >
                     {({ hovered }) => (
@@ -429,7 +429,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -564,11 +564,11 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.full,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: withAlpha('#ffffff', 0.05),
     flexShrink: 0,
   },
   statusActive: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    backgroundColor: semantic.verifiedBg,
   },
   statusText: {
     fontSize: 10,
@@ -581,7 +581,7 @@ function buildStyles(colors, isDark) {
   deleteButton: {
     padding: spacing.sm,
     borderRadius: borderRadius.md,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    backgroundColor: semantic.criticalBg,
     flexShrink: 0,
   },
   emptyState: {
@@ -602,7 +602,7 @@ function buildStyles(colors, isDark) {
     ...StyleSheet.absoluteFillObject,
     // Darker scrim so background content reads as clearly "behind" the
     // modal rather than bleeding through it.
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: withAlpha('#000000', 0.75),
   },
   modalContent: {
     flex: 1,
@@ -647,8 +647,8 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.md,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: withAlpha('#ffffff', 0.1),
+    backgroundColor: withAlpha('#ffffff', 0.03),
   },
   classPickerActive: {
     borderColor: colors.primary || '#3b82f6',
@@ -678,13 +678,13 @@ function buildStyles(colors, isDark) {
     height: 22,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.15)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: withAlpha('#ffffff', 0.15),
+    backgroundColor: withAlpha('#ffffff', 0.04),
     alignItems: 'center',
     justifyContent: 'center',
   },
   toggleBoxActive: {
-    backgroundColor: 'rgba(74,222,128,0.1)',
+    backgroundColor: semantic.verifiedBg,
     borderColor: '#4ade80',
   },
   toggleLabel: {
@@ -699,7 +699,7 @@ function buildStyles(colors, isDark) {
     flexShrink: 0,
   },
   classificationMajor: {
-    backgroundColor: 'rgba(245,158,11,0.15)',
+    backgroundColor: withAlpha('#94a3b8', 0.15),
   },
   classificationText: {
     fontSize: 10,

@@ -11,7 +11,7 @@ import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
 
@@ -116,8 +116,8 @@ const errorStyles = StyleSheet.create({
     fontWeight: '600',
   },
   detailBox: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: withAlpha('#ffffff', 0.06),
+    borderColor: withAlpha('#ffffff', 0.15),
     borderWidth: 1,
     borderRadius: 10,
     padding: 12,

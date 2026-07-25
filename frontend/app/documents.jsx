@@ -29,7 +29,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
-import { semantic } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
@@ -435,7 +435,7 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    borderBottomColor: withAlpha('#ffffff', 0.08),
   },
   headerLeft: {
     flexDirection: 'row',
@@ -492,7 +492,7 @@ function buildStyles(colors, isDark) {
   dropdownItem: {
     padding: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
+    borderBottomColor: withAlpha('#ffffff', 0.05),
   },
   dropdownItemActive: { backgroundColor: 'rgba(59, 130, 246, 0.1)' },
   dropdownItemText: { fontSize: 15, color: colors.text.primary },
