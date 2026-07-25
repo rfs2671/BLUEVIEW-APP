@@ -599,6 +599,11 @@ export default function DOBLogsScreen() {
               {/* Inspector unit */}
               {log.inspector_unit && <DetailRow label="Inspector Unit" value={log.inspector_unit} colors={colors} />}
 
+              {/* Assigned DOB unit — eabe-havv `unit` (e.g. "OBM"). A unit
+                  code, not a named inspector. Hidden when absent (311 records,
+                  or DOB complaints not yet re-polled after this change). */}
+              {log.complaint_unit && <DetailRow label="ASSIGNED TO" value={log.complaint_unit} colors={colors} />}
+
               {/* Linked violation card */}
               {hasLinkedViolation && (
                 <Pressable onPress={() => {
@@ -613,9 +618,11 @@ export default function DOBLogsScreen() {
                 </Pressable>
               )}
 
-              {/* DOB link */}
-              {log.dob_link && log.dob_link.trim().length > 0 && (
-                <GlassButton title={log.dob_link.includes('dobnow') ? 'View on DOB NOW' : 'View on DOB BIS'} icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
+              {/* DOB link — only the working BIS complaint page. 311 records
+                  carry a dead portal.311 link (NYC 311 exposes no public per-SR
+                  URL), so render no button for them rather than a dead one. */}
+              {log.dob_link && log.dob_link.includes('bisweb.nyc.gov') && (
+                <GlassButton title="View on DOB BIS" icon={<ExternalLink size={16} strokeWidth={1.5} color={colors.text.primary} />} onPress={() => Linking.openURL(log.dob_link)} style={s.dobLinkBtn} />
               )}
             </View>
           )}

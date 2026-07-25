@@ -16452,6 +16452,11 @@ def _extract_complaint_fields(rec: dict) -> dict:
     fields["complaint_number"] = rec.get("complaint_number") or None
     fields["complaint_type"] = rec.get("complaint_category") or None
     fields["complaint_status"] = rec.get("status") or None
+    # eabe-havv `unit` = the DOB unit assigned to the complaint (e.g. "OBM").
+    # This is a UNIT code, not a named inspector — surfaced as "ASSIGNED TO"
+    # (labeled as the unit, never implying a person). 311 records don't reach
+    # this extractor, so they carry no complaint_unit.
+    fields["complaint_unit"] = rec.get("unit") or None
     # V2.3.A3 PR #9 — normalize MDY → ISO at ingestion time. Stage 1.5
     # Query B found 50 production complaints stored as MDY via this
     # path. T3.B: closed_date also normalized for symmetry with the
@@ -16844,8 +16849,24 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         # Fallback: BIN-scoped overview.
         return _bis_bin_overview_url(bin_val)
 
-    # ── Complaints: no public deep-link exists; BIN list view. ────────
+    # ── Complaints ────────────────────────────────────────────────────
     if record_type == "complaint":
+        # DOB Complaints Received (eabe-havv) carry a real `complaint_number`
+        # that deep-links to the BIS per-complaint page — verified live to work
+        # for the modern alphanumeric "3A…" numbers, not just legacy numeric
+        # ones. 311 Service Requests (erm2-nwe9) carry only a `unique_key`, for
+        # which NYC 311 exposes no public per-SR URL — emit no link. (In
+        # practice the 311 poller builds its own link inline and never reaches
+        # this branch; the unique_key guard is defensive.)
+        if rec.get("unique_key"):
+            return ""
+        comp_num = str(rec.get("complaint_number") or "").strip()
+        if comp_num:
+            return (
+                "https://a810-bisweb.nyc.gov/bisweb/OverviewForComplaintServlet"
+                f"?complaintno={quote_plus(comp_num)}"
+            )
+        # eabe-havv record missing its number → BIN-scoped list view fallback.
         if bin_val:
             return (
                 "https://a810-bisweb.nyc.gov/bisweb/ComplaintsByAddressServlet"
