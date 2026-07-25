@@ -281,7 +281,10 @@ export default function ProjectDetailScreen() {
     setLoadingFiles(true);
     try {
       const result = await dropboxAPI.getFiles(projectId);
-      setDropboxFiles(result.files || []);
+      // The endpoint returns a BARE ARRAY (not {files:[...]}); reading
+      // result.files left this [] on every project. Match the Array.isArray
+      // pattern the other file consumers use.
+      setDropboxFiles(Array.isArray(result) ? result : []);
     } catch (error) {
       console.error('Failed to fetch Dropbox files:', error);
       setDropboxFiles([]);

@@ -94,7 +94,10 @@ export default function SiteDocumentsScreen() {
     setLoading(true);
     try {
       const result = await dropboxAPI.getProjectFiles(siteProject.id);
-      setFiles(result.files || []);
+      // The endpoint returns a BARE ARRAY (not {files:[...]}); reading
+      // result.files left this [] always. Match the Array.isArray pattern
+      // the other file consumers use.
+      setFiles(Array.isArray(result) ? result : []);
     } catch (error) {
       console.error('Failed to fetch documents:', error);
       toast.error('Error', 'Could not load documents');
