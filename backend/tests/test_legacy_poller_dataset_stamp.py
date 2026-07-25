@@ -57,7 +57,10 @@ EXPECTED_SLUGS = {
     "3h2n-5cm9",   # BIS legacy violations
     "6bgk-3dad",   # ECB / OATH violations
     "eabe-havv",   # DOB complaints received
-    "p937-wjvj",   # DOB inspections
+    # "p937-wjvj" (DOB "inspections") REMOVED (COMMIT 1, 2026-07-25): it was
+    # DOHMH Rodent Inspection data mislabeled as DOB inspections. The ingest
+    # endpoints were removed, so _query_dob_apis no longer polls it. Absence
+    # is pinned by test_p937_rodent_ingest_removed below.
     "rbx6-tga4",   # DOB NOW Build permits
     "dm9a-ab7w",   # DOB NOW Electrical permits
     "ipu4-2q9a",   # BIS legacy permits
@@ -174,6 +177,40 @@ class TestLegacyPollerDatasetStamp(unittest.TestCase):
                 f"record carries unknown _dataset slug "
                 f"{rec.get('_dataset')!r}; expected one of EXPECTED_SLUGS",
             )
+
+    def test_p937_rodent_ingest_removed(self):
+        """COMMIT 1 (2026-07-25) — assert the p937-wjvj (DOHMH Rodent
+        Inspection) dataset is NO LONGER polled by _query_dob_apis. It was
+        DOHMH rat-inspection data mislabeled as DOB inspections; the ingest
+        endpoints were removed. Pins the ABSENCE so a future re-add is caught
+        (flip of the former EXPECTED_SLUGS pin)."""
+        from server import _query_dob_apis
+
+        router = _ResponseRouter()
+
+        def _http_factory(*args, **kwargs):
+            return _StubAsyncContextManager(router)
+
+        with patch("server.ServerHttpClient", _http_factory):
+            records = _run(_query_dob_apis(
+                nyc_bin="1234567",
+                project_address="100 Main St, BROOKLYN, NY 11221",
+            ))
+
+        # No endpoint URL was polled for the rodent dataset.
+        self.assertFalse(
+            any("p937-wjvj" in (c.get("url") or "") for c in router.calls),
+            "p937-wjvj (rodent) endpoint was polled — ingest was removed in "
+            "COMMIT 1 and must not return.",
+        )
+        # No record carries the rodent dataset stamp, and record_type=inspection
+        # (produced ONLY by the p937-wjvj ingest) is gone.
+        self.assertNotIn("p937-wjvj", {r.get("_dataset") for r in records})
+        self.assertNotIn(
+            "inspection", {r.get("_record_type") for r in records},
+            "record_type=inspection is produced only by the p937-wjvj ingest; "
+            "it must be absent after removal.",
+        )
 
     def test_run_dob_sync_persists_dataset_field_on_dob_logs(self):
         """Pin Change 3 at the dob_logs write layer.

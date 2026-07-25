@@ -15073,31 +15073,17 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
             "id_field": "job__",
         })
     
-    # ── DOB INSPECTIONS (p937-wjvj) ──
-    # Active projects easily have 100+ inspections over a year — the
-    # old $limit=50 was truncating older records off the end of the
-    # DESC sort, which is how April inspections disappear when there
-    # have been 50 more-recent inspections since. Bump to 500 and
-    # add an address-based fallback so BIN churn doesn't hide data.
-    if bin_usable:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/p937-wjvj.json",
-            "params": {"bin": nyc_bin, "$limit": "500", "$order": "inspection_date DESC"},
-            "record_type": "inspection",
-            "id_field": "job_ticket_or_work_order_id",
-        })
-    if house_num and street_name:
-        endpoints.append({
-            "url": "https://data.cityofnewyork.us/resource/p937-wjvj.json",
-            "params": {
-                "house_number": house_num,
-                "$where": f"upper(street_name) like '%{street_name}%'",
-                "$limit": "500",
-                "$order": "inspection_date DESC",
-            },
-            "record_type": "inspection",
-            "id_field": "job_ticket_or_work_order_id",
-        })
+    # ── DOB INSPECTIONS — INGEST REMOVED (COMMIT 1, 2026-07-25) ──
+    # The p937-wjvj dataset ingested here as record_type="inspection"
+    # is NYC DOHMH *Rodent* Inspection data (rat inspections), NOT DOB
+    # building inspections — a dataset mislabel. Its "PC" (Pest Control)
+    # job prefix was also fabricated into a "Plumbing" trade category by
+    # the (now-removed) DOB_JOB_PREFIX_CATEGORY decoder. Ingest removed
+    # so no new rodent rows enter dob_logs; existing rows are deleted
+    # separately. NOTE: the statistical engine still queries p937-wjvj
+    # LIVE via DATASET_DOB_INSPECTIONS (peer dimension, borough-sweep
+    # trigger, inspection prediction, calibration) — deferred to the
+    # score rebuild; see docs/audits/ follow-ups.
 
     # ── DOB COMPLAINTS RECEIVED (eabe-havv) - Primary DOB complaint source ──
     if bin_usable:
@@ -15238,25 +15224,6 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         # Build a dedup key from the record's unique ID
                         id_field = ep["id_field"]
                         raw_id = str(rec.get(id_field, "")).strip()
-
-                        # Inspections with empty job_ticket_or_work_order_id
-                        # are dropped by a pure raw_id gate — and there are
-                        # real ones with blank tickets in p937-wjvj,
-                        # especially older quick-close records. Build a
-                        # composite fallback (job + date + result) so we
-                        # don't silently lose attestations that actually
-                        # happened.
-                        if not raw_id and ep["record_type"] == "inspection":
-                            composite = "|".join([
-                                str(rec.get("job_id") or rec.get("job_filing_number") or rec.get("job__") or ""),
-                                str(rec.get("inspection_date") or rec.get("approved_date") or ""),
-                                str(rec.get("inspection_type") or rec.get("job_progress") or ""),
-                                str(rec.get("result") or ""),
-                                str(rec.get("bin") or rec.get("bin__") or ""),
-                            ])
-                            if composite.strip("|"):
-                                raw_id = f"composite:{composite}"
-                                rec["_id_field"] = "_composite_inspection_key"
 
                         if not raw_id:
                             continue
@@ -16547,38 +16514,12 @@ def _extract_complaint_fields(rec: dict) -> dict:
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
 
-# DOB inspection job_id prefix → human-readable work category.
-# The p937-wjvj dataset's `inspection_type` is phase-only (Initial / Re-inspection),
-# the actual work category is encoded in the job_id letter prefix.
-DOB_JOB_PREFIX_CATEGORY = {
-    "PC": "Plumbing",
-    "PL": "Plumbing",
-    "EL": "Electrical",
-    "ME": "Mechanical",
-    "SP": "Sprinkler",
-    "SD": "Standpipe",
-    "EA": "Elevator",
-    "EW": "Earthwork",
-    "FS": "Fuel Storage",
-    "FB": "Fuel Burning",
-    "BL": "Boiler",
-    "OT": "Other / General Construction",
-    "CC": "Curb Cut",
-    "SG": "Sign",
-    "FA": "Fire Alarm",
-    "FP": "Fire Suppression",
-    "AN": "Antenna",
-    "SF": "Scaffold",
-    "SH": "Sidewalk Shed",
-    "FN": "Fence",
-    "DM": "Demolition",
-    "EQ": "Construction Equipment",
-    "CH": "Chute",
-    "NB": "New Building",
-    "A1": "Alteration Type 1",
-    "A2": "Alteration Type 2",
-    "A3": "Alteration Type 3",
-}
+# DOB_JOB_PREFIX_CATEGORY / _decode_job_prefix REMOVED (COMMIT 1, 2026-07-25).
+# The map decoded a job_id's 2-letter prefix into a trade category, but its
+# only live caller was the p937-wjvj (rodent) inspection ingest, where the
+# "PC" (Pest Control) prefix was fabricated into "Plumbing". Real DOB job
+# numbers never hit the map (trade lives in a separate `work_type` field, not
+# a number prefix), so with rodent ingest gone this had zero valid callers.
 
 
 def _base_job_number(job_id: str) -> str:
@@ -16606,46 +16547,22 @@ def _base_job_number(job_id: str) -> str:
     return s
 
 
-def _decode_job_prefix(job_id: str) -> str:
-    """Return a human-readable work category for a DOB job_id prefix, or ''."""
-    if not job_id:
-        return ""
-    s = str(job_id).strip().upper()
-    # DOB-NOW jobs often look like B00714447-I1 or M01234567-PC1 — category may
-    # follow the dash. Try both positions.
-    import re as _re
-    m = _re.search(r'-([A-Z]{2})\d*$', s)
-    if m and m.group(1) in DOB_JOB_PREFIX_CATEGORY:
-        return DOB_JOB_PREFIX_CATEGORY[m.group(1)]
-    # Leading two letters (legacy BIS jobs like PC6530234)
-    if len(s) >= 2 and s[:2] in DOB_JOB_PREFIX_CATEGORY:
-        return DOB_JOB_PREFIX_CATEGORY[s[:2]]
-    return ""
-
-
 def _extract_inspection_fields(rec: dict) -> dict:
-    """Extract structured inspection fields from DOB Inspections dataset (p937-wjvj).
-
-    The dataset's `inspection_type` is phase-only ("Initial" / "Re-inspection").
-    We enrich it with the work category decoded from the job_id prefix so the
-    UI shows "Plumbing — Initial" instead of just "Initial".
+    """Extract structured inspection fields. DEAD PATH — the inspection
+    (p937-wjvj rodent) ingest was removed in COMMIT 1; this is retained only
+    because the ingest dispatch still references it (harmless with no data,
+    separate cleanup). The job-prefix → trade-category enrichment was removed
+    with the rodent ingest: it fabricated "Plumbing" from the p937-wjvj "PC"
+    (Pest Control) prefix via the deleted DOB_JOB_PREFIX_CATEGORY decoder.
     """
     fields = {}
     fields["inspection_date"] = rec.get("inspection_date") or rec.get("approved_date") or None
 
     raw_phase = rec.get("inspection_type") or rec.get("inspection_category") or rec.get("job_progress") or None
     job_id = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or rec.get("job__") or None
-    category = _decode_job_prefix(str(job_id or ""))
 
-    # Compose a richer inspection_type string when we can.
-    if raw_phase and category:
-        composed = f"{category} — {str(raw_phase).strip()}"
-    elif category:
-        composed = f"{category} Inspection"
-    else:
-        composed = raw_phase
-    fields["inspection_type"] = composed
-    fields["inspection_category"] = category or None
+    fields["inspection_type"] = str(raw_phase).strip() if raw_phase else None
+    fields["inspection_category"] = None
     fields["inspection_phase"] = str(raw_phase).strip() if raw_phase else None
 
     fields["inspection_result"] = rec.get("result") or rec.get("inspection_result") or None
@@ -16746,18 +16663,13 @@ def _generate_summary(rec: dict, record_type: str) -> str:
         return summary
  
     if record_type == "inspection":
+        # DEAD PATH — inspection (p937-wjvj rodent) ingest removed in COMMIT 1.
+        # The job-prefix → trade-category enrichment ("Plumbing …") was removed
+        # with the decoder; phase-only label retained for the harmless dead path.
         phase = rec.get("inspection_type") or rec.get("job_progress") or ""
         job = rec.get("job_id") or rec.get("job_filing_number") or rec.get("job_number") or ""
-        category = _decode_job_prefix(str(job))
         result = rec.get("result") or rec.get("inspection_result") or "Pending"
-        if category and phase:
-            label = f"{category} — {phase} Inspection"
-        elif category:
-            label = f"{category} Inspection"
-        elif phase:
-            label = f"{phase} Inspection"
-        else:
-            label = "Inspection"
+        label = f"{phase} Inspection" if phase else "Inspection"
         job_str = f" (Job {job})" if job else ""
         return f"{label}{job_str} — Result: {result}"
 
@@ -18161,41 +18073,11 @@ async def get_dob_logs(
                 except Exception:
                     pass
 
-            # Inspection records written before the job-prefix decoder landed
-            # stored inspection_type as phase-only ("Initial"). Re-enrich on
-            # read from the raw DOB record so existing rows show the work
-            # category ("Plumbing — Initial") without a migration.
-            if rtype == "inspection":
-                phase = log.get("inspection_type") or ""
-                if raw and ("—" not in phase):
-                    job_id = (
-                        log.get("linked_job_number")
-                        or raw.get("job_id")
-                        or raw.get("job_filing_number")
-                        or raw.get("job_number")
-                        or ""
-                    )
-                    category = _decode_job_prefix(str(job_id))
-                    raw_phase = (
-                        raw.get("inspection_type")
-                        or raw.get("job_progress")
-                        or phase
-                    )
-                    if category and raw_phase:
-                        log["inspection_type"] = f"{category} — {raw_phase}"
-                    elif category:
-                        log["inspection_type"] = f"{category} Inspection"
-                    # Regenerate summary so the card text reflects the category
-                    result = raw.get("result") or log.get("inspection_result") or "Pending"
-                    label_phase = raw_phase or "General"
-                    if category and raw_phase:
-                        label = f"{category} — {raw_phase} Inspection"
-                    elif category:
-                        label = f"{category} Inspection"
-                    else:
-                        label = f"{label_phase} Inspection"
-                    job_str = f" (Job {job_id})" if job_id else ""
-                    log["ai_summary"] = f"{label}{job_str} — Result: {result}"
+            # Inspection read-time re-enrichment REMOVED (COMMIT 1, 2026-07-25).
+            # It re-decoded the job_id prefix into a trade category ("Plumbing —
+            # Initial") via the now-deleted DOB_JOB_PREFIX_CATEGORY decoder —
+            # the "PC" (Pest Control) → "Plumbing" fabrication on rodent data.
+            # Dead now that the p937-wjvj inspection ingest is gone.
             # MR.14 commit 3 — server-side render via templates.
             # signal_kind drives the per-template renderer; output
             # is added to the dict before Pydantic serialization so
