@@ -28,8 +28,11 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
+import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import HeaderBrand from '../src/components/HeaderBrand';
+import { useIsDesktop } from '../src/hooks/useIsDesktop';
+import { semantic, chrome, border, surface, text } from '../src/styles/semanticColors';
 
 const adminActions = [
   { title: 'User Mgmt', subtitle: 'CPs & workers', path: '/admin/users', icon: UserCog },
@@ -66,17 +69,83 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
   );
 };
 
+// ── Desktop portfolio-triage surface (RN-Web >=1024). Layout only; colors
+//    come from semantic tokens inline so they stay theme-aware. Mobile never
+//    renders any of this. ──────────────────────────────────────────────────
+const deskStyles = StyleSheet.create({
+  sectionLabel: { ...typography.label, marginBottom: spacing.sm, marginTop: spacing.md },
+  rollupRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginBottom: spacing.lg },
+  rollupCard: {
+    flex: 1, minWidth: 190, borderWidth: 1, borderRadius: borderRadius.lg,
+    paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
+  },
+  rollupNumber: { fontSize: 40, fontWeight: '300', letterSpacing: -1 },
+  rollupLabel: { fontSize: typography.sizes.sm, marginTop: spacing.xs },
+  adminRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  adminRowTile: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 40,
+    minWidth: 200, paddingHorizontal: spacing.md, borderWidth: 1,
+    borderRadius: borderRadius.md,
+  },
+  adminRowLabel: { fontSize: typography.sizes.sm, fontWeight: '500' },
+});
+
+// One exception count. Zero (or loading) renders neutral — a 0 is good news on
+// an exception surface, so it must not be painted with a state color.
+function RollupCard({ value, label, token, loading }) {
+  const isZero = !loading && (value == null || value === 0);
+  const numberColor = loading || isZero ? semantic.neutral : token;
+  return (
+    <View style={[deskStyles.rollupCard, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+      <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
+        {loading ? '—' : (value ?? 0)}
+      </Text>
+      <Text style={[deskStyles.rollupLabel, { color: text.secondary }]}>{label}</Text>
+    </View>
+  );
+}
+
+// Compressed ~40px admin-tool row item: icon left of label (not the 250px
+// stacked card the mobile home uses). Destinations are the same adminActions.
+function AdminRowTile({ action, onPress }) {
+  const Icon = action.icon;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="link"
+      accessibilityLabel={action.title}
+      style={({ hovered }) => [
+        deskStyles.adminRowTile,
+        { backgroundColor: surface.glass, borderColor: border.subtle },
+        hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
+      ]}
+    >
+      <Icon size={16} strokeWidth={1.5} color={chrome.icon} />
+      <Text style={[deskStyles.adminRowLabel, { color: text.primary }]} numberOfLines={1}>
+        {action.title}
+      </Text>
+    </Pressable>
+  );
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isPending, isLoading: authLoading } = useAuth();
   const { isDark, colors } = useTheme();
   const s = buildStyles(colors, isDark);
   const toast = useToast();
+  // Desktop (RN-Web >=1024) renders the portfolio-triage layout below; mobile
+  // renders exactly what it does today. Called unconditionally (hooks rule).
+  const isDesktop = useIsDesktop();
 
   const [loading, setLoading] = useState(true);
   const [workers, setWorkers] = useState([]);
   const [projects, setProjects] = useState([]);
   const [activeCheckIns, setActiveCheckIns] = useState([]);
+  // Portfolio exception totals from GET /api/projects/dob-summary (ONE call,
+  // no N+1). Desktop-only; the fetch is gated on isDesktop below.
+  const [dobTotals, setDobTotals] = useState(null);
+  const [dobLoading, setDobLoading] = useState(true);
 
   const [layoutReady, setLayoutReady] = useState(false);
 
@@ -113,6 +182,25 @@ export default function DashboardScreen() {
       fetchData();
     }
   }, [isAuthenticated, isPending]);
+
+  // Portfolio exception rollup — ONE GET /api/projects/dob-summary, desktop
+  // only. Degrades to muted "—" cards on failure; never blocks the page.
+  useEffect(() => {
+    if (!isDesktop || !isAuthenticated || isPending) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        setDobLoading(true);
+        const r = await apiClient.get('/api/projects/dob-summary');
+        if (!cancelled) setDobTotals(r?.data?.totals || null);
+      } catch (_e) {
+        if (!cancelled) setDobTotals(null);
+      } finally {
+        if (!cancelled) setDobLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isDesktop, isAuthenticated, isPending]);
 
   // Phase C1.3 — first-poll banner: AsyncStorage hydration on
   // mount. Hoisted alongside the other useEffects above the early
@@ -220,6 +308,45 @@ export default function DashboardScreen() {
   const tilePadding = spacing.lg * 2;
   const tileGap = spacing.sm;
   const tileWidth = Math.min((screenWidth - tilePadding - tileGap) / 2, 300);
+
+  // ── Desktop portfolio-triage layout (exceptions above the fold, admin
+  //    tools demoted below). No greeting, no date — an admin knows both. ──────
+  const renderDesktopDashboard = () => {
+    const t = dobTotals || {};
+    const ov = t.open_violations;
+    const pe = t.permits_expiring;
+    const oc = t.open_complaints;
+    // "Never synced" is derived from the projects list payload already
+    // fetched (no extra call); dob-summary does not carry it.
+    const neverSynced = projects.filter(p => !p.first_poll_completed_at).length;
+    const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+    return (
+      <>
+        <Text style={deskStyles.sectionLabel}>PORTFOLIO EXPOSURE</Text>
+        <View style={deskStyles.rollupRow}>
+          <RollupCard loading={dobLoading} value={ov} label="Open violations" token={semantic.criticalText} />
+          <RollupCard loading={dobLoading} value={pe} label="Permits expiring <30d" token={semantic.attention} />
+          <RollupCard loading={dobLoading} value={oc} label="Open complaints" token={semantic.attention} />
+          <RollupCard loading={loading} value={neverSynced} label="Never synced" token={semantic.neutral} />
+        </View>
+
+        {isAdmin ? (
+          <>
+            <Text style={deskStyles.sectionLabel}>ADMIN TOOLS</Text>
+            <View style={deskStyles.adminRow}>
+              {adminActions.map((action) => (
+                <AdminRowTile
+                  key={action.title}
+                  action={action}
+                  onPress={() => router.push(action.path)}
+                />
+              ))}
+            </View>
+          </>
+        ) : null}
+      </>
+    );
+  };
 
   // ── Shared admin tools block ────────────────────────────────────────────────
   const renderAdminTools = () => {
@@ -349,7 +476,12 @@ export default function DashboardScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {loading ? (
+          {isDesktop ? (
+            /* ══════════════════════════════════════════════════════════════
+               DESKTOP — portfolio triage (RN-Web >=1024). Mobile unaffected.
+               ══════════════════════════════════════════════════════════════ */
+            renderDesktopDashboard()
+          ) : loading ? (
             <DashboardSkeleton />
           ) : isDark ? (
             /* ══════════════════════════════════════════════════════════════
