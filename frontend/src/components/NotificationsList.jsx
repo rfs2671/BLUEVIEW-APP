@@ -36,7 +36,7 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
+  FlatList,
   Pressable,
   ActivityIndicator,
   RefreshControl,
@@ -184,7 +184,10 @@ export default function NotificationsList({
     );
   }
 
-  if (items.length === 0) {
+  // Inline preview short-circuits to a bare empty card. Full mode keeps its
+  // header + pull-to-refresh when empty by rendering the card as the
+  // FlatList's ListEmptyComponent instead (see below).
+  if (items.length === 0 && mode === 'inline') {
     return (
       <GlassCard style={styles.emptyCard}>
         <Bell size={20} color={colors.text.secondary} />
@@ -222,39 +225,52 @@ export default function NotificationsList({
 
   // ── Full mode ───────────────────────────────────────────────
 
+  // Full mode — FlatList owns the scroll. The unread toggle + mark-all-read
+  // row moves into ListHeaderComponent so it scrolls with the list (its prior
+  // behavior — it was never sticky); RefreshControl and the empty card carry
+  // over. Row component (NotificationItem) is unchanged.
   return (
-    <ScrollView
+    <FlatList
       style={styles.container}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }
-    >
-      <View style={styles.header}>
-        <Pressable
-          onPress={() => setUnreadOnly((u) => !u)}
-          style={styles.toggle}
-        >
-          <Text style={[styles.toggleText, { color: colors.text.primary }]}>
-            {unreadOnly ? 'Showing unread' : 'Showing all'}
-          </Text>
-        </Pressable>
-        <Pressable onPress={handleMarkAllRead} style={styles.markAll}>
-          <CheckCheck size={16} color={colors.text.secondary} />
-          <Text style={[styles.markAllText, { color: colors.text.secondary }]}>
-            Mark all read
-          </Text>
-        </Pressable>
-      </View>
-
-      {items.map((item) => (
+      data={items}
+      keyExtractor={(item) => String(item.id || item._id)}
+      renderItem={({ item }) => (
         <NotificationItem
-          key={item.id || item._id}
           item={item}
           colors={colors}
           onPress={() => handleMarkRead(item)}
         />
-      ))}
-    </ScrollView>
+      )}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+      }
+      ListHeaderComponent={
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => setUnreadOnly((u) => !u)}
+            style={styles.toggle}
+          >
+            <Text style={[styles.toggleText, { color: colors.text.primary }]}>
+              {unreadOnly ? 'Showing unread' : 'Showing all'}
+            </Text>
+          </Pressable>
+          <Pressable onPress={handleMarkAllRead} style={styles.markAll}>
+            <CheckCheck size={16} color={colors.text.secondary} />
+            <Text style={[styles.markAllText, { color: colors.text.secondary }]}>
+              Mark all read
+            </Text>
+          </Pressable>
+        </View>
+      }
+      ListEmptyComponent={
+        <GlassCard style={styles.emptyCard}>
+          <Bell size={20} color={colors.text.secondary} />
+          <Text style={[styles.emptyText, { color: colors.text.secondary }]}>
+            {unreadOnly ? 'No unread notifications' : 'No notifications yet'}
+          </Text>
+        </GlassCard>
+      }
+    />
   );
 }
 

@@ -31,6 +31,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  FlatList,
   Pressable,
   ActivityIndicator,
   RefreshControl,
@@ -678,11 +679,25 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
           />
         ) : null}
 
-        {/* Feed */}
-        <ScrollView
+        {/* Feed — FlatList owns the scroll (virtualized). Pagination that was
+            hand-rolled via onMomentumScrollEnd now uses onEndReached; the
+            RefreshControl and empty/footer states carry over unchanged. */}
+        <FlatList
           style={styles.feed}
           contentContainerStyle={styles.feedContent}
           showsVerticalScrollIndicator={false}
+          data={visibleLogs}
+          keyExtractor={(log) => String(log.id)}
+          renderItem={({ item: log }) => (
+            <SignalCard
+              log={log}
+              onMarkRead={handleMarkRead}
+              onViewRaw={setRawModalLog}
+              styles={styles}
+              colors={colors}
+              severityPalette={severityPalette}
+            />
+          )}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -690,52 +705,34 @@ export default function ActivityFeed({ projectId, onUnreadCountChange }) {
               tintColor={colors.text.muted}
             />
           }
-          onMomentumScrollEnd={(e) => {
-            const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
-            const padding = 80;
-            if (
-              hasMore &&
-              !loading &&
-              layoutMeasurement.height + contentOffset.y >= contentSize.height - padding
-            ) {
-              loadPage({ reset: false });
-            }
+          onEndReachedThreshold={0.3}
+          onEndReached={() => {
+            if (hasMore && !loading) loadPage({ reset: false });
           }}
-        >
-          {loading && visibleLogs.length === 0 ? (
-            <View style={styles.loadingState}>
-              <ActivityIndicator size="large" color={colors.primary} />
-            </View>
-          ) : visibleLogs.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Info size={28} color={colors.text.muted} />
-              <Text style={styles.emptyStateText}>{emptyStateMsg}</Text>
-            </View>
-          ) : (
-            <>
-              {visibleLogs.map((log) => (
-                <SignalCard
-                  key={log.id}
-                  log={log}
-                  onMarkRead={handleMarkRead}
-                  onViewRaw={setRawModalLog}
-                  styles={styles}
-                  colors={colors}
-                  severityPalette={severityPalette}
-                />
-              ))}
-              {hasMore ? (
-                <View style={styles.loadMoreRow}>
-                  {loading ? (
-                    <ActivityIndicator size="small" color={colors.text.muted} />
-                  ) : (
-                    <Text style={styles.loadMoreText}>Scroll for more…</Text>
-                  )}
-                </View>
-              ) : null}
-            </>
-          )}
-        </ScrollView>
+          ListEmptyComponent={
+            loading && visibleLogs.length === 0 ? (
+              <View style={styles.loadingState}>
+                <ActivityIndicator size="large" color={colors.primary} />
+              </View>
+            ) : (
+              <View style={styles.emptyState}>
+                <Info size={28} color={colors.text.muted} />
+                <Text style={styles.emptyStateText}>{emptyStateMsg}</Text>
+              </View>
+            )
+          }
+          ListFooterComponent={
+            hasMore ? (
+              <View style={styles.loadMoreRow}>
+                {loading ? (
+                  <ActivityIndicator size="small" color={colors.text.muted} />
+                ) : (
+                  <Text style={styles.loadMoreText}>Scroll for more…</Text>
+                )}
+              </View>
+            ) : null
+          }
+        />
       </View>
 
       {/* Mobile filter sheet */}

@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  FlatList,
   Pressable,
   ActivityIndicator,
   RefreshControl,
@@ -751,7 +752,22 @@ export default function DOBLogsScreen() {
           </View>
         </View>
 
-        <ScrollView style={s.scrollView} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}>
+        {/* FlatList owns the scroll (virtualizes the DOB log rows). The
+            title, nav cards, banners and Sync button move into
+            ListHeaderComponent so they stay accessible while the list scrolls;
+            the empty states become ListEmptyComponent. Row spacing that was
+            logsList's `gap` is preserved via ItemSeparatorComponent. */}
+        <FlatList
+          style={s.scrollView}
+          contentContainerStyle={s.scrollContent}
+          showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={fetchLogs} tintColor={colors.text.muted} />}
+          data={loading ? [] : filteredLogs}
+          keyExtractor={(item) => String(item.id)}
+          renderItem={({ item }) => renderLogCard(item)}
+          ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
+          ListHeaderComponent={
+            <>
           {/* Title */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
@@ -870,15 +886,14 @@ export default function DOBLogsScreen() {
           </Pressable>
           <Text style={s.totalText}>{total} total records</Text>
 
-          {/* Log cards — three distinct empty states so the screen
-                is never ambiguous between "still loading", "BIN not
-                configured", "BIN set but no DOB records", and "filter
-                happens to exclude everything". */}
-          {(() => {
+            </>
+          }
+          ListEmptyComponent={(() => {
+            // Rows render via data/renderItem above; this covers only the
+            // no-rows case (three distinct empty states so the screen is never
+            // ambiguous between "still loading", "BIN not configured", "BIN set
+            // but no DOB records", and "filter excludes everything").
             if (loading) return null; // RefreshControl / spinner covers this
-            if (filteredLogs.length > 0) {
-              return <View style={s.logsList}>{filteredLogs.map(renderLogCard)}</View>;
-            }
 
             // --- Empty states, most specific first ---
 
@@ -966,7 +981,7 @@ export default function DOBLogsScreen() {
               </GlassCard>
             );
           })()}
-        </ScrollView>
+        />
 
         {/* Config Modal */}
         <Modal visible={showConfigModal} transparent animationType="fade" onRequestClose={() => setShowConfigModal(false)}>
