@@ -4,6 +4,38 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-26 — OverviewByBinServlet: code was already clean; risk is stored data + doc drift
+
+**Finding.** A repoint of violation tier-3 links off the decommissioned
+`OverviewByBinServlet` was requested, but the builder was **already** clean: every
+BIN fallback (`_build_dob_link` violation/permit/job_status/inspection/final)
+routes through `_bis_bin_overview_url` → `PropertyProfileOverviewServlet?bin=`
+(the confirmed-live BIN profile), and there is **zero** `OverviewByBinServlet` URL
+construction in the deployed tree. The only residue was **stale docstring text**
+in `_build_dob_link` (three "→ BIS OverviewByBin" lines plus an outdated
+permit/job_status routing summary) — corrected this pass. `_bis_property_profile_link`
+does not exist. The `SourceInvariantTest` guard already forbade the dead URL; a
+functional guard (`test_no_record_type_emits_overviewbybin`) was added so no
+future branch can reintroduce it regardless of URL literal.
+
+**Why links can still LOOK dead (data, not code):** `dob_link` is written at
+ingest, but the dob-logs read path (`server.py` ~18085) rebuilds it from each
+row's `raw_record` on every read — so a stale stored `OverviewByBin` value is
+replaced with the live URL at read time **iff the row has a `raw_record`**. A row
+with no `raw_record` keeps its stale stored link. Remedy for those is a re-poll
+(`/projects/{id}/dob-sync`), not a code change. `backend/scripts/violation_link_check.py`
+reports, per record, stored-vs-freshly-built link and whether a `raw_record`
+exists (auto-heal) or is missing (genuinely stale).
+
+**Lesson — BIS legacy servlets are being retired mid-lifecycle.** DOB has quietly
+decommissioned `OverviewByBinServlet` (now BIS "Page not found") while
+`PropertyProfileOverviewServlet` stays live. BIS-based deep links therefore need
+**periodic** re-verification, not one-time confirmation; treat any BIS servlet as
+"confirmed as of <date>", and keep all BIN links flowing through the single
+`_bis_bin_overview_url` helper so a future swap is one edit.
+
+---
+
 ## 2026-07-26 — Permit / job_status links repointed to BIN property profile
 
 **Done.** DOB NOW permit/job_status filings had no public per-record URL (DOB NOW

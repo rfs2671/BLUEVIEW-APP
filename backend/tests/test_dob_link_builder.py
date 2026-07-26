@@ -158,6 +158,29 @@ class OtherFallbacksFixedTest(unittest.TestCase):
             server._build_dob_link({"job_filing_number": "M00855935-I1"}, "job_status"), "",
         )
 
+    def test_no_record_type_emits_overviewbybin(self):
+        """FIX #5 functional guard (complements SourceInvariant's source-text
+        check): no record type / tier may EVER emit the decommissioned
+        OverviewByBin servlet, whatever identifiers the record carries — so a
+        future edit that reintroduces it in any branch fails here, not just if
+        it happens to use the exact URL literal."""
+        recs = (
+            {},
+            {"bin": _BIN},
+            {"bin": _BIN, "isn_dob_bis_viol": "1234567", "number": "V0X"},
+            {"bin": _BIN, "ecb_violation_number": "35123456K"},
+            {"bin": _BIN, "job_filing_number": "B00123456-I1"},
+            {"bin": _BIN, "job__": "123456789", "doc__": "3"},
+            {"bin": _BIN, "complaint_number": "3A62074"},
+        )
+        for rtype in ("violation", "swo", "permit", "job_status",
+                      "inspection", "complaint", "cofo"):
+            for rec in recs:
+                self.assertNotIn(
+                    "OverviewByBin", server._build_dob_link(rec, rtype),
+                    f"{rtype} with {rec} emitted OverviewByBin",
+                )
+
     def test_unknown_type_final_fallback_uses_same_form(self):
         self.assertEqual(
             server._build_dob_link({"bin": _BIN}, "cofo"), _OVERVIEW,

@@ -16794,27 +16794,27 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
 
     Routing, by record type:
       - permit / job_status
-          DOB NOW job (borough-letter prefix) → Open Data w9ak-ipjd
-            filtered by job_filing_number
-          BIS legacy (numeric) → JobsQueryByNumberServlet with the
-            record's real doc number, zero-padded to 2 digits
-          No job → BIS OverviewByBin
-      - inspection
-          DOB NOW job → Open Data p937-wjvj filtered by job_id
-          Legacy numeric → JobsQueryByNumberServlet, doc 01
-          No job → BIS OverviewByBin
-      - violation / swo
+          Always → PropertyProfileOverviewServlet by BIN. DOB NOW filings
+          have no public per-record URL (login-walled SPA) and are not in
+          BIS; legacy BIS-numeric permits share the same BIN profile. No BIN
+          → no link.
+      - violation
           ecb_violation_number → ECBQueryByNumberServlet
-          isn + bin + number → ActionViolationDisplayServlet
-          Else → BIS OverviewByBin
+          isn + bin + number   → ActionViolationDisplayServlet
+          else                 → PropertyProfileOverviewServlet by BIN
+      - swo → ComplaintsByAddressServlet by BIN (else no link)
       - complaint
-          BIS has no complaint-number deep-link — fall back to the
-          complaints-by-BIN list view (unchanged).
+          complaint_number → OverviewForComplaintServlet; 311 unique_key →
+          no link; else → ComplaintsByAddressServlet by BIN
+      - inspection (ingest removed 2026-07-25; branch retained)
+          DOB NOW job_id → Open Data p937-wjvj; legacy →
+          JobsQueryByNumberServlet; else → PropertyProfileOverviewServlet
       - Fallback → PropertyProfileOverviewServlet by BIN
 
-    DOB NOW jobs must NOT be routed to BIS `JobsQueryByNumberServlet` —
-    per nyc.gov, "Jobs filed in DOB NOW: Build will not appear in BIS,"
-    which is the regression we're fixing.
+    Every BIN fallback routes through the single _bis_bin_overview_url helper
+    (PropertyProfileOverviewServlet?bin=), the confirmed-live building page.
+    The old OverviewByBinServlet form is decommissioned by DOB (BIS "Page not
+    found") and must not be reintroduced — SourceInvariantTest guards it.
     """
     bin_val = str(rec.get("bin") or rec.get("bin__") or "").strip()
     isn_val = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
