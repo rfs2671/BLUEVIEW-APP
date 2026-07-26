@@ -932,6 +932,18 @@ def get_today_range_est():
     today_end_utc = today_start_utc + timedelta(hours=24)
     return today_start_utc, today_end_utc
 
+def get_day_range_est(date_str):
+    """UTC start/end for the given 'YYYY-MM-DD' calendar day in Eastern Time.
+    Companion to get_today_range_est() for an explicit date; zoneinfo handles
+    EST (-5) vs EDT (-4) for that specific day. Use this instead of parsing the
+    date as UTC midnight, which buckets a late-evening Eastern check-in into the
+    next calendar day."""
+    from zoneinfo import ZoneInfo
+    eastern = ZoneInfo("America/New_York")
+    day_midnight_eastern = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=eastern)
+    day_start_utc = day_midnight_eastern.astimezone(timezone.utc)
+    return day_start_utc, day_start_utc + timedelta(hours=24)
+
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
 
@@ -9364,12 +9376,8 @@ async def get_all_checkins(
     if company_id:
         query["company_id"] = company_id
     if date:
-        # Parse date as Eastern Time day, convert to UTC range
-        from zoneinfo import ZoneInfo
-        eastern = ZoneInfo("America/New_York")
-        day_start_eastern = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=eastern)
-        day_start_utc = day_start_eastern.astimezone(timezone.utc)
-        day_end_utc = day_start_utc + timedelta(hours=24)
+        # Parse date as an Eastern Time day, convert to UTC range
+        day_start_utc, day_end_utc = get_day_range_est(date)
         query["check_in_time"] = {"$gte": day_start_utc, "$lt": day_end_utc}
     total = await db.checkins.count_documents(query)
     checkins = await db.checkins.find(query).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
@@ -11141,7 +11149,14 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
     
     total_workers = await db.workers.count_documents(query)
 
-    on_site_query = {**query, "status": "checked_in"}
+    # ON SITE = checked in AND within the Eastern-local "today" window, matching
+    # the per-project active tile (GET /checkins/project/{id}/active). Without the
+    # date bound this counted stale checked-in rows from prior days.
+    on_site_query = {
+        **query,
+        "status": "checked_in",
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
+    }
     unique_on_site = await db.checkins.distinct("worker_id", on_site_query)
     on_site_now = len(unique_on_site)
     
@@ -14168,8 +14183,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         "is_deleted": {"$ne": True},
     })
 
-    day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = get_day_range_est(date)
     checkins = await db.checkins.find({
         "project_id": project_id,
         "check_in_time": {"$gte": day_start, "$lt": day_end},
@@ -14719,8 +14733,7 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         "is_deleted": {"$ne": True},
     })
 
-    day_start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = get_day_range_est(date)
     checkin_count = await db.checkins.count_documents({
         "project_id": project_id,
         "check_in_time": {"$gte": day_start, "$lt": day_end},
@@ -18378,8 +18391,7 @@ async def check_and_send_reports():
                 "date": today,
                 "is_deleted": {"$ne": True},
             })
-            day_start = datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            day_end = day_start + timedelta(days=1)
+            day_start, day_end = get_day_range_est(today)
             has_checkins = await db.checkins.count_documents({
                 "project_id": project_id,
                 "check_in_time": {"$gte": day_start, "$lt": day_end},
@@ -19684,10 +19696,10 @@ async def _handle_who_on_site(
     company: Optional[str] = None,
 ) -> str:
     """Return formatted worker list on site. Optionally filter by trade or company."""
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
-        "check_in_time": {"$gte": today_start},
+        "check_in_time": {"$gte": today_start, "$lt": today_end},
         "status": "checked_in",
         "is_deleted": {"$ne": True},
     }).to_list(500)

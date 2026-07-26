@@ -397,7 +397,10 @@ export const checkinsAPI = {
   },
 
   getByDate: async (date) => {
-    const dateStr = date.toISOString().split('T')[0];
+    // Use the New York calendar date, not the UTC one — toISOString() rolls to
+    // the next day for any evening EDT time (e.g. 8:30pm EDT = 00:30 UTC), which
+    // asked the backend for the wrong day's check-ins. en-CA formats as YYYY-MM-DD.
+    const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(date);
     const response = await apiClient.get(`/api/checkins?date=${dateStr}`);
     return response.data;
   },

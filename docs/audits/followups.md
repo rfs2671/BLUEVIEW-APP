@@ -4,6 +4,24 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-25 — Check-in date handling fixed, but never tested via a real NFC tap
+
+**Done.** Bucketing check-ins by NYC-local day was fixed across all six date
+sites (4 backend UTC-midnight `strptime(...tzinfo=utc)` sites → `get_day_range_est`,
+frontend `getByDate` → NYC-local date, dashboard `on_site_now` → EST-today to
+match the project ON SITE tile). Verified against synthetic boundary records
+(8:30pm EDT rollover + early-EST lower boundary) via
+`backend/scripts/checkin_tz_verify.py`.
+
+**Deferred — physical device test required before customer reliance.** The full
+NFC-tap → kiosk write → display path has **never** been exercised on a real
+device; verification to date is synthetic records only. Per the
+device-test-before-production principle, run a real on-device check-in end to
+end before relying on the feature with a customer. Note: zero real check-ins
+exist on either live project today, so the write path is unproven in production.
+
+---
+
 ## 2026-07-25 — Rodent-inspection (p937-wjvj) removal: deferred statistical-engine scope
 
 **Context.** `p937-wjvj` is NYC **DOHMH Rodent Inspection** data (rat inspections),
