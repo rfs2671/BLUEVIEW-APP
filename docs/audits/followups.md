@@ -4,6 +4,36 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-26 — Permit / job_status links repointed to BIN property profile
+
+**Done.** DOB NOW permit/job_status filings had no public per-record URL (DOB NOW
+is a login-walled Angular SPA whose Job-Number search does not encode the job in
+the URL — confirmed by live fetch; its result URL is `…/Index.html#!/search`),
+and the old `data.cityofnewyork.us/w9ak-ipjd.html?job_filing_number=` link landed
+on a generic dataset page because Socrata's `.html` surface ignores the column
+filter. All permit/job_status now resolve to the SAME confirmed-working BIS BIN
+property profile used for the violation fallback
+(`PropertyProfileOverviewServlet?bin=`, via `_bis_bin_overview_url`); legacy
+BIS-numeric permits (previously `JobsQueryByNumberServlet`) share it too. No BIN
+→ no link.
+
+**Candidate to verify when BIS is reliably up: `JobsQueryByLocationServlet` for
+I1/inspection-suffix filings.** This per-location servlet was *proposed as a
+possible per-filing surface but never fetch-confirmed* — it did not appear as a
+tested/working destination in the link diagnostic. It was therefore NOT adopted;
+I1 filings fall back to the BIN property profile like the rest. If a live fetch
+(when BIS is not throwing its intermittent high-traffic / Access-Denied errors)
+returns a real per-filing page for a DOB NOW `…-I1` job, it could be adopted for
+that subset. Until fetch-confirmed, do not build it.
+
+Note: BIS (a810-bisweb) was intermittently Akamai Access-Denied during
+verification — `PropertyProfileOverviewServlet?bin=` loaded live (twice) while
+`JobsQueryByNumberServlet` and `OverviewByBinServlet?requestid=2&allbin=` both
+errored (the latter a genuine "Page not found", confirming that shape is dead —
+only `PropertyProfileOverviewServlet?bin=` is the working BIN form).
+
+---
+
 ## 2026-07-25 — Check-in date handling fixed, but never tested via a real NFC tap
 
 **Done.** Bucketing check-ins by NYC-local day was fixed across all six date

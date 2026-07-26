@@ -16817,16 +16817,8 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
     which is the regression we're fixing.
     """
     bin_val = str(rec.get("bin") or rec.get("bin__") or "").strip()
-    job_num = str(
-        rec.get("job__")
-        or rec.get("job_filing_number")
-        or rec.get("job_number")
-        or ""
-    ).strip()
     isn_val = str(rec.get("isn_dob_bis_viol") or rec.get("isn") or "").strip()
     ecb_num = str(rec.get("ecb_violation_number") or "").strip()
-
-    dob_now = _is_dob_now_job(job_num)
 
     # ── SWO: straight to the complaints-by-BIN list view ──────────────
     if record_type == "swo":
@@ -16888,35 +16880,26 @@ def _build_dob_link(rec: dict, record_type: str) -> str:
         return ""
 
     # ── Permits / job status ─────────────────────────────────────────
+    # job_status is a status facet of a permit's job filing, not a separate
+    # record — both route identically. DOB NOW exposes no public per-filing URL
+    # (Angular SPA, login-walled — confirmed by fetch) and its filings are not
+    # in BIS, so there is no per-record public page to deep-link. Point every
+    # permit/job_status at the SAME confirmed-working BIS BIN property profile
+    # used for the violation fallback (PropertyProfileOverviewServlet?bin=, via
+    # _bis_bin_overview_url) — one clean building-overview form for the whole
+    # type, showing that building's filings.
+    #
+    # This replaces the data.cityofnewyork.us/w9ak-ipjd.html?job_filing_number=
+    # filtered view, which landed on a generic dataset page because Socrata's
+    # .html surface ignores the column filter. Legacy BIS-numeric permits, which
+    # previously went to JobsQueryByNumberServlet, share the BIN profile too, so
+    # the whole type resolves to one verified destination. No BIN → no link (a
+    # dead button is worse than none, same as the 311 pattern);
+    # _bis_bin_overview_url returns "" for a blank BIN and the UI hides the
+    # button. I1/inspection-suffix filings also fall here — the per-location
+    # JobsQueryByLocationServlet was never fetch-confirmed, so it is NOT used
+    # (logged as a candidate to verify when BIS is reliably up).
     if record_type in ("permit", "job_status"):
-        if dob_now and job_num:
-            # DOB NOW jobs are not in BIS. Route to Open Data's
-            # filtered view on the Approved Permits dataset so the
-            # user lands on the exact row. Strip the filing suffix:
-            # w9ak-ipjd holds one row per filing, but the filter
-            # param is job_filing_number (full id including -I<n>),
-            # so we pass the full id through after trimming.
-            return _open_data_filtered_url(
-                "w9ak-ipjd", "job_filing_number", job_num
-            )
-        if job_num:
-            # BIS legacy numeric — JobsQueryByNumberServlet with the
-            # record's doc number. BIS returns "{JOB} 01 NOT FOUND"
-            # when doc 02/03/... was filed but we asked for 01, so
-            # pull the real doc from the record and only default to
-            # 01 when absent.
-            doc_num = str(
-                rec.get("doc__")
-                or rec.get("doc_number")
-                or rec.get("docnum")
-                or "01"
-            ).strip().zfill(2)
-            base_job = _base_job_number(job_num)
-            return (
-                "https://a810-bisweb.nyc.gov/bisweb/JobsQueryByNumberServlet"
-                f"?passjobnumber={quote_plus(base_job)}"
-                f"&passdocnumber={quote_plus(doc_num)}&requestid=1"
-            )
         return _bis_bin_overview_url(bin_val)
 
     # ── Inspections ──────────────────────────────────────────────────

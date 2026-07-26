@@ -125,6 +125,39 @@ class OtherFallbacksFixedTest(unittest.TestCase):
             server._build_dob_link({"bin": _BIN}, "inspection"), _OVERVIEW,
         )
 
+    def test_dob_now_permit_routes_to_bin_overview(self):
+        """DOB NOW permits (borough-letter filing) have no public per-filing
+        page — Socrata's .html view ignored the filter and landed on a generic
+        dataset page. They now resolve to the BIN property profile, and must not
+        point at Open Data."""
+        rec = {"bin": _BIN, "job_filing_number": "B00123456-I1"}
+        url = server._build_dob_link(rec, "permit")
+        self.assertEqual(url, _OVERVIEW)
+        self.assertNotIn("data.cityofnewyork.us", url)
+
+    def test_dob_now_job_status_routes_to_bin_overview(self):
+        rec = {"bin": _BIN, "job_filing_number": "M00855935-I1"}
+        url = server._build_dob_link(rec, "job_status")
+        self.assertEqual(url, _OVERVIEW)
+        self.assertNotIn("data.cityofnewyork.us", url)
+
+    def test_legacy_permit_routes_to_bin_overview(self):
+        """Legacy BIS-numeric permits previously went to JobsQueryByNumberServlet;
+        the whole permit/job_status type now shares the one verified BIN profile."""
+        rec = {"bin": _BIN, "job__": "123456789", "doc__": "3"}
+        url = server._build_dob_link(rec, "permit")
+        self.assertEqual(url, _OVERVIEW)
+        self.assertNotIn("JobsQueryByNumberServlet", url)
+
+    def test_permit_without_bin_returns_empty(self):
+        """No BIN → no link (a dead button is worse than none), even with a job."""
+        self.assertEqual(
+            server._build_dob_link({"job_filing_number": "B00123456-I1"}, "permit"), "",
+        )
+        self.assertEqual(
+            server._build_dob_link({"job_filing_number": "M00855935-I1"}, "job_status"), "",
+        )
+
     def test_unknown_type_final_fallback_uses_same_form(self):
         self.assertEqual(
             server._build_dob_link({"bin": _BIN}, "cofo"), _OVERVIEW,
@@ -136,17 +169,6 @@ class OtherFallbacksFixedTest(unittest.TestCase):
 
 class UntouchedRoutesTest(unittest.TestCase):
     """Guard the paths this change must NOT have altered."""
-
-    def test_dob_now_permit_still_routes_to_open_data(self):
-        rec = {"bin": _BIN, "job_filing_number": "B00123456-I1"}
-        url = server._build_dob_link(rec, "permit")
-        self.assertIn("data.cityofnewyork.us/resource/w9ak-ipjd", url)
-
-    def test_legacy_permit_still_routes_to_jobs_servlet(self):
-        rec = {"bin": _BIN, "job__": "123456789", "doc__": "3"}
-        url = server._build_dob_link(rec, "permit")
-        self.assertIn("JobsQueryByNumberServlet", url)
-        self.assertIn("passdocnumber=03", url)
 
     def test_swo_and_complaint_still_use_complaints_servlet(self):
         self.assertIn(
