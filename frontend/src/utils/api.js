@@ -967,6 +967,18 @@ export const dobAPI = {
     return response.data;
   },
 
+  // Standing OPEN DOB exposure for one project, computed server-side by
+  // STATUS deduped by raw_dob_id — NO detected_at window (so tile numbers
+  // don't decay as the sync stamp ages). Returns
+  // { by_project: { <pid>: { open_violations, open_complaints,
+  //   permits_expiring, has_risk_score } }, totals: {...} }.
+  getSummary: async (projectId) => {
+    const response = await apiClient.get(
+      `/api/projects/dob-summary?project_id=${encodeURIComponent(projectId)}`
+    );
+    return response.data;
+  },
+
   // MR.14 commit 3 — mark a single dob_log as read for the calling user.
   markRead: async (projectId, logId) => {
     const response = await apiClient.post(

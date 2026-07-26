@@ -30,7 +30,6 @@ import {
   MessageSquare,
   ExternalLink,
   FileCheck,
-  ClipboardCheck,
   ShieldAlert,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
@@ -95,7 +94,9 @@ export default function DOBLogsScreen() {
   const [nycBin, setNycBin] = useState('');
   const [trackDobStatus, setTrackDobStatus] = useState(false);
   const [allLogs, setAllLogs] = useState([]);
-  const [total, setTotal] = useState(0);
+  // Standing OPEN exposure from GET /projects/dob-summary (status-based, no
+  // detected_at window) — drives the tile numbers so they don't decay.
+  const [summary, setSummary] = useState(null);
   const [activeTab, setActiveTab] = useState('all');
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -120,12 +121,18 @@ export default function DOBLogsScreen() {
   const fetchLogs = async () => {
     if (!loading) setRefreshing(true);
     try {
-      const data = await dobAPI.getLogs(projectId, { limit: 200 });
+      // date_range:'all' — the record LIST must not decay on detected_at either
+      // (default '30d' empties the list ~30 days after the sync stamp). Tile
+      // numbers come from dob-summary; both are fetched together.
+      const [data, summaryData] = await Promise.all([
+        dobAPI.getLogs(projectId, { limit: 200, date_range: 'all' }),
+        dobAPI.getSummary(projectId).catch(() => null),
+      ]);
       setProjectName(data.project_name || '');
       setNycBin(data.nyc_bin || '');
       setTrackDobStatus(data.track_dob_status || false);
       setAllLogs(data.logs || []);
-      setTotal(data.total || 0);
+      setSummary(summaryData?.by_project?.[projectId] || null);
     } catch (error) {
       console.error('Failed to fetch DOB logs:', error);
       toast.error('Error', 'Could not load DOB compliance data');
@@ -171,11 +178,15 @@ export default function DOBLogsScreen() {
   };
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
-  // Counts from ALL logs (not filtered)
-  const permitCount = allLogs.filter(l => l.record_type === 'permit').length;
-  const violationCount = allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo').length;
-  const complaintCount = allLogs.filter(l => l.record_type === 'complaint').length;
-  const inspectionCount = allLogs.filter(l => l.record_type === 'inspection').length;
+  // Tile numbers = standing OPEN exposure from GET /projects/dob-summary
+  // (status-based, deduped by raw_dob_id, NO detected_at window — so they do
+  // not decay as the sync stamp ages). 0 until the summary loads. dob-summary
+  // returns no inspections (ingest removed) and no active-permit / closed-
+  // complaint counts, so the Permits tile shows permits_expiring and the
+  // Inspections tile is dropped.
+  const openViolations = summary?.open_violations ?? 0;
+  const openComplaints = summary?.open_complaints ?? 0;
+  const permitsExpiring = summary?.permits_expiring ?? 0;
 
   // Get the real date for a record (actual issue/complaint/filing date, not sync date)
   const getRealDate = (log) => {
@@ -193,11 +204,12 @@ export default function DOBLogsScreen() {
     return db - da;
   });
   
-  // Filtered logs for display
+  // Filtered logs for display. Inspections are excluded everywhere: their
+  // ingest was removed (rodent-data mislabel) and dob-summary doesn't count
+  // them, so there's no tile/tab — don't leave orphan inspection cards in "all".
   const filteredLogs = sortByDate(
-    activeTab === 'all' ? allLogs
+    activeTab === 'all' ? allLogs.filter(l => l.record_type !== 'inspection')
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
-    : activeTab === 'inspection' ? allLogs.filter(l => l.record_type === 'inspection')
     : allLogs.filter(l => l.record_type === activeTab)
   );
 
@@ -805,29 +817,22 @@ export default function DOBLogsScreen() {
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? chrome.brand : colors.text.muted} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitCount}</Text>
-                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Permits</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitsExpiring}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Expiring Permits</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
-                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (violationCount > 0 ? semantic.critical : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, violationCount > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{violationCount}</Text>
-                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Violations</Text>
+                <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (openViolations > 0 ? semantic.critical : colors.text.muted)} />
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openViolations > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{openViolations}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Open Violations</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
-                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (complaintCount > 0 ? '#f59e0b' : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, complaintCount > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{complaintCount}</Text>
-                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Complaints</Text>
-              </GlassCard>
-            </Pressable>
-            <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'inspection' ? 'all' : 'inspection'); setExpandedLogId(null); }}>
-              <GlassCard style={[s.navCard, activeTab === 'inspection' && s.navCardActive]}>
-                <ClipboardCheck size={22} strokeWidth={1.5} color={activeTab === 'inspection' ? chrome.brand : colors.text.muted} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'inspection' && s.navCountActive]}>{inspectionCount}</Text>
-                <Text numberOfLines={1} style={[s.navLabel, activeTab === 'inspection' && s.navLabelActive]}>Inspections</Text>
+                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (openComplaints > 0 ? '#f59e0b' : colors.text.muted)} />
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{openComplaints}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
             </Pressable>
           </ScrollView>
@@ -891,7 +896,6 @@ export default function DOBLogsScreen() {
             <RefreshCw size={18} strokeWidth={1.5} color="#fff" />
             <Text style={s.syncButtonText}>{syncing ? 'Syncing with NYC DOB...' : 'Sync Now'}</Text>
           </Pressable>
-          <Text style={s.totalText}>{total} total records</Text>
 
             </>
           }
