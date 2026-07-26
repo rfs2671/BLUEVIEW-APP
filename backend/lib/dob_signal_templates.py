@@ -224,8 +224,9 @@ def _render_filing_pending(log: dict) -> Dict[str, Any]:
 
 
 def _render_violation_dob(log: dict) -> Dict[str, Any]:
+    from dob_complaint_codes import violation_type_display
     vnum = _get(log, "violation_number", default="?")
-    vtype = _get(log, "violation_type", default="DOB violation")
+    vtype = violation_type_display(log.get("violation_type")) or "DOB violation"
     return {
         "title": f"⚠️ DOB violation issued — {vtype} (#{vnum})",
         "body": (

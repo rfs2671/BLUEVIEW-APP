@@ -38,7 +38,7 @@ import re
 import hashlib
 from urllib.parse import quote_plus
 import json
-from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label
+from dob_complaint_codes import classify_complaint, get_disposition_label, get_category_label, violation_type_display
 import mimetypes
 
 try:
@@ -16645,11 +16645,15 @@ def _generate_summary(rec: dict, record_type: str) -> str:
  
     if record_type in ("violation", "swo"):
         vnum = rec.get("violation_number") or rec.get("number") or rec.get("ecb_violation_number") or "Unknown"
-        vtype = rec.get("violation_type") or rec.get("violation_type_code") or rec.get("severity") or ""
+        # Violation-type codes have no verified official label yet → rendered
+        # "DOB code: {code}" (never a bare code, never a guessed label); DOB's
+        # own plain-English ECB values pass through as-is.
+        vtype = violation_type_display(rec.get("violation_type") or rec.get("violation_type_code") or "")
         desc = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or ""
         if desc and len(str(desc)) > 120:
             desc = str(desc)[:117] + "..."
-        return f"Violation {vnum}: {vtype}. {desc}".strip()
+        vtype_part = f": {vtype}" if vtype else ""
+        return f"Violation {vnum}{vtype_part}. {desc}".strip()
  
     if record_type == "complaint":
         comp_num = rec.get("complaint_number") or ""

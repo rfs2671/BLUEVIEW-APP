@@ -8,7 +8,11 @@ to provide intelligent complaint classification in Levelog.
 Sources:
   - Disposition codes: https://data.cityofnewyork.us/id/6v9u-ndjg
   - Category codes:    https://www.nyc.gov/assets/buildings/pdf/complaint_category.pdf
+  - Violation type codes: DOB Violations dataset 3h2n-5cm9 `violation_type`
+    column (each code's official description), verified live 2026-07-26.
 """
+
+import re
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DISPOSITION CODES — What happened after the inspector visited
@@ -398,6 +402,118 @@ DOB_CATEGORY_CODES = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# VIOLATION TYPE CODES — UNVERIFIED, PENDING AN OFFICIAL SOURCE — DO NOT DISPLAY
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠️  These labels are NOT authoritative and MUST NOT be shown to customers.
+#
+# They were transcribed from the DOB Violations dataset's `violation_type`
+# column (3h2n-5cm9) — DOB data, but the dataset's embedded text, NOT a
+# dedicated official DOB violation-type code list. Until each code→label is
+# confirmed against DOB's published violation-type reference, we do NOT display
+# these as fact. `violation_type_display()` DELIBERATELY does not read this map;
+# every violation-type code renders as "DOB code: {code}" instead.
+#
+# Retained (not deleted) only as a staging area so a future task can verify
+# these against the official source and then promote them into the display path.
+# If you wire this into any customer-facing rendering, you are shipping
+# unverified labels — don't.
+
+UNVERIFIED_VIOLATION_TYPE_LABELS_PENDING_SOURCE = {
+    # Elevators
+    "E": "Elevator",
+    "EVCAT1": "Elevator Annual Inspection/Test",
+    "VCAT1": "Elevator Annual Inspection/Test",
+    "EVCAT5": "Non-Residential Elevator Periodic Inspection/Test",
+    "JVCAT5": "Residential Elevator Periodic Inspection/Test",
+    "JVIOS": "Private Residential Elevator",
+    "HVCAT5": "NYCHA Elevator Periodic Inspection/Test",
+    "HVIOS": "NYCHA Elevator Annual Inspection/Test",
+    "ACC1": "Elevator Affirmation of Correction (Other Building Types)",
+    "ACH1": "Elevator Affirmation of Correction (NYCHA)",
+    "ACJ1": "Elevator Affirmation of Correction (Private Residence)",
+    "LL1081": "Local Law 10/81 — Elevator",
+    "LL10/81": "Local Law 10/81 — Elevator",
+    "LL16": "Local Law 16/84 — Elevator",
+    # Boilers
+    "B": "Boiler",
+    "LBLVIO": "Low Pressure Boiler",
+    "HBLVIO": "High Pressure Boiler",
+    "LL6291": "Local Law 62/91 — Boilers",
+    # Facade
+    "FISP": "Facade Safety Program (FISP)",
+    "FISPNRF": "Facade — No Report / Late Filing",
+    "FISPHAZ": "Facade — Hazardous Condition",
+    "FISPFCS": "Facade — Failure to Correct SWARMP Conditions",
+    "L1198": "Local Law 11/98 — Facade",
+    "LL1198": "Local Law 11/98 — Facade",
+    "LL11/98": "Local Law 11/98 — Facade",
+    "LL1080": "Local Law 10/80 — Facade",
+    "LL10/80": "Local Law 10/80 — Facade",
+    # Energy / benchmarking
+    "BENCH": "Failure to Benchmark (Energy)",
+    "EGRADE": "Failure to Post Energy Grade/Score",
+    "EARCX": "Failure to Submit Energy Efficiency Report (EER)",
+    # Local Law 26/04 (life-safety systems)
+    "LL2604": "Local Law 26/04 — Photoluminescent",
+    "LL2604E": "Local Law 26/04 — Emergency Power",
+    "LL2604S": "Local Law 26/04 — Sprinkler",
+    "LL5": "Local Law 5/73",
+    # Failure to certify (Class 1 device)
+    "AEUHAZ1": "Failure to Certify (Class 1 Device)",
+    # Trades / general
+    "C": "Construction",
+    "P": "Plumbing",
+    "CS": "Site Safety",
+    "ES": "Electric Signs",
+    "CMQ": "Marquee",
+    "PA": "Public Assembly",
+    "Z": "Zoning",
+    "UB": "Unsafe Buildings",
+    "RWNRF": "Retaining Wall",
+    "LANDMK": "Landmark",
+    "LANDMRK": "Landmark",
+    "COMPBLD": "Structurally Compromised Building",
+    "CLOS": "Padlock",
+    # Emergency
+    "EGNCY": "Emergency",
+    "IMD": "Immediate Emergency",
+    "IMEGNCY": "Immediate Emergency",
+}
+
+
+def violation_type_display(raw) -> str:
+    """Customer-safe display for a stored violation_type value.
+
+    Violation-type CODES have no verified official label yet
+    (UNVERIFIED_VIOLATION_TYPE_LABELS_PENDING_SOURCE is NOT read here), so every
+    code renders as "DOB code: {code}" — honest and prefixed, never a guessed
+    label. The three input shapes:
+      1. Legacy BIS (3h2n-5cm9): "{CODE}-{DESCRIPTION}   {DEVICE}{REQ}" (spaces)
+         → "DOB code: {CODE}" (the embedded description is NOT shown as fact).
+      2. DOB NOW Safety (855j-jady): a bare UPPERCASE code, e.g. "FTC-AEU-HAZ"
+         → "DOB code: {code}".
+      3. ECB/OATH (6bgk-3dad): DOB's OWN plain-English category value, e.g.
+         "Construction", "Quality of Life" (mixed case) → shown as-is. This is
+         a pass-through of DOB's field value, not a code→label lookup.
+
+    Never returns a blank for a non-blank input.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    # 1. Legacy "{CODE}-{DESCRIPTION …}" — take the code only; the embedded
+    #    description is unverified and must not be displayed as a label.
+    m = re.match(r"^([A-Z0-9/*]{1,10})-\S", s)
+    if m and " " in s:
+        return f"DOB code: {m.group(1)}"
+    # 2. Bare uppercase code (no spaces), e.g. "FTC-AEU-HAZ", "LBLVIO", "E".
+    if s == s.upper() and re.fullmatch(r"[A-Z0-9/\-*]+", s):
+        return f"DOB code: {s}"
+    # 3. DOB's own plain-English value (mixed case, ECB) — pass through as-is.
+    return s
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS — Use these in server.py
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -453,8 +569,8 @@ def classify_complaint(rec: dict) -> dict:
 
     return {
         "risk_level": final_risk,
-        "disposition_label": disp_info.get("label", f"Code {disp_code}"),
-        "category_label": cat_info.get("desc", f"Category {cat_code}"),
+        "disposition_label": disp_info.get("label", f"DOB code: {disp_code}") if disp_code else "",
+        "category_label": cat_info.get("desc", f"DOB code: {cat_code}") if cat_code else "",
         "action": action,
         "severity": severity,
     }
@@ -462,14 +578,20 @@ def classify_complaint(rec: dict) -> dict:
 
 def get_disposition_label(code: str) -> str:
     """Get human-readable label for a disposition code."""
-    info = DOB_DISPOSITION_CODES.get(str(code).strip().upper(), {})
-    return info.get("label", f"Disposition {code}")
+    c = str(code).strip()
+    if not c:
+        return ""
+    info = DOB_DISPOSITION_CODES.get(c.upper(), {})
+    return info.get("label", f"DOB code: {c}")
 
 
 def get_category_label(code: str) -> str:
     """Get human-readable description for a category code."""
-    info = DOB_CATEGORY_CODES.get(str(code).strip(), {})
-    return info.get("desc", f"Category {code}")
+    c = str(code).strip()
+    if not c:
+        return ""
+    info = DOB_CATEGORY_CODES.get(c, {})
+    return info.get("desc", f"DOB code: {c}")
 
 
 def get_complaint_risk(code: str, code_type: str = "disposition") -> str:

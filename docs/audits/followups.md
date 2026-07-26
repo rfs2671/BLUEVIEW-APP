@@ -4,6 +4,30 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-26 — Violation-type code labels need an official DOB source
+
+DOB violation-type codes (`JVIOS`, `JVCAT5`, `E`, `LBLVIO`, the `LL*` family,
+and DOB NOW Safety `FTC-*/FTF-*` codes) are currently shown to customers as
+`DOB code: {code}` — the honest raw code — because there is **no verified
+official label** for them yet. The DOB Violations dataset (`3h2n-5cm9`) embeds a
+description in its `violation_type` column, but that is dataset text, not a
+dedicated authoritative DOB violation-type code list, so it is treated as
+UNVERIFIED.
+
+A transcribed-from-dataset map exists but is **quarantined** behind
+`UNVERIFIED_VIOLATION_TYPE_LABELS_PENDING_SOURCE` in
+`backend/dob_complaint_codes.py`, with a comment that it must not be displayed;
+`violation_type_display()` deliberately does not read it, and a test
+(`test_display_never_returns_an_unverified_label`) enforces that.
+
+**To close:** confirm each code→label against DOB's official published
+violation-type reference (or the `855j-jady` data-dictionary xlsx for the
+`FTC-*/FTF-*` family), then promote the verified entries into the display path.
+Until then, violation types stay prefixed. (Complaint category + disposition
+labels already have official sources and DO display.)
+
+---
+
 ## 2026-07-26 — OverviewByBinServlet: code was already clean; risk is stored data + doc drift
 
 **Finding.** A repoint of violation tier-3 links off the decommissioned
