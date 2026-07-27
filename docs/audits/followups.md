@@ -4,6 +4,66 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## OFFLINE CORRECTNESS — 2026-07-27 — offline "on site" count includes stale prior-day check-ins
+
+`getActiveCheckIns` in `frontend/src/hooks/useCheckIns.js` falls back to a local
+WatermelonDB query when the API call fails. That fallback filters **only** on
+`check_out_time: null` — there is **no day boundary**:
+
+```js
+// useCheckIns.js:107 — the offline fallback
+const queryConditions = [
+  Q.where('is_deleted', false),
+  Q.where('check_out_time', null),
+];
+if (projectId) {
+  queryConditions.push(Q.where('project_id', projectId));
+}
+```
+
+Offline, a worker who was never checked out on a **prior** day still satisfies
+`check_out_time: null` and is counted as "on site today". The count silently
+inflates with every un-checked-out worker, and nothing on screen indicates the
+number came from the offline path.
+
+Both surfaces share this: the dashboard **Active by site** section and the
+project-detail **ON SITE** tile call the same hook (deliberately — one code
+path so the two cannot disagree). They stay consistent with each other; both
+are wrong together when offline.
+
+**Online path is correct** and unaffected: `GET /checkins/project/{id}/active`
+bounds the query with `get_today_range_est()` (the NYC-local day from the
+check-in timezone fix). This is an offline-path-only defect.
+
+**Second, related divergence found in the same file:** the sibling
+`getTodayCheckIns` fallback (`useCheckIns.js:142`) *does* bound the day — but
+with **device-local** midnight:
+
+```js
+const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+const dayEnd   = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+```
+
+So a device outside America/New_York gets a different "today" offline than the
+server's `get_day_range_est`. Two different day definitions now exist on the
+offline path, and neither matches the server's.
+
+**Why this matters beyond cosmetics:** "who was on site" is a compliance
+record. An inflated on-site count offline is a false attendance statement, not
+a display glitch.
+
+**To close (offline audit):**
+- Give the `getActiveCheckIns` fallback an NYC-local day bound so an
+  un-checked-out prior-day record cannot count as present today.
+- Derive the offline day boundary from a shared NYC-local helper rather than
+  `setHours(0,0,0,0)`, so `getTodayCheckIns` and `getActiveCheckIns` agree with
+  each other and with the server.
+- Consider surfacing staleness in the UI when a count came from the local
+  fallback — an offline number that looks identical to a live one is the part
+  that makes this dangerous.
+
+---
+
 ## COMPLIANCE GAP — 2026-07-27 — worker certification expiry renders with no warning state
 
 **Priority: compliance, not polish.**
