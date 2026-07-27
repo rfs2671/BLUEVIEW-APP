@@ -1,0 +1,84 @@
+# Test suites — the gate that was missing.
+#
+# Before this workflow, CI ran architectural-rules (git-grep guards) and
+# backend-import-smoke (proves the server imports) — neither executes a single
+# test. The 140-file / 2053-test backend suite and the frontend JS suite were
+# run only by hand, so a red suite could sit on main unnoticed between
+# sessions. Both had in fact rotted red at some point (a shared rate-limit
+# counter saturating mid-run; a ReferenceError that killed 16 assertions before
+# any ran) and were only caught by manual audit.
+#
+# Both suites are hermetic: no database, no network, no service containers.
+# backend/tests/conftest.py os.environ.setdefault()s MONGO_URL / DB_NAME /
+# JWT_SECRET / QWEN_API_KEY, and the suite is fully mock-based.
+#
+# DO NOT set DB_NAME (or the other four) on these jobs. conftest uses
+# setdefault, and three tests in test_migrate_clear_filing_rep_credentials.py
+# key their motor mock on the literal "smoke_test"; pre-setting a DIFFERENT
+# value makes setdefault a no-op and those tests fail with KeyError. Letting
+# conftest own the defaults is what keeps the suite green.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: backend suite (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 3.12 matches production (Dockerfile: python:3.12-slim, runtime.txt:
+      # python-3.12.0), so CI exercises the interpreter we actually ship on.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+
+      # Full suite, not a subset. Runs from backend/ so conftest's sys.path
+      # insert resolves sibling imports the same way it does locally.
+      # No env block on purpose — see the header note.
+      - name: Run backend suite
+        working-directory: backend
+        run: python -m pytest tests/ -q
+
+  frontend-tests:
+    name: frontend suite (node)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The JS tests are dependency-free harnesses (fs/path only) that parse
+      # real component source, so no npm install is needed and the job stays
+      # seconds long. Globbed rather than hard-coded so a new *.test.cjs /
+      # *.test.js is picked up automatically — a test nobody runs is the thing
+      # this workflow exists to prevent. Fails the job on the FIRST non-zero
+      # exit, and fails loudly if the glob ever matches nothing.
+      - name: Run frontend JS tests
+        working-directory: frontend
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find src app -type f \( -name '*.test.cjs' -o -name '*.test.js' \) 2>/dev/null | sort)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "ERROR: no frontend test files matched — the glob is stale."
+            exit 1
+          fi
+          echo "Found ${#files[@]} test file(s):"
+          printf '  %s\n' "${files[@]}"
+          for f in "${files[@]}"; do
+            echo "--- $f"
+            node "$f"
+          done
