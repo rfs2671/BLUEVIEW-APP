@@ -56,7 +56,7 @@ import { useTheme } from '../context/ThemeContext';
 import GlassButton from './GlassButton';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import apiClient from '../utils/api';
-import { bandFor, RISK_SCORE_TITLE } from './RiskScoreCircle';
+import { bandFor, RISK_SCORE_TITLE, SCORE_SHELVED } from './RiskScoreCircle';
 import { titleCase } from '../utils/displayHelpers';
 import { semantic, withAlpha } from '../styles/semanticColors';
 
@@ -247,8 +247,10 @@ const RiskScoreDrawer = ({
     }
   }, [projectId, scoreDoc, reviewWasCorrect, reviewNotes]);
 
-  // ── Fail-closed render: flag OFF → nothing. ────────────────
-  if (!v2RiskScoreEnabled) {
+  // ── Fail-closed render: score shelved OR flag OFF → nothing.
+  //    (The drawer only opens from RiskScoreCircle, which is already hidden
+  //    when shelved — this guard makes it airtight if mounted elsewhere.) ──
+  if (SCORE_SHELVED || !v2RiskScoreEnabled) {
     return null;
   }
   if (!visible) {

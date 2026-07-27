@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { ChevronUp, ChevronDown, MoreVertical, Trash2 } from 'lucide-react-native';
 import apiClient from '../utils/api';
-import { bandFor } from './RiskScoreCircle';
+import { bandFor, SCORE_SHELVED } from './RiskScoreCircle';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { semantic, chrome, border, surface, text } from '../styles/semanticColors';
 import { spacing, borderRadius, typography } from '../styles/theme';
@@ -68,13 +68,17 @@ function riskPresentation(score) {
 }
 
 export default function ProjectsTable({ projects, onRowPress, onDelete }) {
-  // Default sort: risk descending, nulls last (see comparator).
-  const [sortKey, setSortKey] = useState('risk');
+  // Default sort: risk descending, nulls last (see comparator). When the score
+  // is shelved the Risk column is gone, so default to Class instead.
+  const [sortKey, setSortKey] = useState(SCORE_SHELVED ? 'class' : 'risk');
   const [sortDir, setSortDir] = useState('desc');
   const [menuFor, setMenuFor] = useState(null);
   const [riskById, setRiskById] = useState({});
 
   const v2RiskScoreEnabled = useFeatureFlag('v2_risk_score');
+
+  // Score shelved → drop the Risk column from the header entirely.
+  const columns = SCORE_SHELVED ? COLUMNS.filter((c) => c.key !== 'risk') : COLUMNS;
 
   // Stable dependency — `projects` is a fresh array every render, so keying
   // the effect on the id list avoids an infinite refetch loop.
@@ -90,7 +94,7 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
   // docs/audits/ui-inventory-2026-07-23.md.
   // ───────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!v2RiskScoreEnabled) return undefined;
+    if (SCORE_SHELVED || !v2RiskScoreEnabled) return undefined;
     let cancelled = false;
     (async () => {
       const entries = await Promise.all(
@@ -168,7 +172,7 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
     <View style={styles.root}>
       {/* Header */}
       <View style={[styles.headerRow, { borderBottomColor: border.medium }]}>
-        {COLUMNS.map((col) => {
+        {columns.map((col) => {
           const active = sortKey === col.key;
           const Arrow = sortDir === 'asc' ? ChevronUp : ChevronDown;
           return (
@@ -243,16 +247,19 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
                 )}
               </View>
 
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.cell, styles.cellText,
-                  { flex: 1, color: risk.color },
-                  risk.pending && styles.pendingText,
-                ]}
-              >
-                {risk.label}
-              </Text>
+              {/* Risk column — hidden while the score is shelved. */}
+              {!SCORE_SHELVED && (
+                <Text
+                  numberOfLines={1}
+                  style={[
+                    styles.cell, styles.cellText,
+                    { flex: 1, color: risk.color },
+                    risk.pending && styles.pendingText,
+                  ]}
+                >
+                  {risk.label}
+                </Text>
+              )}
 
               <Text numberOfLines={1} style={[styles.cell, styles.cellText, { flex: 1.2, color: text.secondary }]}>
                 {p.status || '—'}

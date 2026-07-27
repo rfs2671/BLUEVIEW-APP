@@ -69,6 +69,16 @@ export const RISK_SCORE_TITLE = 'DOB Risk Score';
 // Band-word shown below the circle when there's no score yet.
 export const PENDING_LABEL = 'PENDING';
 
+// ── SCORE SHELVED — single source of truth for hiding the numeric risk
+//    score/band from every customer-facing render. The predictive score is
+//    shelved (deferred pending a DOB expert), not deleted: the risk_scores
+//    collection, the recompute pipeline, and the /risk-score* API are all
+//    untouched. Every render site (this circle, ProjectsTable's Risk column,
+//    RiskScoreDrawer) imports this flag and renders nothing when it's true.
+//    To bring the score back after a rebuild: flip to false — the existing
+//    `v2_risk_score` feature flag then controls visibility again as before. ──
+export const SCORE_SHELVED = true;
+
 // Score-band thresholds — pinned to backend schema.py::score_band.
 // Boundaries (≤30 green, ≤60 yellow, ≤80 orange, >80 red) match
 // exactly. A test in test_v2_1_2_risk_score_redesign.py asserts
@@ -106,7 +116,7 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
-    if (!v2RiskScoreEnabled || !projectId) return;
+    if (SCORE_SHELVED || !v2RiskScoreEnabled || !projectId) return;
     let cancelled = false;
     (async () => {
       try {
@@ -128,8 +138,8 @@ const RiskScoreCircle = ({ projectId, isAdmin = false, size = 84 }) => {
     };
   }, [v2RiskScoreEnabled, projectId]);
 
-  // ── Fail-closed render: flag OFF → nothing. ───────────────
-  if (!v2RiskScoreEnabled) {
+  // ── Fail-closed render: score shelved OR flag OFF → nothing. ──
+  if (SCORE_SHELVED || !v2RiskScoreEnabled) {
     return null;
   }
 
