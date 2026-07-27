@@ -4,6 +4,50 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## COMPLIANCE GAP — 2026-07-27 — worker certification expiry renders with no warning state
+
+**Priority: compliance, not polish.**
+
+`frontend/app/workers/[id].jsx:558` renders a worker's certification expiry as
+
+```jsx
+<Text style={s.certExpiry}>Expires: {cert.expiry}</Text>
+```
+
+and `certExpiry` (line ~955) is `color: colors.text.muted` — **unconditionally**.
+The date is printed as flat muted text whether it expires in a year, expires
+tomorrow, or expired last month. There is no `daysUntil` / `isExpired`
+evaluation anywhere in this file for certifications: the expiry is never
+compared against today, so no code path can colour it.
+
+On a NYC jobsite an expired SST or OSHA card means the worker **legally cannot
+be on site**. A foreman scanning this screen gets no signal that a card has
+lapsed, so this is a missing compliance warning, not a cosmetic gap.
+
+The `Award` icon beside the row is a constant glyph for every certification and
+was correctly routed to the neutral token in the amber sweep (`8b4830a`) — it
+was never carrying the warning. That commit did not cause this gap; it surfaced
+it.
+
+**Second instance, same defect:** the OSHA card at
+`frontend/app/workers/[id].jsx:414–417` renders `oshaData.expiration` with
+`oshaFieldValue` (`colors.text.primary`) — also unconditional, also never
+compared against today.
+
+**To close:**
+- Evaluate days-remaining for `cert.expiry` and `oshaData.expiration` (a
+  `daysUntil` helper already exists at
+  `frontend/app/project/[id]/dob-logs.jsx:72` — lift it into a shared util
+  rather than re-implementing).
+- Colour the expiry text `semantic.attention` when expiring soon (threshold to
+  be agreed — the DOB permit surfaces use 30d, `settings.jsx` / safety-staff use
+  60d/90d) and `semantic.criticalText` once expired.
+- Consider surfacing an expired card at the worker-list level too, not only on
+  the detail screen — an expired card is only actionable if someone sees it
+  before the worker reaches the gate.
+
+---
+
 ## 2026-07-27 — 85 hardcoded `#f59e0b` amber literals still bypass the token layer
 
 The dual-theme contrast fix made the semantic state tokens per-theme, so
