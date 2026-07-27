@@ -15,6 +15,9 @@ import {
   Plus,
   Sparkles,
   X,
+  ChevronDown,
+  ChevronUp,
+  ChevronRight,
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import AnimatedBackground from '../src/components/AnimatedBackground';
@@ -69,6 +72,15 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
   );
 };
 
+// Exposure card key → the matching per-project field on dob-summary's
+// by_project map. 'never' is absent: never-synced is derived from the projects
+// payload (first_poll_completed_at), which dob-summary does not carry.
+const EXPOSURE_FIELD = {
+  violations: 'open_violations',
+  permits: 'permits_expiring',
+  complaints: 'open_complaints',
+};
+
 // ── Desktop portfolio-triage surface (RN-Web >=1024). Layout only; colors
 //    come from semantic tokens inline so they stay theme-aware. Mobile never
 //    renders any of this. ──────────────────────────────────────────────────
@@ -81,10 +93,39 @@ const deskStyles = StyleSheet.create({
   },
   rollupNumber: { fontSize: 40, fontWeight: '300', letterSpacing: -1 },
   rollupLabel: { fontSize: typography.sizes.sm, marginTop: spacing.xs },
+  // Expand affordance — only rendered on cards that actually have something
+  // to expand (count > 0), so a zero card carries no interactive signal.
+  rollupFoot: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
+  rollupFootText: { fontSize: 11, fontWeight: '600', letterSpacing: 0.4, textTransform: 'uppercase' },
+
+  // ── Accordion panel: opens BELOW the 4-card row, full width, so the list
+  //    gets the whole shelf instead of being crushed into one 190px column.
+  //    This is what fills the empty space — no filler widgets.
+  expandPanel: {
+    borderWidth: 1, borderRadius: borderRadius.lg,
+    marginTop: -spacing.xs, marginBottom: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  expandHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+  },
+  expandHeadText: { fontSize: 11, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase' },
+  expandRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.md,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2,
+    borderRadius: borderRadius.sm,
+  },
+  expandRowAddr: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
+  expandRowCount: { fontSize: typography.sizes.sm, fontWeight: '700', minWidth: 24, textAlign: 'right' },
+  expandEmpty: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: typography.sizes.sm },
+
   adminRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   adminRowTile: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 40,
-    minWidth: 200, paddingHorizontal: spacing.md, borderWidth: 1,
+    flexGrow: 1, flexBasis: 200, maxWidth: 260,
+    paddingHorizontal: spacing.md, borderWidth: 1,
     borderRadius: borderRadius.md,
   },
   adminRowLabel: { fontSize: typography.sizes.sm, fontWeight: '500' },
@@ -92,16 +133,56 @@ const deskStyles = StyleSheet.create({
 
 // One exception count. Zero (or loading) renders neutral — a 0 is good news on
 // an exception surface, so it must not be painted with a state color.
-function RollupCard({ value, label, token, loading }) {
+// A card with a count of 0 (or still loading) has nothing to expand, so it is
+// rendered as a plain View: no press handler, no hover, no chevron, no
+// accessibilityRole. The affordance appears only where there is something
+// behind it.
+function RollupCard({ value, label, token, loading, expanded, onToggle }) {
   const isZero = !loading && (value == null || value === 0);
   const numberColor = loading || isZero ? semantic.neutral : token;
-  return (
-    <View style={[deskStyles.rollupCard, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+  const pressable = !loading && !isZero && typeof onToggle === 'function';
+
+  const body = (
+    <>
       <Text style={[deskStyles.rollupNumber, { color: numberColor }]}>
         {loading ? '—' : (value ?? 0)}
       </Text>
       <Text style={[deskStyles.rollupLabel, { color: text.secondary }]}>{label}</Text>
-    </View>
+      {pressable ? (
+        <View style={deskStyles.rollupFoot}>
+          <Text style={[deskStyles.rollupFootText, { color: text.secondary }]}>
+            {expanded ? 'Hide' : 'Show'}
+          </Text>
+          {expanded
+            ? <ChevronUp size={13} strokeWidth={2} color={text.secondary} />
+            : <ChevronDown size={13} strokeWidth={2} color={text.secondary} />}
+        </View>
+      ) : null}
+    </>
+  );
+
+  if (!pressable) {
+    return (
+      <View style={[deskStyles.rollupCard, { backgroundColor: surface.card, borderColor: border.subtle }]}>
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onToggle}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={`${label}: ${value}. ${expanded ? 'Hide' : 'Show'} contributing projects`}
+      style={({ hovered }) => [
+        deskStyles.rollupCard,
+        { backgroundColor: surface.card, borderColor: expanded ? border.strong : border.subtle },
+        hovered && { backgroundColor: surface.glassHover, borderColor: border.medium },
+      ]}
+    >
+      {body}
+    </Pressable>
   );
 }
 
@@ -145,7 +226,13 @@ export default function DashboardScreen() {
   // Portfolio exception totals from GET /api/projects/dob-summary (ONE call,
   // no N+1). Desktop-only; the fetch is gated on isDesktop below.
   const [dobTotals, setDobTotals] = useState(null);
+  // Per-project breakdown from the SAME dob-summary call — powers the
+  // exposure-card accordion (which projects contribute to each count).
+  const [dobByProject, setDobByProject] = useState({});
   const [dobLoading, setDobLoading] = useState(true);
+  // Which exposure card is expanded ('violations' | 'permits' | 'complaints' |
+  // 'never'), or null for the calm default state. One at a time.
+  const [expandedCard, setExpandedCard] = useState(null);
 
   const [layoutReady, setLayoutReady] = useState(false);
 
@@ -192,9 +279,12 @@ export default function DashboardScreen() {
       try {
         setDobLoading(true);
         const r = await apiClient.get('/api/projects/dob-summary');
-        if (!cancelled) setDobTotals(r?.data?.totals || null);
+        if (!cancelled) {
+          setDobTotals(r?.data?.totals || null);
+          setDobByProject(r?.data?.by_project || {});
+        }
       } catch (_e) {
-        if (!cancelled) setDobTotals(null);
+        if (!cancelled) { setDobTotals(null); setDobByProject({}); }
       } finally {
         if (!cancelled) setDobLoading(false);
       }
@@ -318,17 +408,100 @@ export default function DashboardScreen() {
     const oc = t.open_complaints;
     // "Never synced" is derived from the projects list payload already
     // fetched (no extra call); dob-summary does not carry it.
-    const neverSynced = projects.filter(p => !p.first_poll_completed_at).length;
+    const neverSyncedProjects = projects.filter(p => !p.first_poll_completed_at);
+    const neverSynced = neverSyncedProjects.length;
     const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+
+    const pidOf = (p) => p._id || p.id;
+    const addrOf = (p) => p.address || p.name || 'Untitled project';
+
+    // Contributing projects for the open card, from the by_project map that
+    // came back on the SAME dob-summary call — no extra request per card.
+    const contributors = (key) => {
+      if (key === 'never') {
+        return neverSyncedProjects.map((p) => ({ p, n: null }));
+      }
+      const field = EXPOSURE_FIELD[key];
+      return projects
+        .map((p) => ({ p, n: Number(dobByProject[pidOf(p)]?.[field]) || 0 }))
+        .filter((x) => x.n > 0)
+        .sort((a, b) => b.n - a.n);
+    };
+
+    // Violations/permits/complaints land on the project's DOB compliance tab
+    // (where the records actually are). "Never synced" has no DOB records yet
+    // by definition, so it lands on the project itself.
+    const rowTarget = (key, p) =>
+      key === 'never' ? `/project/${pidOf(p)}` : `/project/${pidOf(p)}/dob-logs`;
+
+    const cards = [
+      { key: 'violations', value: ov, label: 'Open violations', token: semantic.criticalText, loading: dobLoading },
+      { key: 'permits', value: pe, label: 'Permits expiring <30d', token: semantic.attention, loading: dobLoading },
+      { key: 'complaints', value: oc, label: 'Open complaints', token: semantic.attention, loading: dobLoading },
+      { key: 'never', value: neverSynced, label: 'Never synced', token: semantic.attention, loading },
+    ];
+    const openCard = cards.find((c) => c.key === expandedCard) || null;
+    const openRows = openCard ? contributors(openCard.key) : [];
+
     return (
       <>
         <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>PORTFOLIO EXPOSURE</Text>
         <View style={deskStyles.rollupRow}>
-          <RollupCard loading={dobLoading} value={ov} label="Open violations" token={semantic.criticalText} />
-          <RollupCard loading={dobLoading} value={pe} label="Permits expiring <30d" token={semantic.attention} />
-          <RollupCard loading={dobLoading} value={oc} label="Open complaints" token={semantic.attention} />
-          <RollupCard loading={loading} value={neverSynced} label="Never synced" token={semantic.neutral} />
+          {cards.map((c) => (
+            <RollupCard
+              key={c.key}
+              loading={c.loading}
+              value={c.value}
+              label={c.label}
+              token={c.token}
+              expanded={expandedCard === c.key}
+              onToggle={() => setExpandedCard((cur) => (cur === c.key ? null : c.key))}
+            />
+          ))}
         </View>
+
+        {openCard ? (
+          <View style={[deskStyles.expandPanel, { backgroundColor: surface.card, borderColor: border.medium }]}>
+            <View style={[deskStyles.expandHead, { borderBottomColor: border.subtle }]}>
+              <Text style={[deskStyles.expandHeadText, { color: text.secondary }]}>
+                {openCard.label} — by project
+              </Text>
+              <Pressable
+                onPress={() => setExpandedCard(null)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Collapse"
+              >
+                <X size={14} strokeWidth={2} color={text.secondary} />
+              </Pressable>
+            </View>
+
+            {openRows.length === 0 ? (
+              <Text style={[deskStyles.expandEmpty, { color: text.muted }]}>
+                No projects to show.
+              </Text>
+            ) : openRows.map(({ p, n }) => (
+              <Pressable
+                key={pidOf(p)}
+                onPress={() => router.push(rowTarget(openCard.key, p))}
+                accessibilityRole="link"
+                accessibilityLabel={`Open ${addrOf(p)}`}
+                style={({ hovered }) => [
+                  deskStyles.expandRow,
+                  hovered && { backgroundColor: surface.glassHover },
+                ]}
+              >
+                <Text numberOfLines={1} style={[deskStyles.expandRowAddr, { color: text.primary }]}>
+                  {addrOf(p)}
+                </Text>
+                {n != null ? (
+                  <Text style={[deskStyles.expandRowCount, { color: openCard.token }]}>{n}</Text>
+                ) : null}
+                <ChevronRight size={15} strokeWidth={1.5} color={text.muted} />
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
 
         {isAdmin ? (
           <>
