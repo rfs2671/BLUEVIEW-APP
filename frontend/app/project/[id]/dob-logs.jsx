@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   FlatList,
   Pressable,
   ActivityIndicator,
@@ -41,7 +40,7 @@ import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import apiClient, { dobAPI } from '../../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
-import { semantic, chrome, withAlpha } from '../../../src/styles/semanticColors';
+import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import InfoTooltip from '../../../src/components/InfoTooltip';
@@ -845,9 +844,24 @@ export default function DOBLogsScreen() {
           ItemSeparatorComponent={() => <View style={{ height: spacing.md }} />}
           ListHeaderComponent={
             <>
-          {/* Title */}
+          {/* Title. The refresh control lives up here as a quiet icon-button:
+              DOB data syncs automatically, so a full-width primary button was
+              overstating a fallback action. Sync is unchanged underneath. */}
           <View style={s.titleSection}>
-            <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
+            <View style={s.titleTopRow}>
+              <Text style={s.titleLabel}>DOB COMPLIANCE</Text>
+              <Pressable
+                onPress={handleSync}
+                disabled={syncing}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={syncing ? 'Syncing with NYC DOB' : 'Sync now'}
+                style={({ hovered }) => [s.syncChip, hovered && s.syncChipHover, syncing && s.syncChipDisabled]}
+              >
+                <RefreshCw size={13} strokeWidth={1.5} color={semantic.neutral} />
+                <Text style={s.syncChipText}>{syncing ? 'Syncing…' : 'Synced automatically'}</Text>
+              </Pressable>
+            </View>
             <Text style={s.titleText}>{projectName}</Text>
             {nycBin ? (
               <View style={s.binBadge}>
@@ -867,11 +881,7 @@ export default function DOBLogsScreen() {
           {/* ── 3 Glass Nav Cards — horizontal scroll on narrow viewports.
                 Each shows "{open} of {total}" (open subset of the deduped total)
                 so the count matches the list once you drill in. ── */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={s.navRow}
-          >
+          <View style={s.navRow}>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? chrome.brand : colors.text.muted} />
@@ -893,7 +903,7 @@ export default function DOBLogsScreen() {
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
             </Pressable>
-          </ScrollView>
+          </View>
 
           {/* Disclosure: permits with no expiry date are excluded from the
               "active" denominator — surface the gap so it's never silent. */}
@@ -956,12 +966,6 @@ export default function DOBLogsScreen() {
               )}
             </GlassCard>
           )}
-
-          {/* Full-width Sync Button */}
-          <Pressable onPress={handleSync} disabled={syncing} style={[s.syncButton, syncing && s.syncButtonDisabled]}>
-            <RefreshCw size={18} strokeWidth={1.5} color="#fff" />
-            <Text style={s.syncButtonText}>{syncing ? 'Syncing with NYC DOB...' : 'Sync Now'}</Text>
-          </Pressable>
 
             </>
           }
@@ -1118,7 +1122,7 @@ function buildStyles(colors, isDark) {
     scrollView: { flex: 1 },
     scrollContent: { padding: spacing.lg, paddingBottom: 120 },
     titleSection: { marginBottom: spacing.lg },
-    titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
+    titleLabel: { ...typography.label, color: colors.text.secondary, marginBottom: spacing.sm },
     titleText: { fontSize: 28, fontWeight: '200', color: colors.text.primary, letterSpacing: -0.5, marginBottom: spacing.xs },
     binBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     binText: { fontSize: 13, color: colors.text.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
@@ -1126,14 +1130,14 @@ function buildStyles(colors, isDark) {
     noBinText: { fontSize: 13, color: semantic.attention },
 
     // Nav cards (replaces pill tabs + stat row)
-    navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg, paddingRight: spacing.sm },
+    navRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginBottom: spacing.lg },
     // Needs to fit the longest label ("Inspections") + two-digit count
     // inside GlassCard's built-in cardContent padding (spacing.xl each
     // side). 118px leaves ~70px usable which comfortably fits both.
-    navCardWrap: { minWidth: 118 },
-    navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.sm, gap: 4 },
+    navCardWrap: { flexGrow: 1, flexBasis: 150, minWidth: 150 },
+    navCard: { alignItems: 'center', paddingVertical: spacing.md, paddingHorizontal: spacing.xs, gap: 4 },
     navCardActive: { borderColor: semantic.verifiedBorder, backgroundColor: semantic.verifiedBg },
-    navCount: { fontSize: 26, fontWeight: '700', color: colors.text.primary },
+    navCount: { fontSize: 20, fontWeight: '700', color: colors.text.primary },
     navCountActive: { color: chrome.brand },
     navLabel: { fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
     navLabelActive: { color: chrome.brand },
@@ -1167,9 +1171,11 @@ function buildStyles(colors, isDark) {
     bisLegacyText: { fontSize: 13, color: semantic.attention, flex: 1, lineHeight: 18 },
 
     // Full-width sync button
-    syncButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: '#1565C0', paddingVertical: 14, borderRadius: borderRadius.lg, marginBottom: spacing.sm },
-    syncButtonDisabled: { opacity: 0.6 },
-    syncButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+    titleTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, marginBottom: spacing.sm },
+    syncChip: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4, paddingHorizontal: spacing.sm, borderRadius: borderRadius.sm, borderWidth: 1, borderColor: border.subtle },
+    syncChipText: { color: text.secondary, fontSize: 11, fontWeight: '500' },
+    syncChipHover: { borderColor: border.medium, backgroundColor: surface.glassHover },
+    syncChipDisabled: { opacity: 0.6 },
     totalText: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginBottom: spacing.lg },
 
     logsList: { gap: spacing.md },

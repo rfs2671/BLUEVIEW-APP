@@ -64,6 +64,7 @@ import { GlassCard, IconPod } from './GlassCard';
 import DefconHeader from './DefconHeader';
 import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { useTheme } from '../context/ThemeContext';
+import { semantic, border, surface, text } from '../styles/semanticColors';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { projectsAPI } from '../utils/api';
 import {
@@ -360,23 +361,17 @@ export default function CompliancePanel({ projectId }) {
   } = data;
 
   // ── State 4 — unavailable (no fit yet) ───────────────────────
+  // Calibrating is a NON-event: there is nothing to act on, so it renders as a
+  // single quiet strip (icon + one line) rather than a hero card. The full card
+  // returns below once there is a real forecast to show.
   if (!predictionAvailable) {
     return (
-      <GlassCard style={styles.card}>
-        <View style={styles.header}>
-          <IconPod>
-            <Shield size={18} strokeWidth={1.5} color={colors.iconPod.iconColor} />
-          </IconPod>
-          <Text style={[styles.title, { color: colors.text.primary }]}>
-            DOB Enforcement Forecast
-          </Text>
-        </View>
-        <Text style={[styles.muted, { color: colors.text.muted }]}>
-          A forecast for this project is still being prepared. New
-          projects typically have one ready within 24 hours of being
-          added.
+      <View style={[styles.calibratingStrip, { borderColor: border.subtle, backgroundColor: surface.card }]}>
+        <Shield size={14} strokeWidth={1.5} color={semantic.neutral} />
+        <Text numberOfLines={1} style={[styles.calibratingText, { color: text.secondary }]}>
+          DOB Enforcement Forecast — calibrating, ready within 24h
         </Text>
-      </GlassCard>
+      </View>
     );
   }
 
@@ -786,6 +781,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: spacing.lg,
   },
+  // Calibrating strip — one line, no hero card (empty state must be small).
+  calibratingStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.md,
+  },
+  calibratingText: { flex: 1, fontSize: 12 },
   muted: {
     ...typography.body,
     paddingVertical: spacing.sm,
