@@ -136,6 +136,9 @@ export const surface = {
   get card() { return colors.glass.card; },
   get glass() { return colors.glass.background; },
   get glassHover() { return colors.glass.backgroundHover; },
+  // Opaque, theme-aware surface for popovers/menus that must OCCLUDE the
+  // content behind them (the translucent glass fills let rows bleed through).
+  get menu() { return colors.background.middle; },
 };
 
 export const text = {

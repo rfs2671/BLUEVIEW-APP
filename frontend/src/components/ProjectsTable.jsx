@@ -1,178 +1,115 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { ChevronUp, ChevronDown, MoreVertical, Trash2 } from 'lucide-react-native';
+import { ChevronUp, ChevronDown, MoreVertical, Trash2, Eye } from 'lucide-react-native';
 import apiClient from '../utils/api';
-import { bandFor, SCORE_SHELVED } from './RiskScoreCircle';
-import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { semantic, chrome, border, surface, text } from '../styles/semanticColors';
 import { spacing, borderRadius, typography } from '../styles/theme';
 
 /**
- * ProjectsTable — desktop-only (>=1024) replacement for the projects card list.
+ * ProjectsTable — desktop-only (>=1024) compliance TRIAGE table for a NYC GC.
  *
  * Mobile is untouched: projects/index.jsx branches on useIsDesktop() and still
  * renders its existing card list below the breakpoint.
  *
- * Columns are limited to what the existing GET /api/projects payload can
- * actually answer (see docs/audits/ui-inventory-2026-07-23.md Follow-ups):
- *   Address, BIN, Class, Risk, Status.
- * Violations / Permits-expiring / Last-sync are deliberately NOT here — they
- * need a server-side dob-summary aggregation (and, for "last sync", a field
- * the sync job does not currently write). Rendering them from client-side
- * dob-logs calls would produce wrong numbers: that endpoint defaults to a
- * 30-day detected_at window, caps at 200 rows, and detected_at is a
- * backfill/sync stamp rather than an event date.
+ * Reads standing exposure from ONE portfolio-wide GET /api/projects/dob-summary
+ * (by_project: open_violations / open_complaints / permits_expiring) — no N+1
+ * per-row call. Class + BIN are demoted to the row overflow menu (reference,
+ * not triage). The risk-score column was removed (score shelved).
  *
- * defcon_tier is intentionally NOT surfaced here — one severity scale per
- * view. Risk score is the scale; a second colored tier alongside it would be
- * two verdicts competing for the same glance.
+ * SYNCED column, honest semantics: the payload carries NO per-project
+ * last-DOB-sync timestamp. first_poll_completed_at is stamped ONCE on the first
+ * poll and never updated (server.py: `if not proj_doc.get("first_poll_...")`),
+ * so it is NOT sync freshness — showing "4m" off it would mislead. We therefore
+ * show only the one truthful bit it gives: "Never" when it is null (no poll has
+ * ever completed — same signal the dashboard's "Never synced" rollup uses), and
+ * "—" once a project has synced (freshness unknown). Real relative freshness is
+ * blocked until the sync path persists a rolling timestamp — see
+ * docs/audits/followups.md.
  */
 
 const CLASS_LABEL = { major_b: 'MAJOR B', major_a: 'MAJOR A', regular: 'REGULAR' };
-// Ordering only — NOT severity. Project class is a classification, so every
-// badge renders neutral (taxonomy: MAJOR B is not an alarm).
-const CLASS_RANK = { major_b: 3, major_a: 2, regular: 1 };
 
+// Column flex + alignment — shared by header + row cells so they can't drift.
 const COLUMNS = [
-  { key: 'address', label: 'Address', flex: 3, numeric: false },
-  { key: 'bin', label: 'BIN', flex: 1.4, numeric: false },
-  { key: 'class', label: 'Class', flex: 1.3, numeric: true },
-  { key: 'risk', label: 'Risk', flex: 1, numeric: true },
-  { key: 'status', label: 'Status', flex: 1.2, numeric: false },
+  { key: 'address', label: 'Address', flex: 3, numeric: false, align: 'flex-start' },
+  { key: 'violations', label: 'Violations', flex: 1.2, numeric: true, align: 'center' },
+  { key: 'permits', label: 'Permits', flex: 1.5, numeric: true, align: 'center' },
+  { key: 'complaints', label: 'Complaints', flex: 1.3, numeric: true, align: 'center' },
+  { key: 'synced', label: 'Synced', flex: 1.1, numeric: true, align: 'center' },
 ];
+const FLEX = Object.fromEntries(COLUMNS.map((c) => [c.key, c.flex]));
 
 const projectId = (p) => p._id || p.id;
-
-/**
- * Risk presentation. Thresholds are NOT reimplemented here — bandFor() is
- * imported from RiskScoreCircle so there is one source of truth for the
- * [30, 60, 80] cutoffs (the audit already flagged score_band/bandFor drifting
- * as parallel implementations; this does not add a third).
- *
- * Colors map the band onto the semantic taxonomy rather than bandFor's raw
- * hexes. Critical uses criticalText because this renders as TEXT on a card
- * surface, where plain `critical` fails WCAG AA (4.03:1 on surface-1).
- * A null/uncomputed score is ALWAYS neutral "Scoring" — never green.
- */
-function riskPresentation(score) {
-  const band = bandFor(score);
-  if (score == null || !Number.isFinite(Number(score))) {
-    return { label: band.label, color: semantic.neutral, pending: true };
-  }
-  const value = String(Math.round(Number(score)));
-  if (band.label === 'LOW RISK') return { label: value, color: semantic.verified };
-  if (band.label === 'CRITICAL RISK') return { label: value, color: semantic.criticalText };
-  // MODERATE / HIGH both map to attention — the taxonomy has exactly four
-  // state tokens, so the two middle bands share one.
-  return { label: value, color: semantic.attention };
-}
+const addrOf = (p) => p.address || p.name || '';
+const hasSynced = (p) => !!p.first_poll_completed_at;
 
 export default function ProjectsTable({ projects, onRowPress, onDelete }) {
-  // Default sort: risk descending, nulls last (see comparator). When the score
-  // is shelved the Risk column is gone, so default to Class instead.
-  const [sortKey, setSortKey] = useState(SCORE_SHELVED ? 'class' : 'risk');
+  // Default: exposure-descending — open_violations, then permits_expiring, then
+  // open_complaints (all desc). The "violations" comparator IS that composite,
+  // so the Violations header reads as active by default.
+  const [sortKey, setSortKey] = useState('violations');
   const [sortDir, setSortDir] = useState('desc');
   const [menuFor, setMenuFor] = useState(null);
-  const [riskById, setRiskById] = useState({});
+  const [summary, setSummary] = useState({}); // by_project keyed by project_id
 
-  const v2RiskScoreEnabled = useFeatureFlag('v2_risk_score');
-
-  // Score shelved → drop the Risk column from the header entirely.
-  const columns = SCORE_SHELVED ? COLUMNS.filter((c) => c.key !== 'risk') : COLUMNS;
-
-  // Stable dependency — `projects` is a fresh array every render, so keying
-  // the effect on the id list avoids an infinite refetch loop.
-  const idsKey = useMemo(() => projects.map(projectId).join(','), [projects]);
-
-  // ── N+1 WARNING ────────────────────────────────────────────────────────
-  // One GET /api/projects/{id}/risk-score per row, because the list payload
-  // carries no score. Acceptable at the current scale (single-digit
-  // projects) and each failure degrades to "Scoring" rather than an error.
-  // Past ~20 projects this MUST move to the server-side dob-summary
-  // aggregation (one request returning score + open-violation + expiring-
-  // permit counts for every project) — see the Follow-ups section of
-  // docs/audits/ui-inventory-2026-07-23.md.
-  // ───────────────────────────────────────────────────────────────────────
+  // ── ONE portfolio-wide dob-summary call — no N+1. ─────────────────────────
   useEffect(() => {
-    if (SCORE_SHELVED || !v2RiskScoreEnabled) return undefined;
     let cancelled = false;
     (async () => {
-      const entries = await Promise.all(
-        projects.map(async (p) => {
-          const id = projectId(p);
-          try {
-            const r = await apiClient.get(`/api/projects/${id}/risk-score`);
-            const doc = r?.data?.score;
-            const n = doc && typeof doc.score === 'number' ? Number(doc.score) : null;
-            return [id, n];
-          } catch (_e) {
-            // Silent — a failed score renders as neutral "Scoring", never as
-            // a reassuring value, and never as a toast per row.
-            return [id, null];
-          }
-        }),
-      );
-      if (!cancelled) setRiskById(Object.fromEntries(entries));
+      try {
+        const r = await apiClient.get('/api/projects/dob-summary');
+        if (!cancelled) setSummary(r?.data?.by_project || {});
+      } catch (_e) {
+        if (!cancelled) setSummary({}); // degrade to zeros, never an error toast
+      }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey, v2RiskScoreEnabled]);
+  }, []);
 
-  const riskFor = (p) => {
-    const v = riskById[projectId(p)];
-    return v === undefined ? null : v;
-  };
-
-  const valueFor = (p, key) => {
-    switch (key) {
-      case 'address': return p.address || p.name || '';
-      case 'bin': return p.nyc_bin || '';
-      case 'status': return p.status || '';
-      default: return '';
-    }
+  const expo = (p) => {
+    const s = summary[projectId(p)] || {};
+    return {
+      ov: Number(s.open_violations) || 0,
+      pe: Number(s.permits_expiring) || 0,
+      oc: Number(s.open_complaints) || 0,
+    };
   };
 
   const sorted = useMemo(() => {
-    const arr = [...projects];
     const mul = sortDir === 'asc' ? 1 : -1;
+    const byNums = (a, b, keys) => {
+      const A = expo(a), B = expo(b);
+      for (const k of keys) { if (A[k] !== B[k]) return (A[k] - B[k]) * mul; }
+      return 0;
+    };
+    const arr = [...projects];
     arr.sort((a, b) => {
-      if (sortKey === 'risk') {
-        const ra = riskFor(a);
-        const rb = riskFor(b);
-        // Nulls sort last in BOTH directions — an uncomputed score must never
-        // float to the top of an exposure-ordered list.
-        if (ra == null && rb == null) return 0;
-        if (ra == null) return 1;
-        if (rb == null) return -1;
-        return (ra - rb) * mul;
+      switch (sortKey) {
+        case 'violations': return byNums(a, b, ['ov', 'pe', 'oc']);
+        case 'permits':    return byNums(a, b, ['pe', 'ov', 'oc']);
+        case 'complaints': return byNums(a, b, ['oc', 'ov', 'pe']);
+        // Two buckets only (synced / never) — no false ordering by first-poll time.
+        case 'synced':     return ((hasSynced(a) ? 1 : 0) - (hasSynced(b) ? 1 : 0)) * mul;
+        default: // address
+          return addrOf(a).toLowerCase().localeCompare(addrOf(b).toLowerCase()) * mul;
       }
-      if (sortKey === 'class') {
-        const ca = CLASS_RANK[a.project_class] || 0;
-        const cb = CLASS_RANK[b.project_class] || 0;
-        return (ca - cb) * mul;
-      }
-      return String(valueFor(a, sortKey)).toLowerCase()
-        .localeCompare(String(valueFor(b, sortKey)).toLowerCase()) * mul;
     });
     return arr;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects, sortKey, sortDir, riskById]);
+  }, [projects, sortKey, sortDir, summary]);
 
   const toggleSort = (key) => {
-    if (key === sortKey) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-      return;
-    }
+    if (key === sortKey) { setSortDir((d) => (d === 'asc' ? 'desc' : 'asc')); return; }
     setSortKey(key);
-    // Numeric columns lead with the "most" end; text columns read A→Z.
     setSortDir(COLUMNS.find((c) => c.key === key)?.numeric ? 'desc' : 'asc');
   };
 
   return (
     <View style={styles.root}>
-      {/* Header */}
+      {/* Header — labels use the readable secondary token (muted failed contrast);
+          the sorted column uses the brand token. */}
       <View style={[styles.headerRow, { borderBottomColor: border.medium }]}>
-        {columns.map((col) => {
+        {COLUMNS.map((col) => {
           const active = sortKey === col.key;
           const Arrow = sortDir === 'asc' ? ChevronUp : ChevronDown;
           return (
@@ -183,17 +120,11 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
               accessibilityLabel={`Sort by ${col.label}`}
               style={({ hovered }) => [
                 styles.headerCell,
-                { flex: col.flex },
+                { flex: col.flex, justifyContent: col.align },
                 hovered && { backgroundColor: surface.card },
               ]}
             >
-              <Text
-                numberOfLines={1}
-                style={[
-                  styles.headerText,
-                  { color: active ? chrome.brand : text.muted },
-                ]}
-              >
+              <Text numberOfLines={1} style={[styles.headerText, { color: active ? chrome.brand : text.secondary }]}>
                 {col.label}
               </Text>
               {active ? <Arrow size={13} strokeWidth={2} color={chrome.brand} /> : null}
@@ -206,103 +137,88 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
       {/* Rows */}
       {sorted.map((p) => {
         const id = projectId(p);
-        const risk = riskPresentation(riskFor(p));
-        const classLabel = CLASS_LABEL[p.project_class] || null;
+        const { ov, pe, oc } = expo(p);
         const open = menuFor === id;
+        const synced = hasSynced(p);
+        const classLabel = CLASS_LABEL[p.project_class] || null;
         return (
           <View
             key={id}
-            // Raise the open row so its popover paints above later rows.
             style={[styles.row, { borderBottomColor: border.subtle }, open && styles.rowRaised]}
           >
             <Pressable
               onPress={() => onRowPress(p)}
               accessibilityRole="link"
-              accessibilityLabel={`Open ${p.address || p.name || 'project'}`}
-              style={({ hovered }) => [
-                styles.rowMain,
-                hovered && { backgroundColor: surface.card },
-              ]}
+              accessibilityLabel={`Open ${addrOf(p) || 'project'}`}
+              style={({ hovered }) => [styles.rowMain, hovered && { backgroundColor: surface.card }]}
             >
-              {/* Address — single line. The card list printed name AND address,
-                  which are the same string for most projects (create_project
-                  sets name = address when only one is supplied). */}
-              <Text numberOfLines={1} style={[styles.cell, styles.addressCell, { flex: 3, color: text.primary }]}>
-                {p.address || p.name || '—'}
+              <Text numberOfLines={1} style={[styles.cell, styles.addressCell, { flex: FLEX.address, color: text.primary }]}>
+                {addrOf(p) || '—'}
               </Text>
 
-              <Text numberOfLines={1} style={[styles.cell, { flex: 1.4, color: text.secondary }]}>
-                {p.nyc_bin || '—'}
-              </Text>
-
-              <View style={[styles.cell, { flex: 1.3 }]}>
-                {classLabel ? (
-                  <View style={[styles.badge, { backgroundColor: semantic.neutralBg }]}>
-                    <Text numberOfLines={1} style={[styles.badgeText, { color: semantic.neutralStrong }]}>
-                      {classLabel}
-                    </Text>
-                  </View>
-                ) : (
-                  <Text style={[styles.cellText, { color: text.muted }]}>—</Text>
-                )}
+              {/* Violations — filled dot + count, centered. Critical only when > 0. */}
+              <View style={[styles.cell, styles.countCell, { flex: FLEX.violations }]}>
+                <View style={[styles.dot, { backgroundColor: ov > 0 ? semantic.critical : semantic.neutral }]} />
+                <Text style={[styles.countText, { color: ov > 0 ? semantic.criticalText : text.muted, fontWeight: ov > 0 ? '700' : '400' }]}>
+                  {ov}
+                </Text>
               </View>
 
-              {/* Risk column — hidden while the score is shelved. */}
-              {!SCORE_SHELVED && (
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.cell, styles.cellText,
-                    { flex: 1, color: risk.color },
-                    risk.pending && styles.pendingText,
-                  ]}
-                >
-                  {risk.label}
-                </Text>
-              )}
+              {/* Permits expiring — attention only when > 0. (dob-summary carries
+                  no soonest-expiry date, so no "· Nd" suffix; count only.) */}
+              <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.permits, color: pe > 0 ? semantic.attention : text.muted, fontWeight: pe > 0 ? '700' : '400' }]}>
+                {pe}
+              </Text>
 
-              <Text numberOfLines={1} style={[styles.cell, styles.cellText, { flex: 1.2, color: text.secondary }]}>
-                {p.status || '—'}
+              {/* Complaints — always neutral, count only. */}
+              <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.complaints, color: oc > 0 ? text.secondary : text.muted }]}>
+                {oc}
+              </Text>
+
+              {/* Synced — "Never" (attention) when no poll has completed; "—" once
+                  synced (no real freshness timestamp exists yet). */}
+              <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.synced, color: synced ? text.muted : semantic.attention }]}>
+                {synced ? '—' : 'Never'}
               </Text>
             </Pressable>
 
-            {/* Overflow menu — sibling of the row Pressable, so tapping it can
-                never trigger row navigation. Delete logic itself is unchanged:
-                this calls the same handler (and therefore the same
-                confirmation) the card list used. */}
+            {/* Overflow menu — view, delete, and CLASS + BIN (demoted here). */}
             <View style={styles.actionsCell}>
               <Pressable
                 onPress={() => setMenuFor(open ? null : id)}
                 hitSlop={8}
                 accessibilityRole="button"
                 accessibilityLabel="Row actions"
-                style={({ hovered }) => [
-                  styles.kebab,
-                  hovered && { backgroundColor: surface.glassHover },
-                ]}
+                style={({ hovered }) => [styles.kebab, hovered && { backgroundColor: surface.glassHover }]}
               >
                 <MoreVertical size={16} strokeWidth={1.5} color={text.muted} />
               </Pressable>
 
               {open ? (
-                <View
-                  style={[
-                    styles.menu,
-                    { backgroundColor: surface.glass, borderColor: border.medium },
-                  ]}
-                >
+                // Opaque popover (surface.menu) + shadow so it OCCLUDES the rows
+                // behind it — the translucent glass fills let cells bleed through.
+                <View style={[styles.menu, { backgroundColor: surface.menu, borderColor: border.medium }]}>
+                  {/* Reference: class + BIN (not triage columns). */}
+                  <View style={[styles.menuInfo, { borderBottomColor: border.subtle }]}>
+                    <Text numberOfLines={1} style={[styles.menuInfoText, { color: text.secondary }]}>
+                      {(classLabel || '—')}  ·  BIN {p.nyc_bin || '—'}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => { setMenuFor(null); onRowPress(p); }}
+                    accessibilityRole="button"
+                    style={({ hovered }) => [styles.menuItem, hovered && { backgroundColor: surface.card }]}
+                  >
+                    <Eye size={14} strokeWidth={1.5} color={semantic.neutral} />
+                    <Text style={[styles.menuItemText, { color: text.primary }]}>View project</Text>
+                  </Pressable>
                   <Pressable
                     onPress={() => { setMenuFor(null); onDelete(p); }}
                     accessibilityRole="button"
-                    style={({ hovered }) => [
-                      styles.menuItem,
-                      hovered && { backgroundColor: surface.card },
-                    ]}
+                    style={({ hovered }) => [styles.menuItem, hovered && { backgroundColor: surface.card }]}
                   >
                     <Trash2 size={14} strokeWidth={1.5} color={semantic.neutral} />
-                    <Text style={[styles.menuItemText, { color: text.primary }]}>
-                      Delete project
-                    </Text>
+                    <Text style={[styles.menuItemText, { color: text.primary }]}>Delete project</Text>
                   </Pressable>
                 </View>
               ) : null}
@@ -331,55 +247,25 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
     borderRadius: borderRadius.sm,
   },
-  headerText: {
-    fontSize: typography.sizes.xs,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    textTransform: 'uppercase',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    overflow: 'visible',
-  },
-  rowRaised: { zIndex: 10 },
-  rowMain: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.sm + 2,
-    borderRadius: borderRadius.sm,
-  },
+  headerText: { fontSize: typography.sizes.xs, fontWeight: '600', letterSpacing: 0.5, textTransform: 'uppercase' },
+  row: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, overflow: 'visible' },
+  rowRaised: { zIndex: 30 },
+  rowMain: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm + 2, borderRadius: borderRadius.sm },
   cell: { paddingHorizontal: spacing.sm },
-  cellText: { fontSize: typography.sizes.sm },
+  countText: { fontSize: typography.sizes.sm, textAlign: 'center' },
+  countCell: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  dot: { width: 8, height: 8, borderRadius: 4 },
   addressCell: { fontSize: typography.sizes.sm, fontWeight: '500' },
-  pendingText: { fontStyle: 'italic' },
-  badge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-    borderRadius: borderRadius.full,
-  },
-  badgeText: { fontSize: 10, fontWeight: '600', letterSpacing: 0.5 },
   actionsCell: { width: 44, alignItems: 'center', justifyContent: 'center' },
   kebab: { padding: spacing.xs, borderRadius: borderRadius.sm },
   menu: {
-    position: 'absolute',
-    top: 32,
-    right: 4,
-    minWidth: 170,
-    borderWidth: 1,
-    borderRadius: borderRadius.md,
-    paddingVertical: spacing.xs,
-    zIndex: 20,
+    position: 'absolute', top: 32, right: 4, minWidth: 200,
+    borderWidth: 1, borderRadius: borderRadius.md, paddingVertical: spacing.xs, zIndex: 40,
+    // Popover elevation (RN Web → boxShadow).
+    shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.35, shadowRadius: 16, elevation: 12,
   },
-  menuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
+  menuInfo: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth },
+  menuInfoText: { fontSize: 11, fontWeight: '600', letterSpacing: 0.3 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   menuItemText: { fontSize: typography.sizes.sm },
 });

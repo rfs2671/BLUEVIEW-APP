@@ -4,6 +4,26 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-27 — No per-project DOB-sync timestamp (Projects triage "Synced" column)
+
+The desktop Projects triage table (`frontend/src/components/ProjectsTable.jsx`)
+wants a **data-sync freshness** value per project, but no such field is written.
+The only sync-ish project timestamp is `first_poll_completed_at`, stamped **once**
+on the first DOB poll and never updated thereafter
+(`backend/server.py:17395` — `if proj_doc and not proj_doc.get("first_poll_completed_at")`).
+Rendering relative time off it ("synced 4m") would be a lie for any established
+project — it's first-poll age, not last-sync freshness. (`last_synced_at`
+[server.py:12419] is Dropbox files; `last_sync_at` [server.py:18383] is a global
+rate-limit doc — neither is per-project DOB sync.)
+
+**Interim (shipped):** the Synced column shows only the one truthful bit —
+"Never" (attention) when `first_poll_completed_at` is null, "—" once synced. No
+fake relative freshness.
+
+**To close:** stamp a rolling `last_dob_sync_at` (UTC) on the project doc at the
+end of each successful `run_dob_sync_for_project`, add it to `ProjectResponse`,
+then render real relative freshness in the Synced column.
+
 ## 2026-07-26 — i18n gap on the DOB compliance screen (dob-logs.jsx)
 
 `frontend/app/project/[id]/dob-logs.jsx` has **no i18n framework** — the
