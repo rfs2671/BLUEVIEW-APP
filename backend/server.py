@@ -2586,6 +2586,76 @@ async def require_company_access(current_user = Depends(get_current_user)):
         )
     return current_user
 
+
+# ── Per-project tenant isolation ──────────────────────────────────────────────
+# THE scoping gate for any route that takes a {project_id}. Before this existed,
+# project-scoped routes filtered on project_id ALONE — the path parameter went
+# straight into the query — so any authenticated user could read another
+# company's project data by supplying its id. `user_can_act_on_project` existed
+# but was opt-in and applied to only 4 of 76 project-scoped routes; scoping that
+# must be remembered is scoping that gets forgotten.
+#
+# Use as a dependency so it CANNOT be forgotten silently:
+#
+#     async def handler(project_id: str, project = Depends(require_project_access)):
+#
+# It returns the project doc, so handlers that already re-fetch can drop their
+# own lookup rather than paying for two round trips.
+#
+# The company is ALWAYS derived from the authenticated principal
+# (get_user_company_id) and NEVER read from the request body or query.
+#
+# Three legitimate principals, in precedence order:
+#
+#   1. SITE DEVICE (kiosk/NFC). Authorized for exactly ONE project — the one it
+#      was provisioned for. get_current_user resolves a site_mode token to its
+#      site_devices row and derives company_id from that device's project doc
+#      server-side, so nothing here is client-asserted. This branch exists
+#      because a device has role="site_device" and no assigned_projects, so the
+#      company/assignment checks below would 403 it and BREAK CHECK-IN at the
+#      gate. Do not remove it.
+#   2. SAME COMPANY. The tenant-isolation invariant: a member of the company
+#      that owns the project may read it. Deliberately NOT restricted to
+#      admin/owner — workers and CPs legitimately use these read endpoints, and
+#      a guard that 403s a company's own staff is as broken as one that 403s
+#      nobody.
+#   3. ASSIGNED. A user explicitly assigned to this project, mirroring the
+#      assigned_projects branch of user_can_act_on_project, so cross-company
+#      contractors keep working where that is already the model.
+#
+# 404 (not 403) when the project does not exist or is deleted — that matches the
+# existing project-detail behavior and does not confirm ids to a prober. 403
+# when it exists but the caller has no claim to it.
+async def require_project_access(
+    project_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    project = await db.projects.find_one({
+        "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
+    })
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # 1. Site device — its own project only.
+    if current_user.get("site_mode") or current_user.get("role") == "site_device":
+        if str(current_user.get("project_id") or "") == str(project_id):
+            return project
+        raise HTTPException(
+            status_code=403, detail="Not authorized for this project",
+        )
+
+    # 2. Same company (derived from auth, never from the request).
+    user_company = get_user_company_id(current_user)
+    if user_company and str(project.get("company_id") or "") == str(user_company):
+        return project
+
+    # 3. Explicitly assigned to this project.
+    if str(project_id) in (current_user.get("assigned_projects") or []):
+        return project
+
+    raise HTTPException(status_code=403, detail="Not authorized for this project")
+
+
 # ==================== SYNC HELPERS ====================
 
 # WatermelonDB schema columns per table - only these fields should be sent to client
@@ -8240,7 +8310,7 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
 # ==================== PROJECT NFC TAGS ====================
 
 @api_router.get("/projects/{project_id}/nfc-tags")
-async def get_project_nfc_tags(project_id: str, current_user = Depends(get_current_user)):
+async def get_project_nfc_tags(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -9987,6 +10057,7 @@ async def get_project_checkins(
     current_user = Depends(get_current_user),
     limit: int = Query(200, ge=1, le=1000),
     skip: int = Query(0, ge=0),
+    _proj = Depends(require_project_access),
 ):
     checkins = await db.checkins.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("check_in_time", -1).skip(skip).limit(limit).to_list(limit)
 
@@ -10016,7 +10087,7 @@ async def get_project_checkins(
     return results
 
 @api_router.get("/checkins/project/{project_id}/active")
-async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user)):
+async def get_active_project_checkins(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -10049,7 +10120,7 @@ async def get_active_project_checkins(project_id: str, current_user = Depends(ge
     return results
 
 @api_router.get("/checkins/project/{project_id}/today")
-async def get_today_project_checkins(project_id: str, current_user = Depends(get_current_user)):
+async def get_today_project_checkins(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     today_start, today_end = get_today_range_est()
     checkins = await db.checkins.find({
         "project_id": project_id,
@@ -10324,7 +10395,7 @@ async def get_daily_log(log_id: str, current_user = Depends(get_current_user)):
     return DailyLogResponse(**serialize_id(log))
 
 @api_router.get("/daily-logs/project/{project_id}")
-async def get_project_daily_logs(project_id: str, current_user = Depends(get_current_user)):
+async def get_project_daily_logs(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     result = await paginated_query(
         db.daily_logs,
         {"project_id": project_id, "is_deleted": {"$ne": True}},
@@ -10333,7 +10404,7 @@ async def get_project_daily_logs(project_id: str, current_user = Depends(get_cur
     return result
 
 @api_router.get("/daily-logs/project/{project_id}/date/{date}")
-async def get_daily_log_by_date(project_id: str, date: str, current_user = Depends(get_current_user)):
+async def get_daily_log_by_date(project_id: str, date: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get daily log for a specific project and date"""
     log = await db.daily_logs.find_one({
         "project_id": project_id,
@@ -10460,7 +10531,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     return {"message": "Site device deleted successfully"}
 
 @api_router.get("/projects/{project_id}/site-devices")
-async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user)):
+async def get_project_site_devices(project_id: str, admin = Depends(get_admin_user), _proj = Depends(require_project_access)):
     """Get all site devices for a specific project"""
     devices = await db.site_devices.find(
         {"project_id": project_id, "is_deleted": {"$ne": True}},
@@ -10918,7 +10989,7 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
  
  
 @api_router.get("/cs/project/{project_id}")
-async def get_project_cs(project_id: str, current_user=Depends(get_current_user)):
+async def get_project_cs(project_id: str, current_user=Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get the active CS for a project. Used by site device to auto-fill superintendent info."""
     
     cs = await db.cs_registrations.find_one({
@@ -11263,7 +11334,7 @@ async def get_dashboard_stats(current_user = Depends(get_current_user)):
 # ==================== PROJECT CHECKLISTS ====================
 
 @api_router.get("/projects/{project_id}/checklists")
-async def get_project_checklists(project_id: str, current_user = Depends(get_current_user)):
+async def get_project_checklists(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get all checklist assignments for a project"""
     assignments = await db.checklist_assignments.find({
         "project_id": project_id,
@@ -11600,7 +11671,7 @@ async def get_reports(current_user = Depends(get_current_user)):
     return serialize_list(reports)
 
 @api_router.get("/reports/project/{project_id}")
-async def get_project_reports(project_id: str, current_user = Depends(get_current_user)):
+async def get_project_reports(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     reports = await db.reports.find({"project_id": project_id, "is_deleted": {"$ne": True}}).sort("created_at", -1).to_list(200)
     return serialize_list(reports)
 
@@ -13527,7 +13598,7 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
     return {"message": "Logbook deleted"}
 
 @api_router.get("/logbooks/project/{project_id}/notifications")
-async def get_logbook_notifications(project_id: str, current_user = Depends(get_current_user)):
+async def get_logbook_notifications(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """
     Returns alerts for CP:
     - Workers who haven't had toolbox talk this week
@@ -13591,7 +13662,7 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
     }
 
 @api_router.get("/logbooks/project/{project_id}/scaffold-info")
-async def get_scaffold_info(project_id: str, current_user = Depends(get_current_user)):
+async def get_scaffold_info(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get saved scaffold info for a project (remembered after first entry)"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
     if not project:
@@ -13641,7 +13712,7 @@ async def get_logbook_types(current_user = Depends(get_current_user)):
 # ==================== SAFETY STAFF ENDPOINTS ====================
 
 @api_router.get("/projects/{project_id}/safety-staff")
-async def get_project_safety_staff(project_id: str, current_user = Depends(get_current_user)):
+async def get_project_safety_staff(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get safety staff registrations for a project (SSC/SSM)."""
     staff = await db.safety_staff_registrations.find({
         "project_id": project_id, "is_deleted": {"$ne": True}
@@ -13820,7 +13891,7 @@ async def get_weather(lat: Optional[float] = None, lng: Optional[float] = None, 
         raise HTTPException(status_code=502, detail="Could not fetch weather data")
 
 @api_router.get("/logbooks/project/{project_id}/checkins-today")
-async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user)):
+async def get_project_checkins_today(project_id: str, date: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get all workers checked in to a project on a given date (for
     auto-populating log books).
 
@@ -14759,13 +14830,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     return html
 
 @api_router.get("/reports/project/{project_id}/date/{date}")
-async def get_combined_report(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user)):
+async def get_combined_report(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Generate combined daily report for a project+date."""
     from fastapi.responses import HTMLResponse
     html = await generate_combined_report(project_id, date)
     return HTMLResponse(content=html)
 @api_router.get("/reports/project/{project_id}/date/{date}/pdf")
-async def get_combined_report_pdf(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user)):
+async def get_combined_report_pdf(project_id: str, date: str, token: Optional[str] = None, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Generate combined daily report as downloadable PDF."""
     from fastapi.responses import Response
     html = await generate_combined_report(project_id, date)
@@ -14861,7 +14932,7 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
 
 
 @api_router.get("/logbooks/project/{project_id}/submitted")
-async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user)):
+async def get_submitted_logbooks(project_id: str, current_user = Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get all submitted logbook entries grouped by date. For site device inspector view."""
     logbooks = await db.logbooks.find({
         "project_id": project_id,
@@ -18887,7 +18958,7 @@ async def create_annotation(data: dict, background_tasks: BackgroundTasks, curre
 
 
 @api_router.get("/annotations/{project_id}/{document_path:path}")
-async def get_annotations_for_document(project_id: str, document_path: str, current_user=Depends(get_current_user)):
+async def get_annotations_for_document(project_id: str, document_path: str, current_user=Depends(get_current_user), _proj = Depends(require_project_access)):
     """Get annotations for a document with server-side visibility filtering.
 
     `document_path` may be either a real Dropbox path ("/Projects/…/A-101.pdf")
