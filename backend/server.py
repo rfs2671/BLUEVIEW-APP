@@ -7451,10 +7451,19 @@ async def get_projects_dob_summary(
 
     Response:
       { "by_project": { "<pid>": { "open_violations", "open_complaints",
-                                   "permits_expiring", "has_risk_score" } },
+                                   "permits_expiring", "total_violations",
+                                   "total_complaints", "total_permits",
+                                   "permits_no_expiry", "has_risk_score" } },
         "totals":     { "open_violations", "open_complaints",
-                        "permits_expiring", "projects_without_score",
+                        "permits_expiring", "total_violations",
+                        "total_complaints", "total_permits",
+                        "permits_no_expiry", "projects_without_score",
                         "projects_total" } }
+
+    total_* are per-type denominators for the "X of Y" tiles (deduped by
+    raw_dob_id, all statuses; total_permits = ACTIVE only — not-expired by date,
+    REVOKED excluded). permits_no_expiry = permits with no parseable
+    expiration_date, excluded from total_permits and disclosed in the UI.
 
     Violations are count-only: dob_logs has no field mapping to DOB
     hazard class 1/2/3 (see docs/audits/ui-inventory-2026-07-23.md
@@ -7480,6 +7489,8 @@ async def get_projects_dob_summary(
             "totals": {
                 "open_violations": 0, "open_complaints": 0,
                 "permits_expiring": 0,
+                "total_violations": 0, "total_complaints": 0,
+                "total_permits": 0, "permits_no_expiry": 0,
                 "projects_without_score": 0, "projects_total": 0,
             },
         }
@@ -7568,6 +7579,62 @@ async def get_projects_dob_summary(
                 {"$match": {"_exp": {"$gte": today_start, "$lte": t30}}},
                 {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
             ],
+            # ── Per-type TOTALS (denominators for the "X of Y" tiles) ──
+            # Same dedup + scope as the open facets; additive — the open-count
+            # logic above is untouched.
+            "total_violations": [
+                {"$match": {"record_type": {"$in": ["violation", "swo"]}}},
+                {"$sort": dedup_sort},
+                {"$group": {"_id": "$raw_dob_id", "project_id": {"$first": "$project_id"}}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+            "total_complaints": [
+                {"$match": {"record_type": "complaint"}},
+                {"$sort": dedup_sort},
+                {"$group": {"_id": "$raw_dob_id", "project_id": {"$first": "$project_id"}}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+            # ACTIVE permits (Option A): not-expired by date, REVOKED excluded,
+            # Signed-off kept. Dedup FIRST so REVOKED/expiration are judged on
+            # the LATEST row. Reuses the SAME UTC today_start as permits_expiring
+            # so expiring (today..t30) is always a subset of active (>= today) —
+            # UTC-vs-NYC-local boundary logged as a minor known item. Permits
+            # whose expiration_date is null/unparseable (all DOB NOW Electrical —
+            # dm9a-ab7w has no expiration_date) get _exp=null and drop out here;
+            # they are surfaced as permits_no_expiry so the tile can disclose
+            # them (never a silent undercount).
+            "total_permits": [
+                {"$match": {"record_type": "permit"}},
+                {"$sort": dedup_sort},
+                {"$group": {
+                    "_id": "$raw_dob_id",
+                    "project_id": {"$first": "$project_id"},
+                    "permit_status": {"$first": "$permit_status"},
+                    "expiration_date": {"$first": "$expiration_date"},
+                }},
+                {"$match": {"permit_status": {"$ne": "REVOKED"}}},
+                {"$addFields": {"_exp": {"$dateFromString": {
+                    "dateString": "$expiration_date", "onError": None, "onNull": None,
+                }}}},
+                {"$match": {"_exp": {"$gte": today_start}}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
+            # Deduped permits with NO parseable expiration_date — excluded from
+            # the active denominator; returned so the UI can disclose the gap.
+            "permits_no_expiry": [
+                {"$match": {"record_type": "permit"}},
+                {"$sort": dedup_sort},
+                {"$group": {
+                    "_id": "$raw_dob_id",
+                    "project_id": {"$first": "$project_id"},
+                    "expiration_date": {"$first": "$expiration_date"},
+                }},
+                {"$addFields": {"_exp": {"$dateFromString": {
+                    "dateString": "$expiration_date", "onError": None, "onNull": None,
+                }}}},
+                {"$match": {"_exp": None}},
+                {"$group": {"_id": "$project_id", "n": {"$sum": 1}}},
+            ],
         }},
     ]
 
@@ -7580,6 +7647,10 @@ async def get_projects_dob_summary(
     ov = _by_pid("open_violations")
     oc = _by_pid("open_complaints")
     pe = _by_pid("permits_expiring")
+    tv = _by_pid("total_violations")
+    tc = _by_pid("total_complaints")
+    tp = _by_pid("total_permits")        # active permits (Option A)
+    pne = _by_pid("permits_no_expiry")   # excluded from active — disclose in UI
 
     # Risk-score PRESENCE only — separate collection, string project_id
     # (projects._id is ObjectId; recompute_and_persist stores
@@ -7596,6 +7667,10 @@ async def get_projects_dob_summary(
             "open_violations": int(ov.get(pid, 0)),
             "open_complaints": int(oc.get(pid, 0)),
             "permits_expiring": int(pe.get(pid, 0)),
+            "total_violations": int(tv.get(pid, 0)),
+            "total_complaints": int(tc.get(pid, 0)),
+            "total_permits": int(tp.get(pid, 0)),
+            "permits_no_expiry": int(pne.get(pid, 0)),
             "has_risk_score": pid in scored,
         }
         for pid in project_ids
@@ -7604,6 +7679,10 @@ async def get_projects_dob_summary(
         "open_violations": sum(v["open_violations"] for v in by_project.values()),
         "open_complaints": sum(v["open_complaints"] for v in by_project.values()),
         "permits_expiring": sum(v["permits_expiring"] for v in by_project.values()),
+        "total_violations": sum(v["total_violations"] for v in by_project.values()),
+        "total_complaints": sum(v["total_complaints"] for v in by_project.values()),
+        "total_permits": sum(v["total_permits"] for v in by_project.values()),
+        "permits_no_expiry": sum(v["permits_no_expiry"] for v in by_project.values()),
         "projects_without_score": sum(1 for pid in project_ids if pid not in scored),
         "projects_total": len(project_ids),
     }

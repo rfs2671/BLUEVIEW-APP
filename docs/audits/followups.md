@@ -4,6 +4,19 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-26 — dob-summary active-permit boundary: UTC vs NYC-local (minor)
+
+`GET /projects/dob-summary`'s `permits_expiring` facet uses **UTC midnight**
+today (`server.py` ~7496), not NYC-local. The new `total_permits` (active)
+facet deliberately reuses that **same UTC `today_start`** so `permits_expiring`
+is always a subset of `active`. Immaterial for a 30-day permit window (a permit
+sitting exactly on the UTC-vs-EDT boundary is a few hours' difference on a
+month-scale horizon). Fully aligning to NYC-local would require changing
+`permits_expiring` too (the open-count logic), which was explicitly out of
+scope. Log-only; revisit if a day-boundary discrepancy is ever reported.
+
+---
+
 ## 2026-07-26 — Violation-type code labels need an official DOB source
 
 DOB violation-type codes (`JVIOS`, `JVCAT5`, `E`, `LBLVIO`, the `LL*` family,

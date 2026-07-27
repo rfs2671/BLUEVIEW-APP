@@ -187,6 +187,57 @@ export default function DOBLogsScreen() {
   const openViolations = summary?.open_violations ?? 0;
   const openComplaints = summary?.open_complaints ?? 0;
   const permitsExpiring = summary?.permits_expiring ?? 0;
+  // Denominators for the "X of Y" tiles. total_permits = ACTIVE permits
+  // (unexpired, REVOKED excluded); permits_no_expiry = permits with no expiry
+  // date, excluded from the active denominator and disclosed below the tiles.
+  const totalViolations = summary?.total_violations ?? 0;
+  const totalComplaints = summary?.total_complaints ?? 0;
+  const activePermits = summary?.total_permits ?? 0;
+  const permitsNoExpiry = summary?.permits_no_expiry ?? 0;
+  // Always "{open} of {total}" — the VERIFY acceptance shows "2 of 2" even when
+  // equal, so the count always states the subset relationship explicitly.
+  const ofText = (open, total) => `${open} of ${total}`;
+
+  // Open/active status per record — drives the card badge and open-first sort,
+  // mirroring dob-summary's open definitions.
+  const isRecordOpen = (log) => {
+    if (log.record_type === 'violation' || log.record_type === 'swo') {
+      return !['certified', 'dismissed', 'paid', 'resolved'].includes(log.resolution_state);
+    }
+    if (log.record_type === 'complaint') {
+      return !(log.closed_date || (log.complaint_status || '').toLowerCase().includes('closed'));
+    }
+    if (log.record_type === 'permit') {
+      const d = parseAnyDate(log.expiration_date);
+      const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+      return !!d && d.getTime() >= t0.getTime();
+    }
+    return true;
+  };
+
+  // Status pill: Open/Active (warm accent) vs Closed/Expired (neutral). Permits
+  // with no expiry date get no pill (status unknown; disclosed at the tiles).
+  const statusBadge = (log) => {
+    if (log.record_type === 'permit') {
+      if (!log.expiration_date) return null;
+      return isRecordOpen(log)
+        ? { label: 'Active', color: semantic.verified }
+        : { label: 'Expired', color: colors.text.muted };
+    }
+    if (isRecordOpen(log)) {
+      return { label: 'Open', color: log.record_type === 'complaint' ? '#f59e0b' : semantic.critical };
+    }
+    return { label: 'Closed', color: colors.text.muted };
+  };
+  const renderStatusPill = (log) => {
+    const b = statusBadge(log);
+    if (!b) return null;
+    return (
+      <View style={[s.statusPill, { borderColor: withAlpha(b.color, 0.3), backgroundColor: withAlpha(b.color, 0.12) }]}>
+        <Text style={[s.statusPillText, { color: b.color }]}>{b.label}</Text>
+      </View>
+    );
+  };
 
   // Get the real date for a record (actual issue/complaint/filing date, not sync date)
   const getRealDate = (log) => {
@@ -197,17 +248,21 @@ export default function DOBLogsScreen() {
     return log.detected_at;
   };
 
-  // Sort by real date descending (newest first)
-  const sortByDate = (logs) => [...logs].sort((a, b) => {
+  // OPEN records first, then newest real date — so a tile's open subset leads
+  // the list while closed/resolved records stay visible below.
+  const openFirstSort = (logs) => [...logs].sort((a, b) => {
+    const oa = isRecordOpen(a) ? 0 : 1;
+    const ob = isRecordOpen(b) ? 0 : 1;
+    if (oa !== ob) return oa - ob;
     const da = parseAnyDate(getRealDate(a)) || new Date(0);
     const db = parseAnyDate(getRealDate(b)) || new Date(0);
     return db - da;
   });
-  
+
   // Filtered logs for display. Inspections are excluded everywhere: their
   // ingest was removed (rodent-data mislabel) and dob-summary doesn't count
   // them, so there's no tile/tab — don't leave orphan inspection cards in "all".
-  const filteredLogs = sortByDate(
+  const filteredLogs = openFirstSort(
     activeTab === 'all' ? allLogs.filter(l => l.record_type !== 'inspection')
     : activeTab === 'violation' ? allLogs.filter(l => l.record_type === 'violation' || l.record_type === 'swo')
     : allLogs.filter(l => l.record_type === activeTab)
@@ -320,6 +375,7 @@ export default function DOBLogsScreen() {
               <View style={[s.typeBadge, { borderColor: semantic.verifiedBorder }]}>
                 <Text style={[s.typeText, { color: semantic.verified }]}>Permit</Text>
               </View>
+              {renderStatusPill(log)}
             </View>
             <View style={s.logHeaderRight}>
               {needsRenewal && (
@@ -447,6 +503,7 @@ export default function DOBLogsScreen() {
               <View style={[s.typeBadge, { borderColor: headerColor + '40' }]}>
                 <Text style={[s.typeText, { color: semantic.criticalText }]}>{headerLabel}</Text>
               </View>
+              {renderStatusPill(log)}
             </View>
             <View style={s.logHeaderRight}>
               {displayDate && <Text style={s.dateText}>{formatDate(displayDate)}</Text>}
@@ -545,6 +602,7 @@ export default function DOBLogsScreen() {
               <View style={[s.typeBadge, { borderColor: semantic.attentionBorder }]}>
                 <Text style={[s.typeText, { color: '#f59e0b' }]}>{complaintSource}</Text>
               </View>
+              {renderStatusPill(log)}
             </View>
             <View style={s.logHeaderRight}>
               {log.complaint_date && <Text style={s.dateText}>{formatDate(log.complaint_date)}</Text>}
@@ -806,9 +864,9 @@ export default function DOBLogsScreen() {
             )}
           </View>
 
-          {/* ── 4 Glass Nav Cards — horizontal scroll on narrow viewports.
-                At 375px mobile width, 4 pills with gap don't fit; let them
-                scroll instead of cramming. ── */}
+          {/* ── 3 Glass Nav Cards — horizontal scroll on narrow viewports.
+                Each shows "{open} of {total}" (open subset of the deduped total)
+                so the count matches the list once you drill in. ── */}
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -817,25 +875,33 @@ export default function DOBLogsScreen() {
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'permit' ? 'all' : 'permit'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'permit' && s.navCardActive]}>
                 <FileCheck size={22} strokeWidth={1.5} color={activeTab === 'permit' ? chrome.brand : colors.text.muted} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{permitsExpiring}</Text>
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Expiring Permits</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, activeTab === 'permit' && s.navCountActive]}>{ofText(permitsExpiring, activePermits)}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'permit' && s.navLabelActive]}>Expiring / Active Permits</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'violation' ? 'all' : 'violation'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'violation' && s.navCardActive]}>
                 <Gavel size={22} strokeWidth={1.5} color={activeTab === 'violation' ? chrome.brand : (openViolations > 0 ? semantic.critical : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openViolations > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{openViolations}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openViolations > 0 && { color: semantic.criticalText }, activeTab === 'violation' && s.navCountActive]}>{ofText(openViolations, totalViolations)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'violation' && s.navLabelActive]}>Open Violations</Text>
               </GlassCard>
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
                 <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (openComplaints > 0 ? '#f59e0b' : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{openComplaints}</Text>
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{ofText(openComplaints, totalComplaints)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
             </Pressable>
           </ScrollView>
+
+          {/* Disclosure: permits with no expiry date are excluded from the
+              "active" denominator — surface the gap so it's never silent. */}
+          {permitsNoExpiry > 0 && (
+            <Text style={s.disclosureText}>
+              {permitsNoExpiry} permit{permitsNoExpiry === 1 ? '' : 's'} without expiry data not counted
+            </Text>
+          )}
 
           {/* Active filter indicator */}
           {activeTab !== 'all' && (
@@ -1075,6 +1141,7 @@ function buildStyles(colors, isDark) {
     // Filter banner
     filterBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, marginBottom: spacing.md, borderRadius: borderRadius.lg, backgroundColor: semantic.verifiedBg, borderWidth: 1, borderColor: semantic.verifiedBorder },
     filterText: { fontSize: 13, color: chrome.brand, fontWeight: '500' },
+    disclosureText: { fontSize: 11, color: colors.text.muted, textAlign: 'center', marginBottom: spacing.md },
     filterClear: { fontSize: 12, color: colors.text.muted, textDecorationLine: 'underline' },
 
     // Renewal status banner
@@ -1134,6 +1201,8 @@ function buildStyles(colors, isDark) {
     severityDot: { width: 10, height: 10, borderRadius: 5 },
     typeBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: borderRadius.full, borderWidth: 1 },
     typeText: { fontSize: 11, fontWeight: '500' },
+    statusPill: { marginLeft: 6, paddingHorizontal: 6, paddingVertical: 2, borderRadius: borderRadius.full, borderWidth: 1 },
+    statusPillText: { fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3 },
     dateText: { fontSize: 11, color: colors.text.subtle },
     // Text containers must flex and clip at line limit — no maxWidth
     // so they can fill the available column on all viewports.
