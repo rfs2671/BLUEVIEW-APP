@@ -36,8 +36,27 @@ const _dark = {
   text: {
     primary:   'rgba(255, 255, 255, 0.9)',
     secondary: 'rgba(255, 255, 255, 0.6)',
-    muted:     'rgba(255, 255, 255, 0.4)',
+    // 0.40 → 0.55: at 0.40 this was 3.59–3.79:1 on every dark surface, below
+    // WCAG AA 4.5:1 for text. 0.55 clears it everywhere (5.44–6.28:1).
+    muted:     'rgba(255, 255, 255, 0.55)',
+    // `subtle` stays at 0.30 (2.6–2.7:1). It is placeholder/disabled/meta-dot
+    // text, which WCAG exempts; raising it would collapse the muted/subtle
+    // hierarchy and make disabled inputs read as active.
     subtle:    'rgba(255, 255, 255, 0.3)',
+  },
+
+  // ── Semantic STATE values, per theme ────────────────────────────────────
+  // The saturated state tokens used to be pinned theme-blind in
+  // semanticColors.js, so light mode inherited the dark hexes and failed
+  // badly (amber 1.16:1, green 1.59:1, red 1.93:1). They now live in the
+  // palette so each theme carries values that clear AA on ITS surfaces.
+  // Dark keeps exactly what shipped — this half is a zero-pixel change.
+  state: {
+    attention:    '#fbbf24',  // amber-400  — 8.61:1 worst dark surface
+    critical:     '#ef4444',  // red-500    — icons/dots (3.0 bar), 3.82:1
+    criticalText: '#f87171',  // red-400    — text, 5.19:1
+    criticalFill: '#dc2626',  // red-600    — fill behind WHITE text (4.83:1)
+    verified:     '#22c55e',  // green-500  — 6.30:1
   },
 
   iconPod: {
@@ -120,9 +139,30 @@ const _light = {
 
   text: {
     primary:   '#0A1929',
-    secondary: 'rgba(10, 25, 41, 0.75)',
-    muted:     'rgba(10, 25, 41, 0.65)',
+    secondary: 'rgba(10, 25, 41, 0.75)',   // 6.40:1 at the darkest gradient stop
+    muted:     'rgba(10, 25, 41, 0.65)',   // 4.75:1 at the darkest gradient stop
+    // See the dark palette: `subtle` is placeholder/disabled text (WCAG-exempt).
     subtle:    'rgba(10, 25, 41, 0.50)',
+  },
+
+  // ── Semantic STATE values, light theme ──────────────────────────────────
+  // Darker variants of the SAME hue families — the dark-theme hexes were
+  // unreadable here (amber 1.16:1, green 1.59:1, red 1.93:1 at the darkest
+  // gradient stop). Every value below clears AA against BOTH gradient ends
+  // (#D6E4F7 lightest / #ccd8ee darkest) and both card fills.
+  //
+  // `attention` is #7A5300, NOT a browner amber like #92400E. Both pass
+  // contrast, but #92400E sits at hue 23° — only 18° from critical red, so
+  // "expiring" and "violation" stopped being distinguishable at a glance.
+  // #7A5300 is hue 41°, within 2° of the dark amber #fbbf24 (43°): a pure
+  // lightness/saturation change on amber's own hue, keeping 42.5° of hue
+  // separation from red (dark theme has 57°).
+  state: {
+    attention:    '#7A5300',  // dark gold-amber — 4.77:1 worst surface
+    critical:     '#C62828',  // red — icons/dots (3.0 bar), 3.92:1
+    criticalText: '#B91C1C',  // red-700 — text, 4.51:1
+    criticalFill: '#B91C1C',  // fill behind WHITE text — 6.02:1 on white
+    verified:     '#166534',  // green-800 — 4.97:1
   },
 
   iconPod: {

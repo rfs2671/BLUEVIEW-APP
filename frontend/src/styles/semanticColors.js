@@ -36,17 +36,18 @@
 
 import { colors } from './theme';
 
-// Theme-insensitive saturated state values — identical to the literals they
-// replace, so semantic call-site migration produces no visual change.
-const ATTENTION = '#fbbf24'; // amber-400  (matches theme warning / current literals)
-const CRITICAL = '#ef4444'; // red-500    (dominant literal; matches RiskScoreCircle BAND_RED)
-const CRITICAL_TEXT = '#f87171'; // red-400 — critical for TEXT. #ef4444 as text on
-// glass cards is 4.03:1 (surface-1) / 3.33:1 (surface-2), below WCAG AA 4.5:1.
-// #f87171 clears it — page 6.41:1, card 5.48:1, elevated 4.53:1 — same hue,
-// one step lighter. Use for red TEXT; keep `critical` for icons/borders/dots
-// (they only need 3:1 and pass).
-const CRITICAL_FILL = '#dc2626'; // red-600    (AA-contrast fill behind white text)
-const VERIFIED = '#22c55e'; // green-500  (matches RiskScoreCircle BAND_GREEN post-fix)
+// Saturated state values are now PER-THEME and live in the palette
+// (theme.js `state` block), read through live getters below so they track
+// applyTheme(). They used to be theme-blind constants pinned to the dark
+// hexes, which meant light mode rendered amber at 1.16:1, green at 1.59:1 and
+// red at 1.93:1 — far below WCAG AA. Dark values are unchanged (zero-pixel);
+// light gained darker same-hue variants that clear AA against both ends of
+// the gradient background and both card fills. See theme.js for the
+// per-token ratios and for why light amber is #7A5300 (hue-matched to the
+// dark amber) rather than a browner value that collides with red.
+//
+// Within a theme these are still constants — one value per token per theme —
+// so nothing at a call site can drift.
 
 // State tokens. `neutral`/`neutralStrong` are live getters so they track
 // applyTheme(); the saturated tokens are constants (see THEME BEHAVIOR above).
@@ -97,11 +98,11 @@ export const semantic = {
   get neutral() { return colors.text.muted; },
   get neutralStrong() { return colors.text.secondary; },
   get neutralBg() { return NEUTRAL_BG; },
-  get attention() { return ATTENTION; },
-  get critical() { return CRITICAL; },
-  get criticalText() { return CRITICAL_TEXT; },
-  get criticalFill() { return CRITICAL_FILL; },
-  get verified() { return VERIFIED; },
+  get attention() { return colors.state.attention; },
+  get critical() { return colors.state.critical; },
+  get criticalText() { return colors.state.criticalText; },
+  get criticalFill() { return colors.state.criticalFill; },
+  get verified() { return colors.state.verified; },
 
   // ── Derived state tints (fill + border), from the base tokens above via
   //    withAlpha. These fix the theme drift the audit found: they are built on
@@ -109,12 +110,12 @@ export const semantic = {
   //    stale successBg/errorBg bases (#4ade80 / #f87171). Migrating a call site
   //    to these therefore shifts both hue (green #4ade80→#22c55e, red
   //    #f87171→#ef4444) and opacity to the canonical steps.
-  get criticalBg() { return withAlpha(CRITICAL, STATE_FILL); },
-  get criticalBorder() { return withAlpha(CRITICAL, STATE_BORDER); },
-  get attentionBg() { return withAlpha(ATTENTION, STATE_FILL); },
-  get attentionBorder() { return withAlpha(ATTENTION, STATE_BORDER); },
-  get verifiedBg() { return withAlpha(VERIFIED, STATE_FILL); },
-  get verifiedBorder() { return withAlpha(VERIFIED, STATE_BORDER); },
+  get criticalBg() { return withAlpha(colors.state.critical, STATE_FILL); },
+  get criticalBorder() { return withAlpha(colors.state.critical, STATE_BORDER); },
+  get attentionBg() { return withAlpha(colors.state.attention, STATE_FILL); },
+  get attentionBorder() { return withAlpha(colors.state.attention, STATE_BORDER); },
+  get verifiedBg() { return withAlpha(colors.state.verified, STATE_FILL); },
+  get verifiedBorder() { return withAlpha(colors.state.verified, STATE_BORDER); },
 };
 
 // ── Non-state groupings (theme-aware, re-exported for one-import ergonomics) ───

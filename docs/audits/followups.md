@@ -4,6 +4,27 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-27 — 85 hardcoded `#f59e0b` amber literals still bypass the token layer
+
+The dual-theme contrast fix made the semantic state tokens per-theme, so
+`semantic.attention` now resolves to a light-mode-safe amber. But **85
+occurrences across 30 files** still hardcode the raw amber literal `#f59e0b`
+(plus `rgba(245,158,11,…)` fills), which cannot follow the theme and therefore
+still render at ~3.2:1 in light mode — below WCAG AA.
+
+**Fixed in this pass (the screen named in the audit):**
+`frontend/app/project/[id]/dob-logs.jsx` — all 22 amber literals routed to
+`semantic.attention` / `semantic.attentionBg`.
+
+**Still open:** the other 30 files, notably `app/admin/safety-staff.jsx`,
+`app/admin/site-devices.jsx`, `app/daily-log.jsx`, `app/logbooks/*.jsx`,
+`app/documents.jsx`, `app/demo.jsx`. Same class of bug exists for any
+hardcoded red/green literal.
+
+**To close:** sweep the remaining literals onto the semantic tokens (a
+color-only change per site), then add a lint rule banning raw state-color hex
+in `app/`/`src/` so the sprawl cannot reappear.
+
 ## 2026-07-27 — No per-project DOB-sync timestamp (Projects triage "Synced" column)
 
 The desktop Projects triage table (`frontend/src/components/ProjectsTable.jsx`)

@@ -225,7 +225,7 @@ export default function DOBLogsScreen() {
         : { label: 'Expired', color: colors.text.muted };
     }
     if (isRecordOpen(log)) {
-      return { label: 'Open', color: log.record_type === 'complaint' ? '#f59e0b' : semantic.critical };
+      return { label: 'Open', color: log.record_type === 'complaint' ? semantic.attention : semantic.critical };
     }
     return { label: 'Closed', color: colors.text.muted };
   };
@@ -408,8 +408,8 @@ export default function DOBLogsScreen() {
           <Text style={s.logSummary} numberOfLines={isExpanded ? 10 : 2} ellipsizeMode="tail">{log.ai_summary}</Text>
           {(isExpired || isExpiring) && (
             <View style={[s.expirationBanner, isExpired ? s.expiredBanner : s.expiringBanner]}>
-              <AlertTriangle size={14} color={isExpired ? semantic.critical : '#f59e0b'} />
-              <Text style={[s.expirationText, { color: isExpired ? semantic.criticalText : '#f59e0b' }]}>
+              <AlertTriangle size={14} color={isExpired ? semantic.critical : semantic.attention} />
+              <Text style={[s.expirationText, { color: isExpired ? semantic.criticalText : semantic.attention }]}>
                 {isExpired ? `EXPIRED ${Math.abs(days)} days ago` : `Expires in ${days} day${days !== 1 ? 's' : ''}`}
               </Text>
             </View>
@@ -429,7 +429,7 @@ export default function DOBLogsScreen() {
               </View>
               {isBisLegacy && needsRenewal && (
                 <View style={s.bisLegacyBanner}>
-                  <AlertTriangle size={14} color="#f59e0b" />
+                  <AlertTriangle size={14} color={semantic.attention} />
                   <Text style={s.bisLegacyText}>
                     BIS Legacy Permit — automated renewal unavailable. Contact your expediter for a PAA or re-file on DOB NOW.
                   </Text>
@@ -522,7 +522,7 @@ export default function DOBLogsScreen() {
               <View style={s.divider} />
               {log.notice_type && (
                 <View style={[s.typeBadge, { borderColor: semantic.attentionBorder, marginTop: 4, alignSelf: 'flex-start' }]}>
-                  <Text style={[s.typeText, { color: '#f59e0b' }]}>
+                  <Text style={[s.typeText, { color: semantic.attention }]}>
                     {{'commissioners_order': "COMMISSIONER'S ORDER", 'padlock_order': 'PADLOCK ORDER', 'emergency_declaration': 'EMERGENCY DECLARATION', 'notice_of_deficiency': 'NOTICE OF DEFICIENCY', 'letter_of_deficiency': 'LETTER OF DEFICIENCY'}[log.notice_type] || log.notice_type}
                   </Text>
                 </View>
@@ -533,8 +533,8 @@ export default function DOBLogsScreen() {
                 const isOverdue = deadlineDays < 0;
                 return (
                   <View style={[s.expirationBanner, { backgroundColor: isOverdue ? semantic.criticalBg : semantic.attentionBg }]}>
-                    <AlertTriangle size={14} color={isOverdue ? semantic.critical : '#f59e0b'} />
-                    <Text style={[s.expirationText, { color: isOverdue ? semantic.criticalText : '#f59e0b', fontWeight: '600' }]}>
+                    <AlertTriangle size={14} color={isOverdue ? semantic.critical : semantic.attention} />
+                    <Text style={[s.expirationText, { color: isOverdue ? semantic.criticalText : semantic.attention, fontWeight: '600' }]}>
                       {isOverdue ? `OVERDUE by ${Math.abs(deadlineDays)} days` : `${deadlineDays} days to comply`}
                     </Text>
                   </View>
@@ -553,7 +553,7 @@ export default function DOBLogsScreen() {
                 <View style={{ marginTop: 8 }}>
                   <Text style={{ fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>RESOLUTION STATUS</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ['certified','dismissed','paid','resolved'].includes(log.resolution_state) ? semantic.verified : ['hearing_scheduled','cure_pending'].includes(log.resolution_state) ? '#f59e0b' : semantic.critical }} />
+                    <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ['certified','dismissed','paid','resolved'].includes(log.resolution_state) ? semantic.verified : ['hearing_scheduled','cure_pending'].includes(log.resolution_state) ? semantic.attention : semantic.critical }} />
                     <Text style={{ fontSize: 13, color: colors.text.primary, fontWeight: '600' }}>
                       {{'open':'Open — Unresolved','cure_pending':'Cure Submitted — Awaiting Certification','hearing_scheduled':'ECB Hearing Scheduled','hearing_past':'Hearing Occurred — Awaiting Result','certified':'Certified — Resolved','dismissed':'Dismissed','paid':'Penalty Paid','resolved':'Resolved'}[log.resolution_state] || log.resolution_state}
                     </Text>
@@ -581,7 +581,7 @@ export default function DOBLogsScreen() {
     const riskColors = {
       CRITICAL: semantic.critical,
       HIGH: '#f97316',
-      MEDIUM: '#f59e0b',
+      MEDIUM: semantic.attention,
       LOW: semantic.verified,
       RESOLVED: '#6b7280',
       PENDING: '#3b82f6',
@@ -600,7 +600,7 @@ export default function DOBLogsScreen() {
             <View style={s.logHeaderLeft}>
               <View style={[s.severityDot, { backgroundColor: riskColor }]} />
               <View style={[s.typeBadge, { borderColor: semantic.attentionBorder }]}>
-                <Text style={[s.typeText, { color: '#f59e0b' }]}>{complaintSource}</Text>
+                <Text style={[s.typeText, { color: semantic.attention }]}>{complaintSource}</Text>
               </View>
               {renderStatusPill(log)}
             </View>
@@ -707,7 +707,7 @@ export default function DOBLogsScreen() {
     const resultConfig = result.includes('FAIL')
       ? { color: semantic.critical, textColor: semantic.criticalText, label: 'Failed', bg: 'rgba(239,68,68,0.1)' }
       : result.includes('PARTIAL')
-      ? { color: '#f59e0b', label: 'Partial', bg: 'rgba(245,158,11,0.1)' }
+      ? { color: semantic.attention, label: 'Partial', bg: semantic.attentionBg }
       : { color: semantic.verified, label: 'Passed', bg: 'rgba(34,197,94,0.1)' };
 
     return (
@@ -857,7 +857,7 @@ export default function DOBLogsScreen() {
             ) : (
               <Pressable onPress={isAdmin ? openConfigModal : undefined}>
                 <View style={s.noBinBadge}>
-                  <AlertTriangle size={13} strokeWidth={1.5} color="#f59e0b" />
+                  <AlertTriangle size={13} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.noBinText}>No BIN — {isAdmin ? 'tap to configure' : 'address-based lookup active'}</Text>
                 </View>
               </Pressable>
@@ -888,8 +888,8 @@ export default function DOBLogsScreen() {
             </Pressable>
             <Pressable style={s.navCardWrap} onPress={() => { setActiveTab(activeTab === 'complaint' ? 'all' : 'complaint'); setExpandedLogId(null); }}>
               <GlassCard style={[s.navCard, activeTab === 'complaint' && s.navCardActive]}>
-                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (openComplaints > 0 ? '#f59e0b' : colors.text.muted)} />
-                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: '#f59e0b' }, activeTab === 'complaint' && s.navCountActive]}>{ofText(openComplaints, totalComplaints)}</Text>
+                <MessageSquare size={22} strokeWidth={1.5} color={activeTab === 'complaint' ? chrome.brand : (openComplaints > 0 ? semantic.attention : colors.text.muted)} />
+                <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navCount, openComplaints > 0 && { color: semantic.attention }, activeTab === 'complaint' && s.navCountActive]}>{ofText(openComplaints, totalComplaints)}</Text>
                 <Text numberOfLines={1} adjustsFontSizeToFit style={[s.navLabel, activeTab === 'complaint' && s.navLabelActive]}>Open Complaints</Text>
               </GlassCard>
             </Pressable>
@@ -919,7 +919,7 @@ export default function DOBLogsScreen() {
           {renewablePermits.length > 0 && (
             <GlassCard style={s.renewalBanner}>
               <View style={s.renewalBannerHeader}>
-                <ShieldAlert size={16} strokeWidth={2} color="#f59e0b" />
+                <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
                 <Text style={s.renewalBannerTitle}>
                   {renewablePermits.length} Permit{renewablePermits.length > 1 ? 's' : ''} Need Renewal
                 </Text>
@@ -927,7 +927,7 @@ export default function DOBLogsScreen() {
               <View style={s.renewalStatsRow}>
                 {expiringPermits.length > 0 && (
                   <View style={s.renewalStat}>
-                    <Text style={[s.renewalStatNum, { color: '#f59e0b' }]}>{expiringPermits.length}</Text>
+                    <Text style={[s.renewalStatNum, { color: semantic.attention }]}>{expiringPermits.length}</Text>
                     <Text style={s.renewalStatLabel}>Expiring</Text>
                   </View>
                 )}
@@ -945,7 +945,7 @@ export default function DOBLogsScreen() {
                     <Text style={s.renewalItemText} numberOfLines={1}>
                       {p.work_type || p.permit_type || 'Permit'} ({p.job_number || '—'})
                     </Text>
-                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.criticalText : '#f59e0b' }]}>
+                    <Text style={[s.renewalItemDays, { color: d !== null && d < 0 ? semantic.criticalText : semantic.attention }]}>
                       {d !== null ? (d < 0 ? `${Math.abs(d)}d overdue` : `${d}d left`) : 'Expired'}
                     </Text>
                   </View>
@@ -979,7 +979,7 @@ export default function DOBLogsScreen() {
             if (!nycBin) {
               return (
                 <GlassCard style={s.emptyCard}>
-                  <AlertTriangle size={40} strokeWidth={1} color="#f59e0b" />
+                  <AlertTriangle size={40} strokeWidth={1} color={semantic.attention} />
                   <Text style={s.emptyTitle}>No BIN on File</Text>
                   <Text style={s.emptySubtitle}>
                     We couldn't auto-resolve this project's NYC Building Identification
@@ -1123,7 +1123,7 @@ function buildStyles(colors, isDark) {
     binBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
     binText: { fontSize: 13, color: colors.text.muted, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
     noBinBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-    noBinText: { fontSize: 13, color: '#f59e0b' },
+    noBinText: { fontSize: 13, color: semantic.attention },
 
     // Nav cards (replaces pill tabs + stat row)
     navRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg, paddingRight: spacing.sm },
@@ -1147,7 +1147,7 @@ function buildStyles(colors, isDark) {
     // Renewal status banner
     renewalBanner: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder, marginBottom: spacing.lg },
     renewalBannerHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-    renewalBannerTitle: { fontSize: 14, fontWeight: '600', color: '#f59e0b' },
+    renewalBannerTitle: { fontSize: 14, fontWeight: '600', color: semantic.attention },
     renewalStatsRow: { flexDirection: 'row', gap: spacing.lg, marginBottom: spacing.sm },
     renewalStat: { flexDirection: 'row', alignItems: 'baseline', gap: 4 },
     renewalStatNum: { fontSize: 18, fontWeight: '700' },
@@ -1164,7 +1164,7 @@ function buildStyles(colors, isDark) {
 
     // BIS legacy banner
     bisLegacyBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, backgroundColor: semantic.attentionBg, borderRadius: borderRadius.lg, padding: spacing.md, marginTop: spacing.sm, borderWidth: 1, borderColor: semantic.attentionBorder },
-    bisLegacyText: { fontSize: 13, color: '#f59e0b', flex: 1, lineHeight: 18 },
+    bisLegacyText: { fontSize: 13, color: semantic.attention, flex: 1, lineHeight: 18 },
 
     // Full-width sync button
     syncButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, backgroundColor: '#1565C0', paddingVertical: 14, borderRadius: borderRadius.lg, marginBottom: spacing.sm },

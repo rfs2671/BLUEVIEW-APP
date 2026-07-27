@@ -643,7 +643,7 @@ export default function ProjectDetailScreen() {
         <View style={deskStyles.cols}>
           {/* LEFT (primary) — DOB exposure, forecast, operational tiles. */}
           <View style={deskStyles.colLeft}>
-            <Text style={deskStyles.sectionLabel}>DOB EXPOSURE</Text>
+            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>DOB EXPOSURE</Text>
             <View style={deskStyles.tileRow}>
               <DeskTile loading={dobExpLoading} value={exp.open_violations} label="Open violations" token={semantic.criticalText} />
               <DeskTile loading={dobExpLoading} value={exp.permits_expiring} label="Permits expiring <30d" token={semantic.attention} />
@@ -652,7 +652,7 @@ export default function ProjectDetailScreen() {
 
             <CompliancePanel projectId={projectId} />
 
-            <Text style={deskStyles.sectionLabel}>ON SITE</Text>
+            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>ON SITE</Text>
             <View style={deskStyles.tileRow}>
               <DeskTile value={stats.onSiteWorkers} label="On site" token={tokenText.primary} />
               <DeskTile value={nfcTags.length} label="NFC tags" token={tokenText.primary} />
@@ -662,7 +662,7 @@ export default function ProjectDetailScreen() {
 
           {/* RIGHT (secondary) — quick actions as a compact list. */}
           <View style={deskStyles.colRight}>
-            <Text style={deskStyles.sectionLabel}>QUICK ACTIONS</Text>
+            <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>QUICK ACTIONS</Text>
             {quickActions.map((action) => {
               const Icon = action.icon;
               return (

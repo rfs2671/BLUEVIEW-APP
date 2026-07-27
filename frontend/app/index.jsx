@@ -322,7 +322,7 @@ export default function DashboardScreen() {
     const isAdmin = user?.role === 'admin' || user?.role === 'owner';
     return (
       <>
-        <Text style={deskStyles.sectionLabel}>PORTFOLIO EXPOSURE</Text>
+        <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>PORTFOLIO EXPOSURE</Text>
         <View style={deskStyles.rollupRow}>
           <RollupCard loading={dobLoading} value={ov} label="Open violations" token={semantic.criticalText} />
           <RollupCard loading={dobLoading} value={pe} label="Permits expiring <30d" token={semantic.attention} />
@@ -332,7 +332,7 @@ export default function DashboardScreen() {
 
         {isAdmin ? (
           <>
-            <Text style={deskStyles.sectionLabel}>ADMIN TOOLS</Text>
+            <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>ADMIN TOOLS</Text>
             <View style={deskStyles.adminRow}>
               {adminActions.map((action) => (
                 <AdminRowTile
