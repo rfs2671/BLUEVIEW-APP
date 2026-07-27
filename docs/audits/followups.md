@@ -4,6 +4,25 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## 2026-07-26 — i18n gap on the DOB compliance screen (dob-logs.jsx)
+
+`frontend/app/project/[id]/dob-logs.jsx` has **no i18n framework** — the
+no-expiry permit disclosure ("N permit(s) without expiry data not counted") and
+every other user-facing string on this screen (tile labels, "Sync Now", filter
+banner, status badges, etc.) are **English-only**. This is against the app's
+stated **bilingual EN/ES** principle for user-facing strings. The app has no
+i18n library wired at all (no i18next/react-i18next; a few worker-facing screens
+carry inline EN/ES strings, but the compliance screens do not).
+
+**Interim:** English-only shipped honestly — commit `5e4a521`'s body records that
+the disclosure is English because this screen lacks i18n.
+
+**To close:** wire i18n on this screen (and the sibling compliance screens) so
+its strings meet the bilingual convention — ideally via a shared translation
+mechanism rather than per-string inline ternaries.
+
+---
+
 ## 2026-07-26 — dob-summary active-permit boundary: UTC vs NYC-local (minor)
 
 `GET /projects/dob-summary`'s `permits_expiring` facet uses **UTC midnight**
