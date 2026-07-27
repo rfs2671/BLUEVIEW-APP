@@ -8,9 +8,16 @@
  *
  * So this harness reads the REAL component source, extracts the actual
  * `const BAND_* = {...}` definitions and the shipped `bandFor` function
- * body verbatim, evaluates just those (they are pure and reference no
- * imports), and asserts against them. If a threshold or band label ever
- * changes in the component, this test reflects it — it is not a hand-copy.
+ * body verbatim, evaluates just those, and asserts against them. If a
+ * threshold or band label ever changes in the component, this test reflects
+ * it — it is not a hand-copy.
+ *
+ * The extracted snippet is NOT import-free: BAND_PENDING builds its colors
+ * with withAlpha() from ../styles/semanticColors. That helper is parsed out
+ * of its real source and evaluated alongside, so the snippet resolves. Any
+ * future token helper adopted by the bands must be added the same way — the
+ * harness is deliberately loud (throws) rather than silently substituting a
+ * hand-written stand-in.
  *
  * Run:  node src/components/RiskScoreCircle.bandFor.test.cjs
  *
@@ -40,8 +47,22 @@ const fnMatch = src.match(/export function bandFor\(score\)\s*\{[\s\S]*?\n\}/);
 if (!fnMatch) throw new Error('bandFor() not found in source');
 const fnSrc = fnMatch[0].replace('export function', 'function');
 
+// The BAND_* consts are no longer import-free: BAND_PENDING builds its colors
+// with withAlpha() from the semantic-token module. Pull that helper in from
+// its real source the same way everything else here is pulled in — parsed out
+// of the shipped file, never hand-copied — so the eval scope can resolve it.
+// If withAlpha is ever renamed or removed this throws loudly rather than
+// silently testing a stale copy.
+const semFile = path.join(__dirname, '..', 'styles', 'semanticColors.js');
+const semSrc = fs.readFileSync(semFile, 'utf8');
+const helperMatch = semSrc.match(/export function withAlpha\(hex, opacity\)\s*\{[\s\S]*?\n\}/);
+if (!helperMatch) throw new Error('withAlpha() not found in semanticColors.js');
+const helperSrc = helperMatch[0].replace('export function', 'function');
+
 // eslint-disable-next-line no-eval
-const bandFor = eval(`(function () { ${bandConsts}\n${fnSrc}\nreturn bandFor; })()`);
+const bandFor = eval(
+  `(function () { ${helperSrc}\n${bandConsts}\n${fnSrc}\nreturn bandFor; })()`
+);
 
 let failed = 0;
 function check(name, actual, expected) {
