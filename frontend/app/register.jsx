@@ -46,14 +46,15 @@ export default function RegisterScreen() {
     setLoading(true);
     setError('');
     try {
-      // role "owner" so a self-serve signup doesn't require a pre-existing
-      // company_id (the backend requires a company for non-owner/admin roles).
+      // No role, no company_id. The server decides both and DISCARDS whatever
+      // the client sends — sending them would be theatre. A self-registrant
+      // becomes the owner of their own new organisation, which POST
+      // /onboarding/company creates and links immediately after this.
       await authAPI.register({
         name: name.trim(),
         email: email.trim(),
         password,
         company_name: company.trim() || null,
-        role: 'owner',
       });
       // Register returns no token; sign in to establish the session.
       await login(email.trim(), password);

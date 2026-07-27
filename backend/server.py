@@ -2490,16 +2490,50 @@ ACTIVE_PROJECT_FILTER = {
 # accounts are "pending" and blocked from every cost-bearing endpoint (AI,
 # uploads, live external APIs) until an admin approves them. The UI lock alone
 # is NOT sufficient — this dependency is the real gate.
+# ── Legacy null grace — TEMPORARY, REMOVE AFTER THE PRODUCTION BACKFILL ──────
+# Accounts created before account_status existed carry no value at all. Failing
+# those closed would lock out effectively the entire existing user base on
+# deploy, so a missing/null status is admitted for now.
+#
+# This is a HOLE while it lasts: any path that creates a user without an
+# explicit account_status produces an account that bypasses this gate. It is
+# accepted only because the alternative is a certain outage.
+#
+# REMOVAL PROCEDURE (do not skip a step):
+#   1. run backend/scripts/backfill_account_status.py --apply   (null -> approved)
+#   2. run backend/scripts/audit_account_roles.py               (confirm 0 MISSING)
+#   3. flip ALLOW_LEGACY_NULL_STATUS to False and ship
+# After step 3 a null status fails closed forever: a future null is a bug or an
+# attack, not a legacy account.
+ALLOW_LEGACY_NULL_STATUS = True
+
+# The ONLY statuses that may pass. An allow-list, not a deny-list: an unknown
+# or future status ("suspended", "revoked", a typo, a value written by a path
+# nobody audited) must fail CLOSED rather than sail through because it happens
+# not to equal "pending".
+APPROVED_ACCOUNT_STATUSES = frozenset({"approved"})
+
+
 async def require_approved(current_user = Depends(get_current_user)):
-    """Reject pending accounts BEFORE any AI/storage/API spend. Applied as a
-    route dependency on cost-bearing endpoints. Site devices (provisioned by an
-    approved admin) bypass. Legacy accounts missing the field are grandfathered
-    — the startup backfill (run_account_status_startup_migration) sets them to
-    'approved', and only an EXPLICIT 'pending' is blocked, so no existing user
-    is ever locked out even if the backfill hasn't run yet."""
+    """Reject accounts that are not explicitly approved.
+
+    Applied to cost-bearing endpoints (AI/storage/external-API spend) and, since
+    the Finding 0 fix, to privileged/destructive routes.
+
+    Allow-list semantics: only a status in APPROVED_ACCOUNT_STATUSES passes.
+    'pending' is blocked, and so is any unrecognised value.
+
+    Site devices (provisioned by an approved admin, company derived server-side)
+    bypass — this gate sits in front of check-in and must never break it.
+
+    Legacy accounts with NO status are admitted while ALLOW_LEGACY_NULL_STATUS
+    is True; see the removal procedure above. That flag is temporary."""
     if current_user.get("site_mode") or current_user.get("role") == "site_device":
         return current_user
-    if current_user.get("account_status") == "pending":
+    status = current_user.get("account_status")
+    if status is None and ALLOW_LEGACY_NULL_STATUS:
+        return current_user
+    if status not in APPROVED_ACCOUNT_STATUSES:
         raise HTTPException(status_code=403, detail={"error": "account_pending"})
     return current_user
 
@@ -2991,21 +3025,54 @@ async def register(user_data: UserCreate, request: Request = None, _rate=Depends
     # the client payload — always forced here.
     user_dict["account_status"] = "pending"
 
-    # If no company_id provided, this is invalid (except for testing)
-    if not user_dict.get("company_id") and user_dict.get("role") not in ["owner", "admin"]:
-        raise HTTPException(status_code=400, detail="Company ID required")
-
-    # CP role hard-requires a company — without one every company-gated
-    # endpoint will 403 and their session looks broken. Explicit error
-    # text for this case on top of the generic Company ID required rule.
-    _role = user_dict.get("role") or getattr(user_data, "role", None)
-    _cid = user_dict.get("company_id") or getattr(user_data, "company_id", None)
-    if (_role == "cp") and not _cid:
-        raise HTTPException(
-            status_code=422,
-            detail="company_id is required when creating a CP user. "
-                   "Assign them to a company first.",
+    # ── Registration lockdown (Finding 0) ────────────────────────────────────
+    # role and company_id were previously taken STRAIGHT FROM THE REQUEST BODY
+    # via model_dump() and persisted. A caller could therefore self-assign any
+    # role, and name any existing company_id to be created INSIDE that tenant —
+    # after which every company-scoped endpoint correctly served them that
+    # company's data, because they genuinely were a member.
+    #
+    # Both are now decided server-side and the client's values are DISCARDED,
+    # not validated-then-accepted. Discarding is the point: a validator that
+    # accepts a value the client chose is still trusting the client.
+    #
+    # Why the forced role is "owner" and not something lower: a self-serve
+    # registrant is the first user of their OWN new organisation. The intended
+    # model (POST /onboarding/company, which 409s if the user already has a
+    # company) is register -> create your own company -> you own it. Forcing a
+    # lower role here would make the company-required check below reject every
+    # self-signup, and no new organisation could ever be created — an outage in
+    # the signup path, not a hardening.
+    #
+    # NOTE this does NOT by itself stop an owner reaching the platform-ish
+    # routes (DELETE /owner/companies/{id}, /projects/{id}/hard-delete), which
+    # gate on role == "owner" alone. New accounts are blocked there because they
+    # are 'pending' and those routes now carry require_approved. An EXISTING
+    # approved owner of company A can still reach company B's — that is a
+    # tenant-scoping defect on those routes, tracked separately; it is not
+    # closed here and must not be described as closed.
+    _client_role = user_dict.pop("role", None)
+    _client_company = user_dict.pop("company_id", None)
+    if _client_role not in (None, "", "worker"):
+        logger.warning(
+            "register: ignoring client-supplied role=%r for %s",
+            _client_role, user_data.email,
         )
+    if _client_company:
+        logger.warning(
+            "register: ignoring client-supplied company_id=%r for %s",
+            _client_company, user_data.email,
+        )
+    user_dict["role"] = "owner"
+    # No company yet — /onboarding/company creates one and links this user.
+    # Self-registration can NEVER join an existing company; that path is
+    # POST /admin/users, where company_id is inherited from the acting admin.
+    user_dict["company_id"] = None
+
+    # The CP-requires-a-company guard that used to live here is gone: it read
+    # role/company_id back off the request body, and self-registration can no
+    # longer produce a CP or carry a company at all. That rule still applies on
+    # the path that CAN create a CP — POST /admin/users — where it remains.
 
     result = await db.users.insert_one(user_dict)
     user_dict["id"] = str(result.inserted_id)
@@ -4973,7 +5040,7 @@ async def link_gc_license_to_company(
     }
 
 
-@api_router.delete("/owner/companies/{company_id}", tags=["Owner"])
+@api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_approved)])
 async def hard_delete_company(company_id: str, current_user=Depends(get_current_user)):
     """Hard delete a company and all its users (owner only)"""
     if current_user.get("role") != "owner":
@@ -7973,7 +8040,7 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 
     return ProjectResponse(**serialize_id(project))
 
-@api_router.put("/projects/{project_id}", response_model=ProjectResponse)
+@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved)])
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
@@ -8156,7 +8223,7 @@ async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
     return deleted
 
 
-@api_router.delete("/projects/{project_id}/hard-delete")
+@api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_approved)])
 async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     """TIER 2 — irreversible purge. OWNER ONLY.
 
