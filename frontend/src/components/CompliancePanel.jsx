@@ -66,7 +66,7 @@ import { useFeatureFlag } from '../hooks/useFeatureFlag';
 import { useTheme } from '../context/ThemeContext';
 import { semantic, border, surface, text } from '../styles/semanticColors';
 import { spacing, borderRadius, typography } from '../styles/theme';
-import { projectsAPI } from '../utils/api';
+import { projectsAPI, dobAPI } from '../utils/api';
 import {
   hazardRatioToColorTier,
   tierToStatusColor,
@@ -310,6 +310,33 @@ export default function CompliancePanel({ projectId }) {
     return () => { cancelled = true; };
   }, [flagOn, projectId]);
 
+  // ── Standing-open exposure for THIS project ──────────────────────
+  // The forecast model is deliberately blind to standing open items: it
+  // scores ACUTE signals (active SWO, CLASS-1 in 7d, CLASS-2 in 14d,
+  // complaint clustering in 30d, hazard ratio). That makes a "NORMAL"
+  // verdict reachable while the project still carries open violations —
+  // a present fact the forecast never looked at.
+  //
+  // We do NOT feed this into the model (present facts and future
+  // prediction stay separate). It is used at the DISPLAY layer only, to
+  // stop the panel leading with a reassurance that contradicts what the
+  // project's own exposure tiles say two rows above.
+  //
+  // Source is dob-summary — the SAME endpoint the exposure tiles read.
+  // This must never read /risk-score: that model is shelved and this
+  // component has no business un-shelving it.
+  const [openExposure, setOpenExposure] = useState(null);
+  useEffect(() => {
+    if (!flagOn || !projectId) return undefined;
+    let cancelled = false;
+    dobAPI.getSummary(projectId)
+      .then((resp) => {
+        if (!cancelled) setOpenExposure(resp?.by_project?.[projectId] || null);
+      })
+      .catch(() => { if (!cancelled) setOpenExposure(null); });
+    return () => { cancelled = true; };
+  }, [flagOn, projectId]);
+
   // ── State 1 — flag OFF (return null, no render, no fetch) ────
   if (!flagOn) return null;
 
@@ -436,6 +463,28 @@ export default function CompliancePanel({ projectId }) {
     else                                  PrimaryArrowIcon = Minus;
   }
 
+  // ── Contradiction guard (display layer only) ─────────────────
+  // Which exposure counts as contradiction-worthy: OPEN VIOLATIONS and OPEN
+  // COMPLAINTS — present, unresolved DOB matters. `permits_expiring` is
+  // deliberately NOT in the trigger: an expiring permit is a future deadline,
+  // not an open enforcement fact, so it does not contradict a forward-looking
+  // "no acute signals" reading (and it already has its own attention-colored
+  // tile). Change this set here if that judgement shifts.
+  const openViolations = Number(openExposure?.open_violations) || 0;
+  const openComplaints = Number(openExposure?.open_complaints) || 0;
+  const hasOpenExposure = openViolations > 0 || openComplaints > 0;
+  const suppressReassurance = defcon?.tier === 'NORMAL' && hasOpenExposure;
+
+  const exposureTone = openViolations > 0 ? 'critical' : 'attention';
+  const exposureSummary = [
+    openViolations > 0
+      ? `${openViolations} open violation${openViolations === 1 ? '' : 's'}`
+      : null,
+    openComplaints > 0
+      ? `${openComplaints} open complaint${openComplaints === 1 ? '' : 's'}`
+      : null,
+  ].filter(Boolean).join('  ·  ');
+
   // ── State 5/6 — ready (cold_start OR standard) ───────────────
   return (
     <GlassCard style={styles.card}>
@@ -445,6 +494,12 @@ export default function CompliancePanel({ projectId }) {
       {defcon?.tier && (
         <DefconHeader
           tier={defcon.tier}
+          // Suppress-not-blend: when the tier is the reassuring NORMAL but the
+          // project carries standing open exposure, DefconHeader leads with the
+          // exposure instead and demotes the forecast to context. ELEVATED /
+          // IMMEDIATE are already non-reassuring and pass through untouched.
+          exposureSummary={suppressReassurance ? exposureSummary : null}
+          exposureTone={suppressReassurance ? exposureTone : null}
           primaryReason={defcon.primary_reason}
           lastEvaluatedAt={defcon.last_evaluated_at}
           onPressWhy={() => router.push(`/project/${projectId}/defcon`)}
@@ -515,7 +570,18 @@ export default function CompliancePanel({ projectId }) {
         <Text style={[styles.primaryHorizonLabel, { color: colors.text.muted }]}>
           {primaryHorizonLabel.toUpperCase()}
         </Text>
-        <Text style={[styles.primaryVerdict, { color: primaryFg }]}>
+        {/* Demoted to body weight when the project has open exposure: a
+            headline-weight "Tracking normal" next to visible open violations
+            reads as a competing verdict even though it is forward-looking.
+            The line still renders (nothing is hidden) — it just stops
+            shouting. With no open exposure there is nothing to compete with,
+            so it keeps its full prominence. */}
+        <Text
+          style={[
+            suppressReassurance ? styles.primaryVerdictDemoted : styles.primaryVerdict,
+            { color: primaryFg },
+          ]}
+        >
           {primaryVerdict}
         </Text>
         <View style={[
@@ -735,6 +801,14 @@ const styles = StyleSheet.create({
   },
   primaryVerdict: {
     ...typography.h2,
+    fontWeight: '600',
+  },
+  // Same color/token, body weight instead of h2 — used when open exposure
+  // is present so the forecast reads as context, not a headline verdict.
+  primaryVerdictDemoted: {
+    ...typography.body,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: '600',
   },
   suppressionNote: {

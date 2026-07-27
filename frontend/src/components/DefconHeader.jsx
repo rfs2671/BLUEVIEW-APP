@@ -11,6 +11,13 @@
  *   primaryReason   — pre-rendered GC-voice reason string from backend
  *   lastEvaluatedAt — ISO UTC string; rendered as "X minutes ago"
  *   onPressWhy      — handler for the Why? link (parent passes navigation)
+ *   exposureSummary — OPTIONAL. When set, the card LEADS with this open-exposure
+ *                     line instead of the tier label + primary_reason, and the
+ *                     backend NORMAL prose is withheld. Set by CompliancePanel
+ *                     only when tier===NORMAL AND the project has open
+ *                     violations/complaints, so a reassuring verdict can never
+ *                     sit above contradicting exposure.
+ *   exposureTone    — OPTIONAL. 'critical' | 'attention' — tone for the lede.
  *
  * Icon mapping (3-bucket Lucide):
  *   NORMAL    → ShieldCheck    (green)
@@ -27,6 +34,7 @@ import {
 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
+import { semantic } from '../styles/semanticColors';
 import {
   tierToTheme,
   tierToLabel,
@@ -44,18 +52,36 @@ export default function DefconHeader({
   primaryReason,
   lastEvaluatedAt,
   onPressWhy,
+  exposureSummary,
+  exposureTone,
 }) {
   const { colors } = useTheme();
   const safeTier = tier || 'NORMAL';
-  const { fg, bg } = tierToTheme(safeTier);
-  const Icon = _tierIcon(safeTier);
+  // Exposure lede — set by CompliancePanel when a reassuring NORMAL verdict
+  // would otherwise sit above standing open exposure. The tier itself is
+  // unchanged; only what this card LEADS with changes.
+  const leading = !!exposureSummary;
+  const tierTheme = tierToTheme(safeTier);
+  const fg = leading
+    ? (exposureTone === 'critical' ? semantic.criticalText : semantic.attention)
+    : tierTheme.fg;
+  const bg = leading
+    ? (exposureTone === 'critical' ? semantic.criticalBg : semantic.attentionBg)
+    : tierTheme.bg;
+  const Icon = leading
+    ? (exposureTone === 'critical' ? AlertTriangle : ShieldAlert)
+    : _tierIcon(safeTier);
   const timeAgo = formatTimeAgo(lastEvaluatedAt);
 
   return (
     <View
       style={[styles.card, { backgroundColor: bg, borderColor: fg }]}
       accessibilityRole="summary"
-      accessibilityLabel={`Defcon tier: ${tierToLabel(safeTier)}`}
+      accessibilityLabel={
+        leading
+          ? `Open exposure: ${exposureSummary}`
+          : `Defcon tier: ${tierToLabel(safeTier)}`
+      }
     >
       <View style={styles.row}>
         <Icon size={18} strokeWidth={1.5} color={fg} />
@@ -66,7 +92,7 @@ export default function DefconHeader({
           numberOfLines={1}
           ellipsizeMode="tail"
         >
-          {tierToLabel(safeTier).toUpperCase()}
+          {leading ? 'OPEN EXPOSURE' : tierToLabel(safeTier).toUpperCase()}
         </Text>
         {timeAgo && (
           <Text
@@ -77,7 +103,29 @@ export default function DefconHeader({
           </Text>
         )}
       </View>
-      {primaryReason ? (
+      {leading ? (
+        <>
+          <Text
+            style={[styles.reason, { color: colors.text.primary }]}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+          >
+            {exposureSummary}
+          </Text>
+          {/* The backend's NORMAL prose ("All indicators within typical range")
+              is NOT rendered here — it overstates what the model examined and
+              would contradict the line above. This states the model's actual
+              scope instead. */}
+          <Text
+            style={[styles.scopeNote, { color: colors.text.secondary }]}
+            numberOfLines={3}
+          >
+            Forecast reads acute signals only — stop-work orders, recent
+            CLASS-1/2 violations, complaint clustering. It does not count
+            standing open items.
+          </Text>
+        </>
+      ) : primaryReason ? (
         // PR #52 — reason is prose; allow up to 3 lines then ellipsize
         // rather than letting it run unbounded on small screens.
         <Text
@@ -129,6 +177,10 @@ const styles = StyleSheet.create({
     ...typography.body,
     fontSize: 14,
     lineHeight: 18,
+  },
+  scopeNote: {
+    fontSize: 11,
+    lineHeight: 15,
   },
   whyLink: {
     ...typography.label,
