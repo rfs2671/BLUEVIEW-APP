@@ -74,7 +74,7 @@ const ActionTile = ({ action, onPress, tileWidth }) => {
 
 // Exposure card key → the matching per-project field on dob-summary's
 // by_project map. 'never' is absent: never-synced is derived from the projects
-// payload (first_poll_completed_at), which dob-summary does not carry.
+// payload (last_dob_sync_at), which dob-summary does not carry.
 const EXPOSURE_FIELD = {
   violations: 'open_violations',
   permits: 'permits_expiring',
@@ -408,7 +408,12 @@ export default function DashboardScreen() {
     const oc = t.open_complaints;
     // "Never synced" is derived from the projects list payload already
     // fetched (no extra call); dob-summary does not carry it.
-    const neverSyncedProjects = projects.filter(p => !p.first_poll_completed_at);
+    // Reads last_dob_sync_at (rolling, stamped on every successful sync), NOT
+    // first_poll_completed_at — that one is written once and never refreshed,
+    // so it answers "has this ever synced?" rather than "is this project's DOB
+    // data current?". The first-poll BANNER above still uses the once-only
+    // field on purpose; the two are different questions.
+    const neverSyncedProjects = projects.filter(p => !p.last_dob_sync_at);
     const neverSynced = neverSyncedProjects.length;
     const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 

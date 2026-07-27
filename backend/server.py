@@ -1461,6 +1461,12 @@ class ProjectResponse(BaseModel):
     # admin / PLUTO-lookup edits track their source.
     bbl_source: Optional[str] = None  # "address_lookup_at_creation" | "pluto_lookup" | "manual_entry" | "geosupport" | "user_corrected"
     bbl_last_synced: Optional[datetime] = None
+    # Rolling DOB-sync freshness, written by run_dob_sync_for_project on every
+    # successful run. MUST be declared here: this model filters the project
+    # DETAIL response, so an undeclared field is silently dropped — which is
+    # exactly why the detail badge read undefined and showed "NEVER SYNCED" for
+    # every project regardless of how recently it had synced.
+    last_dob_sync_at: Optional[datetime] = None
     # MR.14 (commit 2a) — default True. The v1 monitoring product
     # treats DOB-signal polling as the core feature; opt-in to "no,
     # don't track me" is now the unusual case. Existing False docs
@@ -17424,6 +17430,24 @@ async def run_dob_sync_for_project(project: dict) -> list:
     # can send email alerts. The first scan of a newly-tracked project
     # pulls in the entire historical backlog — silent during that run.
     await _mark_initial_scan_done(project_id, "dob")
+
+    # Rolling per-project sync freshness. Distinct from first_poll_completed_at,
+    # which is written ONCE (guarded above) and therefore answers "has this
+    # project ever synced?", not "how fresh is its DOB data?". This runs on
+    # every successful sync, so the UI can show a real relative time.
+    #
+    # Placement is deliberate: after the three early returns (no BIN / lookup
+    # failure / no records path), so a run that bailed never stamps a success.
+    # Wrapped like the block above — a stamp failure must never fail the sync
+    # that already inserted its records.
+    try:
+        await db.projects.update_one(
+            {"_id": to_query_id(project_id)},
+            {"$set": {"last_dob_sync_at": datetime.now(timezone.utc)}},
+        )
+    except Exception as _e:
+        logger.warning(f"last_dob_sync_at write failed for {project_id}: {_e}")
+
     return inserted_logs
  
  

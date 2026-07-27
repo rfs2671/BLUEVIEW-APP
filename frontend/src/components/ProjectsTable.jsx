@@ -16,15 +16,14 @@ import { spacing, borderRadius, typography } from '../styles/theme';
  * per-row call. Class + BIN are demoted to the row overflow menu (reference,
  * not triage). The risk-score column was removed (score shelved).
  *
- * SYNCED column, honest semantics: the payload carries NO per-project
- * last-DOB-sync timestamp. first_poll_completed_at is stamped ONCE on the first
- * poll and never updated (server.py: `if not proj_doc.get("first_poll_...")`),
- * so it is NOT sync freshness — showing "4m" off it would mislead. We therefore
- * show only the one truthful bit it gives: "Never" when it is null (no poll has
- * ever completed — same signal the dashboard's "Never synced" rollup uses), and
- * "—" once a project has synced (freshness unknown). Real relative freshness is
- * blocked until the sync path persists a rolling timestamp — see
- * docs/audits/followups.md.
+ * SYNCED column now reads last_dob_sync_at — a ROLLING timestamp written by
+ * run_dob_sync_for_project on every successful sync, so a real relative time
+ * ("4m", "3d") is honest. This replaces first_poll_completed_at, which is
+ * stamped ONCE on the first poll and never updated, and therefore answered
+ * "has this ever synced?" rather than "how fresh is this?".
+ *
+ * A project with no last_dob_sync_at has not completed a sync since the field
+ * shipped; it reads "Never" until its next nightly/manual run stamps it.
  */
 
 const CLASS_LABEL = { major_b: 'MAJOR B', major_a: 'MAJOR A', regular: 'REGULAR' };
@@ -41,7 +40,23 @@ const FLEX = Object.fromEntries(COLUMNS.map((c) => [c.key, c.flex]));
 
 const projectId = (p) => p._id || p.id;
 const addrOf = (p) => p.address || p.name || '';
-const hasSynced = (p) => !!p.first_poll_completed_at;
+const syncedAt = (p) => {
+  const t = p.last_dob_sync_at ? new Date(p.last_dob_sync_at).getTime() : NaN;
+  return Number.isNaN(t) ? null : t;
+};
+const hasSynced = (p) => syncedAt(p) !== null;
+
+// Coarse relative age — the column is ~90px, so one unit is all that fits.
+// Deliberately not "just now": a sync that landed seconds ago still reads "0m",
+// which is precise without implying live streaming.
+const relAge = (ms) => {
+  const mins = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return days < 365 ? `${days}d` : `${Math.floor(days / 365)}y`;
+};
 
 export default function ProjectsTable({ projects, onRowPress, onDelete }) {
   // Default: exposure-descending — open_violations, then permits_expiring, then
@@ -88,8 +103,9 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
         case 'violations': return byNums(a, b, ['ov', 'pe', 'oc']);
         case 'permits':    return byNums(a, b, ['pe', 'ov', 'oc']);
         case 'complaints': return byNums(a, b, ['oc', 'ov', 'pe']);
-        // Two buckets only (synced / never) — no false ordering by first-poll time.
-        case 'synced':     return ((hasSynced(a) ? 1 : 0) - (hasSynced(b) ? 1 : 0)) * mul;
+        // Real recency ordering now that the timestamp rolls. Never-synced sorts
+        // as oldest (0) so it sinks to the stale end, which is where it belongs.
+        case 'synced':     return ((syncedAt(a) || 0) - (syncedAt(b) || 0)) * mul;
         default: // address
           return addrOf(a).toLowerCase().localeCompare(addrOf(b).toLowerCase()) * mul;
       }
@@ -175,10 +191,10 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
                 {oc}
               </Text>
 
-              {/* Synced — "Never" (attention) when no poll has completed; "—" once
-                  synced (no real freshness timestamp exists yet). */}
+              {/* Synced — real relative age off last_dob_sync_at; "Never"
+                  (attention) until a sync has stamped it. */}
               <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.synced, color: synced ? text.muted : semantic.attention }]}>
-                {synced ? '—' : 'Never'}
+                {synced ? relAge(syncedAt(p)) : 'Never'}
               </Text>
             </Pressable>
 

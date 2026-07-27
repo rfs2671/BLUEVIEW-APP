@@ -615,7 +615,12 @@ export default function ProjectDetailScreen() {
     const addr = project?.address || project?.location || '';
     const title = project?.name || addr || 'Project';
     const showAddr = addr && addr !== title;           // address ONCE, no dup
-    const neverSynced = !project?.first_poll_completed_at;
+    // last_dob_sync_at, not first_poll_completed_at. This screen reads
+    // GET /projects/{id}, which filters through ProjectResponse — the old field
+    // was never declared there, so it arrived undefined and this badge showed
+    // "NEVER SYNCED" on every project regardless of its real sync state.
+    // last_dob_sync_at IS declared on the model, so the badge now tells the truth.
+    const neverSynced = !project?.last_dob_sync_at;
     const exp = dobExposure || {};
     const cls = project?.project_class;
     const clsLabel = cls === 'major_b' ? 'MAJOR B' : cls === 'major_a' ? 'MAJOR A' : null;
