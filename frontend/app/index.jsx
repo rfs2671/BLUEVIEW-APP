@@ -35,6 +35,7 @@ import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import HeaderBrand from '../src/components/HeaderBrand';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
+import { useCheckIns } from '../src/hooks/useCheckIns';
 import { semantic, chrome, border, surface, text } from '../src/styles/semanticColors';
 
 const adminActions = [
@@ -121,6 +122,15 @@ const deskStyles = StyleSheet.create({
   expandRowCount: { fontSize: typography.sizes.sm, fontWeight: '700', minWidth: 24, textAlign: 'right' },
   expandEmpty: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: typography.sizes.sm },
 
+  // ── ACTIVE BY SITE ────────────────────────────────────────────────────
+  siteList: { borderWidth: 1, borderRadius: borderRadius.lg, marginBottom: spacing.lg, overflow: 'hidden' },
+  siteRow: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.md,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm + 2,
+  },
+  siteName: { flex: 1, fontSize: typography.sizes.sm, fontWeight: '500' },
+  siteCount: { fontSize: typography.sizes.sm, fontWeight: '600' },
+  siteEmpty: { fontSize: typography.sizes.sm, marginBottom: spacing.lg },
   adminRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   adminRowTile: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm, height: 40,
@@ -218,6 +228,8 @@ export default function DashboardScreen() {
   // Desktop (RN-Web >=1024) renders the portfolio-triage layout below; mobile
   // renders exactly what it does today. Called unconditionally (hooks rule).
   const isDesktop = useIsDesktop();
+  // Same hook the project-detail ON SITE tile uses (constraint d).
+  const { getActiveCheckIns } = useCheckIns();
 
   const [loading, setLoading] = useState(true);
   const [workers, setWorkers] = useState([]);
@@ -233,6 +245,9 @@ export default function DashboardScreen() {
   // Which exposure card is expanded ('violations' | 'permits' | 'complaints' |
   // 'never'), or null for the calm default state. One at a time.
   const [expandedCard, setExpandedCard] = useState(null);
+  // On-site-now count per project, keyed by project id. Desktop only.
+  const [onSite, setOnSite] = useState({});
+  const [onSiteLoading, setOnSiteLoading] = useState(true);
 
   const [layoutReady, setLayoutReady] = useState(false);
 
@@ -291,6 +306,50 @@ export default function DashboardScreen() {
     })();
     return () => { cancelled = true; };
   }, [isDesktop, isAuthenticated, isPending]);
+
+  // ── On-site-now per project (ACTIVE BY SITE) ──────────────────────────────
+  // Goes through getActiveCheckIns() — the SAME hook the project-detail "ON
+  // SITE" tile uses — which hits GET /api/checkins/project/{id}/active. Using
+  // the hook rather than the API client directly means the two surfaces share
+  // one code path and cannot drift, including the hook's offline fallback.
+  // The endpoint scopes to the NYC-local day via get_today_range_est(), so this
+  // inherits the check-in timezone fix rather than defining a second "today".
+  //
+  // N+1: one request per project. Fine at the current 2-3 projects; past ~15
+  // this should move to a batch/portfolio rollup (same caveat that killed the
+  // per-row risk-score column). Deliberately NOT building that endpoint now —
+  // see the dob-summary pattern for the shape it should take.
+  useEffect(() => {
+    if (!isDesktop || !isAuthenticated || isPending) return undefined;
+    if (!Array.isArray(projects) || projects.length === 0) {
+      setOnSite({});
+      setOnSiteLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        setOnSiteLoading(true);
+        const entries = await Promise.all(projects.map(async (p) => {
+          const pid = p.id || p._id;
+          try {
+            const rows = await getActiveCheckIns(pid);
+            return [pid, Array.isArray(rows) ? rows.length : 0];
+          } catch (_e) {
+            // One project failing must not blank the whole section; that site
+            // reports null and renders "—" rather than a fabricated 0.
+            return [pid, null];
+          }
+        }));
+        if (!cancelled) setOnSite(Object.fromEntries(entries));
+      } catch (_e) {
+        if (!cancelled) setOnSite({});
+      } finally {
+        if (!cancelled) setOnSiteLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isDesktop, isAuthenticated, isPending, projects]);
 
   // Phase C1.3 — first-poll banner: AsyncStorage hydration on
   // mount. Hoisted alongside the other useEffects above the early
@@ -446,6 +505,13 @@ export default function DashboardScreen() {
       { key: 'never', value: neverSynced, label: 'Never synced', token: semantic.attention, loading },
     ];
     const openCard = cards.find((c) => c.key === expandedCard) || null;
+
+    // ACTIVE BY SITE rows, busiest first. A null count means that project's
+    // lookup failed — it sorts last and renders "—", never a fabricated 0.
+    const siteRows = projects
+      .map((p) => ({ p, n: onSite[p.id || p._id] ?? null }))
+      .sort((a, b) => (b.n ?? -1) - (a.n ?? -1));
+    const totalOnSite = siteRows.reduce((sum, r) => sum + (r.n || 0), 0);
     const openRows = openCard ? contributors(openCard.key) : [];
 
     return (
@@ -507,6 +573,46 @@ export default function DashboardScreen() {
             ))}
           </View>
         ) : null}
+
+        {/* ── ACTIVE BY SITE — who is on site right now, per project ──────
+            Counts come from the same endpoint as the project's own ON SITE
+            tile, so the two always agree. All-zero renders one honest line
+            rather than a column of zeros; a project whose lookup failed shows
+            "—", never a fabricated 0. */}
+        <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>ACTIVE BY SITE</Text>
+        {onSiteLoading ? (
+          <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>Checking sites…</Text>
+        ) : siteRows.length === 0 ? (
+          <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>No projects yet.</Text>
+        ) : totalOnSite === 0 ? (
+          <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>
+            No workers checked in today.
+          </Text>
+        ) : (
+          <View style={[deskStyles.siteList, { borderColor: border.subtle, backgroundColor: surface.card }]}>
+            {siteRows.map(({ p, n }, i) => (
+              <Pressable
+                key={p.id || p._id}
+                onPress={() => router.push(`/project/${p.id || p._id}`)}
+                accessibilityRole="link"
+                accessibilityLabel={`Open ${p.name || p.address || 'project'}, ${n == null ? 'count unavailable' : `${n} on site`}`}
+                style={({ hovered }) => [
+                  deskStyles.siteRow,
+                  i > 0 && { borderTopWidth: 1, borderTopColor: border.subtle },
+                  hovered && { backgroundColor: surface.glassHover },
+                ]}
+              >
+                <Text numberOfLines={1} style={[deskStyles.siteName, { color: text.primary }]}>
+                  {p.name || p.address || 'Untitled project'}
+                </Text>
+                <Text style={[deskStyles.siteCount, { color: n ? text.primary : text.muted }]}>
+                  {n == null ? '—' : `${n} on site`}
+                </Text>
+                <ChevronRight size={15} strokeWidth={1.5} color={text.muted} />
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {isAdmin ? (
           <>
