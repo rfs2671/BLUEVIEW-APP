@@ -388,7 +388,7 @@ export default function ReportsScreen() {
                           <Text style={s.summaryLabel} numberOfLines={1}>Logbooks</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard}>
-                          <Building2 size={18} strokeWidth={1.5} color="#f59e0b" />
+                          <Building2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                           <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
                           <Text style={s.summaryLabel} numberOfLines={1}>Subs</Text>
                         </GlassCard>
@@ -401,7 +401,7 @@ export default function ReportsScreen() {
                             {preview.report_already_sent ? (
                               <CheckCircle size={20} strokeWidth={1.5} color={semantic.verified} />
                             ) : (
-                              <Clock size={20} strokeWidth={1.5} color="#f59e0b" />
+                              <Clock size={20} strokeWidth={1.5} color={semantic.attention} />
                             )}
                           </IconPod>
                           <View style={s.statusInfo}>

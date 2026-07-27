@@ -216,7 +216,7 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
     const creatorId = annotation.created_by?._id || annotation.created_by?.id || annotation.created_by;
     const currentUserId = user?._id || user?.id;
     if (creatorId === currentUserId) return '#1565C0';
-    return '#f59e0b';
+    return semantic.neutral;
   };
 
   const canDelete = (annotation) => {

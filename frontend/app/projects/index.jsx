@@ -282,7 +282,7 @@ export default function ProjectsScreen() {
                             backgroundColor: project.project_class === 'major_b' ? semantic.neutralBg : semantic.attentionBg,
                           }]}>
                             <Text style={[s.classificationText, {
-                              color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',
+                              color: project.project_class === 'major_b' ? semantic.neutralStrong : semantic.neutralStrong,
                             }]}>
                               {project.project_class === 'major_b' ? 'MAJOR B' : 'MAJOR A'}
                             </Text>
@@ -707,7 +707,7 @@ function buildStyles(colors, isDark) {
     color: '#60a5fa',
   },
   classificationTextMajor: {
-    color: '#f59e0b',
+    color: semantic.neutralStrong,
   },
   });
 }

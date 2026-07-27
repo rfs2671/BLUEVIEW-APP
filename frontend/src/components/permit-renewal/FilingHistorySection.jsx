@@ -35,7 +35,7 @@ import { useTheme } from '../../context/ThemeContext';
 const STATUS_PALETTE = {
   queued:      { label: 'Queued',           color: '#6b7280' },
   claimed:     { label: 'Claimed',          color: '#3b82f6' },
-  in_progress: { label: 'In Progress',      color: '#f59e0b' },
+  in_progress: { label: 'In Progress',      color: semantic.attention },
   filed:       { label: 'Filed',            color: semantic.verified },
   completed:   { label: 'Completed',        color: semantic.verified },
   failed:      { label: 'Failed',           color: semantic.critical, textColor: semantic.criticalText },

@@ -56,7 +56,7 @@ const getExpirationColor = (dateStr) => {
   if (isNaN(d.getTime())) return '#6b7280';
   const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
   if (daysLeft < 0) return semantic.critical;
-  if (daysLeft <= 60) return '#f59e0b';
+  if (daysLeft <= 60) return semantic.attention;
   return semantic.verified;
 };
 
@@ -491,8 +491,8 @@ export default function SettingsScreen() {
               ) : !gcResolved ? (
                 <GlassCard style={[s.card, { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
-                    <AlertTriangle size={18} color="#f59e0b" />
-                    <Text style={{ fontSize: 13, color: '#f59e0b', flex: 1, lineHeight: 18 }}>
+                    <AlertTriangle size={18} color={semantic.attention} />
+                    <Text style={{ fontSize: 13, color: semantic.attention, flex: 1, lineHeight: 18 }}>
                       Company not linked to a DOB license. Contact your administrator.
                     </Text>
                   </View>
@@ -587,7 +587,7 @@ export default function SettingsScreen() {
                   {showInsuranceForm && (
                     <GlassCard style={[s.card, { borderColor: semantic.attentionBorder }]}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md }}>
-                        <CalendarDays size={18} strokeWidth={1.5} color="#f59e0b" />
+                        <CalendarDays size={18} strokeWidth={1.5} color={semantic.attention} />
                         <Text style={{ fontSize: 14, fontWeight: '600', color: colors.text.primary, flex: 1 }}>
                           Enter Certificate of Insurance Dates
                         </Text>
@@ -770,7 +770,7 @@ export default function SettingsScreen() {
                   )}
 
                   {projects.length === 0 ? (
-                    <Text style={[s.hintText, { color: '#f59e0b', marginTop: 8 }]}>
+                    <Text style={[s.hintText, { color: semantic.attention, marginTop: 8 }]}>
                       No projects found. Create a project first, then set the GC name here.
                     </Text>
                   ) : (

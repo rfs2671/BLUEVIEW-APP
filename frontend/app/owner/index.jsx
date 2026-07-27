@@ -554,7 +554,7 @@ export default function OwnerPortalScreen() {
           <View style={styles.centerContent}>
             <GlassCard style={styles.loginCard}>
               <IconPod size={64}>
-                <ShieldAlert size={28} strokeWidth={1.5} color="#f59e0b" />
+                <ShieldAlert size={28} strokeWidth={1.5} color={semantic.attention} />
               </IconPod>
               <Text style={styles.loginTitle}>Owner Access</Text>
               <Text style={styles.loginSubtitle}>Enter owner password to continue</Text>
@@ -604,9 +604,9 @@ export default function OwnerPortalScreen() {
           {/* Migration Banner */}
           {unmigratedAdmins.length > 0 && (
             <Pressable onPress={handleOpenMigration} style={styles.migrationBanner}>
-              <AlertTriangle size={20} strokeWidth={1.5} color="#f59e0b" />
+              <AlertTriangle size={20} strokeWidth={1.5} color={semantic.attention} />
               <View style={styles.migrationText}>
-                <Text style={styles.migrationTitle}>
+                <Text style={[styles.migrationTitle, { color: semantic.attention }]}>
                   ⚠️ You have {unmigratedAdmins.length} admin(s) without companies
                 </Text>
                 <Text style={styles.migrationSubtitle}>Tap to assign companies and migrate data</Text>
@@ -643,7 +643,7 @@ export default function OwnerPortalScreen() {
                     if (isNaN(d.getTime())) return '#6b7280';
                     const daysLeft = Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
                     if (daysLeft < 0) return semantic.criticalText;
-                    if (daysLeft <= 60) return '#f59e0b';
+                    if (daysLeft <= 60) return semantic.attention;
                     return semantic.verified;
                   };
                   const insGL = insRecords.find(r => r.insurance_type === 'general_liability');
@@ -718,8 +718,8 @@ export default function OwnerPortalScreen() {
                         </View>
                       ) : company.gc_resolved === false && company.name ? (
                         <View style={styles.gcUnverifiedBlock}>
-                          <AlertTriangle size={12} color="#f59e0b" />
-                          <Text style={styles.gcUnverifiedText}>Unverified — not matched to DOB</Text>
+                          <AlertTriangle size={12} color={semantic.attention} />
+                          <Text style={[styles.gcUnverifiedText, { color: semantic.attention }]}>Unverified — not matched to DOB</Text>
                         </View>
                       ) : null}
 
@@ -757,7 +757,7 @@ export default function OwnerPortalScreen() {
                               <View key={rep.id} style={styles.filingRepRow}>
                                 <View style={styles.filingRepRowHeader}>
                                   {rep.is_primary ? (
-                                    <Star size={12} color="#f59e0b" fill="#f59e0b" strokeWidth={1.5} />
+                                    <Star size={12} color={semantic.neutral} fill={semantic.neutral} strokeWidth={1.5} />
                                   ) : (
                                     <Pressable onPress={() => setPrimaryFilingRep(company.id, rep)}>
                                       <Star size={12} color={colors.text.muted} strokeWidth={1.5} />
@@ -830,7 +830,7 @@ export default function OwnerPortalScreen() {
 
             {companies.length === 0 && (
               <View style={styles.infoBox}>
-                <AlertTriangle size={16} strokeWidth={1.5} color="#f59e0b" />
+                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.infoText}>Create a company first before adding admins</Text>
               </View>
             )}
@@ -1208,7 +1208,7 @@ export default function OwnerPortalScreen() {
                 <Text style={styles.confirmText}>
                   Are you sure you want to delete admin "{selectedAdmin?.name}"?
                 </Text>
-                <Text style={styles.confirmWarning}>
+                <Text style={[styles.confirmWarning, { color: semantic.attention }]}>
                   ⚠️ This will only delete the admin account. Their created projects and data will remain.
                 </Text>
                 <View style={styles.confirmActions}>
@@ -1322,7 +1322,7 @@ export default function OwnerPortalScreen() {
                     style={styles.filingRepPrimaryToggle}
                   >
                     {filingRepForm.is_primary ? (
-                      <Star size={16} color="#f59e0b" fill="#f59e0b" strokeWidth={1.5} />
+                      <Star size={16} color={semantic.neutral} fill={semantic.neutral} strokeWidth={1.5} />
                     ) : (
                       <Star size={16} color={colors.text.muted} strokeWidth={1.5} />
                     )}
@@ -1437,7 +1437,7 @@ const styles = StyleSheet.create({
   migrationTitle: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#f59e0b',
+    color: semantic.attention,
   },
   migrationSubtitle: {
     fontSize: 12,
@@ -1540,7 +1540,7 @@ const styles = StyleSheet.create({
   },
   gcUnverifiedText: {
     fontSize: 11,
-    color: '#f59e0b',
+    color: semantic.attention,
   },
   // ── MR.2: filing_reps section ────────────────────────────────
   filingRepsToggle: {
@@ -1897,7 +1897,7 @@ const styles = StyleSheet.create({
   },
   confirmWarning: {
     fontSize: 12,
-    color: '#f59e0b',
+    color: semantic.attention,
     textAlign: 'center',
     marginTop: spacing.md,
   },

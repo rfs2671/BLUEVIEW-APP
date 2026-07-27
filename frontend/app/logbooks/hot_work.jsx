@@ -224,7 +224,7 @@ export default function HotWorkPermitLog() {
           {/* Work Type Picker */}
           <GlassCard style={s.section}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm }}>
-              <Flame size={16} strokeWidth={1.5} color="#f59e0b" />
+              <Flame size={16} strokeWidth={1.5} color={semantic.neutral} />
               <Text style={s.sectionTitle}>Type of Hot Work</Text>
             </View>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs }}>
@@ -400,6 +400,6 @@ function buildStyles(colors, isDark) {
     },
     chipActive: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
     chipText: { fontSize: 13, color: colors.text.muted },
-    chipTextActive: { color: '#f59e0b', fontWeight: '600' },
+    chipTextActive: { color: semantic.attention, fontWeight: '600' },
   });
 }

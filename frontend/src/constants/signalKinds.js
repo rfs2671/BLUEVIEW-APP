@@ -290,6 +290,6 @@ export const TOTAL_SIGNAL_KINDS = Object.keys(SIGNAL_KIND_INDEX).length;
 // SEVERITY_INFO/WARNING/CRITICAL colors used by the activity feed.
 export const SEVERITY_PALETTE = {
   info: { color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.15)', label: 'Info' },
-  warning: { color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)', label: 'Warning' },
+  warning: { get color() { return semantic.attention; }, get bg() { return semantic.attentionBg; }, label: 'Warning' },
   critical: { color: semantic.critical, textColor: semantic.criticalText, bg: 'rgba(239, 68, 68, 0.15)', label: 'Critical' },
 };

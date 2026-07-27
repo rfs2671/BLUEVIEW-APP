@@ -179,7 +179,7 @@ const RenewalAlertCard = ({ projectId }) => {
                             days <= 7
                               ? '#ef4444'
                               : days <= 14
-                                ? '#f59e0b'
+                                ? semantic.attention
                                 : '#22c55e',
                         },
                       ]}

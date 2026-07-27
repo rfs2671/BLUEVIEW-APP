@@ -409,7 +409,7 @@ function buildStyles(colors) {
     blockersHeader: {
       fontFamily: typography.semibold,
       fontSize: 12,
-      color: '#f59e0b',
+      color: semantic.attention,
       marginBottom: 2,
     },
     blockerItem: {

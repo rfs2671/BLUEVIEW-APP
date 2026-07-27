@@ -145,7 +145,7 @@ export default function SiteDeviceHomeScreen() {
             >
               <GlassCard style={s.buttonInner}>
                 <View style={[s.iconContainer, { backgroundColor: semantic.attentionBg }]}>
-                  <FolderOpen size={64} strokeWidth={1.5} color="#f59e0b" />
+                  <FolderOpen size={64} strokeWidth={1.5} color={semantic.neutral} />
                 </View>
                 <Text style={s.buttonLabel}>Documents</Text>
               </GlassCard>

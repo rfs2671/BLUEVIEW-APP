@@ -388,7 +388,7 @@ export default function SiteDevicesScreen() {
                 </View>
 
                 <View style={s.infoBox}>
-                  <Key size={16} strokeWidth={1.5} color="#f59e0b" />
+                  <Key size={16} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.infoText}>
                     Save these credentials securely. The password cannot be recovered after creation.
                   </Text>
@@ -703,7 +703,7 @@ function buildStyles(colors, isDark) {
   infoText: {
     flex: 1,
     fontSize: 13,
-    color: '#f59e0b',
+    color: semantic.attention,
     lineHeight: 18,
   },
   modalActions: {

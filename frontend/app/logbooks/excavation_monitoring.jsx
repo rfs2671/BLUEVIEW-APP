@@ -378,7 +378,7 @@ export default function ExcavationMonitoringLog() {
             </View>
             {vibrationOverThreshold && (
               <View style={s.warningBanner}>
-                <AlertTriangle size={16} strokeWidth={2} color="#f59e0b" />
+                <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
                 <Text style={s.warningText}>
                   Current vibration exceeds threshold! Review and take corrective action.
                 </Text>
@@ -482,6 +482,6 @@ function buildStyles(colors, isDark) {
       padding: spacing.md, marginTop: spacing.sm,
       borderWidth: 1, borderColor: semantic.attentionBorder,
     },
-    warningText: { color: '#f59e0b', fontSize: 13, fontWeight: '500', flex: 1 },
+    warningText: { color: semantic.attention, fontSize: 13, fontWeight: '500', flex: 1 },
   });
 }

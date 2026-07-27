@@ -652,7 +652,7 @@ export default function DailyLogScreen() {
 
               <GlassCard style={s.section}>
                 <View style={s.sectionHeader}>
-                  <ShieldCheck size={20} strokeWidth={1.5} color="#f59e0b" />
+                  <ShieldCheck size={20} strokeWidth={1.5} color={semantic.neutral} />
                   <Text style={s.sectionTitle}>Safety Inspection Checklist</Text>
                 </View>
                 <Text style={s.sectionSubtitle}>
@@ -740,7 +740,7 @@ export default function DailyLogScreen() {
                   <View style={s.signatureSection}>
                     <View style={s.signatureHeader}>
                       <IconPod size={40}>
-                        <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                        <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />
                       </IconPod>
                       <Text style={s.signatureTitle}>Superintendent Sign-Off</Text>
                     </View>

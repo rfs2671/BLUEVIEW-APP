@@ -603,7 +603,7 @@ export default function ProjectDetailScreen() {
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
     { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.neutral, warn: !hasValidBin },
-    { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: '#f59e0b' },
+    { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: semantic.neutral },
     { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.neutral },
   ];
 
@@ -770,7 +770,7 @@ export default function ProjectDetailScreen() {
                   }]}>
                     <Text style={{
                       fontSize: 10, fontWeight: '700', letterSpacing: 0.5,
-                      color: project.project_class === 'major_b' ? semantic.neutralStrong : '#f59e0b',
+                      color: project.project_class === 'major_b' ? semantic.neutralStrong : semantic.neutralStrong,
                     }}>
                       {project.project_class === 'major_b' ? 'MAJOR B · SSM' : 'MAJOR A · SSC'}
                     </Text>
@@ -847,7 +847,7 @@ export default function ProjectDetailScreen() {
                   <Text style={s.actionTitle}>{action.title}</Text>
                   {action.warn && (
                     <View style={s.actionWarnBadge}>
-                      <AlertTriangle size={12} strokeWidth={2} color="#f59e0b" />
+                      <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
                       <Text style={s.actionWarnText}>No BIN</Text>
                     </View>
                   )}
@@ -1173,7 +1173,7 @@ export default function ProjectDetailScreen() {
                       {allComplete ? (
                         <CheckCircle size={24} strokeWidth={1.5} color={semantic.verified} />
                       ) : (
-                        <Clock size={24} strokeWidth={1.5} color="#f59e0b" />
+                        <Clock size={24} strokeWidth={1.5} color={semantic.attention} />
                       )}
                     </View>
 
@@ -1413,7 +1413,7 @@ export default function ProjectDetailScreen() {
                   </View>
 
                   <View style={s.infoBox}>
-                    <Key size={16} strokeWidth={1.5} color="#f59e0b" />
+                    <Key size={16} strokeWidth={1.5} color={semantic.attention} />
                     <Text style={s.infoText}>
                       Save these credentials securely. The password cannot be recovered after creation.
                     </Text>
@@ -1740,7 +1740,7 @@ function buildStyles(colors, isDark) {
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.3,
-    color: '#f59e0b',
+    color: semantic.attention,
   },
   itemsList: {
     gap: spacing.sm,
@@ -2007,7 +2007,7 @@ function buildStyles(colors, isDark) {
   infoText: {
     flex: 1,
     fontSize: 13,
-    color: '#f59e0b',
+    color: semantic.attention,
     lineHeight: 18,
   },
   addButton: {
@@ -2108,7 +2108,7 @@ function buildStyles(colors, isDark) {
   },
   warningText: {
     fontSize: 13,
-    color: '#f59e0b',
+    color: semantic.attention,
     lineHeight: 18,
   },
   scanButton: {

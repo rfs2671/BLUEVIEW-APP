@@ -48,7 +48,7 @@ const FALLBACK_LOG_TYPES = [
   { key: 'toolbox_talk', label: 'Tool Box Talk', subtitle: 'OSHA — Weekly', icon: 'BookOpen', color: '#3b82f6', frequency: 'weekly' },
   { key: 'subcontractor_orientation', label: 'Subcontractor Safety Orientation', subtitle: 'First-time workers', icon: 'ShieldCheck', color: '#8b5cf6', frequency: 'as_needed' },
   { key: 'osha_log', label: 'OSHA Log Book', subtitle: 'Worker certifications', icon: 'ClipboardList', color: '#06b6d4', frequency: 'daily' },
-  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', color: '#f59e0b', frequency: 'daily', conditional: 'scaffold_erected' },
+  { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', color: semantic.neutral, frequency: 'daily', conditional: 'scaffold_erected' },
 ];
 
 export default function LogBooksScreen() {
@@ -328,7 +328,7 @@ export default function LogBooksScreen() {
               <>
                 <View style={styles.heroDivider} />
                 <View style={styles.scaffoldToggleRow}>
-                  <HardHat size={18} strokeWidth={1.5} color="#f59e0b" />
+                  <HardHat size={18} strokeWidth={1.5} color={semantic.neutral} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.scaffoldToggleTitle}>Scaffolding / Overhead Shed</Text>
                     <Text style={styles.scaffoldToggleDesc}>
@@ -354,7 +354,7 @@ export default function LogBooksScreen() {
           {missingToolbox.length > 0 && (
             <GlassCard style={styles.notifCard}>
               <View style={styles.notifHeader}>
-                <Bell size={16} strokeWidth={1.5} color="#f59e0b" />
+                <Bell size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.notifTitle}>
                   {missingToolbox.length} worker{missingToolbox.length > 1 ? 's' : ''} missing Tool Box Talk this week
                 </Text>
@@ -380,7 +380,7 @@ export default function LogBooksScreen() {
           <Pressable onPress={() => router.push('/logbooks/review')}>
             <GlassCard style={styles.notifCard}>
               <View style={styles.notifHeader}>
-                <ShieldAlert size={16} strokeWidth={1.5} color="#f59e0b" />
+                <ShieldAlert size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.notifTitle}>Check-In Review</Text>
               </View>
               <Text style={styles.notifWorker}>
@@ -548,14 +548,14 @@ function buildStyles(colors, isDark) {
       borderColor: semantic.attentionBorder,
     },
     toggleBtnText: { fontSize: 12, fontWeight: '600', color: colors.text.muted },
-    toggleBtnTextActive: { color: '#f59e0b' },
+    toggleBtnTextActive: { color: semantic.attention },
 
     notifCard: {
       marginBottom: spacing.md, padding: spacing.md,
       backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder,
     },
     notifHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-    notifTitle: { fontSize: 14, fontWeight: '500', color: '#f59e0b', flex: 1 },
+    notifTitle: { fontSize: 14, fontWeight: '500', color: semantic.attention, flex: 1 },
     notifWorker: { fontSize: 13, color: colors.text.secondary, marginBottom: 2, paddingLeft: spacing.sm },
     notifMore: { fontSize: 12, color: colors.text.muted, paddingLeft: spacing.sm, marginBottom: spacing.sm },
     notifBtn: { marginTop: spacing.sm },

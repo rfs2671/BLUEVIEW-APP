@@ -66,8 +66,8 @@ const getFileTypeInfo = (filename) => {
     jpg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPG' },
     jpeg: { icon: ImageIcon, color: '#8b5cf6', label: 'JPEG' },
     gif: { icon: ImageIcon, color: '#8b5cf6', label: 'GIF' },
-    dwg: { icon: File, color: '#f59e0b', label: 'DWG' },
-    dxf: { icon: File, color: '#f59e0b', label: 'DXF' },
+    dwg: { icon: File, color: semantic.neutral, label: 'DWG' },
+    dxf: { icon: File, color: semantic.neutral, label: 'DXF' },
   };
 
   return typeMap[ext] || { icon: File, color: colors.text.muted, label: ext?.toUpperCase() || 'FILE' };

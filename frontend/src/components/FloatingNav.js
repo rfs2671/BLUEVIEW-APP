@@ -33,7 +33,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { authAPI } from '../utils/api';
-import { withAlpha } from '../styles/semanticColors';
+import { semantic, withAlpha } from '../styles/semanticColors';
 
 const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
@@ -151,7 +151,7 @@ const SettingsModal = ({ visible, onClose, user, onToast }) => {
                 <View style={modalStyles.rowLeft}>
                   {isDark
                     ? <Moon size={18} strokeWidth={1.5} color={colors.text.secondary} />
-                    : <Sun size={18} strokeWidth={1.5} color="#f59e0b" />}
+                    : <Sun size={18} strokeWidth={1.5} color={semantic.neutral} />}
                   <Text style={[modalStyles.rowText, { color: colors.text.primary }]}>
                     {isDark ? 'Dark Mode' : 'Light Mode'}
                   </Text>

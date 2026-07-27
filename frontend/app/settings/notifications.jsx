@@ -1053,8 +1053,8 @@ const PreviewCard = ({ preview, loading, error, styles, colors }) => {
     {
       key: 'digest_daily',
       Icon: Mailbox,
-      iconColor: '#f59e0b',
-      bg: 'rgba(245, 158, 11, 0.10)',
+      iconColor: semantic.neutral,
+      bg: semantic.neutralBg,
       count: summary.digest_daily_signals || 0,
       label: 'in daily digest',
       tip: 'Batched into a 7am email each day.',

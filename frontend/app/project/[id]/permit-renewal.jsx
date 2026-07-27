@@ -157,14 +157,14 @@ const STATUS_CONFIG = {
   },
   needs_insurance: {
     label: 'Insurance Required',
-    color: '#f59e0b',
+    color: semantic.attention,
     bg: semantic.attentionBg,
     icon: ShieldAlert,
     description: 'Enter your certificate of insurance dates in Settings to enable renewal eligibility.',
   },
   ineligible_insurance: {
     label: 'Insurance Update Required',
-    color: '#f59e0b',
+    color: semantic.attention,
     bg: semantic.attentionBg,
     icon: ShieldAlert,
     description: 'Insurance must be updated before renewal can proceed. See details below.',
@@ -231,19 +231,19 @@ const getStatusConfig = (status) =>
 const ACTION_BADGE_OVERRIDES = {
   manual_renewal_dob_now: {
     label: 'Manual Renewal',
-    color: '#f59e0b',
+    color: semantic.attention,
     bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
   manual_renewal_lapsed: {
     label: 'Permit Lapsed',
-    color: '#f59e0b',
+    color: semantic.attention,
     bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
   shed_renewal: {
     label: 'Shed Renewal',
-    color: '#f59e0b',
+    color: semantic.attention,
     bg: semantic.attentionBg,
     icon: AlertTriangle,
   },
@@ -501,7 +501,7 @@ export default function PermitRenewalScreen() {
         <Text style={s.statLabel}>Done</Text>
       </StatCard>
       <StatCard style={s.statCard}>
-        <Text style={[s.statValue, { color: '#f59e0b' }]}>
+        <Text style={[s.statValue, { color: semantic.attention }]}>
           {blockedCount}
         </Text>
         <Text style={s.statLabel}>Blocked</Text>
@@ -792,9 +792,9 @@ export default function PermitRenewalScreen() {
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-                    <ShieldAlert size={18} color="#f59e0b" style={{ marginTop: 2 }} />
+                    <ShieldAlert size={18} color={semantic.attention} style={{ marginTop: 2 }} />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: '#f59e0b', marginBottom: 4 }}>
+                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: semantic.attention, marginBottom: 4 }}>
                         Insurance Required
                       </Text>
                       <Text style={{ fontFamily: typography.regular, fontSize: 13, color: colors.text.secondary, lineHeight: 18 }}>
@@ -848,7 +848,7 @@ export default function PermitRenewalScreen() {
               {renewal.status !== 'needs_insurance' &&
                renewal.blocking_reasons?.length > 0 && (
                 <View style={s.blockingBlock}>
-                  <AlertTriangle size={14} color="#f59e0b" />
+                  <AlertTriangle size={14} color={semantic.attention} />
                   {renewal.blocking_reasons.map((reason, i) => (
                     <Text key={i} style={s.blockingText}>
                       {reason}
@@ -861,9 +861,9 @@ export default function PermitRenewalScreen() {
               {(renewalData?.renewal_path === 'bis_legacy' || renewal.renewal_path === 'bis_legacy') && (
                 <GlassCard style={{ backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder, borderWidth: 1, marginBottom: 12, padding: 14 }}>
                   <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-                    <AlertTriangle size={18} color="#f59e0b" style={{ marginTop: 2 }} />
+                    <AlertTriangle size={18} color={semantic.attention} style={{ marginTop: 2 }} />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: '#f59e0b', marginBottom: 4 }}>
+                      <Text style={{ fontFamily: typography.semibold, fontSize: 14, color: semantic.attention, marginBottom: 4 }}>
                         BIS Legacy Permit
                       </Text>
                       <Text style={{ fontFamily: typography.regular, fontSize: 13, color: colors.text.secondary, lineHeight: 18 }}>
@@ -1386,7 +1386,7 @@ function buildStyles(colors, isDark) {
     blockingText: {
       fontFamily: typography.regular,
       fontSize: 13,
-      color: '#f59e0b',
+      color: semantic.attention,
       lineHeight: 18,
     },
     actionsRow: { gap: spacing.sm },

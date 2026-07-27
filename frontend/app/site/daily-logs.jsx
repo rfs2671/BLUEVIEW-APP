@@ -418,7 +418,7 @@ export default function SiteDailyLogsScreen() {
               {/* Safety Checklist */}
               <GlassCard style={styles.section}>
                 <View style={styles.sectionHeader}>
-                  <ShieldCheck size={18} strokeWidth={1.5} color="#f59e0b" />
+                  <ShieldCheck size={18} strokeWidth={1.5} color={semantic.neutral} />
                   <Text style={styles.sectionTitle}>Safety Checklist</Text>
                 </View>
                 <View style={styles.checklistContainer}>
@@ -469,7 +469,7 @@ export default function SiteDailyLogsScreen() {
               {/* Superintendent Signature */}
               <View style={styles.signatureSection}>
                 <View style={styles.signatureHeader}>
-                  <IconPod size={36}><HardHat size={16} strokeWidth={1.5} color="#f59e0b" /></IconPod>
+                  <IconPod size={36}><HardHat size={16} strokeWidth={1.5} color={semantic.neutral} /></IconPod>
                   <Text style={styles.signatureTitle}>Superintendent Sign-Off</Text>
                 </View>
                 <SignaturePad title="Superintendent" signerName={formData.superintendent_name}

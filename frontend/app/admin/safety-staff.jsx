@@ -37,7 +37,7 @@ import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
-  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: withAlpha('#94a3b8', 0.15) },
+  major_a: { label: 'MAJOR A', color: semantic.neutralStrong, bg: withAlpha('#94a3b8', 0.15) },
 };
 
 const ROLE_HELPER = {
@@ -295,7 +295,7 @@ export default function SafetyStaffScreen() {
       color = semantic.criticalText;
       prefix = '🚨 ';
     } else if (d < 90) {
-      color = '#f59e0b';
+      color = semantic.attention;
       prefix = '⚠ ';
     }
     return (
@@ -386,7 +386,7 @@ export default function SafetyStaffScreen() {
               {/* Compliance banners */}
               {needsSSC && (
                 <View style={s.amberBanner}>
-                  <AlertTriangle size={18} strokeWidth={1.5} color="#f59e0b" />
+                  <AlertTriangle size={18} strokeWidth={1.5} color={semantic.attention} />
                   <Text style={s.amberBannerText}>
                     No SSC registered — required by NYC BC §3310.4 for Major A projects
                   </Text>
@@ -777,7 +777,7 @@ function buildStyles(colors, isDark) {
       padding: 16,
       marginBottom: 16,
     },
-    amberBannerText: { flex: 1, fontSize: 13, color: '#f59e0b', lineHeight: 18 },
+    amberBannerText: { flex: 1, fontSize: 13, color: semantic.attention, lineHeight: 18 },
     redBanner: {
       flexDirection: 'row',
       alignItems: 'flex-start',
@@ -838,7 +838,7 @@ function buildStyles(colors, isDark) {
       fontWeight: '700',
       letterSpacing: 0.4,
     },
-    roleBadgeTextSSC: { color: '#f59e0b' },
+    roleBadgeTextSSC: { color: semantic.neutralStrong },
     roleBadgeTextSSM: { color: semantic.neutralStrong },
     classBadge: {
       paddingHorizontal: 6,

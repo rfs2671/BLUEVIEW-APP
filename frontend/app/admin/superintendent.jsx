@@ -38,7 +38,7 @@ import HeaderBrand from '../../src/components/HeaderBrand';
 
 const CLASS_BADGES = {
   major_b: { label: 'MAJOR B', color: semantic.neutralStrong, bg: semantic.neutralBg },
-  major_a: { label: 'MAJOR A', color: '#f59e0b', bg: withAlpha('#94a3b8', 0.15) },
+  major_a: { label: 'MAJOR A', color: semantic.neutralStrong, bg: withAlpha('#94a3b8', 0.15) },
   regular: { label: 'REGULAR', color: null, bg: null }, // uses muted
 };
 

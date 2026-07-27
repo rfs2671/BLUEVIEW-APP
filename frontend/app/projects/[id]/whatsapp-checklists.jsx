@@ -29,7 +29,7 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 
 const CATEGORY_COLORS = {
   safety: semantic.neutral,
-  materials: '#f59e0b',
+  materials: semantic.neutral,
   coordination: '#3b82f6',
   inspection: '#a855f7',
   other: '#6b7280',
@@ -274,7 +274,7 @@ export default function WhatsAppChecklistsScreen() {
                                   </Text>
                                   <View style={s.metaRow}>
                                     {prio && (
-                                      <Text style={[s.metaPrio, { color: it.priority === 'high' ? '#ef4444' : it.priority === 'medium' ? '#f59e0b' : colors.text.muted }]}>
+                                      <Text style={[s.metaPrio, { color: it.priority === 'high' ? '#ef4444' : it.priority === 'medium' ? semantic.attention : colors.text.muted }]}>
                                         {prio}
                                       </Text>
                                     )}

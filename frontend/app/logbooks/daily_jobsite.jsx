@@ -646,7 +646,7 @@ export default function DailyJobsiteLog() {
           {/* Observations */}
           <GlassCard style={s.section}>
             <View style={s.sectionHeaderRow}>
-              <AlertTriangle size={16} strokeWidth={1.5} color="#f59e0b" />
+              <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
               <Text style={s.sectionTitle}>Safety Observations / Violations</Text>
             </View>
             {observations.map((obs, i) => (

@@ -406,7 +406,7 @@ export default function SubcontractorOrientation() {
                           {isSigned
                             ? <CheckCircle size={12} strokeWidth={2} color={semantic.verified} />
                             : null}
-                          <Text style={[styles.statusText, isSigned ? styles.statusTextSigned : styles.statusTextPending]}>
+                          <Text style={[styles.statusText, isSigned ? styles.statusTextSigned : [styles.statusTextPending, { color: semantic.attention }]]}>
                             {isSigned ? 'Signed' : 'Needs CP sig'}
                           </Text>
                         </View>
@@ -716,7 +716,7 @@ const styles = StyleSheet.create({
   statusPending: { backgroundColor: semantic.attentionBg },
   statusText: { fontSize: 11, fontWeight: '600' },
   statusTextSigned: { color: semantic.verified },
-  statusTextPending: { color: '#f59e0b' },
+  statusTextPending: {},
   orientDetail: { paddingHorizontal: spacing.md, paddingBottom: spacing.md },
   orientDetailDivider: {
     height: 1,

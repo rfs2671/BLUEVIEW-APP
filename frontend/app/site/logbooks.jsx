@@ -24,7 +24,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 const LOG_TABS = [
   { key: 'daily_jobsite', label: 'Daily Jobsite', icon: ClipboardList, color: '#3b82f6' },
   { key: 'toolbox_talk', label: 'Toolbox Talk', icon: BookOpen, color: '#8b5cf6' },
-  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', icon: Users, color: '#f59e0b' },
+  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', icon: Users, color: semantic.neutral },
 ];
 
 export default function SiteLogbooksViewer() {
@@ -258,7 +258,7 @@ export default function SiteLogbooksViewer() {
           </>
         )}
 
-        {equipList ? (<><DocSectionLabel icon={Wrench} label="Equipment on Site" color="#f59e0b" /><Text style={s.docParagraph}>{equipList}</Text></>) : null}
+        {equipList ? (<><DocSectionLabel icon={Wrench} label="Equipment on Site" color={semantic.neutral} /><Text style={s.docParagraph}>{equipList}</Text></>) : null}
         {checkList ? (<><DocSectionLabel icon={ShieldCheck} label="Inspected" color={semantic.neutral} /><Text style={s.docParagraph}>{checkList}</Text></>) : null}
 
         {observations.length > 0 && observations.some(o => o.description?.trim()) && (
@@ -358,7 +358,7 @@ export default function SiteLogbooksViewer() {
           <DocInfoRow icon={Users} text={`Total Workers: ${data.total_count || workers.length}`} />
         </View>
 
-        <DocSectionLabel icon={Users} label={`Workers (${workers.length})`} color="#f59e0b" />
+        <DocSectionLabel icon={Users} label={`Workers (${workers.length})`} color={semantic.neutral} />
         {workers.length > 0 && (
           <>
             <DocTableRow isHeader cells={[
@@ -648,7 +648,7 @@ function buildStyles(colors, isDark) {
   statusDraft: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
   statusText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
   statusTextSubmitted: { color: semantic.verified },
-  statusTextDraft: { color: '#f59e0b' },
+  statusTextDraft: { color: semantic.attention },
 
   // Document content
   docContent: { gap: 2 },

@@ -894,7 +894,7 @@ const PreviewCard = ({ preview, loading, project, styles, colors }) => {
   }
   const stats = [
     { key: 'i', Icon: Mail, c: '#ef4444', bg: 'rgba(239,68,68,0.10)', count: summary.immediate_emails || 0, label: 'immediate emails' },
-    { key: 'd', Icon: Mailbox, c: '#f59e0b', bg: 'rgba(245,158,11,0.10)', count: summary.digest_daily_signals || 0, label: 'daily digest' },
+    { key: 'd', Icon: Mailbox, c: semantic.neutral, bg: semantic.neutralBg, count: summary.digest_daily_signals || 0, label: 'daily digest' },
     { key: 'w', Icon: Mailbox, c: '#3b82f6', bg: 'rgba(59,130,246,0.10)', count: summary.digest_weekly_signals || 0, label: 'weekly digest' },
     { key: 'f', Icon: Inbox, c: '#6b7280', bg: withAlpha('#6b7280', 0.1), count: summary.suppressed_signals || 0, label: 'feed-only' },
   ];

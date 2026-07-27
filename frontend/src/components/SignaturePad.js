@@ -430,7 +430,7 @@ function buildStyles(colors, isDark) {
     },
     hintText: {
       fontSize: 12,
-      color: '#f59e0b',
+      color: semantic.attention,
       textAlign: 'center',
       marginTop: spacing.sm,
     },

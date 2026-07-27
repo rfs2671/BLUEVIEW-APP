@@ -64,7 +64,7 @@ export default function DemoScreen() {
         <ScrollView style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
           {/* Activation CTA — the primary action for a pending account. */}
           <GlassCard style={s.ctaCard}>
-            <View style={s.ctaIcon}><Lock size={22} strokeWidth={1.5} color="#f59e0b" /></View>
+            <View style={s.ctaIcon}><Lock size={22} strokeWidth={1.5} color={semantic.attention} /></View>
             <Text style={s.ctaTitle}>Your account is pending activation</Text>
             <Text style={s.ctaBody}>
               You're viewing a read-only demo. Full access — real projects, DOB
@@ -172,6 +172,6 @@ function buildStyles(colors, isDark) {
     activityMeta: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
     siRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 5 },
     siText: { flex: 1, fontSize: 13, color: colors.text.secondary },
-    siStatus: { fontSize: 11, color: '#f59e0b', textTransform: 'uppercase' },
+    siStatus: { fontSize: 11, color: semantic.attention, textTransform: 'uppercase' },
   });
 }

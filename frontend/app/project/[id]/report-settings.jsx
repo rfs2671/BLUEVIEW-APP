@@ -290,7 +290,7 @@ export default function ReportSettingsScreen() {
 
           {/* Unsaved Changes Warning */}
           {hasChanges && (
-            <GlassCard style={[s.warningCard, { borderColor: '#f59e0b', borderWidth: 1 }]}>
+            <GlassCard style={[s.warningCard, { borderColor: semantic.attention, borderWidth: 1 }]}>
               <Text style={s.warningText}>⚠ You have unsaved changes</Text>
             </GlassCard>
           )}
@@ -504,7 +504,7 @@ function buildStyles(colors, isDark) {
     },
     warningText: {
       fontSize: 14,
-      color: '#f59e0b',
+      color: semantic.attention,
       fontWeight: '500',
     },
     infoCard: {

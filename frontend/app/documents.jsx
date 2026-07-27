@@ -53,7 +53,7 @@ const getFileIcon = (fileName) => {
     return { Icon: FileText, color: '#3b82f6' };
   }
   if (['dwg', 'dxf', 'skp'].includes(ext)) {
-    return { Icon: FileCode, color: '#f59e0b' };
+    return { Icon: FileCode, color: semantic.neutral };
   }
   return { Icon: File, color: '#94a3b8' };
 };

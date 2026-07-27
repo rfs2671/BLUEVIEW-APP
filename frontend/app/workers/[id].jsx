@@ -43,7 +43,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
-import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
@@ -550,7 +550,7 @@ export default function WorkerDetailScreen() {
                 {certifications.map((cert, index) => (
                   <View key={index} style={s.certItem}>
                     <IconPod size={40}>
-                      <Award size={18} strokeWidth={1.5} color="#f59e0b" />
+                      <Award size={18} strokeWidth={1.5} color={semantic.neutral} />
                     </IconPod>
                     <View style={s.certInfo}>
                       <Text style={s.certName}>{cert.name}</Text>
@@ -741,7 +741,7 @@ function buildStyles(colors, isDark) {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#f59e0b',
+    backgroundColor: chrome.brand,
     alignItems: 'center',
     justifyContent: 'center',
   },
