@@ -17,6 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 // All maintenance questions exactly as per NYC DOB form
@@ -58,6 +59,11 @@ const MAINTENANCE_QUESTIONS = [
 const ANSWER_OPTIONS = ['YES', 'NO', 'N/A'];
 
 export default function ScaffoldMaintenanceLog() {
+  // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
+  // at import (the DARK palette), so on the light theme this screen rendered
+  // near-white text on a pale background. Same tokens, live values.
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -347,7 +353,8 @@ export default function ScaffoldMaintenanceLog() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
@@ -460,4 +467,5 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: 'rgba(59,130,246,0.4)' },
-});
+  });
+}

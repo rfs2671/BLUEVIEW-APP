@@ -3,7 +3,18 @@ import { TextInput, View, StyleSheet, Platform } from 'react-native';
 import { borderRadius, spacing } from '../styles/theme';
 import { useTheme } from '../context/ThemeContext';
 
-/* Inject a global CSS rule once to kill Chrome's autofill background */
+/* Inject a global CSS rule once to kill Chrome's autofill background.
+ *
+ * -webkit-text-fill-color must be `currentColor`, never a literal. Chrome
+ * overrides an autofilled input's `color`, so the declaration has to exist —
+ * but it used to hardcode rgba(255,255,255,0.9), the DARK theme's text colour.
+ * On the light theme that painted white text on a near-white input: invisible
+ * while typing, i.e. a broken sign-in. It only manifested on AUTOFILL, which is
+ * why every visual audit missed it. `currentColor` resolves to the element's
+ * own computed colour, which RN-Web sets per theme, so the rule now follows the
+ * theme even though it is injected once (guarded by autofillCSSInjected) and
+ * never re-injected on theme switch.
+ */
 let autofillCSSInjected = false;
 function injectAutofillCSS() {
   if (autofillCSSInjected || Platform.OS !== 'web') return;
@@ -15,7 +26,7 @@ function injectAutofillCSS() {
     input:-webkit-autofill:focus,
     input:-webkit-autofill:active {
       -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
-      -webkit-text-fill-color: rgba(255,255,255,0.9) !important;
+      -webkit-text-fill-color: currentColor !important;
       background-color: transparent !important;
       transition: background-color 5000s ease-in-out 0s !important;
     }

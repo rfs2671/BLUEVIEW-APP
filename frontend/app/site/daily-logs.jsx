@@ -41,6 +41,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 
 const weatherOptions = [
@@ -59,6 +60,11 @@ const SAFETY_CHECKLIST_ITEMS = [
 ];
 
 export default function SiteDailyLogsScreen() {
+  // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
+  // at import (the DARK palette), so on the light theme this screen rendered
+  // near-white text on a pale background. Same tokens, live values.
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
   const toast = useToast();
@@ -587,7 +593,8 @@ export default function SiteDailyLogsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.08) },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
@@ -663,4 +670,5 @@ const styles = StyleSheet.create({
   checkReviewLabel: { fontSize: 13, color: colors.text.secondary },
   checkReviewStatus: { fontSize: 11, fontWeight: '600', color: colors.text.muted },
   closeBtn: { margin: spacing.lg },
-});
+  });
+}

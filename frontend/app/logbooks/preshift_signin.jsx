@@ -17,6 +17,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 /**
@@ -38,6 +39,11 @@ const EMPTY_WORKER = () => ({
 });
 
 export default function PreShiftSignIn() {
+  // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
+  // at import (the DARK palette), so on the light theme this screen rendered
+  // near-white text on a pale background. Same tokens, live values.
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -442,7 +448,8 @@ export default function PreShiftSignIn() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   loadingCenter: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   header: {
@@ -646,4 +653,5 @@ const styles = StyleSheet.create({
   },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 1 },
-});
+  });
+}

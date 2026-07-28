@@ -44,6 +44,7 @@ import apiClient from '../../src/utils/api';
 // monitoring product never holds credentials; the agent_crypto
 // import + the credential modal + the authorization gate are gone.
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 
 // Owner password
@@ -116,6 +117,12 @@ const FILING_REP_LICENSE_CLASSES = [
 ];
 
 export default function OwnerPortalScreen() {
+  // Read the ACTIVE theme. This screen used a module-scope StyleSheet, which
+  // snapshots colors.* at import — the DARK palette — so on the light theme
+  // every heading and company name rendered near-white on pale blue. Same
+  // tokens, resolved at render time instead of import time.
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
   const toast = useToast();
@@ -1361,7 +1368,8 @@ export default function OwnerPortalScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     flex: 1,
   },
@@ -1911,4 +1919,5 @@ const styles = StyleSheet.create({
     backgroundColor: semantic.criticalBg,
     borderColor: '#ef4444',
   },
-});
+  });
+}

@@ -17,6 +17,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
+import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 const CERT_TYPES = ['OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST', 'Flagman', 'Forklift', 'Scaffold', 'Other'];
@@ -33,6 +34,11 @@ const EMPTY_ENTRY = () => ({
 });
 
 export default function OshaLogBook() {
+  // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
+  // at import (the DARK palette), so on the light theme this screen rendered
+  // near-white text on a pale background. Same tokens, live values.
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
@@ -359,7 +365,8 @@ export default function OshaLogBook() {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: { flex: 1 },
   loadingCenter: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
@@ -494,4 +501,5 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
   draftBtn: { flex: 1 },
   submitBtn: { flex: 2, backgroundColor: 'rgba(6,182,212,0.15)', borderColor: 'rgba(6,182,212,0.3)' },
-});
+  });
+}
