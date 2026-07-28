@@ -15,7 +15,8 @@ const siteNavItems = [
 
 const SiteNavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const Icon = item.icon;
 
   const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
@@ -56,7 +57,8 @@ const SiteNavItem = ({ item, isActive, onPress }) => {
 const SiteNav = () => {
   const router = useRouter();
   const pathname = usePathname();
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
 
   const navBg = isDark ? colors.glass.background : withAlpha('#ffffff', 0.9);
 
@@ -82,7 +84,8 @@ const SiteNav = () => {
   );
 };
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     position: 'absolute',
     bottom: 24,
@@ -128,6 +131,6 @@ const styles = StyleSheet.create({
   navLabelActive: {
     color: colors.text.primary,
   },
-});
-
+  });
+}
 export default SiteNav;

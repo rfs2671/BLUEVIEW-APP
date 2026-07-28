@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { View, StyleSheet, Animated } from 'react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 /**
  * GlassSkeleton - Shimmer loading skeleton matching Base44 aesthetic
@@ -47,18 +48,25 @@ export const GlassSkeleton = ({ width, height, style, borderRadiusValue = border
 /**
  * StatCardSkeleton - Skeleton for stat cards
  */
-export const StatCardSkeleton = () => (
+export const StatCardSkeleton = () => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  return (
   <View style={styles.statCard}>
     <GlassSkeleton width={52} height={52} borderRadiusValue={borderRadius.full} style={styles.mb24} />
     <GlassSkeleton width={60} height={36} style={styles.mb8} />
     <GlassSkeleton width={100} height={12} />
   </View>
-);
+  );
+};
 
 /**
  * ProjectCardSkeleton - Skeleton for project cards
  */
-export const ProjectCardSkeleton = () => (
+export const ProjectCardSkeleton = () => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  return (
   <View style={styles.projectCard}>
     <View style={styles.row}>
       <GlassSkeleton width={52} height={52} borderRadiusValue={borderRadius.full} />
@@ -68,12 +76,16 @@ export const ProjectCardSkeleton = () => (
       </View>
     </View>
   </View>
-);
+  );
+};
 
 /**
  * WorkerCardSkeleton - Skeleton for worker cards
  */
-export const WorkerCardSkeleton = () => (
+export const WorkerCardSkeleton = () => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  return (
   <View style={styles.workerCard}>
     <View style={styles.row}>
       <GlassSkeleton width={40} height={40} borderRadiusValue={borderRadius.full} />
@@ -83,12 +95,16 @@ export const WorkerCardSkeleton = () => (
       </View>
     </View>
   </View>
-);
+  );
+};
 
 /**
  * DashboardSkeleton - Full dashboard loading skeleton
  */
-export const DashboardSkeleton = () => (
+export const DashboardSkeleton = () => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  return (
   <View style={styles.dashboardSkeleton}>
     <View style={styles.statsRow}>
       <StatCardSkeleton />
@@ -102,9 +118,11 @@ export const DashboardSkeleton = () => (
     <WorkerCardSkeleton />
     <WorkerCardSkeleton />
   </View>
-);
+  );
+};
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   statCard: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
@@ -161,6 +179,6 @@ const styles = StyleSheet.create({
   mb8: { marginBottom: spacing.sm },
   mb24: { marginBottom: spacing.lg },
   mb32: { marginBottom: spacing.xl },
-});
-
+  });
+}
 export default GlassSkeleton;

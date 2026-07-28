@@ -53,7 +53,8 @@ export const GlassCard = ({
   variant = 'default',
 }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const CardWrapper = onPress ? Pressable : View;
 
   const cardProps = onPress
@@ -129,7 +130,8 @@ export const GlassCard = ({
    ═══════════════════════════════════════════════════════════════════════════════ */
 export const StatCard = ({ children, style, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const CardWrapper = onPress ? Pressable : View;
 
   const cardProps = onPress
@@ -184,7 +186,8 @@ export const GlassListItem = ({
   disabled,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
 
   const gradientColors = isDark ? DARK_GRADIENT : LIGHT_GRADIENT;
 
@@ -243,6 +246,8 @@ export const GlassListItem = ({
    IconPod
    ═══════════════════════════════════════════════════════════════════════════════ */
 export const IconPod = ({ children, size = 52, style }) => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const themedChildren = React.Children.map(children, (child) => {
     if (!React.isValidElement(child)) return child;
     if (child.props.preserveColor) return child;
@@ -272,7 +277,8 @@ export const IconPod = ({ children, size = 52, style }) => {
 /* ═══════════════════════════════════════════════════════════════════════════════
    STYLES
    ═══════════════════════════════════════════════════════════════════════════════ */
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   /* ── GlassCard ──────────────────────────────────────────────────────────── */
   cardContainer: {
     borderRadius: borderRadius.xxl,
@@ -347,6 +353,6 @@ const styles = StyleSheet.create({
   listItemDisabled: {
     opacity: 0.5,
   },
-});
-
+  });
+}
 export default GlassCard;

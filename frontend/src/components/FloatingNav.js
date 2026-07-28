@@ -290,7 +290,8 @@ const modalStyles = StyleSheet.create({
 
 const NavItem = ({ item, isActive, onPress }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const Icon = item.icon;
 
   // active: bg-blue-50 (#EFF6FF) in light, rgba(255,255,255,0.15) in dark
@@ -330,7 +331,8 @@ const NavItem = ({ item, isActive, onPress }) => {
 
 const SettingsNavItem = ({ onPress, isActive }) => {
   const [isHovered, setIsHovered] = useState(false);
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
 
   const activeBg = isDark ? withAlpha('#ffffff', 0.15) : '#EFF6FF';
   const hoverBg  = isDark ? withAlpha('#ffffff', 0.1) : 'rgba(191, 219, 254, 0.30)';
@@ -372,7 +374,8 @@ const SettingsNavItem = ({ onPress, isActive }) => {
 const FloatingNav = () => {
   const router = useRouter();
   const pathname = usePathname();
-  const { isDark } = useTheme();
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const isDesktop = useIsDesktop();
 
   // bg-white/90 in light, glass.background in dark
@@ -438,7 +441,8 @@ const FloatingNav = () => {
   );
 };
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     position: 'absolute',
     bottom: 24,
@@ -504,6 +508,6 @@ const styles = StyleSheet.create({
   navLabelActive: {
     color: colors.text.primary,
   },
-});
-
+  });
+}
 export default FloatingNav;

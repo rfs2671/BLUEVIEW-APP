@@ -3,43 +3,69 @@ import { View, Text, StyleSheet, Animated, Pressable, Dimensions, Modal, Platfor
 import { BlurView } from 'expo-blur';
 import { X, AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react-native';
 import { colors, borderRadius, spacing } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 import { semantic, withAlpha } from '../styles/semanticColors';
 
 const { width } = Dimensions.get('window');
 
-// Near-opaque fills so toasts are fully readable even when rendered
-// on top of a dimmed modal scrim. The previous ~10% alpha fills
-// were see-through against dark backdrops.
-const toastConfig = {
+// Near-opaque fills so toasts are fully readable even when rendered on top of a
+// dimmed modal scrim. A ~10% ALPHA fill was tried before and rejected: it was
+// see-through against dark backdrops. So these stay fully OPAQUE — what changes
+// per theme is which opaque colour we land on.
+//
+// The fills used to be four hardcoded near-black hexes, which is fine on the
+// dark theme and unreadable on the light one: the toast text follows the theme
+// (colors.text.primary), so on light it became dark navy text on a near-black
+// card. Now the light fills are the state colour mixed into white, so an error
+// toast is a pale red card with dark text — still obviously an error, and
+// legible. Derived from colors.state.*, so no parallel palette is introduced.
+const _mixOpaque = (hex, baseHex, amount) => {
+  const h = (v) => {
+    let s = String(v).replace('#', '');
+    if (s.length === 3) s = s.split('').map((c) => c + c).join('');
+    return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
+  };
+  const [r1, g1, b1] = h(hex);
+  const [r2, g2, b2] = h(baseHex);
+  const m = (a, b) => Math.round(a * amount + b * (1 - amount));
+  return `rgb(${m(r1, r2)}, ${m(g1, g2)}, ${m(b1, b2)})`;
+};
+
+// Built per render so the getters resolve against the ACTIVE theme. As a
+// module-scope object these froze at import — the borders too, not just fills.
+const buildToastConfig = (colors, isDark) => ({
   error: {
     icon: AlertCircle,
     borderColor: semantic.criticalBorder,
-    bgColor: '#2a1313',
+    bgColor: isDark ? '#2a1313' : _mixOpaque(colors.state.critical, '#ffffff', 0.14),
     iconColor: semantic.critical,
   },
   success: {
     icon: CheckCircle,
     borderColor: semantic.verifiedBorder,
-    bgColor: '#11261a',
+    bgColor: isDark ? '#11261a' : _mixOpaque(colors.state.verified, '#ffffff', 0.14),
     iconColor: semantic.verified,
   },
   warning: {
     icon: AlertTriangle,
     borderColor: semantic.attentionBorder,
-    bgColor: '#271e0c',
-    iconColor: '#fbbf24',
+    bgColor: isDark ? '#271e0c' : _mixOpaque(colors.state.attention, '#ffffff', 0.14),
+    iconColor: semantic.attention,
   },
   info: {
     icon: Info,
     borderColor: withAlpha('#94a3b8', 0.5),
-    bgColor: '#171e2c',
+    bgColor: isDark ? '#171e2c' : _mixOpaque('#94a3b8', '#ffffff', 0.18),
     iconColor: colors.text.secondary,
   },
-};
+});
 
 const ToastContext = createContext(null);
 
 const Toast = ({ id, type = 'info', title, message, onClose }) => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
+  const toastConfig = buildToastConfig(colors, isDark);
   const config = toastConfig[type] || toastConfig.info;
   const Icon = config.icon;
   const opacity = React.useRef(new Animated.Value(0)).current;
@@ -100,6 +126,8 @@ const Toast = ({ id, type = 'info', title, message, onClose }) => {
 };
 
 export const ToastProvider = ({ children }) => {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const [toasts, setToasts] = useState([]);
 
   const addToast = useCallback((toast) => {
@@ -159,7 +187,8 @@ export const useToast = () => {
   return useContext(ToastContext) || null;
 };
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   toastContainer: {
     position: 'absolute',
     top: 60,
@@ -195,6 +224,6 @@ const styles = StyleSheet.create({
     color: colors.text.secondary,
     lineHeight: 18,
   },
-});
-
+  });
+}
 export default ToastProvider;

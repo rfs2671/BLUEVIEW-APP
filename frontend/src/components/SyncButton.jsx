@@ -6,8 +6,11 @@ import { useDatabaseContext as useDatabase } from '../context/DatabaseContext';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 import { useToast } from './Toast';
 import { colors, spacing, typography } from '../styles/theme';
+import { useTheme } from '../context/ThemeContext';
 
 export default function SyncButton({ showLabel = true, size = 'md' }) {
+  const { colors, isDark } = useTheme();
+  const styles = buildStyles(colors, isDark);
   const { performSync, isSyncing, lastSyncTime, queueStatus } = useDatabase();
   const { isOnline } = useNetworkStatus();
   const toast = useToast();
@@ -112,7 +115,8 @@ export default function SyncButton({ showLabel = true, size = 'md' }) {
   );
 }
 
-const styles = StyleSheet.create({
+function buildStyles(colors, isDark) {
+  return StyleSheet.create({
   container: {
     gap: spacing.sm,
   },
@@ -127,4 +131,5 @@ const styles = StyleSheet.create({
     color: colors.warning,
     fontWeight: '600',
   },
-});
+  });
+}
