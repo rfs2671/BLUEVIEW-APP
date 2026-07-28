@@ -485,7 +485,43 @@ export default function CompliancePanel({ projectId }) {
       : null,
   ].filter(Boolean).join('  ·  ');
 
-  // ── State 5/6 — ready (cold_start OR standard) ───────────────
+  // ── State 5 — cold start ─────────────────────────────────────
+  // Same treatment as state 4 above: a project still calibrating has no
+  // forecast to act on, so it gets one quiet line rather than a hero card.
+  // Previously this state rendered the FULL card — title, "Calibrating" badge,
+  // the two-line "Personalized forecast not yet available…" tooltip and the
+  // "Not enough project history yet…" one-liner — several hundred px of
+  // chrome restating that there is nothing to show.
+  //
+  // The DefconHeader is NOT part of the forecast and is deliberately kept: it
+  // is the suppress-not-blend contradiction guard, and when the project has
+  // standing open exposure it leads with that exposure. Silencing a calibrating
+  // forecast must never silence real open violations. DefconHeader carries its
+  // own card styling, so it renders correctly outside the GlassCard.
+  if (isColdStart) {
+    return (
+      <>
+        {defcon?.tier && (
+          <DefconHeader
+            tier={defcon.tier}
+            exposureSummary={suppressReassurance ? exposureSummary : null}
+            exposureTone={suppressReassurance ? exposureTone : null}
+            primaryReason={defcon.primary_reason}
+            lastEvaluatedAt={defcon.last_evaluated_at}
+            onPressWhy={() => router.push(`/project/${projectId}/defcon`)}
+          />
+        )}
+        <View style={[styles.calibratingStrip, { borderColor: border.subtle, backgroundColor: surface.card }]}>
+          <Shield size={14} strokeWidth={1.5} color={semantic.neutral} />
+          <Text numberOfLines={1} style={[styles.calibratingText, { color: text.secondary }]}>
+            DOB Enforcement Forecast — calibrating, ready within 24h
+          </Text>
+        </View>
+      </>
+    );
+  }
+
+  // ── State 6 — ready (standard) ───────────────────────────────
   return (
     <GlassCard style={styles.card}>
       {/* Phase 1 Week 11-12 PR-B — Defcon tier header. Only renders
@@ -552,16 +588,13 @@ export default function CompliancePanel({ projectId }) {
           all — that data is the cohort baseline, not a personalized
           prediction, so surfacing it ("Tracking -1 1.0× typical") was
           engineer-voice leak. */}
-      {isColdStart && (
-        <Text style={[styles.coldStartShort, { color: colors.text.muted }]}>
-          Not enough project history yet for a personalized forecast.
-        </Text>
-      )}
+      {/* The cold-start one-liner that used to live here is gone: cold start
+          now returns the calibrating strip above and never reaches this card. */}
 
-      {/* PR #51 L1 — the primary forecast + hazard-ratio chip +
-          expandable 7/14/30 grid + footer render ONLY for non-cold-start
-          projects. Cold-start shows just the one-liner above (plus the
-          header + Calibrating badge + Defcon header). */}
+      {/* PR #51 L1 — the primary forecast + hazard-ratio chip + expandable
+          7/14/30 grid + footer. The !isColdStart guard is now always true
+          (cold start returns the strip above); kept rather than unwrapped so
+          this stays a one-line diff instead of re-indenting the whole block. */}
       {!isColdStart && (
         <>
       {/* PR #49 — single primary forecast (one horizon, one verdict,

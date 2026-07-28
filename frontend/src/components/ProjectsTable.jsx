@@ -32,7 +32,11 @@ const CLASS_LABEL = { major_b: 'MAJOR B', major_a: 'MAJOR A', regular: 'REGULAR'
 const COLUMNS = [
   { key: 'address', label: 'Address', flex: 3, numeric: false, align: 'flex-start' },
   { key: 'violations', label: 'Violations', flex: 1.2, numeric: true, align: 'center' },
-  { key: 'permits', label: 'Permits', flex: 1.5, numeric: true, align: 'center' },
+  // "Expiring", not "Permits": this cell is expiring-within-30d over ACTIVE
+  // permits — a different subset relationship than the open-of-total used by
+  // violations and complaints. Under a "Permits" header, "0 of 5" still reads
+  // as "0 of 5 permits are active".
+  { key: 'permits', label: 'Expiring', flex: 1.5, numeric: true, align: 'center' },
   { key: 'complaints', label: 'Complaints', flex: 1.3, numeric: true, align: 'center' },
   { key: 'synced', label: 'Synced', flex: 1.1, numeric: true, align: 'center' },
 ];
@@ -87,6 +91,13 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
       ov: Number(s.open_violations) || 0,
       pe: Number(s.permits_expiring) || 0,
       oc: Number(s.open_complaints) || 0,
+      // Denominators for the "{subset} of {total}" cells. Without them a
+      // project with 5 active permits and 0 expiring rendered a bare "0" —
+      // read as "no permits", the opposite of the truth. Same numbers and
+      // same wording as the project page's DOB tiles (dob-logs.jsx ofText).
+      tv: Number(s.total_violations) || 0,
+      tp: Number(s.total_permits) || 0,
+      tc: Number(s.total_complaints) || 0,
     };
   };
 
@@ -153,7 +164,7 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
       {/* Rows */}
       {sorted.map((p) => {
         const id = projectId(p);
-        const { ov, pe, oc } = expo(p);
+        const { ov, pe, oc, tv, tp, tc } = expo(p);
         const open = menuFor === id;
         const synced = hasSynced(p);
         const classLabel = CLASS_LABEL[p.project_class] || null;
@@ -176,19 +187,21 @@ export default function ProjectsTable({ projects, onRowPress, onDelete }) {
               <View style={[styles.cell, styles.countCell, { flex: FLEX.violations }]}>
                 <View style={[styles.dot, { backgroundColor: ov > 0 ? semantic.critical : semantic.neutral }]} />
                 <Text style={[styles.countText, { color: ov > 0 ? semantic.criticalText : text.muted, fontWeight: ov > 0 ? '700' : '400' }]}>
-                  {ov}
+                  {ov} of {tv}
                 </Text>
               </View>
 
-              {/* Permits expiring — attention only when > 0. (dob-summary carries
-                  no soonest-expiry date, so no "· Nd" suffix; count only.) */}
+              {/* Permits expiring OF ACTIVE — attention only when > 0. The
+                  denominator is what stops "0" reading as "no permits".
+                  (dob-summary carries no soonest-expiry date, so no "· Nd"
+                  suffix; counts only.) */}
               <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.permits, color: pe > 0 ? semantic.attention : text.muted, fontWeight: pe > 0 ? '700' : '400' }]}>
-                {pe}
+                {pe} of {tp}
               </Text>
 
               {/* Complaints — always neutral, count only. */}
               <Text numberOfLines={1} style={[styles.cell, styles.countText, { flex: FLEX.complaints, color: oc > 0 ? text.secondary : text.muted }]}>
-                {oc}
+                {oc} of {tc}
               </Text>
 
               {/* Synced — real relative age off last_dob_sync_at; "Never"
