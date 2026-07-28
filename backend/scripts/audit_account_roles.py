@@ -63,7 +63,7 @@ async def main() -> int:
         {"is_deleted": {"$ne": True}},
         {"email": 1, "name": 1, "role": 1, "account_status": 1,
          "company_id": 1, "company_name": 1, "created_at": 1,
-         "assigned_projects": 1},
+         "assigned_projects": 1, "is_platform_operator": 1},
     ).to_list(length=None)
 
     if not users:
@@ -162,6 +162,21 @@ async def main() -> int:
             _mask(u.get("email"), args.mask), u.get("account_status")))
     if not orphan_owners:
         print("  (none)")
+
+    # ── Platform operator bootstrap check (STEP 3) ───────────────────────
+    ops = [u for u in users if u.get("is_platform_operator") is True]
+    print("\n" + "-" * 78)
+    print("is_platform_operator = True  (%d)" % len(ops))
+    print("  Expected 0 BEFORE the bootstrap, and exactly 1 after — on the")
+    print("  account that should hold platform power. This flag is DB-write")
+    print("  only; no API path can set it.")
+    print("-" * 78)
+    for u in ops:
+        print("  %-32s role=%-8s status=%s" % (
+            _mask(u.get("email"), args.mask),
+            u.get("role"), u.get("account_status")))
+    if not ops:
+        print("  (none — not yet bootstrapped)")
 
     devices = await db.site_devices.count_documents({})
     print("\n" + "=" * 78)

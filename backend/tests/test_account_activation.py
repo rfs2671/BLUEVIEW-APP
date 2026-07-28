@@ -181,18 +181,39 @@ def test_demo_open_to_pending_and_no_external_calls(monkeypatch):
 
 # ── Admin approve ────────────────────────────────────────────────────
 def test_admin_approve_flips_status():
+    # Approve is tenant-scoped now: actor and target must share a company
+    # (or the actor is the platform operator). Two users who merely both
+    # LACK a company are NOT the same company — absence is not authorization.
     import server
     db = MagicMock()
     db.users.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
-    db.users.find_one = AsyncMock(return_value={"_id": "target", "account_status": "approved"})
+    db.users.find_one = AsyncMock(return_value={"_id": "target", "account_status": "approved", "company_id": "c1"})
     client, restore = _client_with_user(
-        {"_id": "owner1", "id": "owner1", "role": "owner", "account_status": "approved"}, db=db)
+        {"_id": "owner1", "id": "owner1", "role": "owner", "account_status": "approved", "company_id": "c1"}, db=db)
     try:
         r = client.patch("/api/admin/users/target/approve")
         assert r.status_code == 200, r.text
         assert r.json()["account_status"] == "approved"
         setd = db.users.update_one.await_args.args[1]["$set"]
         assert setd["account_status"] == "approved"
+    finally:
+        restore()
+
+
+def test_admin_cannot_approve_across_companies():
+    """Tenant scoping on the very route that decides who gets un-gated."""
+    import server
+    db = MagicMock()
+    db.users.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+    db.users.find_one = AsyncMock(return_value={
+        "_id": "target", "account_status": "pending", "company_id": "OTHER"})
+    client, restore = _client_with_user(
+        {"_id": "owner1", "id": "owner1", "role": "owner",
+         "account_status": "approved", "company_id": "c1"}, db=db)
+    try:
+        r = client.patch("/api/admin/users/target/approve")
+        assert r.status_code == 403, r.text
+        db.users.update_one.assert_not_awaited()
     finally:
         restore()
 

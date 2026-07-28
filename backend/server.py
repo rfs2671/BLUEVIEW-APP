@@ -2576,7 +2576,26 @@ async def get_demo_project(current_user = Depends(get_current_user)):
 async def admin_approve_user(user_id: str, current_user = Depends(get_admin_user)):
     """Flip a user pending -> approved. Admin/owner only, and the caller must
     themselves be approved (require_approved on the route) so a pending
-    self-signup admin cannot self-approve. Upsert-style update; never drops."""
+    self-signup admin cannot self-approve. Upsert-style update; never drops.
+
+    Tenant-scoped: a company admin approves users in THEIR OWN company only.
+    Before this, the update matched on _id alone, so any approved admin could
+    approve a user in any company — the route that decides who is un-gated was
+    itself unscoped.
+
+    The platform operator may approve anyone, and must be able to: a brand-new
+    organisation's first user is 'pending' and is the ONLY member of that
+    company, so nobody inside their org can approve them."""
+    target = await db.users.find_one({
+        "_id": to_query_id(user_id), "is_deleted": {"$ne": True},
+    })
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not is_platform_operator(current_user) and not _same_company(current_user, target):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to approve this user",
+        )
+
     res = await db.users.update_one(
         {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
         {"$set": {"account_status": "approved",
@@ -2619,6 +2638,108 @@ async def require_company_access(current_user = Depends(get_current_user)):
             detail="Company access required. Please contact your administrator."
         )
     return current_user
+
+
+# ── Platform operator ─────────────────────────────────────────────────────────
+# The trust anchor for genuinely cross-tenant operations (delete any company,
+# hard-delete any project, approve a user in any org).
+#
+# It is deliberately NOT the "owner" role. role == "owner" is what EVERY
+# self-serve signup receives — a company owner, i.e. a customer — and worse,
+# `role` is API-mutable: PUT /admin/users/{id} carries "role" in its
+# ALLOWED_USER_FIELDS, so an admin can write it. A value a customer can set is
+# not a trust anchor.
+#
+# `is_platform_operator` appears in NO allow-list in this file
+# (ALLOWED_USER_FIELDS / ALLOWED_SUB_FIELDS / ALLOWED_WORKER_FIELDS /
+# ALLOWED_FIELDS all drop it), so no API path can set it. It is DB-write only,
+# by a human, on purpose.
+#
+# PLATFORM_OPERATOR_EMAILS is the bootstrap and break-glass: it answers "how
+# does the first operator exist" and survives the flag being cleared by a bad
+# write. Changing it requires a redeploy, which is appropriate friction.
+PLATFORM_OPERATOR_EMAILS = frozenset(
+    e.strip().lower()
+    for e in os.environ.get("PLATFORM_OPERATOR_EMAILS", "").split(",")
+    if e.strip()
+)
+
+# Shadow mode. While False the platform gate LOGS what it would have blocked
+# and allows the request, so the gates can ship BEFORE the operator flag is
+# bootstrapped without locking the operator out of the very routes they need.
+# Behaviour while False is exactly today's (the existing role checks still
+# apply underneath); flipping it to True only ever TIGHTENS.
+#
+# ENABLE ONLY AFTER: the flag is set on the real operator account AND
+# audit_account_roles.py confirms it landed. Enabling first locks them out.
+PLATFORM_GATES_ENFORCED = os.environ.get(
+    "PLATFORM_GATES_ENFORCED", "false",
+).strip().lower() in ("1", "true", "yes")
+
+
+def is_platform_operator(user: dict) -> bool:
+    """True for the platform operator. Never inferred from `role`."""
+    if not user:
+        return False
+    if user.get("is_platform_operator") is True:
+        return True
+    email = (user.get("email") or "").strip().lower()
+    return bool(email) and email in PLATFORM_OPERATOR_EMAILS
+
+
+async def require_platform_operator(current_user = Depends(get_current_user)):
+    """Gate for cross-tenant platform operations.
+
+    While PLATFORM_GATES_ENFORCED is False this only logs — see the flag above.
+    """
+    if is_platform_operator(current_user):
+        return current_user
+    who = (current_user or {}).get("email") or (current_user or {}).get("_id")
+    if not PLATFORM_GATES_ENFORCED:
+        logger.warning(
+            "[platform-gate SHADOW] would have blocked non-operator %r "
+            "(role=%r). Set PLATFORM_GATES_ENFORCED=true after bootstrapping "
+            "is_platform_operator.", who, (current_user or {}).get("role"),
+        )
+        return current_user
+    logger.warning("[platform-gate] blocked non-operator %r", who)
+    raise HTTPException(
+        status_code=403, detail="Platform operator access required",
+    )
+
+
+async def require_company_scope(
+    company_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    """Tenant gate for routes that name a {company_id} in the path.
+
+    A customer may act on THEIR OWN company only; the platform operator may act
+    on any. This is the safe default for a route whose bucket is arguable: a
+    tenant-scoped company action cannot reach another tenant, and the operator
+    still gets everywhere through the bypass — so mis-classifying a
+    platform-ish route as company-owner costs nothing, while the reverse locks
+    customers out of their own organisation.
+
+    Authorization only — it does not assert the company exists. Handlers do
+    their own lookups and already 404 appropriately.
+    """
+    if is_platform_operator(current_user):
+        return current_user
+    user_company = get_user_company_id(current_user)
+    if user_company and str(user_company) == str(company_id):
+        return current_user
+    raise HTTPException(
+        status_code=403, detail="Not authorized for this company",
+    )
+
+
+def _same_company(actor: dict, target: dict) -> bool:
+    """Both sides must carry a company and it must match. A missing company on
+    EITHER side is not a match — absence is not authorization."""
+    a = str((actor or {}).get("company_id") or "")
+    b = str((target or {}).get("company_id") or "")
+    return bool(a) and bool(b) and a == b
 
 
 # ── Per-project tenant isolation ──────────────────────────────────────────────
@@ -4656,6 +4777,17 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
     existing_user = await db.users.find_one({"_id": to_query_id(user_id)})
     if not existing_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # SEV-0 tenant scoping. get_admin_user checks ROLE ONLY, so before this any
+    # admin of any company could target any user id here — and "password" is in
+    # ALLOWED_USER_FIELDS above. That is account takeover across tenants, not
+    # merely an information leak: set a victim's password, then log in as them.
+    # The platform operator legitimately administers across companies.
+    if not is_platform_operator(admin) and not _same_company(admin, existing_user):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to modify this user",
+        )
+
     old_phone = existing_user.get("phone", "")
     company_id = existing_user.get("company_id")
 
@@ -4825,7 +4957,7 @@ async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
 
 # ==================== OWNER - COMPANY MANAGEMENT ====================
 
-@api_router.get("/owner/companies")
+@api_router.get("/owner/companies", dependencies=[Depends(require_platform_operator)])
 async def get_companies(current_user = Depends(get_current_user)):
     """Get all companies (owner only)"""
     if current_user.get("role") != "owner":
@@ -4834,7 +4966,7 @@ async def get_companies(current_user = Depends(get_current_user)):
     companies = await db.companies.find({"is_deleted": {"$ne": True}}).to_list(200)
     return serialize_list(companies)
 
-@api_router.post("/owner/companies")
+@api_router.post("/owner/companies", dependencies=[Depends(require_platform_operator)])
 async def create_company(company_data: CompanyCreate, current_user = Depends(get_current_user)):
     """Create a new company (owner only). Optionally links to a GC license and fetches insurance from BIS."""
     if current_user.get("role") != "owner":
@@ -4885,7 +5017,7 @@ class LinkGcLicenseRequest(BaseModel):
     gc_license_number: str
 
 
-@api_router.get("/owner/debug/bis-license/{license_number}", tags=["Owner"])
+@api_router.get("/owner/debug/bis-license/{license_number}", tags=["Owner"], dependencies=[Depends(require_platform_operator)])
 async def debug_bis_license(license_number: str, current_user=Depends(get_current_user)):
     """Diagnostic: fetch the raw BIS license page and return a sanitized snippet
     plus what the current regex extracts. Owner only."""
@@ -4945,7 +5077,7 @@ async def debug_bis_license(license_number: str, current_user=Depends(get_curren
 
 
 
-@api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"])
+@api_router.post("/owner/companies/{company_id}/link-gc-license", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def link_gc_license_to_company(
     company_id: str,
     body: LinkGcLicenseRequest,
@@ -5040,7 +5172,7 @@ async def link_gc_license_to_company(
     }
 
 
-@api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_approved)])
+@api_router.delete("/owner/companies/{company_id}", tags=["Owner"], dependencies=[Depends(require_approved), Depends(require_platform_operator)])
 async def hard_delete_company(company_id: str, current_user=Depends(get_current_user)):
     """Hard delete a company and all its users (owner only)"""
     if current_user.get("role") != "owner":
@@ -5092,7 +5224,7 @@ async def _demote_other_primaries(company_id: str, except_rep_id: str):
     )
 
 
-@api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"])
+@api_router.get("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def list_filing_reps(company_id: str, current_user=Depends(get_current_user)):
     """List filing_reps for a company (owner only)."""
     if current_user.get("role") != "owner":
@@ -5107,7 +5239,7 @@ async def list_filing_reps(company_id: str, current_user=Depends(get_current_use
     return company.get("filing_reps") or []
 
 
-@api_router.post("/owner/companies/{company_id}/filing-reps", tags=["Owner"])
+@api_router.post("/owner/companies/{company_id}/filing-reps", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def add_filing_rep(
     company_id: str,
     body: FilingRepCreate,
@@ -5163,7 +5295,7 @@ async def add_filing_rep(
     return rep_doc
 
 
-@api_router.patch("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"])
+@api_router.patch("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def update_filing_rep(
     company_id: str,
     rep_id: str,
@@ -5227,7 +5359,7 @@ async def update_filing_rep(
     return updated_rep or {}
 
 
-@api_router.delete("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"])
+@api_router.delete("/owner/companies/{company_id}/filing-reps/{rep_id}", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def delete_filing_rep(
     company_id: str,
     rep_id: str,
@@ -6455,7 +6587,7 @@ def _load_authorization_text() -> str:
         return ""
 
 
-@api_router.get("/owner/companies/{company_id}/authorization", tags=["Owner"])
+@api_router.get("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def get_company_authorization(
     company_id: str,
     current_user=Depends(get_current_user),
@@ -6492,7 +6624,7 @@ async def get_company_authorization(
     }
 
 
-@api_router.post("/owner/companies/{company_id}/authorization", tags=["Owner"])
+@api_router.post("/owner/companies/{company_id}/authorization", tags=["Owner"], dependencies=[Depends(require_company_scope)])
 async def post_company_authorization(
     company_id: str,
     body: AuthorizationAccept,
@@ -6565,7 +6697,7 @@ async def post_company_authorization(
 
 # ==================== GC LICENSE INDEX & AUTOCOMPLETE ====================
 
-@api_router.post("/owner/seed-gc-licenses")
+@api_router.post("/owner/seed-gc-licenses", dependencies=[Depends(require_platform_operator)])
 async def seed_gc_licenses(current_user=Depends(get_current_user)):
     """Bulk-load all GC licenses from NYC Open Data into gc_licenses collection (owner only)."""
     if current_user.get("role") != "owner":
@@ -6636,7 +6768,7 @@ async def seed_gc_licenses(current_user=Depends(get_current_user)):
     return {"inserted": inserted, "updated": updated, "total_processed": offset}
 
 
-@api_router.post("/owner/run-gc-sync")
+@api_router.post("/owner/run-gc-sync", dependencies=[Depends(require_platform_operator)])
 async def run_gc_sync(current_user=Depends(get_current_user)):
     """Re-sync GC licenses from NYC Open Data. Flags status changes for companies in our DB (owner only)."""
     if current_user.get("role") != "owner":
@@ -7297,7 +7429,7 @@ class CreateAdminRequest(BaseModel):
     company_name: str
     phone: Optional[str] = None
 
-@api_router.post("/owner/admins")
+@api_router.post("/owner/admins", dependencies=[Depends(require_platform_operator)])
 async def create_admin_with_company(admin_data: CreateAdminRequest, current_user = Depends(get_current_user)):
     """Create admin account with company (owner only)"""
     if current_user.get("role") != "owner":
@@ -7391,7 +7523,7 @@ async def create_admin_with_company(admin_data: CreateAdminRequest, current_user
         "message": "Admin account created successfully"
     }
 
-@api_router.get("/owner/admins")
+@api_router.get("/owner/admins", dependencies=[Depends(require_platform_operator)])
 async def get_admin_accounts(current_user = Depends(get_current_user)):
     """Get all admin accounts (owner only)"""
     if current_user.get("role") != "owner":
@@ -7400,7 +7532,7 @@ async def get_admin_accounts(current_user = Depends(get_current_user)):
     admins = await db.users.find({"role": "admin", "is_deleted": {"$ne": True}}, {"password": 0}).to_list(200)
     return serialize_list(admins)
 
-@api_router.delete("/owner/admins/{admin_id}")
+@api_router.delete("/owner/admins/{admin_id}", dependencies=[Depends(require_platform_operator)])
 async def delete_admin_account(admin_id: str, current_user = Depends(get_current_user)):
     """Delete admin account (owner only)"""
     if current_user.get("role") != "owner":
@@ -7416,7 +7548,7 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     
     return {"message": "Admin account deleted successfully"}
 
-@api_router.put("/owner/admins/{admin_id}")
+@api_router.put("/owner/admins/{admin_id}", dependencies=[Depends(require_platform_operator)])
 async def update_admin_account(admin_id: str, admin_data: dict, current_user = Depends(get_current_user)):
     """Update admin account (owner only)"""
     if current_user.get("role") != "owner":
@@ -8223,7 +8355,7 @@ async def _r2_delete_prefix(client, bucket: str, prefix: str) -> int:
     return deleted
 
 
-@api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_approved)])
+@api_router.delete("/projects/{project_id}/hard-delete", dependencies=[Depends(require_approved), Depends(require_platform_operator)])
 async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     """TIER 2 — irreversible purge. OWNER ONLY.
 

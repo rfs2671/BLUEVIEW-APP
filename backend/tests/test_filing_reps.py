@@ -147,11 +147,18 @@ class TestDemoteOtherPrimaries(unittest.TestCase):
 
 # ── Endpoint smoke (TestClient + dependency overrides) ─────────────
 
-def _setup_client(*, role: str = "owner", company_doc=None):
-    """TestClient with auth + db overrides. Returns (client, restore_fn)."""
+def _setup_client(*, role: str = "owner", company_doc=None, company_id="co_a"):
+    """TestClient with auth + db overrides. Returns (client, restore_fn).
+
+    company_id defaults to "co_a" — the company these tests address in their
+    URLs. The filing-reps routes are tenant-scoped now (require_company_scope):
+    a customer owner manages THEIR OWN company's reps, and the platform
+    operator manages any. A user carrying no company_id can no longer act on
+    an arbitrary company, so the fixture must say which company this owner
+    owns. Pass company_id=... to exercise the cross-company denial."""
     import server
 
-    user = {"id": "u1", "role": role, "_id": "u1"}
+    user = {"id": "u1", "role": role, "_id": "u1", "company_id": company_id}
 
     async def _fake_user():
         return user
@@ -271,7 +278,9 @@ class TestEndpointHappyPaths(unittest.TestCase):
 
     def test_post_404_when_company_missing(self):
         import server
-        client, restore = _setup_client(role="owner")
+        # Owner OF co_missing: passes the tenant gate, so the handler's
+        # "company not found" 404 is what is actually exercised here.
+        client, restore = _setup_client(role="owner", company_id="co_missing")
         mock_db = MagicMock()
         mock_db.companies.find_one = AsyncMock(return_value=None)
         try:
