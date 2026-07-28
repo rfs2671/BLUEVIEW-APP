@@ -87,7 +87,14 @@ def _client_with_user(user, *, db=None):
     orig_company = server.get_user_company_id
     if db is not None:
         server.db = db
-    server.get_user_company_id = lambda u: None
+    # Return the caller's REAL company. This used to be `lambda u: None`, which
+    # made the then-current hand-rolled ownership checks (`if company_id and
+    # project.get("company_id") != company_id`) short-circuit and admit every
+    # request — convenient for isolating require_approved, but it hard-coded the
+    # exact falsy-company_id bypass that batch 2 closed. require_project_access
+    # fails closed on a falsy company, so a stub returning None now 403s before
+    # the handler and the account-status assertions below could never run.
+    server.get_user_company_id = lambda u: u.get("company_id")
     server.app.dependency_overrides[server.get_current_user] = _fake_user
 
     def _restore():

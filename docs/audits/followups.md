@@ -4,6 +4,87 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## TENANT ISOLATION — 2026-07-28 — Batch 2 tightened writes but did NOT complete isolation
+
+25 project-scoped write endpoints now carry `require_approved` +
+`require_project_access`. Four things remain open. **Isolation is TIGHTENED,
+NOT COMPLETE** — do not treat the write batch as closing the multi-tenant story.
+
+### 1. `POST /admin/users/{user_id}/assign-projects` — SEV-0, defeats the guards
+
+`server.py:4880`. `get_admin_user` checks ROLE ONLY. The handler never loads the
+target user to compare companies and never validates the submitted project ids:
+
+```python
+result = await db.users.update_one(
+    {"_id": to_query_id(user_id)},
+    {"$set": {"assigned_projects": project_ids.get("project_ids", []), ...}},
+)
+```
+
+`require_project_access` branch 3 (`server.py:2819-2820`) treats
+`assigned_projects` as sufficient authorization. So this one unscoped write
+**manufactures** the membership that every guard added in Batch 1 and Batch 2
+then honours. Until it is gated, cross-tenant access is still reachable on the
+routes that look protected. Fix: scope the target user to the caller's company
+AND validate every submitted project id belongs to that company.
+
+Note the sibling `PUT /admin/users/{user_id}` (`server.py:4773+`) already has
+this mitigation, commented "SEV-0 tenant scoping. get_admin_user checks ROLE
+ONLY..." — assign-projects was missed.
+
+### 2. Kiosk write path — `POST /daily-logs`, `PUT /daily-logs/{log_id}`
+
+Not gated. A site device registered to project A can write a daily log to
+project B. `require_project_access` cannot be applied as-written because
+`project_id` arrives in the **body** (`DailyLogCreate`), not the path.
+
+Device-auth shape is confirmed and the guard is a straight port, not new logic:
+a kiosk authenticates against `db.site_devices` (`server.py:3092`) with a
+`site_mode` JWT; `get_current_user` (`server.py:2431-2444`) resolves it to the
+device row, sets `role="site_device"`, and re-derives `company_id` from the
+device's project at request time. The device record carries `project_id`
+(written at provisioning, `server.py:10769`). So the check is exactly
+`require_project_access` branch 1 (`server.py:2806`) — device may write only to
+its provisioned project — reading `body.project_id` instead of the path param.
+
+Also fix while there: `create_daily_log` inserts even when the project lookup
+returns `None` (`server.py:10540-10544`).
+
+### 3. Per-endpoint route-level over-gate tests not written
+
+`test_tenant_isolation_writes.py` asserts the three directions against the
+SHARED guard, plus a source pin (ast) and a wiring pin (live FastAPI dependant
+tree) proving all 25 routes declare and carry both dependencies. There is **no
+route-level call** for any endpoint — in particular no per-endpoint
+"own-company admin still works" mirror. A handler-local regression that breaks a
+legitimate own-project write would not be caught.
+
+The two 403 directions are cheap to add per route (the dependency raises before
+body validation). The "works" direction is the expensive one: multipart for
+`upload-file`, R2/Dropbox doubles for `sync-dropbox` and `reindex-*`, the stats
+engine for `risk-score/calculate`.
+
+### 4. Null-`company_id` deployment count — DO THIS BEFORE DEPLOYING
+
+The hand-rolled checks these guards replace had the shape
+`if company_id and project.get("company_id") != company_id:` — which **silently
+passed** when the caller's `company_id` was falsy. `require_project_access`
+fails closed instead. Any real admin/owner account with a null/missing
+`company_id` therefore passed these 25 routes before and gets 403 now.
+
+Count them first — `backend/scripts/audit_account_roles.py --mask` is the
+natural place to add it. No production DB access from the dev environment.
+
+### Also noticed, unrelated to this batch
+
+`get_current_user`'s site-device branch looks the device up by `_id` only
+(`server.py:2432`) and does **not** re-check `is_active` / `is_deleted`, though
+the login endpoint does (`server.py:3092`). A deactivated kiosk's existing token
+keeps working until it expires.
+
+---
+
 ## CAMERA PERF — 2026-07-28 — daily-log camera is not fully pre-warmed; Android still cold-starts the device
 
 Permission is now off the tap path (`4b712e3`), and the capture surface is

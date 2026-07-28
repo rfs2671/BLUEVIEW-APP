@@ -4153,7 +4153,7 @@ class LL196GenerateRequest(BaseModel):
     month: int
 
 
-@api_router.post("/projects/{project_id}/logbook/attestations/generate")
+@api_router.post("/projects/{project_id}/logbook/attestations/generate", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def generate_ll196_attestation_endpoint(
     project_id: str,
     body: LL196GenerateRequest,
@@ -4354,7 +4354,7 @@ async def get_project_risk_score_history(
     return {"history": [serialize_id(d) for d in docs]}
 
 
-@api_router.post("/projects/{project_id}/risk-score/calculate")
+@api_router.post("/projects/{project_id}/risk-score/calculate", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def calculate_project_risk_score(
     project_id: str,
     current_user = Depends(get_current_user),
@@ -8183,7 +8183,7 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 
     return ProjectResponse(**serialize_id(project))
 
-@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved)])
+@api_router.put("/projects/{project_id}", response_model=ProjectResponse, dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
@@ -8243,7 +8243,7 @@ async def get_project_required_logbooks(project_id: str, current_user = Depends(
     required = get_required_logbooks(project_class, project)
     return {"project_id": project_id, "project_class": project_class, "required_logbooks": required}
 
-@api_router.delete("/projects/{project_id}")
+@api_router.delete("/projects/{project_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project(project_id: str, admin = Depends(get_admin_user)):
     """TIER 1 — mark for deletion (admin or owner).
 
@@ -8526,7 +8526,7 @@ async def get_project_nfc_tags(project_id: str, current_user = Depends(get_curre
         raise HTTPException(status_code=404, detail="Project not found")
     return project.get("nfc_tags", [])
 
-@api_router.post("/projects/{project_id}/nfc-tags")
+@api_router.post("/projects/{project_id}/nfc-tags", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin = Depends(get_admin_user)):
     # Get project and verify company access
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
@@ -8602,7 +8602,7 @@ async def add_nfc_tag_to_project(project_id: str, tag_data: NfcTagCreate, admin 
         "tag_id": tag_data.tag_id,
     }
 
-@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}")
+@api_router.delete("/projects/{project_id}/nfc-tags/{tag_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depends(get_admin_user)):
     now = datetime.now(timezone.utc)
     
@@ -10749,7 +10749,7 @@ async def get_project_site_devices(project_id: str, admin = Depends(get_admin_us
     ).to_list(100)
     return serialize_list(devices)
 
-@api_router.post("/projects/{project_id}/site-devices")
+@api_router.post("/projects/{project_id}/site-devices", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def create_project_site_device(project_id: str, device_data: SiteDeviceCreate, admin = Depends(get_admin_user)):
     """Create a site device from project detail page"""
     existing = await db.site_devices.find_one({"username": device_data.username, "is_deleted": {"$ne": True}})
@@ -12364,7 +12364,7 @@ async def list_dropbox_subfolders(
     }
 
 
-@api_router.put("/projects/{project_id}/site-device-subfolders")
+@api_router.put("/projects/{project_id}/site-device-subfolders", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def set_site_device_subfolders(
     project_id: str,
     data: dict,
@@ -12415,7 +12415,7 @@ def _dropbox_api_path(stored: str) -> str:
     return s.rstrip("/")
 
 
-@api_router.post("/projects/{project_id}/link-dropbox", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/link-dropbox", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def link_dropbox_to_project(project_id: str, data: dict, current_user = Depends(get_current_user)):
     """Link or unlink a Dropbox folder for a project.
 
@@ -12746,7 +12746,7 @@ async def _sync_project_to_r2(project_id: str, company_id: str, folder_path: str
         logger.error(f"Background sync failed for project {project_id}: {e}")
 
 
-@api_router.post("/projects/{project_id}/sync-dropbox", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/sync-dropbox", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def sync_project_dropbox(project_id: str, current_user = Depends(get_current_user)):
     """Sync/refresh project files from Dropbox — returns immediately, runs sync in background"""
     project = await db.projects.find_one({"_id": to_query_id(project_id)})
@@ -12868,7 +12868,7 @@ async def _log_upload_attempt(record: dict):
         pass  # never let logging break the request
 
 
-@api_router.post("/projects/{project_id}/upload-file", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/upload-file", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def upload_project_file(project_id: str, request: Request, file: UploadFile = File(...), current_user = Depends(get_current_user)):
     """Upload a file directly to R2 storage for a project (PDF only, max 100 MB)."""
     _log_base = {
@@ -13215,7 +13215,7 @@ async def stream_project_file(project_id: str, file_id: str, current_user = Depe
     return StreamingResponse(_iter(), media_type=content_type, headers=headers)
 
 
-@api_router.delete("/projects/{project_id}/files/{file_id}")
+@api_router.delete("/projects/{project_id}/files/{file_id}", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def delete_project_file(project_id: str, file_id: str, current_user = Depends(get_current_user)):
     """Hard-delete a project file: removes from R2 and Mongo. Admin/owner only.
 
@@ -13891,7 +13891,7 @@ async def get_scaffold_info(project_id: str, current_user = Depends(get_current_
         "scaffold_erected": project.get("scaffold_erected", False),
     }
 
-@api_router.put("/logbooks/project/{project_id}/scaffold-info")
+@api_router.put("/logbooks/project/{project_id}/scaffold-info", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_user = Depends(get_current_user)):
     """Save scaffold info to project so it's remembered"""
     update = {
@@ -13929,7 +13929,7 @@ async def get_project_safety_staff(project_id: str, current_user = Depends(get_c
     }).to_list(20)
     return serialize_list(staff)
 
-@api_router.post("/projects/{project_id}/safety-staff")
+@api_router.post("/projects/{project_id}/safety-staff", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def create_safety_staff(project_id: str, data: SafetyStaffCreate, admin = Depends(get_admin_user)):
     """Register a Site Safety Coordinator (SSC) or Site Safety Manager (SSM) for a project."""
     project = await db.projects.find_one({"_id": to_query_id(project_id), "is_deleted": {"$ne": True}})
@@ -15157,7 +15157,7 @@ async def get_submitted_logbooks(project_id: str, current_user = Depends(get_cur
         by_date[d].append(serialize_id(dict(log)))
     return {"dates": by_date}
 
-@api_router.put("/projects/{project_id}/report-settings")
+@api_router.put("/projects/{project_id}/report-settings", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_report_settings(project_id: str, data: dict, current_user = Depends(get_current_user)):
     """Update report email list + send time with validation."""
     # Verify user is admin
@@ -18236,7 +18236,7 @@ async def check_permit_expirations():
  
 # ==================== DOB COMPLIANCE ENDPOINTS ====================
  
-@api_router.put("/projects/{project_id}/dob-config", dependencies=[Depends(require_approved)])
+@api_router.put("/projects/{project_id}/dob-config", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def update_dob_config(project_id: str, config: DOBConfigUpdate, admin=Depends(get_admin_user)):
     """Manual override: update BIN/BBL and toggle DOB tracking."""
     project = await db.projects.find_one({
@@ -18553,7 +18553,7 @@ async def _verify_dob_log_access(project_id: str, current_user: dict) -> dict:
     return project
 
 
-@api_router.post("/projects/{project_id}/dob-logs/{log_id}/mark-read")
+@api_router.post("/projects/{project_id}/dob-logs/{log_id}/mark-read", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def mark_dob_log_read(
     project_id: str,
     log_id: str,
@@ -18605,7 +18605,7 @@ async def mark_dob_log_read(
     }
 
 
-@api_router.post("/projects/{project_id}/dob-logs/mark-all-read")
+@api_router.post("/projects/{project_id}/dob-logs/mark-all-read", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def mark_all_dob_logs_read(
     project_id: str,
     current_user=Depends(get_current_user),
@@ -18648,7 +18648,7 @@ async def mark_all_dob_logs_read(
     }
 
 
-@api_router.post("/projects/{project_id}/dob-sync", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/dob-sync", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user)):
     """Manual trigger: bypass cron and force immediate DOB fetch. Rate limited 15 min."""
     import traceback as _tb
@@ -24570,7 +24570,7 @@ async def repair_file_names(project_id: str, current_user=Depends(get_admin_user
     return {"repaired_count": len(repaired), "repaired": repaired, "debug": debug_info}
 
 
-@api_router.post("/projects/{project_id}/reindex-document", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/reindex-document", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def reindex_project_document(
     project_id: str,
     body: dict,
@@ -24626,7 +24626,7 @@ async def reindex_project_document(
     }
 
 
-@api_router.post("/projects/{project_id}/reindex-all", dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/reindex-all", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def reindex_all_project_files(
     project_id: str,
     current_user=Depends(get_admin_user),
@@ -24816,7 +24816,7 @@ async def debug_probe_waapi_endpoints(
     return {"base_url": WAAPI_BASE_URL, "instance": WAAPI_INSTANCE_ID, "results": results}
 
 
-@api_router.post("/projects/{project_id}/debug/test-plan-image-send")
+@api_router.post("/projects/{project_id}/debug/test-plan-image-send", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def debug_test_plan_image_send(
     project_id: str,
     body: dict,
@@ -26281,7 +26281,7 @@ async def _pm_load_project_or_403(project_id: str, current_user):
     return project
 
 
-@api_router.post("/projects/{project_id}/model/aggregate", response_model=_ProjectModel, dependencies=[Depends(require_approved)])
+@api_router.post("/projects/{project_id}/model/aggregate", response_model=_ProjectModel, dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def aggregate_project_model_endpoint(
     project_id: str, current_user = Depends(get_current_user)
 ):
@@ -26302,7 +26302,7 @@ async def get_project_model_endpoint(
     return model
 
 
-@api_router.patch("/projects/{project_id}/model/confirm", response_model=_ProjectModel)
+@api_router.patch("/projects/{project_id}/model/confirm", response_model=_ProjectModel, dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def confirm_project_model_endpoint(
     project_id: str, body: _ModelConfirmRequest,
     current_user = Depends(get_current_user),
@@ -26342,7 +26342,7 @@ from app.scheduling import engine as _sched_engine  # noqa: E402
 from app.scheduling.graph_v1 import build_graph_v1 as _build_graph_v1  # noqa: E402
 
 
-@api_router.post("/projects/{project_id}/schedule/generate")
+@api_router.post("/projects/{project_id}/schedule/generate", dependencies=[Depends(require_approved), Depends(require_project_access)])
 async def generate_schedule_endpoint(
     project_id: str, current_user = Depends(get_current_user)
 ):
