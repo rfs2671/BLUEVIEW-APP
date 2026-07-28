@@ -1292,6 +1292,17 @@ class UserResponse(BaseModel):
     # Account activation gating: "pending" (new self-serve signups, read-only
     # demo) or "approved" (full access). Server-controlled — never set by client.
     account_status: Optional[str] = None
+    # READ-ONLY exposure so the client can hide UI a non-operator cannot use
+    # (e.g. the owner-portal entrance). This is a RESPONSE model — declaring it
+    # here cannot make it settable. The write side is guarded separately: the
+    # field appears in NO request model and in NO field allow-list
+    # (ALLOWED_USER_FIELDS / _SUB_ / _WORKER_ / _FIELDS), which
+    # test_flag_is_in_no_allowlist asserts. It is DB-write only, by a human.
+    #
+    # Hiding the door is a UX courtesy, NOT the security boundary: the boundary
+    # is require_platform_operator on the endpoints themselves. A client that
+    # ignores this field still gets 403s.
+    is_platform_operator: bool = False
 
 class TokenResponse(BaseModel):
     token: str

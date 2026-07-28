@@ -117,9 +117,11 @@ The Daily Log page includes comprehensive sections:
 - Timestamp tracking
 
 ## Test Credentials
-- **Admin**: rfs2671@gmail.com / Asdddfgh1$
-- **Site Device**: site-downtown-1 / password (Downtown Tower project)
-- **Owner Portal Password**: blueview2024
+- **Admin**: rfs2671@gmail.com / <set in your local env; never commit a password>
+- **Site Device**: site-downtown-1 / <local env only>  (Downtown Tower project)
+- **Owner Portal**: no password. Access is granted server-side by the
+  `is_platform_operator` flag; the old client-side password gate was removed
+  because it shipped a plaintext secret in the web bundle.
 
 ## Testing Status (as of February 1, 2026)
 - **Backend**: 100% (21/21 tests passed)

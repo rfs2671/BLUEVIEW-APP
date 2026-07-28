@@ -16,13 +16,25 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
+import os
+
 API = "https://api.levelog.com"
 
 OWNER_EMAIL = "rfs2671@gmail.com"
-OWNER_PASSWORD = "Asdddfgh1$"
+OWNER_PASSWORD = os.environ.get("SEED_OWNER_PASSWORD", "")
 
 ADMIN_EMAIL = "rfs2671+blueview@gmail.com"
-ADMIN_PASSWORD = "1234"
+ADMIN_PASSWORD = os.environ.get("SEED_ADMIN_PASSWORD", "")
+
+
+# Credentials come from the environment. They were previously hardcoded here,
+# and because this file is tracked in a PUBLIC repo that leaked a real account
+# password. Never put a credential back in this file.
+if not OWNER_PASSWORD or not ADMIN_PASSWORD:
+    raise SystemExit(
+        "Set SEED_OWNER_PASSWORD and SEED_ADMIN_PASSWORD in the environment; "
+        "this script no longer carries credentials."
+    )
 
 COMPANY_NAME = "Blueview Builders"
 GC_LEGAL_NAME = "Blueview Builders"

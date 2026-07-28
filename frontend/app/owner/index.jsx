@@ -47,8 +47,13 @@ import { colors, spacing, borderRadius, typography } from '../../src/styles/them
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 
-// Owner password
-const OWNER_PASSWORD = 'Asdddfgh1$';
+// The client-side password gate that used to live here has been removed.
+// It compared against a constant compiled into the web bundle, so it was
+// readable by anyone with dev tools and bypassable by calling the API
+// directly — zero security, while implying the portal was protected.
+// The real boundary is server-side: require_platform_operator on every
+// /owner/* endpoint. This screen now only HIDES the door from users the
+// server would refuse anyway.
 
 // Owner API functions
 const ownerAPI = {
@@ -160,8 +165,10 @@ export default function OwnerPortalScreen() {
   const adminModalScrollMaxHeight = Math.max(220, Math.round(winHeight * 0.75) - 120);
 
   // Auth state
-  const [ownerAuthenticated, setOwnerAuthenticated] = useState(false);
-  const [password, setPassword] = useState('');
+  // Operator status is the SERVER's answer, surfaced on /auth/me. It is not a
+  // client decision: the same is_platform_operator drives require_platform_operator
+  // on every /owner/* endpoint, so a client that ignored this would just get 403s.
+  const isOperator = user?.is_platform_operator === true;
 
   // Data state
   const [loading, setLoading] = useState(false);
@@ -223,20 +230,11 @@ export default function OwnerPortalScreen() {
   }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
-    if (ownerAuthenticated && isAuthenticated) {
+    if (isOperator && isAuthenticated) {
       fetchData();
     }
-  }, [ownerAuthenticated, isAuthenticated]);
+  }, [isOperator, isAuthenticated]);
 
-  const handleOwnerLogin = () => {
-    if (password === OWNER_PASSWORD) {
-      setOwnerAuthenticated(true);
-      setPassword('');
-      toast.success('Welcome', 'Owner portal access granted');
-    } else {
-      toast.error('Access Denied', 'Invalid owner password');
-    }
-  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -543,8 +541,8 @@ export default function OwnerPortalScreen() {
     setShowAdminCompanyDropdown(false);
   };
 
-  // If not authenticated with owner password
-  if (!ownerAuthenticated) {
+  // Non-operators get a closed door, not a password prompt.
+  if (!isOperator) {
     return (
       <AnimatedBackground>
         <SafeAreaView style={styles.container} edges={['top']}>
@@ -563,21 +561,16 @@ export default function OwnerPortalScreen() {
               <IconPod size={64}>
                 <ShieldAlert size={28} strokeWidth={1.5} color={semantic.attention} />
               </IconPod>
-              <Text style={styles.loginTitle}>Owner Access</Text>
-              <Text style={styles.loginSubtitle}>Enter owner password to continue</Text>
+              <Text style={styles.loginTitle}>Operator access required</Text>
+              <Text style={styles.loginSubtitle}>
+                This portal is limited to platform operators. If you reached
+                this page by URL, your account does not have operator access.
+              </Text>
 
               <View style={styles.loginForm}>
-                <GlassInput
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder="Owner password"
-                  secureTextEntry
-                  onSubmitEditing={handleOwnerLogin}
-                  autoFocus
-                />
                 <GlassButton
-                  title="Access Portal"
-                  onPress={handleOwnerLogin}
+                  title="Back to dashboard"
+                  onPress={() => router.push('/')}
                   style={styles.loginButton}
                 />
               </View>
