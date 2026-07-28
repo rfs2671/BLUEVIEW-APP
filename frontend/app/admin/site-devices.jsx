@@ -74,7 +74,6 @@ export default function SiteDevicesScreen() {
   const [showCredentials, setShowCredentials] = useState(null);
   const [newDevice, setNewDevice] = useState({
     project_id: '',
-    device_name: '',
     username: '',
     password: '',
   });
@@ -127,7 +126,14 @@ export default function SiteDevicesScreen() {
 
     setSaving(true);
     try {
-      const result = await siteDevicesAPI.create(newDevice);
+      // The form no longer collects a separate display name — the username IS
+      // the device's identity. Sent explicitly so the device list shows it
+      // rather than the backend's "Site Device" default (device_name is
+      // Optional[str] = "Site Device" server-side).
+      const result = await siteDevicesAPI.create({
+        ...newDevice,
+        device_name: newDevice.username,
+      });
       toast.success('Created', 'Site device created successfully');
       
       // Show credentials to admin
@@ -137,7 +143,7 @@ export default function SiteDevicesScreen() {
       });
       
       setShowCreateModal(false);
-      setNewDevice({ project_id: '', device_name: '', username: '', password: '' });
+      setNewDevice({ project_id: '', username: '', password: '' });
       fetchData();
     } catch (error) {
       console.error('Failed to create device:', error);
@@ -359,15 +365,6 @@ export default function SiteDevicesScreen() {
                 </View>
 
                 <View style={s.formGroup}>
-                  <Text style={s.formLabel}>DEVICE NAME</Text>
-                  <GlassInput
-                    value={newDevice.device_name}
-                    onChangeText={(val) => setNewDevice({ ...newDevice, device_name: val })}
-                    placeholder="e.g., Site Tablet 1"
-                  />
-                </View>
-
-                <View style={s.formGroup}>
                   <Text style={s.formLabel}>USERNAME</Text>
                   <GlassInput
                     value={newDevice.username}
@@ -386,14 +383,18 @@ export default function SiteDevicesScreen() {
                     secureTextEntry
                   />
                 </View>
-
-                <View style={s.infoBox}>
-                  <Key size={16} strokeWidth={1.5} color={semantic.attention} />
-                  <Text style={s.infoText}>
-                    Save these credentials securely. The password cannot be recovered after creation.
-                  </Text>
-                </View>
               </ScrollView>
+
+              {/* OUTSIDE the ScrollView on purpose. This is the only warning
+                  that the password is unrecoverable, and inside the scroll
+                  region it sat below the password field, where a short
+                  viewport hid it. It must be on screen whenever Create is. */}
+              <View style={s.infoBox}>
+                <Key size={16} strokeWidth={1.5} color={semantic.attention} />
+                <Text style={s.infoText}>
+                  Save these credentials securely. The password cannot be recovered after creation.
+                </Text>
+              </View>
 
               <View style={s.modalActions}>
                 <GlassButton
@@ -433,10 +434,6 @@ export default function SiteDevicesScreen() {
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Project</Text>
                   <Text style={s.credentialValueBold}>{showCredentials?.project_name}</Text>
-                </View>
-                <View style={s.credentialRow}>
-                  <Text style={s.credentialLabel}>Device</Text>
-                  <Text style={s.credentialValueBold}>{showCredentials?.device_name}</Text>
                 </View>
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Username</Text>
@@ -620,7 +617,10 @@ function buildStyles(colors, isDark) {
     padding: spacing.lg,
   },
   modalContent: {
-    backgroundColor: '#1a1a2e',
+    // Opaque AND theme-aware (the surface.menu value). Was a hardcoded
+    // '#1a1a2e': text here uses colors.text.*, which is DARK in the light
+    // theme, so every label in this modal was dark-on-dark and unreadable.
+    backgroundColor: colors.background.middle,
     borderRadius: borderRadius.xxl,
     width: '100%',
     maxWidth: 500,
@@ -720,7 +720,7 @@ function buildStyles(colors, isDark) {
     flex: 2,
   },
   credentialsModal: {
-    backgroundColor: '#1a1a2e',
+    backgroundColor: colors.background.middle,
     borderRadius: borderRadius.xxl,
     padding: spacing.xl,
     width: '100%',
@@ -769,7 +769,7 @@ function buildStyles(colors, isDark) {
   credentialValueMono: {
     fontSize: 14,
     fontFamily: 'monospace',
-    color: '#4ade80',
+    color: colors.state.verified,
   },
   doneBtn: {
     width: '100%',

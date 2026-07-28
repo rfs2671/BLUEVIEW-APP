@@ -192,7 +192,6 @@ export default function ProjectDetailScreen() {
   const [siteDevices, setSiteDevices] = useState([]);
   const [showAddDeviceModal, setShowAddDeviceModal] = useState(false);
   const [newDevice, setNewDevice] = useState({
-    device_name: '',
     username: '',
     password: '',
   });
@@ -488,7 +487,13 @@ export default function ProjectDetailScreen() {
 
     setAddingDevice(true);
     try {
-      const result = await siteDevicesAPI.create(projectId, newDevice);
+      // The form no longer collects a separate display name — the username IS
+      // the device's identity. Sent explicitly so the device list shows it
+      // rather than the backend's "Site Device" default.
+      const result = await siteDevicesAPI.create(projectId, {
+        ...newDevice,
+        device_name: newDevice.username,
+      });
       toast.success('Created', 'Site device created successfully');
       
       setShowCredentials({
@@ -496,7 +501,7 @@ export default function ProjectDetailScreen() {
         password: newDevice.password,
       });
 
-      setNewDevice({ device_name: '', username: '', password: '' });
+      setNewDevice({ username: '', password: '' });
       setShowAddDeviceModal(false);
       await fetchData();
     } catch (error) {
@@ -1389,15 +1394,6 @@ export default function ProjectDetailScreen() {
 
                 <View style={s.modalForm}>
                   <View style={s.inputGroup}>
-                    <Text style={s.inputLabel}>DEVICE NAME</Text>
-                    <GlassInput
-                      value={newDevice.device_name}
-                      onChangeText={(val) => setNewDevice({ ...newDevice, device_name: val })}
-                      placeholder="e.g., Site Tablet 1"
-                    />
-                  </View>
-
-                  <View style={s.inputGroup}>
                     <Text style={s.inputLabel}>USERNAME</Text>
                     <GlassInput
                       value={newDevice.username}
@@ -1505,10 +1501,6 @@ export default function ProjectDetailScreen() {
               </Text>
 
               <View style={s.credentialsBox}>
-                <View style={s.credentialRow}>
-                  <Text style={s.credentialLabel}>Device</Text>
-                  <Text style={s.credentialValueBold}>{showCredentials?.device_name}</Text>
-                </View>
                 <View style={s.credentialRow}>
                   <Text style={s.credentialLabel}>Username</Text>
                   <Text style={s.credentialValueMono}>{showCredentials?.username}</Text>
@@ -2019,7 +2011,10 @@ function buildStyles(colors, isDark) {
     marginTop: spacing.sm,
   },
   credentialsModal: {
-    backgroundColor: '#1a1a2e',
+    // Opaque AND theme-aware (the surface.menu value). Was a hardcoded
+    // '#1a1a2e': the text here uses colors.text.*, which is DARK in the light
+    // theme, so "Device Created!" and the labels were dark-on-dark.
+    backgroundColor: colors.background.middle,
     borderRadius: borderRadius.xxl,
     padding: spacing.xl,
     maxWidth: 400,
@@ -2073,7 +2068,7 @@ function buildStyles(colors, isDark) {
   credentialValueMono: {
     fontSize: 14,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    color: '#4ade80',
+    color: colors.state.verified,
   },
   doneBtn: {
     width: '100%',
