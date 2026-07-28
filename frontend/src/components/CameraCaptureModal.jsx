@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Modal, View, Text, Pressable, StyleSheet, ActivityIndicator, Platform,
+  AppState, BackHandler, View, Text, Pressable, StyleSheet, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
@@ -53,9 +53,11 @@ async function compressUnderCap(srcUri) {
  * long as it took them to read and answer it.
  *
  * Calling this hook where the screen mounts moves that dialog to screen load,
- * so by the time the camera is tapped the permission is already resolved. It
- * deliberately does NOT touch <Camera>: this is permission only, not a warm
- * camera. The device is still acquired when the modal opens.
+ * so by the time the camera is tapped the permission is already resolved.
+ *
+ * Kept even though the surface below is now mounted (and therefore already
+ * requests permission) from screen mount: this hook is what guarantees the
+ * behaviour if the pre-warm commit is ever reverted on its own.
  *
  * Platform-split: the .web.jsx sibling exports a no-op of the same name, so
  * screens can call this unconditionally without pulling the native
@@ -69,9 +71,10 @@ export function useCameraPrewarmPermission() {
   return hasPermission;
 }
 
-function CameraSurface({ onCapture, onClose }) {
+function CameraSurface({ active, onCapture, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const [position, setPosition] = useState('back'); // 'back' | 'front'
   const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide' — default ultra-wide
   const [capturing, setCapturing] = useState(false);
@@ -99,6 +102,14 @@ function CameraSurface({ onCapture, onClose }) {
   useEffect(() => {
     if (!hasPermission) requestPermission();
   }, [hasPermission]);
+
+  // A warm camera must not survive backgrounding: VisionCamera wants isActive
+  // false when the app is not foregrounded, or the OS tears the session down
+  // underneath it and the preview returns black.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
+    return () => sub.remove();
+  }, []);
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
@@ -174,7 +185,7 @@ function CameraSurface({ onCapture, onClose }) {
         ref={camera}
         style={StyleSheet.absoluteFill}
         device={device}
-        isActive={true}
+        isActive={active && appActive}
         photo={true}
         zoom={zoom}
         onError={(err) => {
@@ -235,22 +246,74 @@ function CameraSurface({ onCapture, onClose }) {
   );
 }
 
+/**
+ * PRE-WARMED. This was an RN <Modal> whose child was gated on `visible`, so
+ * the whole VisionCamera stack — device enumeration, native view mount,
+ * session configuration, device acquisition — began only AFTER the tap.
+ *
+ * RN Modal cannot be pre-warmed: it does not render children while hidden. So
+ * the surface is now a full-screen absolute overlay mounted for the lifetime
+ * of the screen and merely hidden. What that buys, read from the library's
+ * own native source rather than assumed:
+ *
+ *   iOS   — CameraSession.configure() acquires the device input and configures
+ *           format/outputs in steps 1-9; checkIsActive() is step 10 and only
+ *           calls captureSession.startRunning(). The device is held from
+ *           mount, and the tap starts an already-configured session.
+ *   Android — CameraSession.kt runs configureOutputs/configureCamera (CameraX
+ *           bindToLifecycle) first and configureIsActive() fourth, which only
+ *           moves a LifecycleRegistry between CREATED and RESUMED. The session
+ *           graph is pre-built, but CameraX opens the physical device on the
+ *           transition, so the device open is still on the tap. Warmer, not
+ *           fully warm.
+ *
+ * Hidden state is opacity 0 + pointerEvents none, deliberately NOT
+ * display:'none' and not a zero-size box — VisionCamera needs a laid-out,
+ * non-zero surface to configure against. isActive stays false while hidden, so
+ * the sensor is not streaming and the warm surface costs no real battery.
+ *
+ * The overlay must be rendered as a full-screen sibling (in daily_jobsite it
+ * sits directly under AnimatedBackground, OUTSIDE the SafeAreaView) or its
+ * absolute fill inherits the safe-area inset and the preview is not full-bleed.
+ */
 export default function CameraCaptureModal({ visible, onClose, onCapture }) {
+  // Replaces Modal's onRequestClose, which handled the Android back button.
+  useEffect(() => {
+    if (!visible) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, onClose]);
+
+  if (Platform.OS === 'web') return null;
+
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      {/* GestureHandlerRootView is required for gestures to work inside a
-          RN Modal (the Modal is a separate native root). */}
+    <View
+      style={[
+        StyleSheet.absoluteFill,
+        visible ? styles.overlayShown : styles.overlayHidden,
+      ]}
+      pointerEvents={visible ? 'auto' : 'none'}
+      accessibilityElementsHidden={!visible}
+      importantForAccessibility={visible ? 'auto' : 'no-hide-descendants'}
+    >
+      {/* GestureHandlerRootView is required for the pinch gesture to work in
+          this detached overlay, as it was inside the Modal's native root. */}
       <GestureHandlerRootView style={styles.container}>
-        {visible && Platform.OS !== 'web' ? (
-          <CameraSurface onCapture={onCapture} onClose={onClose} />
-        ) : null}
+        <CameraSurface active={visible} onCapture={onCapture} onClose={onClose} />
       </GestureHandlerRootView>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  // elevation only when shown: an elevated-but-invisible view still casts a
+  // shadow on Android.
+  overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
+  overlayHidden: { opacity: 0, zIndex: -1, elevation: 0 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#000' },
   msg: { color: '#fff', fontSize: 15, textAlign: 'center', marginBottom: 24, lineHeight: 22 },
   primaryBtn: {

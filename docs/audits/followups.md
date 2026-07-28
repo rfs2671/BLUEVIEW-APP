@@ -4,6 +4,46 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## CAMERA PERF — 2026-07-28 — daily-log camera is not fully pre-warmed; Android still cold-starts the device
+
+Permission is now off the tap path (`4b712e3`), and the capture surface is
+mounted-hidden rather than created on open (commit 2 of the same pair). What is
+**not** done: the camera device is not held warm on every platform.
+
+Read from VisionCamera 4.7.3's own native source, not assumed:
+
+- **iOS** — `ios/Core/CameraSession.swift`: `configure()` acquires the device
+  input and configures format/outputs in steps 1-9; `checkIsActive()` is step
+  10 and only calls `captureSession.startRunning()`. The device **is** held
+  from screen mount. iOS is genuinely pre-warmed.
+- **Android** — `android/…/core/CameraSession.kt`: `configureOutputs` /
+  `configureCamera` (CameraX `bindToLifecycle`) run first, `configureIsActive`
+  runs fourth and only moves a `LifecycleRegistry` between `CREATED` and
+  `RESUMED` (`CameraSession+Configuration.kt:341`). CameraX opens the physical
+  camera on that transition, so **the device open is still on the tap**. The
+  session graph is pre-built; the device is not held.
+
+**The remaining lever, and why it wasn't pulled:** holding the Android
+lifecycle at `STARTED` while idle would keep the camera device open, but that
+means the camera hardware is held for the whole time the daily-log screen is
+open — a real battery and thermal cost on a shift-long jobsite tablet, and it
+lights the OS camera-in-use indicator while the user is only typing. Not worth
+paying before device testing shows the open actually feels slow.
+
+**Revisit if** device testing shows the Android open still lags noticeably
+behind iOS. Until then this is a known, measured-by-source asymmetry, not a
+defect.
+
+**Unverified without a phone** (neither web nor emulator reproduces camera
+cold-start; the production web export exercises the `.web.jsx` stub, not
+VisionCamera): actual open time on either platform, and the four interaction
+surfaces the overlay restructure introduced — Android hardware back dismissing
+the camera, the overlay stacking above `FloatingNav`, full-bleed layout outside
+the `SafeAreaView`, and AppState background/resume re-acquiring the preview
+rather than returning black.
+
+---
+
 ## TEST GAP — 2026-07-28 — nothing MOUNTS the shared components, so a crash ships green
 
 While converting the shared components to per-render theming (`98e5577`), four

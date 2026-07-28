@@ -113,10 +113,11 @@ export default function DailyJobsiteLog() {
   // native camera intent fires, stalling launch. Refs also update
   // synchronously, so the guard is more reliable against fast taps.
   const capturingRef = useRef(false);
-  // In-process camera modal (CameraCaptureModal) — replaces launchCameraAsync
-  // on native so the app is never backgrounded/killed by the OS camera
-  // handoff. cameraTargetIndex remembers which activity the capture
-  // belongs to while the modal is open.
+  // In-process camera (CameraCaptureModal) — replaces launchCameraAsync on
+  // native so the app is never backgrounded/killed by the OS camera handoff.
+  // The surface is pre-warmed at screen mount, so cameraVisible only REVEALS
+  // it; it does not create it. cameraTargetIndex remembers which activity the
+  // capture belongs to while the camera is open.
   const [cameraVisible, setCameraVisible] = useState(false);
   const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
   // Resolve the camera permission dialog HERE, at screen mount, so it is not
@@ -286,11 +287,15 @@ export default function DailyJobsiteLog() {
         return;
       }
 
-      // Native: open the in-app camera modal. Capture happens
-      // IN-PROCESS (CameraCaptureModal) so the app is never backgrounded
-      // and killed by the OS camera handoff — the root cause of the
-      // 20-30s cold-boot reload. The photo is appended in
+      // Native: REVEAL the already-mounted, already-permissioned camera
+      // overlay. Capture happens IN-PROCESS (CameraCaptureModal) so the app is
+      // never backgrounded and killed by the OS camera handoff — the root
+      // cause of the 20-30s cold-boot reload. The photo is appended in
       // handleCameraCapture once the shutter fires.
+      //
+      // Nothing may be awaited below this line. These two setState calls are
+      // the ENTIRE tap -> preview path; any fetch, permission request or file
+      // read added here goes straight into the user's perceived open time.
       setCameraTargetIndex(activityIndex);
       setCameraVisible(true);
     } catch (err) {
@@ -714,12 +719,17 @@ export default function DailyJobsiteLog() {
           </View>
         </ScrollView>
         <FloatingNav />
-        <CameraCaptureModal
-          visible={cameraVisible}
-          onClose={() => setCameraVisible(false)}
-          onCapture={handleCameraCapture}
-        />
       </SafeAreaView>
+      {/* OUTSIDE the SafeAreaView on purpose: on native this is a pre-warmed
+          full-screen absolute overlay, and inside the SafeAreaView its absolute
+          fill would stop at the safe-area inset instead of going full-bleed.
+          On web this resolves to the .web.jsx stub, which renders an RN Modal —
+          unaffected by where it sits in the tree. */}
+      <CameraCaptureModal
+        visible={cameraVisible}
+        onClose={() => setCameraVisible(false)}
+        onCapture={handleCameraCapture}
+      />
     </AnimatedBackground>
   );
 }
