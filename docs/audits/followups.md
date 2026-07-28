@@ -4,6 +4,52 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## TEST GAP — 2026-07-28 — nothing MOUNTS the shared components, so a crash ships green
+
+While converting the shared components to per-render theming (`98e5577`), four
+of them — `IconPod`, `SiteNav`, `ToastProvider`, `FloatingNav` — were left
+referencing a module-scope `styles` that no longer existed. That is a hard
+runtime crash: **"Something went wrong · styles is not defined"** on any screen
+that raised a toast.
+
+**Both gates passed anyway.**
+
+- The frozen-ref grep reported 0 — it looks for `colors.*` inside a module
+  `StyleSheet.create`, and the crash is a *missing binding*, not a frozen value.
+- The wiring checker reported 0 unwired — it scanned from each component to
+  end-of-file, swallowing the `buildStyles` definition, so every file's LAST
+  component read as "already wired".
+- Both CI suites were green: 2110 backend + 16 frontend, none of which render
+  a React component.
+
+It was caught only because the rendered screenshots were demanded in context —
+the toast screenshot showed the error boundary instead of a toast.
+
+**The gap:** the frontend suite is one Node harness that parses source text
+(`RiskScoreCircle.bandFor.test.cjs`). Nothing in CI ever *mounts* a component,
+so any render-time error — missing binding, bad hook order, undefined style,
+a provider that throws — ships green.
+
+**To close:** add a mount smoke test that renders each shared component (and
+each provider) once and asserts it does not throw. It does not need assertions
+about appearance; mounting is the assertion. Candidates, in dependency order:
+`ToastProvider`, `ThemeProvider`, `AuthProvider`, `GlassCard`, `IconPod`,
+`StatCard`, `GlassListItem`, `GlassSkeleton` (+ its four skeleton variants),
+`Toast`, `OfflineIndicator`, `SyncButton`, `SiteNav`, `FloatingNav`.
+
+Note this needs test infrastructure the repo does not have: there is no jest /
+vitest / react-test-renderer, and `frontend/package.json` has no `test` script.
+Adding one is the bulk of the work; the tests themselves are a few lines each.
+Wire it into the existing `tests` workflow's `frontend-tests` job so it gates
+like the rest.
+
+**Cheaper interim option** if a runner is too much scope: extend the existing
+Playwright verification into a committed script that loads a handful of routes
+against a production build and fails on any console error or error-boundary
+text. That would have caught this exact crash, without a component-test runner.
+
+---
+
 ## OFFLINE CORRECTNESS — 2026-07-27 — offline "on site" count includes stale prior-day check-ins
 
 `getActiveCheckIns` in `frontend/src/hooks/useCheckIns.js` falls back to a local
