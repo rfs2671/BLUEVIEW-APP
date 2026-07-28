@@ -34,6 +34,17 @@ import { colors, spacing, borderRadius, typography } from '../styles/theme';
  * an optional `photos[]`; nothing gates submission on it), so dismissing this
  * modal returns the user to a fully usable form rather than a dead end.
  */
+/**
+ * No-op twin of the native `useCameraPrewarmPermission`. There is no camera
+ * permission to pre-request on web (capture is mobile-only, see above), but
+ * the export must exist so shared screens can call it unconditionally without
+ * a Platform check — a Platform check at the call site would not help anyway,
+ * since the IMPORT alone is what pulls vision-camera into the web graph.
+ */
+export function useCameraPrewarmPermission() {
+  return false;
+}
+
 export default function CameraCaptureModal({ visible, onClose, onCapture }) { // eslint-disable-line no-unused-vars
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>

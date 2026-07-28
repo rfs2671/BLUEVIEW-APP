@@ -20,7 +20,7 @@ import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
-import CameraCaptureModal from '../../src/components/CameraCaptureModal';
+import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -119,6 +119,9 @@ export default function DailyJobsiteLog() {
   // belongs to while the modal is open.
   const [cameraVisible, setCameraVisible] = useState(false);
   const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
+  // Resolve the camera permission dialog HERE, at screen mount, so it is not
+  // sitting between the capture tap and the preview. No-op on web.
+  useCameraPrewarmPermission();
   const [existingLogId, setExistingLogId] = useState(null);
 
   const [projectAddress, setProjectAddress] = useState('');

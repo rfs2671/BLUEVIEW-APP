@@ -44,6 +44,31 @@ async function compressUnderCap(srcUri) {
   return out.uri;
 }
 
+/**
+ * Pre-requests camera permission from the SCREEN, not from the capture tap.
+ *
+ * CameraSurface below also requests permission on mount, but it only mounts
+ * once the modal is already open — so on a fresh install the OS dialog landed
+ * squarely between the user's tap and the preview, stalling the open for as
+ * long as it took them to read and answer it.
+ *
+ * Calling this hook where the screen mounts moves that dialog to screen load,
+ * so by the time the camera is tapped the permission is already resolved. It
+ * deliberately does NOT touch <Camera>: this is permission only, not a warm
+ * camera. The device is still acquired when the modal opens.
+ *
+ * Platform-split: the .web.jsx sibling exports a no-op of the same name, so
+ * screens can call this unconditionally without pulling the native
+ * vision-camera module into the web bundle.
+ */
+export function useCameraPrewarmPermission() {
+  const { hasPermission, requestPermission } = useCameraPermission();
+  useEffect(() => {
+    if (!hasPermission) requestPermission();
+  }, [hasPermission]);
+  return hasPermission;
+}
+
 function CameraSurface({ onCapture, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
