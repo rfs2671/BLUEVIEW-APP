@@ -2822,6 +2822,71 @@ async def require_project_access(
     raise HTTPException(status_code=403, detail="Not authorized for this project")
 
 
+async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
+    """Every id must belong to the ACTOR's company before it can be written into
+    anyone's assigned_projects.
+
+    WHY THIS EXISTS. require_project_access above treats a project id present in
+    a user's assigned_projects as sufficient authorization (branch 3). An
+    unvalidated write to that list therefore MINTS access: it defeats every
+    guard that delegates to require_project_access, including the 25 write
+    guards added in 6cb510e and all of the batch-1 reads. assigned_projects is
+    an authorization grant, not a user preference, and has to be validated like
+    one at every write site.
+
+    Fails closed. An actor with no company_id can assign nothing — absence is
+    not authorization, the same rule _same_company applies. The platform
+    operator is the one deliberate cross-company path.
+
+    Rejects the WHOLE request if any id is foreign OR unknown, so a partial
+    success can never be mistaken for a full one. Unknown ids are refused rather
+    than dropped: silently discarding them would let a caller probe which ids
+    exist by diffing what came back.
+    """
+    if project_ids is None:
+        return []
+    if not isinstance(project_ids, list):
+        raise HTTPException(
+            status_code=400, detail="assigned_projects must be a list of project ids",
+        )
+
+    # Normalise + dedupe, preserving caller order.
+    seen = set()
+    ids: List[str] = []
+    for raw in project_ids:
+        pid = str(raw or "").strip()
+        if not pid or pid in seen:
+            continue
+        seen.add(pid)
+        ids.append(pid)
+    if not ids:
+        return []
+
+    if is_platform_operator(actor):
+        return ids
+
+    actor_company = str(get_user_company_id(actor) or "")
+    if not actor_company:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to assign projects",
+        )
+
+    found = await db.projects.find(
+        {"_id": {"$in": [to_query_id(p) for p in ids]}},
+    ).to_list(len(ids))
+    owned = {
+        str(p.get("_id")) for p in found
+        if str(p.get("company_id") or "") == actor_company
+    }
+    if any(pid not in owned for pid in ids):
+        # One message for foreign AND unknown: distinguishing them would
+        # confirm the existence of another tenant's project id.
+        raise HTTPException(
+            status_code=403, detail="Cannot assign a project outside your company",
+        )
+    return ids
+
+
 # ==================== SYNC HELPERS ====================
 
 # WatermelonDB schema columns per table - only these fields should be sent to client
@@ -4799,6 +4864,18 @@ async def update_admin_user(user_id: str, user_data: dict, admin = Depends(get_a
             status_code=403, detail="Not authorized to modify this user",
         )
 
+    # assigned_projects is in ALLOWED_USER_FIELDS above, so this route is a
+    # SECOND way to mint the authorization grant that require_project_access
+    # honours. The tenant scoping immediately above does NOT cover it: it stops
+    # a company-A admin editing a company-B USER, but not that same admin adding
+    # a company-B PROJECT to their own company-A user — or to themselves. Each
+    # id is validated against the caller's company, and the whole update is
+    # rejected if any is foreign.
+    if "assigned_projects" in update_data:
+        update_data["assigned_projects"] = await validate_assignable_projects(
+            admin, update_data["assigned_projects"],
+        )
+
     old_phone = existing_user.get("phone", "")
     company_id = existing_user.get("company_id")
 
@@ -4877,12 +4954,37 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     await audit_log("user_delete", str(admin.get("_id", "")), "user", user_id)
     return {"message": "User deleted successfully"}
 
-@api_router.post("/admin/users/{user_id}/assign-projects")
+@api_router.post("/admin/users/{user_id}/assign-projects", dependencies=[Depends(require_approved)])
 async def assign_projects_to_user(user_id: str, project_ids: dict, admin = Depends(get_admin_user)):
+    """SEV-0 before this fix. get_admin_user checks ROLE ONLY, and `owner` is
+    what every self-serve signup receives, so any customer could write an
+    arbitrary project list onto an arbitrary user id — including their own.
+    require_project_access honours assigned_projects as authorization, so that
+    single write minted cross-tenant access on every guarded route.
+
+    Both halves are needed. Scoping the TARGET USER stops cross-company edits;
+    it does NOT stop a company-A admin adding a company-B project to their own
+    company-A user (or to themselves), which is why the project ids are
+    validated separately."""
+    target = await db.users.find_one(
+        {"_id": to_query_id(user_id), "is_deleted": {"$ne": True}},
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not is_platform_operator(admin) and not _same_company(admin, target):
+        raise HTTPException(
+            status_code=403, detail="Not authorized to modify this user",
+        )
+
+    assigned = await validate_assignable_projects(
+        admin, project_ids.get("project_ids", []),
+    )
+
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
         {"$set": {
-            "assigned_projects": project_ids.get("project_ids", []),
+            "assigned_projects": assigned,
             "updated_at": datetime.now(timezone.utc)
         }}
     )

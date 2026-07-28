@@ -4,6 +4,68 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## TENANT ISOLATION — 2026-07-28 — assigned_projects: stale-entry audit NOT RUN, + defense-in-depth
+
+Both write vectors into `assigned_projects` are now gated (see the commit that
+adds `validate_assignable_projects`). Two things remain OPEN.
+
+### 1. Stale cross-company entries — audit NOT RUN, no production DB access
+
+The gate is **prospective only**. It stops new foreign entries being written; it
+does not revoke anything already stored. Any pre-existing cross-company entry is
+a live key to another tenant's project and will keep passing
+`require_project_access` branch 3.
+
+This has NOT been checked. Nobody has run it against production. Read-only
+query, no writes:
+
+```javascript
+db.users.aggregate([
+  { $match: { assigned_projects: { $exists: true, $ne: [] }, is_deleted: { $ne: true } } },
+  { $unwind: "$assigned_projects" },
+  { $addFields: { pid: { $toObjectId: "$assigned_projects" } } },
+  { $lookup: { from: "projects", localField: "pid", foreignField: "_id", as: "proj" } },
+  { $unwind: { path: "$proj", preserveNullAndEmptyArrays: true } },
+  { $match: { $expr: { $ne: ["$company_id", "$proj.company_id"] } } },
+  { $project: { _id: 1, email: 1, role: 1, company_id: 1,
+                project_id: "$assigned_projects", project_company: "$proj.company_id" } }
+])
+```
+
+`$toObjectId` throws on a non-ObjectId id, so wrap it or run on a subset if the
+collection has mixed id shapes. Rows returned are grants this fix does not
+retroactively revoke — each needs a deliberate remediation decision (revoke, or
+confirm as an intended contractor grant).
+
+### 2. `require_project_access` trusts assigned_projects blindly
+
+Branch 3 returns the project whenever its id appears in the caller's
+`assigned_projects`, without re-checking the project's company. With both write
+vectors gated, **the assignment guard is now the ONLY thing keeping that list
+clean** — a single point of failure.
+
+Re-verifying the project's company inside branch 3 would make a stale or bad
+entry inert. The reason it was NOT done: that check would also kill the
+legitimate cross-company contractor flow, which is the entire purpose of
+branch 3 (a CP at another company granted access to a GC's project — see
+`USER_C_ASSIGNED` in test_tenant_isolation_reads.py and
+`test_assigned_contractor_allowed_cross_company` in
+test_tenant_isolation_writes.py). That is a product decision, not a security
+one, and needs an explicit answer: is cross-company assignment a supported
+feature, or an accident that should be removed?
+
+If it is NOT supported, branch 3 should verify company and this whole class of
+bug disappears. If it IS supported, the assignment guard must stay the single
+enforcement point and should be treated as security-critical code.
+
+### Scope limit of the sweep
+
+The vector list came from `grep -n "assigned_projects" backend/server.py` — complete
+for that file. Direct DB writes, other services, and migration scripts were not
+audited.
+
+---
+
 ## TENANT ISOLATION — 2026-07-28 — Batch 2 tightened writes but did NOT complete isolation
 
 25 project-scoped write endpoints now carry `require_approved` +
