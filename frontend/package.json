@@ -10,7 +10,8 @@
     "web": "expo start --web --port 3000",
     "build": "node scripts/build-with-sourcemaps.js",
     "build:expo-only": "expo export --platform web --clear",
-    "update": "eas update --auto"
+    "update": "eas update --auto",
+    "smoke": "node scripts/smoke-mount.cjs --dist dist"
   },
   "dependencies": {
     "@expo/metro-runtime": "~4.0.0",

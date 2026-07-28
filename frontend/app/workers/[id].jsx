@@ -47,6 +47,7 @@ import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
 
 export default function WorkerDetailScreen() {
   const { colors, isDark } = useTheme();
@@ -87,6 +88,18 @@ export default function WorkerDetailScreen() {
   const [expandedOrientation, setExpandedOrientation] = useState(null);
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
+
+  // Credential expiry tone. Both the certification list and the OSHA/SST card
+  // route through this: fixing only one of them leaves the other silently
+  // lapsed, which is the bug being fixed here. null status (missing or
+  // unparseable date) deliberately falls through to the unchanged muted style
+  // rather than asserting the credential is fine.
+  const expiryTone = (dateStr) => {
+    const status = expiryStatus(dateStr);
+    if (status === 'expired') return { color: semantic.criticalText, fontWeight: '600' };
+    if (status === 'soon') return { color: semantic.attention, fontWeight: '600' };
+    return null;
+  };
   const isSiteDevice = user?.role === 'site_device';
   const canViewOsha = isAdmin || isSiteDevice;
 
@@ -414,7 +427,9 @@ export default function WorkerDetailScreen() {
                       {oshaData.expiration && (
                         <View style={s.oshaFieldRow}>
                           <Text style={s.oshaFieldLabel}>Expires</Text>
-                          <Text style={s.oshaFieldValue}>{oshaData.expiration}</Text>
+                          <Text style={[s.oshaFieldValue, expiryTone(oshaData.expiration)]}>
+                            {oshaData.expiration}{expirySuffix(oshaData.expiration)}
+                          </Text>
                         </View>
                       )}
                       {oshaData.training_provider && (
@@ -555,7 +570,9 @@ export default function WorkerDetailScreen() {
                     <View style={s.certInfo}>
                       <Text style={s.certName}>{cert.name}</Text>
                       {cert.expiry && (
-                        <Text style={s.certExpiry}>Expires: {cert.expiry}</Text>
+                        <Text style={[s.certExpiry, expiryTone(cert.expiry)]}>
+                          Expires: {cert.expiry}{expirySuffix(cert.expiry)}
+                        </Text>
                       )}
                     </View>
                     {isAdmin && (

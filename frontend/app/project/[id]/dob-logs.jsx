@@ -44,6 +44,9 @@ import { semantic, chrome, border, surface, text, withAlpha } from '../../../src
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import InfoTooltip from '../../../src/components/InfoTooltip';
+// daysUntil moved to a shared util so workers/[id].jsx can use the SAME
+// definition and threshold for credential expiry (it previously had none).
+import { daysUntil } from '../../../src/utils/expiry';
 
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
@@ -69,14 +72,6 @@ const formatDate = (dateStr) => {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const daysUntil = (dateStr) => {
-  if (!dateStr) return null;
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return null;
-    return Math.ceil((d - new Date()) / (1000 * 60 * 60 * 24));
-  } catch { return null; }
-};
 
 export default function DOBLogsScreen() {
   const { colors, isDark } = useTheme();
