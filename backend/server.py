@@ -23,6 +23,7 @@ import bcrypt
 from bson import ObjectId
 import httpx
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import io
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -110,6 +111,101 @@ def _upload_to_r2(file_bytes: bytes, r2_key: str, content_type: str = "applicati
     if R2_PUBLIC_URL:
         return f"{R2_PUBLIC_URL.rstrip('/')}/{r2_key}"
     return f"{R2_ENDPOINT_URL}/{R2_BUCKET_NAME}/{r2_key}"
+
+
+# Daily-log photo enhancement runs on a SMALL dedicated threadpool, never on
+# the event loop. OpenCV/Pillow work is CPU-bound: a bare asyncio.create_task
+# would stall every concurrent request for the duration of the encode. Two
+# workers is deliberate — enough to keep up with a CP saving a log of 5 photos,
+# small enough that it cannot monopolise a 1-2 vCPU Railway instance.
+_PHOTO_ENHANCE_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="photo-enh")
+
+# Key shape, mirroring the existing plans/{project_id}/ convention so the
+# project delete cascade can sweep it with one unconditional prefix (see
+# hard_delete_project). Project-scoped rather than company-scoped on purpose:
+# the {company_id}/{project_id}/ sweep is conditional on company_id being
+# truthy, and an orphaned photo must still be reachable by the cascade.
+def _logbook_photo_r2_key(project_id: str, logbook_id: str, ai: int, pi: int, kind: str) -> str:
+    return f"logbook-photos/{project_id}/{logbook_id}/{ai}-{pi}-{kind}.jpg"
+
+
+def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
+    """Blocking: decode -> enhance -> upload both derivatives to R2.
+
+    Runs in _PHOTO_ENHANCE_POOL. Returns the fields to merge into the photo
+    entry. Raises on failure; the caller records the failure and MOVES ON —
+    the original base64 in Mongo is untouched either way, so a failed
+    enhancement can never lose a photo.
+    """
+    from lib.photo_enhance import enhance_photo
+
+    raw_bytes = base64.b64decode(b64_data)
+    result = enhance_photo(raw_bytes)
+
+    enh_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "enhanced")
+    thumb_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "thumb")
+    _upload_to_r2(result.enhanced_jpeg, enh_key, "image/jpeg")
+    _upload_to_r2(result.thumbnail_jpeg, thumb_key, "image/jpeg")
+
+    return {
+        "enhanced_r2_key": enh_key,
+        "thumb_r2_key": thumb_key,
+        "enhance_status": "done",
+        "enhance_ms": result.elapsed_ms,
+        "enhanced_w": result.enhanced_size[0],
+        "enhanced_h": result.enhanced_size[1],
+    }
+
+
+async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
+    """Walk data.activities[].photos[] and enhance each one off the hot path.
+
+    Fire-and-forget: the CP's save has already returned by the time this runs.
+    Every photo is independent — one failure never blocks the others, and the
+    photo keeps rendering from its original base64 regardless.
+    """
+    try:
+        doc = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+        if not doc:
+            return
+        activities = (doc.get("data") or {}).get("activities") or []
+        loop = asyncio.get_running_loop()
+        done = failed = 0
+
+        for ai, activity in enumerate(activities):
+            for pi, photo in enumerate(activity.get("photos") or []):
+                if not isinstance(photo, dict):
+                    continue
+                if photo.get("enhance_status") == "done":
+                    continue          # idempotent: re-saving a log re-runs nothing
+                b64 = photo.get("base64")
+                if not b64:
+                    continue          # URI-only entry, nothing to enhance yet
+                field = f"data.activities.{ai}.photos.{pi}"
+                try:
+                    patch = await loop.run_in_executor(
+                        _PHOTO_ENHANCE_POOL,
+                        _enhance_one_photo_sync, b64, project_id, logbook_id, ai, pi,
+                    )
+                    done += 1
+                except Exception as e:
+                    logger.warning(
+                        "[photo-enhance] failed logbook=%s a=%d p=%d: %r",
+                        logbook_id, ai, pi, e,
+                    )
+                    patch = {"enhance_status": "failed", "enhance_error": str(e)[:200]}
+                    failed += 1
+                await db.logbooks.update_one(
+                    {"_id": to_query_id(logbook_id)},
+                    {"$set": {f"{field}.{k}": v for k, v in patch.items()}},
+                )
+        if done or failed:
+            logger.info(
+                "[photo-enhance] logbook=%s enhanced=%d failed=%d", logbook_id, done, failed,
+            )
+    except Exception as e:
+        # Never let the background task surface as an unhandled task exception.
+        logger.error("[photo-enhance] walk failed logbook=%s: %r", logbook_id, e)
 
 
 def _presign_r2_get(r2_key: str, expires_in: int = 3600) -> str:
@@ -8517,6 +8613,12 @@ async def hard_delete_project(project_id: str, owner = Depends(get_owner_user)):
     r2_deleted += await _r2_delete_prefix(
         _r2_client, R2_BUCKET_NAME, f"plans/{project_id}/",
     )
+    # Enhanced + thumbnail derivatives of daily-log photos. Unconditional (not
+    # nested under the company sweep below) so an orphaned or company-less
+    # project still has its derivatives purged.
+    r2_deleted += await _r2_delete_prefix(
+        _r2_client, R2_BUCKET_NAME, f"logbook-photos/{project_id}/",
+    )
     if company_id:
         r2_deleted += await _r2_delete_prefix(
             _r2_client, R2_BUCKET_NAME, f"{company_id}/{project_id}/",
@@ -13572,104 +13674,20 @@ async def get_daily_log_pdf(log_id: str, current_user = Depends(get_current_user
     
 # ==================== PHOTO UPLOADS ====================
 
-@api_router.post("/daily-logs/{log_id}/photos")
-async def upload_daily_log_photo(
-    log_id: str,
-    current_user = Depends(get_current_user),
-    file: UploadFile = File(...),
-    subcontractor_index: int = Form(default=-1),
-    caption: str = Form(default=""),
-):
-    """Upload a photo to a daily log, optionally linked to a subcontractor card"""
-    log = await db.daily_logs.find_one({"_id": to_query_id(log_id), "is_deleted": {"$ne": True}})
-    if not log:
-        raise HTTPException(status_code=404, detail="Daily log not found")
-    
-    # CRITICAL FIX: CP role CAN upload photos. Only site_device (read-only) cannot.
-    role = current_user.get("role")
-    if role == "site_device":
-        raise HTTPException(status_code=403, detail="Site devices (read-only) cannot upload photos")
-    
-    if role not in ["admin", "owner"]:
-        company_id = get_user_company_id(current_user)
-        log_company = log.get("company_id")
-        user_projects = current_user.get("assigned_projects", [])
-        if company_id != log_company and log.get("project_id") not in user_projects:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-    
-    b64_data = base64.b64encode(content).decode('utf-8')
-    now = datetime.now(timezone.utc)
-    
-    photo_doc = {
-        "daily_log_id": log_id,
-        "project_id": log.get("project_id"),
-        "company_id": log.get("company_id"),
-        "subcontractor_index": subcontractor_index,
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "size": len(content),
-        "data": b64_data,
-        "caption": caption,
-        "uploaded_by": current_user.get("id"),
-        "uploaded_by_name": current_user.get("name") or current_user.get("device_name", "Unknown"),
-        "created_at": now,
-        "is_deleted": False,
-    }
-    
-    result = await db.daily_log_photos.insert_one(photo_doc)
-    
-    return {
-        "id": str(result.inserted_id),
-        "filename": file.filename,
-        "size": len(content),
-        "subcontractor_index": subcontractor_index,
-        "caption": caption,
-        "uploaded_by_name": photo_doc["uploaded_by_name"],
-        "created_at": now.isoformat(),
-    }
-
-@api_router.get("/daily-logs/{log_id}/photos")
-async def get_daily_log_photos(log_id: str, current_user = Depends(get_current_user)):
-    """Get all photos for a daily log (metadata only, no base64)"""
-    photos = await db.daily_log_photos.find(
-        {"daily_log_id": log_id, "is_deleted": {"$ne": True}},
-        {"data": 0}
-    ).to_list(200)
-    return serialize_list(photos)
-
-@api_router.get("/daily-logs/{log_id}/photos/{photo_id}")
-async def get_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
-    """Get a single photo with base64 data"""
-    photo = await db.daily_log_photos.find_one({
-        "_id": to_query_id(photo_id),
-        "daily_log_id": log_id,
-        "is_deleted": {"$ne": True}
-    })
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    return serialize_id(photo)
-
-@api_router.get("/daily-logs/{log_id}/photos/{photo_id}/image")
-async def get_daily_log_photo_image(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
-    """Serve photo as raw image binary"""
-    from fastapi.responses import Response
-    photo = await db.daily_log_photos.find_one({
-        "_id": to_query_id(photo_id),
-        "daily_log_id": log_id,
-        "is_deleted": {"$ne": True}
-    })
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    image_data = base64.b64decode(photo["data"])
-    return Response(content=image_data, media_type=photo.get("content_type", "image/jpeg"))
-
 @api_router.get("/reports/logbook-photo/{logbook_id}/{activity_index}/{photo_index}")
-async def get_logbook_activity_photo(logbook_id: str, activity_index: int, photo_index: int):
-    """Public endpoint - serve activity photo from logbook as raw image for email reports."""
+async def get_logbook_activity_photo(
+    logbook_id: str, activity_index: int, photo_index: int, v: str = "",
+):
+    """Public endpoint - serve activity photo from logbook as raw image for email reports.
+
+    `v` selects a derivative: "thumb" (long edge 400) or "enhanced" (long edge
+    1800). Anything else serves the untouched original.
+
+    EVERY failure path falls back to the original rather than 404-ing. A photo
+    that failed enhancement, or whose R2 object is missing, still renders in the
+    report — losing a photo to a failed enhance is the one outcome this feature
+    must never produce.
+    """
     from fastapi.responses import Response
     logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
     if not logbook:
@@ -13682,23 +13700,27 @@ async def get_logbook_activity_photo(logbook_id: str, activity_index: int, photo
     if photo_index < 0 or photo_index >= len(photos):
         raise HTTPException(status_code=404, detail="Photo not found")
     photo = photos[photo_index]
+
+    key = photo.get("thumb_r2_key") if v == "thumb" else (
+        photo.get("enhanced_r2_key") if v == "enhanced" else None
+    )
+    if key and _r2_client and R2_BUCKET_NAME:
+        try:
+            obj = await asyncio.to_thread(
+                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key,
+            )
+            return Response(content=obj["Body"].read(), media_type="image/jpeg")
+        except Exception as e:
+            logger.warning(
+                "[photo-enhance] R2 fetch failed key=%s, serving original: %r", key, e,
+            )
+
     b64 = photo.get("base64", "")
     if not b64:
         raise HTTPException(status_code=404, detail="Photo data not available")
     image_data = base64.b64decode(b64)
     return Response(content=image_data, media_type="image/jpeg")
 
-@api_router.delete("/daily-logs/{log_id}/photos/{photo_id}")
-async def delete_daily_log_photo(log_id: str, photo_id: str, current_user = Depends(get_current_user)):
-    """Delete a photo (soft delete)"""
-    result = await db.daily_log_photos.update_one(
-        {"_id": to_query_id(photo_id), "daily_log_id": log_id},
-        {"$set": {"is_deleted": True}}
-    )
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    return {"message": "Photo deleted"}
-    
 # ==================== CP PROFILE ENDPOINTS ====================
 
 @api_router.get("/cp/profile")
@@ -13826,6 +13848,11 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             }}
         )
         updated = await db.logbooks.find_one({"_id": existing["_id"]})
+        # Enhancement is fire-and-forget: the CP never waits on it. New photos
+        # in this save get picked up; already-enhanced ones are skipped.
+        asyncio.create_task(
+            _enhance_logbook_photos(str(existing["_id"]), data.project_id)
+        )
         return serialize_id(updated)
 
     doc = {
@@ -13850,6 +13877,12 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     await audit_log("logbook_create", str(current_user.get("_id", current_user.get("id", ""))), "logbook", str(result.inserted_id), {
         "log_type": data.log_type, "project_id": data.project_id, "date": data.date,
     })
+
+    # Fire-and-forget. The task only SCHEDULES work onto _PHOTO_ENHANCE_POOL;
+    # the CPU-bound encode itself never touches the event loop.
+    asyncio.create_task(
+        _enhance_logbook_photos(str(result.inserted_id), data.project_id)
+    )
 
     return serialize_id(created)
 
@@ -14630,7 +14663,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       1) White background forced (Gmail dark mode defeated via bgcolor + color-scheme)
       2) Fits in email box (table layout, zero flexbox)
       3) Photos render (base64 -> absolute URLs to public image endpoints)
-      4) Full report content (daily_log_photos fetched + all sections)
+      4) Full report content (CP logbook activity photos + all sections)
     """
 
     BASE_URL = "https://api.levelog.com"
@@ -14659,15 +14692,6 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     }).to_list(500)
 
     checkin_count = len(checkins)
-
-    # --- Fetch daily_log_photos if daily_log exists ---
-    daily_log_photos = []
-    if daily_log:
-        dl_id = str(daily_log["_id"])
-        daily_log_photos = await db.daily_log_photos.find(
-            {"daily_log_id": dl_id, "is_deleted": {"$ne": True}},
-            {"data": 0},
-        ).to_list(500)
 
     # Reusable inline style constants
     TH = (
@@ -14726,12 +14750,28 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             photos = ""
             for pi, photo in enumerate(act.get("photos") or []):
                 if photo.get("base64"):
-                    url = f"{BASE_URL}/api/reports/logbook-photo/{logbook_id}/{ai}/{pi}"
+                    # Grid cell shows the THUMBNAIL (long edge 400, ~25-40KB)
+                    # and links to the full-size ENHANCED image. Previously the
+                    # 140px cell pointed at the full original, so an email with
+                    # 5 photos downloaded 5 full images to render 5 thumbnails.
+                    #
+                    # Both fall back to the original endpoint when enhancement
+                    # has not run or failed: enhance_status is only "done" once
+                    # BOTH derivatives are in R2, so a half-finished or failed
+                    # enhance can never point at a missing object.
+                    original = f"{BASE_URL}/api/reports/logbook-photo/{logbook_id}/{ai}/{pi}"
+                    if photo.get("enhance_status") == "done":
+                        thumb_url = f"{original}?v=thumb"
+                        full_url = f"{original}?v=enhanced"
+                    else:
+                        thumb_url = full_url = original
                     photos += (
-                        f'<img src="{url}" width="140" height="105" '
+                        f'<a href="{full_url}" target="_blank" '
+                        'style="text-decoration:none;display:inline-block;">'
+                        f'<img src="{thumb_url}" width="140" height="105" '
                         'style="width:140px;height:105px;object-fit:cover;'
                         'border-radius:4px;border:1px solid #e2e8f0;'
-                        'display:inline-block;margin:3px;" />'
+                        'display:inline-block;margin:3px;" /></a>'
                     )
 
             act_rows += (
@@ -14882,8 +14922,6 @@ async def generate_combined_report(project_id: str, date: str) -> str:
     # ==========================================================
     site_html = ""
     if daily_log:
-        dl_id = str(daily_log["_id"])
-
         # Subcontractor cards
         sub_rows = ""
         for card in (daily_log.get("subcontractor_cards") or []):
@@ -14950,27 +14988,12 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             elif cn:
                 cp_sig_html = bold_para("Competent Person", cn + " (signed)")
 
-        # Photos from daily_log_photos collection
+        # The daily_log_photos collection and its four endpoints were removed:
+        # nothing in the app ever wrote to it, so this section was always empty
+        # and its <img> pointed at an auth-required endpoint that an email
+        # client could never load. CP site photos come from the logbook
+        # activity photos above, which DO have a public image endpoint.
         photos_section = ""
-        if daily_log_photos:
-            cells = []
-            for ph in daily_log_photos:
-                pid = str(ph["_id"])
-                url = f"{BASE_URL}/api/daily-logs/{dl_id}/photos/{pid}/image"
-                cap = ph.get("caption", "")
-                cells.append(
-                    f'<td style="padding:3px;vertical-align:top;" valign="top">'
-                    f'<img src="{url}" width="180" height="135" alt="{cap}" '
-                    f'style="width:180px;height:135px;object-fit:cover;border-radius:4px;'
-                    f'border:1px solid #e2e8f0;display:block;" /></td>'
-                )
-            rows = ""
-            for i in range(0, len(cells), 3):
-                rows += "<tr>" + "".join(cells[i:i + 3]) + "</tr>"
-            photos_section = (
-                sub_title("Site Photos")
-                + f'<table cellpadding="0" cellspacing="0" border="0">{rows}</table>'
-            )
 
         not_signed_super = bold_para("Superintendent", "Not signed")
         not_signed_cp = bold_para("Competent Person", "Not signed")
