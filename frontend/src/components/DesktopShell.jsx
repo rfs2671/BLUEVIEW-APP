@@ -49,7 +49,7 @@ const RAIL_WIDTH = 240;
 /**
  * Routes that must render WITHOUT the shell even on desktop.
  *
- * Two groups:
+ * Three groups:
  *  • Pre-auth / onboarding — a nav rail on the login screen would offer
  *    destinations the visitor cannot reach.
  *  • Worker field-capture flows (`/nfc`, `/checkin/*`) — desktop is
@@ -59,8 +59,17 @@ const RAIL_WIDTH = 240;
  *    would be a RouteGuard change, deliberately out of scope); they simply
  *    render standalone. Read-only equivalents for admins already exist:
  *    site/checkins (check-in log) and the ON SITE tile on project/[id].
+ *  • SITE MODE (`/site/*`) — the jobsite tablet. It is 1280x800, so it clears
+ *    DESKTOP_BREAKPOINT and was getting the full admin rail: 240px of
+ *    Dashboard / Projects / Workers / Reports / Settings / Admin on a device
+ *    whose primary user is a DOB inspector. Every one of those destinations
+ *    bounced straight back to /site — the RouteGuard in app/_layout.jsx
+ *    confines a site device to `/site/*` and `/login` — so the rail was six
+ *    dead ends occupying a fifth of the screen. Site mode has its own
+ *    navigation (SiteNav); it must not inherit the admin one.
  *
- * Prefix-matched, so '/checkin' also covers '/checkin/{project_id}/{tag_id}'.
+ * Prefix-matched, so '/checkin' also covers '/checkin/{project_id}/{tag_id}'
+ * and '/site' covers '/site/documents'.
  */
 const BARE_ROUTES = [
   '/login',
@@ -69,6 +78,7 @@ const BARE_ROUTES = [
   '/onboarding',
   '/nfc',
   '/checkin',
+  '/site',
 ];
 
 function isBareRoute(pathname) {

@@ -143,7 +143,7 @@ export default function SiteLogbooksViewer() {
     }
     return (
       <View style={{ marginTop: spacing.sm }}>
-        <Text style={{ fontSize: 11, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
+        <Text style={{ fontSize: 14, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>
           {label}{signerName ? ` — ${signerName}` : ''}
         </Text>
         {base64Data && typeof base64Data === 'string' ? (
@@ -153,7 +153,7 @@ export default function SiteLogbooksViewer() {
             resizeMode="contain"
           />
         ) : signerName ? (
-          <Text style={{ fontSize: 13, color: colors.text.secondary, fontStyle: 'italic' }}>{signerName} (signed)</Text>
+          <Text style={{ fontSize: 15, color: colors.text.secondary, fontStyle: 'italic' }}>{signerName} (signed)</Text>
         ) : null}
       </View>
     );
@@ -161,15 +161,15 @@ export default function SiteLogbooksViewer() {
 
   const DocInfoRow = ({ icon: Icon, text }) => (
     <View style={s.docInfoRow}>
-      <Icon size={12} strokeWidth={1.5} color={colors.text.muted} />
+      <Icon size={16} strokeWidth={1.5} color={colors.text.muted} />
       <Text style={s.docInfoText}>{text}</Text>
     </View>
   );
 
   const DocSectionLabel = ({ icon: Icon, label, color }) => (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.md, marginBottom: spacing.xs }}>
-      {Icon && <Icon size={14} strokeWidth={1.5} color={color || colors.text.muted} />}
-      <Text style={{ fontSize: 12, fontWeight: '700', color: color || colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</Text>
+      {Icon && <Icon size={16} strokeWidth={1.5} color={color || colors.text.muted} />}
+      <Text style={{ fontSize: 14, fontWeight: '700', color: color || colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</Text>
     </View>
   );
 
@@ -178,18 +178,18 @@ export default function SiteLogbooksViewer() {
       flexDirection: 'row',
       borderBottomWidth: 1,
       borderBottomColor: isHeader ? withAlpha('#ffffff', 0.12) : withAlpha('#ffffff', 0.04),
-      paddingVertical: isHeader ? 6 : spacing.xs,
+      paddingVertical: isHeader ? spacing.sm : spacing.sm,
       backgroundColor: isHeader ? withAlpha('#ffffff', 0.04) : 'transparent',
     }}>
       {cells.map((cell, i) => (
         <Text key={i} style={{
           flex: cell.flex || 1,
-          fontSize: isHeader ? 10 : 12,
+          fontSize: isHeader ? 14 : 16,
           fontWeight: isHeader ? '700' : '400',
           color: isHeader ? colors.text.muted : colors.text.secondary,
           textTransform: isHeader ? 'uppercase' : 'none',
           letterSpacing: isHeader ? 0.5 : 0,
-          paddingHorizontal: 4,
+          paddingHorizontal: spacing.sm,
         }} numberOfLines={3}>
           {cell.text}
         </Text>
@@ -580,35 +580,36 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row', alignItems: 'center', gap: spacing.md,
     paddingHorizontal: spacing.lg, paddingVertical: spacing.md,
   },
-  headerTitle: { fontSize: 17, fontWeight: '600', color: colors.text.primary },
-  headerSub: { fontSize: 12, color: colors.text.muted },
+  headerTitle: { fontSize: 22, fontWeight: '600', color: colors.text.primary },
+  headerSub: { fontSize: 15, color: colors.text.muted },
 
   // Tabs
   tabScroll: { flexGrow: 0, marginBottom: spacing.sm },
   tabRow: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingVertical: spacing.xs },
   tab: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
+    minHeight: 48,
     borderRadius: borderRadius.full, borderWidth: 1, borderColor: colors.glass.border,
     backgroundColor: colors.glass.background,
   },
-  tabText: { fontSize: 13, fontWeight: '500', color: colors.text.muted },
+  tabText: { fontSize: 16, fontWeight: '500', color: colors.text.muted },
   tabBadge: {
-    minWidth: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center',
-    paddingHorizontal: 4,
+    minWidth: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: 6,
   },
-  tabBadgeText: { fontSize: 10, fontWeight: '700', color: '#fff' },
+  tabBadgeText: { fontSize: 14, fontWeight: '700', color: '#fff' },
 
   // Content
   scrollView: { flex: 1 },
   scrollContent: { padding: spacing.lg, paddingBottom: 120 },
   loadingCenter: { alignItems: 'center', paddingVertical: spacing.xxl, gap: spacing.md },
-  loadingText: { fontSize: 14, color: colors.text.muted },
+  loadingText: { fontSize: 16, color: colors.text.muted },
 
   // Empty
   emptyCard: { alignItems: 'center', padding: spacing.xl, gap: spacing.md },
-  emptyTitle: { fontSize: 16, fontWeight: '500', color: colors.text.primary },
-  emptyText: { fontSize: 13, color: colors.text.muted, textAlign: 'center' },
+  emptyTitle: { fontSize: 20, fontWeight: '500', color: colors.text.primary },
+  emptyText: { fontSize: 16, color: colors.text.muted, textAlign: 'center' },
 
   // Date rows
   dateHeader: {
@@ -616,13 +617,13 @@ function buildStyles(colors, isDark) {
     paddingVertical: spacing.md, paddingHorizontal: spacing.sm,
     borderBottomWidth: 1, borderBottomColor: colors.glass.border,
   },
-  dateText: { flex: 1, fontSize: 15, fontWeight: '500', color: colors.text.primary },
+  dateText: { flex: 1, fontSize: 18, fontWeight: '600', color: colors.text.primary },
   dateBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 2,
     borderRadius: borderRadius.full,
   },
-  dateBadgeText: { fontSize: 11, fontWeight: '600', color: '#4ade80' },
+  dateBadgeText: { fontSize: 14, fontWeight: '600', color: '#4ade80' },
 
   // Log card — full document style
   logCard: { marginTop: spacing.sm, marginBottom: spacing.md, padding: spacing.md },
@@ -635,9 +636,9 @@ function buildStyles(colors, isDark) {
   },
   docHeaderLeft: { flex: 1 },
   docHeaderRight: { alignItems: 'flex-end', gap: 4 },
-  logType: { fontSize: 16, fontWeight: '700', color: colors.text.primary },
-  docDate: { fontSize: 12, color: colors.text.muted, marginTop: 2 },
-  logTime: { fontSize: 11, color: colors.text.muted },
+  logType: { fontSize: 20, fontWeight: '700', color: colors.text.primary },
+  docDate: { fontSize: 15, color: colors.text.muted, marginTop: 2 },
+  logTime: { fontSize: 14, color: colors.text.muted },
 
   // Status badge
   statusBadge: {
@@ -646,7 +647,7 @@ function buildStyles(colors, isDark) {
   },
   statusSubmitted: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
   statusDraft: { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder },
-  statusText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+  statusText: { fontSize: 14, fontWeight: '700', letterSpacing: 0.5 },
   statusTextSubmitted: { color: semantic.verified },
   statusTextDraft: { color: semantic.attention },
 
@@ -657,8 +658,8 @@ function buildStyles(colors, isDark) {
     padding: spacing.sm, gap: 6, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06),
   },
   docInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  docInfoText: { fontSize: 13, color: colors.text.secondary, flex: 1 },
-  docParagraph: { fontSize: 13, color: colors.text.secondary, lineHeight: 20, paddingLeft: 2 },
+  docInfoText: { fontSize: 16, color: colors.text.secondary, flex: 1 },
+  docParagraph: { fontSize: 16, color: colors.text.secondary, lineHeight: 24, paddingLeft: 2 },
 
   // Photo row
   photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },
@@ -667,7 +668,7 @@ function buildStyles(colors, isDark) {
   // Signature section
   signatureSection: { marginTop: spacing.md },
   signatureDivider: { height: 1, backgroundColor: withAlpha('#ffffff', 0.08), marginBottom: spacing.sm },
-  signedByName: { fontSize: 13, color: semantic.verified, fontWeight: '500', marginTop: spacing.xs },
+  signedByName: { fontSize: 16, color: semantic.verified, fontWeight: '500', marginTop: spacing.xs },
 
   // Topic chips
   topicChips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
@@ -676,7 +677,7 @@ function buildStyles(colors, isDark) {
     backgroundColor: 'rgba(139,92,246,0.1)', borderWidth: 1, borderColor: 'rgba(139,92,246,0.2)',
     borderRadius: borderRadius.full, paddingHorizontal: spacing.sm, paddingVertical: 4,
   },
-  topicChipText: { fontSize: 12, color: '#c4b5fd', fontWeight: '500' },
+  topicChipText: { fontSize: 15, color: '#c4b5fd', fontWeight: '500' },
 
   // Worker signatures grid
   workerSigGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
@@ -684,13 +685,13 @@ function buildStyles(colors, isDark) {
     width: '47%', backgroundColor: withAlpha('#ffffff', 0.03), borderRadius: borderRadius.md,
     padding: spacing.xs, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), alignItems: 'center',
   },
-  workerSigName: { fontSize: 11, fontWeight: '600', color: colors.text.muted, marginBottom: 4 },
+  workerSigName: { fontSize: 14, fontWeight: '600', color: colors.text.muted, marginBottom: 4 },
   workerSigImage: { width: 120, height: 36, borderRadius: 4, backgroundColor: withAlpha('#ffffff', 0.05) },
 
   // Unsigned workers
   unsignedBlock: { flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: spacing.xs, paddingLeft: 2 },
-  unsignedLabel: { fontSize: 11, fontWeight: '700', color: colors.text.muted },
-  unsignedNames: { fontSize: 11, color: colors.text.subtle },
+  unsignedLabel: { fontSize: 14, fontWeight: '700', color: colors.text.muted },
+  unsignedNames: { fontSize: 14, color: colors.text.muted },
 
   // PDF buttons
   pdfRow: { paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, marginTop: spacing.xs },
@@ -699,16 +700,19 @@ function buildStyles(colors, isDark) {
     flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.sm,
     borderTopWidth: 1, borderTopColor: withAlpha('#ffffff', 0.06),
   },
+  // Was paddingVertical spacing.xs around a 14px icon: a 22-24px target, the
+  // smallest in site mode, on a device used with work gloves.
   pdfActionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs,
+    minHeight: 48, minWidth: 96,
+    paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
     backgroundColor: 'rgba(59,130,246,0.08)', borderRadius: borderRadius.full,
     borderWidth: 1, borderColor: 'rgba(59,130,246,0.2)',
   },
-  pdfActionText: { fontSize: 12, fontWeight: '600', color: '#3b82f6' },
+  pdfActionText: { fontSize: 16, fontWeight: '600', color: '#3b82f6' },
 
   // Legacy
-  logField: { fontSize: 13, color: colors.text.secondary, lineHeight: 20 },
+  logField: { fontSize: 16, color: colors.text.secondary, lineHeight: 24 },
   logFieldLabel: { fontWeight: '600', color: colors.text.primary },
 });
 }

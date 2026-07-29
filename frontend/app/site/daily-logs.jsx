@@ -7,6 +7,7 @@ import {
   Pressable,
   TextInput,
   Modal,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -42,7 +43,8 @@ import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
-import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
+import { semantic, chrome, surface, withAlpha } from '../../src/styles/semanticColors';
+import { useIsWide } from '../../src/hooks/useIsDesktop';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -64,6 +66,7 @@ export default function SiteDailyLogsScreen() {
   // at import (the DARK palette), so on the light theme this screen rendered
   // near-white text on a pale background. Same tokens, live values.
   const { colors, isDark } = useTheme();
+  const isWide = useIsWide();
   const styles = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
@@ -484,10 +487,10 @@ export default function SiteDailyLogsScreen() {
                   onSignatureCapture={(s) => setFormData({...formData, superintendent_signature: s})} />
                 {csLicenseNumber ? (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                    <Text style={{ fontSize: 11, color: colors.text.muted }}>CS LICENSE:</Text>
+                    <Text style={{ fontSize: 14, color: colors.text.muted }}>CS LICENSE:</Text>
                     <Text
                       style={{
-                        fontSize: 11,
+                        fontSize: 14,
                         color: colors.text.muted,
                         fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
                       }}
@@ -507,14 +510,37 @@ export default function SiteDailyLogsScreen() {
               <View style={styles.previousList}>
                 {previousLogs.map((log) => {
                   const WeatherIcon = getWeatherIcon(log.weather);
+                  const signed = !!log.superintendent_signature;
                   return (
                     <GlassListItem key={log.id || log._id} onPress={() => setSelectedPreviousLog(log)} style={styles.logItem}>
+                      {/* The row used to be a date on the left and a number on
+                          the right with ~990px of nothing between them, and no
+                          way to tell a signed log from an unsigned one without
+                          opening it. It now carries what an inspector is
+                          actually scanning for. */}
                       <View style={styles.logDate}><Text style={styles.logDateText}>{formatDate(log.date)}</Text></View>
-                      <View style={styles.logStats}>
-                        <WeatherIcon size={14} strokeWidth={1.5} color={colors.text.muted} />
-                        <Users size={14} strokeWidth={1.5} color={colors.text.muted} />
-                        <Text style={styles.logStatText}>{log.worker_count || 0}</Text>
-                        {log.superintendent_signature && <PenTool size={12} strokeWidth={1.5} color={semantic.verified} />}
+                      <View style={styles.logSummary}>
+                        <View style={styles.logStat}>
+                          <WeatherIcon size={18} strokeWidth={1.5} color={colors.text.muted} />
+                          <Text style={styles.logStatText}>{log.weather || '—'}</Text>
+                        </View>
+                        <View style={styles.logStat}>
+                          <Users size={18} strokeWidth={1.5} color={colors.text.muted} />
+                          <Text style={styles.logStatText}>{log.worker_count || 0} workers</Text>
+                        </View>
+                        {!!log.notes && (
+                          <Text style={styles.logNotes} numberOfLines={1}>{log.notes}</Text>
+                        )}
+                      </View>
+                      <View style={[styles.logSignState, signed ? styles.logSignedOn : styles.logSignedOff]}>
+                        <PenTool
+                          size={16}
+                          strokeWidth={1.5}
+                          color={signed ? semantic.verified : colors.text.muted}
+                        />
+                        <Text style={[styles.logSignText, signed && styles.logSignTextOn]}>
+                          {signed ? 'Signed' : 'Unsigned'}
+                        </Text>
                       </View>
                     </GlassListItem>
                   );
@@ -533,10 +559,18 @@ export default function SiteDailyLogsScreen() {
         {/* Previous Log Modal */}
         <Modal visible={!!selectedPreviousLog} animationType="slide" transparent onRequestClose={() => setSelectedPreviousLog(null)}>
           <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
+            <View style={[styles.modalContent, isWide && styles.modalContentWide]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>{selectedPreviousLog && formatDate(selectedPreviousLog.date)}</Text>
-                <Pressable onPress={() => setSelectedPreviousLog(null)}><X size={24} color={colors.text.muted} /></Pressable>
+                <Pressable
+                  onPress={() => setSelectedPreviousLog(null)}
+                  style={styles.modalClose}
+                  hitSlop={12}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close"
+                >
+                  <X size={24} color={colors.text.muted} />
+                </Pressable>
               </View>
               <ScrollView style={styles.modalScroll}>
                 {selectedPreviousLog && (
@@ -598,77 +632,97 @@ function buildStyles(colors, isDark) {
   container: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: withAlpha('#ffffff', 0.08) },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, flex: 1 },
-  logoutBtn: { padding: 8, borderRadius: 8, backgroundColor: withAlpha('#ffffff', 0.05) },
+  // 44 minimum - operated with work gloves.
+  logoutBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: borderRadius.md, backgroundColor: withAlpha('#ffffff', 0.05) },
   siteBadge: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, backgroundColor: withAlpha('#94a3b8', 0.15), paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#94a3b8', 0.3) },
-  siteBadgeText: { fontSize: 10, fontWeight: '600', color: '#4ade80', letterSpacing: 0.5 },
-  projectName: { fontSize: 16, fontWeight: '500', color: colors.text.primary, flex: 1 },
+  siteBadgeText: { fontSize: 14, fontWeight: '600', color: '#4ade80', letterSpacing: 0.5 },
+  projectName: { fontSize: 18, fontWeight: '500', color: colors.text.primary, flex: 1 },
   tabContainer: { flexDirection: 'row', paddingHorizontal: spacing.lg, paddingVertical: spacing.md, gap: spacing.sm },
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm, paddingVertical: spacing.md, backgroundColor: colors.glass.background, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border },
   tabActive: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
-  tabText: { fontSize: 14, fontWeight: '500', color: colors.text.muted },
+  tabText: { fontSize: 17, fontWeight: '500', color: colors.text.muted },
   tabTextActive: { color: chrome.brand },
   badge: { backgroundColor: '#4ade80', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
-  badgeText: { fontSize: 11, fontWeight: '600', color: '#fff' },
+  badgeText: { fontSize: 14, fontWeight: '600', color: '#fff' },
   scrollView: { flex: 1 },
   scrollContent: { padding: spacing.lg, paddingBottom: 120 },
   titleSection: { marginBottom: spacing.lg },
-  titleLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.sm },
+  titleLabel: { ...typography.label, fontSize: 14, color: colors.text.muted, marginBottom: spacing.sm },
   titleText: { fontSize: 48, fontWeight: '200', color: colors.text.primary, letterSpacing: -1 },
   mb16: { marginBottom: spacing.md },
   dateCard: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, backgroundColor: colors.glass.background, borderRadius: borderRadius.lg, padding: spacing.md, marginBottom: spacing.lg },
-  dateText: { flex: 1, fontSize: 15, color: colors.text.primary },
+  dateText: { flex: 1, fontSize: 18, color: colors.text.primary },
   existingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full },
-  existingText: { fontSize: 11, fontWeight: '500', color: '#4ade80' },
+  existingText: { fontSize: 14, fontWeight: '500', color: '#4ade80' },
   section: { marginBottom: spacing.lg },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
-  sectionTitle: { fontSize: 16, fontWeight: '500', color: colors.text.primary },
+  sectionTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
   weatherGrid: { flexDirection: 'row', gap: spacing.sm },
   weatherOption: { flex: 1, alignItems: 'center', gap: spacing.xs, paddingVertical: spacing.md, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border },
   weatherOptionSelected: { backgroundColor: semantic.verifiedBg, borderColor: chrome.brand },
-  weatherLabel: { fontSize: 11, color: colors.text.muted },
+  weatherLabel: { fontSize: 15, color: colors.text.muted },
   weatherLabelSelected: { color: chrome.brand },
   workerRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   workerInput: { fontSize: 28, fontWeight: '200', color: colors.text.primary, minWidth: 50, textAlign: 'center' },
-  workerLabel: { fontSize: 14, color: colors.text.muted },
-  notesInput: { backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 14, minHeight: 80, textAlignVertical: 'top' },
+  workerLabel: { fontSize: 17, color: colors.text.muted },
+  notesInput: { backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.glass.border, padding: spacing.md, color: colors.text.primary, fontSize: 17, minHeight: 96, textAlignVertical: 'top' },
   checklistContainer: { gap: spacing.sm },
   checklistItem: { backgroundColor: withAlpha('#ffffff', 0.03), borderRadius: borderRadius.lg, padding: spacing.md, borderWidth: 1, borderColor: colors.glass.border },
-  checklistLabel: { fontSize: 14, color: colors.text.primary, marginBottom: spacing.sm },
+  checklistLabel: { fontSize: 17, color: colors.text.primary, marginBottom: spacing.sm },
   checklistOptions: { flexDirection: 'row', gap: spacing.sm },
-  checkOption: { flex: 1, alignItems: 'center', paddingVertical: spacing.sm, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border },
+  // Was ~30px tall around a 14px icon. Fifteen of these per screen.
+  checkOption: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 48, paddingVertical: spacing.md, backgroundColor: withAlpha('#ffffff', 0.05), borderRadius: borderRadius.md, borderWidth: 1, borderColor: colors.glass.border },
   checkOptionActive: { backgroundColor: semantic.verifiedBg, borderColor: chrome.brand },
   checkOptionUnchecked: { backgroundColor: semantic.criticalBg, borderColor: semantic.neutral },
   checkOptionNA: { backgroundColor: withAlpha('#64748b', 0.2), borderColor: colors.text.muted },
-  naText: { fontSize: 11, fontWeight: '500', color: colors.text.muted },
+  naText: { fontSize: 15, fontWeight: '500', color: colors.text.muted },
   naTextActive: { color: colors.text.primary },
-  auditText: { fontSize: 10, color: colors.text.subtle, marginTop: spacing.xs },
-  naCheckbox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.md },
-  checkbox: { width: 18, height: 18, borderRadius: 4, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: withAlpha('#ffffff', 0.05), alignItems: 'center', justifyContent: 'center' },
+  // colors.text.subtle is the WCAG-EXEMPT placeholder/disabled token (see
+  // theme.js). This line is real compliance attribution - who checked the
+  // item and when - so it takes a readable token and a readable size.
+  auditText: { fontSize: 14, color: colors.text.muted, marginTop: spacing.xs },
+  // The ROW is the target (44 tall), not the 18px box that used to be it.
+  naCheckbox: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 44, paddingVertical: spacing.sm, marginBottom: spacing.sm },
+  checkbox: { width: 26, height: 26, borderRadius: 6, borderWidth: 1, borderColor: colors.glass.border, backgroundColor: withAlpha('#ffffff', 0.05), alignItems: 'center', justifyContent: 'center' },
   checkboxChecked: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-  naCheckboxLabel: { fontSize: 13, color: colors.text.secondary },
+  naCheckboxLabel: { fontSize: 17, color: colors.text.secondary },
   signatureSection: { marginBottom: spacing.lg },
   signatureHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, marginBottom: spacing.md },
-  signatureTitle: { fontSize: 15, fontWeight: '500', color: colors.text.primary },
+  signatureTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
   submitBtn: { marginTop: spacing.md, marginBottom: spacing.xxl },
   previousList: { gap: spacing.sm },
-  logItem: { gap: spacing.md },
-  logDate: { minWidth: 100 },
-  logDateText: { fontSize: 14, color: colors.text.primary },
-  logStats: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.md },
-  logStatText: { fontSize: 13, color: colors.text.muted },
+  logItem: { gap: spacing.lg, minHeight: 64 },
+  logDate: { minWidth: 170 },
+  logDateText: { fontSize: 18, fontWeight: '600', color: colors.text.primary },
+  logSummary: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.lg, flexWrap: 'wrap' },
+  logStat: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  logStatText: { fontSize: 16, color: colors.text.muted, textTransform: 'capitalize' },
+  logNotes: { flex: 1, minWidth: 160, fontSize: 15, color: colors.text.muted },
+  logSignState: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderRadius: borderRadius.full, borderWidth: 1 },
+  logSignedOn: { backgroundColor: semantic.verifiedBg, borderColor: semantic.verifiedBorder },
+  logSignedOff: { backgroundColor: 'transparent', borderColor: colors.glass.border },
+  logSignText: { fontSize: 15, fontWeight: '600', color: colors.text.muted },
+  logSignTextOn: { color: semantic.verified },
   emptyCard: { alignItems: 'center', paddingVertical: spacing.xxl },
-  emptyTitle: { fontSize: 16, color: colors.text.muted, marginTop: spacing.md },
+  emptyTitle: { fontSize: 20, color: colors.text.muted, marginTop: spacing.md },
   modalOverlay: { flex: 1, backgroundColor: withAlpha('#000000', 0.7), justifyContent: 'center', alignItems: 'center', padding: spacing.lg },
-  modalContent: { backgroundColor: '#1a1a2e', borderRadius: borderRadius.xxl, width: '100%', maxWidth: 500, maxHeight: '80%', borderWidth: 1, borderColor: colors.glass.border },
+  // Was a hardcoded '#1a1a2e' in BOTH themes, so on light the panel was
+  // near-black behind dark text and the whole record was unreadable.
+  // surface.menu is the opaque theme-aware token for panels that occlude.
+  modalContent: { backgroundColor: surface.menu, borderRadius: borderRadius.xxl, width: '100%', maxWidth: 560, maxHeight: '80%', borderWidth: 1, borderColor: colors.glass.border },
+  // A 500px card centred on a 1280px tablet used 39% of the screen to show
+  // a day's compliance record.
+  modalContentWide: { maxWidth: 980, maxHeight: '86%' },
+  modalClose: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.lg, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
-  modalTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },
+  modalTitle: { fontSize: 22, fontWeight: '600', color: colors.text.primary },
   modalScroll: { padding: spacing.lg },
   modalSection: { marginBottom: spacing.lg },
-  modalLabel: { ...typography.label, color: colors.text.muted, marginBottom: spacing.xs },
-  modalValue: { fontSize: 15, color: colors.text.primary },
+  modalLabel: { ...typography.label, fontSize: 14, color: colors.text.muted, marginBottom: spacing.xs },
+  modalValue: { fontSize: 18, color: colors.text.primary, lineHeight: 26 },
   checkReview: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing.sm, borderBottomWidth: 1, borderBottomColor: colors.glass.border },
-  checkReviewLabel: { fontSize: 13, color: colors.text.secondary },
-  checkReviewStatus: { fontSize: 11, fontWeight: '600', color: colors.text.muted },
+  checkReviewLabel: { fontSize: 17, color: colors.text.secondary },
+  checkReviewStatus: { fontSize: 15, fontWeight: '600', color: colors.text.muted },
   closeBtn: { margin: spacing.lg },
   });
 }

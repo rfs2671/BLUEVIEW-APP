@@ -192,8 +192,12 @@ function buildStyles(colors, isDark) {
       alignItems: 'center',
       gap: spacing.md,
     },
+    // 44 minimum - work gloves.
     logoutBtn: {
-      padding: 8,
+      width: 44,
+      height: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
       borderRadius: 8,
       backgroundColor: withAlpha('#ffffff', 0.05),
     },
@@ -210,12 +214,12 @@ function buildStyles(colors, isDark) {
     },
     siteBadgeText: {
       ...typography.label,
-      fontSize: 9,
+      fontSize: 14,
       color: '#4ade80',
       letterSpacing: 1,
     },
     projectName: {
-      fontSize: 16,
+      fontSize: 18,
       fontWeight: '400',
       color: colors.text.primary,
       flex: 1,
@@ -266,7 +270,7 @@ function buildStyles(colors, isDark) {
       borderColor: colors.glass.border,
     },
     badgeText: {
-      fontSize: 12,
+      fontSize: 15,
       fontWeight: '600',
       color: colors.text.primary,
     },

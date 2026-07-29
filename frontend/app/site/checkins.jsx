@@ -387,8 +387,12 @@ function buildStyles(colors, isDark) {
     gap: spacing.md,
     flex: 1,
   },
+  // 44 minimum - work gloves.
   logoutBtn: {
-    padding: 8,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderRadius: 8,
     backgroundColor: withAlpha('#ffffff', 0.05),
   },
@@ -404,7 +408,7 @@ function buildStyles(colors, isDark) {
     borderColor: withAlpha('#94a3b8', 0.3),
   },
   siteBadgeText: {
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: '600',
     color: '#4ade80',
     letterSpacing: 0.5,
@@ -501,24 +505,27 @@ function buildStyles(colors, isDark) {
     gap: spacing.xs,
   },
   reviewTitle: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
     color: '#fbbf24',
   },
   reviewedText: {
-    fontSize: 13,
+    fontSize: 15,
     color: colors.text.secondary,
   },
   reviewActions: {
     flexDirection: 'row',
     gap: spacing.sm,
   },
+  // Compliance-decision buttons. Were ~34px around a 14px icon, with no
+  // hitSlop, on a wall-mounted tablet used with work gloves.
   reviewBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: spacing.xs,
-    paddingVertical: spacing.sm,
+    minHeight: 48,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
     borderRadius: borderRadius.lg,
     borderWidth: 1,
@@ -536,7 +543,7 @@ function buildStyles(colors, isDark) {
     backgroundColor: semantic.criticalBg,
   },
   reviewBtnText: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
   },
   approveText: {
@@ -555,7 +562,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
   },
   timeOutText: {
-    fontSize: 11,
+    fontSize: 14,
     color: colors.text.muted,
     marginTop: 2,
   },
@@ -582,7 +589,7 @@ function buildStyles(colors, isDark) {
     justifyContent: 'center',
   },
   avatarText: {
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '600',
     color: colors.text.primary,
   },
@@ -595,7 +602,7 @@ function buildStyles(colors, isDark) {
     color: colors.text.primary,
   },
   workerTrade: {
-    fontSize: 12,
+    fontSize: 15,
     color: colors.text.muted,
   },
   workerMeta: {
@@ -609,8 +616,8 @@ function buildStyles(colors, isDark) {
     gap: 4,
   },
   metaText: {
-    fontSize: 11,
-    color: colors.text.subtle,
+    fontSize: 14,
+    color: colors.text.muted,
   },
   statusBadge: {
     flexDirection: 'row',
@@ -631,13 +638,13 @@ function buildStyles(colors, isDark) {
     backgroundColor: '#4ade80',
   },
   statusText: {
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: '600',
     color: '#4ade80',
     letterSpacing: 0.5,
   },
   statusDone: {
-    color: colors.text.subtle,
+    color: colors.text.muted,
   },
   emptyCard: {
     alignItems: 'center',

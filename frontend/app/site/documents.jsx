@@ -1,12 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   Pressable,
-  ActivityIndicator,
-  Platform,
+  TextInput,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,7 +15,10 @@ import {
   FileText,
   File,
   FolderOpen,
-  Download,
+  Folder,
+  Search,
+  X,
+  ChevronRight,
   LogOut,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
@@ -29,6 +31,7 @@ import apiClient from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useIsWide } from '../../src/hooks/useIsDesktop';
 
 import PDFViewer from '../../src/components/PDFViewer';
 
@@ -39,8 +42,11 @@ const dropboxAPI = {
   },
 };
 
+const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase() || '';
+const isViewable = (filename) => extOf(filename) === 'pdf';
+
 const getFileIcon = (filename) => {
-  const ext = filename.split('.').pop()?.toLowerCase();
+  const ext = extOf(filename);
   if (['pdf'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
   if (['doc', 'docx'].includes(ext)) return { Icon: FileText, color: '#3b82f6' };
   if (['xls', 'xlsx'].includes(ext)) return { Icon: FileText, color: semantic.neutral };
@@ -54,9 +60,29 @@ const formatFileSize = (bytes) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/**
+ * The folder a file lives in, from the Dropbox path the API already returns.
+ *
+ * The endpoint sends the full path ("/Approved Plans/DOB-Approved-Plans.pdf")
+ * and this screen was rendering the basename ONLY — so an inspector asking for
+ * "the access agreement" got an undifferentiated flat list and had to read
+ * filenames. The folder names are the categories the GC already maintains
+ * (Approved Plans, Access Agreements, Permits); grouping by them is free
+ * structure we were throwing away.
+ */
+const UNFILED = 'Other Documents';
+const folderOf = (file) => {
+  const raw = String(file?.path || '');
+  const parts = raw.split('/').filter(Boolean);
+  parts.pop();                       // drop the filename
+  if (!parts.length) return UNFILED;
+  return parts[parts.length - 1];    // immediate parent folder
+};
+
 export default function SiteDocumentsScreen() {
   const { colors, isDark } = useTheme();
-  const s = buildStyles(colors, isDark);
+  const isWide = useIsWide();
+  const s = useMemo(() => buildStyles(colors, isDark), [colors, isDark]);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
 
@@ -68,8 +94,38 @@ export default function SiteDocumentsScreen() {
 
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState([]);
+  const [query, setQuery] = useState('');
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
+
+  // Search matches the FOLDER as well as the filename, so "access" finds the
+  // Access Agreements folder even when the files inside are named by address.
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const matched = q
+      ? files.filter((f) => `${f.name || ''} ${folderOf(f)}`.toLowerCase().includes(q))
+      : files;
+
+    const byFolder = new Map();
+    for (const f of matched) {
+      const key = folderOf(f);
+      if (!byFolder.has(key)) byFolder.set(key, []);
+      byFolder.get(key).push(f);
+    }
+    // Folders alphabetical, unfiled last; files alphabetical within a folder.
+    return [...byFolder.entries()]
+      .sort(([a], [b]) => {
+        if (a === UNFILED) return 1;
+        if (b === UNFILED) return -1;
+        return a.localeCompare(b);
+      })
+      .map(([folder, items]) => [
+        folder,
+        [...items].sort((x, y) => String(x.name || '').localeCompare(String(y.name || ''))),
+      ]);
+  }, [files, query]);
+
+  const matchCount = groups.reduce((n, [, items]) => n + items.length, 0);
 
   useEffect(() => {
   if (!authLoading && isAuthenticated !== undefined) {
@@ -106,12 +162,22 @@ export default function SiteDocumentsScreen() {
     }
   };
 
+  /**
+   * Only PDFs can open — the tablet has an in-app PDF viewer and nothing else.
+   * This used to `return` silently for every other type, so tapping a .docx
+   * did nothing at all and read as a broken screen. Non-viewable files now say
+   * so on the card and explain themselves on tap rather than swallowing it.
+   */
   const handleOpenFile = (file) => {
-    const ext = file.name?.split('.').pop()?.toLowerCase();
-    if (ext === 'pdf') {
+    if (isViewable(file?.name)) {
       setSelectedPdfFile(file);
       setPdfViewerVisible(true);
+      return;
     }
+    toast.info(
+      'Can’t open on this device',
+      `${(extOf(file?.name) || 'This file type').toUpperCase()} files open on a computer. Plans and agreements are PDFs and open here.`,
+    );
   };
 
   return (
@@ -142,10 +208,37 @@ export default function SiteDocumentsScreen() {
           </Pressable>
         </View>
 
-        {/* Title */}
-        <View style={s.titleSection}>
-          <Text style={s.titleLabel}>PROJECT</Text>
-          <Text style={s.titleText}>Documents</Text>
+        {/* Title + search. An inspector arrives asking for a named document,
+            not to browse — search is the primary control, so it sits beside the
+            title rather than below the fold. */}
+        <View style={[s.titleSection, isWide && s.titleSectionWide]}>
+          <View>
+            <Text style={s.titleLabel}>PROJECT</Text>
+            <Text style={s.titleText}>Documents</Text>
+          </View>
+          <View style={[s.searchBox, isWide && s.searchBoxWide]}>
+            <Search size={20} strokeWidth={1.5} color={colors.text.muted} />
+            <TextInput
+              style={s.searchInput}
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search plans, agreements, permits…"
+              placeholderTextColor={colors.text.muted}
+              autoCorrect={false}
+              accessibilityLabel="Search documents"
+            />
+            {query.length > 0 && (
+              <Pressable
+                onPress={() => setQuery('')}
+                style={s.searchClear}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+              >
+                <X size={18} strokeWidth={2} color={colors.text.muted} />
+              </Pressable>
+            )}
+          </View>
         </View>
 
         <ScrollView
@@ -159,31 +252,73 @@ export default function SiteDocumentsScreen() {
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
             </View>
-          ) : files.length > 0 ? (
-            <View style={s.filesList}>
-              {files.map((file, index) => {
-                const { Icon, color } = getFileIcon(file.name);
-                return (
-                  <GlassCard key={index} style={s.fileCard} onPress={() => handleOpenFile(file)}>
-                    <View style={s.fileIcon}>
-                      <Icon size={24} strokeWidth={1.5} color={color} />
-                    </View>
-                    <View style={s.fileInfo}>
-                      <Text style={s.fileName} numberOfLines={1}>
-                        {file.name}
-                      </Text>
-                      <Text style={s.fileSize}>{formatFileSize(file.size)}</Text>
-                    </View>
-                    <Download size={20} strokeWidth={1.5} color={colors.text.muted} />
-                  </GlassCard>
-                );
-              })}
-            </View>
+          ) : matchCount > 0 ? (
+            groups.map(([folder, items]) => (
+              <View key={folder} style={s.folderBlock}>
+                <View style={s.folderHeader}>
+                  <Folder size={18} strokeWidth={1.5} color={colors.text.muted} />
+                  <Text style={s.folderName}>{folder}</Text>
+                  <Text style={s.folderCount}>{items.length}</Text>
+                </View>
+                {/* Grid, not a stack. Three columns at tablet width turns a
+                    2.5-row scroll into a screenful of documents. */}
+                <View style={[s.filesGrid, isWide && s.filesGridWide]}>
+                  {items.map((file, index) => {
+                    const { Icon, color } = getFileIcon(file.name);
+                    const viewable = isViewable(file.name);
+                    return (
+                      <GlassCard
+                        key={file.id || `${folder}-${index}`}
+                        style={[s.fileCard, isWide && s.fileCardWide]}
+                        onPress={() => handleOpenFile(file)}
+                      >
+                        {/* The row lives INSIDE the card. GlassCard applies the
+                            `style` prop to its outer wrapper and renders
+                            children into its own column-flex content layer, so
+                            a flexDirection on the card never reaches them —
+                            which is why these stacked vertically before. */}
+                        <View style={s.fileRow}>
+                          <View style={s.fileIcon}>
+                            <Icon size={26} strokeWidth={1.5} color={color} />
+                          </View>
+                          <View style={s.fileInfo}>
+                            <Text style={s.fileName} numberOfLines={2}>
+                              {file.name}
+                            </Text>
+                            <View style={s.fileMetaRow}>
+                              <Text style={s.fileSize}>{formatFileSize(file.size)}</Text>
+                              {!viewable && (
+                                <Text style={s.fileNotViewable}>
+                                  {extOf(file.name).toUpperCase()} · opens on a computer
+                                </Text>
+                              )}
+                            </View>
+                          </View>
+                          {/* Was a Download glyph with no onPress — decorative
+                              chrome that looked like a control. The card opens
+                              the file, so the affordance is an open chevron,
+                              and only where opening does something. */}
+                          {viewable && (
+                            <ChevronRight size={22} strokeWidth={1.5} color={colors.text.muted} />
+                          )}
+                        </View>
+                      </GlassCard>
+                    );
+                  })}
+                </View>
+              </View>
+            ))
           ) : (
             <GlassCard style={s.emptyCard}>
               <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={s.emptyText}>No Documents</Text>
-              <Text style={s.emptySubtext}>Documents will appear here when added</Text>
+              <Text style={s.emptyText}>
+                {query ? 'No matching documents' : 'No Documents'}
+              </Text>
+              <Text style={s.emptySubtext}>
+                {query
+                  ? `Nothing matches “${query}”.`
+                  : 'Documents will appear here when added'}
+              </Text>
             </GlassCard>
           )}
         </ScrollView>
@@ -217,9 +352,13 @@ function buildStyles(colors, isDark) {
     alignItems: 'center',
     gap: spacing.md,
   },
+  // 44 minimum — this is operated with work gloves.
   logoutBtn: {
-    padding: 8,
-    borderRadius: 8,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: borderRadius.md,
     backgroundColor: withAlpha('#ffffff', 0.05),
   },
   siteBadge: {
@@ -235,12 +374,12 @@ function buildStyles(colors, isDark) {
   },
   siteBadgeText: {
     ...typography.label,
-    fontSize: 9,
+    fontSize: 14,
     color: '#4ade80',
     letterSpacing: 1,
   },
   projectName: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '400',
     color: colors.text.primary,
     flex: 1,
@@ -248,9 +387,16 @@ function buildStyles(colors, isDark) {
   titleSection: {
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
+    gap: spacing.md,
+  },
+  titleSectionWide: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
   },
   titleLabel: {
     ...typography.label,
+    fontSize: 14,
     color: colors.text.muted,
     marginBottom: spacing.xs,
   },
@@ -258,6 +404,31 @@ function buildStyles(colors, isDark) {
     fontSize: 32,
     fontWeight: '200',
     color: colors.text.primary,
+  },
+  searchBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    backgroundColor: colors.glass.background,
+  },
+  searchBoxWide: { width: 420 },
+  searchInput: {
+    flex: 1,
+    fontSize: 17,
+    color: colors.text.primary,
+    paddingVertical: spacing.sm,
+    outlineStyle: 'none',
+  },
+  searchClear: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scrollView: {
     flex: 1,
@@ -268,14 +439,52 @@ function buildStyles(colors, isDark) {
   loadingContainer: {
     gap: spacing.md,
   },
-  filesList: {
+  folderBlock: { marginBottom: spacing.xl },
+  folderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  folderName: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: colors.text.primary,
+  },
+  folderCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.text.muted,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.glass.background,
+    overflow: 'hidden',
+  },
+  filesGrid: {
     gap: spacing.md,
   },
+  // Three across at tablet width. `gap` handles the gutters, so the basis is
+  // just under a third and wrapping does the rest — no width arithmetic that
+  // has to be kept in sync with the padding.
+  filesGridWide: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
   fileCard: {
+    justifyContent: 'center',
+  },
+  // 31% basis + a 16pt gap fits three across at 1232pt of content and still
+  // wraps cleanly to two on a narrower tablet.
+  fileCardWide: {
+    flexBasis: '31%',
+    flexGrow: 1,
+    maxWidth: '32%',
+  },
+  fileRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    padding: spacing.lg,
   },
   fileIcon: {
     width: 48,
@@ -289,14 +498,26 @@ function buildStyles(colors, isDark) {
     flex: 1,
   },
   fileName: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '500',
     color: colors.text.primary,
+    lineHeight: 22,
+  },
+  fileMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    flexWrap: 'wrap',
   },
   fileSize: {
-    fontSize: 13,
+    fontSize: 14,
     color: colors.text.muted,
-    marginTop: spacing.xs,
+  },
+  fileNotViewable: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: semantic.neutral,
   },
   emptyCard: {
     alignItems: 'center',
@@ -304,13 +525,13 @@ function buildStyles(colors, isDark) {
     gap: spacing.md,
   },
   emptyText: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '500',
     color: colors.text.muted,
   },
   emptySubtext: {
-    fontSize: 14,
-    color: colors.text.subtle,
+    fontSize: 16,
+    color: colors.text.muted,
   },
 });
 }
