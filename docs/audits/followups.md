@@ -4,6 +4,84 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## PHOTO PIPELINE — 2026-07-29 — deblocking has hit its deterministic floor; ARCNN evaluation CANCELLED
+
+Applies to `backend/lib/photo_enhance.py` (shipped in `5ddc56b`).
+
+### The floor, and why it is a floor
+
+Heavily-compressed dark CP photos — the ones that arrive via WhatsApp from the
+CP's own camera roll, already re-compressed, never touching the app's capture
+path — still show flat 8x8 tiles in lifted shadow. That is as good as it gets
+deterministically, and the reason is worth writing down so nobody re-opens it.
+
+JPEG blocking has two components:
+
+1. **Boundary discontinuity** — the visible step between adjacent blocks. This
+   is SOLVED. `_deblock_jpeg` removes it, and an ordering experiment on the
+   basement photo (lift/deblock/denoise permuted four ways, everything else
+   fixed) drove the blockiness metric from 1.278 down to 0.825 **with no
+   visible difference between any of the four crops at 2x**. Below ~1.3 the
+   metric is measuring boundary steps against ordinary image noise and has
+   decoupled from what the image looks like. Do not tune against it further.
+
+2. **Flat interiors** — the tiles themselves carry no texture. This is NOT an
+   artefact that can be filtered out: JPEG quantisation zeroed the AC
+   coefficients for those blocks. The information is destroyed, not degraded.
+   Recovering it means SYNTHESISING plausible texture.
+
+### ARCNN / FBCNN evaluation: cancelled, deliberately
+
+Considered and rejected on 2026-07-29. The proposed success condition was
+"visibly fills the flat block interiors" — which is synthesis by definition,
+and this pipeline prohibits it: *"No generative/AI upscaling. Deterministic
+image ops only; do not invent detail that wasn't in the frame."*
+
+That constraint is not stylistic here. These photos are a DOB compliance
+record. Invented texture on a concrete wall in a daily log is a defect with
+legal weight, not a cosmetic nicety — the photo is evidence of site conditions
+on a date, and a model's guess about what the wall looked like is not evidence.
+
+Cost data gathered before cancelling, so it need not be re-derived:
+  * no canonical ARCNN ONNX exists; weights ship as `.pth`
+  * conversion would need PyTorch (~2.5 GB) as a one-time step
+  * ARCNN weights are tiny (~100-200 KB, four conv layers); FBCNN ~70 MB
+  * `cv2` itself is 112 MB installed (measured), and was already rejected for
+    CLAHE on the same grounds
+  * third-party ONNX mirrors exist but are unvetted; not used
+
+### IF a presentation-grade derivative is ever wanted
+
+It does NOT belong as a pipeline step. It belongs as a SEPARATE variant
+alongside `enhanced` and `thumb` — generated on demand, stored under its own
+R2 key, and CLEARLY LABELLED as enhanced-for-presentation wherever it renders.
+
+Requirements if that is ever built:
+  * outside the compliance path entirely — never substituted into the daily
+    log, the DOB record, or anything a regulator reads
+  * the original and the deterministic `enhanced` variant remain the record
+  * the label travels with the image, not just the UI that happens to show it
+
+That is the only context in which generative enhancement is appropriate here.
+
+### Recommended stack IF the presentation variant is ever built
+
+`onnxruntime` (CPU wheel ~20 MB) + Pillow + numpy. NOT `opencv-python-headless`
+— 112 MB installed, and already rejected twice on this feature: once for CLAHE
+(implemented in numpy instead, see photo_enhance._clahe_l_channel) and once for
+ARCNN. Load the model once and run it on the existing photo threadpool rather
+than per-request.
+
+To be explicit, because the two decisions are easy to conflate: this stack note
+does NOT reopen ARCNN for the compliance pipeline. Synthesis stays prohibited
+there regardless of which runtime executes the model — the cancellation above
+was about the PASS CONDITION (filling flat interiors is synthesis), not about
+dependency size. A 20 MB runtime does not make invented detail acceptable on a
+DOB record; it only makes the carve-out cheaper to build if the carve-out is
+ever wanted.
+
+---
+
 ## TENANT ISOLATION — 2026-07-28 — assigned_projects: stale-entry audit NOT RUN, + defense-in-depth
 
 Both write vectors into `assigned_projects` are now gated (see the commit that
