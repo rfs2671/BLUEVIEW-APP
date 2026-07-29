@@ -402,7 +402,11 @@ export const checkinsAPI = {
     // asked the backend for the wrong day's check-ins. en-CA formats as YYYY-MM-DD.
     const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(date);
     const response = await apiClient.get(`/api/checkins?date=${dateStr}`);
-    return response.data;
+    // /api/checkins is paginated: {items,total,limit,skip,has_more}. Unwrap so
+    // callers get the array they Array.isArray-guard on (projectsAPI.getAll
+    // pattern). Tolerates a bare array if the endpoint is ever de-paginated.
+    const data = response.data;
+    return Array.isArray(data) ? data : (data?.items ?? []);
   },
 
   getTodayByProject: async (projectId) => {
@@ -475,7 +479,11 @@ export const dailyLogsAPI = {
 
   getByProject: async (projectId) => {
     const response = await apiClient.get(`/api/daily-logs/project/${projectId}`);
-    return response.data;
+    // Paginated wrapper {items,...} → array (projectsAPI.getAll pattern), so
+    // the site daily-log "Previous" list and Today-log lookup stop collapsing
+    // to [] under Array.isArray. Bare array tolerated for future de-pagination.
+    const data = response.data;
+    return Array.isArray(data) ? data : (data?.items ?? []);
   },
 
   getByProjectAndDate: async (projectId, date) => {
@@ -795,7 +803,13 @@ export const logbooksAPI = {
     if (logType) params.log_type = logType;
     if (date) params.date = date;
     const response = await apiClient.get(`/api/logbooks/project/${projectId}`, { params });
-    return response.data;
+    // Paginated wrapper {items,...} → array (projectsAPI.getAll pattern). This
+    // is the load-bearing one: the logbook editors Array.isArray-guard this to
+    // compute `existing`; the raw wrapper made existing=null, so they reopened
+    // blank and re-entered the create path, upsert-$set overwriting the day's
+    // record (a real toolbox_talk was overwritten 2026-07-29, no audit trail).
+    const data = response.data;
+    return Array.isArray(data) ? data : (data?.items ?? []);
   },
 
   getById: async (logbookId) => {
