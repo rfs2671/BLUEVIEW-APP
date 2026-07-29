@@ -96,7 +96,7 @@ EXPOSURE_CLIP_PCT = 0.5
 # while the dark basement RECOVERS MORE shadow detail (44.2% -> 27.7% crushed,
 # versus 39.2% at full strength) because CLAHE downstream is handed a less
 # crushed histogram to work with.
-EXPOSURE_STRENGTH = 0.5
+EXPOSURE_STRENGTH = 0.3
 
 # ── ADAPTIVE GATE ─────────────────────────────────────────────────────────
 # Every strength below is multiplied by a per-photo "needs help" score in
@@ -118,7 +118,11 @@ GATE_DARK_KNEE = 70.0        # mean this far below target => full darkness need
 GATE_FLAT_STD_GOOD = 40.0    # std at/above this is contrasty, not flat
 GATE_FLAT_KNEE = 8.0         # std this far below "good" => full flatness need
 GATE_CRUSH_REF = 0.20        # this fraction under luma 16 => full crush need
-GATE_FLAT_WEIGHT = 0.7       # flatness alone should not trigger max treatment
+GATE_FLAT_WEIGHT = 0.5       # flatness alone should not trigger max treatment
+# ^ A photo may be flat because the SCENE is flat — overcast light, a hazy
+# site, a grey material — not because it needs correcting. Flatness is the
+# weakest evidence of the three that a photo is WRONG, so it gets the smallest
+# vote. Darkness and crush are unambiguous defects; low contrast often is not.
 
 # ── SHADOW LIFT ───────────────────────────────────────────────────────────
 # CLAHE redistributes LOCAL contrast; it does not brighten. A basement at mean
@@ -166,25 +170,49 @@ DEBLOCK_EDGE_THRESHOLD = 24.0  # luma step above this is a REAL edge, left alone
 # of the average bin count; tile grid is how local the adaptation is. The clip
 # limit is INTERPOLATED by the gate between MIN (well-exposed, barely touched)
 # and MAX (dark, aggressive).
-# Driven by the FLATNESS term, not the composite score. Haze destroys LOCAL
-# contrast while leaving the global range intact (the barricade's top band
-# still spans p1=80..p99=213), so only CLAHE can recover it and the clip limit
-# is the ceiling on how much it may. Measured: clip 2.19 -> 6.0 takes that
-# band's std from 38.5 to 47.9, while a finer tile grid did nothing (38.5 at
-# 8x8, 36.3 at 32x32 — slightly WORSE).
 #
-# Decoupling from the score also fixes the basement: it is dark, not flat, so
-# it now gets a modest clip and the shadow lift does the work — which is what
-# was amplifying its JPEG blocking.
+# CLAHE IS A DARK-PHOTO TOOL. It is driven by the SHADOW-LIFT amount
+# (max(dark, crush)) and is SKIPPED ENTIRELY on any photo that needs no lift.
+#
+# It used to be driven by the flatness term, on the theory that flat == hazy ==
+# needs local contrast. Measured on the four real CP photos, that was wrong in
+# both directions. Figures below are END-TO-END enhance_photo output unless
+# marked as a step ablation, and "figure" is high-pass energy over the plywood
+# face crop (grain strength at grain scale — global std also moves with tone):
+#
+#   * On the plywood it destroyed material fidelity. Flat-driven CLAHE at clip
+#     3.5 took the face from figure 3.04 to 11.92 (+292%) and dropped its tone
+#     16.2 luma — weathered light pine rendered as dark, hard, etched wood.
+#     Lowering the ceiling does not rescue it: at clip 1.4 the face is still
+#     +109%, and a step ablation at clip 2.0 attributes +4.13 of the +4.51
+#     figure rise (92%) and 11.0 of the 12.6 luma to CLAHE alone — exposure and
+#     unsharp are noise beside it, so there is no clip worth keeping. Only
+#     skipping it holds the face at figure 3.35 (+10%) and tone -2.8. A photo is
+#     often flat because the SCENE is flat (overcast, a grey material, a hazy
+#     site), and "correcting" that changes what the material looks like.
+#
+#   * On the basement it was BACKWARDS. That photo's flatness is only 0.12, so
+#     the one image where CLAHE demonstrably works was getting the least of it
+#     (clip ~1.2, the lowest of all four). Driving from lift gives it clip 2.00
+#     and its best result: mean 33.0 -> 95.2, crushed 41.9% -> 0.06%.
+#
+# The cost is accepted deliberately: the barricade's haze is no longer lifted
+# by CLAHE (hoarding-band local contrast 2.53 vs 2.69 with dehazing, 2.43 in
+# the original). Dark Channel Prior dehazing was evaluated as a purpose-built
+# replacement and REJECTED — it bought +6% local contrast there while dropping
+# the plywood face 14 luma, the same trade CLAHE offered at a worse rate.
+#
+# The bar is FIDELITY, not punch: same material, same tone, same scene as the
+# original, just clearer. A faithfully hazy photo of a hazy site is correct.
 CLAHE_CLIP_MIN = 1.1
-CLAHE_CLIP_MAX = 3.5
+CLAHE_CLIP_MAX = 2.0
 CLAHE_TILE_GRID = (8, 8)
 
 # Unsharp mask. PIL takes `percent` as an integer; UNSHARP_AMOUNT is a fraction
 # and is converted below. threshold skips low-contrast areas so sensor noise
 # and JPEG mosquito artefacts are not sharpened.
 UNSHARP_RADIUS = 2.0
-UNSHARP_AMOUNT = 0.3
+UNSHARP_AMOUNT = 0.15
 UNSHARP_THRESHOLD = 3
 
 # White balance bounds.
@@ -502,9 +530,14 @@ def enhance_photo(jpeg_bytes: bytes) -> EnhanceResult:
     # 5. white balance — gated
     arr = _gray_world_white_balance(arr_u8.astype(np.float32), GRAY_WORLD_STRENGTH * g)
 
-    # 6. CLAHE — clip limit driven by FLATNESS, not the composite score
-    clip = CLAHE_CLIP_MIN + (CLAHE_CLIP_MAX - CLAHE_CLIP_MIN) * gate.flat
-    arr = _clahe_on_lab_l(np.clip(arr, 0, 255).astype(np.uint8), clip)
+    # 6. CLAHE — dark-photo tool only. Driven by the LIFT amount and skipped
+    #    outright when there is no lift, so a merely-flat daylight photo is
+    #    never given local contrast it did not ask for. See the constants above.
+    if lift > 0.01:
+        clip = CLAHE_CLIP_MIN + (CLAHE_CLIP_MAX - CLAHE_CLIP_MIN) * lift
+        arr = _clahe_on_lab_l(np.clip(arr, 0, 255).astype(np.uint8), clip)
+    else:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
 
     # 7. unsharp — gated
     enhanced = Image.fromarray(arr).filter(ImageFilter.UnsharpMask(
