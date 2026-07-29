@@ -28,8 +28,10 @@ import { colors, spacing, borderRadius, typography } from '../styles/theme';
  * an empty black modal with no way out. This gives an explicit exit instead.
  *
  * INTERFACE PARITY — identical props and default export to the native
- * component (`{ visible, onClose, onCapture }`), so daily_jobsite.jsx needs no
- * change. `onCapture` is accepted and intentionally unused here: on web there
+ * component (`{ visible, shots, onClose, onCapture }`), so daily_jobsite.jsx
+ * needs no change. `shots` (the keep-shooting session strip) is accepted and
+ * ignored: there is no preview here to stack thumbnails on.
+ * `onCapture` is accepted and intentionally unused here: on web there
  * is no capture path, and the parent treats photos as optional (it appends to
  * an optional `photos[]`; nothing gates submission on it), so dismissing this
  * modal returns the user to a fully usable form rather than a dead end.
@@ -45,7 +47,7 @@ export function useCameraPrewarmPermission() {
   return false;
 }
 
-export default function CameraCaptureModal({ visible, onClose, onCapture }) { // eslint-disable-line no-unused-vars
+export default function CameraCaptureModal({ visible, shots, onClose, onCapture }) { // eslint-disable-line no-unused-vars
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <SafeAreaView

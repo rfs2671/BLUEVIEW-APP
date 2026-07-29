@@ -4,11 +4,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
-import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
-import { X, RefreshCw } from 'lucide-react-native';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { withAlpha } from '../styles/semanticColors';
+import CameraOverlay from './CameraOverlay';
 
 /**
  * In-process jobsite camera (react-native-vision-camera). <Camera> is a
@@ -17,32 +14,16 @@ import { withAlpha } from '../styles/semanticColors';
  *
  * Lens: a 0.5× ultra-wide ⇄ 1× wide toggle on the back camera, shown only
  * where ultra-wide genuinely exists. Pinch-to-zoom adjusts WITHIN the
- * active lens. Output is downscaled/compressed to <= 150KB per photo.
+ * active lens.
+ *
+ * KEEP-SHOOTING. The camera no longer closes on the shutter and no longer
+ * compresses on the shutter. Capture hands the raw URI straight to the caller
+ * and re-arms; the caller compresses in the background and passes the session's
+ * photos back in via `shots` so they stack in the corner of the preview. The CP
+ * dismisses with Done (or X) when they are finished, not once per photo.
+ *
+ * The chrome lives in CameraOverlay — see that file for why.
  */
-
-const MAX_BYTES = 150 * 1024;
-
-async function compressUnderCap(srcUri) {
-  let width = 1280;
-  let quality = 0.6;
-  let out = await ImageManipulator.manipulateAsync(
-    srcUri, [{ resize: { width } }],
-    { compress: quality, format: ImageManipulator.SaveFormat.JPEG },
-  );
-  let info = await FileSystem.getInfoAsync(out.uri);
-  let tries = 0;
-  while ((info?.size ?? 0) > MAX_BYTES && tries < 5) {
-    tries += 1;
-    if (quality > 0.3) quality = Math.max(0.3, quality - 0.15);
-    else width = Math.round(width * 0.8);
-    out = await ImageManipulator.manipulateAsync(
-      srcUri, [{ resize: { width } }],
-      { compress: quality, format: ImageManipulator.SaveFormat.JPEG },
-    );
-    info = await FileSystem.getInfoAsync(out.uri);
-  }
-  return out.uri;
-}
 
 /**
  * Pre-requests camera permission from the SCREEN, not from the capture tap.
@@ -71,7 +52,7 @@ export function useCameraPrewarmPermission() {
   return hasPermission;
 }
 
-function CameraSurface({ active, onCapture, onClose }) {
+function CameraSurface({ active, shots, onCapture, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
@@ -140,21 +121,33 @@ function CameraSurface({ active, onCapture, onClose }) {
 
   const showLensToggle = position === 'back' && hasUltraWide;
 
+  /**
+   * NON-BLOCKING. This used to be:
+   *
+   *     await takePhoto()  ->  await compressUnderCap()  ->  onCapture  ->  onClose
+   *
+   * so the modal stayed up, frozen on a live preview with a spinner in the
+   * shutter, for the whole resize/re-encode ladder — and then vanished, forcing
+   * a fresh tap (and another scroll to the button) for the next photo.
+   *
+   * Now the ONLY await on the path is takePhoto itself, which is the sensor
+   * read and cannot be moved. The raw URI is handed up immediately, the shutter
+   * re-arms, and the camera stays open. Compression is the caller's problem and
+   * runs in the background; its progress comes back through `shots`.
+   */
   const handleShutter = useCallback(async () => {
     if (!camera.current || capturing) return;
     setCapturing(true);
     try {
       const photo = await camera.current.takePhoto({ flash: 'off', qualityPrioritization: 'speed' });
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
-      const smallUri = await compressUnderCap(srcUri);
-      onCapture(smallUri);
-      onClose();
+      onCapture(srcUri);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
     } finally {
       setCapturing(false);
     }
-  }, [capturing, onCapture, onClose]);
+  }, [capturing, onCapture]);
 
   if (!hasPermission) {
     return (
@@ -197,50 +190,16 @@ function CameraSurface({ active, onCapture, onClose }) {
           if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
         }}
       />
-      <SafeAreaView style={styles.overlay} edges={['top', 'bottom']} pointerEvents="box-none">
-        <View style={styles.topBar}>
-          <Pressable style={styles.iconBtn} onPress={onClose} hitSlop={12}>
-            <X size={26} strokeWidth={2} color="#fff" />
-          </Pressable>
-        </View>
-
-        <View style={styles.bottomStack}>
-          {showLensToggle && (
-            <View style={styles.lensRow}>
-              <Pressable
-                style={[styles.lensChip, backLens === 'ultra' && styles.lensChipActive]}
-                onPress={() => setBackLens('ultra')}
-              >
-                <Text style={[styles.lensText, backLens === 'ultra' && styles.lensTextActive]}>0.5×</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.lensChip, backLens === 'wide' && styles.lensChipActive]}
-                onPress={() => setBackLens('wide')}
-              >
-                <Text style={[styles.lensText, backLens === 'wide' && styles.lensTextActive]}>1×</Text>
-              </Pressable>
-            </View>
-          )}
-
-          <View style={styles.bottomBar}>
-            <Pressable
-              style={styles.iconBtn}
-              onPress={() => setPosition((p) => (p === 'back' ? 'front' : 'back'))}
-              hitSlop={12}
-              disabled={capturing}
-            >
-              <RefreshCw size={24} strokeWidth={2} color="#fff" />
-            </Pressable>
-
-            <Pressable style={styles.shutter} onPress={handleShutter} disabled={capturing}>
-              {capturing ? <ActivityIndicator color="#000" /> : <View style={styles.shutterInner} />}
-            </Pressable>
-
-            {/* Spacer to keep the shutter centered opposite the flip button. */}
-            <View style={styles.iconBtn} />
-          </View>
-        </View>
-      </SafeAreaView>
+      <CameraOverlay
+        shots={shots}
+        capturing={capturing}
+        showLensToggle={showLensToggle}
+        backLens={backLens}
+        onSelectLens={setBackLens}
+        onFlip={() => setPosition((p) => (p === 'back' ? 'front' : 'back'))}
+        onShutter={handleShutter}
+        onClose={onClose}
+      />
     </View>
     </GestureDetector>
   );
@@ -276,7 +235,7 @@ function CameraSurface({ active, onCapture, onClose }) {
  * sits directly under AnimatedBackground, OUTSIDE the SafeAreaView) or its
  * absolute fill inherits the safe-area inset and the preview is not full-bleed.
  */
-export default function CameraCaptureModal({ visible, onClose, onCapture }) {
+export default function CameraCaptureModal({ visible, shots, onClose, onCapture }) {
   // Replaces Modal's onRequestClose, which handled the Android back button.
   useEffect(() => {
     if (!visible) return undefined;
@@ -302,7 +261,7 @@ export default function CameraCaptureModal({ visible, onClose, onCapture }) {
       {/* GestureHandlerRootView is required for the pinch gesture to work in
           this detached overlay, as it was inside the Modal's native root. */}
       <GestureHandlerRootView style={styles.container}>
-        <CameraSurface active={visible} onCapture={onCapture} onClose={onClose} />
+        <CameraSurface active={visible} shots={shots} onCapture={onCapture} onClose={onClose} />
       </GestureHandlerRootView>
     </View>
   );
@@ -323,36 +282,5 @@ const styles = StyleSheet.create({
   primaryBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
   secondaryBtn: { paddingHorizontal: 28, paddingVertical: 12 },
   secondaryBtnText: { color: '#94a3b8', fontSize: 15 },
-
-  overlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', backgroundColor: 'transparent' },
-  topBar: { flexDirection: 'row', justifyContent: 'flex-start', paddingHorizontal: 20, paddingTop: 8 },
-
-  bottomStack: { alignItems: 'center', gap: 16, paddingBottom: 24 },
-  lensRow: {
-    flexDirection: 'row', gap: 8,
-    backgroundColor: withAlpha('#000000', 0.4), borderRadius: 999, padding: 4,
-  },
-  lensChip: {
-    minWidth: 44, paddingHorizontal: 12, paddingVertical: 6,
-    borderRadius: 999, alignItems: 'center',
-  },
-  lensChipActive: { backgroundColor: withAlpha('#ffffff', 0.9) },
-  lensText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-  lensTextActive: { color: '#000' },
-  bottomBar: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 36, width: '100%',
-  },
-  iconBtn: {
-    width: 50, height: 50, borderRadius: 25,
-    alignItems: 'center', justifyContent: 'center',
-    backgroundColor: withAlpha('#000000', 0.35),
-  },
-  shutter: {
-    width: 72, height: 72, borderRadius: 36,
-    backgroundColor: withAlpha('#ffffff', 0.25),
-    borderWidth: 4, borderColor: '#fff',
-    alignItems: 'center', justifyContent: 'center',
-  },
-  shutterInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' },
+  // The capture chrome's styles moved with it, into CameraOverlay.
 });

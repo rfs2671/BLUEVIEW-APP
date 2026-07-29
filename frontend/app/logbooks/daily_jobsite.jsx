@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
 } from 'react-native';
@@ -21,11 +21,25 @@ import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
+import { compressUnderCap } from '../../src/utils/compressPhoto';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
 const MAX_PHOTOS_PER_ACTIVITY = 5;
+
+// The in-process camera is native-only (vision-camera cannot run in a browser),
+// and the desktop review view must keep the form it has. Everything gated on
+// this constant is the CP's phone path and nothing else.
+const MOBILE_CAPTURE = Platform.OS !== 'web';
+
+// Client-side only. `pending` marks a photo whose background compression is
+// still running; `id` is what lets that background job find its own photo again
+// after the CP has kept shooting, deleted a sibling, or switched rows. Both are
+// stripped before the log is saved, so the stored shape is unchanged.
+let photoSeq = 0;
+const newPhotoId = () => `cap_${Date.now()}_${(photoSeq += 1)}`;
+
 const uriToBase64 = async (uri) => {
   try {
     if (!uri) return null;
@@ -120,6 +134,30 @@ export default function DailyJobsiteLog() {
   // capture belongs to while the camera is open.
   const [cameraVisible, setCameraVisible] = useState(false);
   const [cameraTargetIndex, setCameraTargetIndex] = useState(null);
+  // Ids captured since the camera was last opened — the keep-shooting strip
+  // shows THIS session's frames, not every photo the row already had.
+  const [sessionShotIds, setSessionShotIds] = useState([]);
+  // In-flight background compressions. handleSave waits on these so a log can
+  // never be submitted carrying a raw multi-megabyte sensor JPEG.
+  const pendingCompressRef = useRef([]);
+  // id -> compressed uri. handleSave reads this instead of trusting that the
+  // state update from a background job has already reached its closure.
+  const compressedUriRef = useRef({});
+
+  // ── Which activity does a photo belong to? ────────────────────────────────
+  // The FAB is global, so it has to answer this without the CP telling it.
+  // Signals, all cheap and all refs so scrolling never re-renders the form:
+  //   activitiesBlockYRef — y of the Activity Details card in scroll content
+  //   activityLayoutsRef  — per-row {y, h} inside that card
+  //   scrollYRef/viewportHRef — where the CP is looking right now
+  //   lastEditedRef       — the row whose fields/photos were last touched
+  const activitiesBlockYRef = useRef(0);
+  const activityLayoutsRef = useRef({});
+  const scrollYRef = useRef(0);
+  const viewportHRef = useRef(0);
+  const lastEditedRef = useRef(null);
+  const activitiesRef = useRef([]);
+  const [fabTargetIndex, setFabTargetIndex] = useState(0);
   // Resolve the camera permission dialog HERE, at screen mount, so it is not
   // sitting between the capture tap and the preview. No-op on web.
   useCameraPrewarmPermission();
@@ -228,10 +266,94 @@ export default function DailyJobsiteLog() {
   };
 
   const updateActivity = (index, field, value) => {
+    lastEditedRef.current = index;
     setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
   };
 
+  /**
+   * Resolve the activity a globally-launched capture belongs to.
+   *
+   * A photo landing on the wrong subcontractor is a compliance problem, not a
+   * cosmetic one, so the rule is explicit and the answer is shown on the FAB
+   * itself before the CP taps it. Cascade, first match wins:
+   *
+   *   1. The last row the CP EDITED (typed in, or used its own photo buttons),
+   *      IF that row is currently on screen. Deliberate intent, still in view.
+   *   2. Otherwise the row nearest the vertical CENTRE of the viewport, among
+   *      rows currently on screen. "What I'm looking at."
+   *   3. Otherwise the last row edited, even though it has scrolled away —
+   *      better than silently defaulting when the CP has stated a preference.
+   *   4. Otherwise row 1.
+   *
+   * Reads refs only: no state, no measure() round-trip, nothing awaited. The
+   * FAB tap must stay two synchronous setStates.
+   */
+  const resolveTargetActivity = useCallback((rows) => {
+    const n = rows.length;
+    if (n <= 1) return 0;
+
+    const scrollY = scrollYRef.current;
+    const vh = viewportHRef.current;
+    const blockY = activitiesBlockYRef.current;
+    const layouts = activityLayoutsRef.current;
+    const edited = lastEditedRef.current;
+    const editedValid = edited != null && edited >= 0 && edited < n;
+
+    const bounds = (i) => {
+      const l = layouts[i];
+      if (!l || !vh) return null;
+      const top = blockY + l.y;
+      return { top, bottom: top + l.h, mid: top + l.h / 2 };
+    };
+    const onScreen = (i) => {
+      const b = bounds(i);
+      return !!b && b.bottom > scrollY && b.top < scrollY + vh;
+    };
+
+    if (editedValid && onScreen(edited)) return edited;
+
+    const centre = scrollY + vh / 2;
+    let best = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < n; i += 1) {
+      if (!onScreen(i)) continue;
+      const d = Math.abs(bounds(i).mid - centre);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+    if (best != null) return best;
+
+    if (editedValid) return edited;
+    return 0;
+  }, []);
+
+  // The FAB NAMES its target, so the CP is never guessing where a photo went.
+  // Scrolling writes refs (no re-render); this pulls the resolved index into
+  // state only when it actually changes, which is a few times per scroll at
+  // most rather than once per frame.
+  const syncFabTarget = useCallback(() => {
+    if (!MOBILE_CAPTURE) return;
+    const next = resolveTargetActivity(activitiesRef.current);
+    setFabTargetIndex((prev) => (prev === next ? prev : next));
+  }, [resolveTargetActivity]);
+
+  // Mirror activities into a ref so the scroll handler and the FAB can read the
+  // current rows without either becoming a dependency that re-subscribes.
+  useEffect(() => {
+    activitiesRef.current = activities;
+    syncFabTarget();
+  }, [activities, syncFabTarget]);
+
+  const fabTargetLabel = (() => {
+    const act = activities[fabTargetIndex];
+    if (!act) return '';
+    const name = (act.company || '').trim();
+    if (name) return name;
+    const crew = (act.crew_id || '').trim();
+    return crew ? `Crew ${crew}` : `Activity ${fabTargetIndex + 1}`;
+  })();
+
   const pickActivityPhoto = async (activityIndex) => {
+    lastEditedRef.current = activityIndex;
     const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
@@ -262,6 +384,7 @@ export default function DailyJobsiteLog() {
   };
 
   const takeActivityPhoto = async (activityIndex) => {
+    lastEditedRef.current = activityIndex;
     const current = activities[activityIndex]?.photos || [];
     if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
@@ -293,10 +416,11 @@ export default function DailyJobsiteLog() {
       // cause of the 20-30s cold-boot reload. The photo is appended in
       // handleCameraCapture once the shutter fires.
       //
-      // Nothing may be awaited below this line. These two setState calls are
-      // the ENTIRE tap -> preview path; any fetch, permission request or file
-      // read added here goes straight into the user's perceived open time.
+      // Nothing may be awaited below this line. These setState calls are the
+      // ENTIRE tap -> preview path; any fetch, permission request or file read
+      // added here goes straight into the user's perceived open time.
       setCameraTargetIndex(activityIndex);
+      setSessionShotIds([]);
       setCameraVisible(true);
     } catch (err) {
       console.error('Camera launch failed:', err);
@@ -306,25 +430,90 @@ export default function DailyJobsiteLog() {
     }
   };
 
-  // onCapture from CameraCaptureModal. Appends the captured file:// URI
-  // into the target activity — identical shape/flow to the old
-  // launchCameraAsync path (URI in state, base64 deferred to handleSave).
+  /**
+   * onCapture from CameraCaptureModal — the RAW sensor URI, handed over the
+   * instant takePhoto resolves.
+   *
+   * NOTHING IS AWAITED HERE. The photo is appended immediately in `pending`
+   * state so the strip and the activity row both react on the same frame, and
+   * compressUnderCap is fired off unawaited. When it lands, the entry is found
+   * by id (indexes move: the CP may have deleted a sibling meanwhile) and its
+   * uri is swapped for the compressed one. The camera never waits for any of
+   * it, which is the whole point — the CP can shoot the next frame now.
+   *
+   * If compression fails the raw URI stays in place: a full-size photo is worse
+   * than a small one, but infinitely better than a lost one. handleSave still
+   * encodes it.
+   */
   const handleCameraCapture = (uri) => {
     if (cameraTargetIndex == null || !uri) return;
+    const target = cameraTargetIndex;
+    const existing = activitiesRef.current[target]?.photos || [];
+    if (existing.length >= MAX_PHOTOS_PER_ACTIVITY) {
+      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+      return;
+    }
+
+    const id = newPhotoId();
+    const shot = { id, uri, base64: null, pending: true, timestamp: new Date().toISOString() };
     setActivities(prev => prev.map((a, i) => {
-      if (i !== cameraTargetIndex) return a;
-      return { ...a, photos: [...(a.photos || []), { uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
+      if (i !== target) return a;
+      return { ...a, photos: [...(a.photos || []), shot] };
     }));
+    setSessionShotIds(prev => [...prev, id]);
+
+    const job = compressUnderCap(uri)
+      .then((smallUri) => {
+        if (smallUri) compressedUriRef.current[id] = smallUri;
+        setActivities(prev => prev.map((a, i) => {
+          if (i !== target) return a;
+          return {
+            ...a,
+            photos: (a.photos || []).map(p => (
+              p.id === id ? { ...p, uri: smallUri || p.uri, pending: false } : p
+            )),
+          };
+        }));
+      })
+      .catch((err) => {
+        console.warn('photo compression failed, keeping original:', err?.message);
+        setActivities(prev => prev.map((a, i) => {
+          if (i !== target) return a;
+          return {
+            ...a,
+            photos: (a.photos || []).map(p => (p.id === id ? { ...p, pending: false } : p)),
+          };
+        }));
+      })
+      .finally(() => {
+        pendingCompressRef.current = pendingCompressRef.current.filter(j => j !== job);
+      });
+    pendingCompressRef.current.push(job);
   };
 
+  // The keep-shooting strip: this session's frames, in capture order, resolved
+  // live out of the activity so `pending` flips to a real thumbnail in place.
+  const cameraShots = useMemo(() => {
+    if (cameraTargetIndex == null) return [];
+    const photos = activities[cameraTargetIndex]?.photos || [];
+    const byId = new Map(photos.filter(p => p.id).map(p => [p.id, p]));
+    return sessionShotIds.map(id => byId.get(id)).filter(Boolean);
+  }, [activities, cameraTargetIndex, sessionShotIds]);
+
   const removeActivityPhoto = (activityIndex, photoIndex) => {
+    lastEditedRef.current = activityIndex;
     setActivities(prev => prev.map((a, i) => {
       if (i !== activityIndex) return a;
       return { ...a, photos: (a.photos || []).filter((_, pi) => pi !== photoIndex) };
     }));
   };
 
-  const addActivity = () => setActivities(prev => [...prev, EMPTY_ACTIVITY()]);
+  const addActivity = () => setActivities(prev => {
+    // A freshly added row is what the CP means to work on next, so it becomes
+    // the FAB's target immediately.
+    lastEditedRef.current = prev.length;
+    return [...prev, EMPTY_ACTIVITY()];
+  });
 
   const toggleEquipment = (key) => setEquipmentOnSite(prev => ({ ...prev, [key]: !prev[key] }));
   const toggleChecklist = (key) => setChecklistItems(prev => ({ ...prev, [key]: !prev[key] }));
@@ -337,6 +526,14 @@ export default function DailyJobsiteLog() {
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
+      // Let any background compression finish first. Without this, saving
+      // immediately after a capture would base64 the RAW sensor JPEG that the
+      // pending entry still points at — several MB inlined into the log.
+      // allSettled, not all: a failed compress must not block the save.
+      if (pendingCompressRef.current.length > 0) {
+        await Promise.allSettled(pendingCompressRef.current);
+      }
+
       // Convert any URI-only photos to base64 before saving. Encode
       // sequentially with a setTimeout(0) yield between photos so the
       // native thread is released between encodes — the old Promise.all
@@ -350,13 +547,22 @@ export default function DailyJobsiteLog() {
         }
         const convertedPhotos = [];
         for (const photo of act.photos) {
-          if (photo.base64 || !photo.uri) {
-            convertedPhotos.push(photo); // already encoded, or nothing to encode
+          // `pending`/`id` are client-side bookkeeping for the background
+          // compress. Strip them so the stored photo shape is exactly what it
+          // was before keep-shooting existed — and spread the REST through, so
+          // fields the backend adds (enhance_status, r2 keys) survive a re-save.
+          const { pending, id, ...stored } = photo; // eslint-disable-line no-unused-vars
+          if (stored.base64 || !stored.uri) {
+            convertedPhotos.push(stored); // already encoded, or nothing to encode
             continue;
           }
+          // Prefer the compressed derivative if its job finished. Read from the
+          // ref rather than `photo.uri` because that state update may not have
+          // reached this closure's copy of `activities` yet.
+          const uri = (id && compressedUriRef.current[id]) || stored.uri;
           await new Promise((resolve) => setTimeout(resolve, 0)); // yield before each encode
-          const b64 = await uriToBase64(photo.uri);
-          convertedPhotos.push({ ...photo, base64: b64 });
+          const b64 = await uriToBase64(uri);
+          convertedPhotos.push({ ...stored, uri, base64: b64 });
         }
         activitiesWithBase64.push({ ...act, photos: convertedPhotos });
       }
@@ -469,6 +675,9 @@ export default function DailyJobsiteLog() {
           style={s.scrollView}
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
+          scrollEventThrottle={64}
+          onLayout={(e) => { viewportHRef.current = e.nativeEvent.layout.height; syncFabTarget(); }}
+          onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; syncFabTarget(); }}
         >
           {/* Date */}
           <GlassCard style={s.section}>
@@ -529,7 +738,10 @@ export default function DailyJobsiteLog() {
             />
           </GlassCard>
 
-          {/* Activity Details Table */}
+          {/* Activity Details Table.
+              The wrapper exists to give the FAB a scroll-content-relative y for
+              this block; each card then reports its own offset within it. */}
+          <View onLayout={(e) => { activitiesBlockYRef.current = e.nativeEvent.layout.y; syncFabTarget(); }}>
           <GlassCard style={s.section}>
             <View style={s.sectionHeaderRow}>
               <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -538,7 +750,17 @@ export default function DailyJobsiteLog() {
             <Text style={s.sectionSubtitle}>Auto-populated from check-ins. Edit as needed.</Text>
 
             {activities.map((act, i) => (
-              <View key={i} style={s.activityCard}>
+              <View
+                key={i}
+                // Only worth marking when there is a choice to get wrong.
+                style={[s.activityCard,
+                  MOBILE_CAPTURE && activities.length > 1 && i === fabTargetIndex && s.activityCardTarget]}
+                onLayout={(e) => {
+                  const { y, height } = e.nativeEvent.layout;
+                  activityLayoutsRef.current[i] = { y, h: height };
+                  syncFabTarget();
+                }}
+              >
                 <View style={s.activityRow}>
                   <View style={s.activityField}>
                     <Text style={s.activityLabel}>CREW</Text>
@@ -577,17 +799,44 @@ export default function DailyJobsiteLog() {
                 <View style={s.photosSection}>
                   <View style={s.photosHeader}>
                     <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    <Text style={s.activityLabel}>PHOTOS ({(act.photos || []).length}/{MAX_PHOTOS_PER_ACTIVITY})</Text>
+                    {/* No "(0/5)" — an empty counter is chrome for something
+                        that does not exist yet. The cap only matters once the
+                        CP is actually accumulating photos. */}
+                    <Text style={s.activityLabel}>
+                      PHOTOS{(act.photos || []).length > 0
+                        ? ` (${(act.photos || []).length}/${MAX_PHOTOS_PER_ACTIVITY})`
+                        : ''}
+                    </Text>
+                    {/* The strip fits 2.8 tiles at 390px, so from the third
+                        photo on the row clips mid-frame. showsHorizontal-
+                        ScrollIndicator only paints DURING a scroll (auto-hiding
+                        overlay bars on both web and iOS), which is no help to
+                        someone looking at a still screen — hence a standing
+                        hint as well. */}
+                    {(act.photos || []).length >= 3 && (
+                      <Text style={s.photoScrollHint}>swipe ›</Text>
+                    )}
                   </View>
                   {(act.photos || []).length > 0 && (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.photoScroll}>
+                    // Indicator ON: at 390px the third tile clips mid-frame and
+                    // read as a broken image rather than as "there is more".
+                    <ScrollView horizontal showsHorizontalScrollIndicator style={s.photoScroll}>
                       {(act.photos || []).map((photo, pi) => (
-                        <View key={pi} style={s.photoThumb}>
-                          <Image
-                            source={{ uri: photo.uri || (photo.base64 ?
-                              `data:image/jpeg;base64,${photo.base64}` : undefined) }}
-                            style={s.photoImage}
-                          />
+                        <View key={photo.id ?? pi} style={s.photoThumb}>
+                          {photo.pending ? (
+                            // Placeholder until the background compress lands.
+                            // Rendering the raw capture here would make the UI
+                            // thread decode a full-size sensor JPEG per tile.
+                            <View style={[s.photoImage, s.photoPending]}>
+                              <ActivityIndicator size="small" color={colors.text.muted} />
+                            </View>
+                          ) : (
+                            <Image
+                              source={{ uri: photo.uri || (photo.base64 ?
+                                `data:image/jpeg;base64,${photo.base64}` : undefined) }}
+                              style={s.photoImage}
+                            />
+                          )}
                           <Pressable style={s.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
                             <X size={12} strokeWidth={2} color="#fff" />
                           </Pressable>
@@ -597,12 +846,14 @@ export default function DailyJobsiteLog() {
                   )}
                   {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
                     <View style={s.photoActions}>
-                      <Pressable style={s.photoBtn} onPress={() => takeActivityPhoto(i)}>
-                        <Camera size={16} strokeWidth={1.5} color={colors.primary} />
-                        <Text style={s.photoBtnText}>Take Photo</Text>
+                      {/* Take Photo is the workflow; Gallery is the fallback.
+                          They were identical outline pills, which said neither. */}
+                      <Pressable style={s.photoBtnPrimary} onPress={() => takeActivityPhoto(i)}>
+                        <Camera size={16} strokeWidth={2} color={colors.white} />
+                        <Text style={s.photoBtnPrimaryText}>Take Photo</Text>
                       </Pressable>
                       <Pressable style={s.photoBtn} onPress={() => pickActivityPhoto(i)}>
-                        <ImageIcon size={16} strokeWidth={1.5} color={colors.primary} />
+                        <ImageIcon size={16} strokeWidth={1.5} color={colors.text.muted} />
                         <Text style={s.photoBtnText}>Gallery</Text>
                       </Pressable>
                     </View>
@@ -613,6 +864,7 @@ export default function DailyJobsiteLog() {
 
             <GlassButton title="+ Add Activity" onPress={addActivity} style={s.addBtn} />
           </GlassCard>
+          </View>
 
           {/* Equipment */}
           <GlassCard style={s.section}>
@@ -718,6 +970,37 @@ export default function DailyJobsiteLog() {
             />
           </View>
         </ScrollView>
+
+        {/* PERSISTENT CAPTURE. Take Photo lives 1000px+ down the form, inside
+            the 5th slot of an activity card — on a phone, on a jobsite, that is
+            a scroll the CP pays for every single photo. This is the same
+            action, pinned above the nav, always reachable.
+
+            It NAMES its target row: a photo landing on the wrong subcontractor
+            is a compliance defect, and a global button that does not say where
+            it is aiming would create them silently. See resolveTargetActivity.
+
+            Native only (MOBILE_CAPTURE) — the desktop review view is unchanged,
+            and there is no in-process camera on web to open. */}
+        {MOBILE_CAPTURE && (
+          <View style={s.fabWrap} pointerEvents="box-none">
+            <Pressable
+              style={({ pressed }) => [s.fab, pressed && s.fabPressed]}
+              onPress={() => takeActivityPhoto(fabTargetIndex)}
+              accessibilityRole="button"
+              accessibilityLabel={`Take photo for ${fabTargetLabel}`}
+            >
+              <Camera size={20} strokeWidth={2} color={colors.white} />
+              <View style={s.fabTextWrap}>
+                <Text style={s.fabText}>Photo</Text>
+                {activities.length > 1 && !!fabTargetLabel && (
+                  <Text style={s.fabTarget} numberOfLines={1}>{fabTargetLabel}</Text>
+                )}
+              </View>
+            </Pressable>
+          </View>
+        )}
+
         <FloatingNav />
       </SafeAreaView>
       {/* OUTSIDE the SafeAreaView on purpose: on native this is a pre-warmed
@@ -727,6 +1010,7 @@ export default function DailyJobsiteLog() {
           unaffected by where it sits in the tree. */}
       <CameraCaptureModal
         visible={cameraVisible}
+        shots={cameraShots}
         onClose={() => setCameraVisible(false)}
         onCapture={handleCameraCapture}
       />
@@ -746,7 +1030,10 @@ function buildStyles(colors, isDark) {
   headerTitle: { fontSize: 17, fontWeight: '600', color: colors.text.primary },
   headerSub: { fontSize: 12, color: colors.text.muted },
   scrollView: { flex: 1 },
-  scrollContent: { padding: spacing.lg, paddingBottom: 100 },
+  // Bottom padding clears BOTH floating layers: FloatingNav (bottom 24, ~56
+  // tall) and the capture FAB above it (bottom 96, ~67 tall). At the old 100 the
+  // FAB sat on top of Submit at the end of the scroll.
+  scrollContent: { padding: spacing.lg, paddingBottom: MOBILE_CAPTURE ? 180 : 100 },
   section: { marginBottom: spacing.md },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: colors.text.primary, marginBottom: spacing.xs },
   sectionSubtitle: { fontSize: 13, color: colors.text.muted, marginBottom: spacing.md },
@@ -780,6 +1067,8 @@ function buildStyles(colors, isDark) {
     borderWidth: 1, borderColor: withAlpha('#ffffff', 0.06), borderRadius: borderRadius.lg,
     padding: spacing.md, marginBottom: spacing.sm, gap: spacing.sm,
   },
+  // The row the FAB is currently aiming at.
+  activityCardTarget: { borderColor: withAlpha(colors.primary, 0.45), backgroundColor: withAlpha(colors.primary, 0.05) },
   activityRow: { flexDirection: 'row', gap: spacing.sm },
   activityField: { flex: 1, gap: 2 },
   activityLabel: { fontSize: 10, fontWeight: '600', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -807,6 +1096,7 @@ function buildStyles(colors, isDark) {
   submitBtn: { flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified },
   photosSection: { gap: spacing.xs, marginTop: spacing.xs },
   photosHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  photoScrollHint: { fontSize: 10, fontWeight: '600', color: colors.primary, letterSpacing: 0.3 },
   photoScroll: { marginTop: spacing.xs, paddingTop: 8, paddingBottom: 4 },
   photoThumb: { width: 80, height: 80, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative', overflow: 'visible' },
   photoImage: { width: 80, height: 80, borderRadius: borderRadius.md },
@@ -814,13 +1104,42 @@ function buildStyles(colors, isDark) {
     position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
     backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center',
   },
+  photoPending: {
+    backgroundColor: withAlpha('#ffffff', 0.06),
+    alignItems: 'center', justifyContent: 'center',
+  },
   photoActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  // PRIMARY — filled brand. This is the action the log is built around.
+  photoBtnPrimary: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.primary,
+  },
+  photoBtnPrimaryText: { fontSize: 12, fontWeight: '700', color: colors.white },
+  // SECONDARY — neutral outline. Was an identical blue pill to Take Photo.
   photoBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full, borderWidth: 1, borderColor: 'rgba(59,130,246,0.3)',
-    backgroundColor: 'rgba(59,130,246,0.08)',
+    borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha('#ffffff', 0.12),
+    backgroundColor: withAlpha('#ffffff', 0.04),
   },
-  photoBtnText: { fontSize: 12, fontWeight: '500', color: colors.primary },
+  photoBtnText: { fontSize: 12, fontWeight: '500', color: colors.text.muted },
+
+  // ── Persistent capture FAB ────────────────────────────────────────────────
+  // Sits above FloatingNav (bottom 24 + ~56 pill + breathing room).
+  fabWrap: { position: 'absolute', right: spacing.lg, bottom: 96 },
+  fab: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    paddingLeft: spacing.md, paddingRight: spacing.lg, paddingVertical: spacing.md,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.primary,
+    shadowColor: '#000000', shadowOpacity: 0.35, shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 }, elevation: 8,
+  },
+  fabPressed: { opacity: 0.85 },
+  fabTextWrap: { maxWidth: 150 },
+  fabText: { fontSize: 15, fontWeight: '700', color: colors.white },
+  fabTarget: { fontSize: 11, fontWeight: '500', color: withAlpha('#ffffff', 0.8) },
 });
 }
