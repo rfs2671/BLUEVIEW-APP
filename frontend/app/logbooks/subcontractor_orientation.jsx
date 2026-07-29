@@ -180,6 +180,13 @@ export default function SubcontractorOrientation() {
     setSaving(true);
     try {
       const today = new Date().toISOString().split('T')[0];
+      // Per-worker dedup key for the orientation upsert. A manual entry has no
+      // real worker_id (no NFC registration), so mint a stable, non-null one:
+      // the server keys the (project, log_type, date) upsert on data.worker_id
+      // for orientations, and a null/omitted id is rejected 400 (a null would
+      // collide every manual entry onto one row). Unique per create so two
+      // manual entries never overwrite each other.
+      const manualWorkerId = `manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const created = await logbooksAPI.create({
         project_id: projectId,
         log_type: 'subcontractor_orientation',
@@ -188,6 +195,7 @@ export default function SubcontractorOrientation() {
         cp_name: newCpName,
         status: newCpSignature ? 'submitted' : 'draft',
         data: {
+          worker_id: manualWorkerId,
           worker_name: newName.trim(),
           worker_company: newCompany.trim(),
           worker_trade: newTrade.trim(),

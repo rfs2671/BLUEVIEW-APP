@@ -4,6 +4,47 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## DATA — 2026-07-29 — legacy subcontractor_orientation rows without `data.worker_id`
+
+`POST /api/logbooks` now keys the upsert on `data.worker_id` for
+`log_type == "subcontractor_orientation"` (per-worker, not the daily
+`(project_id, log_type, date)` singleton) — the fix that stops a UI-created
+orientation from `$set`-clobbering a DIFFERENT worker's check-in-created row.
+
+Residual: any orientation row whose `data.worker_id` is **absent or null** —
+legacy rows written before the check-in path stamped that field, or rows from
+a client that never sent one — cannot be matched by a subsequent UI create for
+that worker. The create mints a fresh `srv_<uuid>` id and inserts a SECOND row
+rather than updating the legacy one. This is **harmless** (no clobber, no loss),
+but produces a duplicate per affected worker.
+
+Not shipped, because it needs production data to scope: a one-time backfill
+could stamp `data.worker_id` onto legacy orientation rows (from the linked
+check-in, or a synthesised `legacy_<uuid>` where no link exists), OR the
+duplicate can be accepted as cosmetic. Decide against the real row count first —
+run `db.logbooks.count_documents({"log_type":"subcontractor_orientation", "data.worker_id": {"$in": [None]}})`
+plus the absent-field variant before choosing.
+
+## RESILIENCE — 2026-07-29 — `data?.items ?? []` masks a malformed response as empty
+
+The three unwrap clients shipped in `2b157f6` (`checkinsAPI.getByDate`,
+`dailyLogsAPI.getByProject`, `logbooksAPI.getByProject`) return
+`Array.isArray(data) ? data : (data?.items ?? [])`. That correctly handles the
+`{items,...}` envelope and a bare array — but a **malformed or error-shaped**
+body (`{error: ...}`, `null`, an HTML 500 page that slipped past the interceptor)
+also collapses to `[]`, indistinguishable from a legitimately empty result. The
+consumer renders an empty screen instead of surfacing the failure — the same
+failure-masking class as the original wrapper bug, one layer down.
+
+Deferred deliberately: the unwrap's job here was to stop the silent-empty and
+the content loss, and it does. Hardening is a separate concern — distinguish
+"no data" from "bad data" (e.g. treat a non-array, non-`{items:[]}` body as an
+error: log it, surface a toast, or throw) so a broken endpoint is loud rather
+than silently empty. Applies to these three and to any future client that
+adopts the same `?? []` shape.
+
+---
+
 ## PHOTO PIPELINE — 2026-07-29 — deblocking has hit its deterministic floor; ARCNN evaluation CANCELLED
 
 Applies to `backend/lib/photo_enhance.py` (shipped in `5ddc56b`).

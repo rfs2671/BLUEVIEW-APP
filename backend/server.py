@@ -13828,13 +13828,41 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Check for existing entry same type+date (upsert logic)
-    existing = await db.logbooks.find_one({
+    # Check for existing entry same type+date (upsert logic).
+    #
+    # subcontractor_orientation is the ONE exception: it is PER-WORKER, not a
+    # daily singleton. register_and_checkin inserts one orientation per worker
+    # (deduped on data.worker_id) DIRECTLY, bypassing this endpoint. If the UI
+    # create path deduped on (project_id, log_type, date) like every other type,
+    # its find_one would match a DIFFERENT worker's check-in-created row that
+    # merely shares the date, and the $set below would overwrite it (which is
+    # exactly the clobber this fixes). So orientations additionally key on
+    # data.worker_id, matching the check-in path's per-worker identity.
+    dedupe_filter = {
         "project_id": data.project_id,
         "log_type": data.log_type,
         "date": data.date,
-        "is_deleted": {"$ne": True}
-    })
+        "is_deleted": {"$ne": True},
+    }
+    if data.log_type == "subcontractor_orientation":
+        orientation_worker_id = (data.data or {}).get("worker_id")
+        # worker_id MUST be a non-null, non-empty value: in Mongo
+        # {"data.worker_id": None} matches both absent AND null, so a null id
+        # would collide every keyless entry onto one record. Rather than 400 a
+        # keyless client, the server MINTS one and writes it into the document.
+        # A freshly generated id cannot match any existing row, so the create
+        # always inserts and can never clobber another worker's orientation.
+        # This is defense for OLDER CLIENTS: server.py deploys immediately, the
+        # frontend ships by OTA, and the field build cannot receive OTA — a 400
+        # would break manual orientation creation on the live site until a
+        # rebuild. Current clients send their own id (see subcontractor_-
+        # orientation.jsx handleCreateNew); this only fires when they do not.
+        if not orientation_worker_id:
+            orientation_worker_id = f"srv_{uuid.uuid4().hex}"
+            data.data = {**(data.data or {}), "worker_id": orientation_worker_id}
+        dedupe_filter["data.worker_id"] = orientation_worker_id
+
+    existing = await db.logbooks.find_one(dedupe_filter)
     if existing:
         # Update existing
         await db.logbooks.update_one(
