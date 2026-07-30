@@ -150,6 +150,12 @@ export default function ScaffoldMaintenanceLog() {
         status: submitStatus,
       };
 
+      // FIX (PR F): `created` MUST be declared OUTSIDE the else. Referencing it
+      // at `docId = existingLogId || created?.id` below (a different block)
+      // threw ReferenceError on the FIRST submit of a new log — the record was
+      // written but the client errored, so recordSignatureEvent never fired and
+      // the CP was trained to press Submit twice. Hoisting fixes both.
+      let created = null;
       if (existingLogId) {
         await logbooksAPI.update(existingLogId, {
           data: payload.data,
@@ -158,7 +164,7 @@ export default function ScaffoldMaintenanceLog() {
           status: submitStatus,
         });
       } else {
-        const created = await logbooksAPI.create(payload);
+        created = await logbooksAPI.create(payload);
         setExistingLogId(created.id || created._id);
       }
 
