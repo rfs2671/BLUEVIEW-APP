@@ -13,16 +13,23 @@ This script REPORTS by default and writes NOTHING. With --apply it makes three
 row-level edits only. It NEVER deletes a worker or a whole certifications array;
 it rewrites the array in place with the offending rows removed/flagged.
 
+  NOTE (2026-07-29): Roey Fishman Shelly was hard-deleted by hand in mongosh
+  (full cascade), so the expectations below dropped by one from what the
+  original commit documented. Two workers remain (Jose David Hernandez Pena,
+  Jhonatan Tipantuna). Historical counts before the deletion are shown in
+  parentheses.
+
   --apply performs, per worker:
     (1) Drop every OSHA row whose card_number equals an SST row's card_number on
-        the same worker (the fabricated-from-SST rows). Expect exactly 3.
+        the same worker (the fabricated-from-SST rows). Expect 2 (was 3).
     (2) Set needs_review=true, review_reason="CLASS_UNVERIFIED" on EVERY SST row
-        (the class was hardcoded and cannot be trusted). Expect 3.
+        (the class was hardcoded and cannot be trusted). Expect 2 (was 3).
     (3) For any SST row whose expiration_date is before its capture date (proxy:
         worker.created_at), clear expiration_date to None, set
         needs_review=true, review_reason="EXPIRY_IMPLAUSIBLE", and retain the
-        old value in expiration_raw_rejected. Expect Fishman's row; any other
-        matching row is reported too.
+        old value in expiration_raw_rejected. Expect 0 (was 1) — Fishman's row
+        was the only instance and that worker is deleted; any other matching row
+        is still reported.
 
 Requires MONGO_URL + DB_NAME, same contract as the other scripts here.
 
@@ -148,9 +155,9 @@ async def main() -> int:
 
     print("=== SUMMARY ===")
     print(f"  workers affected            : {workers_touched}")
-    print(f"  (1) fabricated OSHA dropped  : {totals['drop_fabricated_osha']}   (expect 3)")
-    print(f"  (2) SST rows flagged class   : {totals['flag_class_unverified']}   (expect 3)")
-    print(f"  (3) implausible expiry cleared: {totals['clear_implausible_expiry']}   (expect Fishman + any other)")
+    print(f"  (1) fabricated OSHA dropped  : {totals['drop_fabricated_osha']}   (expect 2; was 3 before Fishman deleted)")
+    print(f"  (2) SST rows flagged class   : {totals['flag_class_unverified']}   (expect 2; was 3 before Fishman deleted)")
+    print(f"  (3) implausible expiry cleared: {totals['clear_implausible_expiry']}   (expect 0; was 1 — Fishman deleted; any other reported)")
     if not args.apply:
         print("\nDRY RUN — nothing written. Re-run with --apply to make these changes.")
     return 0
