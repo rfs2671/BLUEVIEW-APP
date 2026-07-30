@@ -9277,6 +9277,18 @@ async def get_project_companies(project_id: str):
     
     return companies
 
+
+def _roster_key(value) -> str:
+    """The ONE roster-match normalization rule: strip surrounding whitespace
+    then casefold. Used for MATCHING a submitted (trade, company) against the
+    project roster — never for STORAGE (the raw values are preserved). This is
+    mirrored verbatim by rosterKey() in checkin.html, so the frontend
+    re-prompt guard and the backend strict match agree on case-only edits,
+    leading/trailing whitespace, internal whitespace, and renames.
+    """
+    return str(value or "").strip().casefold()
+
+
 @api_router.post("/checkin/register-and-checkin")
 async def register_and_checkin(data: dict):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
@@ -9294,6 +9306,14 @@ async def register_and_checkin(data: dict):
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
     device_info = data.get("device_info")  # FingerprintJS data from checkin.html
+    # FEATURE 1.4: worker picked "My company isn't listed" — their sub is not on
+    # this project's roster. Admit them anyway (never block), flag for the CP.
+    trade_not_listed = bool(data.get("trade_not_listed"))
+    # FEATURE 2.10: how many card photos OCR was tried on and why the last one
+    # failed. Frozen onto the check-in row so an admin can tell "card unreadable"
+    # apart from "no card". None on the returning/no-photo path.
+    card_ocr_attempts = data.get("card_ocr_attempts")
+    card_ocr_failure_reason = data.get("card_ocr_failure_reason")
 
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
@@ -9333,21 +9353,46 @@ async def register_and_checkin(data: dict):
         t = str(row.get("trade") or "").strip()
         c = str(row.get("company") or "").strip()
         if t and c:
-            allowed_pairs.add((t, c))
-    submitted_pair = ((trade or "").strip(), (company or "").strip())
+            # Match on the normalized KEY (strip + casefold) only — the raw
+            # trade/company are still what gets stored. This ONE rule is
+            # mirrored by rosterKey() in checkin.html so the frontend
+            # re-prompt guard and this strict match can never disagree on
+            # case or whitespace (see _roster_key).
+            allowed_pairs.add((_roster_key(t), _roster_key(c)))
+    submitted_pair = (_roster_key(trade), _roster_key(company))
     # FIX 1: a project with NO configured trades used to 409 here, which meant
     # a worker standing at the gate could never check in — a pure config gap
     # became a hard block on a real person. Now they proceed, the trade is
     # marked pending, and the check-in is flagged for the CP. The strict
     # roster match below is UNCHANGED for projects that DO have trades.
     needs_trade_assignment = False
+    # Why the trade is pending — selects the CP-notification copy below.
+    # "" means the trade resolved normally and no notification fires.
+    trade_flag_reason = ""
     if not allowed_pairs:
         needs_trade_assignment = True
+        trade_flag_reason = "no_roster"
+        trade = trade or "UNASSIGNED"
+        company = company or "UNASSIGNED"
+    elif trade_not_listed:
+        # FEATURE 1.4: the worker's subcontractor is not on this project's
+        # roster. The roster company is the *accountable* sub, so an absent one
+        # is a real gap a human must close — but it must NEVER block a worker at
+        # the gate. Admit, mark the trade pending, and notify the CP to add the
+        # sub and assign the worker. Mirrors the no-roster path exactly —
+        # including keeping any typed value so a future UI that captures the
+        # worker's real sub isn't silently dropped.
+        needs_trade_assignment = True
+        trade_flag_reason = "not_listed"
         trade = trade or "UNASSIGNED"
         company = company or "UNASSIGNED"
     else:
         if not company:
             raise HTTPException(status_code=400, detail="Missing required fields")
+        # A returning worker whose roster entry was renamed/removed lands here
+        # (their stored pair is no longer allowed and they did NOT pick "not
+        # listed"). The 400 is the signal the check-in page uses to re-prompt
+        # them for a current roster entry — it is not a dead-end.
         if submitted_pair not in allowed_pairs:
             raise HTTPException(
                 status_code=400,
@@ -9560,6 +9605,17 @@ async def register_and_checkin(data: dict):
     else:
         sst_status = "valid"
 
+    # FEATURE 2.10: coerce the client-reported OCR attempt count + last failure
+    # reason into safe shapes before freezing them on the row.
+    try:
+        _ocr_attempts = int(card_ocr_attempts) if card_ocr_attempts is not None else None
+    except (TypeError, ValueError):
+        _ocr_attempts = None
+    if isinstance(card_ocr_failure_reason, str):
+        _ocr_failure_reason = card_ocr_failure_reason.strip()[:300] or None
+    else:
+        _ocr_failure_reason = None
+
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
@@ -9590,6 +9646,11 @@ async def register_and_checkin(data: dict):
         "sst_expiration": sst_expiration,
         "sst_status": sst_status,
         "cert_cleared": bool(cert_result.get("cleared")),
+        # FEATURE 2.10: card-photo OCR telemetry, so an admin reviewing an
+        # `unknown`/flagged card sees the photo was tried and unreadable rather
+        # than never supplied. None when the card read cleanly or no photo path.
+        "card_ocr_attempts": _ocr_attempts,
+        "card_ocr_failure_reason": _ocr_failure_reason,
     }
 
     result = await db.checkins.insert_one(checkin_record)
@@ -9603,6 +9664,20 @@ async def register_and_checkin(data: dict):
             _nt_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         except Exception:
             _nt_today = now.strftime("%Y-%m-%d")
+        if trade_flag_reason == "not_listed":
+            _nt_message = (
+                f"{worker.get('name') or 'A worker'} checked in at "
+                f"{project.get('name') or 'the site'} but their subcontractor is "
+                f"not on this project's roster, so no trade could be selected. "
+                f"Add the sub to the roster and assign this worker."
+            )
+        else:
+            _nt_message = (
+                f"{worker.get('name') or 'A worker'} checked in at "
+                f"{project.get('name') or 'the site'} but this project has no "
+                f"trades configured, so no trade could be selected. Add the "
+                f"project's trades and assign this worker."
+            )
         try:
             await _notifications_inbox.dispatch_notification(
                 db,
@@ -9610,17 +9685,13 @@ async def register_and_checkin(data: dict):
                 kind="checkin_needs_trade",
                 severity="warning",
                 title="Check-in needs a trade assigned",
-                message=(
-                    f"{worker.get('name') or 'A worker'} checked in at "
-                    f"{project.get('name') or 'the site'} but this project has no "
-                    f"trades configured, so no trade could be selected. Add the "
-                    f"project's trades and assign this worker."
-                ),
+                message=_nt_message,
                 source_kind="checkin",
                 source_id=f"needs-trade:{str(worker['_id'])}:{_nt_today}",
                 metadata={
                     "checkin_id": str(result.inserted_id),
                     "worker_id": str(worker["_id"]),
+                    "reason": trade_flag_reason,
                 },
                 deeplink_anchor="workforce",
             )

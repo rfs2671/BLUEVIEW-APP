@@ -435,8 +435,11 @@ const TRANSLATIONS = {
     camRetake: 'Tap to retake photo',
     retakeLead: "Couldn't read the card clearly.",
     retakeMissing: 'missing',
+    retakeGuidance: 'Place the full card in frame, hold it flat, and avoid glare.',
     retakeAction: 'Tap above to retake the photo.',
     retakeLeft: 'attempt(s) left.',
+    ocrFieldName: 'name',
+    ocrFieldCardNumber: 'card number',
     manualNote: "We couldn't read the card automatically — enter your card details manually below.",
     selfieText: 'Tap to take a selfie',
     selfieHint: 'Optional — used for site verification only',
@@ -450,6 +453,7 @@ const TRANSLATIONS = {
     tradeCompanyLabel: 'Trade — Company',
     tradeCompanyLoading: 'Loading trades...',
     selectTradeCompany: 'Select your trade and company',
+    notListed: "My company isn't listed",
     noAssignments: 'This project has no trades configured yet. Ask your site admin to add trades and companies in the project settings.',
     back: 'Back',
     nextOrientation: 'Next: Safety Orientation',
@@ -522,8 +526,11 @@ const TRANSLATIONS = {
     camRetake: 'Toque para volver a tomar la foto',
     retakeLead: 'No se pudo leer la tarjeta con claridad.',
     retakeMissing: 'falta',
+    retakeGuidance: 'Coloque la tarjeta completa en el encuadre, manténgala plana y evite reflejos.',
     retakeAction: 'Toque arriba para volver a tomar la foto.',
     retakeLeft: 'intento(s) restante(s).',
+    ocrFieldName: 'nombre',
+    ocrFieldCardNumber: 'número de tarjeta',
     manualNote: 'No pudimos leer la tarjeta automáticamente — ingrese los datos manualmente abajo.',
     selfieText: 'Toque para tomar una selfie',
     selfieHint: 'Opcional — solo para verificación en el sitio',
@@ -537,6 +544,7 @@ const TRANSLATIONS = {
     tradeCompanyLabel: 'Oficio — Empresa',
     tradeCompanyLoading: 'Cargando oficios...',
     selectTradeCompany: 'Seleccione su oficio y empresa',
+    notListed: 'Mi empresa no aparece',
     noAssignments: 'Este proyecto aún no tiene oficios configurados. Pida a su administrador que agregue oficios y empresas en la configuración del proyecto.',
     back: 'Atrás',
     nextOrientation: 'Siguiente: Orientación de Seguridad',
@@ -693,12 +701,19 @@ let selfieImage = null;  // base64 selfie, stored inline for spot-check only
 // but only a BOUNDED number of times. Once the cap is hit we fall through to
 // manual entry so the worker can always finish check-in. No dead-ends.
 const OCR_MAX_ATTEMPTS = 3;
+// FEATURE 2.7/2.8: gate ONLY on name + card number. Expiration is NOT gated
+// (a legible card often omits it and it can be typed), and card_class is NEVER
+// gated — it is a new field that has never run against a real card, so gating on
+// it could loop every worker to the ceiling. A missing class stores
+// SST_UNSPECIFIED and resolves to `unknown` per the backend three-state gate.
 const OCR_CRITICAL_FIELDS = [
-  { key: 'name', label: 'name' },
-  { key: 'sst_number', label: 'card number' },
-  { key: 'expiration', label: 'expiration date' },
+  { key: 'name', labelKey: 'ocrFieldName' },
+  { key: 'sst_number', labelKey: 'ocrFieldCardNumber' },
 ];
 let ocrAttempts = 0;
+// FEATURE 2.10: the last OCR failure reason, frozen onto the check-in row so an
+// admin can tell an unreadable card apart from an absent one.
+let ocrLastFailureReason = null;
 let checkedItems = new Set();
 let returningWorker = null;
 let signatureData = null;
@@ -958,6 +973,30 @@ function notMe() {
 // ==================== QUICK CHECK-IN (returning) ====================
 async function quickCheckIn() {
   if (!returningWorker) return;
+
+  // FEATURE 1.5: a returning worker is normally NOT re-prompted — we reuse their
+  // stored (trade, company). But if the admin renamed or removed that roster
+  // entry, the stored pair is no longer on the project roster (the backend would
+  // 400 the strict-match). Route them into the picker to choose a current entry
+  // — or "My company isn't listed" — instead of hitting a dead-end.
+  if (tradeAssignments.length) {
+    const stillOnRoster = tradeAssignments.some(
+      (a) =>
+        rosterKey(a.trade) === rosterKey(returningWorker.trade) &&
+        rosterKey(a.company) === rosterKey(returningWorker.company)
+    );
+    if (!stillOnRoster) {
+      document.getElementById('regName').value = returningWorker.name || '';
+      showScreen('screenRegister');
+      // Reveal the trade step directly (display only). We deliberately skip
+      // goStep(2), whose guard requires a fresh card photo/manual entry — a
+      // returning worker already has a card on file and is only re-picking a
+      // current roster entry, so that gate must not trap them here.
+      revealStep(2);
+      return;
+    }
+  }
+
   showLoading(t('checkingIn'));
   try {
     const res = await api('/checkin/register-and-checkin', 'POST', {
@@ -1014,10 +1053,15 @@ async function handleOshaPhoto(input) {
       }
       hideLoading();
       ocrAttempts++;
+      const missing = ocrMissingCriticalFields(res);
+      // FEATURE 2.10: record why this read is short so the row can show it.
+      ocrLastFailureReason = missing.length
+        ? ('missing_fields:' + missing.map((f) => f.key).join(','))
+        : null;
       // Pre-fill whatever OCR did manage to read, then decide whether to ask
       // for a retake or open manual entry.
       showOcrResults(res);
-      handleOcrOutcome(ocrMissingCriticalFields(res));
+      handleOcrOutcome(missing);
     } catch (e) {
       hideLoading();
       // Surface the real reason so operators can diagnose — previously
@@ -1029,6 +1073,8 @@ async function handleOshaPhoto(input) {
       showError('Could not read card: ' + reason);
       oshaData = oshaData || {};
       ocrAttempts++;
+      // FEATURE 2.10: the OCR call itself failed — record the transport reason.
+      ocrLastFailureReason = 'ocr_error:' + reason;
       // null = the OCR call itself failed (not just missing fields).
       handleOcrOutcome(null);
     }
@@ -1037,11 +1083,14 @@ async function handleOshaPhoto(input) {
 }
 
 // ==================== OCR RETAKE / MANUAL FALLBACK ====================
+// Returns the critical field objects that OCR failed to read (empty = clean
+// read). Pure — depends only on OCR_CRITICAL_FIELDS — so it is unit-tested by
+// extracting it verbatim from this file (checkinCardGate.test.cjs).
 function ocrMissingCriticalFields(data) {
   const d = data || {};
-  return OCR_CRITICAL_FIELDS
-    .filter((f) => !d[f.key] || String(d[f.key]).trim() === '')
-    .map((f) => f.label);
+  return OCR_CRITICAL_FIELDS.filter(
+    (f) => !d[f.key] || String(d[f.key]).trim() === ''
+  );
 }
 
 function hideRetakePrompt() {
@@ -1051,9 +1100,12 @@ function hideRetakePrompt() {
 function showRetakePrompt(missing, attemptsLeft) {
   const el = document.getElementById('retakePrompt');
   const t = TRANSLATIONS[currentLang];
+  // `missing` is an array of OCR_CRITICAL_FIELDS objects — translate each label.
+  const labels = (missing || []).map((f) => t[f.labelKey] || f.labelKey);
   el.textContent =
     (t.retakeLead || "Couldn't read the card clearly.") +
-    (missing.length ? ' (' + (t.retakeMissing || 'missing') + ': ' + missing.join(', ') + ')' : '') +
+    (labels.length ? ' (' + (t.retakeMissing || 'missing') + ': ' + labels.join(', ') + ')' : '') +
+    ' ' + (t.retakeGuidance || 'Place the full card in frame, hold it flat, and avoid glare.') +
     ' ' + (t.retakeAction || 'Tap above to retake the photo.') +
     ' ' + attemptsLeft + ' ' + (t.retakeLeft || 'attempt(s) left.');
   el.classList.remove('hidden');
@@ -1156,6 +1208,15 @@ function hasManualCardDetails() {
 // what work. This also eliminates the free-text trade field that used to
 // let workers type anything.
 let tradeAssignments = [];
+// FEATURE 1.4: sentinel option value for "My company isn't listed".
+const NOT_LISTED_VALUE = '__not_listed__';
+// FEATURE 1.5: the ONE roster-match normalization rule — strip + lowercase —
+// mirrored by _roster_key() in server.py. The returning-worker re-prompt guard
+// (stillOnRoster) and the backend strict match both key on this, so a case-only
+// or whitespace-only roster edit can never pass one side and 400 on the other.
+function rosterKey(v) {
+  return String(v || '').trim().toLowerCase();
+}
 // FIX 1: true when the project has no configured trade_assignments — the
 // worker proceeds without picking a pair and the check-in is flagged.
 let noTradesConfigured = false;
@@ -1196,10 +1257,21 @@ function loadTradeAssignments() {
     opt.textContent = a.trade + ' — ' + a.company;
     sel.appendChild(opt);
   });
+
+  // FEATURE 1.4: a worker whose subcontractor isn't on the roster must still be
+  // able to check in. This option admits them; the backend flags the check-in
+  // (needs_trade_assignment) and notifies the CP to add the sub. Never a block.
+  const notListedOpt = document.createElement('option');
+  notListedOpt.value = NOT_LISTED_VALUE;
+  notListedOpt.textContent = t.notListed || "My company isn't listed";
+  sel.appendChild(notListedOpt);
 }
 
 function getSelectedAssignment() {
   const sel = document.getElementById('tradeAssignmentSelect');
+  // FEATURE 1.4: "My company isn't listed" is a valid pick — it resolves to a
+  // flagged, admitted check-in rather than a roster entry.
+  if (sel.value === NOT_LISTED_VALUE) return { notListed: true };
   const idx = parseInt(sel.value, 10);
   if (Number.isNaN(idx) || idx < 0 || idx >= tradeAssignments.length) return null;
   return tradeAssignments[idx];
@@ -1272,6 +1344,13 @@ function goStep(step) {
     }
   }
 
+  revealStep(step);
+}
+
+// Display-only step switch (no validation). goStep() calls this after its
+// guards; the returning-worker re-prompt (FEATURE 1.5) calls it directly to
+// land on the trade step without re-tripping step 1's card gate.
+function revealStep(step) {
   [1, 2, 3, 4].forEach(s => {
     document.getElementById('step' + s).classList.toggle('hidden', s !== step);
   });
@@ -1288,10 +1367,11 @@ function goStep(step) {
 // ==================== SUBMIT REGISTRATION ====================
 async function submitRegistration() {
   const assignment = getSelectedAssignment();
+  const notListed = !!(assignment && assignment.notListed);
   const phone = cleanPhone(document.getElementById('regPhone').value);
   const name = document.getElementById('regName').value.trim() || oshaData?.name || '';
-  const trade = assignment ? assignment.trade : '';
-  const company = assignment ? assignment.company : '';
+  const trade = (assignment && !notListed) ? assignment.trade : '';
+  const company = (assignment && !notListed) ? assignment.company : '';
 
   // Read the (possibly corrected) editable OCR fields. These override the raw
   // OCR blob so a worker/admin correction — especially expiration, which the
@@ -1329,10 +1409,14 @@ async function submitRegistration() {
       phone: phone,
       trade: trade,
       company: company,
+      trade_not_listed: notListed,
       osha_card_image: oshaImage,
       selfie_image: selfieImage,
       osha_data: correctedOshaData,
       osha_number: oshaNumber,
+      // FEATURE 2.10: card-photo OCR telemetry for the check-in row.
+      card_ocr_attempts: ocrAttempts,
+      card_ocr_failure_reason: ocrLastFailureReason,
       safety_orientation: orientation,
       signature: signatureData,
       language_provided: currentLang,

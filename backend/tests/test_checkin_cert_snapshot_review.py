@@ -317,7 +317,12 @@ class CheckinHtmlOcrRetakeTest(unittest.TestCase):
     def test_both_ocr_paths_route_through_outcome_handler(self):
         """Success AND failure of the OCR call must run the retake/fallback
         decision, so neither path can dead-end the worker."""
-        self.assertIn("handleOcrOutcome(ocrMissingCriticalFields(res))", self.html)
+        # Success path computes the missing-fields list and routes it through
+        # the outcome handler (FEATURE 2.10 refactor: the list is captured in
+        # `missing` first so the failure reason can be derived from it).
+        self.assertIn("ocrMissingCriticalFields(res)", self.html)
+        self.assertIn("handleOcrOutcome(missing)", self.html)
+        # Failure path routes through the same handler with null.
         self.assertIn("handleOcrOutcome(null)", self.html)
         self.assertIn("ocrAttempts++", self.html)
 
