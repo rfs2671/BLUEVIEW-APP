@@ -198,13 +198,13 @@ select option{background:#1e293b;color:#f1f5f9}
     <div class="logo">LEVELOG</div>
     <div class="title" data-i18n="title">Worker Check-In</div>
     <div class="lang-toggle" onclick="toggleLang()">
-      <span id="langLabel">ES</span>
+      <span id="langLabel">EN</span>
     </div>
   </div>
 
   <!-- Site info (populated by JS) -->
   <div class="site-card" id="siteCard">
-    <div class="site-name" id="siteName">Loading...</div>
+    <div class="site-name" id="siteName" data-i18n="loadingDefault">Loading...</div>
     <div class="site-loc" id="siteLoc"></div>
     <div class="site-co" id="siteCo"></div>
   </div>
@@ -215,7 +215,7 @@ select option{background:#1e293b;color:#f1f5f9}
   <!-- Loading overlay -->
   <div class="loading-overlay hidden" id="loadingOverlay">
     <div class="spinner" style="width:32px;height:32px;border-width:3px"></div>
-    <div class="msg" id="loadingMsg">Loading...</div>
+    <div class="msg" id="loadingMsg" data-i18n="loadingDefault">Loading...</div>
   </div>
 
   <!-- ========== SCREEN: PHONE ENTRY (first thing) ========== -->
@@ -391,7 +391,11 @@ select option{background:#1e293b;color:#f1f5f9}
 
 <script>
 // ==================== I18N ====================
-let currentLang = 'en';
+// Spanish is the DEFAULT for this worker-facing page — most NYC site workers
+// read Spanish first. English is one tap away via the header toggle, and the
+// choice persists per-device (see LS_LANG / init()). init() reads the stored
+// choice and calls applyTranslations() on load so the default actually renders.
+let currentLang = 'es';
 
 // Device fingerprint for signature audit trail
 let deviceFingerprint = null;
@@ -486,6 +490,7 @@ const TRANSLATIONS = {
     registering: 'Registering and checking in...',
     readingCard: 'Reading your card...',
     couldNotReadCard: 'Could not read the card. You can enter your details manually below.',
+    readCardFailed: 'Could not read card',
     orientationNeeded: '⚠ Safety orientation needed for this site',
     completeOrientation: 'Complete Safety Orientation',
     enterName: 'Please enter your name',
@@ -577,6 +582,7 @@ const TRANSLATIONS = {
     registering: 'Registrando y marcando entrada...',
     readingCard: 'Leyendo su tarjeta...',
     couldNotReadCard: 'No se pudo leer la tarjeta. Puede ingresar sus datos manualmente abajo.',
+    readCardFailed: 'No se pudo leer la tarjeta',
     orientationNeeded: '⚠ Se requiere orientación de seguridad para este sitio',
     completeOrientation: 'Completar Orientación de Seguridad',
     enterName: 'Ingrese su nombre',
@@ -660,6 +666,8 @@ const SAFETY_ITEMS_I18N = {
 
 function toggleLang() {
   currentLang = currentLang === 'en' ? 'es' : 'en';
+  // Persist the explicit choice so a returning worker on this device keeps it.
+  try { localStorage.setItem(LS_LANG, currentLang); } catch (e) {}
   document.getElementById('langLabel').textContent = currentLang === 'en' ? 'ES' : 'EN';
   applyTranslations();
   buildSafetyChecklist();
@@ -683,6 +691,8 @@ const API_BASE = window.location.origin + '/api';
 const LS_WORKER_ID = 'bv_worker_id';
 const LS_WORKER_PHONE = 'bv_worker_phone';
 const LS_WORKER_NAME = 'bv_worker_name';
+// Per-device language choice. Absent on a first visit → Spanish default.
+const LS_LANG = 'bv_lang';
 
 function getSafetyItems() { return SAFETY_ITEMS_I18N[currentLang]; }
 const SAFETY_ITEMS = SAFETY_ITEMS_I18N.en;
@@ -781,6 +791,15 @@ function cropImage(dataUrl, box) {
   
 // ==================== INIT ====================
 (async function init() {
+  // Language FIRST, before any early return, so even the error screen renders
+  // in the right language. Spanish is the default; a stored per-device choice
+  // (English or Spanish) wins. applyTranslations() must run here — without it
+  // the hardcoded English HTML would show regardless of currentLang.
+  const savedLang = localStorage.getItem(LS_LANG);
+  currentLang = (savedLang === 'en' || savedLang === 'es') ? savedLang : 'es';
+  document.getElementById('langLabel').textContent = currentLang === 'en' ? 'ES' : 'EN';
+  applyTranslations();
+
   // Setup phone formatting on all phone inputs
   setupPhoneFormatting(document.getElementById('phoneInput'));
   setupPhoneFormatting(document.getElementById('regPhone'));
@@ -1070,7 +1089,7 @@ async function handleOshaPhoto(input) {
       // failed when in reality the request often never reached it.
       console.error('OSHA OCR upload failed:', e);
       const reason = (e && e.message) ? e.message : 'Unknown error';
-      showError('Could not read card: ' + reason);
+      showError(t('readCardFailed') + ': ' + reason);
       oshaData = oshaData || {};
       ocrAttempts++;
       // FEATURE 2.10: the OCR call itself failed — record the transport reason.
