@@ -86,6 +86,14 @@ const TRANSLATIONS = {
     assignedToast: 'Trade assigned to this check-in',
     assignFailed: 'Could not assign the trade',
     noRoster: 'This project has no trades configured yet — an admin must add them first.',
+    // Cert-review reason codes (backend stores the CODE; text lives here).
+    unknownSst: 'Unverified SST',
+    reason_CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
+    reason_EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
+    reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
+    reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
+    reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
+    reason_EXTRACTION_INCOMPLETE: 'Card details incomplete — verify the card',
   },
   es: {
     title: 'Revisión de Registros',
@@ -120,6 +128,14 @@ const TRANSLATIONS = {
     assignedToast: 'Oficio asignado a este registro',
     assignFailed: 'No se pudo asignar el oficio',
     noRoster: 'Este proyecto aún no tiene oficios configurados — un administrador debe agregarlos primero.',
+    // Códigos de motivo de revisión (el backend guarda el CÓDIGO; el texto va aquí).
+    unknownSst: 'SST sin verificar',
+    reason_CLASS_UNVERIFIED: 'No se pudo leer la clase de la tarjeta — verifique la tarjeta',
+    reason_EXPIRY_IMPLAUSIBLE: 'La fecha de vencimiento no es plausible — reescanee o verifique',
+    reason_EXPIRY_UNPARSEABLE: 'No se pudo leer la fecha de vencimiento — verifique la tarjeta',
+    reason_EXPIRY_CONFLICT: 'Dos escaneos no coinciden en el vencimiento — verifique la tarjeta',
+    reason_DUPLICATE_SST: 'Registros SST duplicados — consolide en uno',
+    reason_EXTRACTION_INCOMPLETE: 'Datos de la tarjeta incompletos — verifique la tarjeta',
   },
 };
 

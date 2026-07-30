@@ -163,7 +163,10 @@ def _body(**overrides):
         "trade": _TRADE,
         "company": _COMPANY,
         "osha_number": "SST12345678",
-        "osha_data": {"sst_number": "SST12345678", "expiration": "01/01/2030"},
+        # card_class now supplied by the OCR (see the capture-integrity fix):
+        # a legible class is required for a 'valid' verdict.
+        "osha_data": {"sst_number": "SST12345678", "card_type": "SST",
+                      "card_class": "LIMITED", "expiration": "01/01/2030"},
         "osha_card_image": "data:image/jpeg;base64,CARDIMG",
     }
     body.update(overrides)
@@ -213,14 +216,17 @@ class CertSnapshotTest(unittest.TestCase):
         self.assertNotEqual(resp.json().get("blocked"), True)
         self.assertEqual(row["sst_expiration"].year, 2020)
 
-    def test_unparseable_expiration_records_unparseable_status(self):
+    def test_unparseable_expiration_records_unknown_status(self):
+        # An expiry that will not parse now folds into the three-state 'unknown'
+        # (it must never read as valid). Date is suppressed, not stored.
         db = _make_db()
         resp = _post_checkin(db, _body(osha_data={
-            "sst_number": "SST12345678", "expiration": "not-a-date",
+            "sst_number": "SST12345678", "card_type": "SST",
+            "card_class": "LIMITED", "expiration": "not-a-date",
         }))
         self.assertEqual(resp.status_code, 200, resp.text)
         row = db.checkins.inserted[0]
-        self.assertEqual(row["sst_status"], "unparseable")
+        self.assertEqual(row["sst_status"], "unknown")
         self.assertIsNone(row["sst_expiration"])
 
 
@@ -249,9 +255,11 @@ class CertificationsPersistenceTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json().get("is_new_worker"))
         certs = self._assert_sst_cert_persisted(db)
-        # OSHA baseline cert persisted alongside the SST one.
-        self.assertTrue(
+        # No fabricated OSHA row from an SST scan (one image -> at most one row).
+        # The SST cert alone satisfies the OSHA baseline in the gate.
+        self.assertFalse(
             any(str(c.get("type", "")).startswith("OSHA") for c in certs),
+            "an SST-only scan must NOT fabricate an OSHA row",
         )
 
     def test_returning_worker_certifications_persisted(self):

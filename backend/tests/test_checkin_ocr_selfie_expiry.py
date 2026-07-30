@@ -335,6 +335,8 @@ class OcrCorrectionFlowThroughTest(unittest.TestCase):
                     osha_number="CORRECTED99",
                     osha_data={
                         "sst_number": "CORRECTED99",
+                        "card_type": "SST",
+                        "card_class": "LIMITED",
                         "expiration": "01/01/2030",
                     },
                 ),

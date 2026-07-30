@@ -148,7 +148,8 @@ def _body(**overrides):
         "name": "Jane Worker",
         "phone": "5551234567",
         "osha_number": "SST12345678",
-        "osha_data": {"sst_number": "SST12345678", "expiration": "01/01/2030"},
+        "osha_data": {"sst_number": "SST12345678", "card_type": "SST",
+                      "card_class": "LIMITED", "expiration": "01/01/2030"},
         "osha_card_image": "data:image/jpeg;base64,CARDIMG",
     }
     body.update(overrides)

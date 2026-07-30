@@ -1623,6 +1623,11 @@ class CertificationType(str, Enum):
     CONFINED_SPACE = "CONFINED_SPACE"
     OTHER = "OTHER"
 
+# SST cards are valid ~5 years; an expiry more than this many years in the
+# future is a physically impossible OCR misread, not a real credential. Named
+# so the sanity gate and its tests share one source of truth.
+SST_EXPIRY_MAX_YEARS = 7
+
 class WorkerCertification(BaseModel):
     type: str
     card_number: Optional[str] = None
@@ -1634,13 +1639,250 @@ class WorkerCertification(BaseModel):
     card_image_url: Optional[str] = None
     ocr_confidence: Optional[float] = None
     notes: Optional[str] = None
+    # ── Capture-integrity fields (persist as raw dict keys today; declared here
+    #    for documentation and future typed reads). ──
+    # True when OCR extraction was incomplete or a value was sanity-flagged;
+    # surfaces the row in the CP/admin cert-review queue.
+    needs_review: bool = False
+    # Machine code for WHY review is needed (frontend maps to EN/ES). One of:
+    # CLASS_UNVERIFIED, EXPIRY_IMPLAUSIBLE, EXPIRY_UNPARSEABLE, EXPIRY_CONFLICT,
+    # DUPLICATE_SST, EXTRACTION_INCOMPLETE.
+    review_reason: Optional[str] = None
+    # The raw OCR expiry string that FAILED the sanity gate. Retained so an
+    # admin can correct it; NEVER promoted to expiration_date automatically.
+    expiration_raw_rejected: Optional[str] = None
+    # Deterministic 0..1 fraction of expected fields cleanly extracted. Replaces
+    # the uncalibrated model self-`confidence` that was structurally null.
+    extraction_completeness: Optional[float] = None
 
 # ==================== CERTIFICATION GATE LOGIC ====================
+
+# ── Cert type vocabularies ────────────────────────────────────────────────
+# SST types that name a SPECIFIC, legible class. A card whose class we could
+# read is one of these.
+SST_CLASS_TYPES = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR", "SST_TEMPORARY"}
+# The class was on the card but OCR could not read it. Recognized as "an SST
+# card is present" (satisfies the OSHA baseline) but NEVER as a valid,
+# class-confirmed credential — see the three-state gate below.
+SST_UNSPECIFIED = "SST_UNSPECIFIED"
+# Every value the gate treats as "a NYC SST card exists on this worker".
+RECOGNIZED_SST_TYPES = SST_CLASS_TYPES | {SST_UNSPECIFIED}
+OSHA_TYPES = {"OSHA_10", "OSHA_30", "OSHA_UNSPECIFIED"}
+
+
+def _map_sst_class(raw) -> str:
+    """OCR card_class -> stored SST type. Illegible/unknown -> SST_UNSPECIFIED,
+    which can never resolve to a valid credential."""
+    s = str(raw or "").strip().upper()
+    if "SUPERV" in s:
+        return "SST_SUPERVISOR"
+    if "TEMP" in s:
+        return "SST_TEMPORARY"
+    if "FULL" in s or "COMPLETE" in s:
+        return "SST_FULL"
+    if "LIMIT" in s:
+        return "SST_LIMITED"
+    return SST_UNSPECIFIED
+
+
+def _map_osha_level(raw) -> str:
+    """OCR card_class -> stored OSHA type. Illegible -> OSHA_UNSPECIFIED."""
+    s = str(raw or "").strip()
+    if "30" in s:
+        return "OSHA_30"
+    if "10" in s:
+        return "OSHA_10"
+    return "OSHA_UNSPECIFIED"
+
+
+def _sst_cert_state(cert: dict, now: datetime) -> str:
+    """Three-state verdict for ONE SST cert: 'valid' | 'unknown' | 'expired'.
+
+    Amendment A, the anti-silence rule: a failure must never read as 'valid'.
+      * a parsed PAST expiry is 'expired' — definitive, regardless of class
+        (the card IS expired; that is more informative than 'unknown');
+      * a parsed FUTURE expiry is 'valid' ONLY if the class was legible; an
+        unread class (*_UNSPECIFIED) with a future expiry is 'unknown', never
+        'valid';
+      * a missing, suppressed-as-implausible, or unparseable expiry is 'unknown'.
+    """
+    exp = cert.get("expiration_date")
+    if isinstance(exp, str):
+        try:
+            exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            exp = None                         # unparseable — never silently valid
+    if isinstance(exp, datetime):
+        exp = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
+        if exp <= now:
+            return "expired"                   # definitive, regardless of class
+        ctype = str(cert.get("type", ""))
+        return "valid" if ctype in SST_CLASS_TYPES else "unknown"
+    return "unknown"                           # missing / suppressed / unparseable
+
+
+def build_worker_certifications(existing_certs, osha_data, osha_number, osha_card_image, now):
+    """Given prior certs + ONE OCR scan, return (worker_certs, expiry_unparseable).
+
+    Pure (no I/O) so it is unit-testable and the endpoint just persists the
+    result. Invariants:
+      * ONE scanned image creates AT MOST ONE certification row (Amendment B).
+      * Card class comes from the OCR; illegible -> *_UNSPECIFIED + needs_review,
+        never a guessed class.
+      * The expiry is sanity-gated: unparseable or physically-impossible values
+        are SUPPRESSED (stored as None + expiration_raw_rejected), never written
+        as fact.
+      * needs_review keys on extraction COMPLETENESS (name/number/class/expiry),
+        not on number presence.
+      * A re-scan corrects a flagged/None expiry on an UNVERIFIED row; a differing
+        scan against a clean stored value raises EXPIRY_CONFLICT without
+        overwriting; a sanity-failing scan never overwrites; a VERIFIED row is
+        never touched.
+      * Two unverified SST rows on one worker are both flagged (Amendment C).
+    """
+    worker_certs = list(existing_certs or [])
+    has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
+    sst_expiration_unparseable = False
+    od = osha_data or {}
+
+    def _parse_mdy(s):
+        try:
+            return datetime.strptime(str(s), "%m/%d/%Y").replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+    # Resolve ONE class for this ONE image (Amendment B).
+    card_type = str(od.get("card_type") or "").strip().upper()
+    card_class = od.get("card_class")
+    raw_expiry = od.get("expiration")
+    if card_type == "OSHA" and not raw_expiry:
+        resolved_kind = "OSHA"
+    elif card_type == "SST" or raw_expiry:
+        resolved_kind = "SST"      # an expiry means SST (OSHA post-2020 is lifetime)
+    elif osha_number or osha_card_image:
+        resolved_kind = "SST"      # ambiguous NFC card → SST (still satisfies OSHA baseline)
+    else:
+        resolved_kind = None
+
+    name_ok = bool(str(od.get("name") or "").strip())
+    number_ok = bool(str(osha_number or od.get("sst_number") or "").strip())
+
+    if resolved_kind == "OSHA":
+        if not has_existing_osha:
+            osha_type = _map_osha_level(card_class)
+            class_ok = osha_type != "OSHA_UNSPECIFIED"
+            completeness = round((int(name_ok) + int(number_ok) + int(class_ok)) / 3, 3)
+            worker_certs.append({
+                "type": osha_type,
+                "card_number": osha_number or None,
+                "issue_date": None,
+                "expiration_date": None,          # OSHA lifetime post-2020
+                "verified": False,
+                "needs_review": not (name_ok and number_ok and class_ok),
+                "review_reason": None if class_ok else "CLASS_UNVERIFIED",
+                "expiration_raw_rejected": None,
+                "extraction_completeness": completeness,
+            })
+
+    elif resolved_kind == "SST":
+        sst_type = _map_sst_class(card_class)
+        class_ok = sst_type in SST_CLASS_TYPES
+        issue_dt = _parse_mdy(od.get("issued"))
+        exp_dt = _parse_mdy(raw_expiry) if raw_expiry else None
+
+        suppressed = False
+        reason = None
+        if raw_expiry and exp_dt is None:
+            sst_expiration_unparseable = True
+            suppressed = True
+            reason = "EXPIRY_UNPARSEABLE"
+        elif exp_dt is not None:
+            ceiling = now.replace(year=now.year + SST_EXPIRY_MAX_YEARS)
+            if (issue_dt is not None and exp_dt <= issue_dt) or exp_dt > ceiling:
+                suppressed = True
+                reason = "EXPIRY_IMPLAUSIBLE"
+        stored_exp = None if suppressed else exp_dt
+        if not class_ok and reason is None:
+            reason = "CLASS_UNVERIFIED"
+
+        completeness = round(
+            (int(name_ok) + int(number_ok) + int(class_ok) + int(bool(stored_exp))) / 4, 3
+        )
+        needs_review = not (name_ok and number_ok and class_ok and bool(stored_exp))
+        card_no = osha_number or None
+
+        # Prefer an exact card-number match (any state — a verified match is
+        # then correctly left untouched). Fall back to an UNVERIFIED SST row
+        # only: a verified row is a confirmed, specific card and a
+        # different-number scan must never be folded onto (or swallowed by) it.
+        existing_sst = next(
+            (c for c in worker_certs
+             if str(c.get("type", "")) in RECOGNIZED_SST_TYPES
+             and card_no and c.get("card_number") == card_no),
+            None,
+        ) or next(
+            (c for c in worker_certs
+             if str(c.get("type", "")) in RECOGNIZED_SST_TYPES and not c.get("verified")),
+            None,
+        )
+
+        if existing_sst is None:
+            worker_certs.append({
+                "type": sst_type,
+                "card_number": card_no,
+                "issue_date": issue_dt,
+                "expiration_date": stored_exp,
+                "verified": False,
+                "needs_review": needs_review,
+                "review_reason": reason,
+                "expiration_raw_rejected": raw_expiry if suppressed else None,
+                "extraction_completeness": completeness,
+            })
+        elif existing_sst.get("verified"):
+            pass  # admin-confirmed — a re-scan may never modify it.
+        else:
+            old_exp = existing_sst.get("expiration_date")
+            old_flagged = bool(existing_sst.get("needs_review")) or old_exp is None
+            if suppressed or stored_exp is None:
+                pass  # untrustworthy scan — never overwrite a stored value.
+            elif old_flagged:
+                existing_sst["expiration_date"] = stored_exp
+                existing_sst["issue_date"] = issue_dt or existing_sst.get("issue_date")
+                if class_ok:
+                    existing_sst["type"] = sst_type
+                existing_sst["needs_review"] = needs_review
+                existing_sst["review_reason"] = reason
+                existing_sst["expiration_raw_rejected"] = None
+                existing_sst["extraction_completeness"] = completeness
+            else:
+                if old_exp != stored_exp:
+                    existing_sst["needs_review"] = True
+                    existing_sst["review_reason"] = "EXPIRY_CONFLICT"
+
+    # Amendment C: two unverified SST rows must never coexist quietly.
+    unverified_sst = [
+        c for c in worker_certs
+        if str(c.get("type", "")) in RECOGNIZED_SST_TYPES and not c.get("verified")
+    ]
+    if len(unverified_sst) > 1:
+        for c in unverified_sst:
+            c["needs_review"] = True
+            if not c.get("review_reason"):
+                c["review_reason"] = "DUPLICATE_SST"
+
+    return worker_certs, sst_expiration_unparseable
+
 
 def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
     """
     Validate worker certs against NYC LL196.
-    Returns {"cleared": bool, "blocks": [...], "warnings": [...]}
+    Returns {"cleared": bool, "blocks": [...], "warnings": [...], "sst_state": str}.
+
+    Flag-but-allow: `cleared` is True unless a hard block fires (only
+    MISSING_OSHA). `sst_state` is the three-state SST verdict
+    (valid | unknown | expired | missing); `unknown` and `expired` each raise a
+    warning that register_and_checkin turns into a compliance alert + inbox
+    notification. Entry is never blocked on SST.
     """
     certs = worker.get("certifications", [])
     blocks = []
@@ -1655,14 +1897,14 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
         cert_types[ctype].append(c)
 
     # Check 1: OSHA baseline. NYC SST training requires OSHA-10 as a
-    # prerequisite, so any SST cert on file satisfies the OSHA baseline
-    # too — we don't force workers to upload two separate photos at
-    # NFC check-in just to prove both.
-    sst_type_names = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
+    # prerequisite, so any SST cert on file (including an unread-class one)
+    # satisfies the OSHA baseline too — we don't force workers to upload two
+    # separate photos at NFC check-in just to prove both.
     has_osha = bool(
         cert_types.get("OSHA_10")
         or cert_types.get("OSHA_30")
-        or any(cert_types.get(t) for t in sst_type_names)
+        or cert_types.get("OSHA_UNSPECIFIED")
+        or any(cert_types.get(t) for t in RECOGNIZED_SST_TYPES)
     )
     if not has_osha:
         blocks.append({
@@ -1671,65 +1913,64 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
             "remediation": "Worker must present valid OSHA card to site manager."
         })
 
-    # Check 2: SST card (LL196)
-    sst_types = {"SST_FULL", "SST_LIMITED", "SST_SUPERVISOR"}
+    # Check 2: SST card (LL196) — THREE-STATE, not a boolean.
+    #   valid   = legible class AND parsed AND future expiry
+    #   unknown = class illegible, expiry missing/suppressed/unparseable
+    #   expired = parsed expiry in the past
+    # All three permit check-in (flag-but-allow). `unknown` and `expired` each
+    # raise a warning that register_and_checkin turns into an alert + inbox
+    # notification. `unknown` can NEVER be reached from `valid` — that is the
+    # whole point: a dead/unread card must announce itself, not read as good.
     sst_certs = []
-    for st in sst_types:
+    for st in RECOGNIZED_SST_TYPES:
         sst_certs.extend(cert_types.get(st, []))
 
-    has_valid_sst = False
-    expired_sst = None
-    for c in sst_certs:
-        exp = c.get("expiration_date")
-        if exp is None:
-            has_valid_sst = True
-            warnings.append({
-                "type": "SST_NO_EXPIRY",
-                "detail": f"SST card ({c.get('type')}) has no expiration date recorded."
-            })
-        elif isinstance(exp, str):
-            try:
-                exp_dt = datetime.fromisoformat(exp.replace('Z', '+00:00'))
-                if exp_dt > now:
-                    has_valid_sst = True
-                else:
-                    expired_sst = exp_dt
-            except (ValueError, TypeError):
-                has_valid_sst = True
-        elif isinstance(exp, datetime):
-            # Mongo can return naive datetimes; coerce to UTC for safe compare.
-            exp_aware = exp if exp.tzinfo is not None else exp.replace(tzinfo=timezone.utc)
-            if exp_aware > now:
-                has_valid_sst = True
-            else:
-                expired_sst = exp_aware
+    per_states = [_sst_cert_state(c, now) for c in sst_certs]
+    if not sst_certs:
+        sst_state = "missing"
+    elif "valid" in per_states:
+        sst_state = "valid"
+    elif "expired" in per_states:
+        sst_state = "expired"
+    else:
+        sst_state = "unknown"
 
-    if not has_valid_sst:
-        if expired_sst:
-            # LL196 hard-block intentionally relaxed to flag-but-allow per
-            # product decision — expired SST is alerted, not blocked. Emitting
-            # this as a WARNING (not a block) keeps cert_result["cleared"] True
-            # so the worker checks in normally. register_and_checkin detects
-            # this EXPIRED_SST warning after the check-in is written to (a)
-            # write the compliance_alerts row (existing /compliance-alerts
-            # admin screen) and (b) dispatch an in-app notification to the
-            # project's admins + assigned CP.
-            warnings.append({
-                "type": "EXPIRED_SST",
-                "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d')}. Worker allowed in under flag-but-allow policy; SST renewal required.",
-                "cert_type": "SST",
-                "expired_on": expired_sst.strftime('%Y-%m-%d'),
-            })
-        elif not sst_certs:
-            # Downgrade to warning: first-time NFC workers upload a single
-            # card photo. If OCR read it as OSHA (no expiration) we don't
-            # have SST evidence yet, but we also don't want to reject the
-            # worker at the gate. CP/admin will follow up in cert review.
-            warnings.append({
-                "type": "MISSING_SST",
-                "detail": "No NYC SST card on file yet. Worker can check in, but CP should verify SST card in next review.",
-                "cert_type": "SST"
-            })
+    if sst_state == "expired":
+        expired_sst = None
+        for c in sst_certs:
+            if _sst_cert_state(c, now) == "expired":
+                exp = c.get("expiration_date")
+                if isinstance(exp, str):
+                    try:
+                        exp = datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        exp = None
+                if isinstance(exp, datetime):
+                    expired_sst = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+                break
+        warnings.append({
+            "type": "EXPIRED_SST",
+            "detail": f"SST card expired {expired_sst.strftime('%Y-%m-%d') if expired_sst else 'on an unknown date'}. Worker allowed in under flag-but-allow policy; SST renewal required.",
+            "cert_type": "SST",
+            "expired_on": expired_sst.strftime('%Y-%m-%d') if expired_sst else None,
+        })
+    elif sst_state == "unknown":
+        # Anti-silence: an SST card is present but its class and/or expiry could
+        # not be confirmed. Fires exactly like EXPIRED_SST so it is never quiet.
+        warnings.append({
+            "type": "SST_UNKNOWN",
+            "detail": "SST card present but its class or expiration could not be confirmed. Worker allowed in; CP/admin must verify the card.",
+            "cert_type": "SST",
+        })
+    elif sst_state == "missing":
+        # First-time NFC workers upload a single card photo. If OCR read it as
+        # OSHA (no expiration) we don't have SST evidence yet, but we don't
+        # reject at the gate. CP/admin follows up in cert review.
+        warnings.append({
+            "type": "MISSING_SST",
+            "detail": "No NYC SST card on file yet. Worker can check in, but CP should verify SST card in next review.",
+            "cert_type": "SST"
+        })
 
     # Check 3: 30-day expiration warnings
     thirty_days = now + timedelta(days=30)
@@ -1752,7 +1993,7 @@ def validate_worker_certifications(worker: dict, project: dict = None) -> dict:
                     "cert_type": c.get("type")
                 })
 
-    return {"cleared": len(blocks) == 0, "blocks": blocks, "warnings": warnings}
+    return {"cleared": len(blocks) == 0, "blocks": blocks, "warnings": warnings, "sst_state": sst_state}
 
 
 async def create_cert_block_alert(worker: dict, project: dict, blocks: list):
@@ -8937,12 +9178,16 @@ async def upload_osha_card(file_data: dict, request: Request):
         "Return ONLY valid JSON, no markdown:\n"
         "{\"name\": \"full name on card\", "
         "\"sst_number\": \"the ID number or card number shown on the card\", "
+        "\"card_type\": \"OSHA or SST — which kind of card this is\", "
+        "\"card_class\": \"the exact class or level printed on the card: "
+        "for SST one of FULL, LIMITED, SUPERVISOR, TEMPORARY; "
+        "for OSHA one of 10, 30\", "
         "\"issued\": \"issued date if visible\", "
         "\"expiration\": \"expiration date if visible\", "
         "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
-        "If a field is not visible, set it to null. 'box_2d' should be the "
-        "normalized coordinates (0-1000) tightly framing the card. Return "
-        "the JSON object only."
+        "If a field is not visible or you are not certain, set it to null — "
+        "do NOT guess the class. 'box_2d' should be the normalized coordinates "
+        "(0-1000) tightly framing the card. Return the JSON object only."
     )
 
     text = ""
@@ -8992,6 +9237,8 @@ async def upload_osha_card(file_data: dict, request: Request):
         return {
             "name":       None,
             "sst_number": None,
+            "card_type":  None,
+            "card_class": None,
             "issued":     None,
             "expiration": None,
             "raw_text":   text,
@@ -9029,7 +9276,7 @@ async def get_project_companies(project_id: str):
             companies.insert(0, {"name": main_company.get("name"), "trade": "General Contractor"})
     
     return companies
-    
+
 @api_router.post("/checkin/register-and-checkin")
 async def register_and_checkin(data: dict):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
@@ -9047,7 +9294,7 @@ async def register_and_checkin(data: dict):
     signature = data.get("signature")  # base64 PNG
     language_provided = data.get("language_provided", "en")  # "en" or "es" auto-captured from NFC
     device_info = data.get("device_info")  # FingerprintJS data from checkin.html
-	
+
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
     # so they legitimately submit no company. It is re-required below, but
@@ -9259,44 +9506,10 @@ async def register_and_checkin(data: dict):
     # and the certs were rebuilt from OCR on every single check-in. Copying the
     # list makes the comparison real so the certs actually persist.
     existing_certs = list(worker.get("certifications") or [])
-    worker_certs = list(existing_certs)
-    has_existing_osha = any(str(c.get("type", "")).startswith("OSHA") for c in worker_certs)
-    has_existing_sst = any(str(c.get("type", "")).startswith("SST") for c in worker_certs)
-
-    # Set when the card carried an expiration string we could not parse. Feeds
-    # the sst_status snapshot written onto the check-in row below.
-    sst_expiration_unparseable = False
-
-    if not has_existing_osha and (osha_number or osha_card_image):
-        course_str = str(osha_data.get("course", "") if osha_data else "")
-        osha_cert = {
-            "type": "OSHA_30" if "30" in course_str else "OSHA_10",
-            "card_number": osha_number or None,
-            "issue_date": None,
-            "expiration_date": None,  # OSHA cards are lifetime post-2020
-            "verified": False,
-            "needs_review": not bool(osha_number),  # flag for admin if OCR missed number
-            "ocr_confidence": osha_data.get("confidence") if osha_data else None,
-        }
-        worker_certs.append(osha_cert)
-
-    # If the card appears to be SST (has expiration), also add an SST entry.
-    if not has_existing_sst and osha_data and osha_data.get("expiration"):
-        try:
-            exp_dt = datetime.strptime(osha_data["expiration"], "%m/%d/%Y").replace(tzinfo=timezone.utc)
-            worker_certs.append({
-                "type": "SST_LIMITED",
-                "card_number": osha_number or None,
-                "issue_date": None,
-                "expiration_date": exp_dt,
-                "verified": False,
-                "needs_review": not bool(osha_number),
-                "ocr_confidence": osha_data.get("confidence") if osha_data else None,
-            })
-        except (ValueError, TypeError):
-            sst_expiration_unparseable = True
-
-    if len(worker_certs) != len(existing_certs):
+    worker_certs, sst_expiration_unparseable = build_worker_certifications(
+        existing_certs, osha_data, osha_number, osha_card_image, now
+    )
+    if worker_certs != existing_certs:
         await db.workers.update_one(
             {"_id": worker["_id"]},
             {"$set": {"certifications": worker_certs, "updated_at": now}}
@@ -9333,14 +9546,17 @@ async def register_and_checkin(data: dict):
     sst_card_number = (
         (_sst_cert.get("card_number") if _sst_cert else None) or osha_number or None
     )
+    # Frozen snapshot mirrors validate's three-state verdict. `unknown` folds
+    # in the old "unparseable"/"no-expiry" cases — a class or expiry we could
+    # not confirm is unknown, never silently "valid".
     if "EXPIRED_SST" in _warning_types or "EXPIRED_SST" in _block_types:
         sst_status = "expired"
+    elif "SST_UNKNOWN" in _warning_types:
+        sst_status = "unknown"
     elif "CERT_EXPIRING_SOON" in _warning_types:
         sst_status = "expiring_soon"
     elif _sst_cert is None:
-        sst_status = "unparseable" if sst_expiration_unparseable else "missing"
-    elif sst_expiration is None:
-        sst_status = "unparseable"
+        sst_status = "missing"
     else:
         sst_status = "valid"
 
@@ -9469,6 +9685,47 @@ async def register_and_checkin(data: dict):
             )
         except Exception as e:
             logger.warning(f"[expired_sst] dispatch_notification failed: {e!r}")
+
+    # ── SST_UNKNOWN handling (flag-but-allow) — mirrors EXPIRED_SST exactly. ──
+    # An SST card whose class or expiry could not be confirmed must be as loud
+    # as an expired one: it is the silent-failure direction the three-state gate
+    # exists to close. The worker has ALREADY checked in above; both side
+    # effects are failure-isolated so a blip can never undo the check-in.
+    unknown_sst_warnings = [w for w in cert_warnings if w.get("type") == "SST_UNKNOWN"]
+    if unknown_sst_warnings:
+        try:
+            await create_cert_block_alert(worker, project, unknown_sst_warnings)
+        except Exception as e:
+            logger.warning(f"[sst_unknown] compliance_alerts write failed: {e!r}")
+        try:
+            from zoneinfo import ZoneInfo
+            est_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            est_today = now.strftime("%Y-%m-%d")
+        try:
+            await _notifications_inbox.dispatch_notification(
+                db,
+                project=project,
+                kind="unknown_sst_checkin",
+                severity="warning",
+                title="Unverified SST credential — worker checked in",
+                message=(
+                    f"{worker.get('name') or 'A worker'} checked in at "
+                    f"{project.get('name') or 'the site'} with an SST card whose "
+                    f"class or expiration could not be confirmed. Entry allowed "
+                    f"under flag-but-allow policy; CP/admin must verify the card."
+                ),
+                source_kind="checkin",
+                source_id=f"unknown_sst:{str(worker['_id'])}:{est_today}",
+                deeplink_anchor=f"checkin-{str(result.inserted_id)}",
+                metadata={
+                    "checkin_id": str(result.inserted_id),
+                    "worker_id": str(worker["_id"]),
+                    "sst_status": sst_status,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"[sst_unknown] dispatch_notification failed: {e!r}")
 
     return {
         "success": True,
