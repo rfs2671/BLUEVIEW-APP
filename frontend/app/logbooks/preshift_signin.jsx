@@ -15,6 +15,7 @@ import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
+import { capitalizeFirst } from '../../src/utils/textFormat';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -329,7 +330,8 @@ export default function PreShiftSignIn() {
                 <View style={styles.workerField}>
                   <Text style={styles.workerFieldLabel}>COMPANY</Text>
                   {worker.auto_filled ? (
-                    <Text style={styles.workerFieldValueLocked}>{worker.company || '—'}</Text>
+                    // PR G: company is short-entry — capitalize first at display only.
+                    <Text style={styles.workerFieldValueLocked}>{capitalizeFirst(worker.company) || '—'}</Text>
                   ) : (
                     <TextInput
                       style={styles.workerFieldInput}

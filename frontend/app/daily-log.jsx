@@ -49,6 +49,7 @@ import SignaturePad from '../src/components/SignaturePad';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { csRegistrationAPI } from '../src/utils/api';
+import { sentenceCase } from '../src/utils/textFormat';
 import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
@@ -832,7 +833,8 @@ export default function DailyLogScreen() {
                     {selectedPreviousLog.notes && (
                       <View style={s.modalSection}>
                         <Text style={s.modalLabel}>NOTES</Text>
-                        <Text style={s.modalValue}>{selectedPreviousLog.notes}</Text>
+                        {/* PR G: notes are prose — sentence case at display only. */}
+                        <Text style={s.modalValue}>{sentenceCase(selectedPreviousLog.notes)}</Text>
                       </View>
                     )}
                     {selectedPreviousLog.safety_checklist && (

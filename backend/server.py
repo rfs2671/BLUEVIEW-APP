@@ -11919,11 +11919,13 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         act_rows = ""
         for i, act in enumerate(data.get("activities", [])):
             act_rows += (
-                f'<tr><td {TD}>{act.get("crew_name", "")}</td>'
-                f'<td {TD}>{_display_sub_company(act.get("company"))}</td>'
+                # PR G: crew/company/location are short-entry (capitalize first);
+                # work description is prose (sentence case). num_workers excluded.
+                f'<tr><td {TD}>{_capitalize_first(act.get("crew_name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
                 f'<td {TD}>{act.get("num_workers", 0)}</td>'
-                f'<td {TD}>{act.get("work_description", "N/A")}</td>'
-                f'<td {TD}>{act.get("work_locations", "")}</td></tr>'
+                f'<td {TD}>{_sentence_case(act.get("work_description", "N/A"))}</td>'
+                f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td></tr>'
             )
         
         equip = data.get("equipment_on_site", {})
@@ -11937,9 +11939,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         for obs in data.get("observations", []):
             if obs.get("description", "").strip():
                 obs_rows += (
-                    f'<tr><td {TD}>{obs.get("description", "")}</td>'
-                    f'<td {TD}>{obs.get("responsible_party", "")}</td>'
-                    f'<td {TD}>{obs.get("remedy", "")}</td></tr>'
+                    # description/remedy prose; responsible party short-entry.
+                    f'<tr><td {TD}>{_sentence_case(obs.get("description", ""))}</td>'
+                    f'<td {TD}>{_capitalize_first(obs.get("responsible_party", ""))}</td>'
+                    f'<td {TD}>{_sentence_case(obs.get("remedy", ""))}</td></tr>'
                 )
         if obs_rows:
             obs_html = (
@@ -11957,10 +11960,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         body_html = (
             info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {data.get("general_description", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(data.get("general_description", "N/A"))}<br />'
                 f'<strong style="color:#0A1929;">Time In:</strong> {data.get("time_in") or "N/A"}'
                 f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {data.get("time_out") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Areas Visited:</strong> {data.get("areas_visited") or "N/A"}'
+                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(data.get("areas_visited") or "N/A")}'
             )
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
@@ -11971,8 +11974,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Equipment", equip_list or "None")
             + bold_para("Inspected", check_list or "None")
             + obs_html
-            + (bold_para("Visitors / Deliveries", visitors) if visitors else "")
-            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
+            + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + cp_sig + sup_sig
         )
     
@@ -15128,6 +15131,35 @@ def _signature_affirmation_html(sig):
         '<div style="font-size:12px;font-weight:700;color:#16a34a;margin-top:4px;">'
         '✓ AFFIRMED for this document</div>' + claim_line + recv_line
     )
+
+
+def _capitalize_first(text):
+    """RULE 1 (short entry): capitalize the first letter, preserve everything
+    after it EXACTLY. Display-time only — never mutates stored data. Mirrors the
+    frontend capitalizeFirst() in src/utils/textFormat.js."""
+    s = "" if text is None else str(text)
+    for i, ch in enumerate(s):
+        if not ch.isspace():
+            return s[:i] + ch.upper() + s[i + 1:]
+    return s
+
+
+def _sentence_case(text):
+    """RULE 2 (prose): capitalize the first letter of the string and the first
+    letter after every terminal punctuation (. ! ?); preserve everything else
+    exactly. Display-time only. Mirrors the frontend sentenceCase()."""
+    s = "" if text is None else str(text)
+    out = []
+    cap_next = True
+    for ch in s:
+        if cap_next and ch.isalpha():
+            out.append(ch.upper())
+            cap_next = False
+        else:
+            out.append(ch)
+            if ch in ".!?":
+                cap_next = True
+    return "".join(out)
 
 
 def _display_sub_company(name):
