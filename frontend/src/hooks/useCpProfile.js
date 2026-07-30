@@ -18,6 +18,19 @@ import { cpProfileAPI } from '../utils/api';
 
 const CP_PROFILE_CACHE_KEY = 'blueview_cp_profile';
 
+/**
+ * The profile signature is a REUSABLE CREDENTIAL, never a per-document
+ * attestation. Strip any per-document affirmation stamp (affirmed / affirmedAt)
+ * before caching it, so an affirmed signature saved from one logbook can never
+ * flow back into the profile and make the NEXT document render as already
+ * VERIFIED without its own affirmation. See SignaturePad's affirmation flow.
+ */
+function stripAffirmation(sig) {
+  if (!sig || typeof sig !== 'object') return sig;
+  const { affirmed, affirmedAt, ...credential } = sig;
+  return credential;
+}
+
 export function useCpProfile() {
   const [cpName, setCpName] = useState('');
   const [cpSignature, setCpSignature] = useState(null);
@@ -91,17 +104,19 @@ export function useCpProfile() {
    */
   const autoSave = async (name, signature) => {
     if (!name?.trim() || !signature) return;
+    // Persist the credential WITHOUT any per-document affirmation stamp.
+    const credential = stripAffirmation(signature);
     const nameChanged = name !== nameRef.current;
-    const sigChanged = signature !== sigRef.current;
+    const sigChanged = credential !== sigRef.current;
     if (!nameChanged && !sigChanged) return;
 
     // Always update local cache first (instant, works offline)
     nameRef.current = name;
-    sigRef.current = signature;
+    sigRef.current = credential;
     try {
       await AsyncStorage.setItem(CP_PROFILE_CACHE_KEY, JSON.stringify({
         cp_name: name,
-        cp_signature: signature,
+        cp_signature: credential,
       }));
     } catch (e) {
       // Non-blocking
@@ -109,7 +124,7 @@ export function useCpProfile() {
 
     // Then sync to backend (may fail if offline — that's OK)
     try {
-      await cpProfileAPI.updateProfile({ cp_name: name, cp_signature: signature });
+      await cpProfileAPI.updateProfile({ cp_name: name, cp_signature: credential });
     } catch (e) {
       console.warn('CP profile auto-save to backend failed (non-blocking):', e?.message);
     }

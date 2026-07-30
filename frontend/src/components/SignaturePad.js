@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { View, StyleSheet, Text, Pressable, PanResponder, TextInput, Platform } from 'react-native';
-import { Trash2, Check, PenTool } from 'lucide-react-native';
+import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
@@ -47,6 +47,32 @@ function PathRenderer({ paths, strokeColor = '#000000', strokeWidth = 2 }) {
   );
 }
 
+// Bilingual copy for the affirmation UI (EN default; CP surfaces are English
+// today, ES provided per the bilingual requirement). Only the affirmation
+// strings are localized here.
+const SIG_STRINGS = {
+  en: {
+    verified: 'VERIFIED',
+    unaffirmed: 'UNAFFIRMED',
+    affirm: 'Affirm for this document',
+    clearResign: 'Clear & Re-sign',
+    unaffirmedHint: 'Inherited signature — tap Affirm to attest for this document.',
+  },
+  es: {
+    verified: 'VERIFICADO',
+    unaffirmed: 'SIN AFIRMAR',
+    affirm: 'Afirmar para este documento',
+    clearResign: 'Borrar y Firmar de nuevo',
+    unaffirmedHint: 'Firma heredada — toque Afirmar para dar fe de este documento.',
+  },
+};
+
+// A signature counts as affirmed for THIS document only when it carries a
+// per-document affirmation stamp. An inherited profile credential does NOT.
+function sigIsAffirmed(sig) {
+  return !!(sig && typeof sig === 'object' && sig.affirmed === true);
+}
+
 const SignaturePad = ({
   onSignatureCapture,
   signerName,
@@ -59,14 +85,21 @@ const SignaturePad = ({
   // is passed — used on forms where the caller wants the signer to
   // retype/redraw each time instead of inheriting a cached signature.
   autoLock = true,
+  lang = 'en',
 }) => {
   const { isDark, colors } = useTheme();
   const styles = buildStyles(colors, isDark);
+  const S = SIG_STRINGS[lang] || SIG_STRINGS.en;
 
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
   const [isSigned, setIsSigned] = useState(autoLock ? !!existingSignature : false);
   const [signatureData, setSignatureData] = useState(existingSignature);
+  // Affirmed FOR THIS DOCUMENT. An inherited profile signature starts
+  // UNAFFIRMED; a signature persisted as affirmed on this doc (a reopened
+  // draft) starts affirmed; drawing or tapping Affirm this session affirms it.
+  // Never render VERIFIED unless this is true.
+  const [isAffirmed, setIsAffirmed] = useState(sigIsAffirmed(existingSignature));
   const containerRef = useRef(null);
 
   // ── Refs to avoid stale closures in PanResponder ──
@@ -83,6 +116,7 @@ const SignaturePad = ({
       setIsSigned(true);
       setSignatureData(existingSignature);
       isSignedRef.current = true;
+      setIsAffirmed(sigIsAffirmed(existingSignature));
     }
   }, [existingSignature]);
 
@@ -121,6 +155,7 @@ const SignaturePad = ({
     setCurrentPath([]);
     setIsSigned(false);
     setSignatureData(null);
+    setIsAffirmed(false);
     isSignedRef.current = false;
     onSignatureCapture?.(null);
   }, [onSignatureCapture]);
@@ -130,17 +165,41 @@ const SignaturePad = ({
   const handleConfirm = useCallback(() => {
     if (!canConfirm) return;
 
+    // A fresh draw is inherently affirmed for THIS document — stamp it now.
+    const now = new Date().toISOString();
     const sigData = {
       paths: pathsRef.current,
       signerName: signerName?.trim(),
-      timestamp: new Date().toISOString(),
+      timestamp: now,
+      affirmed: true,
+      affirmedAt: now,
     };
 
     setSignatureData(sigData);
     setIsSigned(true);
+    setIsAffirmed(true);
     isSignedRef.current = true;
     onSignatureCapture?.(sigData);
   }, [canConfirm, signerName, onSignatureCapture]);
+
+  // ONE explicit affirmative action per document: keep the inherited credential
+  // image but stamp a FRESH affirmation timestamp onto THIS record and emit it.
+  const handleAffirm = useCallback(() => {
+    const now = new Date().toISOString();
+    const base = (signatureData && typeof signatureData === 'object')
+      ? signatureData
+      : { data: signatureData };
+    const affirmedSig = {
+      ...base,
+      signerName: signerName?.trim() || base.signerName,
+      timestamp: now,
+      affirmed: true,
+      affirmedAt: now,
+    };
+    setSignatureData(affirmedSig);
+    setIsAffirmed(true);
+    onSignatureCapture?.(affirmedSig);
+  }, [signatureData, signerName, onSignatureCapture]);
 
   // ── Render active drawing paths (current stroke + completed strokes) ──
   const renderPaths = () => {
@@ -156,9 +215,9 @@ const SignaturePad = ({
           <PenTool size={16} strokeWidth={1.5} color={colors.text.muted} />
           <Text style={styles.title}>{title}</Text>
         </View>
-        {isSigned && signatureData?.timestamp && (
+        {isAffirmed && (signatureData?.affirmedAt || signatureData?.timestamp) && (
           <Text style={styles.timestamp}>
-            {new Date(signatureData.timestamp).toLocaleTimeString()}
+            {new Date(signatureData.affirmedAt || signatureData.timestamp).toLocaleTimeString()}
           </Text>
         )}
       </View>
@@ -204,10 +263,17 @@ const SignaturePad = ({
             ) : (
               <Text style={styles.signedText}>✓ Signed</Text>
             )}
-            <View style={styles.signedBadge}>
-              <Check size={12} strokeWidth={2} color={semantic.verified} />
-              <Text style={styles.signedBadgeText}>VERIFIED</Text>
-            </View>
+            {isAffirmed ? (
+              <View style={styles.signedBadge}>
+                <Check size={12} strokeWidth={2} color={semantic.verified} />
+                <Text style={styles.signedBadgeText}>{S.verified}</Text>
+              </View>
+            ) : (
+              <View style={styles.unaffirmedBadge}>
+                <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
+                <Text style={styles.unaffirmedBadgeText}>{S.unaffirmed}</Text>
+              </View>
+            )}
           </View>
         ) : paths.length === 0 && currentPath.length === 0 ? (
           <View style={styles.placeholder}>
@@ -222,11 +288,24 @@ const SignaturePad = ({
       {/* Actions */}
       {!disabled && (
         <View style={styles.actions}>
-          {isSigned ? (
+          {isSigned && isAffirmed ? (
             <Pressable onPress={handleClear} style={styles.clearBtn}>
               <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
-              <Text style={styles.clearText}>Clear & Re-sign</Text>
+              <Text style={styles.clearText}>{S.clearResign}</Text>
             </Pressable>
+          ) : isSigned && !isAffirmed ? (
+            // Inherited credential — require ONE explicit affirmation for this
+            // document, or clear it to draw a fresh one.
+            <>
+              <Pressable onPress={handleClear} style={styles.actionBtn}>
+                <Trash2 size={16} strokeWidth={1.5} color={colors.text.muted} />
+                <Text style={styles.actionText}>{S.clearResign}</Text>
+              </Pressable>
+              <Pressable onPress={handleAffirm} style={[styles.actionBtn, styles.affirmBtn]}>
+                <Check size={16} strokeWidth={1.5} color="#fff" />
+                <Text style={styles.confirmText}>{S.affirm}</Text>
+              </Pressable>
+            </>
           ) : (
             <>
               <Pressable
@@ -252,6 +331,11 @@ const SignaturePad = ({
             </>
           )}
         </View>
+      )}
+
+      {/* Inherited-but-unaffirmed hint */}
+      {isSigned && !isAffirmed && (
+        <Text style={styles.unaffirmedHint}>{S.unaffirmedHint}</Text>
       )}
 
       {/* Hint if name is missing */}
@@ -378,6 +462,24 @@ function buildStyles(colors, isDark) {
       color: semantic.verified,
       letterSpacing: 0.5,
     },
+    unaffirmedBadge: {
+      position: 'absolute',
+      bottom: spacing.sm,
+      right: spacing.sm,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: semantic.attentionBg,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 4,
+      borderRadius: borderRadius.full,
+    },
+    unaffirmedBadgeText: {
+      fontSize: 10,
+      fontWeight: '600',
+      color: semantic.attention,
+      letterSpacing: 0.5,
+    },
     actions: {
       flexDirection: 'row',
       gap: spacing.sm,
@@ -412,6 +514,11 @@ function buildStyles(colors, isDark) {
       fontWeight: '500',
       color: '#fff',
     },
+    affirmBtn: {
+      flex: 2,
+      backgroundColor: semantic.attention,
+      borderColor: semantic.attention,
+    },
     clearBtn: {
       flex: 1,
       flexDirection: 'row',
@@ -429,6 +536,12 @@ function buildStyles(colors, isDark) {
       color: semantic.neutralStrong,
     },
     hintText: {
+      fontSize: 12,
+      color: semantic.attention,
+      textAlign: 'center',
+      marginTop: spacing.sm,
+    },
+    unaffirmedHint: {
       fontSize: 12,
       color: semantic.attention,
       textAlign: 'center',

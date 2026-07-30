@@ -14135,6 +14135,63 @@ async def get_logbook(logbook_id: str, current_user = Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Logbook not found")
     return serialize_id(logbook)
 
+def _parse_iso_dt(raw):
+    """Parse an ISO-8601 string to an aware UTC datetime, or None."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+# How far a claimed affirmation may sit BEFORE the document's own date before we
+# treat it as implausible (timezone slack + legitimate early drafting).
+_AFFIRM_BACKDATE_GRACE = timedelta(days=2)
+# Clock-skew tolerance for a "future" claim.
+_AFFIRM_FUTURE_SKEW = timedelta(minutes=5)
+
+
+def _finalize_cp_signature(sig, doc_date, now):
+    """Stamp + plausibility-validate an affirmed CP signature before storage.
+
+    The client-claimed ``affirmedAt`` is KEPT (with draft-all-day, the CP may
+    affirm hours before the log files, so the client instant is the real
+    attestation moment) — but the server cannot vouch for it, so we ALSO:
+
+      * server-stamp ``affirmed_received_at`` — the instant the server accepted
+        the affirmation, a time the server CAN vouch for; and
+      * validate the client claim. A future claim (> now + skew) or one
+        implausibly older than the document's date is FLAGGED via
+        ``affirmation_flag`` — never silently stored as fact (the Fishman-expiry
+        lesson). An unparseable claim is flagged too. The value is preserved,
+        only annotated; nothing is suppressed.
+
+    Non-affirmed / non-dict signatures pass through untouched.
+    """
+    if not isinstance(sig, dict) or sig.get("affirmed") is not True:
+        return sig
+    out = dict(sig)
+    out["affirmed_received_at"] = now.isoformat()
+    claimed = _parse_iso_dt(sig.get("affirmedAt") or sig.get("timestamp"))
+    flag = None
+    if claimed is None:
+        flag = "UNPARSEABLE"
+    elif claimed > now + _AFFIRM_FUTURE_SKEW:
+        flag = "FUTURE"
+    else:
+        doc_start = _parse_iso_dt(str(doc_date) + "T00:00:00+00:00") if doc_date else None
+        if doc_start is not None and claimed < doc_start - _AFFIRM_BACKDATE_GRACE:
+            flag = "IMPLAUSIBLE_OLD"
+    if flag:
+        out["affirmation_flag"] = flag
+    else:
+        # Drop any stale flag a re-affirm cleared.
+        out.pop("affirmation_flag", None)
+    return out
+
+
 @api_router.post("/logbooks")
 async def create_logbook(data: LogbookCreate, current_user = Depends(get_current_user)):
     """Create a new logbook entry"""
@@ -14197,7 +14254,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
             {"_id": existing["_id"]},
             {"$set": {
                 "data": data.data,
-                "cp_signature": data.cp_signature,
+                "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
                 "cp_name": data.cp_name,
                 "status": data.status,
                 "updated_at": now,
@@ -14218,7 +14275,7 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "log_type": data.log_type,
         "date": data.date,
         "data": data.data,
-        "cp_signature": data.cp_signature,
+        "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
         "cp_name": data.cp_name,
         "status": data.status,
         "created_by": current_user.get("id"),
@@ -14263,7 +14320,11 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     if data.data is not None:
         update["data"] = data.data
     if data.cp_signature is not None:
-        update["cp_signature"] = data.cp_signature
+        # Stamp + validate against THIS document's date (fetch it once).
+        _lb = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}, {"date": 1})
+        update["cp_signature"] = _finalize_cp_signature(
+            data.cp_signature, (_lb or {}).get("date"), now
+        )
     if data.cp_name is not None:
         update["cp_name"] = data.cp_name
     if data.status is not None:
@@ -14356,9 +14417,22 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         "is_deleted": {"$ne": True},
     })
 
+    # Count SUBMITTED logbooks whose CP signature was inherited but never
+    # affirmed for that document (cp_signature present, cp_signature.affirmed
+    # not True). This surfaces the unaffirmed exception to the admin exactly
+    # like unsigned_orientations — an honest deficiency, not a hard block.
+    unaffirmed_logbooks = await db.logbooks.count_documents({
+        "project_id": project_id,
+        "status": "submitted",
+        "is_deleted": {"$ne": True},
+        "cp_signature": {"$ne": None},
+        "cp_signature.affirmed": {"$ne": True},
+    })
+
     return {
         "missing_toolbox_talk": missing_toolbox,
         "unsigned_orientations": unsigned_orientations,
+        "unaffirmed_logbooks": unaffirmed_logbooks,
         "week_start": week_start_str,
     }
 
@@ -14975,11 +15049,56 @@ async def serve_checkin_page_full(project_id: str, tag_id: str):
     return HTMLResponse(content=html_path.read_text(), status_code=200)
 
 # ==================== COMBINED REPORT GENERATOR ====================
+def _signature_affirmation_html(sig):
+    """The per-document affirmation banner. A signature is AFFIRMED only when the
+    CP took an explicit affirmative action on THIS document (sig.affirmed is
+    True). An inherited/reused credential or a legacy signature renders
+    UNAFFIRMED — an honest deficiency, never a VERIFIED stamp the signer never
+    made for this record. Mirrors SignaturePad's attention/verified treatment."""
+    affirmed = isinstance(sig, dict) and sig.get("affirmed") is True
+    if not affirmed:
+        return (
+            '<div style="font-size:12px;font-weight:700;color:#d97706;margin-top:4px;">'
+            '⚠ UNAFFIRMED — inherited signature, not affirmed for this document</div>'
+        )
+
+    def _fmt(raw):
+        return (str(raw)[:19].replace("T", " ") + " UTC") if raw else ""
+
+    claimed = _fmt(sig.get("affirmedAt") or sig.get("timestamp"))
+    received = _fmt(sig.get("affirmed_received_at"))
+    flag = sig.get("affirmation_flag")
+    # Server-received (a time the server can vouch for) is always shown.
+    recv_line = (
+        f'<div style="font-size:11px;color:#475569;">server-received {received}</div>'
+        if received else ""
+    )
+    if flag:
+        # The client-claimed time failed validation — say so, do NOT print it
+        # as fact.
+        return (
+            '<div style="font-size:12px;font-weight:700;color:#d97706;margin-top:4px;">'
+            '✓ AFFIRMED — claimed time NOT VERIFIED (' + flag + '): '
+            + (claimed or 'no time') + '</div>' + recv_line
+        )
+    claim_line = (
+        f'<div style="font-size:11px;color:#475569;">claimed {claimed}</div>'
+        if claimed else ""
+    )
+    return (
+        '<div style="font-size:12px;font-weight:700;color:#16a34a;margin-top:4px;">'
+        '✓ AFFIRMED for this document</div>' + claim_line + recv_line
+    )
+
+
 def render_signature_html(sig, label="CP Signature"):
     """Render a signature as email-safe HTML. Signatures stay as base64
-    since they are small PNGs critical for legal compliance."""
+    since they are small PNGs critical for legal compliance. Every rendered
+    signature carries an explicit AFFIRMED / UNAFFIRMED banner (see
+    _signature_affirmation_html)."""
     if not sig:
         return ""
+    status = _signature_affirmation_html(sig)
     if isinstance(sig, str):
         return (
             '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
@@ -14987,11 +15106,12 @@ def render_signature_html(sig, label="CP Signature"):
             + label + ':</td></tr>'
             '<tr><td><img src="data:image/png;base64,' + sig
             + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+            '<tr><td>' + status + '</td></tr>'
             '</table>'
         )
     if isinstance(sig, dict):
         sig_data = sig.get("data") or sig.get("paths") or ""
-        signer = sig.get("signer_name", "")
+        signer = sig.get("signer_name") or sig.get("signerName") or ""
         if isinstance(sig_data, str) and sig_data:
             full_label = f"{label} ({signer})" if signer else label
             return (
@@ -15000,14 +15120,21 @@ def render_signature_html(sig, label="CP Signature"):
                 + full_label + ':</td></tr>'
                 '<tr><td><img src="data:image/png;base64,' + sig_data
                 + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                '<tr><td>' + status + '</td></tr>'
                 '</table>'
             )
         if signer:
             return (
                 '<p style="color:#475569;margin:8px 0;">'
                 '<strong style="color:#0A1929;">' + label + ':</strong> '
-                + signer + ' (signed)</p>'
+                + signer + ' (signed)</p>' + status
             )
+        # A signature object with no drawable image and no signer — still record
+        # its affirmation status so the record is never silently blank.
+        return (
+            '<p style="color:#475569;margin:8px 0;">'
+            '<strong style="color:#0A1929;">' + label + ':</strong></p>' + status
+        )
     return ""
 
 

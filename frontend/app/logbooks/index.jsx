@@ -23,6 +23,7 @@ import {
   Calendar,
   Bell,
   ShieldAlert,
+  AlertTriangle,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
@@ -62,7 +63,7 @@ export default function LogBooksScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
-  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0 });
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0 });
   const [cpName, setCpName] = useState('');
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
@@ -120,7 +121,7 @@ export default function LogBooksScreen() {
     try {
       const [logs, notifs, scaffoldInfo, reqLogbooks] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
-        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0 })),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0 })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
         projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
       ]);
@@ -216,6 +217,7 @@ export default function LogBooksScreen() {
   };
 
   const missingToolbox = notifications?.missing_toolbox_talk || [];
+  const unaffirmedLogbooks = notifications?.unaffirmed_logbooks || 0;
   const visibleLogs = getVisibleLogTypes();
 
   const StatusBadge = ({ status }) => {
@@ -370,6 +372,23 @@ export default function LogBooksScreen() {
                 onPress={() => handleOpenLog('toolbox_talk')}
                 style={styles.notifBtn}
               />
+            </GlassCard>
+          )}
+
+          {/* Unaffirmed-signature alert — a filed logbook whose CP signature was
+              inherited but never affirmed for that document. Same attention
+              channel as the toolbox alert; an honest deficiency, not a block. */}
+          {unaffirmedLogbooks > 0 && (
+            <GlassCard style={styles.notifCard}>
+              <View style={styles.notifHeader}>
+                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                <Text style={styles.notifTitle}>
+                  {unaffirmedLogbooks} logbook{unaffirmedLogbooks > 1 ? 's' : ''} filed without an affirmed signature
+                </Text>
+              </View>
+              <Text style={styles.notifWorker}>
+                Reopen each and tap Affirm to attest the signature for that document.
+              </Text>
             </GlassCard>
           )}
 
