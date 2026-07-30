@@ -2,6 +2,23 @@
 
 Known gaps and deferred work, newest first.
 
+- **[HIGH] Compliance packet incomplete — several logbook types under-render.**
+  Found while extending report capitalization (commit 16df52c). In the report
+  renderers (`backend/server.py`):
+  - **hot_work, concrete_operations, crane_operations, excavation_monitoring,
+    ssc_daily_safety_log** render in `generate_combined_report` as a raw
+    `data.items()` key-value dump with NO field map — every field emitted
+    generically, per-field semantics unknown (which is why capitalization was
+    excluded, not applied blindly).
+  - **osha_log, scaffold_maintenance, subcontractor_orientation** render NO
+    structured fields at all: `generate_single_logbook_html` shows a bare
+    `Status:` stub and `generate_combined_report` skips them entirely.
+  These are the documents an inspector asks for BY NAME, so the gap is
+  **completeness of the compliance packet, not formatting**. Fixing it needs a
+  per-type field map for each type in BOTH renderers
+  (`generate_single_logbook_html` and `generate_combined_report`). Capitalization
+  then falls out for free via the existing `_capitalize_first` / `_sentence_case`.
+
 - **Exception-surface drift on the logbooks screen (`app/logbooks/index.jsx`).**
   Three exception signals now render three different ways: `unsigned_orientations`
   is an invisible list-visibility gate (no count shown), `missing_toolbox_talk` is

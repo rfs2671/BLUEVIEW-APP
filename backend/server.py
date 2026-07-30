@@ -11987,19 +11987,22 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         att_rows = ""
         for a in data.get("attendees", []):
             signed = "&#10003;" if a.get("signed") else "&mdash;"
+            # PR G: attendee name/company are short-entry.
             att_rows += (
-                f'<tr><td {TD}>{a.get("name", "")}</td>'
-                f'<td {TD}>{a.get("company", "")}</td>'
+                f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{signed}</td></tr>'
             )
-        
+
         tb_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
-        
+
+        # PR G: location/company/performed-by/cp are short-entry; time excluded;
+        # topics are enum labels already title-cased.
         body_html = (
             info_box(
-                f'<strong style="color:#0A1929;">Location:</strong> {data.get("location", "N/A")}<br />'
-                f'<strong style="color:#0A1929;">Company:</strong> {data.get("company_name", "N/A")}<br />'
-                f'<strong style="color:#0A1929;">Performed By:</strong> {data.get("performed_by", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(data.get("location", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Company:</strong> {_capitalize_first(data.get("company_name", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Performed By:</strong> {_capitalize_first(data.get("performed_by", "N/A"))}<br />'
                 f'<strong style="color:#0A1929;">Time:</strong> {data.get("meeting_time", "N/A")}'
             )
             + bold_para("Topics", topic_list or "None")
@@ -12008,7 +12011,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
             + (att_rows or f'<tr><td colspan="3" {TD}>—</td></tr>')
             + '</table>'
-            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
         )
     
@@ -12019,20 +12022,22 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         w_rows = ""
         for w in workers:
             if w.get("name", "").strip():
+                # PR G: name/company short-entry; osha_number excluded (identifier).
                 w_rows += (
-                    f'<tr><td {TD}>{w.get("name", "")}</td>'
-                    f'<td {TD}>{w.get("company", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
                 )
-        
+
         ps_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
-        
+
+        # PR G: company/location short-entry; total count excluded (numeric).
         body_html = (
             info_box(
-                f'<strong style="color:#0A1929;">Company:</strong> {data.get("company", "N/A")}<br />'
-                f'<strong style="color:#0A1929;">Location:</strong> {data.get("project_location", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Company:</strong> {_capitalize_first(data.get("company", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(data.get("project_location", "N/A"))}<br />'
                 f'<strong style="color:#0A1929;">Total Workers:</strong> {data.get("total_count", len(workers))}'
             )
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
@@ -12041,7 +12046,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
             + (w_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
             + '</table>'
-            + bold_para("CP", logbook.get("cp_name", "N/A"))
+            + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + ps_sig
         )
     
@@ -15341,13 +15346,16 @@ async def generate_combined_report(project_id: str, date: str) -> str:
                         'display:inline-block;margin:3px;" /></a>'
                     )
 
+            # PR G + PR B (combined-report parity): company is short-entry AND the
+            # UNASSIGNED sentinel renders as pending here too; description is prose;
+            # location short-entry. crew_id/num_workers excluded.
             act_rows += (
                 f'<tr>'
                 f'<td {TD}>{act.get("crew_id", "")}</td>'
-                f'<td {TD}>{act.get("company", "")}</td>'
+                f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
                 f'<td {TD}>{act.get("num_workers", "")}</td>'
-                f'<td {TD}>{act.get("work_description", "")}</td>'
-                f'<td {TD}>{act.get("work_locations", "")}</td>'
+                f'<td {TD}>{_sentence_case(act.get("work_description", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(act.get("work_locations", ""))}</td>'
                 f'</tr>'
             )
             if photos:
@@ -15364,10 +15372,11 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         obs_html = ""
         obs_rows = ""
         for obs in d.get("observations", []):
+            # PR G: description/remedy prose; responsible party short-entry.
             obs_rows += (
-                f'<tr><td {TD}>{obs.get("description", "")}</td>'
-                f'<td {TD}>{obs.get("responsible_party", "")}</td>'
-                f'<td {TD}>{obs.get("remedy", "")}</td></tr>'
+                f'<tr><td {TD}>{_sentence_case(obs.get("description", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(obs.get("responsible_party", ""))}</td>'
+                f'<td {TD}>{_sentence_case(obs.get("remedy", ""))}</td></tr>'
             )
         if obs_rows:
             obs_html = (
@@ -15391,10 +15400,10 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             section_title("Daily Jobsite Log (NYC DOB 3301-02)")
             + info_box(
                 f'<strong style="color:#0A1929;">Weather:</strong> {weather_str}<br />'
-                f'<strong style="color:#0A1929;">Description:</strong> {d.get("general_description", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Description:</strong> {_sentence_case(d.get("general_description", "N/A"))}<br />'
                 f'<strong style="color:#0A1929;">Time In:</strong> {d.get("time_in") or "N/A"}'
                 f' &nbsp;&nbsp; <strong style="color:#0A1929;">Time Out:</strong> {d.get("time_out") or "N/A"}<br />'
-                f'<strong style="color:#0A1929;">Areas Visited:</strong> {d.get("areas_visited") or "N/A"}'
+                f'<strong style="color:#0A1929;">Areas Visited:</strong> {_capitalize_first(d.get("areas_visited") or "N/A")}'
             )
             + sub_title("Activity Details")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
@@ -15406,7 +15415,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + bold_para("Equipment", equip_list or "None")
             + bold_para("Inspected", check_list or "None")
             + obs_html
-            + (bold_para("Visitors / Deliveries", visitors) if visitors else "")
+            + (bold_para("Visitors / Deliveries", _sentence_case(visitors)) if visitors else "")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="margin-top:16px;border-top:1px solid #e2e8f0;"><tr><td style="padding-top:12px;">'
             + bold_para("CP", daily_jobsite.get("cp_name", "N/A"))
@@ -15426,20 +15435,22 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         att_rows = ""
         for a in td_data.get("attendees", []):
             signed = "&#10003;" if a.get("signed") else "&mdash;"
+            # PR G: attendee name/company short-entry.
             att_rows += (
-                f'<tr><td {TD}>{a.get("name", "")}</td>'
-                f'<td {TD}>{a.get("company", "")}</td>'
+                f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{signed}</td></tr>'
             )
 
         tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
 
+        # PR G: location/company/performed-by/cp short-entry; time excluded.
         toolbox_html = (
             section_title("Tool Box Talk")
             + info_box(
-                f'<strong style="color:#0A1929;">Location:</strong> {td_data.get("location", "N/A")}<br />'
-                f'<strong style="color:#0A1929;">Company:</strong> {td_data.get("company_name", "N/A")}<br />'
-                f'<strong style="color:#0A1929;">Performed By:</strong> {td_data.get("performed_by", "N/A")}<br />'
+                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(td_data.get("location", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Company:</strong> {_capitalize_first(td_data.get("company_name", "N/A"))}<br />'
+                f'<strong style="color:#0A1929;">Performed By:</strong> {_capitalize_first(td_data.get("performed_by", "N/A"))}<br />'
                 f'<strong style="color:#0A1929;">Time:</strong> {td_data.get("meeting_time", "N/A")}'
             )
             + bold_para("Topics", topic_list or "None")
@@ -15448,7 +15459,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
             + (att_rows or EMPTY_3)
             + '</table>'
-            + bold_para("CP", toolbox.get("cp_name", "N/A"))
+            + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig
         )
 
@@ -15462,9 +15473,10 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         w_rows = ""
         for w in pd.get("workers", []):
             if w.get("name", "").strip():
+                # PR G: name/company short-entry; osha_number excluded.
                 w_rows += (
-                    f'<tr><td {TD}>{w.get("name", "")}</td>'
-                    f'<td {TD}>{w.get("company", "")}</td>'
+                    f'<tr><td {TD}>{_capitalize_first(w.get("name", ""))}</td>'
+                    f'<td {TD}>{_capitalize_first(w.get("company", ""))}</td>'
                     f'<td {TD}>{w.get("osha_number", "")}</td>'
                     f'<td {TD}>{w.get("had_injury") or "&mdash;"}</td>'
                     f'<td {TD}>{w.get("inspected_ppe") or "&mdash;"}</td></tr>'
@@ -15480,7 +15492,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
               f'<th {TH}>Injury</th><th {TH}>PPE</th></tr>'
             + (w_rows or EMPTY_5)
             + '</table>'
-            + bold_para("CP", preshift.get("cp_name", "N/A"))
+            + bold_para("CP", _capitalize_first(preshift.get("cp_name", "N/A")))
             + ps_sig
         )
 
@@ -15492,12 +15504,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         # Subcontractor cards
         sub_rows = ""
         for card in (daily_log.get("subcontractor_cards") or []):
+            # PR G: company/trade short-entry; description prose; hours/workers excluded.
             sub_rows += (
-                f'<tr><td {TD}>{card.get("company_name", "N/A")}</td>'
-                f'<td {TD}>{card.get("trade", "N/A")}</td>'
+                f'<tr><td {TD}>{_capitalize_first(card.get("company_name", "N/A"))}</td>'
+                f'<td {TD}>{_capitalize_first(card.get("trade", "N/A"))}</td>'
                 f'<td {TD}>{card.get("num_workers", 0)}</td>'
                 f'<td {TD}>{card.get("hours", "N/A")}</td>'
-                f'<td {TD}>{card.get("description", "N/A")}</td></tr>'
+                f'<td {TD}>{_sentence_case(card.get("description", "N/A"))}</td></tr>'
             )
 
         # Safety checklist
@@ -15510,13 +15523,14 @@ async def generate_combined_report(project_id: str, date: str) -> str:
                 f'<td {TD}>{st}</td><td {TD}>{cb}</td></tr>'
             )
 
+        # PR G: corrective actions / incident log / work performed are prose.
         corrective_na = daily_log.get("corrective_actions_na", False)
-        corrective_text = "N/A" if corrective_na else (daily_log.get("corrective_actions", "") or "None recorded")
+        corrective_text = "N/A" if corrective_na else (_sentence_case(daily_log.get("corrective_actions", "")) or "None recorded")
 
         incident_na = daily_log.get("incident_log_na", False)
-        incident_text = "N/A" if incident_na else (daily_log.get("incident_log", "") or "None recorded")
+        incident_text = "N/A" if incident_na else (_sentence_case(daily_log.get("incident_log", "")) or "None recorded")
 
-        work_performed = daily_log.get("work_performed", "")
+        work_performed = _sentence_case(daily_log.get("work_performed", ""))
         work_html = (sub_title("Work Performed") + para(work_performed)) if work_performed else ""
 
         # Superintendent signature
