@@ -28,6 +28,7 @@ import {
   Calendar,
   Pen,
   ShieldCheck,
+  AlertTriangle,
   CreditCard,
   ChevronDown,
   ChevronUp,
@@ -102,6 +103,22 @@ export default function WorkerDetailScreen() {
   };
   const isSiteDevice = user?.role === 'site_device';
   const canViewOsha = isAdmin || isSiteDevice;
+
+  // PR B: cert-level review flag surface. The check-in review screen resolves
+  // the ENTRY decision (Admit / Send home) but never verifies the credential —
+  // the SST cert stays flagged (needs_review / review_reason). This is where
+  // that flag is rendered so "stays flagged for review" is not a dead end.
+  // English-only: this screen has no language path. Codes mirror review.jsx.
+  const CERT_REVIEW_REASON = {
+    CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
+    EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
+    EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
+    EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
+    DUPLICATE_SST: 'Duplicate SST records — resolve to one',
+  };
+  const flaggedCerts = (certifications || []).filter(
+    (c) => c && (c.needs_review || c.review_reason)
+  );
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -446,6 +463,22 @@ export default function WorkerDetailScreen() {
                   <CreditCard size={32} strokeWidth={1} color={colors.text.subtle} />
                   <Text style={s.emptyText}>No OSHA card on file</Text>
                   <Text style={s.emptySubtext}>Worker will upload during NFC check-in</Text>
+                </GlassCard>
+              )}
+
+              {/* PR B: the SST credential is still flagged for review even after
+                  a CP admits the check-in. Surfaced here beside the card. */}
+              {flaggedCerts.length > 0 && (
+                <GlassCard style={s.certReviewCard}>
+                  <View style={s.certReviewHeader}>
+                    <AlertTriangle size={14} strokeWidth={1.5} color={semantic.attention} />
+                    <Text style={s.certReviewTitle}>Credential needs review</Text>
+                  </View>
+                  {flaggedCerts.map((c, i) => (
+                    <Text key={i} style={s.certReviewText}>
+                      • {CERT_REVIEW_REASON[c.review_reason] || 'Verify the card'}
+                    </Text>
+                  ))}
                 </GlassCard>
               )}
             </View>
@@ -972,6 +1005,28 @@ function buildStyles(colors, isDark) {
   certExpiry: {
     fontSize: 12,
     color: colors.text.muted,
+  },
+  certReviewCard: {
+    marginTop: spacing.sm,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+    backgroundColor: semantic.attentionBg,
+  },
+  certReviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.xs,
+  },
+  certReviewTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: semantic.attention,
+  },
+  certReviewText: {
+    fontSize: 13,
+    color: colors.text.secondary,
   },
   deleteBtn: {
     padding: spacing.sm,

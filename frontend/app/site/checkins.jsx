@@ -246,6 +246,10 @@ export default function SiteCheckInsScreen() {
                 // need an admin/CP decision recorded against them.
                 const checkinId = checkin._id || checkin.id;
                 const isExpiredSst = checkin.sst_status === 'expired';
+                // PR B: an SST whose class/expiry we could not confirm. Its own
+                // attention treatment — reuses the expired reviewCard rather
+                // than inventing a new pattern — but never reads as expired.
+                const isUnknownSst = checkin.sst_status === 'unknown';
                 const reviewed = checkin.review_decision;
 
                 return (
@@ -331,6 +335,61 @@ export default function SiteCheckInsScreen() {
                           >
                             <Check size={14} strokeWidth={2} color="#4ade80" />
                             <Text style={[s.reviewBtnText, s.approveText]}>Approve</Text>
+                          </Pressable>
+                          <Pressable
+                            onPress={() => handleReview(checkin, 'sent_home')}
+                            disabled={reviewingId === checkinId}
+                            style={[s.reviewBtn, s.sendHomeBtn,
+                              reviewingId === checkinId && s.reviewBtnDisabled]}
+                          >
+                            <X size={14} strokeWidth={2} color="#f87171" />
+                            <Text style={[s.reviewBtnText, s.sendHomeText]}>Send home</Text>
+                          </Pressable>
+                        </View>
+                      )}
+                    </GlassCard>
+                  )}
+
+                  {isUnknownSst && (
+                    <GlassCard style={s.reviewCard}>
+                      <View style={s.reviewHeader}>
+                        <AlertTriangle size={14} strokeWidth={1.5} color={semantic.attention} />
+                        <Text style={s.reviewTitle}>
+                          {'Unverified SST — '}
+                          {checkin.sst_unknown_reason === 'CLASS'
+                            ? 'class could not be read'
+                            : checkin.sst_unknown_reason === 'EXPIRY'
+                            ? 'expiration could not be confirmed'
+                            : checkin.sst_unknown_reason === 'BOTH'
+                            ? 'class and expiration could not be confirmed'
+                            : 'credential could not be confirmed'}
+                        </Text>
+                      </View>
+                      {/* Approve here ADMITS the worker; it does NOT verify the
+                          card. The credential stays flagged for cert review. */}
+                      <Text style={s.reviewHint}>
+                        Ask the worker to re-scan the card. Approving admits them
+                        but does not verify the credential.
+                      </Text>
+
+                      {reviewed ? (
+                        <Text style={s.reviewedText}>
+                          {reviewed === 'approved'
+                            ? 'Admitted — credential still unverified'
+                            : 'Sent home'}
+                          {checkin.reviewed_by_name ? ` by ${checkin.reviewed_by_name}` : ''}
+                          {checkin.reviewed_at ? ` • ${formatDateTime(checkin.reviewed_at)}` : ''}
+                        </Text>
+                      ) : (
+                        <View style={s.reviewActions}>
+                          <Pressable
+                            onPress={() => handleReview(checkin, 'approved')}
+                            disabled={reviewingId === checkinId}
+                            style={[s.reviewBtn, s.approveBtn,
+                              reviewingId === checkinId && s.reviewBtnDisabled]}
+                          >
+                            <Check size={14} strokeWidth={2} color="#4ade80" />
+                            <Text style={[s.reviewBtnText, s.approveText]}>Admit</Text>
                           </Pressable>
                           <Pressable
                             onPress={() => handleReview(checkin, 'sent_home')}
@@ -512,6 +571,12 @@ function buildStyles(colors, isDark) {
   reviewedText: {
     fontSize: 15,
     color: colors.text.secondary,
+  },
+  reviewHint: {
+    fontSize: 13,
+    color: colors.text.muted,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
   },
   reviewActions: {
     flexDirection: 'row',

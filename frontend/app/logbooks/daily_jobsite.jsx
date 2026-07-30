@@ -226,7 +226,12 @@ export default function DailyJobsiteLog() {
         const rows = Array.isArray(headcount) ? headcount : [];
         const autoActivities = rows.map((r, i) => ({
           crew_id: `C${i + 1}`,
-          company: r.sub_name || 'Unknown',
+          // PR B: 'UNASSIGNED' is a placeholder (worker's sub not on the roster
+          // at check-in), not a company. Seed the field EMPTY so it reads as
+          // pending and prompts the CP to assign the accountable sub — never
+          // stamp the sentinel onto the 3301-02. The headcount is preserved.
+          company: (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
+            ? r.sub_name : '',
           num_workers: String(r.worker_count_today ?? 0),
           work_description: r.trade || '',
           work_locations: '',
@@ -779,6 +784,12 @@ export default function DailyJobsiteLog() {
                     <TextInput style={s.activityInput} value={act.company}
                       onChangeText={(v) => updateActivity(i, 'company', v)}
                       placeholder="Company" placeholderTextColor={colors.text.subtle} />
+                    {/* PR B: workers present but no company = pending assignment.
+                        Reads as pending in the editor; the 3301-02 export renders
+                        it as "Pending assignment" too — never dropped. */}
+                    {!((act.company || '').trim()) && (parseInt(act.num_workers, 10) || 0) > 0 ? (
+                      <Text style={s.pendingHint}>Pending assignment</Text>
+                    ) : null}
                   </View>
                   <View style={s.activityField}>
                     <Text style={s.activityLabel}># WORKERS</Text>
@@ -1081,6 +1092,9 @@ function buildStyles(colors, isDark) {
   activityInput: {
     backgroundColor: withAlpha('#ffffff', 0.04), borderRadius: borderRadius.sm,
     padding: spacing.xs, fontSize: 14, color: colors.text.primary,
+  },
+  pendingHint: {
+    fontSize: 11, fontWeight: '600', color: semantic.attention, marginTop: 2,
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   chip: {

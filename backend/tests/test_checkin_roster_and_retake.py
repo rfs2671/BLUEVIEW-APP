@@ -484,5 +484,63 @@ class CheckInNeverBlocksTest(unittest.TestCase):
         self.assertTrue(r.json().get("success"))
 
 
+class SstUnknownReasonTest(unittest.TestCase):
+    """PR B: the checkin row freezes WHAT was unknown at check-in."""
+
+    def _row(self, **osha):
+        db = _make_db()
+        with patch.object(server, "db", db), _dispatch_patch():
+            resp = _client().post(
+                "/api/checkin/register-and-checkin",
+                json=_body(osha_data=_valid_osha(**osha)),
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        return db.checkins.inserted[0]
+
+    def test_class_unknown(self):
+        # Illegible class + valid future expiry → class is the unknown.
+        row = self._row(card_class=None, expiration="01/01/2030")
+        self.assertEqual(row.get("sst_status"), "unknown")
+        self.assertEqual(row.get("sst_unknown_reason"), "CLASS")
+
+    def test_expiry_unknown(self):
+        # Legible class + missing expiry → expiry is the unknown.
+        row = self._row(card_class="LIMITED", expiration=None)
+        self.assertEqual(row.get("sst_status"), "unknown")
+        self.assertEqual(row.get("sst_unknown_reason"), "EXPIRY")
+
+    def test_both_unknown(self):
+        row = self._row(card_class=None, expiration=None)
+        self.assertEqual(row.get("sst_status"), "unknown")
+        self.assertEqual(row.get("sst_unknown_reason"), "BOTH")
+
+    def test_valid_has_no_unknown_reason(self):
+        db = _make_db()
+        with patch.object(server, "db", db), _dispatch_patch():
+            resp = _client().post(
+                "/api/checkin/register-and-checkin", json=_body(),
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        row = db.checkins.inserted[0]
+        self.assertEqual(row.get("sst_status"), "valid")
+        self.assertIsNone(row.get("sst_unknown_reason"))
+
+
+class DisplaySubCompanyTest(unittest.TestCase):
+    """PR B: the UNASSIGNED sentinel renders as pending, never a company."""
+
+    def test_unassigned_is_pending(self):
+        self.assertEqual(server._display_sub_company("UNASSIGNED"), "Pending assignment")
+        self.assertEqual(server._display_sub_company("unassigned"), "Pending assignment")
+
+    def test_empty_is_pending(self):
+        self.assertEqual(server._display_sub_company(""), "Pending assignment")
+        self.assertEqual(server._display_sub_company(None), "Pending assignment")
+
+    def test_real_company_passes_through(self):
+        self.assertEqual(server._display_sub_company("AAZ"), "AAZ")
+        self.assertEqual(server._display_sub_company("  Real Sub LLC "), "Real Sub LLC")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9605,6 +9605,25 @@ async def register_and_checkin(data: dict):
     else:
         sst_status = "valid"
 
+    # PR B: freeze WHAT is unknown — class / expiry / both — as an immutable COPY
+    # derived from the SST cert AT CHECK-IN. The cert can change later (re-scan,
+    # admin edit); this row is the record of what was known now, so the value is
+    # copied here, never re-derived at read time. Same rule as worker_trade /
+    # worker_company. None unless sst_status == "unknown".
+    sst_unknown_reason = None
+    if sst_status == "unknown" and _sst_cert is not None:
+        _class_unknown = str(_sst_cert.get("type", "")) not in SST_CLASS_TYPES
+        _expiry_unknown = (
+            _sst_cert.get("expiration_date") is None
+            or bool(_sst_cert.get("expiration_raw_rejected"))
+        )
+        if _class_unknown and _expiry_unknown:
+            sst_unknown_reason = "BOTH"
+        elif _class_unknown:
+            sst_unknown_reason = "CLASS"
+        elif _expiry_unknown:
+            sst_unknown_reason = "EXPIRY"
+
     # FEATURE 2.10: coerce the client-reported OCR attempt count + last failure
     # reason into safe shapes before freezing them on the row.
     try:
@@ -9645,6 +9664,8 @@ async def register_and_checkin(data: dict):
         "sst_card_number": sst_card_number,
         "sst_expiration": sst_expiration,
         "sst_status": sst_status,
+        # PR B: immutable copy of what was unknown at check-in (class/expiry/both).
+        "sst_unknown_reason": sst_unknown_reason,
         "cert_cleared": bool(cert_result.get("cleared")),
         # FEATURE 2.10: card-photo OCR telemetry, so an admin reviewing an
         # `unknown`/flagged card sees the photo was tried and unreadable rather
@@ -10538,17 +10559,23 @@ async def get_flagged_project_checkins(
 
     # "Unreviewed" covers rows written before the review feature existed
     # (field absent) as well as rows explicitly reset to null.
-    unreviewed_expired = {
-        "sst_status": "expired",
-        "$or": [
-            {"review_decision": {"$exists": False}},
-            {"review_decision": None},
-        ],
-    }
+    _unreviewed = [
+        {"review_decision": {"$exists": False}},
+        {"review_decision": None},
+    ]
+    unreviewed_expired = {"sst_status": "expired", "$or": _unreviewed}
+    # PR B: an unknown SST (class/expiry we could not confirm) is as much a
+    # review case as an expired one — surface it here so the review screen can
+    # act on it, instead of it living only in the notification inbox.
+    unreviewed_unknown = {"sst_status": "unknown", "$or": _unreviewed}
     query = {
         "project_id": project_id,
         "is_deleted": {"$ne": True},
-        "$or": [unreviewed_expired, {"needs_trade_assignment": True}],
+        "$or": [
+            unreviewed_expired,
+            unreviewed_unknown,
+            {"needs_trade_assignment": True},
+        ],
     }
 
     checkins = await db.checkins.find(query).sort(
@@ -10581,6 +10608,18 @@ async def get_flagged_project_checkins(
         reasons = []
         if s.get("sst_status") == "expired" and not s.get("review_decision"):
             reasons.append("expired_sst")
+        if s.get("sst_status") == "unknown" and not s.get("review_decision"):
+            reasons.append("unknown_sst")
+            # Surface the SST cert's CURRENT granular review_reason so the review
+            # screen can name exactly what to fix (CLASS_UNVERIFIED / EXPIRY_*).
+            # This is advisory display of live cert state — the immutable
+            # what-was-known copy stays on the row as sst_unknown_reason.
+            _sst = next(
+                (c for c in (worker.get("certifications") or [])
+                 if str(c.get("type", "")).startswith("SST")),
+                None,
+            )
+            s["sst_review_reason"] = (_sst or {}).get("review_reason")
         if s.get("needs_trade_assignment"):
             reasons.append("needs_trade")
         s["flag_reasons"] = reasons
@@ -11881,7 +11920,7 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         for i, act in enumerate(data.get("activities", [])):
             act_rows += (
                 f'<tr><td {TD}>{act.get("crew_name", "")}</td>'
-                f'<td {TD}>{act.get("company", "N/A")}</td>'
+                f'<td {TD}>{_display_sub_company(act.get("company"))}</td>'
                 f'<td {TD}>{act.get("num_workers", 0)}</td>'
                 f'<td {TD}>{act.get("work_description", "N/A")}</td>'
                 f'<td {TD}>{act.get("work_locations", "")}</td></tr>'
@@ -15089,6 +15128,19 @@ def _signature_affirmation_html(sig):
         '<div style="font-size:12px;font-weight:700;color:#16a34a;margin-top:4px;">'
         '✓ AFFIRMED for this document</div>' + claim_line + recv_line
     )
+
+
+def _display_sub_company(name):
+    """Render a subcontractor/company for a report or headcount. The
+    'UNASSIGNED' sentinel — a worker whose sub was not on the project roster at
+    check-in — is a PLACEHOLDER, not a company. Show it as an explicit pending
+    state so an inspector reads 'awaiting assignment', never a real sub named
+    UNASSIGNED. The row and its headcount stay visible; ONLY the label changes —
+    a pending row is better than a dropped worker (PR B, constraint 2)."""
+    s = str(name or "").strip()
+    if not s or s.upper() == "UNASSIGNED":
+        return "Pending assignment"
+    return s
 
 
 def render_signature_html(sig, label="CP Signature"):

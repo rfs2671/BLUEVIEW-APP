@@ -88,12 +88,14 @@ const TRANSLATIONS = {
     noRoster: 'This project has no trades configured yet — an admin must add them first.',
     // Cert-review reason codes (backend stores the CODE; text lives here).
     unknownSst: 'Unverified SST',
+    admit: 'Admit',
+    admittedUnverified: 'Admitted — credential still unverified',
+    unknownAdmitHint: 'Admitting records entry only — it does not verify the card. The credential stays flagged for review.',
     reason_CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
     reason_EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
     reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
     reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
     reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
-    reason_EXTRACTION_INCOMPLETE: 'Card details incomplete — verify the card',
   },
   es: {
     title: 'Revisión de Registros',
@@ -130,12 +132,14 @@ const TRANSLATIONS = {
     noRoster: 'Este proyecto aún no tiene oficios configurados — un administrador debe agregarlos primero.',
     // Códigos de motivo de revisión (el backend guarda el CÓDIGO; el texto va aquí).
     unknownSst: 'SST sin verificar',
+    admit: 'Admitir',
+    admittedUnverified: 'Admitido — credencial aún sin verificar',
+    unknownAdmitHint: 'Admitir registra solo la entrada — no verifica la tarjeta. La credencial permanece marcada para revisión.',
     reason_CLASS_UNVERIFIED: 'No se pudo leer la clase de la tarjeta — verifique la tarjeta',
     reason_EXPIRY_IMPLAUSIBLE: 'La fecha de vencimiento no es plausible — reescanee o verifique',
     reason_EXPIRY_UNPARSEABLE: 'No se pudo leer la fecha de vencimiento — verifique la tarjeta',
     reason_EXPIRY_CONFLICT: 'Dos escaneos no coinciden en el vencimiento — verifique la tarjeta',
     reason_DUPLICATE_SST: 'Registros SST duplicados — consolide en uno',
-    reason_EXTRACTION_INCOMPLETE: 'Datos de la tarjeta incompletos — verifique la tarjeta',
   },
 };
 
@@ -361,6 +365,7 @@ export default function CheckInReviewScreen() {
               const id = item._id || item.id;
               const reasons = item.flag_reasons || [];
               const isExpired = reasons.includes('expired_sst');
+              const isUnknown = reasons.includes('unknown_sst');
               const needsTrade = reasons.includes('needs_trade');
               const reviewed = item.review_decision;
               const busy = actingId === id;
@@ -387,6 +392,18 @@ export default function CheckInReviewScreen() {
                           : ''}
                         {item.osha_number ? `  (#${item.osha_number})` : ''}
                       </Text>
+                    </View>
+                  )}
+                  {isUnknown && (
+                    <View style={[s.reasonRow, s.reasonExpired]}>
+                      <ShieldAlert size={14} color="#fbbf24" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={s.reasonText}>{t('unknownSst')}</Text>
+                        {item.sst_review_reason && t(`reason_${item.sst_review_reason}`) !== `reason_${item.sst_review_reason}` ? (
+                          <Text style={s.reasonHint}>{t(`reason_${item.sst_review_reason}`)}</Text>
+                        ) : null}
+                        <Text style={s.reasonHint}>{t('unknownAdmitHint')}</Text>
+                      </View>
                     </View>
                   )}
                   {needsTrade && (
@@ -461,11 +478,16 @@ export default function CheckInReviewScreen() {
                     <Text style={s.cardHint}>{t('noCard')}</Text>
                   )}
 
-                  {/* Decision — only for the expired-SST flag */}
-                  {isExpired && (
+                  {/* Decision — for the expired-SST OR unknown-SST flag. On
+                      unknown, "approved" ADMITS the worker but does NOT verify
+                      the card (the review endpoint only writes the check-in
+                      decision), so the reviewed text says so explicitly. */}
+                  {(isExpired || isUnknown) && (
                     reviewed ? (
                       <Text style={s.reviewedText}>
-                        {reviewed === 'approved' ? t('approved') : t('sentHome')}
+                        {reviewed === 'approved'
+                          ? (isUnknown ? t('admittedUnverified') : t('approved'))
+                          : t('sentHome')}
                         {item.reviewed_by_name
                           ? ` ${t('by')} ${item.reviewed_by_name}` : ''}
                         {item.reviewed_at ? ` • ${fmt(item.reviewed_at)}` : ''}
@@ -479,7 +501,7 @@ export default function CheckInReviewScreen() {
                         >
                           <Check size={15} strokeWidth={2} color="#4ade80" />
                           <Text style={[s.actionText, s.approveText]}>
-                            {t('approve')}
+                            {isUnknown ? t('admit') : t('approve')}
                           </Text>
                         </Pressable>
                         <Pressable
