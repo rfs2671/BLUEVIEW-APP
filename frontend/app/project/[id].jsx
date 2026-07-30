@@ -65,6 +65,7 @@ import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/utils/api';
 import apiClient from '../../src/utils/api';
+import { isValidBin } from '../../src/utils/bin';
 import * as NfcHelper from '../../src/utils/nfcHelper';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, border, surface, text as tokenText, withAlpha } from '../../src/styles/semanticColors';
@@ -267,13 +268,21 @@ export default function ProjectDetailScreen() {
 
   const fetchData = async () => {
     try {
-      let projectData = await getProjectById(projectId);
+      // PR D: read the SERVER object FIRST. WatermelonDB's local projects schema
+      // omits ~29 server fields (nyc_bin, project_class, last_dob_sync_at,
+      // dropbox_folder/enabled, …), so a local-first read renders "No BIN" etc.
+      // even when the server has the value. The local record is the OFFLINE
+      // FALLBACK only — this screen needs the network anyway (DOB tiles, sync
+      // state, plans). We deliberately do NOT mirror those columns locally;
+      // that recreates the divergence every time the server model grows.
+      let projectData = null;
+      try {
+        projectData = await projectsAPI.getById(projectId);
+      } catch (e) {
+        console.warn('Server project fetch failed, using local fallback:', e?.message);
+      }
       if (!projectData) {
-        try {
-          projectData = await projectsAPI.getById(projectId);
-        } catch (e) {
-          console.error('Failed to fetch project from API:', e);
-        }
+        projectData = await getProjectById(projectId);  // offline fallback
       }
       setProject(projectData);
 
@@ -593,13 +602,11 @@ export default function ProjectDetailScreen() {
     }
   };
 
-  // No valid BIN flag — mirrors backend _is_placeholder_bin: a BIN must
-  // be 7 digits, borough-prefixed (1–5), and not a X000000 placeholder.
-  // When false, DOB scans silently return nothing, so we flag it on the
-  // DOB Compliance action card (the dob-logs screen has the full
-  // "No BIN on File" remediation flow).
-  const binStr = String(project?.nyc_bin || '').trim();
-  const hasValidBin = /^[1-5]\d{6}$/.test(binStr) && binStr.slice(1) !== '000000';
+  // No valid BIN flag — shared isValidBin() (mirrors backend
+  // _is_placeholder_bin). When false, DOB scans silently return nothing, so we
+  // flag it on the DOB Compliance action card (the dob-logs screen has the full
+  // "No BIN on File" remediation flow). Same predicate as the DOB tab.
+  const hasValidBin = isValidBin(project?.nyc_bin);
 
   const quickActions = [
     { title: 'Plans & Files', icon: FileText, path: `/projects/${projectId}/construction-plans`, color: '#3b82f6' },

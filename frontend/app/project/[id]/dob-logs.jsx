@@ -47,6 +47,7 @@ import InfoTooltip from '../../../src/components/InfoTooltip';
 // daysUntil moved to a shared util so workers/[id].jsx can use the SAME
 // definition and threshold for credential expiry (it previously had none).
 import { daysUntil } from '../../../src/utils/expiry';
+import { isValidBin } from '../../../src/utils/bin';
 
 // Severity: Action (red) vs Good (green)
 const getSevConfig = (severity) => {
@@ -858,7 +859,7 @@ export default function DOBLogsScreen() {
               </Pressable>
             </View>
             <Text style={s.titleText}>{projectName}</Text>
-            {nycBin ? (
+            {isValidBin(nycBin) ? (
               <View style={s.binBadge}>
                 <Building2 size={13} strokeWidth={1.5} color={semantic.neutral} />
                 <Text style={s.binText}>BIN: {nycBin}</Text>
@@ -973,9 +974,11 @@ export default function DOBLogsScreen() {
 
             // --- Empty states, most specific first ---
 
-            // (1) No BIN on file — auto-lookup didn't resolve. Admin
-            // needs to pick a borough-specific address or enter a BIN.
-            if (!nycBin) {
+            // (1) No BIN on file — auto-lookup didn't resolve, OR a borough
+            // placeholder (X000000) that returns zero DOB records. Same
+            // isValidBin() predicate as the project tile, so they never
+            // disagree. Admin needs a borough-specific address or a real BIN.
+            if (!isValidBin(nycBin)) {
               return (
                 <GlassCard style={s.emptyCard}>
                   <AlertTriangle size={40} strokeWidth={1} color={semantic.attention} />
