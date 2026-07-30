@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image,
+  View, Text, StyleSheet, ScrollView, Pressable, TextInput, ActivityIndicator, Image, Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -513,6 +513,31 @@ export default function DailyJobsiteLog() {
     }));
   };
 
+  // PR C: tap-to-enlarge so the CP can verify his own evidence before attesting.
+  // Mirrors the worker-detail OSHA-card lightbox modal. Shows the ENHANCED
+  // derivative for a saved photo (the serving endpoint falls back to the
+  // original on any failure, so enhance_status pending/failed never breaks the
+  // image); an unsaved photo shows its local capture. Labels which is which.
+  const [photoLightbox, setPhotoLightbox] = useState(null);
+  const openPhotoLightbox = (photo, activityIndex, photoIndex) => {
+    if (!photo || photo.pending) return;
+    const done = photo.enhance_status === 'done';
+    // A photo already persisted server-side carries an enhance_status; use the
+    // server URL so we show the enhanced (or original-fallback) render.
+    if (existingLogId && photo.enhance_status) {
+      setPhotoLightbox({
+        uri: logbooksAPI.getLogbookPhotoUrl(
+          existingLogId, activityIndex, photoIndex,
+          done ? 'enhanced' : 'original', photo.enhance_status,
+        ),
+        label: done ? 'Enhanced' : `Original — enhancement ${photo.enhance_status}`,
+      });
+      return;
+    }
+    const local = photo.uri || (photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : null);
+    if (local) setPhotoLightbox({ uri: local, label: 'Original' });
+  };
+
   const addActivity = () => setActivities(prev => {
     // A freshly added row is what the CP means to work on next, so it becomes
     // the FAB's target immediately.
@@ -848,11 +873,13 @@ export default function DailyJobsiteLog() {
                               <ActivityIndicator size="small" color={colors.text.muted} />
                             </View>
                           ) : (
-                            <Image
-                              source={{ uri: photo.uri || (photo.base64 ?
-                                `data:image/jpeg;base64,${photo.base64}` : undefined) }}
-                              style={s.photoImage}
-                            />
+                            <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
+                              <Image
+                                source={{ uri: photo.uri || (photo.base64 ?
+                                  `data:image/jpeg;base64,${photo.base64}` : undefined) }}
+                                style={s.photoImage}
+                              />
+                            </Pressable>
                           )}
                           <Pressable style={s.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
                             <X size={12} strokeWidth={2} color="#fff" />
@@ -1031,6 +1058,30 @@ export default function DailyJobsiteLog() {
         onClose={() => setCameraVisible(false)}
         onCapture={handleCameraCapture}
       />
+
+      {/* PR C: photo lightbox — mirrors the worker-detail OSHA-card modal. */}
+      <Modal
+        visible={!!photoLightbox}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPhotoLightbox(null)}
+      >
+        <Pressable style={s.lightboxOverlay} onPress={() => setPhotoLightbox(null)}>
+          <Pressable style={s.lightboxClose} onPress={() => setPhotoLightbox(null)}>
+            <X size={24} color="#fff" />
+          </Pressable>
+          {photoLightbox?.uri ? (
+            <Image
+              source={{ uri: photoLightbox.uri }}
+              style={s.lightboxImage}
+              resizeMode="contain"
+            />
+          ) : null}
+          {photoLightbox?.label ? (
+            <Text style={s.lightboxLabel}>{photoLightbox.label}</Text>
+          ) : null}
+        </Pressable>
+      </Modal>
     </AnimatedBackground>
   );
 }
@@ -1120,6 +1171,18 @@ function buildStyles(colors, isDark) {
   photoScroll: { marginTop: spacing.xs, paddingTop: 8, paddingBottom: 4 },
   photoThumb: { width: 80, height: 80, borderRadius: borderRadius.md, marginRight: spacing.sm, position: 'relative', overflow: 'visible' },
   photoImage: { width: 80, height: 80, borderRadius: borderRadius.md },
+  lightboxOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center', justifyContent: 'center', padding: spacing.lg,
+  },
+  lightboxImage: { width: '100%', height: '80%' },
+  lightboxClose: {
+    position: 'absolute', top: 48, right: 24, zIndex: 2, padding: spacing.sm,
+  },
+  lightboxLabel: {
+    marginTop: spacing.md, color: '#fff', fontSize: 13, fontWeight: '600',
+    opacity: 0.85,
+  },
   photoRemove: {
     position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
     backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center',

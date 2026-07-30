@@ -875,6 +875,20 @@ export const logbooksAPI = {
     const response = await apiClient.get(`/api/projects/${projectId}/daily-headcount`, { params });
     return response.data;
   },
+
+  /**
+   * URL an <Image> can point at for a SAVED logbook activity photo. `variant`
+   * selects the derivative: 'enhanced' (long edge 1800) or 'thumb' (400); any
+   * other value serves the untouched original. The endpoint falls back to the
+   * original on ANY failure (enhancement pending/failed, R2 miss), so this URL
+   * never yields a broken image. `bust` cache-busts when the enhance status
+   * flips. Only valid once the logbook has an id.
+   */
+  getLogbookPhotoUrl: (logbookId, activityIndex, photoIndex, variant = 'enhanced', bust = '') => {
+    if (!logbookId && logbookId !== 0) return null;
+    const q = `?v=${encodeURIComponent(variant)}${bust ? `&t=${encodeURIComponent(bust)}` : ''}`;
+    return `${API_BASE_URL}/api/reports/logbook-photo/${encodeURIComponent(logbookId)}/${activityIndex}/${photoIndex}${q}`;
+  },
 };
 
 /**
