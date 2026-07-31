@@ -549,8 +549,8 @@ function OrientationSignaturePanel({ onSign }) {
   };
 
   return (
-    <View style={styles.signPanel}>
-      <Text style={styles.sectionTitle}>Add Your CP Signature</Text>
+    <View style={s.signPanel}>
+      <Text style={s.sectionTitle}>Add Your CP Signature</Text>
       <SignaturePad
         title="Competent Person Signature"
         signerName={cpName}
@@ -564,7 +564,7 @@ function OrientationSignaturePanel({ onSign }) {
         onPress={handleSign}
         loading={saving}
         disabled={!cpSignature}
-        style={styles.signBtn}
+        style={s.signBtn}
       />
     </View>
   );
