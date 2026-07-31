@@ -15960,6 +15960,122 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  SUBCONTRACTOR SAFETY ORIENTATION  (aggregate — one doc per worker)
+    # ==========================================================
+    # LL196: subcontractor orientation is FIRST-TIME-on-project only (not daily).
+    # The coverage question is therefore: has each worker currently ON SITE ever
+    # been oriented on THIS project? Rendered whenever anyone checked in today,
+    # even if no orientation was filed today — the point is catching an
+    # un-oriented worker on a day nobody new was oriented.
+    orientation_today = [l for l in logbooks if l.get("log_type") == "subcontractor_orientation"]
+    orientation_html = ""
+    if checkin_count > 0 or orientation_today:
+        def _norm_name(v):
+            return " ".join(str(v or "").split()).lower()
+
+        # ON SITE = checked in today AND not checked out, THIS project (checkins is
+        # already scoped to project_id + this date's EST window). Mirrors the app's
+        # canonical on_site_query (status == "checked_in"); deduped to DISTINCT
+        # workers so N counts people, not check-in rows.
+        on_site = {}
+        for c in checkins:
+            if c.get("status") != "checked_in":
+                continue
+            rid = str(c.get("worker_id") or "")
+            rname = _norm_name(c.get("worker_name"))
+            key = rid or (f"name:{rname}" if rname else "")
+            if key:
+                on_site.setdefault(key, c)
+        n_onsite = len(on_site)
+
+        # Every orientation doc for THIS project across ALL dates — a worker
+        # oriented weeks ago counts as covered. Manual entries mint a synthetic
+        # worker_id, so match on worker_id OR normalized name (heuristic —
+        # collisions/spelling can skew it; tracked in followups).
+        all_orientations = await db.logbooks.find(
+            {"project_id": project_id, "log_type": "subcontractor_orientation",
+             "is_deleted": {"$ne": True}},
+            {"data.worker_id": 1, "data.worker_name": 1},
+        ).to_list(5000)
+        oriented_ids, oriented_names = set(), set()
+        for o in all_orientations:
+            od = o.get("data") or {}
+            if od.get("worker_id"):
+                oriented_ids.add(str(od.get("worker_id")))
+            if od.get("worker_name"):
+                oriented_names.add(_norm_name(od.get("worker_name")))
+
+        n_covered = 0
+        for c in on_site.values():
+            rid = str(c.get("worker_id") or "")
+            rname = _norm_name(c.get("worker_name"))
+            if (rid and rid in oriented_ids) or (rname and rname in oriented_names):
+                n_covered += 1
+        coverage_gap = max(0, n_onsite - n_covered)
+
+        if n_onsite == 0:
+            coverage_value = "No workers currently on site"
+        else:
+            coverage_value = f"{n_covered} of {n_onsite} on-site workers"
+            if coverage_gap > 0:
+                coverage_value += (
+                    f' &nbsp;<span style="color:#b91c1c;font-weight:700;">'
+                    f'&#9888; {coverage_gap} on-site worker(s) with no orientation on file</span>'
+                )
+
+        # Today's FILED orientation records — who was oriented today (often empty;
+        # that is normal and correct, not a gap).
+        n_today = len(orientation_today)
+        n_signed = 0
+        orient_rows = ""
+        for doc in orientation_today:
+            od = doc.get("data") or {}
+            name = _capitalize_first(od.get("worker_name", "")) or "&mdash;"
+            trade = _capitalize_first(od.get("worker_trade", ""))
+            company = _capitalize_first(od.get("worker_company", ""))
+            trade_company = " &bull; ".join([p for p in (trade, company) if p]) or "&mdash;"
+            # Orientation date: completed_at (ISO) preferred, else the doc's date;
+            # neither present renders "Not recorded", not a fabricated date.
+            completed = od.get("completed_at") or ""
+            orient_date = (str(completed)[:10] if completed else doc.get("date")) or "&mdash; Not recorded"
+            # cp_name is the trainer's attestation (a competent person delivered
+            # the orientation) — top-level on the doc, short-entry.
+            cp = _capitalize_first(doc.get("cp_name", "")) or "&mdash; Not recorded"
+            # LOAD-BEARING HONESTY: worker_signature is hardcoded null on manual
+            # entries. Surface UNSIGNED so an unattested acknowledgment is never
+            # presented as complete (same failure class as a replayed CP signature).
+            if od.get("worker_signature"):
+                sig_cell = '<span style="color:#15803d;font-weight:600;">Signed</span>'
+                n_signed += 1
+            else:
+                sig_cell = '<span style="color:#b91c1c;font-weight:700;">UNSIGNED</span>'
+            orient_rows += (
+                f'<tr><td {TD}>{name}</td>'
+                f'<td {TD}>{trade_company}</td>'
+                f'<td {TD}>{orient_date}</td>'
+                f'<td {TD}>{cp}</td>'
+                f'<td {TD}>{sig_cell}</td></tr>'
+            )
+
+        signed_line = (
+            bold_para("Worker acknowledgments signed", f"{n_signed} of {n_today} filed today")
+            if n_today else ""
+        )
+        orientation_html = (
+            section_title("Subcontractor Safety Orientation")
+            + bold_para("First-time orientation on file", coverage_value)
+            + signed_line
+            + sub_title("Oriented Today")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Worker</th><th {TH}>Trade / Company</th>'
+              f'<th {TH}>Orientation Date</th><th {TH}>Conducted By (CP)</th>'
+              f'<th {TH}>Worker Signature</th></tr>'
+            + (orient_rows or f'<tr><td colspan="5" {TD}>No orientations filed today (workers may have been oriented on a prior date — see coverage above)</td></tr>')
+            + '</table>'
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
@@ -16079,6 +16195,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {crane_html}
       {exc_html}
       {scaffold_html}
+      {orientation_html}
       {additional_logbooks_html}
     </td>
   </tr>

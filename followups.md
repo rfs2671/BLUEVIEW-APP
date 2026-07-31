@@ -2,6 +2,21 @@
 
 Known gaps and deferred work, newest first.
 
+- **[HIGH] Orientation coverage matching is heuristic — can FALSE-cover and hide an LL196 gap.**
+  The combined-report subcontractor-orientation coverage number ("X of N on-site
+  workers with first-time orientation on file", `generate_combined_report`) matches
+  on-site check-ins to orientation docs by `worker_id` OR normalized name. Manual
+  orientations mint a synthetic `worker_id` (`manual_<ts>_...`), so a name fallback
+  is required — but two on-site workers sharing a normalized name can mark an
+  un-oriented worker as covered, HIDING a real LL196 first-timer violation on a
+  compliance document (false-negative — the dangerous direction). Real fix: persist
+  an orientation flag/link on the WORKER record, keyed to the real worker and
+  resolved at orientation time (rides the batched native build), so coverage is a
+  direct lookup, not a name heuristic. Caveat in the same area: the coverage
+  denominator uses `status == "checked_in"` as the on-site proxy; on a PAST-date
+  report that means "checked in that day and never checked out," not literally "was
+  on site" — fine for the live daily report, a caveat for historical dates.
+
 - **[MED] osha_log review-state depends on the fabricated-cert cleanup being APPLIED.**
   The combined-report osha_log renderer surfaces each cert's `needs_review` /
   `review_reason` by joining to `worker.certifications`. Those flags are WRITTEN by
