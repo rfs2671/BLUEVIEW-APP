@@ -15894,6 +15894,72 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  SCAFFOLD MAINTENANCE INSPECTION
+    # ==========================================================
+    scaffold_html = ""
+    scaffold_lb = next((l for l in logbooks if l.get("log_type") == "scaffold_maintenance"), None)
+    if scaffold_lb:
+        d = scaffold_lb.get("data") or {}
+        gi = d.get("general_info") or {}
+        answers = d.get("answers") or {}
+
+        # 19 inspection questions, exact DOB-form wording from the editor. Sparse:
+        # an unanswered question reads "Not recorded", never a silent "No"; an
+        # explicit N/A stays N/A. (general_info.drawings_on_site is a dead
+        # duplicate of the answers question of the same key — only the answer is
+        # rendered.)
+        SCAFFOLD_QUESTIONS = [
+            ("signs_on_parapets", "Are the signs on the parapets?"),
+            ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
+            ("scaffold_pins_bolts", "Are the scaffold pins and bolts installed?"),
+            ("legs_poles_plumb", "Are the legs and poles plumb, braced and not displaced?"),
+            ("tie_ins_spaced", "Are tie-ins correctly spaced, properly secured and the correct amount?"),
+            ("cross_braces", "Are cross braces fully attached, not bent, and not missing?"),
+            ("pipe_clamps_tight", "Are pipe clamps tight?"),
+            ("window_jacks_tight", "Are window jacks tight?"),
+            ("planks_secured", "Are all the planks secured?"),
+            ("decking_planks_condition", "Are decking and planks in good condition?"),
+            ("deck_fully_planked", "Is deck fully planked?"),
+            ("gaps_open_spaces", "Are there gaps or open spaces on decking?"),
+            ("guardrails_toe_boards", "Are the guardrails and toe boards secured at all places where required?"),
+            ("netting_extension", "Is the netting extension of full length and height?"),
+            ("netting_secured", "Is the netting secured?"),
+            ("parapet_height", "Is the parapet the proper height and secured?"),
+            ("lights_working", "Are the lights working?"),
+            ("deck_clean", "Is the deck clean and free of debris?"),
+            ("drawings_on_site", "Drawings on site for inspection?"),
+        ]
+        q_rows = ""
+        for key, label in SCAFFOLD_QUESTIONS:
+            ans = answers.get(key)
+            val = ans if (key in answers and ans) else "&mdash; Not recorded"
+            q_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
+
+        # scaffold_erector / renters_name are short-entry; permit_number / phone
+        # are identifiers; dates & counts render raw; shed_type is an enum.
+        scaffold_html = (
+            section_title("Scaffold Maintenance Inspection")
+            + info_box(
+                f'<strong style="color:#0A1929;">Scaffold Erector:</strong> {_capitalize_first(gi.get("scaffold_erector", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Renter:</strong> {_capitalize_first(gi.get("renters_name", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Permit #:</strong> {gi.get("permit_number") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Phone #:</strong> {gi.get("phone") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Installation Date:</strong> {gi.get("installation_date") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Expiration:</strong> {gi.get("expiration_date") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Scaffold Height:</strong> {gi.get("scaffold_height") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Platforms Decked:</strong> {gi.get("num_platforms") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Shed Type:</strong> {gi.get("shed_type") or "N/A"}'
+            )
+            + sub_title("Inspection Checklist")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Question</th><th {TH}>Answer</th></tr>'
+            + q_rows
+            + '</table>'
+            + render_signature_html(scaffold_lb.get("cp_signature"), "CP Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
@@ -16012,6 +16078,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {hot_work_html}
       {crane_html}
       {exc_html}
+      {scaffold_html}
       {additional_logbooks_html}
     </td>
   </tr>
