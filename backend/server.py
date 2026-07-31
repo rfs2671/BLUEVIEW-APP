@@ -9181,7 +9181,12 @@ async def upload_osha_card(file_data: dict, request: Request):
         "\"card_type\": \"OSHA or SST — which kind of card this is\", "
         "\"card_class\": \"the exact class or level printed on the card: "
         "for SST one of FULL, LIMITED, SUPERVISOR, TEMPORARY; "
-        "for OSHA one of 10, 30\", "
+        "for OSHA one of 10, 30. "
+        "CRITICAL: SST cards also print the COURSE HOURS (e.g. '40 hours', "
+        "'62 hours', '10-hr', '30-hr') — those are the training DURATION, NOT the "
+        "class. NEVER return an hours value as card_class. The SST class is always "
+        "a WORD: SUPERVISOR, LIMITED, FULL, or TEMPORARY. If only hours are visible "
+        "and no class word, set card_class to null\", "
         "\"issued\": \"issued date if visible\", "
         "\"expiration\": \"expiration date if visible\", "
         "\"box_2d\": [ymin, xmin, ymax, xmax]}\n"
@@ -15191,38 +15196,95 @@ def _display_sub_company(name):
     return s
 
 
+def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280):
+    """Reconstruct an inline SVG from SignaturePad stroke paths.
+
+    SignaturePad (frontend) stores a signature as {paths, signerName, timestamp}
+    where `paths` is a list of strokes, each stroke a list of {x, y} points in
+    pad-pixel coords — NOT a base64 raster. The report renderers only knew how to
+    embed base64, so real signatures fell through to a typed-name fallback and the
+    document showed no signature. Rebuild the strokes as SVG polylines (viewBox =
+    the drawn bounding box, so it scales regardless of the original pad size);
+    weasyprint and the HTML report both render inline SVG. Works retroactively for
+    every already-signed logbook. Returns the SVG string, or None if unusable."""
+    if not isinstance(paths, list):
+        return None
+    pts = [
+        (p["x"], p["y"])
+        for stroke in paths if isinstance(stroke, list)
+        for p in stroke
+        if isinstance(p, dict) and isinstance(p.get("x"), (int, float)) and isinstance(p.get("y"), (int, float))
+    ]
+    if len(pts) < 2:
+        return None
+    xs = [x for x, _ in pts]
+    ys = [y for _, y in pts]
+    minx, miny = min(xs), min(ys)
+    pad = 6.0
+    vb_w = ((max(xs) - minx) or 1.0) + pad * 2
+    vb_h = ((max(ys) - miny) or 1.0) + pad * 2
+    polylines = []
+    for stroke in paths:
+        if not isinstance(stroke, list) or len(stroke) < 2:
+            continue
+        coords = [
+            f"{p['x'] - minx + pad:.1f},{p['y'] - miny + pad:.1f}"
+            for p in stroke
+            if isinstance(p, dict) and isinstance(p.get("x"), (int, float)) and isinstance(p.get("y"), (int, float))
+        ]
+        if len(coords) >= 2:
+            polylines.append(
+                f'<polyline points="{" ".join(coords)}" fill="none" stroke="{stroke_color}" '
+                'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+            )
+    if not polylines:
+        return None
+    disp_w = min(float(max_width), vb_w * 2)
+    disp_h = disp_w * vb_h / vb_w
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:.0f} {vb_h:.0f}" '
+        f'width="{disp_w:.0f}" height="{disp_h:.0f}" '
+        'style="border:1px solid #e2e8f0;border-radius:4px;background:#ffffff;">'
+        + "".join(polylines) + '</svg>'
+    )
+
+
 def render_signature_html(sig, label="CP Signature"):
-    """Render a signature as email-safe HTML. Signatures stay as base64
-    since they are small PNGs critical for legal compliance. Every rendered
-    signature carries an explicit AFFIRMED / UNAFFIRMED banner (see
-    _signature_affirmation_html)."""
+    """Render a signature as email-safe HTML with its AFFIRMED / UNAFFIRMED
+    banner. Handles both shapes: a base64 PNG string / {data: base64}, and the
+    SignaturePad vector shape {paths: [...strokes...]} (reconstructed to SVG)."""
     if not sig:
         return ""
     status = _signature_affirmation_html(sig)
-    if isinstance(sig, str):
+
+    def _wrap(full_label, inner):
         return (
             '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
             '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-            + label + ':</td></tr>'
-            '<tr><td><img src="data:image/png;base64,' + sig
-            + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+            + full_label + ':</td></tr>'
+            '<tr><td>' + inner + '</td></tr>'
             '<tr><td>' + status + '</td></tr>'
             '</table>'
         )
+
+    def _img(b64):
+        return ('<img src="data:image/png;base64,' + b64
+                + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+
+    if isinstance(sig, str):
+        return _wrap(label, _img(sig))
     if isinstance(sig, dict):
-        sig_data = sig.get("data") or sig.get("paths") or ""
         signer = sig.get("signer_name") or sig.get("signerName") or ""
-        if isinstance(sig_data, str) and sig_data:
-            full_label = f"{label} ({signer})" if signer else label
-            return (
-                '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;">'
-                '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
-                + full_label + ':</td></tr>'
-                '<tr><td><img src="data:image/png;base64,' + sig_data
-                + '" style="max-width:280px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
-                '<tr><td>' + status + '</td></tr>'
-                '</table>'
-            )
+        full_label = f"{label} ({signer})" if signer else label
+        data_b64 = sig.get("data")
+        # 1) base64 raster (legacy path / pre-rendered).
+        if isinstance(data_b64, str) and data_b64:
+            return _wrap(full_label, _img(data_b64))
+        # 2) vector stroke paths — SignaturePad's real output → reconstruct SVG.
+        svg = _signature_paths_to_svg(sig.get("paths"))
+        if svg:
+            return _wrap(full_label, svg)
+        # 3) signer only (no drawable data).
         if signer:
             return (
                 '<p style="color:#475569;margin:8px 0;">'
@@ -15549,14 +15611,17 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         sup_sig_raw = daily_log.get("superintendent_signature")
         if sup_sig_raw and isinstance(sup_sig_raw, dict):
             sn = sup_sig_raw.get("signer_name", "Superintendent")
-            sd = sup_sig_raw.get("paths") or sup_sig_raw.get("data") or ""
-            if isinstance(sd, str) and sd:
+            sd = sup_sig_raw.get("data")
+            inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=300)
+            if not inner and isinstance(sd, str) and sd:
+                inner = (f'<img src="data:image/png;base64,{sd}" '
+                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+            if inner:
                 sup_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
                     f'Superintendent ({sn}):</td></tr>'
-                    f'<tr><td><img src="data:image/png;base64,{sd}" '
-                    'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                    f'<tr><td>{inner}</td></tr>'
                     '</table>'
                 )
             elif sn:
@@ -15567,14 +15632,17 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         cp_sig_raw = daily_log.get("competent_person_signature")
         if cp_sig_raw and isinstance(cp_sig_raw, dict):
             cn = cp_sig_raw.get("signer_name", "Competent Person")
-            cd = cp_sig_raw.get("paths") or cp_sig_raw.get("data") or ""
-            if isinstance(cd, str) and cd:
+            cd = cp_sig_raw.get("data")
+            inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=300)
+            if not inner and isinstance(cd, str) and cd:
+                inner = (f'<img src="data:image/png;base64,{cd}" '
+                         'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
+            if inner:
                 cp_sig_html = (
                     '<table cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;">'
                     '<tr><td style="font-weight:bold;color:#0A1929;font-size:14px;padding-bottom:4px;">'
                     f'Competent Person ({cn}):</td></tr>'
-                    f'<tr><td><img src="data:image/png;base64,{cd}" '
-                    'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" /></td></tr>'
+                    f'<tr><td>{inner}</td></tr>'
                     '</table>'
                 )
             elif cn:
