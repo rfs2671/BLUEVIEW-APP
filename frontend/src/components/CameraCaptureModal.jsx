@@ -62,6 +62,8 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const [zoom, setZoom] = useState(1);
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
+  // TEMP (item 6): guards the one-time capability dump below.
+  const loggedFormatsRef = useRef(false);
 
   const uwDevice = useCameraDevice('back', { physicalDevices: ['ultra-wide-angle-camera'] });
   const wideDevice = useCameraDevice('back', { physicalDevices: ['wide-angle-camera'] });
@@ -91,6 +93,37 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     const sub = AppState.addEventListener('change', (s) => setAppActive(s === 'active'));
     return () => sub.remove();
   }, []);
+
+  // ─── TEMP (item 6 — motion blur diagnosis) ────────────────────────────────
+  // One-time dump of the MOUNTED back device's real capabilities so the Pixel
+  // 10 Pro's actual format list can be read off a preview build, and the final
+  // useCameraFormat targets (fps floor / photoHdr / low-light-boost) chosen
+  // from data instead of a guess. supportsPhotoHdr is PER-FORMAT in
+  // vision-camera (there is no device.supportsPhotoHdr), so it is logged on
+  // each format row. REMOVE this block once the format is locked in.
+  useEffect(() => {
+    if (!device || loggedFormatsRef.current) return;
+    loggedFormatsRef.current = true;
+    const fmts = device.formats || [];
+    console.log(
+      `[item6] device id=${device.id} position=${device.position}`,
+      `supportsLowLightBoost=${device.supportsLowLightBoost}`,
+      `hasFlash=${device.hasFlash} minZoom=${device.minZoom} maxZoom=${device.maxZoom}`,
+      `formats=${fmts.length}`,
+    );
+    fmts.forEach((f, i) => {
+      console.log(
+        `[item6] fmt#${i}`,
+        `photo=${f.photoWidth}x${f.photoHeight}`,
+        `video=${f.videoWidth}x${f.videoHeight}`,
+        `fps=${f.minFps}-${f.maxFps}`,
+        `iso=${f.minISO}-${f.maxISO}`,
+        `supportsPhotoHdr=${f.supportsPhotoHdr}`,
+        `supportsVideoHdr=${f.supportsVideoHdr}`,
+      );
+    });
+  }, [device]);
+  // ─── END TEMP (item 6) ────────────────────────────────────────────────────
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
