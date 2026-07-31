@@ -2,6 +2,16 @@
 
 Known gaps and deferred work, newest first.
 
+- **[HIGH] Full responsive-layout audit across the supported device-size range.**
+  Verify EVERY screen at the smallest supported size (iPhone SE / 4.7") and the
+  largest (Pro Max / 6.9"), on both iOS and Android: nothing clipped, truncated,
+  or overflowing horizontally; headers, cards, tables, and modals reflow instead
+  of pushing off-screen; and touch targets are large enough for **gloved hands**
+  on a jobsite (min ~44–48pt, adequate spacing). Especially check the dense/new
+  UIs — logbook editors (crane/excavation/scaffold checklists, slump-test rows),
+  the worker sign-in table, the camera overlay chrome, and the reports screen.
+  Not gated to any build; a standalone QA sweep. Separate from the camera work.
+
 - **[HIGH] SSC daily-log compliance toggles are two-state (seeded false) — a value the human never affirmed.**
   In `ssc_daily_safety_log.jsx`, five compliance fields — `incidents_reported`,
   `safety_meetings_held`, `fire_protection_in_place`, `housekeeping_satisfactory`,
