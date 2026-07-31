@@ -15831,10 +15831,74 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  EXCAVATION MONITORING
+    # ==========================================================
+    exc_html = ""
+    exc_lb = next((l for l in logbooks if l.get("log_type") == "excavation_monitoring"), None)
+    if exc_lb:
+        d = exc_lb.get("data") or {}
+
+        # Vibration: the over-threshold flag is only meaningful with an actual
+        # reading. Without both values it is "Not recorded", NOT a false "Within".
+        v_thr = str(d.get("vibration_threshold") or "").strip()
+        v_cur = str(d.get("vibration_current") or "").strip()
+        if v_thr and v_cur:
+            over_display = (
+                '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
+                if d.get("vibration_over_threshold") else "Within threshold"
+            )
+        else:
+            over_display = "&mdash; Not recorded"
+
+        # Adjacent-structure monitoring points. Units and per-reading timestamps
+        # are NOT captured (tracked in followups), so headers imply no unit and
+        # there is NO time column — readings render exactly as entered, and a
+        # reading without a timestamp shows without one rather than inventing it.
+        buildings = d.get("adjacent_buildings") or []
+        bld_rows = ""
+        for b in buildings:
+            if not any(str(b.get(k, "")).strip() for k in ("address", "baseline_reading", "current_reading", "delta")):
+                continue
+            bld_rows += (
+                f'<tr><td {TD}>{_capitalize_first(b.get("address", "")) or "&mdash;"}</td>'
+                f'<td {TD}>{b.get("baseline_reading", "") or "&mdash;"}</td>'
+                f'<td {TD}>{b.get("current_reading", "") or "&mdash;"}</td>'
+                f'<td {TD}>{b.get("delta", "") or "&mdash;"}</td></tr>'
+            )
+
+        # soil_type / protection_system are enums (as-is); excavation_depth is a
+        # raw number (unit not captured); groundwater / atmospheric are real
+        # booleans (seeded false, always present) → Yes/No.
+        exc_html = (
+            section_title("Excavation Monitoring")
+            + info_box(
+                f'<strong style="color:#0A1929;">Excavation Depth:</strong> {d.get("excavation_depth") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Soil Type:</strong> {d.get("soil_type") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Protection System:</strong> {d.get("protection_system") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Groundwater Observed:</strong> {"Yes" if d.get("groundwater_observed") else "No"}<br />'
+                f'<strong style="color:#0A1929;">Atmospheric Testing:</strong> {"Yes" if d.get("atmospheric_testing") else "No"}'
+            )
+            + sub_title("Vibration")
+            + info_box(
+                f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr or "&mdash; Not recorded"}<br />'
+                f'<strong style="color:#0A1929;">Current:</strong> {v_cur or "&mdash; Not recorded"}<br />'
+                f'<strong style="color:#0A1929;">Status:</strong> {over_display}'
+            )
+            + sub_title("Adjacent-Structure Monitoring Points")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Location</th><th {TH}>Baseline</th><th {TH}>Current</th><th {TH}>Movement (&Delta;)</th></tr>'
+            + (bld_rows or f'<tr><td colspan="4" {TD}>No monitoring points recorded</td></tr>')
+            + '</table>'
+            + render_signature_html(exc_lb.get("cp_signature"), "CP Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
-                     "subcontractor_orientation", "osha_log", "hot_work", "crane_operations"}
+                     "subcontractor_orientation", "osha_log", "hot_work", "crane_operations",
+                     "excavation_monitoring"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
@@ -15947,6 +16011,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {osha_html}
       {hot_work_html}
       {crane_html}
+      {exc_html}
       {additional_logbooks_html}
     </td>
   </tr>
