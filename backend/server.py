@@ -15757,10 +15757,84 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  CRANE OPERATIONS
+    # ==========================================================
+    crane_html = ""
+    crane_lb = next((l for l in logbooks if l.get("log_type") == "crane_operations"), None)
+    if crane_lb:
+        d = crane_lb.get("data") or {}
+
+        # Full list so an unconfirmed item reads "Not recorded", never a silent
+        # "No" (sparse-map convention). Labels mirror the editor's checklist.
+        CRANE_PREOP = [
+            ("wire_ropes", "Wire Ropes Inspected"),
+            ("hooks_latches", "Hooks & Latches Secure"),
+            ("brakes", "Brakes Functional"),
+            ("outriggers", "Outriggers Deployed"),
+            ("load_chart", "Load Chart Available"),
+            ("boom_condition", "Boom Condition OK"),
+            ("anti_two_block", "Anti Two-Block Device"),
+            ("fire_extinguisher", "Fire Extinguisher Present"),
+            ("signals_reviewed", "Signals Reviewed"),
+            ("area_barricaded", "Area Barricaded"),
+            ("wind_speed_checked", "Wind Speed Checked"),
+            ("power_lines_clear", "Power Lines Clear"),
+            ("load_weight_known", "Load Weight Known"),
+            ("rigging_inspected", "Rigging Inspected"),
+            ("swing_radius_clear", "Swing Radius Clear"),
+        ]
+        checklist = d.get("pre_operation_checklist") or {}
+        preop_rows = ""
+        for key, label in CRANE_PREOP:
+            if key in checklist:
+                val = "Yes" if checklist.get(key) else "No"
+            else:
+                val = "&mdash; Not recorded"
+            preop_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
+
+        load_entries = d.get("load_entries") or []
+        load_rows = ""
+        for le in load_entries:
+            if not any(str(le.get(k, "")).strip() for k in ("time", "description", "load_weight", "radius")):
+                continue
+            load_rows += (
+                f'<tr><td {TD}>{le.get("time", "") or "&mdash;"}</td>'
+                f'<td {TD}>{_capitalize_first(le.get("description", "")) or "&mdash;"}</td>'
+                f'<td {TD}>{le.get("load_weight", "") or "&mdash;"}</td>'
+                f'<td {TD}>{le.get("radius", "") or "&mdash;"}</td></tr>'
+            )
+
+        # crane_type / operator_name are short-entry; crane_id / operator_license
+        # are identifiers (raw). load_weight & radius are unit-less strings as
+        # entered by the operator (units are a logged capture gap).
+        crane_html = (
+            section_title("Crane Operations")
+            + info_box(
+                f'<strong style="color:#0A1929;">Crane Type:</strong> {_capitalize_first(d.get("crane_type", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Crane ID:</strong> {d.get("crane_id") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Operator:</strong> {_capitalize_first(d.get("operator_name", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Operator License:</strong> {d.get("operator_license") or "N/A"}'
+            )
+            + sub_title("Pre-Operation Checklist")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
+            + preop_rows
+            + '</table>'
+            + sub_title("Lift Log")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Time</th><th {TH}>Description</th><th {TH}>Load Weight</th><th {TH}>Radius</th></tr>'
+            + (load_rows or f'<tr><td colspan="4" {TD}>No lifts recorded</td></tr>')
+            + '</table>'
+            + render_signature_html(crane_lb.get("cp_signature"), "CP Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
-                     "subcontractor_orientation", "osha_log", "hot_work"}
+                     "subcontractor_orientation", "osha_log", "hot_work", "crane_operations"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
@@ -15872,6 +15946,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {site_html}
       {osha_html}
       {hot_work_html}
+      {crane_html}
       {additional_logbooks_html}
     </td>
   </tr>
