@@ -2,6 +2,39 @@
 
 Known gaps and deferred work, newest first.
 
+- **[MED] osha_log review-state depends on the fabricated-cert cleanup being APPLIED.**
+  The combined-report osha_log renderer surfaces each cert's `needs_review` /
+  `review_reason` by joining to `worker.certifications`. Those flags are WRITTEN by
+  `backend/scripts/audit_fabricated_certs.py --apply`, which has NOT been run in
+  production yet (narrowed rule landed; dry run pending confirmation of 2/2/2/0).
+  Until `--apply` runs, the DB carries no `needs_review` flags for the two legacy
+  workers (Jose David Hernandez Pena, Jhonatan Tipantuna), so the packet still
+  renders their SST rows without a ⚠. Run the dry-run-confirmed `--apply` to make
+  the review-state surfacing effective (it also drops the 2 fabricated OSHA rows).
+
+- **[MED] Compliance-packet capture gaps — new EDITOR fields (batch with next native build).**
+  Surfaced while building the report renderers (item C). The renderers can only
+  show what the editors persist; these fields an inspector needs are NOT captured
+  today and must be ADDED to the editor `data:{}` blocks (`frontend/app/logbooks/*.jsx`),
+  then ride the NEXT native build — do not ship piecemeal:
+  - **hot_work.jsx** — FDNY hot-work permit #; Certificate of Fitness # for the
+    operator AND the fire-watch holder. (Today: no permit/C.O.F. number at all.)
+  - **crane_operations.jsx** — rigger name, signal-person name, lift-director name
+    (OSHA 1926.1400 qualified roles); measured wind-speed VALUE (today only a
+    `wind_speed_checked` bool exists — no reading).
+  - **excavation_monitoring.jsx** — units on every reading (depth, vibration
+    threshold/current, baseline/current building readings); a per-reading
+    timestamp on each adjacent-building row (a monitoring log needs reading times).
+  - **subcontractor_orientation.jsx** — worker signature. `handleCreateNew` writes
+    `worker_signature: null` hardcoded; the orientation acknowledgment is
+    UNATTESTED without it (same integrity class as the CP signature). Capture the
+    worker's signature at orientation.
+
+- **[LOW] Concrete special-inspection fields — only if it becomes a TR record.**
+  `concrete_operations.jsx` captures no cylinder/sample IDs and no special-inspector
+  / TR# reference. Only matters if the concrete log is used as a special-inspection
+  (TR1) record rather than an internal QA/pour log. Deferred until that's required.
+
 - **[HIGH] Compliance packet incomplete — several logbook types under-render.**
   Found while extending report capitalization (commit 16df52c). In the report
   renderers (`backend/server.py`):

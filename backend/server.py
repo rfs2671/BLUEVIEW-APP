@@ -15624,10 +15624,143 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  OSHA / SST CERTIFICATION LOG
+    # ==========================================================
+    # Rendered as a real table, and — critically — each row is joined back to the
+    # worker's LIVE certifications so a cert the database has flagged for review
+    # (needs_review / CLASS_UNVERIFIED, e.g. from audit_fabricated_certs) is never
+    # shown as a clean row. The osha_log snapshot itself carries no review state,
+    # so we look it up now; match is by (worker_id, card_number).
+    osha_html = ""
+    osha_lb = next((l for l in logbooks if l.get("log_type") == "osha_log"), None)
+    if osha_lb:
+        osha_entries = (osha_lb.get("data") or {}).get("entries") or []
+
+        # (worker_id_str, card_number_str) -> review_reason, for FLAGGED certs only.
+        review_by_key = {}
+        worker_ids = {str(e.get("worker_id")) for e in osha_entries if e.get("worker_id")}
+        if worker_ids:
+            qids = [q for q in (to_query_id(w) for w in worker_ids) if q is not None]
+            worker_docs = await db.workers.find(
+                {"_id": {"$in": qids}}, {"certifications": 1}
+            ).to_list(500)
+            for wdoc in worker_docs:
+                wid = str(wdoc.get("_id"))
+                for cert in (wdoc.get("certifications") or []):
+                    if not cert.get("needs_review"):
+                        continue
+                    cn = str(cert.get("card_number") or "")
+                    review_by_key[(wid, cn)] = cert.get("review_reason") or "NEEDS_REVIEW"
+
+        REVIEW_LABELS = {
+            "CLASS_UNVERIFIED": "Class unverified",
+            "EXPIRY_IMPLAUSIBLE": "Expiry implausible",
+            "EXPIRY_UNPARSEABLE": "Expiry unreadable",
+            "EXPIRY_CONFLICT": "Expiry conflict",
+            "DUPLICATE_SST": "Duplicate SST",
+            "NEEDS_REVIEW": "Needs review",
+        }
+
+        osha_rows = ""
+        for e in osha_entries:
+            wid = str(e.get("worker_id") or "")
+            cn = str(e.get("card_number") or "")
+            reason = review_by_key.get((wid, cn)) if cn else None
+            if reason is not None:
+                label = REVIEW_LABELS.get(reason, "Needs review")
+                review_cell = f'<span style="color:#b45309;font-weight:600;">&#9888; {label}</span>'
+            else:
+                review_cell = "&mdash;"
+            # name/company are short-entry; card_number/expiration are identifiers
+            # (rendered raw, no capitalization).
+            osha_rows += (
+                f'<tr><td {TD}>{_capitalize_first(e.get("worker_name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(e.get("company", ""))}</td>'
+                f'<td {TD}>{e.get("certification_type", "") or "&mdash;"}</td>'
+                f'<td {TD}>{e.get("card_number", "") or "&mdash;"}</td>'
+                f'<td {TD}>{e.get("expiration", "") or "&mdash;"}</td>'
+                f'<td {TD}>{"&#10003;" if e.get("signed") else "&mdash;"}</td>'
+                f'<td {TD}>{review_cell}</td></tr>'
+            )
+
+        osha_sig = render_signature_html(osha_lb.get("cp_signature"), "CP Signature")
+        osha_html = (
+            section_title("OSHA / SST Certification Log")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Worker</th><th {TH}>Company</th><th {TH}>Cert Type</th>'
+              f'<th {TH}>Card #</th><th {TH}>Expiration</th><th {TH}>Signed</th>'
+              f'<th {TH}>Review</th></tr>'
+            + (osha_rows or f'<tr><td colspan="7" {TD}>No certifications recorded</td></tr>')
+            + '</table>'
+            + osha_sig
+        )
+
+    # ==========================================================
+    #  HOT WORK PERMIT
+    # ==========================================================
+    hot_work_html = ""
+    hw_lb = next((l for l in logbooks if l.get("log_type") == "hot_work"), None)
+    if hw_lb:
+        d = hw_lb.get("data") or {}
+
+        # Full precaution list so an UNconfirmed item reads "Not recorded", never
+        # a silent "No" (sparse-map convention). Labels mirror the editor's
+        # PRECAUTION_ITEMS.
+        HW_PRECAUTIONS = [
+            ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
+            ("fire_extinguisher_present", "Fire Extinguisher Present"),
+            ("sprinklers_operational", "Sprinklers Operational"),
+            ("combustibles_covered", "Combustibles Covered / Protected"),
+            ("fire_watch_assigned", "Fire Watch Assigned"),
+            ("ventilation_adequate", "Ventilation Adequate"),
+            ("permit_posted", "Permit Posted at Location"),
+        ]
+        precautions = d.get("precautions") or {}
+        prec_rows = ""
+        for key, label in HW_PRECAUTIONS:
+            if key in precautions:
+                val = "Yes" if precautions.get(key) else "No"
+            else:
+                val = "&mdash; Not recorded"
+            prec_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
+
+        # The editor captures NO real fire-watch end time — fire_watch_end_time is
+        # derived as work-end + 30 min. FDNY can require a 60-min watch, so this is
+        # labeled as a computed DEFAULT, never asserted as a recorded watch-until.
+        fw_end = d.get("fire_watch_end_time") or ""
+        fw_end_display = (
+            f'{fw_end} <span style="color:#94a3b8;">(default: work end + 30 min)</span>'
+            if fw_end else "&mdash;"
+        )
+
+        # work_type is an enum label; location / worker / fire-watch names are
+        # short-entry; worker_cert_number is an identifier (raw); times as-is.
+        hot_work_html = (
+            section_title("Hot Work Permit")
+            + info_box(
+                f'<strong style="color:#0A1929;">Work Type:</strong> {d.get("work_type") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Location:</strong> {_capitalize_first(d.get("location", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Worker:</strong> {_capitalize_first(d.get("worker_name", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Worker Cert #:</strong> {d.get("worker_cert_number") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Start &ndash; End:</strong> {d.get("start_time") or "N/A"} &ndash; {d.get("end_time") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Fire Watch:</strong> {_capitalize_first(d.get("fire_watch_name", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Fire Watch Until:</strong> {fw_end_display}'
+            )
+            + sub_title("Pre-Work Precautions")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Precaution</th><th {TH}>Confirmed</th></tr>'
+            + prec_rows
+            + '</table>'
+            + render_signature_html(hw_lb.get("cp_signature"), "CP Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
-                     "subcontractor_orientation", "osha_log"}
+                     "subcontractor_orientation", "osha_log", "hot_work"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
@@ -15737,6 +15870,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {toolbox_html}
       {preshift_html}
       {site_html}
+      {osha_html}
+      {hot_work_html}
       {additional_logbooks_html}
     </td>
   </tr>
