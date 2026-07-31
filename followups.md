@@ -2,6 +2,21 @@
 
 Known gaps and deferred work, newest first.
 
+- **[HIGH] SSC daily-log compliance toggles are two-state (seeded false) — a value the human never affirmed.**
+  In `ssc_daily_safety_log.jsx`, five compliance fields — `incidents_reported`,
+  `safety_meetings_held`, `fire_protection_in_place`, `housekeeping_satisfactory`,
+  `ppe_compliance` — are two-state `ToggleRow`s seeded `false`. There is no
+  untouched-vs-explicit-No distinction, so an untouched toggle persists as `false`
+  and, on the DOB report, a bare "No" on e.g. PPE Compliance / Fire Protection
+  reads as an affirmative self-incriminating safety-violation finding the CP may
+  never have made (and a false "Yes" would be a fabricated attestation). The
+  report now qualifies this with a footnote, but the real fix is at the source:
+  make these tri-state (unset / Yes / No) or required-before-submit so an
+  untouched toggle can't masquerade as either a compliance finding or a
+  violation. Rides the batched native build. Same class as the CP-signature
+  replay and the orientation false-cover — a stored value asserting something the
+  human never affirmed.
+
 - **[HIGH] Orientation coverage matching is heuristic — can FALSE-cover and hide an LL196 gap.**
   The combined-report subcontractor-orientation coverage number ("X of N on-site
   workers with first-time orientation on file", `generate_combined_report`) matches

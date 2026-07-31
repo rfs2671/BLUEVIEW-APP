@@ -16076,11 +16076,68 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  SSC DAILY SAFETY LOG
+    # ==========================================================
+    ssc_html = ""
+    ssc_lb = next((l for l in logbooks if l.get("log_type") == "ssc_daily_safety_log"), None)
+    if ssc_lb:
+        d = ssc_lb.get("data") or {}
+
+        # Two-state ToggleRows (seeded false, always present) → Yes/No as captured.
+        SSC_FLAGS = [
+            ("incidents_reported", "Incidents Reported"),
+            ("safety_meetings_held", "Safety Meetings Held"),
+            ("fire_protection_in_place", "Fire Protection in Place"),
+            ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
+            ("ppe_compliance", "PPE Compliance"),
+        ]
+        flag_rows = ""
+        for key, label in SSC_FLAGS:
+            flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{"Yes" if d.get(key) else "No"}</td></tr>'
+
+        # Prose (sentence-case); empty renders "Not recorded", never an asserted
+        # "none" that could read as a negative finding the CP did not make.
+        def _ssc_prose(v):
+            return (_sentence_case(v) if v else "") or "&mdash; Not recorded"
+
+        incident_line = (
+            bold_para("Incident Details", _ssc_prose(d.get("incident_details")))
+            if d.get("incidents_reported") else ""
+        )
+
+        ssc_html = (
+            section_title("SSC Daily Safety Log")
+            + info_box(
+                f'<strong style="color:#0A1929;">Project Address:</strong> {_capitalize_first(d.get("project_address", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Site Safety Plan #:</strong> {d.get("ssp_number") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Weather:</strong> {d.get("weather") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Workers on Site:</strong> {d.get("workers_on_site_count") or "N/A"}'
+            )
+            + sub_title("Compliance")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Item</th><th {TH}>Status</th></tr>'
+            + flag_rows
+            + '</table>'
+            # A rendered "No" here may be an untouched default, not a deliberate
+            # negative finding — qualify it so a bare "No" is never read as an
+            # affirmative safety-violation attestation on a DOB record.
+            + '<p style="color:#94a3b8;font-size:11px;font-style:italic;margin:2px 0 0;">'
+              'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
+            + sub_title("Narrative")
+            + bold_para("Site Conditions", _ssc_prose(d.get("site_conditions")))
+            + bold_para("Safety Violations Observed", _ssc_prose(d.get("safety_violations_observed")))
+            + bold_para("Corrective Actions Taken", _ssc_prose(d.get("corrective_actions_taken")))
+            + incident_line
+            + render_signature_html(ssc_lb.get("cp_signature"), "SSC / SSM Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
                      "subcontractor_orientation", "osha_log", "hot_work", "crane_operations",
-                     "excavation_monitoring"}
+                     "excavation_monitoring", "ssc_daily_safety_log"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
@@ -16196,6 +16253,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {exc_html}
       {scaffold_html}
       {orientation_html}
+      {ssc_html}
       {additional_logbooks_html}
     </td>
   </tr>
