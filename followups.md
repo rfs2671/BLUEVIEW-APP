@@ -32,16 +32,6 @@ Known gaps and deferred work, newest first.
   report that means "checked in that day and never checked out," not literally "was
   on site" — fine for the live daily report, a caveat for historical dates.
 
-- **[MED] osha_log review-state depends on the fabricated-cert cleanup being APPLIED.**
-  The combined-report osha_log renderer surfaces each cert's `needs_review` /
-  `review_reason` by joining to `worker.certifications`. Those flags are WRITTEN by
-  `backend/scripts/audit_fabricated_certs.py --apply`, which has NOT been run in
-  production yet (narrowed rule landed; dry run pending confirmation of 2/2/2/0).
-  Until `--apply` runs, the DB carries no `needs_review` flags for the two legacy
-  workers (Jose David Hernandez Pena, Jhonatan Tipantuna), so the packet still
-  renders their SST rows without a ⚠. Run the dry-run-confirmed `--apply` to make
-  the review-state surfacing effective (it also drops the 2 fabricated OSHA rows).
-
 - **[MED] Compliance-packet capture gaps — new EDITOR fields (batch with next native build).**
   Surfaced while building the report renderers (item C). The renderers can only
   show what the editors persist; these fields an inspector needs are NOT captured

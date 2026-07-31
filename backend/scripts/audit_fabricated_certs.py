@@ -101,7 +101,16 @@ def plan_for_worker(worker: dict):
             c["review_reason"] = "EXPIRY_IMPLAUSIBLE"
             actions.append(("clear_implausible_expiry", ctype, c["expiration_raw_rejected"]))
         else:
-            # (2) class was hardcoded — cannot be trusted on ANY existing row
+            # (2) LEGACY hardcoded-class rows ONLY. The new capture pipeline
+            # (build_worker_certifications) stamps extraction_completeness on
+            # every row it writes and derives the class from the card's OCR, so
+            # a row carrying a real score had its class genuinely read and must
+            # not be flagged — it already carries the pipeline's own review
+            # state. Only pre-pipeline rows (no score) are class-unverified.
+            # `is not None` also spares a legacy doc that was re-serialized
+            # through the model and picked up the `= None` default.
+            if c.get("extraction_completeness") is not None:
+                continue  # read by the new pipeline — class is trustworthy
             c["needs_review"] = True
             if not c.get("review_reason"):
                 c["review_reason"] = "CLASS_UNVERIFIED"
@@ -140,7 +149,7 @@ async def main() -> int:
 
         name = w.get("name") or "(no name)"
         print(f"WORKER {w.get('_id')}  {name}")
-        print(f"  BEFORE: {[{'type': c.get('type'), 'card_number': c.get('card_number'), 'expiration_date': str(c.get('expiration_date'))} for c in before]}")
+        print(f"  BEFORE: {[{'type': c.get('type'), 'card_number': c.get('card_number'), 'expiration_date': str(c.get('expiration_date')), 'extraction_completeness': c.get('extraction_completeness')} for c in before]}")
         for a, t, v in actions:
             print(f"    - {a}: type={t} value={v}")
         print(f"  AFTER : {[{'type': c.get('type'), 'card_number': c.get('card_number'), 'expiration_date': str(c.get('expiration_date')), 'needs_review': c.get('needs_review'), 'review_reason': c.get('review_reason')} for c in new_certs]}")
@@ -156,7 +165,7 @@ async def main() -> int:
     print("=== SUMMARY ===")
     print(f"  workers affected            : {workers_touched}")
     print(f"  (1) fabricated OSHA dropped  : {totals['drop_fabricated_osha']}   (expect 2; was 3 before Fishman deleted)")
-    print(f"  (2) SST rows flagged class   : {totals['flag_class_unverified']}   (expect 2; was 3 before Fishman deleted)")
+    print(f"  (2) SST rows flagged class   : {totals['flag_class_unverified']}   (expect 2 legacy; post-fix supervisor cards skipped)")
     print(f"  (3) implausible expiry cleared: {totals['clear_implausible_expiry']}   (expect 0; was 1 — Fishman deleted; any other reported)")
     if not args.apply:
         print("\nDRY RUN — nothing written. Re-run with --apply to make these changes.")
