@@ -10,7 +10,8 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "updates": {
-      "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51"
+      "url": "https://u.expo.dev/818dd5ed-c372-4582-aea9-846381063a51",
+      "fallbackToCacheTimeout": 3000
     },
     "runtimeVersion": {
       "policy": "appVersion"
