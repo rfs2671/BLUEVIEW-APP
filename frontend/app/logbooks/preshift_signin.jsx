@@ -57,7 +57,7 @@ export default function PreShiftSignIn() {
 
   const [company, setCompany] = useState('');
   const [projectLocation, setProjectLocation] = useState('');
-  const [workers, setWorkers] = useState(Array.from({ length: 5 }, EMPTY_WORKER));
+  const [workers, setWorkers] = useState([]);
 
   useEffect(() => {
     fetchData();
@@ -108,13 +108,11 @@ export default function PreShiftSignIn() {
   /**
    * Builds the worker list from today's check-ins.
    * Captures: name, company, osha_number, and worker_signature — all locked (read-only).
-   * Pads to at least 5 rows with empty editable rows.
+   * Rows come ONLY from check-ins; no blank padding. The CP adds any manual
+   * entries with "+ Add Row", so an empty check-in list starts with no rows
+   * rather than five empty numbered slots.
    */
   const buildWorkerList = (checkins) => {
-    if (checkins.length === 0) {
-      setWorkers(Array.from({ length: 5 }, EMPTY_WORKER));
-      return;
-    }
     const list = checkins.map((c) => ({
       worker_id: c.worker_id,
       name: c.worker_name || '',
@@ -129,8 +127,6 @@ export default function PreShiftSignIn() {
       signed: false,
       auto_filled: true, // Lock identity fields — came from sign-in system
     }));
-    // Pad with empty manual rows
-    while (list.length < 5) list.push(EMPTY_WORKER());
     setWorkers(list);
   };
 

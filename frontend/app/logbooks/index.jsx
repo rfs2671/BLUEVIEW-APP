@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ClipboardList,
@@ -63,7 +63,7 @@ export default function LogBooksScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [todayLogs, setTodayLogs] = useState({});
-  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0 });
+  const [notifications, setNotifications] = useState({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [] });
   const [cpName, setCpName] = useState('');
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
@@ -85,6 +85,19 @@ export default function LogBooksScreen() {
   useEffect(() => {
     if (isAuthenticated) fetchInitial();
   }, [isAuthenticated]);
+
+  // Refetch the selected project's logbook data whenever the hub regains
+  // focus. Without this, returning here after submitting a logbook (e.g.
+  // pre-shift calls router.back()) shows the stale pre-submit status —
+  // "Draft" where it should now read "Done". Mirrors the useFocusEffect
+  // pattern used by project/[id]/report-settings.jsx.
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isAuthenticated && selectedProject) {
+        fetchProjectData(selectedProject._id || selectedProject.id);
+      }
+    }, [isAuthenticated, selectedProject])
+  );
 
   const fetchInitial = async () => {
     setLoading(true);
@@ -121,7 +134,7 @@ export default function LogBooksScreen() {
     try {
       const [logs, notifs, scaffoldInfo, reqLogbooks] = await Promise.all([
         logbooksAPI.getByProject(projectId, null, today).catch(() => []),
-        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0 })),
+        logbooksAPI.getNotifications(projectId).catch(() => ({ missing_toolbox_talk: [], unsigned_orientations: 0, unaffirmed_logbooks: 0, unaffirmed_logbook_refs: [] })),
         logbooksAPI.getScaffoldInfo(projectId).catch(() => null),
         projectsAPI.getRequiredLogbooks(projectId).catch(() => null),
       ]);
@@ -159,6 +172,18 @@ export default function LogBooksScreen() {
     }
     const projectId = selectedProject._id || selectedProject.id;
     router.push(`/logbooks/${logType}?projectId=${projectId}&date=${today}`);
+  };
+
+  // Deep-link the unaffirmed-signature alert to a logbook that needs the CP
+  // signature affirmed. Refs come from the notifications payload (log_type +
+  // date); we open the most recent one — after it's affirmed, the focus
+  // refetch drops the count and the alert clears (or points at the next one).
+  const handleOpenUnaffirmed = () => {
+    const refs = notifications?.unaffirmed_logbook_refs || [];
+    if (!selectedProject || refs.length === 0) return;
+    const projectId = selectedProject._id || selectedProject.id;
+    const { log_type, date } = refs[0];
+    router.push(`/logbooks/${log_type}?projectId=${projectId}&date=${date}`);
   };
 
   const getLogStatus = (logTypeKey) => {
@@ -379,17 +404,19 @@ export default function LogBooksScreen() {
               inherited but never affirmed for that document. Same attention
               channel as the toolbox alert; an honest deficiency, not a block. */}
           {unaffirmedLogbooks > 0 && (
-            <GlassCard style={styles.notifCard}>
-              <View style={styles.notifHeader}>
-                <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
-                <Text style={styles.notifTitle}>
-                  {unaffirmedLogbooks} logbook{unaffirmedLogbooks > 1 ? 's' : ''} filed without an affirmed signature
+            <Pressable onPress={handleOpenUnaffirmed}>
+              <GlassCard style={styles.notifCard}>
+                <View style={styles.notifHeader}>
+                  <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
+                  <Text style={styles.notifTitle}>
+                    {unaffirmedLogbooks} logbook{unaffirmedLogbooks > 1 ? 's' : ''} filed without an affirmed signature
+                  </Text>
+                </View>
+                <Text style={styles.notifWorker}>
+                  Tap to open and affirm the signature for that document.
                 </Text>
-              </View>
-              <Text style={styles.notifWorker}>
-                Reopen each and tap Affirm to attest the signature for that document.
-              </Text>
-            </GlassCard>
+              </GlassCard>
+            </Pressable>
           )}
 
           {/* Check-in review entry point. Lives here because /logbooks/* is

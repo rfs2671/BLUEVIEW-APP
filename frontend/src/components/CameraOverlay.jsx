@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View, Text, Image, Pressable, StyleSheet, ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { X, RefreshCw, Check } from 'lucide-react-native';
+import { X, RefreshCw, Check, Trash2, ChevronLeft, ChevronRight } from 'lucide-react-native';
 import { chrome, withAlpha } from '../styles/semanticColors';
 
 /**
@@ -35,12 +35,35 @@ export default function CameraOverlay({
   onSelectLens,
   onFlip,
   onShutter,
+  onDeleteShot,
   onClose,
 }) {
   // Newest first — the CP's most recent frame is the one they want to confirm.
   const newestFirst = [...shots].reverse();
   const visible = newestFirst.slice(0, MAX_VISIBLE_SHOTS);
   const hidden = newestFirst.length - visible.length;
+
+  // In-camera review: position (into newestFirst) of the shot the CP is
+  // previewing full-screen, or null when the strip is just the corner stack.
+  // Kept so a CP can confirm and DELETE a bad frame without leaving the camera.
+  const [previewIndex, setPreviewIndex] = useState(null);
+  const previewShot = previewIndex == null ? null : newestFirst[previewIndex];
+  const canPrev = previewIndex != null && previewIndex > 0;
+  const canNext = previewIndex != null && previewIndex < newestFirst.length - 1;
+
+  const openPreview = (idx, shot) => {
+    // Pending shots have no decoded uri yet — nothing to review.
+    if (shot?.pending) return;
+    setPreviewIndex(idx);
+  };
+
+  const handleDeletePreview = () => {
+    if (previewShot?.id != null) onDeleteShot?.(previewShot.id);
+    // The list shrinks by one after the parent drops it. Close if that was the
+    // last frame; otherwise keep the index in range (step back off the end).
+    if (newestFirst.length <= 1) { setPreviewIndex(null); return; }
+    setPreviewIndex((idx) => Math.min(idx, newestFirst.length - 2));
+  };
 
   return (
     <SafeAreaView style={styles.overlay} edges={['top', 'bottom']} pointerEvents="box-none">
@@ -56,13 +79,20 @@ export default function CameraOverlay({
         </Pressable>
       </View>
 
-      {/* Session shots, stacked in the corner. Non-interactive: the CP manages
-          photos in the log, not here — this is confirmation that the shutter
-          fired, which the old flow never gave. */}
+      {/* Session shots, stacked in the corner. Tappable: a tile opens the
+          full-screen review below, where the CP can confirm or DELETE the
+          frame without leaving the camera. A pending tile ignores the tap. */}
       {visible.length > 0 && (
-        <View style={styles.shotStack} pointerEvents="none">
+        <View style={styles.shotStack}>
           {visible.map((shot, i) => (
-            <View key={shot.id ?? i} style={styles.shotTile}>
+            <Pressable
+              key={shot.id ?? i}
+              style={styles.shotTile}
+              onPress={() => openPreview(i, shot)}
+              disabled={shot.pending}
+              accessibilityRole="button"
+              accessibilityLabel={shot.pending ? 'Photo processing' : 'Review photo'}
+            >
               {shot.pending ? (
                 // Placeholder while the background compress runs. Rendering the
                 // RAW capture here would make the UI thread decode a full-size
@@ -73,12 +103,19 @@ export default function CameraOverlay({
               ) : (
                 <Image source={{ uri: shot.uri }} style={styles.shotImg} />
               )}
-            </View>
+            </Pressable>
           ))}
           {hidden > 0 && (
-            <View style={[styles.shotTile, styles.shotMore]}>
+            // Opens the first frame not shown in the corner stack, so every
+            // shot in the session stays reachable for review/delete.
+            <Pressable
+              style={[styles.shotTile, styles.shotMore]}
+              onPress={() => openPreview(MAX_VISIBLE_SHOTS, newestFirst[MAX_VISIBLE_SHOTS])}
+              accessibilityRole="button"
+              accessibilityLabel={`Review ${hidden} more photos`}
+            >
               <Text style={styles.shotMoreText}>+{hidden}</Text>
-            </View>
+            </Pressable>
           )}
         </View>
       )}
@@ -148,6 +185,68 @@ export default function CameraOverlay({
           </View>
         </View>
       </View>
+
+      {/* Full-screen review of one session frame, layered over the live
+          preview. Confirm it, page to a sibling, or delete it — all without
+          dismissing the camera. Absolute-fills the overlay above the chrome. */}
+      {previewShot && (
+        <View style={styles.previewLayer}>
+          <Image
+            source={{ uri: previewShot.uri }}
+            style={styles.previewImage}
+            resizeMode="contain"
+          />
+
+          <View style={styles.previewTop}>
+            <Pressable
+              style={styles.iconBtn}
+              onPress={() => setPreviewIndex(null)}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Close review"
+            >
+              <X size={24} strokeWidth={2} color="#fff" />
+            </Pressable>
+            <Text style={styles.previewCount}>
+              {previewIndex + 1} / {newestFirst.length}
+            </Text>
+            <Pressable
+              style={[styles.iconBtn, styles.previewDeleteBtn]}
+              onPress={handleDeletePreview}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Delete photo"
+            >
+              <Trash2 size={22} strokeWidth={2} color="#fff" />
+            </Pressable>
+          </View>
+
+          {newestFirst.length > 1 && (
+            <View style={styles.previewNav} pointerEvents="box-none">
+              <Pressable
+                style={[styles.navBtn, !canPrev && styles.navBtnDisabled]}
+                onPress={() => canPrev && setPreviewIndex((idx) => idx - 1)}
+                disabled={!canPrev}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Previous photo"
+              >
+                <ChevronLeft size={28} strokeWidth={2} color="#fff" />
+              </Pressable>
+              <Pressable
+                style={[styles.navBtn, !canNext && styles.navBtnDisabled]}
+                onPress={() => canNext && setPreviewIndex((idx) => idx + 1)}
+                disabled={!canNext}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Next photo"
+              >
+                <ChevronRight size={28} strokeWidth={2} color="#fff" />
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -207,4 +306,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 12, borderRadius: 999,
   },
   doneText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+
+  // ── In-camera review ──
+  previewLayer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: withAlpha('#000000', 0.92),
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  previewImage: { width: '100%', height: '100%' },
+  previewTop: {
+    position: 'absolute', top: 0, left: 0, right: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 20, paddingTop: 8,
+  },
+  previewCount: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  previewDeleteBtn: { backgroundColor: withAlpha('#ef4444', 0.85) },
+  previewNav: {
+    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 12,
+  },
+  navBtn: {
+    width: 48, height: 48, borderRadius: 24,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: withAlpha('#000000', 0.35),
+  },
+  navBtnDisabled: { opacity: 0.25 },
 });

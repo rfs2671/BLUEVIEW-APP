@@ -52,7 +52,7 @@ export function useCameraPrewarmPermission() {
   return hasPermission;
 }
 
-function CameraSurface({ active, shots, onCapture, onClose }) {
+function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const camera = useRef(null);
   const { hasPermission, requestPermission } = useCameraPermission();
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
@@ -198,6 +198,7 @@ function CameraSurface({ active, shots, onCapture, onClose }) {
         onSelectLens={setBackLens}
         onFlip={() => setPosition((p) => (p === 'back' ? 'front' : 'back'))}
         onShutter={handleShutter}
+        onDeleteShot={onDeleteShot}
         onClose={onClose}
       />
     </View>
@@ -235,7 +236,7 @@ function CameraSurface({ active, shots, onCapture, onClose }) {
  * sits directly under AnimatedBackground, OUTSIDE the SafeAreaView) or its
  * absolute fill inherits the safe-area inset and the preview is not full-bleed.
  */
-export default function CameraCaptureModal({ visible, shots, onClose, onCapture }) {
+export default function CameraCaptureModal({ visible, shots, onClose, onCapture, onDeleteShot }) {
   // Replaces Modal's onRequestClose, which handled the Android back button.
   useEffect(() => {
     if (!visible) return undefined;
@@ -261,7 +262,7 @@ export default function CameraCaptureModal({ visible, shots, onClose, onCapture 
       {/* GestureHandlerRootView is required for the pinch gesture to work in
           this detached overlay, as it was inside the Modal's native root. */}
       <GestureHandlerRootView style={styles.container}>
-        <CameraSurface active={visible} shots={shots} onCapture={onCapture} onClose={onClose} />
+        <CameraSurface active={visible} shots={shots} onCapture={onCapture} onDeleteShot={onDeleteShot} onClose={onClose} />
       </GestureHandlerRootView>
     </View>
   );

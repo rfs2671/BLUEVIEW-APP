@@ -14464,22 +14464,33 @@ async def get_logbook_notifications(project_id: str, current_user = Depends(get_
         "is_deleted": {"$ne": True},
     })
 
-    # Count SUBMITTED logbooks whose CP signature was inherited but never
-    # affirmed for that document (cp_signature present, cp_signature.affirmed
-    # not True). This surfaces the unaffirmed exception to the admin exactly
-    # like unsigned_orientations — an honest deficiency, not a hard block.
-    unaffirmed_logbooks = await db.logbooks.count_documents({
-        "project_id": project_id,
-        "status": "submitted",
-        "is_deleted": {"$ne": True},
-        "cp_signature": {"$ne": None},
-        "cp_signature.affirmed": {"$ne": True},
-    })
+    # SUBMITTED logbooks whose CP signature was inherited but never affirmed
+    # for that document (cp_signature present, cp_signature.affirmed not True).
+    # This surfaces the unaffirmed exception to the admin exactly like
+    # unsigned_orientations — an honest deficiency, not a hard block. We return
+    # the count (drives the badge) AND lightweight refs (log_type + date) so
+    # the hub can deep-link the alert straight to a logbook that needs fixing.
+    unaffirmed_docs = await db.logbooks.find(
+        {
+            "project_id": project_id,
+            "status": "submitted",
+            "is_deleted": {"$ne": True},
+            "cp_signature": {"$ne": None},
+            "cp_signature.affirmed": {"$ne": True},
+        },
+        {"log_type": 1, "date": 1},
+    ).sort("date", -1).to_list(200)
+    unaffirmed_refs = [
+        {"log_type": d.get("log_type"), "date": d.get("date")}
+        for d in unaffirmed_docs
+        if d.get("log_type") and d.get("date")
+    ]
 
     return {
         "missing_toolbox_talk": missing_toolbox,
         "unsigned_orientations": unsigned_orientations,
-        "unaffirmed_logbooks": unaffirmed_logbooks,
+        "unaffirmed_logbooks": len(unaffirmed_docs),
+        "unaffirmed_logbook_refs": unaffirmed_refs,
         "week_start": week_start_str,
     }
 

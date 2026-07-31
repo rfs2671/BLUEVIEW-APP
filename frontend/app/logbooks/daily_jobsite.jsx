@@ -505,6 +505,21 @@ export default function DailyJobsiteLog() {
     return sessionShotIds.map(id => byId.get(id)).filter(Boolean);
   }, [activities, cameraTargetIndex, sessionShotIds]);
 
+  // Delete a shot straight from the camera strip (item 7 — in-camera review).
+  // Removes it from the target activity's photos AND this session's id list so
+  // the strip and the row drop it together, and forgets any compressed uri.
+  // The CP never leaves the camera to discard a bad frame.
+  const handleDeleteShot = (id) => {
+    if (cameraTargetIndex == null || !id) return;
+    const target = cameraTargetIndex;
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== target) return a;
+      return { ...a, photos: (a.photos || []).filter(p => p.id !== id) };
+    }));
+    setSessionShotIds(prev => prev.filter(sid => sid !== id));
+    delete compressedUriRef.current[id];
+  };
+
   const removeActivityPhoto = (activityIndex, photoIndex) => {
     lastEditedRef.current = activityIndex;
     setActivities(prev => prev.map((a, i) => {
@@ -1057,6 +1072,7 @@ export default function DailyJobsiteLog() {
         shots={cameraShots}
         onClose={() => setCameraVisible(false)}
         onCapture={handleCameraCapture}
+        onDeleteShot={handleDeleteShot}
       />
 
       {/* PR C: photo lightbox — mirrors the worker-detail OSHA-card modal. */}

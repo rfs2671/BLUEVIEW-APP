@@ -858,7 +858,11 @@ function buildStyles(colors, isDark) {
   },
   oshaCardImage: {
     width: '100%',
-    height: 200,
+    // Size the frame to the card's own proportions (~1.6:1, credit-card
+    // ratio) instead of a fixed 200px box. With resizeMode="contain" that
+    // fixed height letterboxed a full card down until the printed expiry
+    // was too small to read; an aspect-ratio frame renders it legibly.
+    aspectRatio: 1.6,
     borderRadius: borderRadius.md,
     backgroundColor: withAlpha('#ffffff', 0.03),
   },
