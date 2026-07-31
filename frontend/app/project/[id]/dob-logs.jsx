@@ -243,12 +243,29 @@ export default function DOBLogsScreen() {
     return log.detected_at;
   };
 
-  // OPEN records first, then newest real date — so a tile's open subset leads
-  // the list while closed/resolved records stay visible below.
+  // Severity tiers (0 = top). Stop-work/SWO first, then open violations, then
+  // orders/notices, then open complaints, then resolved/closed LAST. Resolution
+  // is read via isRecordOpen (a STATUS-field derivation), NEVER from description
+  // text — so an SWO's own "…until resolved" wording cannot demote it; text can
+  // only PROMOTE stop-work. Matches the read-only render check on real data.
+  const STOP_WORK_RE = /stop work|work stopped|work shall not resume|cease all work|work shall stop/i;
+  const severityTier = (log) => {
+    if (!isRecordOpen(log)) return 4; // resolved / dismissed / paid / closed → bottom
+    const rt = (log.record_type || '').toLowerCase();
+    const sub = (log.violation_subtype || '').toUpperCase();
+    const stopWork = rt === 'swo' || sub === 'SWO_FULL' || sub === 'SWO_PARTIAL'
+      || STOP_WORK_RE.test(`${log.violation_type || ''} ${log.description || ''}`);
+    if (stopWork) return 0;
+    if (sub === 'VACATE_FULL' || sub === 'VACATE_PARTIAL' || sub === 'COMM_ORDER' || log.notice_type) return 2;
+    if (rt === 'violation' || rt === 'boiler' || rt === 'elevator' || sub === 'ECB') return 1;
+    if (rt === 'complaint') return 3;
+    return 3;
+  };
+  // SEVERITY-ranked (stop-work first, resolved last), newest within a tier.
   const openFirstSort = (logs) => [...logs].sort((a, b) => {
-    const oa = isRecordOpen(a) ? 0 : 1;
-    const ob = isRecordOpen(b) ? 0 : 1;
-    if (oa !== ob) return oa - ob;
+    const ta = severityTier(a);
+    const tb = severityTier(b);
+    if (ta !== tb) return ta - tb;
     const da = parseAnyDate(getRealDate(a)) || new Date(0);
     const db = parseAnyDate(getRealDate(b)) || new Date(0);
     return db - da;

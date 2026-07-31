@@ -18016,10 +18016,16 @@ def _classify_violation_subtype(rec: dict) -> str:
 
     combined = f"{vtype} {desc}"
 
-    if "FULL STOP WORK" in combined or (record_type == "swo" and "PARTIAL" not in combined):
-        return "SWO_FULL"
-    if "PARTIAL STOP" in combined or "PARTIAL SWO" in combined:
-        return "SWO_PARTIAL"
+    # Stop-work detection keyed on DOB's REAL phrasing, not just the literal
+    # "FULL STOP WORK". A borough-commissioner order reads "…ORDERED ALL WORK
+    # STOPPED…", which the old check missed → it fell through to COMM_ORDER and
+    # ranked below open violations. record_type=='swo' still forces stop-work.
+    stop_work = record_type == "swo" or any(p in combined for p in (
+        "STOP WORK", "WORK STOPPED", "WORK SHALL NOT RESUME",
+        "CEASE ALL WORK", "WORK SHALL STOP",
+    ))
+    if stop_work:
+        return "SWO_PARTIAL" if "PARTIAL" in combined else "SWO_FULL"
     if "FULL VACATE" in combined:
         return "VACATE_FULL"
     if "PARTIAL VACATE" in combined or "VACATE" in combined:
@@ -18117,7 +18123,16 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["violation_number"] = rec.get("ecb_violation_number") or rec.get("violation_number") or rec.get("number") or rec.get("isn_dob_bis_viol") or None
     fields["violation_category"] = rec.get("violation_category") or rec.get("category") or None
     fields["violation_date"] = rec.get("issue_date") or rec.get("violation_date") or rec.get("issued_date") or rec.get("infraction_date") or None
-    fields["description"] = rec.get("description") or rec.get("violation_description") or rec.get("infraction_codes") or None
+    # 855j-jady (DOB NOW Safety) has NO `description` field — its readable
+    # content is device_type + violation_remarks, so FTF-PL-PER-class rows
+    # otherwise ingest with a blank description. Compose from those when the
+    # standard fields are absent so the code isn't shown bare.
+    fields["description"] = (
+        rec.get("description") or rec.get("violation_description")
+        or rec.get("infraction_codes")
+        or " — ".join(p for p in (rec.get("device_type"), rec.get("violation_remarks")) if p)
+        or None
+    )
     fields["penalty_amount"] = rec.get("penalty_applied") or rec.get("penalty_balance_due") or rec.get("amount_paid") or None
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
