@@ -3,7 +3,7 @@ import {
   AppState, BackHandler, View, Text, Pressable, StyleSheet, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraFormat, useCameraPermission } from 'react-native-vision-camera';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 import CameraOverlay from './CameraOverlay';
 
@@ -81,6 +81,30 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const device = position === 'front'
     ? frontDevice
     : (uwIsDistinct && backLens === 'ultra' ? uwDevice : backBase);
+
+  // ── item 6: per-device capture tuning to freeze hand-held motion ──────────
+  // CRITERIA-based format selection (priority order) — every phone resolves its
+  // OWN best format from the same code, never a hardcoded index. useCameraFormat
+  // sorts the device's formats by closeness to each criterion in turn, so an
+  // older/weaker device (iPhone 6s, midrange Android) that can't satisfy a
+  // criterion silently falls back to its nearest match instead of failing.
+  const format = useCameraFormat(device, [
+    { photoResolution: 'max' },                       // 1) sharpest still the sensor offers
+    { videoStabilizationMode: 'cinematic-extended' }, // 2) strongest stabilization where supported
+    { fps: 60 },                                      // 3) prefer a format that can run fast (short exposures)
+  ]);
+
+  // Shutter-speed FLOOR: stream at up to 60fps so each frame's exposure time is
+  // capped near 1/60s — enough to freeze a hand-held site photo. Clamped to the
+  // chosen format's own maxFps, so a phone that tops out at 30fps just gets 30
+  // (still far better than an uncapped multi-second interior exposure).
+  const fps = format ? Math.min(60, format.maxFps) : undefined;
+
+  // Exposure FLOOR: bias one stop under so the AE targets a faster shutter in dim
+  // interior light (the sensor holds brightness by raising gain/ISO instead of
+  // lengthening the exposure). Clamped to the device's supported range, so a
+  // device that reports no negative range gets 0 — a harmless no-op.
+  const exposure = device ? Math.max(device.minExposure ?? 0, -1) : undefined;
 
   useEffect(() => {
     if (!hasPermission) requestPermission();
@@ -211,6 +235,11 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         ref={camera}
         style={StyleSheet.absoluteFill}
         device={device}
+        format={format}
+        fps={fps}
+        exposure={exposure}
+        photoHdr={false}
+        lowLightBoost={device?.supportsLowLightBoost === true}
         isActive={active && appActive}
         photo={true}
         zoom={zoom}

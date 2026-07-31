@@ -31,7 +31,10 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  Share2,
 } from 'lucide-react-native';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../src/components/GlassCard';
 import GlassButton from '../src/components/GlassButton';
@@ -230,6 +233,43 @@ export default function ReportsScreen() {
     }
   };
   
+  // Item 9 — native OS share sheet, token-safe. Downloads the PDF with the
+  // auth token in the Authorization HEADER (never in the URL, so nothing
+  // token-bearing is handed to the share sheet), then shares only the local
+  // file. Requires expo-sharing's native module → active from the NEXT native
+  // build, not an OTA update.
+  const handleSharePdf = async () => {
+    if (!selectedProject) return;
+    const projectId = selectedProject._id || selectedProject.id;
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        toast.error('Unavailable', 'Sharing is not available on this device');
+        return;
+      }
+      const baseURL = apiClient.defaults.baseURL || '';
+      const token = await getToken();
+      const safeName = selectedProject.name?.replace(/\s+/g, '_') || 'report';
+      const target = `${FileSystem.cacheDirectory}LeveLog_Report_${safeName}_${previewDate}.pdf`;
+      const { uri, status } = await FileSystem.downloadAsync(
+        `${baseURL}/api/reports/project/${projectId}/date/${previewDate}/pdf`,
+        target,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (status !== 200) {
+        toast.error('Error', 'Could not generate PDF');
+        return;
+      }
+      await Sharing.shareAsync(uri, {
+        mimeType: 'application/pdf',
+        UTI: 'com.adobe.pdf',
+        dialogTitle: 'Share report',
+      });
+    } catch (err) {
+      console.error('Failed to share PDF:', err);
+      toast.error('Error', 'Could not share report');
+    }
+  };
+
   const navigateDate = (direction) => {
     const current = new Date(previewDate + 'T12:00:00');
     current.setDate(current.getDate() + direction);
@@ -502,6 +542,14 @@ export default function ReportsScreen() {
                         onPress={handleDownloadPdf}
                         style={s.previewBtn}
                       />
+                      {Platform.OS !== 'web' && (
+                        <GlassButton
+                          title="Share Report"
+                          icon={<Share2 size={18} strokeWidth={1.5} color={colors.text.primary} />}
+                          onPress={handleSharePdf}
+                          style={s.previewBtn}
+                        />
+                      )}
                     </>
                   ) : (
                     <GlassCard style={s.emptyCard}>

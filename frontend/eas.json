@@ -26,6 +26,16 @@
       },
       "channel": "preview"
     },
+    "preview-prod": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "channel": "production"
+    },
     "production": {
       "distribution": "store",
       "autoIncrement": true,

@@ -3,7 +3,7 @@
     "name": "LeveLog",
     "slug": "levelog",
     "owner": "rfs2671",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "levelog",
