@@ -16133,11 +16133,81 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         )
 
     # ==========================================================
+    #  CONCRETE OPERATIONS
+    # ==========================================================
+    concrete_html = ""
+    concrete_lb = next((l for l in logbooks if l.get("log_type") == "concrete_operations"), None)
+    if concrete_lb:
+        d = concrete_lb.get("data") or {}
+
+        FORMWORK_ITEMS = [
+            ("shores_plumb", "Shores Plumb"),
+            ("bracing_adequate", "Bracing Adequate"),
+            ("formwork_clean", "Formwork Clean"),
+            ("no_gaps", "No Gaps"),
+        ]
+        formwork = d.get("formwork_checklist") or {}
+        formwork_rows = ""
+        for key, label in FORMWORK_ITEMS:
+            if key in formwork:
+                val = "Yes" if formwork.get(key) else "No"
+            else:
+                val = "&mdash; Not recorded"
+            formwork_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
+
+        slump_rows = ""
+        for st in (d.get("slump_tests") or []):
+            t = str(st.get("time", "")).strip()
+            v = str(st.get("value", "")).strip()
+            p = st.get("pass")
+            if not t and not v and p is None:
+                continue
+            # pass is TRI-STATE: null → Not recorded, never "Fail".
+            if p is True:
+                result = '<span style="color:#15803d;font-weight:600;">Pass</span>'
+            elif p is False:
+                result = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
+            else:
+                result = "&mdash; Not recorded"
+            slump_rows += (
+                f'<tr><td {TD}>{t or "&mdash;"}</td>'
+                f'<td {TD}>{v or "&mdash;"}</td>'
+                f'<td {TD}>{result}</td></tr>'
+            )
+
+        # pour_location / concrete_supplier short-entry; mix_design an identifier;
+        # volume_ordered & temperature raw (unit-less as entered); weather an enum.
+        concrete_html = (
+            section_title("Concrete Operations")
+            + info_box(
+                f'<strong style="color:#0A1929;">Pour Location:</strong> {_capitalize_first(d.get("pour_location", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Supplier:</strong> {_capitalize_first(d.get("concrete_supplier", "")) or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Mix Design:</strong> {d.get("mix_design") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Volume Ordered:</strong> {d.get("volume_ordered") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Weather:</strong> {d.get("weather_conditions") or "N/A"}<br />'
+                f'<strong style="color:#0A1929;">Temperature:</strong> {d.get("temperature") or "N/A"}'
+            )
+            + sub_title("Slump Tests")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Time</th><th {TH}>Slump</th><th {TH}>Result</th></tr>'
+            + (slump_rows or f'<tr><td colspan="3" {TD}>No slump tests recorded</td></tr>')
+            + '</table>'
+            + sub_title("Formwork Inspection")
+            + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+              'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            + f'<tr><th {TH}>Item</th><th {TH}>Confirmed</th></tr>'
+            + formwork_rows
+            + '</table>'
+            + render_signature_html(concrete_lb.get("cp_signature"), "CP Signature")
+        )
+
+    # ==========================================================
     #  ADDITIONAL LOGBOOKS (new types: SSC, concrete, crane, hot work, excavation)
     # ==========================================================
     handled_types = {"daily_jobsite", "toolbox_talk", "preshift_signin", "scaffold_maintenance",
                      "subcontractor_orientation", "osha_log", "hot_work", "crane_operations",
-                     "excavation_monitoring", "ssc_daily_safety_log"}
+                     "excavation_monitoring", "ssc_daily_safety_log", "concrete_operations"}
     additional_logbooks_html = ""
     for logbook in logbooks:
         lt = logbook.get("log_type", "")
@@ -16254,6 +16324,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
       {scaffold_html}
       {orientation_html}
       {ssc_html}
+      {concrete_html}
       {additional_logbooks_html}
     </td>
   </tr>
