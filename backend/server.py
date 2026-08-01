@@ -15216,7 +15216,7 @@ def _display_sub_company(name):
     return s
 
 
-def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280, max_height=120):
+def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=140, max_height=60):
     """Reconstruct an inline SVG from SignaturePad stroke paths.
 
     SignaturePad (frontend) stores a signature as {paths, signerName, timestamp}
@@ -15282,7 +15282,7 @@ def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280, max_he
         if len(coords) >= 2:
             polylines.append(
                 f'<polyline points="{" ".join(coords)}" fill="none" stroke="{stroke_color}" '
-                'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+                'stroke-width="0.6" stroke-linecap="round" stroke-linejoin="round"/>'
             )
     if not polylines:
         return None
@@ -15665,7 +15665,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         if sup_sig_raw and isinstance(sup_sig_raw, dict):
             sn = sup_sig_raw.get("signer_name", "Superintendent")
             sd = sup_sig_raw.get("data")
-            inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=300)
+            inner = _signature_paths_to_svg(sup_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(sd, str) and sd:
                 inner = (f'<img src="data:image/png;base64,{sd}" '
                          'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
@@ -15686,7 +15686,7 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         if cp_sig_raw and isinstance(cp_sig_raw, dict):
             cn = cp_sig_raw.get("signer_name", "Competent Person")
             cd = cp_sig_raw.get("data")
-            inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=300)
+            inner = _signature_paths_to_svg(cp_sig_raw.get("paths"), max_width=150)
             if not inner and isinstance(cd, str) and cd:
                 inner = (f'<img src="data:image/png;base64,{cd}" '
                          'style="max-width:300px;height:auto;border:1px solid #e2e8f0;border-radius:4px;" />')
