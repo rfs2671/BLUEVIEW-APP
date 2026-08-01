@@ -15097,6 +15097,26 @@ async def root():
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
+@api_router.get("/version")
+async def version():
+    """Report the exact commit this running backend was built from, so a
+    deploy can be verified as "the active deploy IS my commit" — not merely
+    "a deploy is green". Railway injects RAILWAY_GIT_COMMIT_SHA at build; the
+    others are fallbacks for other hosts / local runs."""
+    sha = (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or os.environ.get("SOURCE_COMMIT")
+        or os.environ.get("COMMIT_SHA")
+        or "unknown"
+    )
+    return {
+        "commit": sha,
+        "short": sha[:7] if sha != "unknown" else "unknown",
+        "branch": os.environ.get("RAILWAY_GIT_BRANCH") or None,
+        "built_at": os.environ.get("RAILWAY_DEPLOYMENT_ID") or None,
+    }
+
 @app.get("/checkin/{tag_id}")
 async def serve_checkin_page(tag_id: str):
     from fastapi.responses import HTMLResponse
@@ -18113,15 +18133,21 @@ def _classify_resolution_state(rec: dict) -> str:
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
-    if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVED"]):
+    # Match DOB's actual status words, not a longer guess. BIS writes
+    # `violation_category` as "V-DOB VIOLATION - ACTIVE" / "... RESOLVE" /
+    # "... DISMISS" — note RESOLVE has no trailing D, so the old
+    # `"RESOLVED" in current_status` check never fired. And on the raw Socrata
+    # record `current_status` is empty; the real state lives in
+    # `violation_category`. So the resolved/dismissed reads MUST consult
+    # `category`, using substrings that DOB itself uses.
+    if any(w in cert_status for w in ["CERTIFIED", "CERTIFICATE", "RESOLVE"]):
         return "certified"
-    if any(w in current_status for w in ["DISMISSED"]):
-        return "dismissed"
-    if any(w in category for w in ["DISMISSED"]):
+    if "DISMISS" in current_status or "DISMISS" in category:
         return "dismissed"
     if any(w in current_status for w in ["PAID", "SATISFIED"]):
         return "paid"
-    if any(w in current_status for w in ["RESOLVED", "CLOSED"]):
+    if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
+            or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -18247,14 +18273,20 @@ def _extract_complaint_fields(rec: dict) -> dict:
     fields["disposition_label"] = result.get("disposition_label")
     fields["category_label"] = result.get("category_label")
 
-    # Derived: complaint_source
-    cat_code = rec.get("complaint_category", "")
-    if rec.get("community_board"):
-        fields["complaint_source"] = "Neighbor/Community Complaint"
-    elif (cat_code >= "4A" and cat_code <= "4W") or (cat_code >= "6B" and cat_code <= "7N"):
-        fields["complaint_source"] = "DOB Internal Inspection"
-    else:
+    # Derived: complaint_source — from the ACTUAL source dataset, never inferred
+    # from `community_board`. That was a location field present on virtually
+    # every DOB complaint (e.g. "303"), so the old `if community_board` branch
+    # stamped "Neighbor/Community Complaint" on almost everything, discarding the
+    # record's real category. eabe-havv IS DOB Complaints Received; erm2-nwe9 is
+    # 311. Unknown dataset → no fabricated source (the real complaint_category /
+    # disposition carry the record's identity).
+    _ds = str(rec.get("_dataset") or "")
+    if _ds == "erm2-nwe9":
         fields["complaint_source"] = "311 Complaint"
+    elif _ds == "eabe-havv":
+        fields["complaint_source"] = "DOB Complaint"
+    else:
+        fields["complaint_source"] = None
 
     # Derived: inspector_unit
     disp_code = (disposition_code or "").strip()
@@ -20101,6 +20133,70 @@ async def manual_dob_sync(project_id: str, current_user=Depends(get_current_user
         return JSONResponse(
             status_code=500,
             content={"detail": f"DOB sync error: {str(e)}"},
+        )
+
+
+@api_router.post(
+    "/projects/{project_id}/dob-logs/reset-resync",
+    dependencies=[Depends(require_project_access)],
+)
+async def reset_and_resync_dob_logs(project_id: str, current_user=Depends(get_admin_user)):
+    """Admin-only: row-level clear ONE project's dob_logs, then re-ingest from
+    DOB through the current extractor.
+
+    Why this exists: non-permit DOB records are insert-once — run_dob_sync_for_project
+    skips any raw_id already in `existing_ids`, so a plain re-sync can never
+    correct rows ingested with old logic or before DOB changed their disposition
+    (that's why a rescinded SWO stays "open" and an old fabricated label sticks).
+    This deletes the project's rows (delete_many on {project_id} — row-level,
+    NEVER drop()) so the very next sync re-ingests every CURRENT DOB record fresh
+    with correct source/category/resolution. Scoped to one project; fully
+    reconstructed by the same sync it triggers.
+    """
+    try:
+        project = await db.projects.find_one({
+            "_id": to_query_id(project_id),
+            **ACTIVE_PROJECT_FILTER,
+        })
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        company_id = get_user_company_id(current_user)
+        if company_id and project.get("company_id") != company_id:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+
+        pid = str(project["_id"])
+        deleted = await db.dob_logs.delete_many({"project_id": pid})
+        logger.info(
+            f"DOB reset-resync: purged {deleted.deleted_count} dob_logs rows "
+            f"for project {pid} before re-ingest"
+        )
+
+        new_logs = await run_dob_sync_for_project(project)
+
+        safe_logs = []
+        for log in new_logs:
+            try:
+                safe_logs.append(DOBLogResponse(**serialize_id(dict(log))))
+            except Exception as e:
+                logger.warning(f"Failed to serialize dob_log {log.get('raw_dob_id')}: {e}")
+
+        return {
+            "message": (
+                f"Cleared {deleted.deleted_count} row(s), re-ingested "
+                f"{len(new_logs)} fresh record(s)."
+            ),
+            "deleted": deleted.deleted_count,
+            "new_records": len(new_logs),
+            "logs": safe_logs,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"DOB reset-resync error for project {project_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"DOB reset-resync error: {str(e)}"},
         )
 
 

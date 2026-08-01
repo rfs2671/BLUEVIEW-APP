@@ -614,9 +614,13 @@ export default function ProjectDetailScreen() {
     // MR.14 commit 3 — v1 monitoring product surface. Activity feed
     // sits ABOVE the legacy DOB Compliance entry; both are reachable.
     { title: 'Activity', icon: Activity, path: `/project/${projectId}/activity`, color: '#0ea5e9' },
-    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: semantic.neutral, warn: !hasValidBin },
+    // DOB Compliance + Check-in Trades are CORE modules — give them active
+    // accent colors (like Plans/Daily Log/Activity) so they don't read as
+    // disabled/greyed. They were never gated; the grey was only this hardcoded
+    // semantic.neutral. Report Settings stays neutral (genuinely secondary).
+    { title: 'DOB Compliance', icon: Shield, path: `/project/${projectId}/dob-logs`, color: '#ef4444', warn: !hasValidBin },
     { title: 'Report Settings', icon: Settings, path: `/project/${projectId}/report-settings`, color: semantic.neutral },
-    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: semantic.neutral },
+    { title: 'Check-in Trades', icon: HardHat, path: `/project/${projectId}/trades`, color: '#f59e0b' },
   ];
 
   // ── Desktop 2-column triage layout. Replaces the mobile header + stats +
