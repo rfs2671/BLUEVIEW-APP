@@ -10,6 +10,7 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -60,14 +61,62 @@ export default function ConcreteOperationsLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. This is
+  // what lets the CP fill with zero network and reopen to the same draft.
+  // `status` is intentionally omitted so an autosave never downgrades a
+  // submitted log back to draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date }),
+        {
+          data: {
+            pour_location: pourLocation,
+            concrete_supplier: concreteSupplier,
+            mix_design: mixDesign,
+            volume_ordered: volumeOrdered,
+            slump_tests: slumpTests,
+            formwork_checklist: formworkChecklist,
+            weather_conditions: weatherConditions,
+            temperature,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, pourLocation, concreteSupplier, mixDesign,
+    volumeOrdered, slumpTests, formworkChecklist, weatherConditions, temperature,
+    cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
-      const existingLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Phase A — local-first: read the on-device draft first. Only if there is
+      // no local copy do we hydrate once from the server (best-effort); offline
+      // that simply opens a blank log rather than erroring.
+      const key = draftKey({ projectId, logType: LOG_TYPE, date });
+      let existing = await readDraft(key);
+      if (!existing) {
+        const serverLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
+        const s = Array.isArray(serverLogs) && serverLogs.length > 0 ? serverLogs[0] : null;
+        if (s) {
+          existing = {
+            data: s.data || {},
+            cp_signature: s.cp_signature,
+            cp_name: s.cp_name,
+            status: s.status,
+            backend_id: s.id || s._id,
+          };
+        }
+      }
       if (existing) {
-        setExistingLogId(existing.id || existing._id);
+        setExistingLogId(existing.backend_id || null);
         const d = existing.data || {};
         if (d.pour_location) setPourLocation(d.pour_location);
         if (d.concrete_supplier) setConcreteSupplier(d.concrete_supplier);
@@ -103,41 +152,48 @@ export default function ConcreteOperationsLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: LOG_TYPE, date });
+    const data = {
+      pour_location: pourLocation,
+      concrete_supplier: concreteSupplier,
+      mix_design: mixDesign,
+      volume_ordered: volumeOrdered,
+      slump_tests: slumpTests,
+      formwork_checklist: formworkChecklist,
+      weather_conditions: weatherConditions,
+      temperature,
+    };
     try {
-      const payload = {
-        project_id: projectId,
-        log_type: LOG_TYPE,
-        date,
-        data: {
-          pour_location: pourLocation,
-          concrete_supplier: concreteSupplier,
-          mix_design: mixDesign,
-          volume_ordered: volumeOrdered,
-          slump_tests: slumpTests,
-          formwork_checklist: formworkChecklist,
-          weather_conditions: weatherConditions,
-          temperature,
-        },
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline CP completes the log without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
 
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
+      // NOTE: a submit made offline has no server id yet, so the signature-audit
+      // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        const created = await logbooksAPI.create(payload);
-        savedId = created.id || created._id;
-        setExistingLogId(savedId);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+        } else {
+          const created = await logbooksAPI.create({
+            project_id: projectId, log_type: LOG_TYPE, date,
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      await autoSave(cpName, cpSignature).catch(() => {});
 
       if (submitStatus === 'submitted' && cpSignature && savedId) {
         recordSignatureEvent({
@@ -151,7 +207,7 @@ export default function ConcreteOperationsLog() {
             log_type: LOG_TYPE,
             date,
             project_id: projectId,
-            data: payload.data,
+            data,
             status: submitStatus,
           },
           user,
@@ -159,8 +215,8 @@ export default function ConcreteOperationsLog() {
       }
 
       toast.success(
-        submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ? 'Concrete log submitted successfully' : 'Draft saved'
+        submitStatus === 'submitted' ? 'Submitted' : 'Saved',
+        submitStatus === 'submitted' ? 'Concrete log submitted' : 'Saved on this device'
       );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {

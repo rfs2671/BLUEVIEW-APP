@@ -4,6 +4,33 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## CLEANUP (MEDIUM) — 2026-08-01 — dormant WatermelonDB still runs a background sync every launch
+
+WatermelonDB is wired in but effectively abandoned as a data path: **no screen
+reads or writes its local store.** The only offline wrapper built on it,
+`src/utils/offlineapi.js` (imports `database` + `Q`), is imported by no screen;
+the check-in UI calls `checkinsAPI` directly (`useCheckIns.js`,
+`app/checkin/index.jsx`, `app/nfc/index.jsx`) with no local store. Logbook
+offline (Phase A, 2026-08-01) deliberately uses AsyncStorage
+(`src/utils/logbookDrafts.js`), not WatermelonDB.
+
+**But it is not inert:** `DatabaseContext` still calls `setupAutoSync()` and
+`syncDatabase()` on every launch (`src/context/DatabaseContext.jsx:30/72`), and
+`offlineQueue.js:130` calls `syncDatabase()` after processing — so a WatermelonDB
+`synchronize()` (pull/push to `/api/sync/*`) runs at startup doing no useful
+work. This is the mechanism that historically caused the sync delays/collisions,
+now pure dead-weight risk (startup cost + a chance of being accidentally
+re-relied-on).
+
+**Deferred, not done here** (per instruction — Phase A must not touch it). A
+separate, dev-build-verified cleanup should: remove the `setupAutoSync()` /
+`syncDatabase()` calls (DatabaseContext + offlineQueue), delete `offlineapi.js`,
+and — once nothing references them — the WatermelonDB models/schema/migrations/
+adapter (`src/database/*`) and the `@nozbe/watermelondb` deps. Verify check-ins
+(direct API) and logbook drafts (AsyncStorage) are unaffected before/after.
+
+---
+
 ## SECURITY (HIGH) — 2026-08-01 — NFC check-in proves a URL load, not physical presence
 
 The worker check-in NFC tags encode a **STATIC** URL
