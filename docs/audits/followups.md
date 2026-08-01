@@ -4,6 +4,45 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## ENHANCEMENT (FUTURE, LOW) — 2026-08-01 — optional per-worker signature on pre-shift sign-in
+
+**Not a compliance gap — rigor only.** The pre-shift sign-in is compliant as-is:
+each worker is documented by an SST-card-backed, timestamped NFC/QR check-in
+(credentialed presence evidence, harder to forge than a handwritten mark) and the
+Competent Person affirms the attendance record with an **affirmed CP signature**.
+The OSHA/DOB documentation baseline (attendance record + responsible-person
+certification) is met without a per-worker wet signature — confirmed by the
+safety lead against the site-safety plan / GC contract (2026-08-01).
+
+Optional rigor to consider later: capture a per-worker acknowledgment signature
+**during the pre-shift meeting** — sign on the CP's device at meeting time
+(`SignaturePad` is already imported in `app/logbooks/preshift_signin.jsx`, so it's
+an **OTA-deliverable JS change**, no native build). **Timing note:** do NOT hang it
+off NFC check-in — check-in is *arrival*, which precedes the meeting, so a
+check-in signature wouldn't attest to the meeting. Render side (CP signature) is
+already handled. Low priority.
+
+## COMPLIANCE (MEDIUM) — 2026-08-01 — evaluate a worker acknowledgment signature on subcontractor orientation
+
+**Distinct from pre-shift, and a real case — not optional rigor.** Orientation is
+the **first-time worker attesting they RECEIVED and understood** site-specific
+orientation (the worker's own sign-off), whereas pre-shift is the CP attesting to
+attendance. Site-safety plans / GC contracts commonly expect a per-worker
+orientation acknowledgment.
+
+Current state: orientation already **captures + renders** the one-time
+first-registration signature (with the honest UNSIGNED marker on manual rows).
+**Open question for design:** does that first-registration signature count as the
+orientation acknowledgment, or does a distinct "I was oriented on THIS project"
+sign-off need to be captured?
+
+Do NOT build yet — needs the capture-flow design: **where/how** the worker signs
+(the orientation moment, on whose device), how it binds to the per-worker
+orientation record (`data.worker_id` — see the name-match/worker_id followup), and
+delivery (`SignaturePad` is already native/OTA-able). Scope deliberately when
+prioritized. Separate from — and higher priority than — the pre-shift enhancement
+above.
+
 ## CLEANUP (MEDIUM) — 2026-08-01 — dormant WatermelonDB still runs a background sync every launch
 
 WatermelonDB is wired in but effectively abandoned as a data path: **no screen
