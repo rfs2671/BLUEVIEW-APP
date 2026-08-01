@@ -4,6 +4,50 @@ Running log of deferred fixes surfaced during audits. Newest first.
 
 ---
 
+## SECURITY (HIGH) — 2026-08-01 — NFC check-in proves a URL load, not physical presence
+
+The worker check-in NFC tags encode a **STATIC** URL
+(`/checkin/{project_id}/{tag_id}`). `tag_id` is a client-supplied value stored
+verbatim in `nfc_tags` (`add_nfc_tag_to_project`, server.py ~9022) and validated
+at POST only as `{tag_id, project_id, status:"active"}` — **no per-tap nonce, no
+signature, no expiry, no rotation**. The two primary public creation endpoints,
+`POST /api/checkin/register-and-checkin` (server.py:9298) and
+`POST /api/checkin/submit` (server.py:9869), take no `request` object, so they
+capture **no ip/user_agent/device** and have **no rate-limiting** (the
+`checkin_rate_limiter`, server.py:574, is wired only to `/checkin` and
+`upload-osha`). Same-worker+project+EST-day **dedupe** exists on every path; that
+is the only abuse control.
+
+**Impact:** anyone who ever holds the tag URL — from tapping the physical tag, a
+screenshot/QR photo, browser history, or a shared link — can mint a real,
+current-timestamped check-in for any roster-valid worker, from any device,
+anywhere, unthrottled, with no origin recorded on the row. Confirmed live: a
+false "on site" record for Mauro E Zumba at 588 Boyland (2026-08-01 12:24) was
+created by opening the tag URL from a **desktop browser** during testing — no one
+on site, no tag tapped. For a compliance product, "on site" today attests only
+that the tag URL was loaded, not that a person was present.
+
+**Fix BEFORE GCs rely on check-in data as presence evidence.** Ranked options
+(effectiveness vs effort):
+1. **FLOOR (very low effort):** add `request` + `checkin_rate_limiter` to
+   register-and-checkin and submit; persist `ip`/`user_agent`/`device_info` on
+   the check-in row. Ends silent, unattributable minting; enables forensics.
+2. **Server-issued short-lived per-tap nonce (medium):** the tag GET mints a
+   single-use, TTL-bound token bound to tag+project; POST must present it. Kills
+   replay/bookmark reuse — the bare URL stops working. Best effectiveness-for-
+   effort; the real presence fix.
+3. **Signed tag payload / HMAC (medium):** stops URL forgery/guessing, but a
+   static signed URL is still replayable unless paired with NFC SUN/SDM rotating
+   counters (capable tags required).
+4. **Geofence device GPS vs site (med-high):** rejects off-site check-ins;
+   spoofable and coarse — a secondary signal.
+5. **Device/selfie gate (high identity, high effort):** `selfie_image` is
+   already captured (spot-check only) and could be surfaced for CP review cheaply
+   before full liveness.
+
+Recommended: ship #1 now as the floor, then #2 as the presence proof; keep #4/#5
+as layered signals.
+
 ## DATA — 2026-07-29 — legacy subcontractor_orientation rows without `data.worker_id`
 
 `POST /api/logbooks` now keys the upsert on `data.worker_id` for

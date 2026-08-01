@@ -504,7 +504,10 @@ export default function DOBLogsScreen() {
     const headerLabel = subtypeLabels[subtype] || 'VIOLATION';
     const headerColor = subtypeColors[subtype] || semantic.critical;
     const isSWO = subtype.startsWith('SWO') || subtype.startsWith('VACATE');
-    const displayDate = log.violation_date || log.detected_at;
+    // Never fall back to detected_at (the ingest date) for a violation's shown
+    // date — a missing DOB date must read "Date unknown", not today. The real
+    // date now comes through from the backend (855j-jady violation_issue_date).
+    const displayDate = log.violation_date;
 
     return (
       <Pressable key={log.id} onPress={() => setExpandedLogId(isExpanded ? null : log.id)}>
@@ -518,7 +521,7 @@ export default function DOBLogsScreen() {
               {renderStatusPill(log)}
             </View>
             <View style={s.logHeaderRight}>
-              {displayDate && <Text style={s.dateText}>{formatDate(displayDate)}</Text>}
+              <Text style={s.dateText}>{displayDate ? formatDate(displayDate) : 'Date unknown'}</Text>
               {isExpanded ? <ChevronUp size={16} color={colors.text.muted} /> : <ChevronDown size={16} color={colors.text.muted} />}
             </View>
           </View>

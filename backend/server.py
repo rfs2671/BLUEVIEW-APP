@@ -18130,6 +18130,11 @@ def _classify_resolution_state(rec: dict) -> str:
     cert_status = str(rec.get("certification_status") or "").upper()
     current_status = str(rec.get("current_status") or "").upper()
     category = str(rec.get("violation_category") or "").upper()
+    # 855j-jady (DOB NOW Safety) carries its state in `violation_status`
+    # ("Active" / "Disputed Successfully" / "Cured" / "Resolved") — a field
+    # neither current_status nor violation_category exposes, so a won dispute
+    # ("Disputed Successfully") read as OPEN until this was added.
+    vstatus = str(rec.get("violation_status") or "").upper()
     hearing = rec.get("hearing_date_time") or rec.get("hearing_date") or ""
     disp_date = rec.get("disposition_date") or ""
 
@@ -18144,10 +18149,15 @@ def _classify_resolution_state(rec: dict) -> str:
         return "certified"
     if "DISMISS" in current_status or "DISMISS" in category:
         return "dismissed"
+    # A successful dispute (DOB NOW) resolves the violation in the owner's
+    # favor. Match the FULL phrase — "Disputed Unsuccessfully" stays open.
+    if "DISPUTED SUCCESSFULLY" in vstatus:
+        return "resolved"
     if any(w in current_status for w in ["PAID", "SATISFIED"]):
         return "paid"
     if (any(w in current_status for w in ["RESOLVE", "CLOSED", "RESCIND"])
-            or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])):
+            or any(w in category for w in ["RESOLVE", "CLOSED", "RESCIND"])
+            or any(w in vstatus for w in ["RESOLVE", "CLOSED", "CURED", "COMPLIED"])):
         return "resolved"
     if "CURE" in cert_status or "CURE" in current_status:
         return "cure_pending"
@@ -18209,6 +18219,27 @@ def _extract_compliance_deadline(rec: dict) -> Optional[str]:
     return None
 
 
+def _cycle_date_from_violation_number(num) -> Optional[str]:
+    """LAST-RESORT date proxy: DOB NOW violation numbers embed a 6-digit
+    filing-cycle token (YYYYMM), e.g. VIO-FTF-PL-PER-202412-0186052 -> 2024-12.
+
+    This is the filing CYCLE, not the issue date — the two can differ by many
+    months (that very record's real violation_issue_date is 2026-01-08, 13
+    months off its 202412 cycle). So it is used ONLY when DOB carries no real
+    date field at all, purely so a dateless row reads/sorts with an approximate
+    period instead of the ingest date (today). Returns 'YYYY-MM-01' or None.
+    Plausibility-gated (year 2000-2099, month 01-12) so a stray 6-digit
+    sequence/ISN is not mistaken for a date."""
+    if not num:
+        return None
+    import re as _re
+    for tok in _re.findall(r'(?<!\d)(\d{6})(?!\d)', str(num)):
+        yr, mo = int(tok[:4]), int(tok[4:])
+        if 2000 <= yr <= 2099 and 1 <= mo <= 12:
+            return f"{yr:04d}-{mo:02d}-01"
+    return None
+
+
 def _extract_violation_fields(rec: dict) -> dict:
     """Extract structured violation fields from raw DOB record."""
     fields = {}
@@ -18216,7 +18247,17 @@ def _extract_violation_fields(rec: dict) -> dict:
     # Build a display-friendly violation number from whichever source
     fields["violation_number"] = rec.get("ecb_violation_number") or rec.get("violation_number") or rec.get("number") or rec.get("isn_dob_bis_viol") or None
     fields["violation_category"] = rec.get("violation_category") or rec.get("category") or None
-    fields["violation_date"] = rec.get("issue_date") or rec.get("violation_date") or rec.get("issued_date") or rec.get("infraction_date") or None
+    # 855j-jady (DOB NOW Safety) names its date field `violation_issue_date`;
+    # BIS/ECB use `issue_date`. Without the DOB NOW name here, those rows land
+    # with violation_date=None and the UI falls back to the ingest date (today).
+    # NOTE: do NOT parse the "202412" in the violation number as the date — that
+    # is a filing-cycle code, not the issue date (this record proves it: id
+    # cycle 202412 vs real violation_issue_date 2026-01-08).
+    fields["violation_date"] = rec.get("issue_date") or rec.get("violation_issue_date") or rec.get("violation_date") or rec.get("issued_date") or rec.get("infraction_date") or None
+    if not fields["violation_date"]:
+        # Only when DOB has NO real date field: approximate from the filing-cycle
+        # token in the violation number (YYYYMM). Approximate, never today.
+        fields["violation_date"] = _cycle_date_from_violation_number(fields.get("violation_number"))
     # 855j-jady (DOB NOW Safety) has NO `description` field — its readable
     # content is device_type + violation_remarks, so FTF-PL-PER-class rows
     # otherwise ingest with a blank description. Compose from those when the
@@ -18231,7 +18272,7 @@ def _extract_violation_fields(rec: dict) -> dict:
     fields["respondent"] = rec.get("respondent_name") or rec.get("respondent") or None
     fields["disposition_date"] = rec.get("disposition_date") or rec.get("hearing_date_time") or None
     fields["disposition_comments"] = rec.get("disposition_comments") or rec.get("hearing_status") or None
-    fields["status"] = rec.get("violation_category") or rec.get("certification_status") or rec.get("current_status") or None
+    fields["status"] = rec.get("violation_category") or rec.get("violation_status") or rec.get("certification_status") or rec.get("current_status") or None
     fields["violation_subtype"] = _classify_violation_subtype(rec)
     fields["resolution_state"] = _classify_resolution_state(rec)
     fields["notice_type"] = _classify_notice_type(rec)
