@@ -15216,7 +15216,7 @@ def _display_sub_company(name):
     return s
 
 
-def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280):
+def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280, max_height=120):
     """Reconstruct an inline SVG from SignaturePad stroke paths.
 
     SignaturePad (frontend) stores a signature as {paths, signerName, timestamp}
@@ -15229,29 +15229,56 @@ def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280):
     every already-signed logbook. Returns the SVG string, or None if unusable."""
     if not isinstance(paths, list):
         return None
-    pts = [
-        (p["x"], p["y"])
-        for stroke in paths if isinstance(stroke, list)
-        for p in stroke
-        if isinstance(p, dict) and isinstance(p.get("x"), (int, float)) and isinstance(p.get("y"), (int, float))
-    ]
-    if len(pts) < 2:
-        return None
-    xs = [x for x, _ in pts]
-    ys = [y for _, y in pts]
-    minx, miny = min(xs), min(ys)
-    pad = 6.0
-    vb_w = ((max(xs) - minx) or 1.0) + pad * 2
-    vb_h = ((max(ys) - miny) or 1.0) + pad * 2
-    polylines = []
+    # Collect valid points per stroke (kept for drawing) and flat (for bounds).
+    strokes_pts = []
     for stroke in paths:
-        if not isinstance(stroke, list) or len(stroke) < 2:
+        if not isinstance(stroke, list):
             continue
-        coords = [
-            f"{p['x'] - minx + pad:.1f},{p['y'] - miny + pad:.1f}"
-            for p in stroke
+        sp = [
+            (p["x"], p["y"]) for p in stroke
             if isinstance(p, dict) and isinstance(p.get("x"), (int, float)) and isinstance(p.get("y"), (int, float))
         ]
+        if sp:
+            strokes_pts.append(sp)
+    pts = [p for sp in strokes_pts for p in sp]
+    if len(pts) < 2:
+        return None
+
+    xs = sorted(x for x, _ in pts)
+    ys = sorted(y for _, y in pts)
+
+    # Robust bounding box. A single mis-captured touch (a stray point far from the
+    # ink) used to land in min()/max() and inflate the box — stretching the whole
+    # signature vertically and dragging one stroke down the full height. Take a
+    # 1st/99th percentile window instead, so a lone outlier can't set the bounds;
+    # fall back to raw extents for tiny point sets or a degenerate span.
+    def _pctl(vals, q):
+        i = min(len(vals) - 1, max(0, int(round(q * (len(vals) - 1)))))
+        return vals[i]
+
+    if len(pts) >= 12:
+        minx, maxx = _pctl(xs, 0.01), _pctl(xs, 0.99)
+        miny, maxy = _pctl(ys, 0.01), _pctl(ys, 0.99)
+    else:
+        minx, maxx, miny, maxy = xs[0], xs[-1], ys[0], ys[-1]
+    if maxx - minx < 1:
+        minx, maxx = xs[0], xs[-1]
+    if maxy - miny < 1:
+        miny, maxy = ys[0], ys[-1]
+
+    pad = 6.0
+    vb_w = (maxx - minx or 1.0) + pad * 2
+    vb_h = (maxy - miny or 1.0) + pad * 2
+
+    polylines = []
+    for sp in strokes_pts:
+        coords = []
+        for (x, y) in sp:
+            # Drop points outside the robust box — removes the outlier spike
+            # rather than clamping it to an edge, so no stroke drags to full height.
+            if x < minx or x > maxx or y < miny or y > maxy:
+                continue
+            coords.append(f"{x - minx + pad:.1f},{y - miny + pad:.1f}")
         if len(coords) >= 2:
             polylines.append(
                 f'<polyline points="{" ".join(coords)}" fill="none" stroke="{stroke_color}" '
@@ -15259,11 +15286,17 @@ def _signature_paths_to_svg(paths, stroke_color="#0A1929", max_width=280):
             )
     if not polylines:
         return None
-    disp_w = min(float(max_width), vb_w * 2)
-    disp_h = disp_w * vb_h / vb_w
+
+    # Fit within BOTH max_width and max_height, preserving the true aspect ratio
+    # (never stretch to fill a fixed-tall box); preserveAspectRatio keeps it
+    # centered. Gentle upscale cap so a small signature isn't ballooned.
+    scale = min(float(max_width) / vb_w, float(max_height) / vb_h, 3.0)
+    disp_w = vb_w * scale
+    disp_h = vb_h * scale
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:.0f} {vb_h:.0f}" '
         f'width="{disp_w:.0f}" height="{disp_h:.0f}" '
+        'preserveAspectRatio="xMidYMid meet" '
         'style="border:1px solid #e2e8f0;border-radius:4px;background:#ffffff;">'
         + "".join(polylines) + '</svg>'
     )
