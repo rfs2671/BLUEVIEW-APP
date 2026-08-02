@@ -18098,7 +18098,12 @@ def _extract_job_status_fields(rec: dict) -> dict:
         or None
     )
     fields["job_filing_number"] = rec.get("job_filing_number") or rec.get("job__") or None
-    fields["filing_date"] = rec.get("filing_date") or rec.get("latest_action_date") or None
+    # current_status_date is DOB NOW's "Filing Status Date" — WHEN the filing
+    # reached its current status (what DOB NOW shows). Read it FIRST so a filing
+    # displays its real status date, not the original filing_date and never the
+    # ingest date (today). The display uses filing_date for the job_status row.
+    fields["filing_date"] = rec.get("current_status_date") or rec.get("filing_date") or rec.get("latest_action_date") or None
+    fields["job_type"] = rec.get("job_type") or None
     fields["job_description"] = rec.get("job_description") or None
     return {k: str(v).strip() if v else None for k, v in fields.items()}
 
@@ -18923,7 +18928,43 @@ async def run_dob_sync_for_project(project: dict) -> list:
 
     if not raw_records:
         return []
- 
+
+    # DOB NOW Job → Filing de-duplication. A permit-bearing filing appears BOTH
+    # in a permit dataset (rbx6-tga4 / dm9a-ab7w, record_type="permit") AND in the
+    # job-filing dataset (w9ak-ipjd, record_type="job_status") — the SAME filing,
+    # shown twice with two labels. Keep ONE row per permit-bearing filing: the
+    # permit (it carries issuance + expiration), folding the real `job_type` from
+    # the w9ak twin onto it (permit datasets have no job_type). Drop the redundant
+    # job_status twin. Standalone job_status filings (Approved specs with no
+    # permit) survive untouched as demoted "pending filings".
+    def _norm_jfn(r):
+        return str(r.get("job_filing_number") or r.get("job__") or "").strip().upper()
+
+    _permit_by_jfn = {
+        _norm_jfn(r): r
+        for r in raw_records
+        if r.get("_record_type") == "permit" and _norm_jfn(r)
+    }
+    if _permit_by_jfn:
+        _deduped, _dropped = [], 0
+        for r in raw_records:
+            if r.get("_record_type") == "job_status":
+                perm = _permit_by_jfn.get(_norm_jfn(r))
+                if perm is not None:
+                    # Fold the job's real type onto the permit for labelling,
+                    # then drop this duplicate filing row.
+                    if r.get("job_type") and not perm.get("job_type"):
+                        perm["job_type"] = r.get("job_type")
+                    _dropped += 1
+                    continue
+            _deduped.append(r)
+        raw_records = _deduped
+        if _dropped:
+            logger.info(
+                f"DOB sync for project {project_id}: collapsed {_dropped} "
+                f"job_status filing(s) into their matching permit rows"
+            )
+
     # One-time cleanup of legacy-format permit rows. Before the
     # renewal-collapse fix, permits were keyed by per-filing
     # job_filing_number (e.g. "B00834550-I1:FE"), so a renewed permit
