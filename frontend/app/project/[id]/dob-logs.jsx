@@ -564,6 +564,13 @@ export default function DOBLogsScreen() {
               {log.respondent && <DetailRow label="Respondent" value={log.respondent} colors={colors} />}
               {log.disposition_date && <DetailRow label="Disposition" value={formatDate(log.disposition_date)} colors={colors} />}
               {log.status && <DetailRow label="Status" value={log.status} colors={colors} />}
+              {/* Option A — the LAST status change we recorded (not DOB's full
+                  history). Shown only when we actually synced across a change;
+                  absent = we never observed one, so we say nothing rather than
+                  imply stability. */}
+              {log.status_changed_at && log.previous_status && log.previous_status !== (log.current_status || '') && (
+                <DetailRow label="Status changed" value={`${formatDate(log.status_changed_at)}: ${log.previous_status} → ${log.current_status || '—'}`} colors={colors} />
+              )}
               {log.resolution_state && (
                 <View style={{ marginTop: 8 }}>
                   <Text style={{ fontSize: 11, color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>RESOLUTION STATUS</Text>
@@ -650,6 +657,12 @@ export default function DOBLogsScreen() {
                   <Text style={s.nextActionLabel}>WHAT HAPPENED</Text>
                   <Text style={s.nextActionText}>{log.category_label}</Text>
                 </View>
+              )}
+
+              {/* Option A — last recorded status change (not DOB's full history);
+                  shown only when we synced across a change, else nothing. */}
+              {log.status_changed_at && log.previous_status && log.previous_status !== (log.current_status || '') && (
+                <DetailRow label="Status changed" value={`${formatDate(log.status_changed_at)}: ${log.previous_status} → ${log.current_status || '—'}`} colors={colors} />
               )}
 
               {/* Current Status */}
