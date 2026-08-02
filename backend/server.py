@@ -17033,26 +17033,28 @@ async def _query_dob_apis(nyc_bin: str, project_address: str = "") -> list:
                         if not raw_id:
                             continue
 
-                        # Permits need special handling: DOB issues a new
-                        # filing per renewal (B00834550-I1, -I2, -I3...)
-                        # with distinct job_filing_numbers. The old filings
-                        # stay in the dataset forever. If we dedup on the
-                        # raw filing number, users see every historical
-                        # filing including long-expired ones that have
-                        # already been renewed. Collapse by BASE job
-                        # number + work_type and, because endpoints are
-                        # ordered by filing_date DESC, the first record
-                        # we see is the newest — keep it, drop older
-                        # renewals for the same (base_job, work_type).
+                        # Permits: ONE row per permit filing. Key on the full
+                        # job_filing_number (raw_id) — the same `record_type:raw_id`
+                        # shape every other type uses (shared dedup, not a parallel
+                        # permit copy). A permit re-issued annually is the SAME
+                        # filing number on several rows with different issued_dates
+                        # (e.g. B01074863-I1 × 3); endpoints order issued_/
+                        # filing_date DESC, so the first seen is the newest — keep
+                        # it, drop the older re-issuances → latest status wins.
+                        # Distinct filings of one job (…-I1 vs …-S1) keep separate
+                        # numbers → separate permits, correctly not merged.
+                        #
+                        # Replaces the old base_job:work_type collapse, which split
+                        # ONE permit into duplicates whenever `work_type` was
+                        # populated on one DOB dataset's row and null on another's.
+                        # (Trade-off: a renewal DOB issues under a NEW number —
+                        # …-I2/-I3 — now shows as its own filing rather than being
+                        # folded into the base job. Current DOB NOW data re-issues
+                        # under the same number, so this matches observed permits.)
                         if ep["record_type"] == "permit":
-                            base_job = _base_job_number(raw_id)
-                            work_suffix = rec.get("work_type") or rec.get("permit_type") or rec.get("permit_sequence__") or ""
-                            dedup_key = f"permit:{base_job}:{work_suffix}"
-                            # Also stamp the record with the collapsed id
-                            # so downstream storage uses the stable
-                            # (base_job, work_type) key instead of the
-                            # per-filing id that churns on every renewal.
-                            rec["_collapsed_permit_id"] = f"{base_job}:{work_suffix}" if work_suffix else base_job
+                            filing_no = (raw_id or "").strip()
+                            dedup_key = f"permit:{filing_no.upper()}"
+                            rec["_collapsed_permit_id"] = filing_no
                         else:
                             dedup_key = f"{ep['record_type']}:{raw_id}"
 
@@ -18113,9 +18115,17 @@ def _extract_permit_fields(rec: dict) -> dict:
     # DOB NOW permits (rbx6-tga4)
     fields["permit_type"] = rec.get("permit_type") or rec.get("permittee_s_license_type") or None
     fields["permit_subtype"] = rec.get("permit_subtype") or rec.get("work_type") or None
-    fields["permit_status"] = rec.get("permit_status") or rec.get("current_status") or rec.get("status") or None
+    # Read the real DOB status field per dataset — never leave it null to render
+    # a fabricated "Unknown". rbx6-tga4 / ipu4-2q9a use `permit_status`; DOB NOW
+    # Electrical (dm9a-ab7w) carries its state in `filing_status` / `job_status`,
+    # which the old read missed → electrical permits showed with no real status.
+    fields["permit_status"] = (
+        rec.get("permit_status") or rec.get("filing_status") or rec.get("job_status")
+        or rec.get("current_status") or rec.get("status") or None
+    )
     fields["expiration_date"] = rec.get("expiration_date") or rec.get("permit_expiration_date") or rec.get("expired_date") or None
-    fields["issuance_date"] = rec.get("issuance_date") or rec.get("issued_date") or rec.get("permit_si_issuance_date") or None
+    # dm9a-ab7w (Electrical) names its issuance `permit_issued_date`.
+    fields["issuance_date"] = rec.get("issuance_date") or rec.get("issued_date") or rec.get("permit_issued_date") or rec.get("permit_si_issuance_date") or None
     fields["filing_date"] = rec.get("filing_date") or rec.get("pre_filing_date") or rec.get("latest_action_date") or None
     fields["job_number"] = rec.get("job__") or rec.get("job_filing_number") or rec.get("job_number") or None
     fields["job_type"] = rec.get("job_type") or rec.get("filing_reason") or None
