@@ -22,6 +22,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos } from '../../src/utils/logbookDrafts';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -182,9 +183,67 @@ export default function DailyJobsiteLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A2 — autosave to the local draft on any change (debounced). Photos are
+  // copied to persistent storage so they survive quit/reopen; base64 is NOT
+  // stored (built only at server-save). No server call; `status` omitted so an
+  // autosave never downgrades a submitted log.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(async () => {
+      try {
+        const persistedActivities = await persistActivityPhotos(activities);
+        await writeDraft(draftKey({ projectId, logType: 'daily_jobsite', date }), {
+          data: {
+            project_address: projectAddress,
+            weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+            general_description: generalDescription,
+            activities: persistedActivities,
+            equipment_on_site: equipmentOnSite,
+            checklist_items: checklistItems,
+            observations,
+            visitors_deliveries: visitorsDeliveries,
+            time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        });
+      } catch (_e) { /* draft autosave is best-effort */ }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, projectAddress, weather, weatherTemp, weatherWind,
+    generalDescription, activities, equipmentOnSite, checklistItems, observations,
+    visitorsDeliveries, timeIn, timeOut, areasVisited, cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Phase A2 — local-first: read the on-device draft first; if present,
+      // hydrate from it and skip the server round-trip (works fully offline).
+      const _draft = await readDraft(draftKey({ projectId, logType: 'daily_jobsite', date }));
+      if (_draft && _draft.data && Object.keys(_draft.data).length) {
+        const d = _draft.data;
+        setExistingLogId(_draft.backend_id || null);
+        if (d.project_address) setProjectAddress(d.project_address);
+        if (d.weather) setWeather(d.weather);
+        if (d.weather_temp) setWeatherTemp(d.weather_temp);
+        if (d.weather_wind) setWeatherWind(d.weather_wind);
+        if (d.general_description) setGeneralDescription(d.general_description);
+        if (d.activities?.length > 0) setActivities(d.activities);
+        if (d.equipment_on_site) setEquipmentOnSite(d.equipment_on_site);
+        if (d.checklist_items) setChecklistItems(d.checklist_items);
+        if (d.observations) setObservations(d.observations);
+        if (d.visitors_deliveries) setVisitorsDeliveries(d.visitors_deliveries);
+        if (d.time_in) setTimeIn(d.time_in);
+        if (d.time_out) setTimeOut(d.time_out);
+        if (d.areas_visited) setAreasVisited(d.areas_visited);
+        if (_draft.cp_signature) setCpSignature(_draft.cp_signature);
+        if (_draft.cp_name) setCpName(_draft.cp_name);
+        setLoading(false);
+        return;
+      }
+
       // Daily Jobsite Log is a per-company HEADCOUNT log, not a
       // per-worker signature roster. We hit /daily-headcount which
       // returns pre-aggregated {sub_name, trade, worker_count_today}
@@ -571,6 +630,22 @@ export default function DailyJobsiteLog() {
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
+      // Phase A2 — write the LOCAL draft first (persistent photos, no base64) so
+      // an offline CP completes the log without losing anything. The server push
+      // below is best-effort; offline it's deferred (markPending) and the draft
+      // stays the source of truth.
+      const _key = draftKey({ projectId, logType: 'daily_jobsite', date });
+      const _persisted = await persistActivityPhotos(activities);
+      await writeDraft(_key, {
+        data: {
+          project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+          general_description: generalDescription, activities: _persisted,
+          equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
+          visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+        },
+        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+      });
+
       // Let any background compression finish first. Without this, saving
       // immediately after a capture would base64 the RAW sensor JPEG that the
       // pending entry still points at — several MB inlined into the log.
@@ -643,16 +718,27 @@ export default function DailyJobsiteLog() {
       // written but the client errored, so recordSignatureEvent never fired and
       // the CP was trained to press Submit twice. Hoisting fixes both.
       let created = null;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        created = await logbooksAPI.create(payload);
-        setExistingLogId(created.id || created._id);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data: payload.data,
+            cp_signature: cpSignature,
+            cp_name: cpName,
+            status: submitStatus,
+          });
+        } else {
+          created = await logbooksAPI.create(payload);
+          setExistingLogId(created.id || created._id);
+        }
+        // Server push landed — bind the id, clear the pending marker.
+        await setDraftBackendId(_key, existingLogId || created?.id || created?._id);
+        await clearPending(_key);
+      } catch (pushErr) {
+        // Offline / server error — the local draft is already saved above; defer
+        // the push. NOTE: a submit made offline has no server id, so the
+        // signature audit below is skipped until it syncs.
+        await markPending(_key);
+        console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
       }
 
       await autoSave(cpName, cpSignature);

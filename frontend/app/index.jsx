@@ -31,6 +31,7 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
+import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import HeaderBrand from '../src/components/HeaderBrand';
@@ -387,10 +388,15 @@ export default function DashboardScreen() {
   const fetchData = async () => {
     try {
       setLoading(true);
+      // P1: each read is individually resilient so one offline endpoint doesn't
+      // blank the whole dashboard, and projects are cached to AsyncStorage so a
+      // CP can still SELECT a project (and reach its logbooks) with no network.
       const [workersData, projectsData, activeCheckInsData] = await Promise.all([
-        workersAPI.getAll(),
-        projectsAPI.getAll(),
-        checkinsAPI.getByDate(new Date()),
+        workersAPI.getAll().catch(() => []),
+        projectsAPI.getAll()
+          .then((d) => { cacheProjectList(d); return d; })
+          .catch(() => readCachedProjectList()),
+        checkinsAPI.getByDate(new Date()).catch(() => []),
       ]);
       setWorkers(Array.isArray(workersData) ? workersData : []);
       setProjects(Array.isArray(projectsData) ? projectsData : []);
@@ -400,7 +406,8 @@ export default function DashboardScreen() {
       setActiveCheckIns(active);
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
-      toast.error('Error', 'Could not load dashboard data');
+      // Last resort — hydrate projects from cache so selection still works offline.
+      setProjects(await readCachedProjectList());
     } finally {
       setLoading(false);
     }

@@ -15,6 +15,7 @@ import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { capitalizeFirst } from '../../src/utils/textFormat';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -63,9 +64,43 @@ export default function PreShiftSignIn() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A2 — autosave to the local draft on any change (debounced); no server
+  // call; `status` omitted so an autosave never downgrades a submitted log.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(draftKey({ projectId, logType: 'preshift_signin', date }), {
+        data: {
+          company,
+          project_location: projectLocation,
+          workers,
+          total_count: workers.filter(w => (w.name || '').trim()).length,
+        },
+        cp_signature: cpSignature,
+        cp_name: cpName,
+      }).catch(() => {});
+    }, 700);
+    return () => clearTimeout(t);
+  }, [loading, projectId, date, company, projectLocation, workers, cpSignature, cpName]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Phase A2 — local-first: read the on-device draft first; if present,
+      // hydrate from it and skip the server round-trip (works fully offline).
+      const _draft = await readDraft(draftKey({ projectId, logType: 'preshift_signin', date }));
+      if (_draft && _draft.data && (_draft.data.workers?.length || _draft.data.company)) {
+        const d = _draft.data;
+        setExistingLogId(_draft.backend_id || null);
+        if (d.company) setCompany(d.company);
+        if (d.project_location) setProjectLocation(d.project_location);
+        if (d.workers && d.workers.length > 0) setWorkers(d.workers);
+        if (_draft.cp_signature) setCpSignature(_draft.cp_signature);
+        if (_draft.cp_name) setCpName(_draft.cp_name);
+        setLoading(false);
+        return;
+      }
+
       const [projectData, checkins, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
@@ -143,6 +178,13 @@ export default function PreShiftSignIn() {
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
     try {
+      // Phase A2 — write the LOCAL draft first (works offline), then best-effort push.
+      const _key = draftKey({ projectId, logType: 'preshift_signin', date });
+      await writeDraft(_key, {
+        data: { company, project_location: projectLocation, workers, total_count: filledWorkers.length },
+        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+      });
+
       const payload = {
         project_id: projectId,
         log_type: 'preshift_signin',
@@ -164,16 +206,23 @@ export default function PreShiftSignIn() {
       // written but the client errored, so recordSignatureEvent never fired and
       // the CP was trained to press Submit twice. Hoisting fixes both.
       let created = null;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        created = await logbooksAPI.create(payload);
-        setExistingLogId(created.id || created._id);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data: payload.data,
+            cp_signature: cpSignature,
+            cp_name: cpName,
+            status: submitStatus,
+          });
+        } else {
+          created = await logbooksAPI.create(payload);
+          setExistingLogId(created.id || created._id);
+        }
+        await setDraftBackendId(_key, existingLogId || created?.id || created?._id);
+        await clearPending(_key);
+      } catch (pushErr) {
+        await markPending(_key);
+        console.warn('preshift push deferred (will sync on reconnect):', pushErr?.message);
       }
 
       await autoSave(cpName, cpSignature);

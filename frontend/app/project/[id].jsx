@@ -64,6 +64,7 @@ import { useProjects } from '../../src/hooks/useProjects';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/utils/api';
+import { cacheProject, readCachedProject } from '../../src/utils/projectCache';
 import apiClient from '../../src/utils/api';
 import { isValidBin } from '../../src/utils/bin';
 import * as NfcHelper from '../../src/utils/nfcHelper';
@@ -278,11 +279,15 @@ export default function ProjectDetailScreen() {
       let projectData = null;
       try {
         projectData = await projectsAPI.getById(projectId);
+        cacheProject(projectData);  // P1: cache for offline selection
       } catch (e) {
         console.warn('Server project fetch failed, using local fallback:', e?.message);
       }
       if (!projectData) {
-        projectData = await getProjectById(projectId);  // offline fallback
+        // P1: AsyncStorage cache first (populated on every online load). The
+        // WatermelonDB getProjectById stays as a last resort but is empty in
+        // practice (dormant store), which is why offline used to error here.
+        projectData = await readCachedProject(projectId) || await getProjectById(projectId);
       }
       setProject(projectData);
 

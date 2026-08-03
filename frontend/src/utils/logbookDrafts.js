@@ -1,4 +1,48 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+
+// ── Persistent photos for offline drafts ────────────────────────────────────
+// Captured photos land in the OS cache dir (ImageManipulator / picker), which
+// can be evicted — so a URI stored in a draft can dangle after quit. Copy the
+// file into documentDirectory (persistent) and store THAT uri in the draft;
+// base64 is never stored (it would blow AsyncStorage's size cap). No-op on web
+// (no FileSystem) and idempotent (already-persistent uris are returned as-is).
+const PHOTO_DIR = (FileSystem.documentDirectory || '') + 'logbook_photos/';
+
+async function _ensurePhotoDir() {
+  try {
+    const info = await FileSystem.getInfoAsync(PHOTO_DIR);
+    if (!info.exists) await FileSystem.makeDirectoryAsync(PHOTO_DIR, { intermediates: true });
+  } catch (_e) { /* non-fatal */ }
+}
+
+export async function persistPhoto(uri, id) {
+  if (Platform.OS === 'web' || !FileSystem.documentDirectory) return uri;
+  if (!uri || typeof uri !== 'string' || uri.startsWith(PHOTO_DIR)) return uri;
+  try {
+    await _ensurePhotoDir();
+    const ext = ((uri.split('?')[0].split('.').pop()) || 'jpg').slice(0, 5);
+    const dest = `${PHOTO_DIR}${id || Date.now()}_${Math.abs((id || '').length || 0)}.${ext}`;
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch (_e) {
+    return uri; // fall back to the original uri if the copy fails
+  }
+}
+
+/** Persist every photo uri across a daily_jobsite activities array (base64 dropped). */
+export async function persistActivityPhotos(activities) {
+  if (!Array.isArray(activities)) return activities;
+  return Promise.all(activities.map(async (a) => ({
+    ...a,
+    photos: await Promise.all((a.photos || []).map(async (p) => {
+      const uri = await persistPhoto(p.uri, p.id);
+      const { base64, ...rest } = p; // never store base64 in the draft
+      return { ...rest, uri };
+    })),
+  })));
+}
 
 /**
  * Phase A — local-first CP logbook drafts on AsyncStorage.
