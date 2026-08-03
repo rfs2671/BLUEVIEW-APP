@@ -23,6 +23,7 @@ export async function cacheProjectList(projects) {
   if (!Array.isArray(projects)) return;
   try {
     await AsyncStorage.setItem(LIST_KEY, JSON.stringify(projects));
+    console.log('[projectCache] wrote', projects.length, 'projects to', LIST_KEY);
     await Promise.all(
       projects
         .map((p) => {
@@ -37,7 +38,9 @@ export async function cacheProjectList(projects) {
 export async function readCachedProjectList() {
   try {
     const raw = await AsyncStorage.getItem(LIST_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const list = raw ? JSON.parse(raw) : [];
+    console.log('[projectCache] read', list.length, 'cached projects from', LIST_KEY);
+    return list;
   } catch (_e) {
     return [];
   }

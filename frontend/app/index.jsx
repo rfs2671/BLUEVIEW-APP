@@ -387,19 +387,40 @@ export default function DashboardScreen() {
 
   const fetchData = async () => {
     try {
-      setLoading(true);
-      // P1: each read is individually resilient so one offline endpoint doesn't
-      // blank the whole dashboard, and projects are cached to AsyncStorage so a
-      // CP can still SELECT a project (and reach its logbooks) with no network.
-      const [workersData, projectsData, activeCheckInsData] = await Promise.all([
+      // CACHE-FIRST: show the cached project list immediately so the dashboard is
+      // never empty when a cache exists — robust to the OTA-apply timing race.
+      // Then refresh from the server (and re-cache) when online.
+      const _cachedProjects = await readCachedProjectList();
+      if (_cachedProjects.length > 0) {
+        setProjects(_cachedProjects);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
+      // Each read is individually resilient so one offline endpoint doesn't blank
+      // the dashboard. The projects read reports whether it came from server or
+      // cache so we can show a definitive offline confirmation.
+      const [workersData, projectsResult, activeCheckInsData] = await Promise.all([
         workersAPI.getAll().catch(() => []),
         projectsAPI.getAll()
-          .then((d) => { cacheProjectList(d); return d; })
-          .catch(() => readCachedProjectList()),
+          .then((d) => { cacheProjectList(d); return { list: d, online: true }; })
+          .catch(() => ({ list: _cachedProjects, online: false })),
         checkinsAPI.getByDate(new Date()).catch(() => []),
       ]);
       setWorkers(Array.isArray(workersData) ? workersData : []);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
+      const _pList = Array.isArray(projectsResult.list) ? projectsResult.list : [];
+      setProjects(_pList);
+      // VISIBLE CONFIRM when the server was unreachable — tells you on-device
+      // whether the cache was populated (write worked) or empty (need to open
+      // online on THIS bundle first). Ends the code-vs-test guessing.
+      if (!projectsResult.online) {
+        if (_pList.length > 0) {
+          toast.success('Offline', `Loaded ${_pList.length} cached projects`);
+        } else {
+          toast.error('Offline', 'No cached projects — open once online on this version first');
+        }
+      }
       const active = Array.isArray(activeCheckInsData)
         ? activeCheckInsData.filter(c => !c.check_out_time && !c.checkout_time)
         : [];
