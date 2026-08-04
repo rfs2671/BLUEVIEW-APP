@@ -89,9 +89,14 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // older/weaker device (iPhone 6s, midrange Android) that can't satisfy a
   // criterion silently falls back to its nearest match instead of failing.
   const format = useCameraFormat(device, [
-    { photoResolution: 'max' },                       // 1) sharpest still the sensor offers
-    { videoStabilizationMode: 'cinematic-extended' }, // 2) strongest stabilization where supported
-    { fps: 60 },                                      // 3) prefer a format that can run fast (short exposures)
+    // Item 2 (CAPTURE SPEED): `photoResolution: 'max'` selected the full-sensor
+    // still (48-50MP on modern phones), so takePhoto spent 3-5s encoding +
+    // writing it. A field compliance photo is downscaled to ~1280px by
+    // compressUnderCap regardless, so target a moderate ~2MP still — takePhoto is
+    // then sub-second with plenty of detail. This is THE fix for the slow shutter.
+    { photoResolution: { width: 1920, height: 1080 } }, // 1) moderate still -> fast capture
+    { videoStabilizationMode: 'cinematic-extended' },   // 2) strongest stabilization where supported
+    { fps: 60 },                                        // 3) prefer a format that can run fast (short exposures)
   ]);
 
   // Shutter-speed FLOOR: stream at up to 60fps so each frame's exposure time is
@@ -176,7 +181,10 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
       setZoom(Math.min(max, Math.max(min, next)));
     }), [device]);
 
-  const showLensToggle = position === 'back' && hasUltraWide;
+  // Item 3: remove the 0.5×/1× chips entirely. The camera opens at ultra-wide by
+  // default (backLens='ultra'; a phone with no ultra-wide falls back to its
+  // widest device via the zoom logic below), and zoom is pinch-only — no chips.
+  const showLensToggle = false;
 
   /**
    * NON-BLOCKING. This used to be:

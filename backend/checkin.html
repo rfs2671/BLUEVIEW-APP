@@ -1051,8 +1051,12 @@ async function handleOshaPhoto(input) {
   reader.onload = async function(e) {
     const rawImage = e.target.result;
     
-    // Compress: max 1200px wide, JPEG 70% quality (~100-200KB)
-    const compressed = await compressImage(rawImage, 1200, 0.7);
+    // Item 4: OCR reads the WHOLE card (full native-camera photo — there is no
+    // app-side crop; box_2d crops AFTER OCR, for display only). 1200px / 0.7 was
+    // too low-res for the small CLASS label, so OCR caught the big "40/62 hours"
+    // course text but missed Supervisor/Limited. Capture at higher res/quality so
+    // the class label is legible to OCR.
+    const compressed = await compressImage(rawImage, 1600, 0.85);
     oshaImage = compressed;
     
     const zone = document.getElementById('cameraZone');

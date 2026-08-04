@@ -982,8 +982,8 @@ export default function DailyJobsiteLog() {
                               />
                             </Pressable>
                           )}
-                          <Pressable style={s.photoRemove} onPress={() => removeActivityPhoto(i, pi)}>
-                            <X size={12} strokeWidth={2} color="#fff" />
+                          <Pressable style={s.photoRemove} hitSlop={10} onPress={() => removeActivityPhoto(i, pi)}>
+                            <X size={14} strokeWidth={2.5} color="#fff" />
                           </Pressable>
                         </View>
                       ))}
@@ -1169,8 +1169,8 @@ export default function DailyJobsiteLog() {
         onRequestClose={() => setPhotoLightbox(null)}
       >
         <Pressable style={s.lightboxOverlay} onPress={() => setPhotoLightbox(null)}>
-          <Pressable style={s.lightboxClose} onPress={() => setPhotoLightbox(null)}>
-            <X size={24} color="#fff" />
+          <Pressable style={s.lightboxClose} hitSlop={16} onPress={() => setPhotoLightbox(null)}>
+            <X size={26} color="#fff" />
           </Pressable>
           {photoLightbox?.uri ? (
             <Image
@@ -1286,8 +1286,11 @@ function buildStyles(colors, isDark) {
     opacity: 0.85,
   },
   photoRemove: {
-    position: 'absolute', top: -6, right: -6, width: 22, height: 22, borderRadius: 11,
-    backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center',
+    // Item 5: was top:-6/right:-6 — OUTSIDE the 80×80 thumbnail, so it got clipped
+    // and was untappable. Sit it just inside the corner and make it bigger; the
+    // Pressable also gets a hitSlop so the tap target clears the icon.
+    position: 'absolute', top: 3, right: 3, width: 26, height: 26, borderRadius: 13,
+    backgroundColor: semantic.criticalBg, alignItems: 'center', justifyContent: 'center', zIndex: 2,
   },
   photoPending: {
     backgroundColor: withAlpha('#ffffff', 0.06),

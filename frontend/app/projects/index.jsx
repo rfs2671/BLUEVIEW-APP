@@ -34,6 +34,7 @@ import FloatingNav from '../../src/components/FloatingNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
+import { cacheProjectList, readCachedProjectList } from '../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
@@ -83,14 +84,25 @@ export default function ProjectsScreen() {
   }, [isAuthenticated]);
 
   const fetchProjects = async () => {
-    setLoading(true);
+    // Cache-first: show the cached list immediately so the selection screen is
+    // never empty offline. (The old catch did setProjects([]), which BLANKED the
+    // list on any offline load — the CP's live "no projects" bug.)
+    const _cached = await readCachedProjectList();
+    if (_cached.length > 0) { setProjects(_cached); setLoading(false); }
+    else setLoading(true);
     try {
       const data = await projectsAPI.getAll();
+      cacheProjectList(data);
       setProjects(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Failed to fetch projects:', error);
-      toast.error('Load Error', 'Could not load projects');
-      setProjects([]);
+      // KEEP the already-loaded cached list — the offline refresh failure must
+      // NEVER clear or overwrite it. Re-set the SAME `_cached` we already
+      // rendered (no re-read, no [] path); cacheProjectList only runs on success
+      // above, so the stored cache is never overwritten with empty either.
+      setProjects(_cached);
+      if (_cached.length > 0) toast.success('Offline', `Loaded ${_cached.length} cached projects`);
+      else toast.error('Offline', 'No cached projects — open once online on this version first');
     } finally {
       setLoading(false);
     }
