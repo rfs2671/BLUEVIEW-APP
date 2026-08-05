@@ -30,7 +30,7 @@ import {
   Image,
   Modal,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft,
@@ -146,6 +146,7 @@ const TRANSLATIONS = {
 export default function CheckInReviewScreen() {
   const { colors } = useTheme();
   const router = useRouter();
+  const params = useLocalSearchParams(); // Task A: land on the project passed by the banner
   const toast = useToast();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
@@ -189,7 +190,12 @@ export default function CheckInReviewScreen() {
               (user?.assigned_projects || []).includes(p.id || p._id))
           : list;
         setProjects(visible);
-        if (visible.length && !selectedProject) setSelectedProject(visible[0]);
+        if (visible.length && !selectedProject) {
+          // Prefer the project the banner routed us to (the first with flagged
+          // items) so the review list isn't empty on open; else fall back to first.
+          const target = visible.find((p) => (p._id || p.id) === params.projectId) || visible[0];
+          setSelectedProject(target);
+        }
       } catch (e) {
         setProjects([]);
       } finally {

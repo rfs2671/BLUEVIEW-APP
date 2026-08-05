@@ -32,7 +32,7 @@ import CpNav from '../../src/components/CpNav';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
-import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
+import { projectsAPI, logbooksAPI, cpProfileAPI, checkinsAPI } from '../../src/utils/api';
 import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -73,6 +73,10 @@ export default function LogBooksScreen() {
   const [scaffoldActive, setScaffoldActive] = useState(false);
   const [toolboxDoneThisWeek, setToolboxDoneThisWeek] = useState(false);
   const [requiredLogbooks, setRequiredLogbooks] = useState(null); // dynamic from API
+  // Task A: flagged check-in count across the CP's projects, so the Check-In
+  // Review banner only shows when there's genuinely something to review (and
+  // taps land on the first project that has items).
+  const [flagged, setFlagged] = useState({ count: 0, projectId: null });
 
   const today = new Date().toISOString().split('T')[0];
   const todayFormatted = new Date().toLocaleDateString('en-US', {
@@ -90,6 +94,31 @@ export default function LogBooksScreen() {
   useEffect(() => {
     if (isAuthenticated) fetchInitial();
   }, [isAuthenticated]);
+
+  // Task A: gate the Check-In Review banner on a real flagged count. The
+  // /flagged endpoint already returns a per-project `count`; sum it across the
+  // CP's visible projects and remember the first non-empty one to land on.
+  // (Perf note: this is one request per project — fine at the small
+  // project counts a CP has; a cross-project aggregate endpoint is the future
+  // optimization if that grows.)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!projects.length) { setFlagged({ count: 0, projectId: null }); return; }
+      const results = await Promise.all(projects.map(async (p) => {
+        const pid = p._id || p.id;
+        try {
+          const d = await checkinsAPI.getFlagged(pid);
+          return { pid, c: d?.count ?? (d?.items?.length || 0) };
+        } catch (_e) { return { pid, c: 0 }; }
+      }));
+      if (cancelled) return;
+      let total = 0, firstPid = null;
+      for (const r of results) { if (r.c > 0) { total += r.c; if (!firstPid) firstPid = r.pid; } }
+      setFlagged({ count: total, projectId: firstPid });
+    })();
+    return () => { cancelled = true; };
+  }, [projects]);
 
   // Refetch the selected project's logbook data whenever the hub regains
   // focus. Without this, returning here after submitting a logbook (e.g.
@@ -464,17 +493,21 @@ export default function LogBooksScreen() {
               the only area a CP is allowed on (see the guard in _layout.jsx),
               so this is how a CP reaches the approve / send-home decision
               from their own login. */}
-          <Pressable onPress={() => router.push('/logbooks/review')}>
-            <GlassCard style={styles.notifCard}>
-              <View style={styles.notifHeader}>
-                <ShieldAlert size={16} strokeWidth={1.5} color={semantic.attention} />
-                <Text style={styles.notifTitle}>Check-In Review</Text>
-              </View>
-              <Text style={styles.notifWorker}>
-                Expired SST cards and workers with no trade assigned
-              </Text>
-            </GlassCard>
-          </Pressable>
+          {flagged.count > 0 && (
+            <Pressable onPress={() => router.push(
+              flagged.projectId ? `/logbooks/review?projectId=${flagged.projectId}` : '/logbooks/review'
+            )}>
+              <GlassCard style={styles.notifCard}>
+                <View style={styles.notifHeader}>
+                  <ShieldAlert size={16} strokeWidth={1.5} color={semantic.attention} />
+                  <Text style={styles.notifTitle}>Check-In Review</Text>
+                </View>
+                <Text style={styles.notifWorker}>
+                  {flagged.count} check-in{flagged.count > 1 ? 's' : ''} to review — expired SST cards or workers with no trade assigned
+                </Text>
+              </GlassCard>
+            </Pressable>
+          )}
 
           {/* Log book cards */}
           {loading ? (
