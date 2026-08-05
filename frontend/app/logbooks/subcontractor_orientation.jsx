@@ -25,6 +25,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
@@ -388,6 +389,7 @@ export default function SubcontractorOrientation() {
                 const d = orient.data || {};
                 const isExpanded = expandedIndex === index;
                 const isSigned = orient.status === 'submitted' && orient.cp_signature;
+                const isLocked = !!orient.is_locked;
                 const { checked, total } = getChecklistCompletion(d.checklist);
 
                 return (
@@ -498,8 +500,9 @@ export default function SubcontractorOrientation() {
                           </View>
                         ))}
 
-                        {/* CP signature — add if not yet signed */}
-                        {!isSigned && (
+                        {/* CP signature — add if not yet signed AND not finalized.
+                            A finalized (is_locked) row must never be re-signable. */}
+                        {!isSigned && !isLocked && (
                           <OrientationSignaturePanel
                           onSign={(sig, name) => handleSignExisting(orient, sig, name)}
                           />
@@ -513,6 +516,17 @@ export default function SubcontractorOrientation() {
                             </Text>
                           </View>
                         )}
+
+                        {/* Per-card lock / finalize / amend. Finalize is offered
+                            once the row is signed; a finalized row shows the
+                            read-only banner + Amend (which mints a new child row). */}
+                        <LogbookLockBar
+                          locked={isLocked}
+                          logId={orient.id || orient._id}
+                          canFinalize={!isLocked && isSigned}
+                          onFinalized={fetchData}
+                          onAmended={fetchData}
+                        />
                       </View>
                     )}
 
