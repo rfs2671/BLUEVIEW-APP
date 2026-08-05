@@ -1,107 +1,63 @@
-import { useState, useEffect } from 'react';
-import database from '../database';
-import { Platform } from 'react-native'
-
-const Q = Platform.OS !== 'web' ? require('@nozbe/watermelondb').Q : null;
+import { useState } from 'react';
+import { dailyLogsAPI } from '../utils/api';
 
 export function useDailyLogs(projectId = null) {
   const [dailyLogs, setDailyLogs] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Create daily log
+  // Create daily log via API
   const createDailyLog = async (logData) => {
-    await database.write(async () => {
-      await database.get('daily_logs').create(log => {
-        log.projectId = logData.project_id || '';
-        log.projectName = logData.project_name || '';
-        log.date = logData.date ? new Date(logData.date).getTime() : Date.now();
-        log.weather = logData.weather || '';
-        log.notes = logData.notes || '';
-        log.workPerformed = logData.work_performed || '';
-        log.materialsUsed = logData.materials_used || '';
-        log.issues = logData.issues || '';
-        log.backendId = logData._id || '';
-        log.isDeleted = false;
-        log.syncStatus = 'pending';
-      });
-    });
+    return await dailyLogsAPI.create(logData);
   };
 
-  // Update daily log
+  // Update daily log via API
   const updateDailyLog = async (logId, updates) => {
-    await database.write(async () => {
-      const log = await database.get('daily_logs').find(logId);
-      await log.update(l => {
-        if (updates.date !== undefined) {
-          l.date = new Date(updates.date).getTime();
-        }
-        if (updates.weather !== undefined) l.weather = updates.weather;
-        if (updates.notes !== undefined) l.notes = updates.notes;
-        if (updates.work_performed !== undefined) l.workPerformed = updates.work_performed;
-        if (updates.materials_used !== undefined) l.materialsUsed = updates.materials_used;
-        if (updates.issues !== undefined) l.issues = updates.issues;
-        l.syncStatus = 'pending';
-      });
-    });
+    return await dailyLogsAPI.update(logId, updates);
   };
 
-  // Delete daily log (soft delete)
+  // Delete daily log — no backend endpoint exists; kept for API compatibility.
   const deleteDailyLog = async (logId) => {
-    await database.write(async () => {
-      const log = await database.get('daily_logs').find(logId);
-      await log.update(l => {
-        l.isDeleted = true;
-      });
-    });
+    console.warn('deleteDailyLog is not supported by the API');
   };
 
   // Get daily log by ID
   const getDailyLogById = async (logId) => {
     try {
-      return await database.get('daily_logs').find(logId);
+      return await dailyLogsAPI.getById(logId);
     } catch (error) {
       console.error('Daily log not found:', error);
       return null;
     }
   };
 
-  // Get logs for a specific date range
-  const getLogsByDateRange = async (startDate, endDate, projectId = null) => {
-    const queryConditions = [
-      Q.where('is_deleted', false),
-      Q.where('date', Q.gte(new Date(startDate).getTime())),
-      Q.where('date', Q.lte(new Date(endDate).getTime()))
-    ];
-    
-    if (projectId) {
-      queryConditions.push(Q.where('project_id', projectId));
+  // Get logs for a specific date range (filtered client-side from project logs)
+  const getLogsByDateRange = async (startDate, endDate, projectIdArg = null) => {
+    const pid = projectIdArg || projectId;
+    if (!pid) return [];
+    try {
+      const logs = await dailyLogsAPI.getByProject(pid);
+      const start = new Date(startDate).getTime();
+      const end = new Date(endDate).getTime();
+      return (logs || []).filter(l => {
+        const t = new Date(l.date).getTime();
+        return t >= start && t <= end;
+      });
+    } catch (error) {
+      console.error('Failed to fetch logs by date range:', error);
+      return [];
     }
-    
-    queryConditions.push(Q.sortBy('date', Q.desc));
-    
-    return await database.get('daily_logs')
-      .query(...queryConditions)
-      .fetch();
   };
 
   // Get today's log for a project
-  const getTodayLog = async (projectId) => {
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-    
-    const logs = await database.get('daily_logs')
-      .query(
-        Q.where('is_deleted', false),
-        Q.where('project_id', projectId),
-        Q.where('date', Q.gte(todayStart.getTime())),
-        Q.where('date', Q.lte(todayEnd.getTime()))
-      )
-      .fetch();
-    
-    return logs.length > 0 ? logs[0] : null;
+  const getTodayLog = async (pid) => {
+    try {
+      const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
+      const log = await dailyLogsAPI.getByProjectAndDate(pid, dateStr);
+      return log || null;
+    } catch (error) {
+      console.error('Failed to fetch today log:', error);
+      return null;
+    }
   };
 
   return {

@@ -1,10 +1,43 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
-import { syncDatabase, acquireSyncLock, releaseSyncLock } from '../database/sync';
 import { getToken } from './api';
 
 const QUEUE_KEY = 'blueview_offline_queue';
+const SYNC_LOCK_KEY = 'blueview_sync_lock';
 const MAX_RETRIES = 3;
+
+/**
+ * Acquire a sync lock to prevent concurrent queue drains.
+ * Returns true if lock acquired, false if another drain is in progress.
+ * Lock auto-expires after 30 seconds to prevent deadlocks.
+ *
+ * (Previously lived in the now-removed WatermelonDB sync module; inlined
+ * here since the queue is the only remaining coordinator.)
+ */
+async function acquireSyncLock() {
+  try {
+    const existing = await AsyncStorage.getItem(SYNC_LOCK_KEY);
+    if (existing) {
+      const lockTime = parseInt(existing, 10);
+      if (Date.now() - lockTime < 30000) {
+        return false; // Lock still valid
+      }
+      // Lock expired, take it
+    }
+    await AsyncStorage.setItem(SYNC_LOCK_KEY, Date.now().toString());
+    return true;
+  } catch {
+    return true; // If storage fails, allow processing to proceed
+  }
+}
+
+async function releaseSyncLock() {
+  try {
+    await AsyncStorage.removeItem(SYNC_LOCK_KEY);
+  } catch {
+    // Best effort
+  }
+}
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_URL || 'https://api.levelog.com';
 
@@ -106,8 +139,9 @@ async function processQueueItem(item, token) {
 }
 
 /**
- * Process the queue - try to sync all pending items.
- * Coordinates with WatermelonDB sync via shared lock.
+ * Process the queue - try to sync all pending items via direct API calls.
+ * Serialized with a shared AsyncStorage lock so concurrent drains don't
+ * double-post.
  */
 export async function processQueue() {
   const state = await NetInfo.fetch();
@@ -126,17 +160,7 @@ export async function processQueue() {
 
   console.log(`📤 Processing ${queue.length} queued items...`);
 
-  // Try database sync first (acquires its own lock)
-  const syncResult = await syncDatabase();
-
-  if (syncResult.success) {
-    // Database sync handled the changes — clear the queue
-    await saveQueue([]);
-    console.log(`✅ Processed ${queue.length} items via sync`);
-    return { success: true, processed: queue.length };
-  }
-
-  // Sync failed or was locked — process items individually via direct API calls
+  // Process items individually via direct API calls
   const locked = await acquireSyncLock();
   if (!locked) {
     console.log('Sync lock held, deferring queue processing');

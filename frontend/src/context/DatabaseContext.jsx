@@ -1,14 +1,12 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { Platform } from 'react-native';
-import database from '../database';
-import { syncDatabase, setupAutoSync } from '../database/sync';
-import { setupAutoQueueProcessing, getQueueStatus } from '../utils/offlineQueue';
+import { setupAutoQueueProcessing, getQueueStatus, processQueue } from '../utils/offlineQueue';
 import { useNetworkStatus } from '../hooks/useNetworkStatus';
 
-const WatermelonProvider = Platform.OS !== 'web' 
-  ? require('@nozbe/watermelondb/DatabaseProvider').DatabaseProvider 
-  : ({ children }) => children;
-
+// AsyncStorage-only offline context. WatermelonDB was removed (it was
+// dormant on native); offline now runs entirely on AsyncStorage via
+// offlineQueue. This provider exposes the same shape its consumers
+// (OfflineIndicator, SyncButton) already read — queueStatus, performSync,
+// isSyncing, lastSyncTime — so nothing downstream changes.
 const DatabaseContext = createContext({});
 
 export function DatabaseProvider({ children }) {
@@ -19,37 +17,34 @@ export function DatabaseProvider({ children }) {
   const [queueStatus, setQueueStatus] = useState({ size: 0, isOnline: false });
   const { isOnline } = useNetworkStatus(); // ✅ Hook called at top level
 
-  // Initialize database on mount
+  // Initialize offline queue processing on mount
   useEffect(() => {
-    let autoSyncUnsubscribe;
     let autoQueueUnsubscribe;
-    
+
     const initialize = async () => {
       try {
-        console.log('🗄️ Initializing database...');
-        autoSyncUnsubscribe = Platform.OS !== 'web' ? setupAutoSync() : null;
-        autoQueueUnsubscribe = Platform.OS !== 'web' ? setupAutoQueueProcessing() : null;
-        
-        if (Platform.OS !== 'web' && isOnline) {
-          console.log('📶 Online - performing initial sync...');
+        console.log('🗄️ Initializing offline store...');
+        autoQueueUnsubscribe = setupAutoQueueProcessing();
+
+        if (isOnline) {
+          console.log('📶 Online - draining offline queue...');
           await performSync();
         }
-        
+
         const status = await getQueueStatus();
         setQueueStatus(status);
-        console.log('✅ Database initialized');
+        console.log('✅ Offline store initialized');
       } catch (error) {
-        console.error('❌ Database initialization failed:', error);
+        console.error('❌ Offline store initialization failed:', error);
       } finally {
         // ✅ Set initialized AFTER all async operations complete
         setIsInitialized(true);
       }
     };
-    
+
     initialize();
-    
+
     return () => {
-      if (autoSyncUnsubscribe) autoSyncUnsubscribe();
       if (autoQueueUnsubscribe) autoQueueUnsubscribe();
     };
   }, [isOnline]); // Re-run when online status changes
@@ -66,16 +61,18 @@ export function DatabaseProvider({ children }) {
   const performSync = async () => {
     if (!isOnline) return { success: false, error: 'offline' };
     if (isSyncing) return { success: false, error: 'already_syncing' };
-    
+
     setIsSyncing(true);
     try {
-      const result = await syncDatabase();
+      const result = await processQueue();
       if (result.success) {
         setLastSyncTime(new Date());
-        const status = await getQueueStatus();
-        setQueueStatus(status);
       }
-      return result;
+      const status = await getQueueStatus();
+      setQueueStatus(status);
+      return result.success
+        ? { success: true }
+        : { success: false, error: result.error || 'sync_failed' };
     } catch (error) {
       console.error('Sync error:', error);
       return { success: false, error: error.message };
@@ -84,19 +81,11 @@ export function DatabaseProvider({ children }) {
     }
   };
 
-  const value = { database, isInitialized, isSyncing, lastSyncTime, queueStatus, performSync };
+  const value = { isInitialized, isSyncing, lastSyncTime, queueStatus, performSync };
 
-  // ✅ Conditional rendering AFTER all hooks are called
-  // Show provider with null until initialized, allowing children to handle loading state
   return (
     <DatabaseContext.Provider value={value}>
-      {Platform.OS === 'web' ? (
-        children
-      ) : (
-        <WatermelonProvider database={database}>
-          {children}
-        </WatermelonProvider>
-      )}
+      {children}
     </DatabaseContext.Provider>
   );
 }

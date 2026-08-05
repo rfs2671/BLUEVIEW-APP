@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import { Q } from '@nozbe/watermelondb';
-import database from '../database';
+import { projectsAPI } from '../utils/api';
 
 export function useProjects() {
   const [projects, setProjects] = useState([]);
@@ -8,77 +7,38 @@ export function useProjects() {
 
   // Create project
   const createProject = async (projectData) => {
-    await database.write(async () => {
-      await database.get('projects').create(project => {
-        project.name = projectData.name;
-        project.address = projectData.address || '';
-        project.status = projectData.status || 'active';
-        project.startDate = projectData.start_date ? new Date(projectData.start_date).getTime() : Date.now();
-        project.endDate = projectData.end_date ? new Date(projectData.end_date).getTime() : null;
-        project.backendId = projectData._id || '';
-        project.isDeleted = false;
-      });
-    });
+    return await projectsAPI.create(projectData);
   };
 
   // Update project
   const updateProject = async (projectId, updates) => {
-    await database.write(async () => {
-      const project = await database.get('projects').find(projectId);
-      await project.update(p => {
-        if (updates.name !== undefined) p.name = updates.name;
-        if (updates.address !== undefined) p.address = updates.address;
-        if (updates.status !== undefined) p.status = updates.status;
-        if (updates.start_date !== undefined) {
-          p.startDate = new Date(updates.start_date).getTime();
-        }
-        if (updates.end_date !== undefined) {
-          p.endDate = updates.end_date ? new Date(updates.end_date).getTime() : null;
-        }
-      });
-    });
+    return await projectsAPI.update(projectId, updates);
   };
 
-  // Delete project (soft delete)
+  // Delete project
   const deleteProject = async (projectId) => {
-    await database.write(async () => {
-      const project = await database.get('projects').find(projectId);
-      await project.update(p => {
-        p.isDeleted = true;
-      });
-    });
+    return await projectsAPI.delete(projectId);
   };
 
   // Get project by ID
   const getProjectById = async (projectId) => {
-  try {
-    return await database.get('projects').find(projectId);
-  } catch (error) {
     try {
-      const results = await database.get('projects')
-        .query(Q.where('backend_id', projectId))
-        .fetch();
-      if (results.length > 0) return results[0];
-    } catch (e) {
-    }
-    try {
-      const { projectsAPI } = require('../utils/api');
       return await projectsAPI.getById(projectId);
-    } catch (e) {
-      console.error('Project not found anywhere:', e);
+    } catch (error) {
+      console.error('Project not found:', error);
       return null;
-      }
     }
   };
- 
+
   // Get active projects
   const getActiveProjects = async () => {
-    return await database.get('projects')
-      .query(
-        Q.where('is_deleted', false),
-        Q.where('status', 'active')
-      )
-      .fetch();
+    try {
+      const all = await projectsAPI.getAll();
+      return (all || []).filter(p => (p.status || 'active') === 'active');
+    } catch (error) {
+      console.error('Failed to fetch active projects:', error);
+      return [];
+    }
   };
 
   return {
