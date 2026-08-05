@@ -832,6 +832,19 @@ export const logbooksAPI = {
     return response.data;
   },
 
+  // Tier 1 (1): end-of-day FINALIZATION — locks the log immutable (423 on edit after).
+  finalize: async (logbookId) => {
+    const response = await apiClient.post(`/api/logbooks/${logbookId}/finalize`);
+    return response.data;
+  },
+
+  // Tier 1 (1): create a linked AMENDMENT of a finalized log. reason is required;
+  // optional data seeds the editable child (else it copies the original's data).
+  amend: async (logbookId, reason, data = undefined) => {
+    const response = await apiClient.post(`/api/logbooks/${logbookId}/amend`, { reason, data });
+    return response.data;
+  },
+
   getNotifications: async (projectId) => {
     const response = await apiClient.get(`/api/logbooks/project/${projectId}/notifications`);
     return response.data;

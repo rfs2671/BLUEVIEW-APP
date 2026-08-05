@@ -101,12 +101,20 @@ export async function readDraft(key) {
 export async function writeDraft(key, patch) {
   try {
     const prev = await readDraft(key);
+    // Tier 1 (1): a FINALIZED (locked) log is immutable — the offline draft store
+    // refuses further edits, mirroring the backend 423 guard. Only a patch that
+    // explicitly sets `finalized` (the markFinalized call) passes, so the lock
+    // itself can be recorded. Corrections happen through an amendment (a NEW key).
+    if (prev?.finalized && patch.finalized === undefined) {
+      return false;
+    }
     const merged = {
       data: patch.data !== undefined ? patch.data : (prev?.data || {}),
       cp_signature: patch.cp_signature !== undefined ? patch.cp_signature : (prev?.cp_signature ?? null),
       cp_name: patch.cp_name !== undefined ? patch.cp_name : (prev?.cp_name ?? null),
       status: patch.status !== undefined ? patch.status : (prev?.status || 'draft'),
       backend_id: patch.backend_id !== undefined ? patch.backend_id : (prev?.backend_id ?? null),
+      finalized: patch.finalized !== undefined ? patch.finalized : (prev?.finalized ?? false),
       updated_at: Date.now(),
     };
     await AsyncStorage.setItem(key, JSON.stringify(merged));
@@ -119,6 +127,15 @@ export async function writeDraft(key, patch) {
 /** Bind the server document id onto the local draft after a successful push. */
 export async function setDraftBackendId(key, backendId) {
   return writeDraft(key, { backend_id: backendId });
+}
+
+/**
+ * Tier 1 (1): mark a local draft FINALIZED (locked). After this, writeDraft
+ * no-ops for this key, so a finalized log can never be re-edited offline. An
+ * editor calls this when it loads a log whose server doc is `is_locked`.
+ */
+export async function markFinalized(key) {
+  return writeDraft(key, { finalized: true });
 }
 
 // ── pending-push index (Phase B drains this; Phase A only records) ──────────

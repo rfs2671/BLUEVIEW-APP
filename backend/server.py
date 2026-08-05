@@ -14292,6 +14292,9 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "log_type": data.log_type,
         "date": data.date,
         "is_deleted": {"$ne": True},
+        # Tier 1 (1): an amendment is a linked child sharing (project,type,date)
+        # with its locked original — never let a fresh upsert match/clobber it.
+        "is_amendment": {"$ne": True},
     }
     if data.log_type == "subcontractor_orientation":
         orientation_worker_id = (data.data or {}).get("worker_id")
@@ -14313,6 +14316,10 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
 
     existing = await db.logbooks.find_one(dedupe_filter)
     if existing:
+        # Tier 1 (1): a FINALIZED (locked) log is immutable (§28-211.1). An upsert
+        # onto it is a tamper attempt — reject; corrections go through /amend.
+        if existing.get("is_locked"):
+            raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
         # Update existing
         await db.logbooks.update_one(
             {"_id": existing["_id"]},
@@ -14380,6 +14387,16 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         if existing_lb.get("project_id") not in assigned:
             raise HTTPException(status_code=403, detail="Not assigned to this project")
 
+    # Tier 1 (1): FINALIZED (locked) logs are immutable — block in-place edits
+    # (§28-211.1 tamper exposure). Same guard/pattern as update_daily_log (423).
+    # Corrections go through POST /logbooks/{id}/amend (linked child, original
+    # left intact). Reuses the CP-role fetch when present; one cheap read otherwise.
+    _lock_target = existing_lb if current_user.get("role") == "cp" else await db.logbooks.find_one(
+        {"_id": to_query_id(logbook_id)}, {"is_locked": 1}
+    )
+    if _lock_target and _lock_target.get("is_locked"):
+        raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
+
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}
     if data.data is not None:
@@ -14399,6 +14416,91 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         raise HTTPException(status_code=404, detail="Logbook not found")
     updated = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
     return serialize_id(updated)
+
+
+@api_router.post("/logbooks/{logbook_id}/finalize")
+async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_user)):
+    """Tier 1 (1): END-OF-DAY FINALIZATION — locks the log immutable.
+
+    After this, in-place edits are rejected (423) and corrections must go through
+    an amendment. This is the explicit finalize primitive; the future end-of-day
+    batch-sign flow calls the same lock. It does NOT fire on an intermediate
+    draft/submitted save — a working log stays editable until finalized here.
+    """
+    now = datetime.now(timezone.utc)
+    existing = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    if current_user.get("role") == "cp":
+        assigned = current_user.get("assigned_projects", []) or []
+        if existing.get("project_id") not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+    if existing.get("is_locked"):
+        return serialize_id(existing)  # idempotent — already finalized
+    await db.logbooks.update_one(
+        {"_id": to_query_id(logbook_id)},
+        {"$set": {
+            "is_locked": True,
+            "finalized_at": now,
+            "finalized_by": current_user.get("id"),
+            "finalized_by_name": current_user.get("full_name") or current_user.get("name"),
+            "status": "submitted",   # finalized logs are terminal-submitted
+            "updated_at": now,
+        }},
+    )
+    await audit_log("logbook_finalize", str(current_user.get("id", "")), "logbook", logbook_id, {
+        "log_type": existing.get("log_type"), "project_id": existing.get("project_id"), "date": existing.get("date"),
+    })
+    return serialize_id(await db.logbooks.find_one({"_id": to_query_id(logbook_id)}))
+
+
+@api_router.post("/logbooks/{logbook_id}/amend")
+async def amend_logbook(logbook_id: str, data: dict, current_user = Depends(get_current_user)):
+    """Tier 1 (1): create a linked AMENDMENT of a finalized log.
+
+    The original stays LOCKED and intact. The amendment is a new EDITABLE child
+    logbook carrying a required Reason for Amendment, a link to its parent, and a
+    fresh server timestamp. It must be re-signed (cp_signature reset) and, when
+    the CP is done, finalized in its own right.
+    """
+    reason = (data or {}).get("reason") or (data or {}).get("amendment_reason")
+    if not reason or not str(reason).strip():
+        raise HTTPException(status_code=400, detail="Reason for Amendment is required.")
+    now = datetime.now(timezone.utc)
+    original = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
+    if not original:
+        raise HTTPException(status_code=404, detail="Logbook not found")
+    if current_user.get("role") == "cp":
+        assigned = current_user.get("assigned_projects", []) or []
+        if original.get("project_id") not in assigned:
+            raise HTTPException(status_code=403, detail="Not assigned to this project")
+    child = {
+        "project_id": original.get("project_id"),
+        "project_name": original.get("project_name", ""),
+        "company_id": original.get("company_id"),
+        "log_type": original.get("log_type"),
+        "date": original.get("date"),
+        # Start from the original's data unless the caller supplies corrected data.
+        "data": (data or {}).get("data", original.get("data")),
+        "cp_signature": None,      # an amendment must be re-signed
+        "cp_name": None,
+        "status": "draft",
+        "is_locked": False,
+        "is_amendment": True,
+        "parent_logbook_id": str(original["_id"]),
+        "amendment_reason": str(reason).strip(),
+        "created_by": current_user.get("id"),
+        "created_by_name": current_user.get("full_name") or current_user.get("name"),
+        "created_at": now,
+        "updated_at": now,
+        "is_deleted": False,
+    }
+    result = await db.logbooks.insert_one(child)
+    await audit_log("logbook_amend", str(current_user.get("id", "")), "logbook", str(result.inserted_id), {
+        "parent_logbook_id": str(original["_id"]), "reason": str(reason).strip()[:200], "log_type": original.get("log_type"),
+    })
+    return serialize_id(await db.logbooks.find_one({"_id": result.inserted_id}))
+
 
 @api_router.delete("/logbooks/{logbook_id}")
 async def delete_logbook(logbook_id: str, current_user = Depends(get_current_user)):
