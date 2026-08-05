@@ -33,9 +33,11 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, logbooksAPI, cpProfileAPI } from '../../src/utils/api';
+import { readCachedProjectList, cacheProjectList } from '../../src/utils/projectCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import BuildMarker from '../../src/components/BuildMarker';
 
 // Icon mapping for dynamic logbook types from API
 const ICON_MAP = {
@@ -102,32 +104,68 @@ export default function LogBooksScreen() {
     }, [isAuthenticated, selectedProject])
   );
 
-  const fetchInitial = async () => {
-    setLoading(true);
-    try {
-      const projectsData = await projectsAPI.getAll().catch(() => []);
-      const projectList = Array.isArray(projectsData) ? projectsData : [];
+  // CP picker scope (defense-in-depth; backend is the real gate): a CP only sees
+  // the project(s) they're assigned to, so they can't navigate to an unassigned
+  // project's logbook. Other roles (admin/owner/superintendent) see all company
+  // projects. Shared by the cache-first read AND the live read below.
+  const filterVisibleProjects = (list) => {
+    const arr = Array.isArray(list) ? list : [];
+    return user?.role === 'cp'
+      ? arr.filter(p => (user?.assigned_projects || []).includes(p.id || p._id))
+      : arr;
+  };
 
-      // CP picker scope (defense-in-depth; backend is the real gate):
-      // a CP only sees the project(s) they're assigned to, so they
-      // can't navigate to an unassigned project's logbook. Other roles
-      // (admin/owner/superintendent) see all company projects.
-      const isCP = user?.role === 'cp';
-      const visibleProjects = isCP
-        ? projectList.filter(p => (user?.assigned_projects || []).includes(p.id || p._id))
-        : projectList;
+  const fetchInitial = async () => {
+    // OFFLINE FIX (CP screen): the CP lands here (_layout.jsx routes role 'cp' to
+    // /logbooks), NOT on the admin projects screen — so the proven cache-first
+    // pattern (admin projects/index.jsx, app/index.jsx) has to live here too, or
+    // the CP's picker blanks offline. Mirror it exactly:
+    //   1) read the local cache first and paint immediately,
+    //   2) write-through on every successful server load,
+    //   3) on refresh failure KEEP the cached list (never blank it).
+    // The old code did `getAll().catch(() => [])`, which SWALLOWED the offline
+    // error into an empty list — the live CP blocker.
+    const _cached = await readCachedProjectList();
+    const cachedVisible = filterVisibleProjects(_cached);
+    let picked = null;
+    if (cachedVisible.length > 0) {
+      setProjects(cachedVisible);
+      picked = cachedVisible[0];
+      setSelectedProject(picked);
+      // Sub-reads all have their own offline `.catch` fallbacks, so this is safe
+      // offline — it just shows empty logs until the CP drafts.
+      fetchProjectData(picked._id || picked.id);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
+    try {
+      // No `.catch(() => [])` here — let getAll REJECT offline so the outer catch
+      // runs and keeps the cache, instead of silently overwriting it with [].
+      const projectsData = await projectsAPI.getAll();
+      const projectList = Array.isArray(projectsData) ? projectsData : [];
+      cacheProjectList(projectList); // write-through (full list, role-agnostic key)
+      const visibleProjects = filterVisibleProjects(projectList);
       setProjects(visibleProjects);
 
       cpProfileAPI.getProfile()
         .then(p => { if (p?.cp_name) setCpName(p.cp_name); })
         .catch(() => {});
 
-      if (visibleProjects.length > 0) {
+      if (visibleProjects.length > 0 && !picked) {
         setSelectedProject(visibleProjects[0]);
         await fetchProjectData(visibleProjects[0]._id || visibleProjects[0].id);
       }
     } catch (error) {
-      console.error('Failed to fetch logbooks data:', error);
+      // Offline / refresh failure — KEEP the cached list already painted above.
+      // Never setProjects([]) here: that is exactly the blank-offline bug.
+      console.error('logbooks fetchInitial failed (keeping cache):', error);
+      if (cachedVisible.length > 0) {
+        toast.success('Offline', `Loaded ${cachedVisible.length} cached project${cachedVisible.length === 1 ? '' : 's'}`);
+      } else {
+        toast.error('Offline', 'No cached projects — open once online on this version first');
+      }
     } finally {
       setLoading(false);
     }
@@ -521,6 +559,10 @@ export default function LogBooksScreen() {
               </View>
             </GlassCard>
           )}
+
+          {/* Running-bundle self-report — lets a CP-role user confirm which JS is
+              live on THEIR screen (they can't reach the admin screen's marker). */}
+          <BuildMarker />
         </ScrollView>
 
         <CpNav />
