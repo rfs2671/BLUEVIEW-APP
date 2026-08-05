@@ -233,6 +233,23 @@ export default function ProjectsScreen() {
             />
           </View>
 
+          {/* TEMP RENDER PROBE — remove with the DIAG line. Plain Text rows
+              (no glass, no gradient, no GlassListItem) rendered straight from
+              filteredProjects. This splits the two remaining hypotheses:
+              • probe rows SHOW but glass cards DON'T → GlassListItem /
+                LinearGradient is the failure (native gradient/glass path).
+              • probe rows ALSO blank → the .map isn't executing / data is
+                unrenderable, despite filtered:2. */}
+          {!loading && filteredProjects.map((p, i) => (
+            <Text
+              key={`probe-${i}`}
+              selectable
+              style={{ color: '#22d3ee', fontSize: 13, borderWidth: 1, borderColor: '#22d3ee', padding: 6, marginBottom: 4 }}
+            >
+              PROBE {i}: id={String(getProjectId(p))} name={String(p?.name)}
+            </Text>
+          ))}
+
           {/* Projects List */}
           <View style={s.projectsList}>
             {loading ? (
@@ -252,7 +269,10 @@ export default function ProjectsScreen() {
                 <GlassListItem
                   key={getProjectId(project)}
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
-                  style={s.projectCard}
+                  /* TEMP: bright magenta border — if a card is present-but-
+                     invisible (glass/gradient renders transparent), this outline
+                     still shows its box. Remove with the DIAG/probe. */
+                  style={[s.projectCard, { borderWidth: 2, borderColor: '#ec4899' }]}
                 >
                   {/* Card redesign: Building2 logo removed. Left zone
                       takes all remaining width (flex:1 + minWidth:0) so

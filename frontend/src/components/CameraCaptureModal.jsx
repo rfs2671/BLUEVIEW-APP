@@ -57,7 +57,14 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const { hasPermission, requestPermission } = useCameraPermission();
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const [position, setPosition] = useState('back'); // 'back' | 'front'
-  const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide' — default ultra-wide
+  // MEASURED CHANGE (camera diag): rear default was 'ultra' (ultra-wide), and the
+  // device measured the ultra-wide REAR capture hanging 60s+ (never returned)
+  // while the front returned in ~5s. The ultra-wide is a distinct physical sensor
+  // with a slower/quirkier still path; the main WIDE sensor is the fast, reliable
+  // one and is what a jobsite compliance photo should use. Change ONE variable
+  // (ultra→wide) and re-measure before touching the format criteria — so we learn
+  // whether the hang was the ultra-wide sensor or the format selection.
+  const [backLens, setBackLens] = useState('wide'); // 'ultra' | 'wide' — default main wide sensor
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
   // TEMP camera-speed diagnostic — remove after the bottleneck is found. Shows the
@@ -208,6 +215,11 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     if (!camera.current || capturing) return;
     setCapturing(true);
     const t0 = Date.now();
+    // Logged BEFORE takePhoto because a hanging capture never reaches the timing
+    // badge — this line is the only record of WHICH device + format the stuck
+    // capture used. photo=WxH is the still resolution useCameraFormat chose.
+    console.log('[CAM] shutter device=%s pos=%s lens=%s fmt=%sx%s fps=%s',
+      device?.id, position, backLens, format?.photoWidth, format?.photoHeight, fps);
     try {
       const photo = await camera.current.takePhoto({ flash: 'off', qualityPrioritization: 'speed' });
       const tShot = Date.now();
@@ -225,7 +237,7 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     } finally {
       setCapturing(false);
     }
-  }, [capturing, onCapture]);
+  }, [capturing, onCapture, device, position, backLens, format, fps]);
 
   if (!hasPermission) {
     return (
