@@ -5273,7 +5273,7 @@ async def delete_admin_user(user_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.users.update_one(
         {"_id": to_query_id(user_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
@@ -5399,7 +5399,7 @@ async def delete_subcontractor(sub_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.subcontractors.update_one(
         {"_id": to_query_id(sub_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Subcontractor not found")
@@ -7991,7 +7991,7 @@ async def delete_admin_account(admin_id: str, current_user = Depends(get_current
     # Soft delete
     result = await db.users.update_one(
         {"_id": to_query_id(admin_id), "role": "admin"},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Admin not found")
@@ -9054,7 +9054,7 @@ async def remove_nfc_tag_from_project(project_id: str, tag_id: str, admin = Depe
     # Soft delete from nfc_tags collection
     await db.nfc_tags.update_one(
         {"tag_id": tag_id, "project_id": project_id},
-        {"$set": {"is_deleted": True, "updated_at": now}}
+        {"$set": {"is_deleted": True, "deleted_at": now, "updated_at": now}}
     )
     
     # Remove from project's nfc_tags array
@@ -10261,7 +10261,7 @@ async def delete_worker(worker_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.workers.update_one(
         {"_id": to_query_id(worker_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Worker not found")
@@ -11319,7 +11319,7 @@ async def delete_site_device(device_id: str, admin = Depends(get_admin_user)):
     # Soft delete
     result = await db.site_devices.update_one(
         {"_id": to_query_id(device_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Site device not found")
@@ -11778,7 +11778,7 @@ async def delete_cs_registration(registration_id: str, admin=Depends(get_admin_u
     """Soft-delete a CS registration."""
     await db.cs_registrations.update_one(
         {"_id": to_query_id(registration_id)},
-        {"$set": {"is_deleted": True, "is_active": False, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "is_active": False, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     return {"message": "CS registration deleted"}
  
@@ -12260,7 +12260,7 @@ async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     """Soft delete a checklist"""
     result = await db.checklists.update_one(
         {"_id": to_query_id(checklist_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Checklist not found")
@@ -12268,7 +12268,7 @@ async def delete_checklist(checklist_id: str, admin = Depends(get_admin_user)):
     # Also soft-delete related assignments
     await db.checklist_assignments.update_many(
         {"checklist_id": checklist_id},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     
     return {"message": "Checklist deleted successfully"}
@@ -12696,7 +12696,7 @@ async def disconnect_dropbox(current_user = Depends(get_current_user)):
     
     await db.dropbox_connections.update_one(
         {"company_id": company_id},
-        {"$set": {"is_deleted": True, "access_token": None, "refresh_token": None, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "access_token": None, "refresh_token": None, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     
     return {"message": "Dropbox disconnected"}
@@ -14415,7 +14415,7 @@ async def delete_logbook(logbook_id: str, current_user = Depends(get_current_use
 
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
 
     await audit_log("logbook_delete", user_id, "logbook", logbook_id, {
@@ -14618,7 +14618,7 @@ async def delete_safety_staff(staff_id: str, admin = Depends(get_admin_user)):
     """Soft delete a safety staff registration."""
     result = await db.safety_staff_registrations.update_one(
         {"_id": to_query_id(staff_id)},
-        {"$set": {"is_deleted": True, "updated_at": datetime.now(timezone.utc)}}
+        {"$set": {"is_deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Safety staff not found")
@@ -28696,6 +28696,60 @@ async def startup_event():
         _notifications_cleanup_tick,
         CronTrigger(hour=3, minute=55, timezone="America/New_York"),
         id='notifications_cleanup',
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # ── Task 8: soft-delete purge (opt-in, allowlist-only) ──
+    # Hard-removes rows soft-deleted (is_deleted:true) more than N days ago, but
+    # ONLY from an explicit allowlist of operational/replaceable collections.
+    # Compliance/audit collections (checkins, logbooks, signatures, dob_logs,
+    # compliance_alerts, ...) are NEVER purged — absent from the allowlist AND
+    # blocked by the explicit NEVER set. Rows without a `deleted_at` stamp are
+    # skipped, which protects any pre-backfill records. A TTL index was NOT used
+    # deliberately: TTL keyed on the wrong timestamp deleted DOB compliance
+    # history before (see scripts/drop_dob_logs_ttl.py), gives no allowlist, no
+    # dry-run, and no audit. Off unless SOFT_DELETE_PURGE_ENABLED=true.
+    SOFT_DELETE_RETENTION_DAYS = int(os.environ.get("SOFT_DELETE_RETENTION_DAYS", "90"))
+    SOFT_DELETE_PURGE_ENABLED = os.environ.get("SOFT_DELETE_PURGE_ENABLED", "false").lower() == "true"
+    SOFT_DELETE_PURGE_COLLECTIONS = [
+        "nfc_tags", "site_devices", "dropbox_connections",
+        "checklist_assignments", "checklists",
+    ]
+    SOFT_DELETE_NEVER_PURGE = {
+        "checkins", "logbooks", "sign_ins", "signatures", "daily_signatures",
+        "signature_events", "audit_logs", "compliance_alerts", "dob_logs",
+        "certificates_of_insurance", "safety_staff_registrations",
+        "cs_registrations", "workers", "users", "subcontractors",
+    }
+
+    async def _soft_delete_purge_tick():
+        if not SOFT_DELETE_PURGE_ENABLED:
+            logger.info("[soft_delete_purge] disabled (SOFT_DELETE_PURGE_ENABLED off) — skipping")
+            return
+        cutoff = datetime.now(timezone.utc) - timedelta(days=SOFT_DELETE_RETENTION_DAYS)
+        total = 0
+        for coll_name in SOFT_DELETE_PURGE_COLLECTIONS:
+            if coll_name in SOFT_DELETE_NEVER_PURGE:
+                logger.warning(f"[soft_delete_purge] refusing protected collection {coll_name!r}")
+                continue
+            try:
+                res = await db[coll_name].delete_many({
+                    "is_deleted": True,
+                    "deleted_at": {"$lte": cutoff},
+                })
+                if res.deleted_count:
+                    logger.info(f"[soft_delete_purge] {coll_name}: removed {res.deleted_count} rows deleted >{SOFT_DELETE_RETENTION_DAYS}d ago")
+                total += res.deleted_count
+            except Exception as e:
+                logger.warning(f"[soft_delete_purge] {coll_name} failed (non-fatal): {e!r}")
+        logger.info(f"[soft_delete_purge] complete — {total} rows removed (retention={SOFT_DELETE_RETENTION_DAYS}d)")
+
+    scheduler.add_job(
+        _soft_delete_purge_tick,
+        CronTrigger(hour=4, minute=30, timezone="America/New_York"),
+        id='soft_delete_purge',
         replace_existing=True,
         max_instances=1,
         coalesce=True,
