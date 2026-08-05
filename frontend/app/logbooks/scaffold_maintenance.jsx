@@ -12,10 +12,11 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -74,6 +75,9 @@ export default function ScaffoldMaintenanceLog() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   const [generalInfo, setGeneralInfo] = useState({
     scaffold_erector: '', renters_name: '', permit_number: '',
@@ -117,6 +121,11 @@ export default function ScaffoldMaintenanceLog() {
       const key = draftKey({ projectId, logType: 'scaffold_maintenance', date });
       const draft = await readDraft(key);
       if (draft) {
+        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        if (draft.finalized) {
+          setLocked(true);
+          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+        }
         setExistingLogId(draft.backend_id);
         const d = draft.data || {};
         if (d.general_info) setGeneralInfo(d.general_info);
@@ -150,9 +159,16 @@ export default function ScaffoldMaintenanceLog() {
 
       // CP profile is auto-loaded by useCpProfile hook — no manual fetch needed
 
-      // Load existing log for this date
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Load existing log for this date. Prefer the EDITABLE (non-locked) doc —
+      // an amendment child — over a locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
       if (existing) {
+        // Tier 1 (1)b: a server doc's is_locked locks the form read-only.
+        if (existing.is_locked) {
+          setLocked(true);
+          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+        }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         if (d.general_info) setGeneralInfo(d.general_info);
@@ -316,6 +332,10 @@ export default function ScaffoldMaintenanceLog() {
 
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
           {/* Date */}
           <GlassCard style={styles.dateCard}>
             <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -387,8 +407,10 @@ export default function ScaffoldMaintenanceLog() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={styles.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -406,6 +428,15 @@ export default function ScaffoldMaintenanceLog() {
               style={styles.submitBtn}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>

@@ -11,11 +11,12 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { capitalizeFirst } from '../../src/utils/textFormat';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -55,6 +56,9 @@ export default function PreShiftSignIn() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   const [company, setCompany] = useState('');
   const [projectLocation, setProjectLocation] = useState('');
@@ -91,6 +95,11 @@ export default function PreShiftSignIn() {
       const _draft = await readDraft(draftKey({ projectId, logType: 'preshift_signin', date }));
       if (_draft && _draft.data && (_draft.data.workers?.length || _draft.data.company)) {
         const d = _draft.data;
+        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        if (_draft.finalized) {
+          setLocked(true);
+          markFinalized(draftKey({ projectId, logType: 'preshift_signin', date }));
+        }
         setExistingLogId(_draft.backend_id || null);
         if (d.company) setCompany(d.company);
         if (d.project_location) setProjectLocation(d.project_location);
@@ -116,7 +125,14 @@ export default function PreShiftSignIn() {
 
       const checkinList = Array.isArray(checkins) ? checkins : [];
 
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
+      // over a locked original that shares (project, type, date).
+      const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = _existingArr.find(l => !l.is_locked) || _existingArr[0] || null;
+      if (existing?.is_locked) {
+        setLocked(true);
+        markFinalized(draftKey({ projectId, logType: 'preshift_signin', date }));
+      }
       if (existing) {
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
@@ -304,6 +320,11 @@ export default function PreShiftSignIn() {
 
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
+
           {/* Date */}
           <GlassCard style={styles.dateCard}>
             <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -476,8 +497,10 @@ export default function PreShiftSignIn() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={styles.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -494,6 +517,15 @@ export default function PreShiftSignIn() {
               style={styles.submitBtn}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
 
         </ScrollView>
       </SafeAreaView>

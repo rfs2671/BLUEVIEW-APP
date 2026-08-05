@@ -11,12 +11,13 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -49,6 +50,9 @@ export default function OshaLogBook() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   const [entries, setEntries] = useState([]);
   const [showCertPicker, setShowCertPicker] = useState(null); // index of row being edited
@@ -76,6 +80,11 @@ export default function OshaLogBook() {
       // server read + check-in auto-populate so unsynced edits are never clobbered.
       const draft = await readDraft(key);
       if (draft) {
+        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        if (draft.finalized) {
+          setLocked(true);
+          markFinalized(key);
+        }
         if (draft.backend_id) setExistingLogId(draft.backend_id);
         const dd = draft.data || {};
         if (Array.isArray(dd.entries)) setEntries(dd.entries);
@@ -95,8 +104,15 @@ export default function OshaLogBook() {
         // on a fresh day, and submit lands on the doc the dashboard queries.
         logbooksAPI.getByProject(projectId, 'osha_log', date).catch(() => []),
       ]);
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
+      // over a locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
       if (existing) {
+        if (existing.is_locked) {
+          setLocked(true);
+          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+        }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         if (d.entries && d.entries.length > 0) {
@@ -274,6 +290,11 @@ export default function OshaLogBook() {
 
         <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
+
           {/* Date */}
           <GlassCard style={styles.dateCard}>
             <Calendar size={16} strokeWidth={1.5} color={colors.text.muted} />
@@ -409,8 +430,10 @@ export default function OshaLogBook() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={styles.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -428,6 +451,15 @@ export default function OshaLogBook() {
               style={styles.submitBtn}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>

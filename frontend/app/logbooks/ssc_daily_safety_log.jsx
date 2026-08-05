@@ -7,10 +7,11 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -31,6 +32,9 @@ export default function SSCDailySafetyLog() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   // SSC/SSM signature state — local to this logbook so a cached
   // personal CP signature from useCpProfile doesn't pre-lock the pad.
@@ -107,6 +111,11 @@ export default function SSCDailySafetyLog() {
       const key = draftKey({ projectId, logType: LOG_TYPE, date });
       const draft = await readDraft(key);
       if (draft) {
+        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        if (draft.finalized) {
+          setLocked(true);
+          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+        }
         setExistingLogId(draft.backend_id);
         const d = draft.data || {};
         if (d.project_address) setProjectAddress(d.project_address);
@@ -138,8 +147,15 @@ export default function SSCDailySafetyLog() {
       setProjectAddress(fullAddress);
       if (projectData?.ssp_number) setSspNumber(projectData.ssp_number);
 
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
       if (existing) {
+        if (existing.is_locked) {
+          setLocked(true);
+          markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+        }
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         if (d.project_address) setProjectAddress(d.project_address);
@@ -292,6 +308,10 @@ export default function SSCDailySafetyLog() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
           {/* Date */}
           <GlassCard style={s.section}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
@@ -447,8 +467,10 @@ export default function SSCDailySafetyLog() {
               autoLock={false}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={s.buttonRow}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -465,6 +487,15 @@ export default function SSCDailySafetyLog() {
               style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>

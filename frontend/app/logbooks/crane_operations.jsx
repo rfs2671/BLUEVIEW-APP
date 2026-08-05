@@ -7,10 +7,11 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -56,6 +57,9 @@ export default function CraneOperationsLog() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   // Form fields
   const [craneType, setCraneType] = useState('');
@@ -107,10 +111,16 @@ export default function CraneOperationsLog() {
       // that simply opens a blank log rather than erroring.
       const key = draftKey({ projectId, logType: LOG_TYPE, date });
       let existing = await readDraft(key);
+      // Tier 1 (1)b: a draft marked finalized locks; a server doc's is_locked locks.
+      let isLocked = !!existing?.finalized;
       if (!existing) {
         const serverLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-        const s = Array.isArray(serverLogs) && serverLogs.length > 0 ? serverLogs[0] : null;
+        const arr = Array.isArray(serverLogs) ? serverLogs : [];
+        // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+        // locked original that shares (project, type, date).
+        const s = arr.find(l => !l.is_locked) || arr[0] || null;
         if (s) {
+          isLocked = !!s.is_locked;
           existing = {
             data: s.data || {},
             cp_signature: s.cp_signature,
@@ -119,6 +129,10 @@ export default function CraneOperationsLog() {
             backend_id: s.id || s._id,
           };
         }
+      }
+      if (isLocked) {
+        setLocked(true);
+        markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
       }
       if (existing) {
         setExistingLogId(existing.backend_id || null);
@@ -261,6 +275,10 @@ export default function CraneOperationsLog() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
           {/* Date */}
           <GlassCard style={s.section}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
@@ -410,8 +428,10 @@ export default function CraneOperationsLog() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={s.buttonRow}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -428,6 +448,15 @@ export default function CraneOperationsLog() {
               style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>

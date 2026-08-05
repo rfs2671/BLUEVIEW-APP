@@ -12,6 +12,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
@@ -22,7 +23,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos } from '../../src/utils/logbookDrafts';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos, markFinalized } from '../../src/utils/logbookDrafts';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -163,6 +164,9 @@ export default function DailyJobsiteLog() {
   // sitting between the capture tap and the preview. No-op on web.
   useCameraPrewarmPermission();
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   const [projectAddress, setProjectAddress] = useState('');
   const [weather, setWeather] = useState('');
@@ -224,6 +228,11 @@ export default function DailyJobsiteLog() {
       const _draft = await readDraft(draftKey({ projectId, logType: 'daily_jobsite', date }));
       if (_draft && _draft.data && Object.keys(_draft.data).length) {
         const d = _draft.data;
+        // Tier 1 (1)b: a draft marked finalized locks the form read-only.
+        if (_draft.finalized) {
+          setLocked(true);
+          markFinalized(draftKey({ projectId, logType: 'daily_jobsite', date }));
+        }
         setExistingLogId(_draft.backend_id || null);
         if (d.project_address) setProjectAddress(d.project_address);
         if (d.weather) setWeather(d.weather);
@@ -258,7 +267,14 @@ export default function DailyJobsiteLog() {
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
 
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
+      // over a locked original that shares (project, type, date).
+      const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
+      const existing = _existingArr.find(l => !l.is_locked) || _existingArr[0] || null;
+      if (existing?.is_locked) {
+        setLocked(true);
+        markFinalized(draftKey({ projectId, logType: 'daily_jobsite', date }));
+      }
       if (existing) {
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
@@ -816,6 +832,11 @@ export default function DailyJobsiteLog() {
           onLayout={(e) => { viewportHRef.current = e.nativeEvent.layout.height; syncFabTarget(); }}
           onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; syncFabTarget(); }}
         >
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (inputs, chips, the photo
+              add/capture controls, the SignaturePad) — no per-field flags to
+              miss. Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
           {/* Date */}
           <GlassCard style={s.section}>
             <View style={s.sectionHeaderRow}>
@@ -1096,8 +1117,10 @@ export default function DailyJobsiteLog() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={s.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -1114,6 +1137,15 @@ export default function DailyJobsiteLog() {
               style={s.submitBtn}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
 
         {/* PERSISTENT CAPTURE. Take Photo lives 1000px+ down the form, inside
@@ -1126,8 +1158,9 @@ export default function DailyJobsiteLog() {
             it is aiming would create them silently. See resolveTargetActivity.
 
             Native only (MOBILE_CAPTURE) — the desktop review view is unchanged,
-            and there is no in-process camera on web to open. */}
-        {MOBILE_CAPTURE && (
+            and there is no in-process camera on web to open. Hidden when the log
+            is finalized (Tier 1 (1)b) so a locked log can't add photos. */}
+        {MOBILE_CAPTURE && !locked && (
           <View style={s.fabWrap} pointerEvents="box-none">
             <Pressable
               style={({ pressed }) => [s.fab, pressed && s.fabPressed]}

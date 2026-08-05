@@ -7,6 +7,7 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
+import LogbookLockBar from '../../src/components/LogbookLockBar';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
@@ -60,6 +61,9 @@ export default function HotWorkPermitLog() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
+  // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
+  // renders read-only and only the Amend path can change anything.
+  const [locked, setLocked] = useState(false);
 
   // Form fields
   const [workType, setWorkType] = useState('');
@@ -82,8 +86,13 @@ export default function HotWorkPermitLog() {
     try {
       const existingLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
 
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      const arr = Array.isArray(existingLogs) ? existingLogs : [];
+      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+      // locked original that shares (project, type, date).
+      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
       if (existing) {
+        // Tier 1 (1)b: a finalized server doc locks the form read-only.
+        if (existing.is_locked) setLocked(true);
         setExistingLogId(existing.id || existing._id);
         const d = existing.data || {};
         if (d.work_type) setWorkType(d.work_type);
@@ -209,6 +218,10 @@ export default function HotWorkPermitLog() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
+              makes EVERY field below non-interactive (no per-field editable flags
+              to miss). Scrolling still works; the LockBar stays interactive. */}
+          <View pointerEvents={locked ? 'none' : 'auto'}>
           {/* Date */}
           <GlassCard style={s.section}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
@@ -344,8 +357,10 @@ export default function HotWorkPermitLog() {
               onSignatureCapture={setCpSignature}
             />
           </GlassCard>
+          </View>
 
-          {/* Actions */}
+          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {!locked && (
           <View style={s.buttonRow}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -362,6 +377,15 @@ export default function HotWorkPermitLog() {
               style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
+          )}
+
+          <LogbookLockBar
+            locked={locked}
+            logId={existingLogId}
+            canFinalize={!locked && !!existingLogId}
+            onFinalized={() => setLocked(true)}
+            onAmended={fetchData}
+          />
         </ScrollView>
       </SafeAreaView>
     </AnimatedBackground>
