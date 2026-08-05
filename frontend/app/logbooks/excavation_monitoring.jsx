@@ -10,6 +10,7 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -54,14 +55,63 @@ export default function ExcavationMonitoringLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. This is
+  // what lets the CP fill with zero network and reopen to the same draft.
+  // `status` is intentionally omitted so an autosave never downgrades a
+  // submitted log back to draft. adjacentBuildings is stored raw — the
+  // save-time delta / vibration_over_threshold derivation lives in handleSave.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date }),
+        {
+          data: {
+            excavation_depth: excavationDepth,
+            soil_type: soilType,
+            adjacent_buildings: adjacentBuildings,
+            vibration_threshold: vibrationThreshold,
+            vibration_current: vibrationCurrent,
+            protection_system: protectionSystem,
+            groundwater_observed: groundwaterObserved,
+            atmospheric_testing: atmosphericTesting,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, excavationDepth, soilType, adjacentBuildings,
+    vibrationThreshold, vibrationCurrent, protectionSystem, groundwaterObserved,
+    atmosphericTesting, cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
-      const existingLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-
-      const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
+      // Phase A — local-first: read the on-device draft first. Only if there is
+      // no local copy do we hydrate once from the server (best-effort); offline
+      // that simply opens a blank log rather than erroring.
+      const key = draftKey({ projectId, logType: LOG_TYPE, date });
+      let existing = await readDraft(key);
+      if (!existing) {
+        const serverLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
+        const s = Array.isArray(serverLogs) && serverLogs.length > 0 ? serverLogs[0] : null;
+        if (s) {
+          existing = {
+            data: s.data || {},
+            cp_signature: s.cp_signature,
+            cp_name: s.cp_name,
+            status: s.status,
+            backend_id: s.id || s._id,
+          };
+        }
+      }
       if (existing) {
-        setExistingLogId(existing.id || existing._id);
+        setExistingLogId(existing.backend_id || null);
         const d = existing.data || {};
         if (d.excavation_depth) setExcavationDepth(d.excavation_depth);
         if (d.soil_type) setSoilType(d.soil_type);
@@ -110,48 +160,54 @@ export default function ExcavationMonitoringLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: LOG_TYPE, date });
+    // Compute deltas for adjacent buildings
+    const buildingsWithDelta = adjacentBuildings.map(b => ({
+      ...b,
+      delta: calcDelta(b.baseline_reading, b.current_reading),
+    }));
+    const data = {
+      excavation_depth: excavationDepth,
+      soil_type: soilType,
+      adjacent_buildings: buildingsWithDelta,
+      vibration_threshold: vibrationThreshold,
+      vibration_current: vibrationCurrent,
+      vibration_over_threshold: vibrationOverThreshold,
+      protection_system: protectionSystem,
+      groundwater_observed: groundwaterObserved,
+      atmospheric_testing: atmosphericTesting,
+    };
     try {
-      // Compute deltas for adjacent buildings
-      const buildingsWithDelta = adjacentBuildings.map(b => ({
-        ...b,
-        delta: calcDelta(b.baseline_reading, b.current_reading),
-      }));
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline CP completes the log without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
 
-      const payload = {
-        project_id: projectId,
-        log_type: LOG_TYPE,
-        date,
-        data: {
-          excavation_depth: excavationDepth,
-          soil_type: soilType,
-          adjacent_buildings: buildingsWithDelta,
-          vibration_threshold: vibrationThreshold,
-          vibration_current: vibrationCurrent,
-          vibration_over_threshold: vibrationOverThreshold,
-          protection_system: protectionSystem,
-          groundwater_observed: groundwaterObserved,
-          atmospheric_testing: atmosphericTesting,
-        },
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
-
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
+      // NOTE: a submit made offline has no server id yet, so the signature-audit
+      // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        const created = await logbooksAPI.create(payload);
-        savedId = created.id || created._id;
-        setExistingLogId(savedId);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+        } else {
+          const created = await logbooksAPI.create({
+            project_id: projectId, log_type: LOG_TYPE, date,
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      await autoSave(cpName, cpSignature).catch(() => {});
 
       if (submitStatus === 'submitted' && cpSignature && savedId) {
         recordSignatureEvent({
@@ -165,7 +221,7 @@ export default function ExcavationMonitoringLog() {
             log_type: LOG_TYPE,
             date,
             project_id: projectId,
-            data: payload.data,
+            data,
             status: submitStatus,
           },
           user,

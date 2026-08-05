@@ -16,6 +16,7 @@ import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -56,9 +57,33 @@ export default function OshaLogBook() {
     fetchData();
   }, [projectId, date]);
 
+  // Task 5 (offline): debounced autosave to the local draft on any change.
+  // `status` deliberately omitted so autosave never downgrades a submitted log.
+  useEffect(() => {
+    if (loading) return undefined;
+    const key = draftKey({ projectId, logType: 'osha_log', date });
+    const t = setTimeout(() => {
+      writeDraft(key, { data: { entries }, cp_signature: cpSignature, cp_name: cpName });
+    }, 800);
+    return () => clearTimeout(t);
+  }, [loading, projectId, date, entries, cpSignature, cpName]);
+
   const fetchData = async () => {
     setLoading(true);
+    const key = draftKey({ projectId, logType: 'osha_log', date });
     try {
+      // Task 5 (offline): a local draft wins — paint it immediately and skip the
+      // server read + check-in auto-populate so unsynced edits are never clobbered.
+      const draft = await readDraft(key);
+      if (draft) {
+        if (draft.backend_id) setExistingLogId(draft.backend_id);
+        const dd = draft.data || {};
+        if (Array.isArray(dd.entries)) setEntries(dd.entries);
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        setLoading(false);
+        return;
+      }
       const [checkins, existingLogs] = await Promise.all([
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         // Date-scoped (Task H/I): the OSHA log is per-DAY like every other
@@ -86,6 +111,23 @@ export default function OshaLogBook() {
       const checkinList = Array.isArray(checkins) ? checkins : [];
       const autoEntries = [];
       for (const c of checkinList) {
+        // Task 9: a worker turned away for missing OSHA (surfaced by the
+        // checkins-today endpoint from a CERT_BLOCK alert) — badge it, read-only.
+        if (c.blocked) {
+          autoEntries.push({
+            worker_id: c.worker_id,
+            worker_name: c.worker_name || '',
+            company: c.company || '',
+            certification_type: 'MISSING OSHA',
+            card_number: '',
+            expiration: '',
+            signed: false,
+            blocked: true,
+            blocks: c.blocks || [],
+            date: date,
+          });
+          continue;
+        }
         // One row per certification per worker
         const certs = c.certifications || [];
         if (certs.length > 0) {
@@ -144,17 +186,31 @@ export default function OshaLogBook() {
         status: submitStatus,
       };
 
+      const key = draftKey({ projectId, logType: 'osha_log', date });
+      // Task 5 (offline): write the local draft FIRST, then best-effort push so a
+      // failed/absent network keeps the CP's entries instead of losing them.
+      await writeDraft(key, { data: payload.data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
+
       let created = null;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        created = await logbooksAPI.create(payload);
-        setExistingLogId(created.id || created._id);
+      let savedId = existingLogId;
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data: payload.data,
+            cp_signature: cpSignature,
+            cp_name: cpName,
+            status: submitStatus,
+          });
+        } else {
+          created = await logbooksAPI.create(payload);
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        if (savedId) setDraftBackendId(key, savedId);
+        clearPending(key);
+      } catch (pushErr) {
+        markPending(key);
+        console.warn('OSHA log deferred push (kept local draft):', pushErr?.message);
       }
 
       await autoSave(cpName, cpSignature);
@@ -245,6 +301,13 @@ export default function OshaLogBook() {
 
             {entries.map((entry, index) => (
               <View key={index} style={styles.entryBlock}>
+                {entry.blocked && (
+                  <View style={styles.deniedBadge}>
+                    <Text style={styles.deniedText}>
+                      ⛔ DENIED — MISSING OSHA (turned away at gate, not admitted)
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.entryRow}>
                   <TextInput
                     style={[styles.entryInput, { flex: 2 }]}
@@ -434,6 +497,17 @@ function buildStyles(colors, isDark) {
     letterSpacing: 0.5,
   },
   entryBlock: { marginBottom: spacing.sm },
+  // Task 9: badge for a worker turned away at the gate for missing OSHA.
+  deniedBadge: {
+    backgroundColor: withAlpha('#ef4444', 0.15),
+    borderColor: withAlpha('#ef4444', 0.4),
+    borderWidth: 1,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    marginBottom: 4,
+  },
+  deniedText: { color: '#ef4444', fontSize: 12, fontWeight: '700' },
   entryRow: { flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.xs },
   entryInput: {
     fontSize: 13,

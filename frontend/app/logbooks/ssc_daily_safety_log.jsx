@@ -10,6 +10,7 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -58,9 +59,76 @@ export default function SSCDailySafetyLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. The cp
+  // fields come from this logbook's LOCAL state (never a profile cache), and
+  // `status` is intentionally omitted so an autosave never downgrades a
+  // submitted log back to draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date }),
+        {
+          data: {
+            project_address: projectAddress,
+            ssp_number: sspNumber,
+            weather,
+            site_conditions: siteConditions,
+            safety_violations_observed: safetyViolations,
+            corrective_actions_taken: correctiveActions,
+            incidents_reported: incidentsReported,
+            incident_details: incidentDetails,
+            workers_on_site_count: workersOnSiteCount,
+            safety_meetings_held: safetyMeetingsHeld,
+            fire_protection_in_place: fireProtectionInPlace,
+            housekeeping_satisfactory: housekeepingSatisfactory,
+            ppe_compliance: ppeCompliance,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, projectAddress, sspNumber, weather, siteConditions,
+    safetyViolations, correctiveActions, incidentsReported, incidentDetails,
+    workersOnSiteCount, safetyMeetingsHeld, fireProtectionInPlace,
+    housekeepingSatisfactory, ppeCompliance, cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Phase A — local-first: read the on-device draft before touching the
+      // network. If one exists we hydrate purely from it (project prefill is
+      // skipped) so an offline SSC/SSM reopens to the same in-progress log.
+      const key = draftKey({ projectId, logType: LOG_TYPE, date });
+      const draft = await readDraft(key);
+      if (draft) {
+        setExistingLogId(draft.backend_id);
+        const d = draft.data || {};
+        if (d.project_address) setProjectAddress(d.project_address);
+        if (d.ssp_number) setSspNumber(d.ssp_number);
+        if (d.weather) setWeather(d.weather);
+        if (d.site_conditions) setSiteConditions(d.site_conditions);
+        if (d.safety_violations_observed) setSafetyViolations(d.safety_violations_observed);
+        if (d.corrective_actions_taken) setCorrectiveActions(d.corrective_actions_taken);
+        if (d.incidents_reported != null) setIncidentsReported(d.incidents_reported);
+        if (d.incident_details) setIncidentDetails(d.incident_details);
+        if (d.workers_on_site_count) setWorkersOnSiteCount(d.workers_on_site_count);
+        if (d.safety_meetings_held != null) setSafetyMeetingsHeld(d.safety_meetings_held);
+        if (d.fire_protection_in_place != null) setFireProtectionInPlace(d.fire_protection_in_place);
+        if (d.housekeeping_satisfactory != null) setHousekeepingSatisfactory(d.housekeeping_satisfactory);
+        if (d.ppe_compliance != null) setPpeCompliance(d.ppe_compliance);
+        // Seed the local cp state from the per-log draft only (never a profile cache).
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        setLoading(false);
+        return;
+      }
+
       const [projectData, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []),
@@ -99,43 +167,58 @@ export default function SSCDailySafetyLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: LOG_TYPE, date });
     try {
+      const data = {
+        project_address: projectAddress,
+        ssp_number: sspNumber,
+        weather,
+        site_conditions: siteConditions,
+        safety_violations_observed: safetyViolations,
+        corrective_actions_taken: correctiveActions,
+        incidents_reported: incidentsReported,
+        incident_details: incidentDetails,
+        workers_on_site_count: workersOnSiteCount,
+        safety_meetings_held: safetyMeetingsHeld,
+        fire_protection_in_place: fireProtectionInPlace,
+        housekeeping_satisfactory: housekeepingSatisfactory,
+        ppe_compliance: ppeCompliance,
+      };
       const payload = {
         project_id: projectId,
         log_type: LOG_TYPE,
         date,
-        data: {
-          project_address: projectAddress,
-          ssp_number: sspNumber,
-          weather,
-          site_conditions: siteConditions,
-          safety_violations_observed: safetyViolations,
-          corrective_actions_taken: correctiveActions,
-          incidents_reported: incidentsReported,
-          incident_details: incidentDetails,
-          workers_on_site_count: workersOnSiteCount,
-          safety_meetings_held: safetyMeetingsHeld,
-          fire_protection_in_place: fireProtectionInPlace,
-          housekeeping_satisfactory: housekeepingSatisfactory,
-          ppe_compliance: ppeCompliance,
-        },
+        data,
         cp_signature: cpSignature,
         cp_name: cpName,
         status: submitStatus,
       };
 
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline SSC/SSM completes the log without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
+
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
       let savedId = existingLogId;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        const created = await logbooksAPI.create(payload);
-        savedId = created.id || created._id;
-        setExistingLogId(savedId);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data: payload.data,
+            cp_signature: cpSignature,
+            cp_name: cpName,
+            status: submitStatus,
+          });
+        } else {
+          const created = await logbooksAPI.create(payload);
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
       if (submitStatus === 'submitted' && cpSignature && savedId) {

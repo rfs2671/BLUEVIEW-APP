@@ -15,6 +15,7 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -87,9 +88,45 @@ export default function ScaffoldMaintenanceLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. This is
+  // what lets the CP fill with zero network and reopen to the same draft.
+  // `status` is intentionally omitted so an autosave never downgrades a
+  // submitted log back to draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: 'scaffold_maintenance', date }),
+        {
+          data: { general_info: generalInfo, answers },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [loading, projectId, date, generalInfo, answers, cpSignature, cpName]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Phase A — local-first: read the on-device draft first. A local draft
+      // wins over both the project-memory prefill and the server copy, so an
+      // offline CP reopens to exactly what they filled.
+      const key = draftKey({ projectId, logType: 'scaffold_maintenance', date });
+      const draft = await readDraft(key);
+      if (draft) {
+        setExistingLogId(draft.backend_id);
+        const d = draft.data || {};
+        if (d.general_info) setGeneralInfo(d.general_info);
+        if (d.answers) setAnswers(d.answers);
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        setLoading(false);
+        return;
+      }
+
       const [scaffoldInfo, existingLogs] = await Promise.all([
         logbooksAPI.getScaffoldInfo(projectId).catch(() => ({})),
         logbooksAPI.getByProject(projectId, 'scaffold_maintenance', date).catch(() => []),
@@ -136,15 +173,21 @@ export default function ScaffoldMaintenanceLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: 'scaffold_maintenance', date });
+    const data = { general_info: generalInfo, answers };
     try {
       // Save scaffold info to project memory
       await logbooksAPI.saveScaffoldInfo(projectId, generalInfo).catch(() => {});
+
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline CP completes the log without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
 
       const payload = {
         project_id: projectId,
         log_type: 'scaffold_maintenance',
         date: date,
-        data: { general_info: generalInfo, answers },
+        data,
         cp_signature: cpSignature,
         cp_name: cpName,
         status: submitStatus,
@@ -156,16 +199,26 @@ export default function ScaffoldMaintenanceLog() {
       // written but the client errored, so recordSignatureEvent never fired and
       // the CP was trained to press Submit twice. Hoisting fixes both.
       let created = null;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        created = await logbooksAPI.create(payload);
-        setExistingLogId(created.id || created._id);
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data: payload.data,
+            cp_signature: cpSignature,
+            cp_name: cpName,
+            status: submitStatus,
+          });
+          await setDraftBackendId(key, existingLogId);
+        } else {
+          created = await logbooksAPI.create(payload);
+          setExistingLogId(created.id || created._id);
+          await setDraftBackendId(key, created.id || created._id);
+        }
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
       await autoSave(cpName, cpSignature);

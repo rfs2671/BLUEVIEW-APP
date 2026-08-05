@@ -14,6 +14,7 @@ import SignaturePad from '../../src/components/SignaturePad';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -89,9 +90,61 @@ export default function ToolboxTalkLog() {
     }
   }, [cpName]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. This is
+  // what lets the CP fill with zero network and reopen to the same draft.
+  // `status` is intentionally omitted so an autosave never downgrades a
+  // submitted log back to draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: 'toolbox_talk', date }),
+        {
+          data: {
+            location,
+            company_name: companyName,
+            type_of_work: typeOfWork,
+            meeting_time: meetingTime,
+            performed_by: performedBy,
+            checked_topics: checkedTopics,
+            attendees,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, location, companyName, typeOfWork, meetingTime,
+    performedBy, checkedTopics, attendees, cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
+      // Phase A — local-first: read the on-device draft first. If a local copy
+      // exists, hydrate from it and skip the server fetch + check-in
+      // auto-populate entirely (works fully offline).
+      const key = draftKey({ projectId, logType: 'toolbox_talk', date });
+      const draft = await readDraft(key);
+      if (draft) {
+        setExistingLogId(draft.backend_id);
+        const d = draft.data || {};
+        if (d.location) setLocation(d.location);
+        if (d.company_name) setCompanyName(d.company_name);
+        if (d.type_of_work) setTypeOfWork(d.type_of_work);
+        if (d.meeting_time) setMeetingTime(d.meeting_time);
+        if (d.performed_by) setPerformedBy(d.performed_by);
+        if (d.checked_topics) setCheckedTopics(d.checked_topics);
+        if (d.attendees && d.attendees.length > 0) setAttendees(d.attendees);
+        if (draft.cp_signature) setCpSignature(draft.cp_signature);
+        if (draft.cp_name) setCpName(draft.cp_name);
+        setLoading(false);
+        return;
+      }
+
       const [projectData, checkins, existingLogs] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
@@ -171,57 +224,57 @@ export default function ToolboxTalkLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: 'toolbox_talk', date });
+    const data = {
+      location,
+      company_name: companyName,
+      type_of_work: typeOfWork,
+      meeting_time: meetingTime,
+      performed_by: performedBy,
+      checked_topics: checkedTopics,
+      attendees,
+    };
     try {
-      const payload = {
-        project_id: projectId,
-        log_type: 'toolbox_talk',
-        date,
-        data: {
-          location,
-          company_name: companyName,
-          type_of_work: typeOfWork,
-          meeting_time: meetingTime,
-          performed_by: performedBy,
-          checked_topics: checkedTopics,
-          attendees,
-        },
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline CP completes the log without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
 
-      // FIX (PR F): `created` MUST be declared OUTSIDE the else. Referencing it
-      // at `docId = existingLogId || created?.id` below (a different block)
-      // threw ReferenceError on the FIRST submit of a new log — the record was
-      // written but the client errored, so recordSignatureEvent never fired and
-      // the CP was trained to press Submit twice. Hoisting fixes both.
-      let created = null;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        created = await logbooksAPI.create(payload);
-        setExistingLogId(created.id || created._id);
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
+      // NOTE: a submit made offline has no server id yet, so the signature-audit
+      // record below is skipped until the draft syncs (a Phase B reconcile item).
+      let savedId = existingLogId;
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+        } else {
+          const created = await logbooksAPI.create({
+            project_id: projectId, log_type: 'toolbox_talk', date,
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      await autoSave(cpName, cpSignature).catch(() => {});
 
-      if (submitStatus === 'submitted' && cpSignature) {
-        const docId = existingLogId || created?.id || created?._id;
-        if (docId) {
-          const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
-          recordSignatureEvent({
-            documentType: 'logbook', documentId: docId, eventType: 'cp_sign',
-            signerName: cpName, signerRole: user?.role || 'cp',
-            signatureData: cpSignature,
-            contentSnapshot: { log_type: 'toolbox_talk', date, project_id: projectId, data: payload.data, status: submitStatus },
-            user,
-          }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
-        }
+      if (submitStatus === 'submitted' && cpSignature && savedId) {
+        const { recordSignatureEvent } = require('../../src/utils/signatureAudit');
+        recordSignatureEvent({
+          documentType: 'logbook', documentId: savedId, eventType: 'cp_sign',
+          signerName: cpName, signerRole: user?.role || 'cp',
+          signatureData: cpSignature,
+          contentSnapshot: { log_type: 'toolbox_talk', date, project_id: projectId, data, status: submitStatus },
+          user,
+        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
 
       toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'Tool Box Talk saved');
