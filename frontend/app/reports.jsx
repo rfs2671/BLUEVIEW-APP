@@ -417,20 +417,20 @@ export default function ReportsScreen() {
                     <>
                       {/* Summary Cards */}
                       <View style={s.summaryRow}>
-                        <GlassCard style={s.summaryCard}>
+                        <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <Users size={18} strokeWidth={1.5} color="#3b82f6" />
                           <Text style={s.summaryValue}>{preview.checkin_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1}>Workers</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Workers</Text>
                         </GlassCard>
-                        <GlassCard style={s.summaryCard}>
+                        <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <ClipboardList size={18} strokeWidth={1.5} color="#8b5cf6" />
                           <Text style={s.summaryValue}>{preview.logbooks?.length || 0}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1}>Logbooks</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Logbooks</Text>
                         </GlassCard>
-                        <GlassCard style={s.summaryCard}>
+                        <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <Building2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                           <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1}>Subs</Text>
+                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Subs</Text>
                         </GlassCard>
                       </View>
 
@@ -747,8 +747,14 @@ function buildStyles(colors, isDark) {
     },
     summaryCard: {
       flex: 1,
+    },
+    // Task C: GlassCard's default cardContent padding is spacing.xl (32) per
+    // side; stacked on a ~100px-wide card that left ~7px for the label, clipping
+    // "Workers" to "w…". Override to a compact inset so the full label fits (with
+    // adjustsFontSizeToFit as a belt-and-suspenders on the narrowest devices).
+    summaryCardContent: {
       alignItems: 'center',
-      padding: spacing.md,
+      padding: spacing.sm,
       gap: spacing.xs,
     },
     summaryValue: {

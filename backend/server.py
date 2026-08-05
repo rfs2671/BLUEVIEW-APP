@@ -14133,7 +14133,10 @@ async def get_cp_profile(current_user = Depends(get_current_user)):
                 "has_signature": False,
             }
         return {
-            "cp_name": user.get("cp_name") or user.get("name"),
+            # Task B: prefer the canonical full_name (set in user management) over
+            # the short `name` so reports read "Conducted By: Michael Smith", not
+            # "michael". `cp_name` (a hand-typed CP name) still wins if present.
+            "cp_name": user.get("cp_name") or user.get("full_name") or user.get("name"),
             "cp_title": user.get("cp_title", "Competent Person"),
             "cp_signature": user.get("cp_signature"),
             "has_signature": bool(user.get("cp_signature")),
@@ -14340,7 +14343,8 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "cp_name": data.cp_name,
         "status": data.status,
         "created_by": current_user.get("id"),
-        "created_by_name": current_user.get("name"),
+        # Task B (sibling): same full_name-first preference for the stored author.
+        "created_by_name": current_user.get("full_name") or current_user.get("name"),
         "created_at": now,
         "updated_at": now,
         "is_deleted": False,

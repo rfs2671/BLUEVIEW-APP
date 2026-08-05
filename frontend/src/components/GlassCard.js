@@ -47,6 +47,7 @@ const LIGHT_GRADIENT = [
 export const GlassCard = ({
   children,
   style,
+  contentStyle,
   onPress,
   intensity = 20,
   hoverEffect = true,
@@ -110,8 +111,9 @@ export const GlassCard = ({
           ]}
         />
       )}
-      {/* Layer 3: content */}
-      <View style={styles.cardContent}>{children}</View>
+      {/* Layer 3: content. `contentStyle` (optional) overrides the default
+          padding — e.g. narrow summary bubbles that can't afford 32px insets. */}
+      <View style={[styles.cardContent, contentStyle]}>{children}</View>
       {/* Layer 4: border overlay — dark only */}
       {isDark && (
         <View
