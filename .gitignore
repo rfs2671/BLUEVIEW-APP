@@ -39,6 +39,13 @@ cloudflared/credentials.json
 # Local harness state (Claude Code scheduled tasks)
 .claude/scheduled_tasks.lock
 
+# Hard-delete exports (worker PII + inline base64 card image/selfie — NEVER commit)
+backend/scripts/_deleted_exports/
+
+# Local-only working dirs — public repo, NEVER commit (worker photos + agent worktrees)
+temp_photos/
+.claude/worktrees/
+
 # System files
 .DS_Store
 Thumbs.db

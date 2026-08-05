@@ -43,6 +43,7 @@ import { useTheme } from '../../src/context/ThemeContext';
 // ── FIX #3: Import AddressAutocomplete ──
 import AddressAutocomplete from '../../src/components/AddressAutocomplete';
 import HeaderBrand from '../../src/components/HeaderBrand';
+import BuildMarker from '../../src/components/BuildMarker';
 // Phase 1 Week 11-12 PR-B — Defcon dot color mapping (NORMAL hidden).
 import { tierToTheme } from '../../src/utils/defconHelpers';
 // PR #52 — shared text-overflow helpers (no mid-word breaks).
@@ -203,6 +204,18 @@ export default function ProjectsScreen() {
             <Text style={s.titleText}>Projects</Text>
           </View>
 
+          {/* TEMP OFFLINE DIAGNOSTIC — remove after root cause found.
+              Reads the LIVE render inputs so the device tells us the truth:
+              • state=2 filtered=2 but no cards  → render bug
+              • state=0 (or filtered=0)          → a path cleared the list
+              • auth=false                       → the redirect (73-77) fired */}
+          <Text
+            selectable
+            style={{ fontSize: 11, color: '#f59e0b', textAlign: 'center', marginBottom: 8 }}
+          >
+            DIAG state:{projects.length} filtered:{filteredProjects.length} loading:{String(loading)} auth:{String(isAuthenticated)}/{String(authLoading)}
+          </Text>
+
           {/* Search & Add */}
           <View style={s.searchRow}>
             <View style={s.searchContainer}>
@@ -345,6 +358,9 @@ export default function ProjectsScreen() {
               </View>
             )}
           </View>
+
+          {/* Running-bundle self-report — proves which JS is live. */}
+          <BuildMarker />
         </ScrollView>
 
         <FloatingNav />

@@ -60,6 +60,10 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const [backLens, setBackLens] = useState('ultra'); // 'ultra' | 'wide' — default ultra-wide
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
+  // TEMP camera-speed diagnostic — remove after the bottleneck is found. Shows the
+  // sensor-read time (takePhoto) and the total in-modal time on-screen, so we
+  // MEASURE where the 3-5s goes instead of guessing at the format again.
+  const [captureTiming, setCaptureTiming] = useState(null);
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
   // TEMP (item 6): guards the one-time capability dump below.
@@ -203,10 +207,19 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const handleShutter = useCallback(async () => {
     if (!camera.current || capturing) return;
     setCapturing(true);
+    const t0 = Date.now();
     try {
       const photo = await camera.current.takePhoto({ flash: 'off', qualityPrioritization: 'speed' });
+      const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       onCapture(srcUri);
+      const tHandoff = Date.now();
+      // takePhoto = pure sensor read (unmovable); handoff = everything else in the
+      // modal. If takePhoto is the 3-5s, it's format/sensor; if it's <1s the delay
+      // lives in the CALLER's compression/thumbnail path, not here.
+      const timing = { take: tShot - t0, handoff: tHandoff - tShot, total: tHandoff - t0 };
+      console.log('[CAM] takePhoto=%dms handoff=%dms total=%dms', timing.take, timing.handoff, timing.total);
+      setCaptureTiming(timing);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
     } finally {
@@ -260,6 +273,13 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
           if (uwIsDistinct && backLens === 'ultra') setBackLens('wide');
         }}
       />
+      {captureTiming && (
+        <View pointerEvents="none" style={styles.timingBadge}>
+          <Text style={styles.timingText}>
+            takePhoto {captureTiming.take}ms · handoff {captureTiming.handoff}ms · total {captureTiming.total}ms
+          </Text>
+        </View>
+      )}
       <CameraOverlay
         shots={shots}
         capturing={capturing}
@@ -340,6 +360,12 @@ export default function CameraCaptureModal({ visible, shots, onClose, onCapture,
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  // TEMP camera-speed diagnostic overlay (top-center). Remove with the timing state.
+  timingBadge: {
+    position: 'absolute', top: 48, alignSelf: 'center', zIndex: 200, elevation: 200,
+    backgroundColor: 'rgba(0,0,0,0.7)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+  },
+  timingText: { color: '#f59e0b', fontSize: 12, fontWeight: '600' },
   // elevation only when shown: an elevated-but-invisible view still casts a
   // shadow on Android.
   overlayShown: { opacity: 1, zIndex: 100, elevation: 100 },
