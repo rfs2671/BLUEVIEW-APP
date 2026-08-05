@@ -14899,6 +14899,52 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "source": "legacy_checkin",
         })
 
+    # ── PASS 3 (Task 9): workers TURNED AWAY for missing OSHA today ──────
+    # A gate block writes a CERT_BLOCK compliance_alert but NO checkins row
+    # (register_and_checkin returns before the insert), so without this they are
+    # invisible on the OSHA log — the very log meant to prove who lacked OSHA.
+    # Surface them BADGED (blocked=true / cert_cleared=false) and read-only.
+    # Sourced from compliance_alerts, NOT checkins, so these rows can never count
+    # toward any "checked_in" headcount — they don't exist in the checkins
+    # collection at all. Deduped against Pass 1/2 by (name, company): a worker who
+    # was blocked then cleared shows only their cleared row.
+    try:
+        blocked_alerts = await db.compliance_alerts.find({
+            "alert_type": "CERT_BLOCK",
+            "project_id": project_id,
+            "created_at": {"$gte": day_start, "$lt": day_end},
+        }).to_list(500)
+    except Exception:
+        blocked_alerts = []
+    seen_blocked_wids: set = set()
+    for a in blocked_alerts:
+        wid = a.get("worker_id")
+        if wid and wid in seen_blocked_wids:
+            continue
+        if wid:
+            seen_blocked_wids.add(wid)
+        name = (a.get("worker_name") or "").strip()
+        company = (a.get("worker_company") or "").strip()
+        name_key = (name.lower(), company.lower())
+        if name_key in seen_name_keys:
+            continue  # already cleared/represented today — never double-list
+        seen_name_keys.add(name_key)
+        result.append({
+            "worker_id": wid,
+            "worker_name": name or "Unknown",
+            "company": company,
+            "trade": "",
+            "check_in_time": a.get("created_at").isoformat() if isinstance(a.get("created_at"), datetime) else str(a.get("created_at", "")),
+            "osha_number": "",
+            "certifications": [],
+            "worker_signature": None,
+            "signin_id": None,
+            "source": "cert_block",
+            "blocked": True,
+            "cert_cleared": False,
+            "blocks": [b.get("type") for b in (a.get("blocks") or []) if isinstance(b, dict)],
+        })
+
     return result
 
 
