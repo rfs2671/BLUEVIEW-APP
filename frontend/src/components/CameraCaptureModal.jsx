@@ -226,33 +226,38 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     if (!camera.current || capturing) return;
     setCapturing(true);
     const t0 = Date.now();
-    // Logged BEFORE takePhoto because a hanging capture never reaches the timing
-    // badge — this line is the only record of WHICH device + format the stuck
-    // capture used. photo=WxH is the still resolution useCameraFormat chose.
-    console.log('[CAM] shutter device=%s pos=%s lens=%s fmt=%sx%s fps=%s',
-      device?.id, position, backLens, format?.photoWidth, format?.photoHeight, fps);
+    // Logged BEFORE capture because a hanging capture never reaches the timing
+    // badge — this line is the only record of WHICH device/lens the capture used.
+    console.log('[CAM] shutter device=%s pos=%s lens=%s', device?.id, position, backLens);
     try {
-      // v4 TakePhotoOptions is small: flash + enableShutterSound are the only
-      // Android-relevant knobs (qualityPrioritization/skipMetadata/enableAuto
-      // Stabilization were removed — speed now lives on the photoQualityBalance
-      // PROP above). Shutter sound off shaves the system click's tail.
-      const photo = await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
+      // SPEED (the real fix): `takePhoto` is CameraX ImageCapture — sensor read +
+      // autofocus/AE convergence + full JPEG encode — inherently ~3s on Android,
+      // and NO js option moved it (we peeled video criteria, photoQualityBalance,
+      // and the whole format). `takeSnapshot` on Android is a GPU screenshot of
+      // the PREVIEW view: no sensor round-trip, no AF wait, no full-res encode →
+      // tens of ms. It also bypasses the ImageCapture pipeline that FAILS on
+      // ultra-wide, so ultra-wide captures too. A jobsite photo is downscaled to
+      // ~1280px anyway, so preview-resolution is plenty.
+      //
+      // iOS keeps takePhoto: iOS takeSnapshot needs `video` enabled (a frame from
+      // the video pipeline), which this photo-only session does not run.
+      const photo = Platform.OS === 'android'
+        ? await camera.current.takeSnapshot({ quality: 90 })
+        : await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       onCapture(srcUri);
       const tHandoff = Date.now();
-      // takePhoto = pure sensor read (unmovable); handoff = everything else in the
-      // modal. If takePhoto is the 3-5s, it's format/sensor; if it's <1s the delay
-      // lives in the CALLER's compression/thumbnail path, not here.
+      // take = the native capture call; handoff = everything else in the modal.
       const timing = { take: tShot - t0, handoff: tHandoff - tShot, total: tHandoff - t0 };
-      console.log('[CAM] takePhoto=%dms handoff=%dms total=%dms', timing.take, timing.handoff, timing.total);
+      console.log('[CAM] capture=%dms handoff=%dms total=%dms', timing.take, timing.handoff, timing.total);
       setCaptureTiming(timing);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
     } finally {
       setCapturing(false);
     }
-  }, [capturing, onCapture, device, position, backLens, format, fps]);
+  }, [capturing, onCapture, device, position, backLens]);
 
   if (!hasPermission) {
     return (
@@ -309,7 +314,7 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
       {captureTiming && (
         <View pointerEvents="none" style={styles.timingBadge}>
           <Text style={styles.timingText}>
-            takePhoto {captureTiming.take}ms · handoff {captureTiming.handoff}ms · total {captureTiming.total}ms
+            capture {captureTiming.take}ms · handoff {captureTiming.handoff}ms · total {captureTiming.total}ms
           </Text>
         </View>
       )}
