@@ -9556,8 +9556,17 @@ async def register_and_checkin(data: dict):
     # and the certs were rebuilt from OCR on every single check-in. Copying the
     # list makes the comparison real so the certs actually persist.
     existing_certs = list(worker.get("certifications") or [])
+    # Task E (valid returning worker falsely blocked): the returning-worker quick
+    # check-in path sends NO card evidence (no osha_data / osha_card_image, often
+    # no osha_number), so a worker who proved OSHA on a prior visit would resolve
+    # to no cert → has_osha False → MISSING_OSHA block. Fall back to the worker's
+    # ON-FILE evidence so their prior proof counts. This does NOT admit a worker
+    # with no evidence anywhere (stored or submitted) — that still blocks. It is
+    # independent of the company/roster logic (Task D), so it can't weaken D.
+    effective_osha_number = osha_number or worker.get("osha_number")
+    effective_osha_card_image = osha_card_image or worker.get("osha_card_image")
     worker_certs, sst_expiration_unparseable = build_worker_certifications(
-        existing_certs, osha_data, osha_number, osha_card_image, now
+        existing_certs, osha_data, effective_osha_number, effective_osha_card_image, now
     )
     if worker_certs != existing_certs:
         await db.workers.update_one(

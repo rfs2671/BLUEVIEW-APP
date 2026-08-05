@@ -901,16 +901,36 @@ function showScreen(id) {
 function showLoading(msg) {
   document.getElementById('loadingMsg').textContent = msg || t('loadingDefault');
   document.getElementById('loadingOverlay').classList.remove('hidden');
+  // Starting a new operation clears any stale (incl. persistent) error so a
+  // retry doesn't stack messages.
+  document.getElementById('errorToast').style.display = 'none';
 }
 function hideLoading() {
   document.getElementById('loadingOverlay').classList.add('hidden');
 }
 
-function showError(msg) {
+let _errorToastTimer = null;
+// persistent=true keeps the message on screen until the next action. Submit
+// failures use it: the old 4s auto-hide made a failed check-in look like a
+// SILENT reset — the worker, seeing nothing, re-tapped the NFC tag, which reloads
+// the page to the phone screen (the "loop"). A message that stays put — telling
+// them WHY and to retry without re-scanning — breaks that loop.
+function showError(msg, persistent) {
   const el = document.getElementById('errorToast');
   el.textContent = msg;
   el.style.display = 'block';
-  setTimeout(() => el.style.display = 'none', 4000);
+  if (_errorToastTimer) { clearTimeout(_errorToastTimer); _errorToastTimer = null; }
+  if (!persistent) {
+    _errorToastTimer = setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+}
+
+// Bilingual "your check-in failed, retry — don't re-scan" hint appended to submit
+// errors so the worker never silently loops back to the start.
+function submitFailureHint() {
+  return currentLang === 'es'
+    ? ' — Tu registro no se completó. Corrige el problema mostrado y vuelve a intentarlo — NO vuelvas a escanear la etiqueta.'
+    : ' — Your check-in did not go through. Fix the issue shown and try again — do NOT re-scan the tag.';
 }
 
 // ==================== PHONE LOOKUP ====================
@@ -1038,7 +1058,9 @@ async function quickCheckIn() {
     showSuccess(res);
   } catch (e) {
     hideLoading();
-    showError(translateApiError(e));
+    // Persistent (not a 4s toast): a vanishing error is what made a failed
+    // check-in look silent and drove the worker to re-scan → phone-screen loop.
+    showError(translateApiError(e) + submitFailureHint(), true);
   }
 }
 
@@ -1469,7 +1491,9 @@ async function submitRegistration() {
     showSuccess(res);
   } catch (e) {
     hideLoading();
-    showError(translateApiError(e));
+    // Persistent (not a 4s toast): a vanishing error is what made a failed
+    // check-in look silent and drove the worker to re-scan → phone-screen loop.
+    showError(translateApiError(e) + submitFailureHint(), true);
   }
 }
 

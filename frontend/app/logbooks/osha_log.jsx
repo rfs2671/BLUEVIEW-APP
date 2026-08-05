@@ -61,8 +61,14 @@ export default function OshaLogBook() {
     try {
       const [checkins, existingLogs] = await Promise.all([
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
-        // OSHA log is ongoing — get all entries for project (no date filter)
-        logbooksAPI.getByProject(projectId, 'osha_log').catch(() => []),
+        // Date-scoped (Task H/I): the OSHA log is per-DAY like every other
+        // logbook. Fetching with no date returned the most-recent prior-day doc,
+        // so on day 2+ the early-return below loaded old entries (skipping today's
+        // check-in auto-populate — Task H) AND submit finalized that old-dated doc
+        // while the dashboard reads only today's (showing "pending" — Task I).
+        // Passing `date` makes `existing` today's doc or null → auto-populate runs
+        // on a fresh day, and submit lands on the doc the dashboard queries.
+        logbooksAPI.getByProject(projectId, 'osha_log', date).catch(() => []),
       ]);
       const existing = Array.isArray(existingLogs) && existingLogs.length > 0 ? existingLogs[0] : null;
       if (existing) {
