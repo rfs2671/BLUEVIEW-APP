@@ -3,7 +3,7 @@ import {
   AppState, BackHandler, View, Text, Pressable, StyleSheet, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Camera, useCameraDevice, useCameraFormat, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 import CameraOverlay from './CameraOverlay';
 
@@ -99,17 +99,15 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // sorts the device's formats by closeness to each criterion in turn, so an
   // older/weaker device (iPhone 6s, midrange Android) that can't satisfy a
   // criterion silently falls back to its nearest match instead of failing.
-  const format = useCameraFormat(device, [
-    // SPEED (measured): rear capture was ~3s even after ultra->wide. The two
-    // criteria below were VIDEO constraints — `cinematic-extended` stabilization
-    // and `fps: 60` steer useCameraFormat toward a video-optimized format whose
-    // STILL path is slow. A jobsite compliance photo needs neither: it's a single
-    // frame, downscaled to ~1280px by compressUnderCap anyway. Relaxing to a
-    // photo-first, single criterion lets the device pick its fast still format.
-    // One variable changed vs the last build (dropped the two video criteria) so
-    // the re-measured takePhoto ms attributes cleanly to this.
-    { photoResolution: { width: 1920, height: 1080 } }, // moderate ~2MP still -> fast capture
-  ]);
+  // SPEED (measured variable, this round): photoQualityBalance:'speed' did NOT
+  // move the ~3s takePhoto, so the last remaining format constraint —
+  // `photoResolution: 1920x1080` — is the next single variable to peel. Targeting
+  // a specific still size can force useCameraFormat onto a format whose capture
+  // needs a downscale/re-encode. Passing NO format lets vision-camera use the
+  // device's own default still format (its native-fast path). `format` is then
+  // undefined; fps falls back to undefined (Camera default) and the [CAM] log
+  // just prints undefined dims — both harmless. Re-measure takePhoto after this.
+  const format = undefined;
 
   // Shutter-speed FLOOR: stream at up to 60fps so each frame's exposure time is
   // capped near 1/60s — enough to freeze a hand-held site photo. Clamped to the
@@ -166,19 +164,17 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   }, [device]);
   // ─── END TEMP (item 6) ────────────────────────────────────────────────────
 
-  // LENS DEFAULT (item 1): open at the widest lens that CAPTURES reliably.
-  //   • uwViaZoom  → ultra-wide is a zoom level (<1×) on the MAIN back device, so
-  //     0.5× shares the same fast sensor/pipeline as 1× (measured 2946ms). Safe
-  //     to open at ultra-wide: set backLens 'ultra' and the framing effect below
-  //     zooms to minZoom.
-  //   • uwIsDistinct → the ultra-wide is a SEPARATE physical device whose
-  //     takePhoto measured a 60s+ hang. NEVER auto-select it; stay on the wide
-  //     (main) device at 1×. On these phones widest-that-captures genuinely IS 1×.
-  // Runs once devices resolve. If a phone has no ultra-wide at all, both are
-  // false and 'wide' is correct.
-  useEffect(() => {
-    setBackLens(uwViaZoom ? 'ultra' : 'wide');
-  }, [uwViaZoom, uwIsDistinct]);
+  // LENS DEFAULT (item 1 — REVERTED): the "open at widest" effect defaulted this
+  // device to ultra-wide, and ultra-wide takePhoto is BROKEN here (won't capture)
+  // even with photoQualityBalance:'speed' — the same failure ultra-wide had
+  // before. Measured verdict: on this device the widest lens that actually
+  // CAPTURES is the WIDE (1×) lens, so the default stays 'wide' (useState above).
+  // A wider VIEW, if ever wanted, comes from zooming OUT on the wide lens — never
+  // by auto-switching to the ultra-wide sensor that can't take a photo. The
+  // [CAM] shutter log (before takePhoto) records the device+lens+format attempted,
+  // and the `vision-camera capture failed:` warn in the catch records the error —
+  // together they show WHY ultra-wide fails, but the fix is: default to the lens
+  // that works.
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
