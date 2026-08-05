@@ -103,6 +103,20 @@ export default function CameraOverlay({
               ) : (
                 <Image source={{ uri: shot.uri }} style={styles.shotImg} />
               )}
+              {/* Item 3: delete straight from the thumbnail — a nested Pressable
+                  captures the touch so the tile's open-preview onPress doesn't
+                  also fire. Hidden while pending (no id / nothing to drop yet). */}
+              {!shot.pending && shot.id != null && (
+                <Pressable
+                  style={styles.shotDelete}
+                  hitSlop={8}
+                  onPress={() => onDeleteShot?.(shot.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Delete photo"
+                >
+                  <X size={12} strokeWidth={3} color="#fff" />
+                </Pressable>
+              )}
             </Pressable>
           ))}
           {hidden > 0 && (
@@ -197,30 +211,11 @@ export default function CameraOverlay({
             resizeMode="contain"
           />
 
-          <View style={styles.previewTop}>
-            <Pressable
-              style={styles.iconBtn}
-              onPress={() => setPreviewIndex(null)}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Close review"
-            >
-              <X size={24} strokeWidth={2} color="#fff" />
-            </Pressable>
-            <Text style={styles.previewCount}>
-              {previewIndex + 1} / {newestFirst.length}
-            </Text>
-            <Pressable
-              style={[styles.iconBtn, styles.previewDeleteBtn]}
-              onPress={handleDeletePreview}
-              hitSlop={12}
-              accessibilityRole="button"
-              accessibilityLabel="Delete photo"
-            >
-              <Trash2 size={22} strokeWidth={2} color="#fff" />
-            </Pressable>
-          </View>
-
+          {/* Nav is rendered BEFORE the top bar so the top bar wins z-order.
+              previewNav full-screen `box-none` pass-through to a lower sibling is
+              unreliable on Android — it was eating the close/delete taps. Its
+              track now also starts BELOW the top bar (styles.previewNav.top) so
+              the two never overlap geometrically. */}
           {newestFirst.length > 1 && (
             <View style={styles.previewNav} pointerEvents="box-none">
               <Pressable
@@ -245,6 +240,32 @@ export default function CameraOverlay({
               </Pressable>
             </View>
           )}
+
+          {/* Top bar LAST → highest z-order, so close (X) + delete (trash) always
+              win the touch over the nav layer. */}
+          <View style={styles.previewTop}>
+            <Pressable
+              style={styles.iconBtn}
+              onPress={() => setPreviewIndex(null)}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Close review"
+            >
+              <X size={24} strokeWidth={2} color="#fff" />
+            </Pressable>
+            <Text style={styles.previewCount}>
+              {previewIndex + 1} / {newestFirst.length}
+            </Text>
+            <Pressable
+              style={[styles.iconBtn, styles.previewDeleteBtn]}
+              onPress={handleDeletePreview}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Delete photo"
+            >
+              <Trash2 size={22} strokeWidth={2} color="#fff" />
+            </Pressable>
+          </View>
         </View>
       )}
     </SafeAreaView>
@@ -267,6 +288,12 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   shotImg: { width: '100%', height: '100%' },
+  shotDelete: {
+    position: 'absolute', top: 2, right: 2,
+    width: 18, height: 18, borderRadius: 9,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: withAlpha('#ef4444', 0.9),
+  },
   shotPending: { width: '100%', height: '100%', alignItems: 'center', justifyContent: 'center' },
   shotMore: { backgroundColor: withAlpha('#000000', 0.6) },
   shotMoreText: { color: '#fff', fontSize: 13, fontWeight: '700' },
@@ -323,7 +350,9 @@ const styles = StyleSheet.create({
   previewCount: { color: '#fff', fontSize: 14, fontWeight: '700' },
   previewDeleteBtn: { backgroundColor: withAlpha('#ef4444', 0.85) },
   previewNav: {
-    position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+    // Starts below the top bar (X/trash live at top:0..~64) so the nav track
+    // never overlaps them — defense-in-depth alongside the render-order fix.
+    position: 'absolute', left: 0, right: 0, top: 72, bottom: 0,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     paddingHorizontal: 12,
   },

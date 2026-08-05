@@ -100,14 +100,15 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   // older/weaker device (iPhone 6s, midrange Android) that can't satisfy a
   // criterion silently falls back to its nearest match instead of failing.
   const format = useCameraFormat(device, [
-    // Item 2 (CAPTURE SPEED): `photoResolution: 'max'` selected the full-sensor
-    // still (48-50MP on modern phones), so takePhoto spent 3-5s encoding +
-    // writing it. A field compliance photo is downscaled to ~1280px by
-    // compressUnderCap regardless, so target a moderate ~2MP still — takePhoto is
-    // then sub-second with plenty of detail. This is THE fix for the slow shutter.
-    { photoResolution: { width: 1920, height: 1080 } }, // 1) moderate still -> fast capture
-    { videoStabilizationMode: 'cinematic-extended' },   // 2) strongest stabilization where supported
-    { fps: 60 },                                        // 3) prefer a format that can run fast (short exposures)
+    // SPEED (measured): rear capture was ~3s even after ultra->wide. The two
+    // criteria below were VIDEO constraints — `cinematic-extended` stabilization
+    // and `fps: 60` steer useCameraFormat toward a video-optimized format whose
+    // STILL path is slow. A jobsite compliance photo needs neither: it's a single
+    // frame, downscaled to ~1280px by compressUnderCap anyway. Relaxing to a
+    // photo-first, single criterion lets the device pick its fast still format.
+    // One variable changed vs the last build (dropped the two video criteria) so
+    // the re-measured takePhoto ms attributes cleanly to this.
+    { photoResolution: { width: 1920, height: 1080 } }, // moderate ~2MP still -> fast capture
   ]);
 
   // Shutter-speed FLOOR: stream at up to 60fps so each frame's exposure time is
@@ -164,6 +165,20 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     });
   }, [device]);
   // ─── END TEMP (item 6) ────────────────────────────────────────────────────
+
+  // LENS DEFAULT (item 1): open at the widest lens that CAPTURES reliably.
+  //   • uwViaZoom  → ultra-wide is a zoom level (<1×) on the MAIN back device, so
+  //     0.5× shares the same fast sensor/pipeline as 1× (measured 2946ms). Safe
+  //     to open at ultra-wide: set backLens 'ultra' and the framing effect below
+  //     zooms to minZoom.
+  //   • uwIsDistinct → the ultra-wide is a SEPARATE physical device whose
+  //     takePhoto measured a 60s+ hang. NEVER auto-select it; stay on the wide
+  //     (main) device at 1×. On these phones widest-that-captures genuinely IS 1×.
+  // Runs once devices resolve. If a phone has no ultra-wide at all, both are
+  // false and 'wide' is correct.
+  useEffect(() => {
+    setBackLens(uwViaZoom ? 'ultra' : 'wide');
+  }, [uwViaZoom, uwIsDistinct]);
 
   // Framing for the current lens: distinct-device UW → device neutral;
   // zoom-based UW → minZoom for ultra, neutral (1×) for wide.
