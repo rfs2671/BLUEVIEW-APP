@@ -236,7 +236,11 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     console.log('[CAM] shutter device=%s pos=%s lens=%s fmt=%sx%s fps=%s',
       device?.id, position, backLens, format?.photoWidth, format?.photoHeight, fps);
     try {
-      const photo = await camera.current.takePhoto({ flash: 'off', qualityPrioritization: 'speed' });
+      // v4 TakePhotoOptions is small: flash + enableShutterSound are the only
+      // Android-relevant knobs (qualityPrioritization/skipMetadata/enableAuto
+      // Stabilization were removed — speed now lives on the photoQualityBalance
+      // PROP above). Shutter sound off shaves the system click's tail.
+      const photo = await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       onCapture(srcUri);
@@ -290,6 +294,12 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         lowLightBoost={device?.supportsLowLightBoost === true}
         isActive={active && appActive}
         photo={true}
+        // SPEED (measured variable): v4 moved the still speed/quality trade-off
+        // from the takePhoto option `qualityPrioritization` (removed) to THIS
+        // Camera prop, which defaults to 'balanced' — the reason takePhoto sat at
+        // ~2000ms. 'speed' minimizes capture latency (CameraX CAPTURE_MODE_
+        // MINIMIZE_LATENCY on Android). This is the single change to re-measure.
+        photoQualityBalance="speed"
         zoom={zoom}
         onError={(err) => {
           console.warn('vision-camera error:', err?.message);
