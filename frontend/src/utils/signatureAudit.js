@@ -73,6 +73,20 @@ export async function buildDeviceInfo(user) {
  *
  * @returns {string|null} The event_id if successful, null on failure
  */
+// Tier 1 (4): the CAPACITY a person signs in, distinct from their login role.
+// Derived from the sign context so §3301.13.13 "signed as Superintendent" is
+// recorded on every event even without per-editor changes; an explicit
+// actingCapacity (e.g. "Competent Person - Excavation") always wins.
+function deriveActingCapacity(eventType, signerRole) {
+  if (eventType === 'superintendent_sign') return 'Construction Superintendent';
+  if (eventType === 'ssc_sign') return 'Site Safety Coordinator/Manager';
+  if (eventType === 'cp_sign') return 'Competent Person';
+  if (signerRole === 'superintendent') return 'Construction Superintendent';
+  if (signerRole === 'ssc') return 'Site Safety Coordinator/Manager';
+  if (signerRole === 'cp') return 'Competent Person';
+  return signerRole || 'Signer';
+}
+
 export async function recordSignatureEvent({
   documentType,
   documentId,
@@ -81,17 +95,20 @@ export async function recordSignatureEvent({
   signerRole,
   signatureData,
   contentSnapshot,
+  actingCapacity,
   user,
 }) {
   try {
     const deviceInfo = await buildDeviceInfo(user);
- 
+
     const payload = {
       document_type: documentType,
       document_id: documentId,
       event_type: eventType,
       signer_name: signerName,
       signer_role: signerRole,
+      // Tier 1 (4): explicit capacity wins; otherwise derived from the context.
+      acting_capacity: actingCapacity || deriveActingCapacity(eventType, signerRole),
       signature_data: signatureData,
       content_snapshot: contentSnapshot,
       device_info: deviceInfo,

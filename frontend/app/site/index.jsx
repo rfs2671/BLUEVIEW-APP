@@ -9,12 +9,13 @@ import {
   Building2,
   PenTool,
   LogOut,
+  Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
-import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
+import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -25,7 +26,7 @@ export default function SiteDeviceHomeScreen() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading, siteMode, siteProject, logout } = useAuth();
-  const toast = useToast();
+  const { isLocked, lock } = useInspectorLock();
 
   const [todayLogsCount, setTodayLogsCount] = useState(0);
   const [workersOnSite, setWorkersOnSite] = useState(0);
@@ -80,6 +81,15 @@ export default function SiteDeviceHomeScreen() {
     router.replace('/login');
   };
 
+  // Tier 1 ③ Inspector Mode — hand the device to an inspector. A plain
+  // toggle: no PIN, no prerequisites. The tablet's own device lock is
+  // the security control; this just confines the app to the read-only
+  // logbooks tab until the super taps "Exit Inspector Mode" there.
+  const handleLockPress = async () => {
+    await lock();
+    router.replace('/site/logbooks');
+  };
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -124,17 +134,19 @@ export default function SiteDeviceHomeScreen() {
               </GlassCard>
             </Pressable>
 
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/daily-logs')}
-            >
-              <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: 'rgba(139, 92, 246, 0.2)' }]}>
-                  <PenTool size={64} strokeWidth={1.5} color="#8b5cf6" />
-                </View>
-                <Text style={s.buttonLabel}>Daily Logs</Text>
-              </GlassCard>
-            </Pressable>
+            {!isLocked && (
+              <Pressable
+                style={s.buttonCard}
+                onPress={() => handleNavigate('/site/daily-logs')}
+              >
+                <GlassCard style={s.buttonInner}>
+                  <View style={[s.iconContainer, { backgroundColor: 'rgba(139, 92, 246, 0.2)' }]}>
+                    <PenTool size={64} strokeWidth={1.5} color="#8b5cf6" />
+                  </View>
+                  <Text style={s.buttonLabel}>Daily Logs</Text>
+                </GlassCard>
+              </Pressable>
+            )}
           </View>
 
           {/* Bottom Row: Documents + Worker Sign In */}
@@ -151,22 +163,37 @@ export default function SiteDeviceHomeScreen() {
               </GlassCard>
             </Pressable>
 
-            <Pressable
-              style={s.buttonCard}
-              onPress={() => handleNavigate('/site/checkins')}
-            >
-              <GlassCard style={s.buttonInner}>
-                <View style={[s.iconContainer, { backgroundColor: semantic.verifiedBg }]}>
-                  <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
-                </View>
-                <Text style={s.buttonLabel}>Worker Sign In</Text>
-                {!loading && workersOnSite > 0 && (
-                  <View style={s.badge}>
-                    <Text style={s.badgeText}>{workersOnSite} on site</Text>
+            {!isLocked && (
+              <Pressable
+                style={s.buttonCard}
+                onPress={() => handleNavigate('/site/checkins')}
+              >
+                <GlassCard style={s.buttonInner}>
+                  <View style={[s.iconContainer, { backgroundColor: semantic.verifiedBg }]}>
+                    <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
                   </View>
-                )}
-              </GlassCard>
-            </Pressable>
+                  <Text style={s.buttonLabel}>Worker Sign In</Text>
+                  {!loading && workersOnSite > 0 && (
+                    <View style={s.badge}>
+                      <Text style={s.badgeText}>{workersOnSite} on site</Text>
+                    </View>
+                  )}
+                </GlassCard>
+              </Pressable>
+            )}
+          </View>
+
+          {/* Tier 1 ③ Inspector Mode — hand-off toggle. This dashboard is
+              site_device-only, so the control is always shown here. One
+              tap confines the app to the read-only logbooks tab; the
+              Exit control there releases it. */}
+          <View style={s.lockBar}>
+            <GlassButton
+              title="Hand to Inspector (read-only)"
+              icon={<Lock size={18} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={handleLockPress}
+              style={s.lockBtn}
+            />
           </View>
         </View>
       </SafeAreaView>
@@ -273,6 +300,17 @@ function buildStyles(colors, isDark) {
       fontSize: 15,
       fontWeight: '600',
       color: colors.text.primary,
+    },
+    // Inspector Mode lock bar (below the grid, not flex — fixed row).
+    lockBar: {
+      alignItems: 'center',
+      gap: spacing.xs,
+    },
+    lockBtn: {
+      alignSelf: 'stretch',
+      backgroundColor: withAlpha('#f59e0b', 0.12),
+      borderColor: withAlpha('#f59e0b', 0.35),
+      minHeight: 56,
     },
   });
 }

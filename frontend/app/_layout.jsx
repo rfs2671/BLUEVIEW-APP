@@ -9,6 +9,7 @@ import { DatabaseProvider } from '../src/context/DatabaseContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { ToastProvider, useToast } from '../src/components/Toast';
 import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
+import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
@@ -164,6 +165,7 @@ function RouteGuard() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, siteMode, isAuthenticated, isLoading } = useAuth();
+  const { isLocked: inspectorLocked } = useInspectorLock();
   const toast = useToast();
   const [isMounted, setIsMounted] = useState(false);
 
@@ -198,6 +200,21 @@ function RouteGuard() {
       const allowed = pathname.startsWith('/site') || pathname === '/login';
       if (!allowed) {
         router.replace('/site');
+      }
+
+      // Tier 1 ③ "Inspector Mode": while the device-local lock is
+      // engaged, a site_device is confined to the read-only
+      // /site/logbooks tab. Any other in-site path (/site,
+      // /site/daily-logs, /site/checkins, /site/documents, …) — and
+      // anything else that slipped past the gate above — redirects
+      // back to logbooks. /login stays reachable so a logout is still
+      // possible. The super releases the lock with the "Exit Inspector
+      // Mode" control on the logbooks screen; unlocking flips
+      // inspectorLocked and re-runs this effect, restoring normal
+      // navigation.
+      if (inspectorLocked && pathname !== '/site/logbooks' && pathname !== '/login') {
+        router.replace('/site/logbooks');
+        return;
       }
     }
 
@@ -236,7 +253,7 @@ function RouteGuard() {
         }
       }
     }
-  }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname]);
+  }, [isMounted, isLoading, isAuthenticated, user, siteMode, pathname, inspectorLocked]);
 
   return null;
 }
@@ -290,9 +307,11 @@ export default function RootLayout() {
           <DatabaseProvider>
             <AuthProvider>
               <FeatureFlagsProvider>
-                <ToastProvider>
-                  <AppShell />
-                </ToastProvider>
+                <InspectorLockProvider>
+                  <ToastProvider>
+                    <AppShell />
+                  </ToastProvider>
+                </InspectorLockProvider>
               </FeatureFlagsProvider>
             </AuthProvider>
           </DatabaseProvider>

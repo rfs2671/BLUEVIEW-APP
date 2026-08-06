@@ -9,13 +9,14 @@ import {
   ArrowLeft, ClipboardList, BookOpen, Users, FileText,
   Building2, Calendar, CheckCircle, ChevronRight, ChevronDown,
   CloudSun, Clock, MapPin, Wrench, ShieldCheck, Eye, Truck,
-  AlertTriangle, Pen, XCircle, Download, Share2,
+  AlertTriangle, Pen, XCircle, Download, Share2, Lock,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
 import { useAuth } from '../../src/context/AuthContext';
+import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { logbooksAPI, getToken } from '../../src/utils/api';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -32,11 +33,19 @@ export default function SiteLogbooksViewer() {
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
+  const { isLocked, unlock } = useInspectorLock();
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('daily_jobsite');
   const [logsByDate, setLogsByDate] = useState({});
   const [expandedDate, setExpandedDate] = useState(null);
+
+  // Inspector Mode — plain toggle, no PIN. Releasing it restores full
+  // navigation and drops the device back on the site dashboard.
+  const handleExitInspector = async () => {
+    await unlock();
+    router.replace('/site');
+  };
 
   useEffect(() => {
     if (authLoading) return;
@@ -418,18 +427,37 @@ export default function SiteLogbooksViewer() {
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
-        {/* Header */}
+        {/* Header — back button hidden while Inspector Mode is engaged
+            (the inspector must not leave the read-only logbooks tab). */}
         <View style={s.header}>
-          <GlassButton
-            variant="icon"
-            icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => router.push('/site')}
-          />
+          {!isLocked && (
+            <GlassButton
+              variant="icon"
+              icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+              onPress={() => router.push('/site')}
+            />
+          )}
           <View style={{ flex: 1 }}>
             <Text style={s.headerTitle}>Log Books</Text>
             <Text style={s.headerSub}>Submitted Records</Text>
           </View>
         </View>
+
+        {/* Inspector Mode banner — read-only notice + exit control. */}
+        {isLocked && (
+          <View style={s.inspectorBanner}>
+            <Lock size={16} strokeWidth={1.5} color="#f59e0b" />
+            <Text style={s.inspectorBannerText}>Inspector Mode — read only</Text>
+            <Pressable
+              style={s.exitBtn}
+              onPress={handleExitInspector}
+              accessibilityRole="button"
+              accessibilityLabel="Exit Inspector Mode"
+            >
+              <Text style={s.exitBtnText}>Exit Inspector Mode</Text>
+            </Pressable>
+          </View>
+        )}
 
         {/* Tabs */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabScroll}>
@@ -567,7 +595,10 @@ export default function SiteLogbooksViewer() {
           )}
         </ScrollView>
 
-        <SiteNav />
+        {/* Hide the bottom nav while locked — its Dashboard / Check-Ins
+            entries lead off the read-only tab (the route gate would
+            bounce them straight back). */}
+        {!isLocked && <SiteNav />}
       </SafeAreaView>
     </AnimatedBackground>
   );
@@ -714,5 +745,39 @@ function buildStyles(colors, isDark) {
   // Legacy
   logField: { fontSize: 16, color: colors.text.secondary, lineHeight: 24 },
   logFieldLabel: { fontWeight: '600', color: colors.text.primary },
+
+  // Inspector Mode banner
+  inspectorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: withAlpha('#f59e0b', 0.12),
+    borderWidth: 1,
+    borderColor: withAlpha('#f59e0b', 0.35),
+  },
+  inspectorBannerText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#f59e0b',
+    letterSpacing: 0.3,
+  },
+  exitBtn: {
+    minHeight: 40,
+    minWidth: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.lg,
+    borderRadius: borderRadius.full,
+    backgroundColor: withAlpha('#f59e0b', 0.18),
+    borderWidth: 1,
+    borderColor: withAlpha('#f59e0b', 0.4),
+  },
+  exitBtnText: { fontSize: 15, fontWeight: '700', color: '#f59e0b' },
 });
 }
