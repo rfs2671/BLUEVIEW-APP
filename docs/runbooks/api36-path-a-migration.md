@@ -2,12 +2,12 @@
 
 **Goal:** ship `targetSdkVersion 36` (Android 16) to satisfy Google Play.
 
-> ## 🚨 DEADLINE — VERIFY BEFORE PLANNING ANYTHING
-> Google's hard date is **August 31, 2026**. The **November 1 date is NOT automatic** — it must be
-> **actively requested and granted** via the Play Console → Policy status page. An earlier draft of
-> this runbook recorded "Nov 1, extended from Aug 31" as settled fact; that was an assumption, not a
-> verification. **Phase 0 task #1: confirm the extension was filed AND granted.** If it was not, this
-> migration (8–10 days with the edge-to-edge work below) has essentially no slack against Play review.
+> ## ✅ DEADLINE — CONFIRMED
+> Google's hard date was **Aug 31, 2026**; the operator **confirmed the extension to Nov 1, 2026 was
+> requested AND granted** in the Play Console (verified, not assumed — an earlier draft stated it as
+> fact without checking). Run this as a **supervised block**, not a rush. Budget 8–10 days including
+> the edge-to-edge phase, and leave room for Play review.
+
 **Route:** Expo SDK 52 → 54, **legacy architecture** (`newArchEnabled: false`), keeping every native module on a **stable, both-arch-supported** version. **NOT** New Architecture (that's Path B, deferred to the SDK-55 cycle).
 **Deploy type:** **native AAB rebuild + Google Play submission.** This is NOT an OTA/EAS-Update — `targetSdk`/RN/SDK changes are compiled into the binary.
 **Effort:** ~6–8 focused working days. Do it in one committed block with a device on hand.
@@ -130,3 +130,93 @@
 - [nfc-manager releases](https://github.com/revtel/react-native-nfc-manager/releases) (latest = 3.17.2; new-arch only in 4.0.0-beta line)
 - vision-camera RN 0.81 Android: [issue #3616](https://github.com/mrousavy/react-native-vision-camera/issues/3616), [PR #3604](https://github.com/mrousavy/react-native-vision-camera/pull/3604)
 - [RN 0.81 / Android 16 release post](https://reactnative.dev/blog/2025/08/12/react-native-0.81)
+
+---
+
+# APPENDIX — Exact command sequence for the supervised block
+
+Run on the build machine, in order. **Do not batch phases** — verify each before moving on.
+
+## Phase 0 — branch + known-good baseline
+```
+git checkout -b sdk54-path-a
+eas build --platform android --profile production   # SDK 52 baseline to diff against
+```
+Have a physical **Android 16** device with NFC on hand. Record current `expo.version` (1.1.3).
+
+## Phase 1 — SDK 52 → 53
+```
+npx expo install expo@^53 --fix
+npx expo-doctor
+```
+Resolve **React 18 → 19** fallout. Build a dev client and smoke-test that the app boots.
+
+## Phase 2 — SDK 53 → 54
+```
+npx expo install expo@^54 --fix
+```
+
+### 🔴 CRITICAL — THE ONE STEP THAT SILENTLY BREAKS THE BUILD
+`--fix` installs **reanimated 4.1.1**, which is **New-Architecture-ONLY** and **cannot run on
+`newArchEnabled: false`**. It will re-install 4.x after ANY later `expo install`. Re-pin every time:
+```
+npm install --save-exact react-native-reanimated@3.19.5
+node -p "require('./package.json').dependencies['react-native-reanimated']"
+```
+The second command MUST print `3.19.5`. If it prints `4.x`, the build will fail or misbehave at
+runtime. (`3.16.x` is also wrong — it does not support RN 0.81. `3.19.x` is the only 3.x line that does.)
+
+### expo-file-system → /legacy (7 files)
+The classic API moves to `/legacy` in SDK 54 (there are **no** `/next` imports in this repo):
+```
+grep -rl "from 'expo-file-system'" src app | xargs sed -i "s|from 'expo-file-system'|from 'expo-file-system/legacy'|g"
+grep -rn "expo-file-system" src app | grep -v "/legacy"
+```
+The second command should return nothing. Files affected: `src/utils/docCache.js`,
+`src/utils/logbookDrafts.js`, `src/utils/compressPhoto.js`, `src/utils/pdfjsViewer.js`,
+`src/utils/api.js`, `app/reports.jsx`, `app/logbooks/daily_jobsite.jsx`.
+⚠️ `/legacy` is REMOVED in SDK 55 — the real rewrite is Path B's bill.
+
+## Phase 3 — remove dead native deps
+```
+npm uninstall @nozbe/watermelondb react-native-quick-crypto @babel/plugin-proposal-decorators
+```
+`react-native-quick-crypto` is **unused** (zero imports — a WatermelonDB leftover). Then edit by hand:
+- `babel.config.js` — remove `@babel/plugin-proposal-decorators`, `@babel/plugin-proposal-class-properties`
+  (Watermelon `@field` leftovers; deprecated names are a live break risk on `babel-preset-expo@54`) and the
+  now-redundant explicit `react-native-reanimated/plugin` (auto-injected since SDK 50).
+- `metro.config.js` — drop the `@nozbe/watermelondb` web exclusion.
+- `app.json` — remove the `simdjson` entry from `expo-build-properties.ios.extraPods`.
+
+## Phase 4 — app.json native config
+- `newArchEnabled: true` → **`false`**  ← the reversal Path A depends on
+- `compileSdkVersion: 36`, `targetSdkVersion: 36`, `buildToolsVersion: "36.0.0"`
+- bump `expo.version` `1.1.3` → `1.1.4` (rolls runtimeVersion so old OTA bundles can't misapply)
+- pin `react-native-nfc-manager@3.17.2` exactly
+
+## Phase 5 — edge-to-edge inset audit (1–2 days — THE DAY-EATER)
+Mandatory at SDK 54 / API 36 and **cannot be disabled**. Audit every screen; worst offenders:
+the full-screen camera modal, the `checkin.html` WebView, and the dark full-bleed layouts.
+
+## Phase 6 — verify + build
+```
+npx expo-doctor
+npx expo export --platform web
+eas build --platform android --profile production
+```
+⚠️ `expo-doctor` WILL warn that reanimated 3.19.5 ≠ the SDK's 4.1.1 pin. **That warning is correct
+and expected — do not "fix" it.** The web export is in the sequence because
+`react-native-web` 0.19→0.21 + React 19 + `@expo/metro-runtime` 4→6 will move the web bundle.
+
+## Phase 7 — on-device smoke tests before submitting
+- **NFC foreground dispatch** — tap a real tag, check-in page opens (highest legacy-arch risk)
+- **Camera** — jobsite photo + the OSHA/SST card capture (vision-camera 4.7.3, unpatched)
+- **Offline** — drafts persist, reconnect drain syncs (async-storage 2 regression)
+- **Offline PDFs** — cached plan opens on Android (the bundled pdf.js)
+- **Inspector Mode** — cached records, no false "No Submitted Logs"
+- **Edge-to-edge** — no content under the status/nav bars on any screen
+
+## Rollback
+The migration lives on its own branch; `main` stays shippable. If a build regresses, re-submit the
+Phase 0 baseline AAB while debugging. Keep the OTA production channel pointed at whichever native
+build is actually live so bundles don't cross runtimes.
