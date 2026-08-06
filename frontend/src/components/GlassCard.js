@@ -184,6 +184,7 @@ export const GlassListItem = ({
   rightIcon,
   showBorder,
   style,
+  contentStyle,
   onPress,
   disabled,
 }) => {
@@ -237,7 +238,9 @@ export const GlassListItem = ({
         end={{ x: 0.5, y: 1 }}
         style={StyleSheet.absoluteFillObject}
       />
-      <View style={styles.listItemContent}>
+      {/* `contentStyle` (optional) overrides the default spacing.lg inset — for
+          dense rows where a 24px inset per side eats the content width. */}
+      <View style={[styles.listItemContent, contentStyle]}>
         {children || defaultContent}
       </View>
     </Pressable>

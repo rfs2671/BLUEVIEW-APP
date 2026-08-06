@@ -204,18 +204,6 @@ export default function ProjectsScreen() {
             <Text style={s.titleText}>Projects</Text>
           </View>
 
-          {/* TEMP OFFLINE DIAGNOSTIC — remove after root cause found.
-              Reads the LIVE render inputs so the device tells us the truth:
-              • state=2 filtered=2 but no cards  → render bug
-              • state=0 (or filtered=0)          → a path cleared the list
-              • auth=false                       → the redirect (73-77) fired */}
-          <Text
-            selectable
-            style={{ fontSize: 11, color: '#f59e0b', textAlign: 'center', marginBottom: 8 }}
-          >
-            DIAG state:{projects.length} filtered:{filteredProjects.length} loading:{String(loading)} auth:{String(isAuthenticated)}/{String(authLoading)}
-          </Text>
-
           {/* Search & Add */}
           <View style={s.searchRow}>
             <View style={s.searchContainer}>
@@ -232,23 +220,6 @@ export default function ProjectsScreen() {
               onPress={() => setShowAddModal(true)}
             />
           </View>
-
-          {/* TEMP RENDER PROBE — remove with the DIAG line. Plain Text rows
-              (no glass, no gradient, no GlassListItem) rendered straight from
-              filteredProjects. This splits the two remaining hypotheses:
-              • probe rows SHOW but glass cards DON'T → GlassListItem /
-                LinearGradient is the failure (native gradient/glass path).
-              • probe rows ALSO blank → the .map isn't executing / data is
-                unrenderable, despite filtered:2. */}
-          {!loading && filteredProjects.map((p, i) => (
-            <Text
-              key={`probe-${i}`}
-              selectable
-              style={{ color: '#22d3ee', fontSize: 13, borderWidth: 1, borderColor: '#22d3ee', padding: 6, marginBottom: 4 }}
-            >
-              PROBE {i}: id={String(getProjectId(p))} name={String(p?.name)}
-            </Text>
-          ))}
 
           {/* Projects List */}
           <View style={s.projectsList}>
@@ -269,10 +240,7 @@ export default function ProjectsScreen() {
                 <GlassListItem
                   key={getProjectId(project)}
                   onPress={() => router.push(`/project/${getProjectId(project)}`)}
-                  /* TEMP: bright magenta border — if a card is present-but-
-                     invisible (glass/gradient renders transparent), this outline
-                     still shows its box. Remove with the DIAG/probe. */
-                  style={[s.projectCard, { borderWidth: 2, borderColor: '#ec4899' }]}
+                  style={s.projectCard}
                 >
                   {/* Card redesign: Building2 logo removed. Left zone
                       takes all remaining width (flex:1 + minWidth:0) so

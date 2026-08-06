@@ -24,11 +24,11 @@ export default function BuildMarker() {
       : 'embedded';
   } catch (_e) { /* expo-updates not available in some contexts */ }
   return (
-    <View style={{ paddingVertical: 6, opacity: 0.6 }}>
-      <Text selectable style={{ fontSize: 10, color: '#94a3b8', textAlign: 'center' }}>
+    <View style={{ paddingVertical: 4, opacity: 0.35 }}>
+      <Text selectable style={{ fontSize: 9, color: '#94a3b8', textAlign: 'center' }}>
         v{version} · rt {runtime} · {channel} · {BUILD_TAG}
       </Text>
-      <Text selectable style={{ fontSize: 10, color: '#94a3b8', textAlign: 'center' }}>
+      <Text selectable style={{ fontSize: 9, color: '#94a3b8', textAlign: 'center' }}>
         bundle: {updateId} · {created}
       </Text>
     </View>

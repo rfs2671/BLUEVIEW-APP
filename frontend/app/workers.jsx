@@ -186,7 +186,7 @@ export default function WorkersScreen() {
                       <Icon size={16} strokeWidth={1.5} color={colors.text.secondary} />
                     </IconPod>
                     <Text style={s.statValue}>{stat.value}</Text>
-                    <Text style={s.statLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{stat.label.toUpperCase()}</Text>
+                    <Text style={s.statLabel} numberOfLines={1}>{stat.label.toUpperCase()}</Text>
                   </StatCard>
                 );
               })
@@ -210,7 +210,7 @@ export default function WorkersScreen() {
                   return acc;
                 }, {})
               ).map(([company, companyCheckins]) => (
-                <View key={company}>
+                <View key={company} style={s.companyGroup}>
                   <Text style={s.companyHeader}>{company}</Text>
                   {companyCheckins.map((checkin, index) => {
                     const workerInfo = getWorkerInfo(checkin);
@@ -224,6 +224,7 @@ export default function WorkersScreen() {
                       <GlassListItem
                         key={checkin._id || checkin.id || index}
                         style={s.checkinCard}
+                        contentStyle={s.checkinCardContent}
                         onPress={() => {
                           const workerId = checkin.worker_id;
                           if (workerId) {
@@ -233,9 +234,9 @@ export default function WorkersScreen() {
                       >
                         {/* Time */}
                         <View style={s.timeSection}>
-                          <Text style={s.timeText}>{formatTime(workerInfo.checkInTime)}</Text>
+                          <Text style={s.timeText} numberOfLines={1}>{formatTime(workerInfo.checkInTime)}</Text>
                           {workerInfo.checkOutTime && (
-                            <Text style={s.timeOutText}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
+                            <Text style={s.timeOutText} numberOfLines={1}>Out: {formatTime(workerInfo.checkOutTime)}</Text>
                           )}
                         </View>
 
@@ -248,18 +249,18 @@ export default function WorkersScreen() {
                               <Text style={s.avatarText}>{initials}</Text>
                             </View>
                             <View style={s.workerDetails}>
-                              <Text style={s.workerName}>{workerInfo.name}</Text>
-                              <Text style={s.workerTrade}>{workerInfo.trade}</Text>
+                              <Text style={s.workerName} numberOfLines={2} ellipsizeMode="tail">{workerInfo.name}</Text>
+                              <Text style={s.workerTrade} numberOfLines={1} ellipsizeMode="tail">{workerInfo.trade}</Text>
                             </View>
                           </View>
                           <View style={s.workerMeta}>
                             <View style={s.metaItem}>
                               <MapPin size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={s.metaText}>{workerInfo.project}</Text>
+                              <Text style={s.metaText} numberOfLines={1} ellipsizeMode="tail">{workerInfo.project}</Text>
                             </View>
                             <View style={s.metaItem}>
                               <Building2 size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={s.metaText}>{workerInfo.company}</Text>
+                              <Text style={s.metaText} numberOfLines={1} ellipsizeMode="tail">{workerInfo.company}</Text>
                             </View>
                           </View>
                         </View>
@@ -274,12 +275,12 @@ export default function WorkersScreen() {
                           {!workerInfo.checkOutTime ? (
                             <>
                               <View style={s.statusDot} />
-                              <Text style={s.statusText}>ON-SITE</Text>
+                              <Text style={s.statusText} numberOfLines={1}>ON-SITE</Text>
                             </>
                           ) : (
                             <>
                               <Clock size={12} strokeWidth={1.5} color={colors.text.subtle} />
-                              <Text style={[s.statusText, s.statusDone]}>DONE</Text>
+                              <Text style={[s.statusText, s.statusDone]} numberOfLines={1}>DONE</Text>
                             </>
                           )}
                         </View>
@@ -409,6 +410,11 @@ function buildStyles(colors, isDark) {
   checkinsList: {
     gap: spacing.sm,
   },
+  // Cards inside one company group used to be bare siblings with no gap, so
+  // they visually touched. This gap is what separates card-from-card.
+  companyGroup: {
+    gap: spacing.sm + 2,
+  },
   companyHeader: {
     color: colors.text.muted,
     fontSize: 11,
@@ -419,90 +425,115 @@ function buildStyles(colors, isDark) {
     paddingHorizontal: 4,
     marginTop: 8,
   },
+  // NOTE: this is the OUTER Pressable of GlassListItem — it must NOT carry its
+  // own padding, because GlassListItem already pads its inner content View
+  // (see checkinCardContent). The previous `padding: spacing.md` here stacked on
+  // top of that inner spacing.lg for 40px of inset per side, which is what
+  // squeezed the name column down to a few px and forced 3-line wraps.
   checkinCard: {
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.xl,
     borderWidth: 1,
     borderColor: colors.glass.border,
-    padding: spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
+  },
+  // Row budget @ 375px: 375 − scrollContent (24×2) = 327 card width.
+  //   327 − paddingHorizontal (16×2)                       = 295 content
+  //   295 − timeSection (58) − divider (1 + 8×2 margin)    = 220
+  //   220 − statusBadge (~74 incl. padding/dot/border)     = 146 for workerInfo
+  //   146 − avatar (34) − gap (8)                          = 104 for the name
+  // 104px @ 15px fits ~13 chars per line × 2 lines — long names ellipsise
+  // instead of stacking to 3 lines.
+  checkinCardContent: {
+    paddingVertical: spacing.sm + 2,
+    paddingHorizontal: spacing.md,
   },
   timeSection: {
-    width: 70,
+    width: 58,
+    flexShrink: 0,
     alignItems: 'center',
   },
   timeText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
     color: colors.text.secondary,
   },
   timeOutText: {
-    fontSize: 11,
+    fontSize: 10,
     color: colors.text.subtle,
-    marginTop: spacing.xs,
+    marginTop: 2,
   },
   divider: {
     width: 1,
-    height: 48,
+    height: 40,
     backgroundColor: colors.glass.border,
-    marginHorizontal: spacing.md,
+    marginHorizontal: spacing.sm,
   },
   workerInfo: {
     flex: 1,
+    minWidth: 0,
   },
   workerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.xs,
   },
   avatar: {
-    width: 40,
-    height: 40,
+    width: 34,
+    height: 34,
     borderRadius: borderRadius.full,
     backgroundColor: colors.glass.background,
     borderWidth: 1,
     borderColor: colors.glass.border,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
   avatarText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
     color: colors.text.secondary,
   },
   workerDetails: {
     flex: 1,
+    minWidth: 0,
   },
   workerName: {
     fontSize: 15,
+    lineHeight: 19,
     fontWeight: '500',
     color: colors.text.primary,
   },
   workerTrade: {
-    fontSize: 13,
+    fontSize: 12,
+    lineHeight: 15,
     color: colors.text.muted,
   },
   workerMeta: {
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   metaItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
+    flexShrink: 1,
+    minWidth: 0,
   },
   metaText: {
     fontSize: 11,
     color: colors.text.subtle,
+    flexShrink: 1,
   },
+  // flexShrink:0 keeps the pill at its natural size — previously it was the
+  // last flex child in a starved row and got crushed onto two lines.
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexShrink: 0,
     gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: 5,
     backgroundColor: colors.glass.background,
     borderRadius: borderRadius.full,
     borderWidth: 1,

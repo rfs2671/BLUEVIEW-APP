@@ -420,17 +420,17 @@ export default function ReportsScreen() {
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <Users size={18} strokeWidth={1.5} color="#3b82f6" />
                           <Text style={s.summaryValue}>{preview.checkin_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Workers</Text>
+                          <Text style={s.summaryLabel} numberOfLines={2}>Workers</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <ClipboardList size={18} strokeWidth={1.5} color="#8b5cf6" />
                           <Text style={s.summaryValue}>{preview.logbooks?.length || 0}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Logbooks</Text>
+                          <Text style={s.summaryLabel} numberOfLines={2}>Logbooks</Text>
                         </GlassCard>
                         <GlassCard style={s.summaryCard} contentStyle={s.summaryCardContent}>
                           <Building2 size={18} strokeWidth={1.5} color={semantic.neutral} />
                           <Text style={s.summaryValue}>{preview.subcontractor_count}</Text>
-                          <Text style={s.summaryLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>Subs</Text>
+                          <Text style={s.summaryLabel} numberOfLines={2}>Subs</Text>
                         </GlassCard>
                       </View>
 
@@ -748,13 +748,27 @@ function buildStyles(colors, isDark) {
     summaryCard: {
       flex: 1,
     },
-    // Task C: GlassCard's default cardContent padding is spacing.xl (32) per
-    // side; stacked on a ~100px-wide card that left ~7px for the label, clipping
-    // "Workers" to "w…". Override to a compact inset so the full label fits (with
-    // adjustsFontSizeToFit as a belt-and-suspenders on the narrowest devices).
+    // Summary bubble insets. Two separate causes were clipping the labels:
+    //   1. GlassCard's default cardContent padding is spacing.xl (32) per side —
+    //      64px of inset on a ~104px card, leaving ~40px of text box.
+    //   2. `adjustsFontSizeToFit` + numberOfLines={1}: on Android RN measures the
+    //      auto-shrunk line against a near-zero width and truncates to the first
+    //      glyph, which is why even "Subs" (4 chars, trivially fits) rendered as
+    //      "S…". Removed — the labels fit at their natural size, see math below.
+    //
+    // Width math @ 375px (iPhone SE2/12 mini/13 mini):
+    //   375 − scrollContent padding (spacing.lg × 2 = 48)            = 327
+    //   327 − summaryRow gaps (spacing.sm × 2 = 16)                  = 311
+    //   311 ÷ 3 cards                                                = 103.6 per card
+    //   103.6 − summaryCardContent paddingHorizontal (spacing.xs × 2 = 8) = 95.6 usable
+    // Longest label "LOGBOOKS" = 8 caps @ 11px semibold ≈ 8 × 7.5 = 60px. Fits.
+    // Worst case @ 320px (SE 1st gen): (320−48−16)/3 = 85.3 − 8 = 77.3 usable — still fits.
+    // numberOfLines={2} is the safety net for large accessibility font scales:
+    // the label wraps instead of ellipsising.
     summaryCardContent: {
       alignItems: 'center',
-      padding: spacing.sm,
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.xs,
       gap: spacing.xs,
     },
     summaryValue: {
@@ -763,12 +777,16 @@ function buildStyles(colors, isDark) {
       color: colors.text.primary,
     },
     summaryLabel: {
+      // alignSelf:'stretch' is deliberate — the parent is alignItems:'center',
+      // so without it the Text box shrink-wraps; stretching gives the label the
+      // FULL 95.6px content width to lay out in.
       alignSelf: 'stretch',
-      fontSize: 12,
+      fontSize: 11,
+      lineHeight: 14,
       fontWeight: '600',
       color: colors.text.muted,
       textTransform: 'uppercase',
-      letterSpacing: 0.3,
+      letterSpacing: 0,
       textAlign: 'center',
     },
 
