@@ -1,6 +1,13 @@
 # API 36 / Google Play — Path A (Legacy Architecture) Migration Runbook
 
-**Goal:** ship `targetSdkVersion 36` (Android 16) to satisfy Google Play (deadline **Nov 1**, extended from Aug 31).
+**Goal:** ship `targetSdkVersion 36` (Android 16) to satisfy Google Play.
+
+> ## 🚨 DEADLINE — VERIFY BEFORE PLANNING ANYTHING
+> Google's hard date is **August 31, 2026**. The **November 1 date is NOT automatic** — it must be
+> **actively requested and granted** via the Play Console → Policy status page. An earlier draft of
+> this runbook recorded "Nov 1, extended from Aug 31" as settled fact; that was an assumption, not a
+> verification. **Phase 0 task #1: confirm the extension was filed AND granted.** If it was not, this
+> migration (8–10 days with the edge-to-edge work below) has essentially no slack against Play review.
 **Route:** Expo SDK 52 → 54, **legacy architecture** (`newArchEnabled: false`), keeping every native module on a **stable, both-arch-supported** version. **NOT** New Architecture (that's Path B, deferred to the SDK-55 cycle).
 **Deploy type:** **native AAB rebuild + Google Play submission.** This is NOT an OTA/EAS-Update — `targetSdk`/RN/SDK changes are compiled into the binary.
 **Effort:** ~6–8 focused working days. Do it in one committed block with a device on hand.
@@ -12,7 +19,11 @@
 ## ⚠️ The three callouts to read FIRST
 
 1. **`newArchEnabled` is a REAL reversal.** The app currently ships `newArchEnabled: true` (`app.json:11`). Path A flips it to **`false`**. This is safe *today* because reanimated 3.16, vision-camera 4.7, and quick-crypto 0.7 all support both architectures — **but you must re-verify each actually works on legacy after the flip** (see Phase 4 smoke tests). Don't assume; test.
-2. **Riskiest single step: patching `react-native-vision-camera` 4.7.3 for the RN 0.81 Android build error.** There is no 4.7.4. You will likely hit an Android build failure and need to apply the community patch (see Phase 4). Budget time for this; it's the most likely thing to eat a day.
+2. ~~Riskiest step: patching vision-camera~~ **CORRECTED — NO PATCH NEEDED. Do not write one.** Verified by diffing the published tarballs: the RN 0.81 Android break (RN converted `MapBuilder` to Kotlin, so `build()` now returns an immutable `Map`) was fixed in **4.7.2**, and **4.7.3 already contains the fix** (`CameraViewManager.kt` takes `Map<String,Any>?`; `CameraViewModule.kt` uses `reactApplicationContext.currentActivity`). Issue #3616 was filed against **4.7.1**; PR #3604 was never merged but 4.7.2 fixed the same two files independently. **Keep `4.7.3`, no `patch-package`.**
+
+3. **🔴 THE REAL TRAP — reanimated. `npx expo install --fix` WILL BREAK THIS BUILD.** SDK 54 pins `react-native-reanimated: ~4.1.1`, and **Reanimated 4 is New-Architecture-ONLY** — it cannot run on `newArchEnabled: false`. So the command this runbook tells you to trust will install a package incompatible with the chosen architecture. **Pin `3.19.5` explicitly and re-assert it after every `--fix`.** Note `3.16.x` does NOT support RN 0.81 — `3.19.x` is the only 3.x line that does. Expect a permanent `expo-doctor` version warning; that is correct here.
+
+4. **🔴 NEW — edge-to-edge is mandatory and is its own work item (1–2 days).** SDK 54 + API 36 enforce edge-to-edge on all Android apps and it **cannot be disabled** (`windowOptOutEdgeToEdgeEnforcement` is deprecated *and* non-functional on API 36). This app is dark, full-bleed, has a WebView (`checkin.html`) and a full-screen camera modal — **every screen needs an inset audit.** This, not vision-camera, is now the most likely day-eater.
 3. **Version pins move.** Every exact pin below was read from `expo@sdk-54 bundledNativeModules.json` — **re-verify at execution time** with `npx expo install --fix`, which is the source of truth for the SDK you actually install.
 
 ---
@@ -25,20 +36,23 @@
 | react-native | 0.76.9 | 0.81.x | RN 0.81 drops built-in JSC |
 | react / react-dom | 18.3.1 | 19.1.x | React 19 — type/peer fallout |
 | react-native-nfc-manager | ^3.14.0 | **3.17.2** | stable, RN 0.81 **old-arch** support |
-| react-native-vision-camera | ^4.7.3 | 4.7.3 **+ RN0.81 Android patch** | no 4.7.4; see Phase 4 |
-| react-native-reanimated | ~3.16.1 | **stay ~3.16.x** | v3 supports legacy; do NOT go to v4 (v4 is new-arch-only) |
-| react-native-quick-crypto | ^0.7.0 | **stay 0.7.x** | v0.7 supports legacy; v1 is Nitro/new-arch |
+| react-native-vision-camera | ^4.7.3 | **4.7.3 — NO PATCH** | fix already in 4.7.2/4.7.3 (verified by tarball diff) |
+| react-native-reanimated | ~3.16.1 | **PIN 3.19.5** ⚠️ | SDK54 pins 4.1.1 = NEW-ARCH-ONLY. 3.16.x does NOT support RN 0.81. Override `--fix` |
+| react-native-quick-crypto | ^0.7.0 | **REMOVE** | unused — zero imports anywhere; a WatermelonDB leftover |
 | react-native-gesture-handler | ~2.20.2 | ~2.28.0 | |
 | react-native-screens | ~4.4.0 | ~4.16.0 | |
 | react-native-safe-area-context | 4.12.0 | ~5.6.0 | major bump |
-| @react-native-async-storage/async-storage | 1.23.1 | 2.2.0 | major bump — offline store, test carefully |
+| @react-native-async-storage/async-storage | 1.23.1 | **2.2.0** (never 3.x) | verified near no-op: DB files byte-identical, data survives; app only uses get/set/removeItem |
 | @react-native-community/netinfo | 11.4.1 | 11.4.1 | unchanged |
 | react-native-svg | 15.8.0 | 15.12.1 | |
 | react-native-webview | 13.12.5 | 13.15.0 | |
 | @nozbe/watermelondb | ^0.27.1 | **REMOVE** | JS already gone (Task 7 `e8bf396`); drop dep + simdjson pod here |
+| babel-preset-expo | ~12.0.0 | **~54.0.12** | | ⚠️ was missing |
+| @expo/metro-runtime | ~4.0.0 | **~6.1.2** | | ⚠️ was missing |
+| react-native-web | ~0.19.13 | **~0.21.0** | | ⚠️ was missing — you ship a web bundle |
 | expo-* (router, updates, file-system, image-picker, constants, build-properties, …) | SDK 52 pins | SDK 54 pins | lockstep via `expo install --fix` |
 
-> On legacy arch you deliberately **hold reanimated at v3 and quick-crypto at v0.7** — upgrading them (v4 / v1) forces New Arch. That's Path B.
+> On legacy arch you deliberately **hold reanimated at 3.19.5** (v4 is New-Arch-only). **quick-crypto is REMOVED, not held** — it is unused. Also drop the two WatermelonDB babel plugins (`@babel/plugin-proposal-decorators`, `@babel/plugin-proposal-class-properties`) from `babel.config.js`: they existed only for Watermelon `@field` decorators, `class-properties` isn't even in devDependencies, and deprecated plugin names are a live break risk on `babel-preset-expo@54`. The explicit `react-native-reanimated/plugin` entry is also redundant (auto-injected since SDK 50).
 
 ---
 
@@ -61,9 +75,9 @@
 ## Phase 2 — SDK 53 → 54 (~2–3 days)
 
 - [ ] `npx expo install expo@^54 --fix` (RN 0.81, React 19.1).
-- [ ] **`expo-file-system` import change:** the `expo-file-system/next` API graduated — update imports from `expo-file-system/next` → `expo-file-system` (and check the legacy API usages). **This is used by the offline photo-persistence path (`logbookDrafts.persistPhoto`) — verify photo save/load still works.**
+- [ ] **🔴 `expo-file-system` — DIRECTION CORRECTED.** This repo has **no `/next` imports**; all 7 sites use the CLASSIC API. In SDK 54 the NEW api takes the bare `expo-file-system` path and the classic one moves to **`expo-file-system/legacy`**. So rewrite these 7 imports to **`expo-file-system/legacy`** (verified `19.0.23`'s legacy build exports everything used: `documentDirectory`, `cacheDirectory`, `getInfoAsync`, `readAsStringAsync`, `writeAsStringAsync`, `makeDirectoryAsync`, `downloadAsync`, `deleteAsync`, `copyAsync`, `EncodingType`): `src/utils/docCache.js`, `src/utils/logbookDrafts.js`, `src/utils/compressPhoto.js`, `src/utils/pdfjsViewer.js`, `src/utils/api.js`, `app/reports.jsx`, `app/logbooks/daily_jobsite.jsx`. Expect deprecation warnings. ⚠️ `/legacy` is REMOVED in SDK 55 — the real rewrite is Path B's bill.
 - [ ] Bump the SWM/core libs to their SDK 54 pins (gesture-handler, screens, safe-area-context, svg, webview, async-storage 2.x) via `expo install --fix`.
-- [ ] **async-storage 1.x → 2.x is a major bump** and it's the backbone of ALL offline (drafts, project cache, offline queue) — regression-test offline drafts + check-in cache after this.
+- [ ] **async-storage 1.x → 2.2.0 — verified near no-op** (do NOT go to 3.x, which has real breaking changes). Tarball diff: the Android SQLite files (`ReactDatabaseSupplier`, `AsyncLocalStorageUtil`) are **byte-identical**, so on-device data survives; the only API change is a type widening; this app uses only `getItem`/`setItem`/`removeItem`. Still regression-test offline drafts — as confirmation, not as a budgeted risk.
 - [ ] RN 0.81 dropped bundled JSC — confirm you're on Hermes (default) or add the JSC package if anything depended on it.
 - [ ] `npx expo-doctor` clean.
 
@@ -76,9 +90,9 @@
 
 - [ ] **Flip `app.json:11` `newArchEnabled` → `false`.** (The reversal.)
 - [ ] `npx expo install react-native-nfc-manager@3.17.2` (stable RN 0.81 old-arch).
-- [ ] **vision-camera RN 0.81 Android build patch — the risky step.** vision-camera 4.7.3 hits an Android build error on RN 0.81 with no 4.7.4 released. Apply the community fix (see issue [mrousavy/react-native-vision-camera#3616](https://github.com/mrousavy/react-native-vision-camera/issues/3616) / PR [#3604](https://github.com/mrousavy/react-native-vision-camera/pull/3604)) via `patch-package` pinned to 4.7.3, OR bump to the smallest 4.7.x that builds if one has shipped by execution time. **Do this on a throwaway build first — expect iteration.**
+- [ ] ~~vision-camera patch~~ **NOT NEEDED** — 4.7.3 already contains the RN 0.81 Android fix (shipped in 4.7.2). Keep 4.7.3, write no patch. Just confirm the Android build succeeds.
 - [ ] **Remove WatermelonDB natives** (Task 7 left these for here): drop `@nozbe/watermelondb` (+ `@nozbe/*`) from `package.json`, remove the `simdjson` `extraPod` from `app.json` (`plugins → expo-build-properties → ios.extraPods`), and delete the `@nozbe/watermelondb` exclusion in `metro.config.js`. Re-lock.
-- [ ] Confirm reanimated is **held at ~3.16.x** and quick-crypto at **0.7.x** (NOT v4 / v1).
+- [ ] ⚠️ Confirm reanimated is pinned to **3.19.5** (NOT 4.x — `--fix` will try to install 4.1.1, which cannot run on legacy arch) and that **quick-crypto + @nozbe/* + the 2 babel plugins are REMOVED**.
 - [ ] **Legacy-arch verification (the whole point of the reversal) — build a dev client and confirm ON LEGACY ARCH:**
   - [ ] Reanimated animations run (any `useAnimatedStyle`/gesture screens — e.g. the camera pinch-zoom).
   - [ ] vision-camera opens, captures, and the take-snapshot path works (see `CameraCaptureModal`).
