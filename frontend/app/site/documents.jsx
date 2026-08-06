@@ -6,6 +6,7 @@ import {
   ScrollView,
   Pressable,
   TextInput,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -25,9 +26,17 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
+import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
+import { settleFetch } from '../../src/utils/offlineState';
+import {
+  cacheDocList,
+  readCachedDocList,
+  ensureCachedDocFile,
+  warmDocCache,
+} from '../../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -97,6 +106,10 @@ export default function SiteDocumentsScreen() {
   const [query, setQuery] = useState('');
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
+  // 'ok' | 'offline' | 'error' — the discriminator that keeps a dead zone from
+  // rendering the same "No Documents" an empty project renders.
+  const [fetchState, setFetchState] = useState('ok');
+  const offline = fetchState === 'offline';
 
   // Search matches the FOLDER as well as the filename, so "access" finds the
   // Access Agreements folder even when the files inside are named by address.
@@ -146,20 +159,33 @@ export default function SiteDocumentsScreen() {
 
   const fetchDocuments = async () => {
     if (!siteProject?.id) return;
+    const scopeKey = `site:${siteProject.id}`;
 
     setLoading(true);
-    try {
-      const result = await dropboxAPI.getProjectFiles(siteProject.id);
+    // Cache-FIRST: paint the saved list before the network is even attempted, so
+    // a super in a cellar sees the real documents instead of a spinner that
+    // resolves into a blank screen.
+    const cached = await readCachedDocList(scopeKey);
+    if (cached.length) setFiles(cached);
+
+    const r = await settleFetch(() => dropboxAPI.getProjectFiles(siteProject.id));
+    if (r.status === 'ok') {
       // The endpoint returns a BARE ARRAY (not {files:[...]}); reading
       // result.files left this [] always. Match the Array.isArray pattern
       // the other file consumers use.
-      setFiles(Array.isArray(result) ? result : []);
-    } catch (error) {
-      console.error('Failed to fetch documents:', error);
-      toast.error('Error', 'Could not load documents');
-    } finally {
-      setLoading(false);
+      const list = Array.isArray(r.data) ? r.data : [];
+      setFiles(list);
+      setFetchState('ok');
+      cacheDocList(scopeKey, list);
+      // Fire-and-forget: pull the PDF bytes onto the tablet while there is
+      // still signal. Never awaited — this must not hold the render path.
+      warmDocCache(list.filter((f) => isViewable(f?.name)), { limit: 15 }).catch(() => {});
+    } else {
+      // NEVER blank the list on a failed load — the cached copy is the point.
+      console.error('Failed to fetch documents:', r.error);
+      setFetchState(r.status);
     }
+    setLoading(false);
   };
 
   /**
@@ -167,17 +193,54 @@ export default function SiteDocumentsScreen() {
    * This used to `return` silently for every other type, so tapping a .docx
    * did nothing at all and read as a broken screen. Non-viewable files now say
    * so on the card and explain themselves on tap rather than swallowing it.
+   *
+   * ⚠️ .docx/.xlsx open through a REMOTE url in another app — there is no
+   * offline story for them and we don't pretend otherwise.
    */
-  const handleOpenFile = (file) => {
-    if (isViewable(file?.name)) {
-      setSelectedPdfFile(file);
+  const handleOpenFile = async (file) => {
+    const label = (extOf(file?.name) || 'This file type').toUpperCase();
+
+    if (!isViewable(file?.name)) {
+      toast.info(
+        'Can’t open on this device',
+        offline
+          ? `${label} files open over the network in another app — not available offline.`
+          : `${label} files open on a computer. Plans and agreements are PDFs and open here.`,
+      );
+      return;
+    }
+
+    // Prefer the copy already on disk. iOS' WKWebView renders a local file://
+    // straight through PDFKit, and PDFViewer already prefers `directUrl` — so
+    // pointing that at the cached uri is the whole integration.
+    const local = await ensureCachedDocFile({
+      fileId: file?.id,
+      cacheVersion: file?.cache_version ?? 0,
+      remoteUrl: file?.r2_url || file?.directUrl,
+    });
+
+    if (local && Platform.OS === 'ios') {
+      setSelectedPdfFile({ ...file, directUrl: local });
       setPdfViewerVisible(true);
       return;
     }
-    toast.info(
-      'Can’t open on this device',
-      `${(extOf(file?.name) || 'This file type').toUpperCase()} files open on a computer. Plans and agreements are PDFs and open here.`,
-    );
+
+    if (offline) {
+      // ⚠️ ANDROID LIMIT: PDFViewer.native.jsx draws Android PDFs through the
+      // REMOTE mozilla.github.io/pdf.js viewer, so even a fully cached file
+      // renders nothing without signal. Say that, rather than opening a viewer
+      // that sits blank. (Fixed by bundling a viewer natively — a rebuild.)
+      toast.info(
+        local ? 'Saved — but the viewer needs signal' : 'Not saved on this device',
+        local
+          ? 'This document is saved on this tablet. Its PDF viewer still needs a connection, so it opens as soon as you have signal.'
+          : 'No saved copy of this document is on this tablet yet. Reconnect to load it.',
+      );
+      return;
+    }
+
+    setSelectedPdfFile(file);
+    setPdfViewerVisible(true);
   };
 
   return (
@@ -246,6 +309,15 @@ export default function SiteDocumentsScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* A failed load is NOT an empty project. Say which one it was. */}
+          {!loading && fetchState !== 'ok' && (
+            <OfflineNotice
+              mode={fetchState}
+              cachedCount={files.length}
+              style={s.offlineBanner}
+            />
+          )}
+
           {loading ? (
             <View style={s.loadingContainer}>
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
@@ -308,7 +380,9 @@ export default function SiteDocumentsScreen() {
                 </View>
               </View>
             ))
-          ) : (
+          ) : (query || fetchState === 'ok') ? (
+            /* "No Documents" ONLY when the server actually answered with none —
+               otherwise the banner above is the whole story. */
             <GlassCard style={s.emptyCard}>
               <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
               <Text style={s.emptyText}>
@@ -320,7 +394,7 @@ export default function SiteDocumentsScreen() {
                   : 'Documents will appear here when added'}
               </Text>
             </GlassCard>
-          )}
+          ) : null}
         </ScrollView>
 
         <PDFViewer
@@ -439,6 +513,7 @@ function buildStyles(colors, isDark) {
   loadingContainer: {
     gap: spacing.md,
   },
+  offlineBanner: { marginBottom: spacing.md },
   folderBlock: { marginBottom: spacing.xl },
   folderHeader: {
     flexDirection: 'row',

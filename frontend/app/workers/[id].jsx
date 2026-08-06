@@ -43,12 +43,61 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useWorkers } from '../../src/hooks/useWorkers';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
+import OfflineNotice from '../../src/components/OfflineNotice';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import HeaderBrand from '../../src/components/HeaderBrand';
 import { expiryStatus, expirySuffix } from '../../src/utils/expiry';
+import { settleFetch } from '../../src/utils/offlineState';
+
+/**
+ * OFFLINE SST/OSHA CARD.
+ *
+ * This screen was online-only: a dead zone produced "Could not load worker
+ * details" plus an empty card slot that reads as "this worker has no SST card"
+ * — the worst possible answer to hand a DOB inspector or a CP at the gate.
+ *
+ * The card image arrives base64-INLINE in the /osha-card response (not a file
+ * URL), so caching it needs nothing but AsyncStorage — no FileSystem, no native
+ * module, OTA-deliverable. Same write-through/read-back shape as projectCache.
+ */
+const WORKER_PREFIX = 'bv_worker:';
+const WORKER_OSHA_PREFIX = 'bv_worker_osha:';
+
+async function cacheWorkerDetail(workerId, data) {
+  if (!workerId || !data) return;
+  try {
+    await AsyncStorage.setItem(`${WORKER_PREFIX}${workerId}`, JSON.stringify(data));
+  } catch (_e) { /* non-fatal — the network read still succeeded */ }
+}
+
+async function readCachedWorkerDetail(workerId) {
+  try {
+    const raw = await AsyncStorage.getItem(`${WORKER_PREFIX}${workerId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/** The base64 card image + parsed fields, keyed per worker. */
+async function cacheWorkerOsha(workerId, data) {
+  if (!workerId || !data) return;
+  try {
+    await AsyncStorage.setItem(`${WORKER_OSHA_PREFIX}${workerId}`, JSON.stringify(data));
+  } catch (_e) { /* non-fatal */ }
+}
+
+async function readCachedWorkerOsha(workerId) {
+  try {
+    const raw = await AsyncStorage.getItem(`${WORKER_OSHA_PREFIX}${workerId}`);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_e) {
+    return null;
+  }
+}
 
 export default function WorkerDetailScreen() {
   const { colors, isDark } = useTheme();
@@ -87,6 +136,11 @@ export default function WorkerDetailScreen() {
   const [loadingOsha, setLoadingOsha] = useState(false);
   const [showOshaCard, setShowOshaCard] = useState(false);
   const [expandedOrientation, setExpandedOrientation] = useState(null);
+
+  // 'ok' | 'offline' | 'error' per fetch, so a failed load is never rendered
+  // as "no card on file" / "no orientations".
+  const [detailState, setDetailState] = useState('ok');
+  const [oshaState, setOshaState] = useState('ok');
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
@@ -136,46 +190,70 @@ export default function WorkerDetailScreen() {
     }
   }, [isAuthenticated, workerId]);
 
+  const applyWorker = (workerData) => {
+    setWorker(workerData);
+    setName(workerData.name || '');
+    setTrade(workerData.trade || '');
+    setCompany(workerData.company || '');
+    setOshaNumber(workerData.osha_number || workerData.oshaNumber || '');
+    setCertifications(workerData.certifications || []);
+    setSignature(workerData.signature || null);
+  };
+
   const fetchWorker = async () => {
-  try {
-    let workerData = await getWorkerById(workerId);
-    if (!workerData || !workerData.signature) {
-      workerData = await workersAPI.getById(workerId);
+    // getWorkerById() swallows its own error and returns null, so the
+    // workersAPI call below is what actually surfaces the offline rejection.
+    const r = await settleFetch(async () => {
+      let workerData = await getWorkerById(workerId);
+      if (!workerData || !workerData.signature) {
+        workerData = await workersAPI.getById(workerId);
+      }
+      return workerData;
+    });
+
+    if (r.status === 'ok' && r.data) {
+      applyWorker(r.data);
+      setDetailState('ok');
+      cacheWorkerDetail(workerId, r.data); // write-through
+    } else {
+      console.error('Failed to fetch worker:', r.error);
+      const cached = await readCachedWorkerDetail(workerId);
+      if (cached) applyWorker(cached);
+      setDetailState(r.status === 'ok' ? 'error' : r.status);
     }
-      setWorker(workerData);
-      setName(workerData.name || '');
-      setTrade(workerData.trade || '');
-      setCompany(workerData.company || '');
-      setOshaNumber(workerData.osha_number || workerData.oshaNumber || '');
-      setCertifications(workerData.certifications || []);
-      setSignature(workerData.signature || null);
-    } catch (error) {
-      console.error('Failed to fetch worker:', error);
-      toast.error('Error', 'Could not load worker details');
-    } finally {
-      setLoading(false);
+    setLoading(false);
+  };
+
+  const applyOsha = (data) => {
+    setOshaCardImage(data.osha_card_image || null);
+    setOshaData(data.osha_data || null);
+    setSafetyOrientations(data.safety_orientations || []);
+    // Only overwrite a signature we already have when this payload carries one.
+    if (data.signature) setSignature(data.signature);
+    if (data.osha_number && !oshaNumber) {
+      setOshaNumber(data.osha_number);
     }
   };
 
   const fetchOshaData = async () => {
     setLoadingOsha(true);
-    try {
-      // Use centralized API utility to handle tokens and headers automatically
-      const data = await workersAPI.getOshaCard(workerId);
-      
-      setOshaCardImage(data.osha_card_image || null);
-      setOshaData(data.osha_data || null);
-      setSafetyOrientations(data.safety_orientations || []);
-      setSignature(data.signature || null);
-      
-      if (data.osha_number && !oshaNumber) {
-        setOshaNumber(data.osha_number);
-      }
-    } catch (error) {
-      console.error('Failed to fetch OSHA data:', error);
-    } finally {
-      setLoadingOsha(false);
+    // Use centralized API utility to handle tokens and headers automatically
+    const r = await settleFetch(() => workersAPI.getOshaCard(workerId));
+
+    if (r.status === 'ok' && r.data) {
+      applyOsha(r.data);
+      setSignature(r.data.signature || null);
+      setOshaState('ok');
+      // The card image is base64 inline in this payload — caching the payload
+      // caches the card itself.
+      cacheWorkerOsha(workerId, r.data);
+    } else {
+      console.error('Failed to fetch OSHA data:', r.error);
+      const cached = await readCachedWorkerOsha(workerId);
+      if (cached) applyOsha(cached);
+      setOshaState(r.status === 'ok' ? 'error' : r.status);
     }
+    setLoadingOsha(false);
   };
 
   const handleSave = async () => {
@@ -280,6 +358,50 @@ export default function WorkerDetailScreen() {
     );
   }
 
+  // Load failed AND nothing cached for this worker — say that, rather than
+  // rendering a blank profile that looks like a worker with no details.
+  if (!worker) {
+    return (
+      <AnimatedBackground>
+        <SafeAreaView style={s.container} edges={['top']}>
+          <View style={s.header}>
+            <View style={s.headerLeft}>
+              <GlassButton
+                variant="icon"
+                icon={<ArrowLeft size={20} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={() => router.back()}
+              />
+              <HeaderBrand />
+            </View>
+            <View style={s.headerRight}>
+              <OfflineIndicator />
+            </View>
+          </View>
+          <View style={s.scrollContent}>
+            <OfflineNotice
+              mode={detailState === 'error' ? 'error' : 'offline'}
+              detail={
+                detailState === 'error'
+                  ? 'Could not load this worker. Try again.'
+                  : "This worker has not been opened on this device while online, so there is no saved copy. Reconnect to load their card. This is NOT a statement that the worker has no SST card."
+              }
+            />
+            <GlassButton
+              title="Retry"
+              onPress={() => {
+                setLoading(true);
+                fetchWorker().then(() => {
+                  if (canViewOsha) fetchOshaData();
+                });
+              }}
+              style={s.retryBtn}
+            />
+          </View>
+        </SafeAreaView>
+      </AnimatedBackground>
+    );
+  }
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -294,7 +416,9 @@ export default function WorkerDetailScreen() {
           </View>
           <View style={s.headerRight}>
             <OfflineIndicator />
-            {isAdmin && !editMode && (
+            {/* Editing is hidden on a cached/failed read: the record on screen
+                may be stale and the write needs the network anyway. */}
+            {isAdmin && !editMode && detailState === 'ok' && (
               <GlassButton
                 variant="icon"
                 icon={<Edit3 size={18} strokeWidth={1.5} color={colors.text.primary} />}
@@ -309,6 +433,18 @@ export default function WorkerDetailScreen() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {detailState !== 'ok' && (
+            <OfflineNotice
+              mode={detailState}
+              cachedCount={1}
+              detail={
+                detailState === 'error'
+                  ? 'Could not refresh this worker. Showing the last saved copy from this device.'
+                  : 'Offline — showing the copy saved on this device. Reconnect to refresh. Edits cannot be saved offline.'
+              }
+            />
+          )}
+
           <GlassCard style={s.profileCard}>
             <View style={s.avatarContainer}>
               <View style={s.avatar}>
@@ -458,12 +594,37 @@ export default function WorkerDetailScreen() {
                     </View>
                   )}
                 </GlassCard>
+              ) : oshaState !== 'ok' ? (
+                // NEVER "No OSHA card on file" for a FAILED load — that asserts
+                // to an inspector that the worker is uncertified.
+                <OfflineNotice
+                  mode={oshaState}
+                  detail={
+                    oshaState === 'error'
+                      ? 'Could not load this card. This is not a statement that no card exists — try again.'
+                      : "Card not saved on this device yet. Reconnect to load it. This is NOT a statement that the worker has no card."
+                  }
+                />
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <CreditCard size={32} strokeWidth={1} color={colors.text.subtle} />
                   <Text style={s.emptyText}>No OSHA card on file</Text>
                   <Text style={s.emptySubtext}>Worker will upload during NFC check-in</Text>
                 </GlassCard>
+              )}
+
+              {/* Card IS on screen but came from the cache — say so, so nobody
+                  reads a stale expiry as freshly verified. */}
+              {oshaState !== 'ok' && oshaCardImage && (
+                <OfflineNotice
+                  mode={oshaState}
+                  cachedCount={1}
+                  detail={
+                    oshaState === 'error'
+                      ? 'Could not refresh — this is the last saved copy of the card.'
+                      : 'Offline — this is the copy of the card saved on this device. Reconnect to re-verify.'
+                  }
+                />
               )}
 
               {/* PR B: the SST credential is still flagged for review even after
@@ -541,6 +702,16 @@ export default function WorkerDetailScreen() {
                     </GlassCard>
                   ))}
                 </View>
+              ) : oshaState !== 'ok' ? (
+                // Same fetch as the card — a failure here is not "none exist".
+                <OfflineNotice
+                  mode={oshaState}
+                  detail={
+                    oshaState === 'error'
+                      ? 'Could not load orientation records. This does not mean none exist.'
+                      : 'Orientation records are not saved on this device. Reconnect to load them — this does not mean none exist.'
+                  }
+                />
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <ShieldCheck size={32} strokeWidth={1} color={colors.text.subtle} />
@@ -833,6 +1004,10 @@ function buildStyles(colors, isDark) {
   },
   cancelBtn: {
     opacity: 0.7,
+  },
+  retryBtn: {
+    marginTop: spacing.md,
+    alignSelf: 'flex-start',
   },
   section: {
     marginBottom: spacing.xl,

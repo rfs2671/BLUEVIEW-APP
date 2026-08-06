@@ -39,6 +39,9 @@ import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import GroupConfigPanel, { isConfigNonDefault } from '../../../src/components/whatsapp/GroupConfigPanel';
 import { withAlpha } from '../../../src/styles/semanticColors';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { readCachedProject } from '../../../src/utils/projectCache';
+import { settleFetch } from '../../../src/utils/offlineState';
 
 const WHATSAPP_GREEN = '#25D366';
 const COUNTDOWN_SECONDS = 300; // 5 minutes
@@ -57,6 +60,10 @@ export default function WhatsAppGroupsScreen() {
   const [whatsappStatus, setWhatsappStatus] = useState(null);
   const [unlinking, setUnlinking] = useState(null);
   const [configOpenId, setConfigOpenId] = useState(null);  // groupId whose config panel is expanded
+  // 'ok' | 'offline' | 'error'. Every fetch here used to .catch(() => null/[]),
+  // so a dead zone rendered "No groups linked yet" — a false claim.
+  const [fetchState, setFetchState] = useState('ok');
+  const readOnly = fetchState !== 'ok';
 
   // Document index state (Sprint 3)
   const [indexStatus, setIndexStatus] = useState(null);  // {qwen_configured, files:[...]}
@@ -113,18 +120,38 @@ export default function WhatsAppGroupsScreen() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, groupsData, waStatus, idxStatus] = await Promise.all([
-        projectsAPI.getById(projectId).catch(() => null),
-        whatsappAPI.getGroups(projectId).catch(() => []),
+      const [projectRes, groupsRes, waStatus, idxStatus] = await Promise.all([
+        settleFetch(() => projectsAPI.getById(projectId)),
+        settleFetch(() => whatsappAPI.getGroups(projectId)),
         whatsappAPI.getStatus().catch(() => null),
         documentsAPI.getIndexStatus(projectId).catch(() => null),
       ]);
+
+      // Offline fallback for the project name/header — cacheProject() already
+      // stored it from the project list/detail screens.
+      let projectData = projectRes.data;
+      if (projectRes.status !== 'ok') {
+        console.warn('Project fetch failed, using device cache:', projectRes.error?.message);
+        projectData = await readCachedProject(projectId);
+      }
+
+      // The GROUP list itself is server-only (no cache): the honest offline
+      // answer is "unknown", never an empty roster.
+      const netState =
+        groupsRes.status !== 'ok'
+          ? groupsRes.status
+          : projectRes.status !== 'ok'
+            ? projectRes.status
+            : 'ok';
+      setFetchState(netState);
+
       setProject(projectData);
-      setGroups(Array.isArray(groupsData) ? groupsData : []);
+      setGroups(Array.isArray(groupsRes.data) ? groupsRes.data : []);
       setWhatsappStatus(waStatus);
       setIndexStatus(idxStatus);
     } catch (error) {
       console.error('Failed to fetch data:', error);
+      setFetchState('error');
       toast.error('Load Error', 'Could not load WhatsApp groups');
     } finally {
       setLoading(false);
@@ -284,11 +311,32 @@ export default function WhatsAppGroupsScreen() {
             </View>
           ) : (
             <>
-              {/* Link a Group Button */}
+              {readOnly && (
+                <>
+                  <OfflineNotice
+                    mode={fetchState}
+                    detail={
+                      fetchState === 'error'
+                        ? 'Could not load the linked groups. This is NOT a statement that no groups are linked.'
+                        : 'Offline — the linked groups for this project could not be read, and linking a group needs a live connection to WhatsApp. This is NOT a statement that no groups are linked.'
+                    }
+                  />
+                  <GlassButton
+                    title="Retry"
+                    icon={<RotateCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                    onPress={fetchData}
+                    style={s.retryBtn}
+                  />
+                </>
+              )}
+
+              {/* Link a Group Button — the whole flow is a live handshake
+                  (code generation + verification), so it is unusable offline. */}
               <GlassButton
-                title="+ Link a Group"
+                title={readOnly ? 'Linking needs a connection' : '+ Link a Group'}
                 icon={<Plus size={18} strokeWidth={1.5} color={colors.text.primary} />}
                 onPress={handleOpenLinkModal}
+                disabled={readOnly}
                 style={s.linkButton}
               />
 
@@ -384,6 +432,14 @@ export default function WhatsAppGroupsScreen() {
                     );
                   })}
                 </View>
+              ) : readOnly ? (
+                <GlassCard style={s.emptyCard}>
+                  <MessageCircle size={48} strokeWidth={1} color={colors.text.subtle} />
+                  <Text style={s.emptyTitle}>Groups unavailable</Text>
+                  <Text style={s.emptyDesc}>
+                    Reconnect to see which WhatsApp groups are linked to this project.
+                  </Text>
+                </GlassCard>
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <MessageCircle size={48} strokeWidth={1} color={colors.text.subtle} />
@@ -646,6 +702,10 @@ function buildStyles(colors, isDark) {
       fontSize: 14,
     },
     linkButton: {
+      marginBottom: spacing.lg,
+    },
+    retryBtn: {
+      alignSelf: 'flex-start',
       marginBottom: spacing.lg,
     },
     groupsList: {

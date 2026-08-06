@@ -39,9 +39,18 @@ import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard'
 import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
+import OfflineNotice from '../../../src/components/OfflineNotice';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI } from '../../../src/utils/api';
+import { settleFetch } from '../../../src/utils/offlineState';
+import { cacheProject, readCachedProject } from '../../../src/utils/projectCache';
+import {
+  cacheDocList,
+  readCachedDocList,
+  ensureCachedDocFile,
+  warmDocCache,
+} from '../../../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -51,6 +60,11 @@ import HeaderBrand from '../../../src/components/HeaderBrand';
 import ConfirmDialog from '../../../src/components/ConfirmDialog';
 
 const DROPBOX_BLUE = '#0061FF';
+
+const extOf = (filename) => String(filename || '').split('.').pop()?.toLowerCase() || '';
+// PDFs are the only type with an offline story — everything else is handed to
+// another app via a REMOTE url and cannot open without a connection.
+const isPdf = (filename) => extOf(filename) === 'pdf';
 
 // File type icons and colors
 const getFileTypeInfo = (filename) => {
@@ -102,6 +116,12 @@ export default function ConstructionPlansScreen() {
   const [uploading, setUploading] = useState(false);
   const [fileToDelete, setFileToDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // 'ok' | 'offline' | 'error'. This screen used to swallow the failure with
+  // `.catch(() => [])`, which rendered a silent blank plan list.
+  const [fetchState, setFetchState] = useState('ok');
+  const offline = fetchState === 'offline';
+
+  const scopeKey = `plans:${projectId}`;
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -117,23 +137,52 @@ export default function ConstructionPlansScreen() {
     }
   }, [isAuthenticated, projectId]);
 
+  /** Write-through: every successful list read refreshes the offline copy. */
+  const adoptFiles = (list) => {
+    const arr = Array.isArray(list) ? list : [];
+    setFiles(arr);
+    setFetchState('ok');
+    cacheDocList(scopeKey, arr);
+    // Fire-and-forget byte warm — the plans land on disk while there is signal.
+    warmDocCache(arr.filter((f) => isPdf(f?.name)), { limit: 15 }).catch(() => {});
+  };
+
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [projectData, filesData] = await Promise.all([
-        projectsAPI.getById(projectId).catch(() => null),
-        dropboxAPI.getProjectFiles(projectId).catch(() => []),
-      ]);
 
-      setProject(projectData);
-      setFiles(Array.isArray(filesData) ? filesData : []);
-      setLastSynced(projectData?.dropbox_last_synced);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Load Error', 'Could not load files');
-    } finally {
-      setLoading(false);
+    // Cache-FIRST so the plan list is on screen before the network is tried.
+    const cached = await readCachedDocList(scopeKey);
+    if (cached.length) setFiles(cached);
+
+    const [projRes, filesRes] = await Promise.all([
+      settleFetch(() => projectsAPI.getById(projectId)),
+      settleFetch(() => dropboxAPI.getProjectFiles(projectId)),
+    ]);
+
+    if (projRes.status === 'ok' && projRes.data) {
+      setProject(projRes.data);
+      setLastSynced(projRes.data?.dropbox_last_synced);
+      cacheProject(projRes.data);
+    } else {
+      // Prefer the cached project over a blind re-fetch — the header name and
+      // `dropbox_folder_path` (which picks the empty state below) come from it.
+      const cachedProject = await readCachedProject(projectId);
+      if (cachedProject) {
+        setProject(cachedProject);
+        setLastSynced(cachedProject?.dropbox_last_synced);
+      }
     }
+
+    if (filesRes.status === 'ok') {
+      adoptFiles(filesRes.data);
+    } else {
+      // KEEP the cached list. The old `.catch(() => [])` here is exactly the
+      // silent blank this screen is being fixed for.
+      console.error('Failed to fetch data:', filesRes.error);
+      setFetchState(filesRes.status);
+    }
+
+    setLoading(false);
   };
 
   const handleSync = async () => {
@@ -142,7 +191,7 @@ export default function ConstructionPlansScreen() {
     try {
       await dropboxAPI.syncProject(projectId);
       const filesData = await dropboxAPI.getProjectFiles(projectId);
-      setFiles(Array.isArray(filesData) ? filesData : []);
+      adoptFiles(filesData);
       setLastSynced(new Date().toISOString());
       setSyncStatus('success');
       toast.success('Synced', 'Files synchronized from Dropbox');
@@ -157,11 +206,14 @@ export default function ConstructionPlansScreen() {
   };
 
   const fetchFiles = async () => {
-    try {
-      const filesData = await dropboxAPI.getProjectFiles(projectId);
-      setFiles(Array.isArray(filesData) ? filesData : []);
-    } catch (error) {
-      console.error('Failed to refresh files:', error);
+    const r = await settleFetch(() => dropboxAPI.getProjectFiles(projectId));
+    if (r.status === 'ok') {
+      adoptFiles(r.data);
+    } else {
+      // Keep the list that is already on screen; a refresh that fails must not
+      // erase the plans the user can still see.
+      console.error('Failed to refresh files:', r.error);
+      setFetchState(r.status);
     }
   };
 
@@ -232,11 +284,50 @@ export default function ConstructionPlansScreen() {
   };
 
   const handleViewFile = async (file) => {
-    const ext = file.name?.split('.').pop()?.toLowerCase();
+    const ext = extOf(file.name);
     if (ext === 'pdf') {
+      // Prefer the copy already on disk. PDFViewer prefers `directUrl`, so
+      // pointing that at the cached uri is the whole integration — and iOS'
+      // WKWebView renders a local file:// through PDFKit with no network.
+      const local = await ensureCachedDocFile({
+        fileId: file?.id || file?._id,
+        cacheVersion: file?.cache_version ?? 0,
+        remoteUrl: file?.r2_url || file?.directUrl,
+      });
+
+      if (local && Platform.OS === 'ios') {
+        setSelectedPdfFile({ ...file, directUrl: local });
+        setPdfViewerVisible(true);
+        return;
+      }
+
+      if (offline) {
+        // ⚠️ ANDROID LIMIT: PDFViewer.native.jsx renders Android PDFs through
+        // the REMOTE mozilla.github.io/pdf.js viewer, so a cached plan still
+        // draws nothing offline. Say so rather than opening a blank viewer.
+        // (Only a natively bundled viewer fixes this — a rebuild, not OTA.)
+        toast.info(
+          local ? 'Saved — but the viewer needs signal' : 'Not saved on this device',
+          local
+            ? 'This plan is saved on this device. Its PDF viewer still needs a connection, so it opens as soon as you reconnect.'
+            : 'No saved copy of this plan is on this device yet. Reconnect to load it.',
+        );
+        return;
+      }
+
       // If file has r2_url, pass it directly instead of calling getFileUrl
       setSelectedPdfFile(file.r2_url ? { ...file, directUrl: file.r2_url } : file);
       setPdfViewerVisible(true);
+      return;
+    }
+
+    // ⚠️ NON-PDF LIMIT: .docx/.xlsx are handed to another app via a REMOTE url.
+    // There is no offline path for them, so don't let the tap just fail.
+    if (offline) {
+      toast.info(
+        'Not available offline',
+        `${(ext || 'This file type').toUpperCase()} files open in another app over the network. Reconnect to open ${file.name}.`,
+      );
       return;
     }
 
@@ -254,6 +345,12 @@ export default function ConstructionPlansScreen() {
   };
 
   const handleDownloadFile = async (file) => {
+    // Downloading hands a REMOTE url to the OS — there is nothing to hand it
+    // offline, cached bytes or not. Don't dead-end the tap.
+    if (offline) {
+      toast.info('Not available offline', 'Downloads need a connection. Reconnect and try again.');
+      return;
+    }
     try {
       // Direct-upload files carry their download URL on the record itself;
       // only fall back to the Dropbox temp-link endpoint for synced files.
@@ -423,8 +520,19 @@ export default function ConstructionPlansScreen() {
                 </View>
               )}
 
-              {/* File list or empty state */}
-              {files.length === 0 && !project?.dropbox_folder_path ? (
+              {/* A failed load is not an empty project. Disclose which it was,
+                  above the list (or the absence of one) it describes. */}
+              {fetchState !== 'ok' && (
+                <OfflineNotice
+                  mode={fetchState}
+                  cachedCount={files.length}
+                  style={s.mb12}
+                />
+              )}
+
+              {/* File list or empty state — the "No Files" cards render ONLY
+                  when the server actually answered with none. */}
+              {fetchState !== 'ok' ? null : files.length === 0 && !project?.dropbox_folder_path ? (
                 <GlassCard style={s.notLinkedCard}>
                   <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
                   <Text style={s.notLinkedTitle}>No Files Yet</Text>
@@ -571,7 +679,7 @@ export default function ConstructionPlansScreen() {
                       </Pressable>
                     );
                   })
-                ) : (
+                ) : (searchQuery || filterType !== 'all' || fetchState === 'ok') ? (
                   <View style={s.emptyFiles}>
                     <FolderOpen size={48} strokeWidth={1} color={colors.text.subtle} />
                     <Text style={s.emptyText}>
@@ -579,14 +687,18 @@ export default function ConstructionPlansScreen() {
                         ? 'No files match your search'
                         : 'No files in this folder'}
                     </Text>
-                    <GlassButton
-                      title="Sync from Dropbox"
-                      icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
-                      onPress={handleSync}
-                      loading={syncing}
-                    />
+                    {/* Syncing needs the network — don't offer it when the last
+                        load already told us there isn't any. */}
+                    {fetchState === 'ok' && (
+                      <GlassButton
+                        title="Sync from Dropbox"
+                        icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                        onPress={handleSync}
+                        loading={syncing}
+                      />
+                    )}
                   </View>
-                )}
+                ) : null}
               </View>
             </>
           )}

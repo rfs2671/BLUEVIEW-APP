@@ -15,9 +15,15 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SiteNav from '../../src/components/SiteNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
-import { logbooksAPI, getToken } from '../../src/utils/api';
+import { logbooksAPI } from '../../src/utils/api';
+import {
+  cacheDocList, readCachedDocList, ensureCachedDocFile, warmDocCache,
+} from '../../src/utils/docCache';
+import { settleFetch } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -28,17 +34,35 @@ const LOG_TABS = [
   { key: 'preshift_signin', label: 'Pre-Shift Sign-In', icon: Users, color: semantic.neutral },
 ];
 
+// How many days of submitted records we keep on the device. AsyncStorage is
+// not a filesystem — an unbounded write on a long-running project eventually
+// fails, and a failed write means NOTHING is here in the dead zone.
+const CACHE_DATE_LIMIT = 60;
+
+// ⚠️ ANDROID LIMIT — PDFViewer.native.jsx renders Android PDFs through a
+// REMOTE viewer (mozilla.github.io/pdf.js), so on Android there is nothing on
+// the device that can draw a cached PDF until a viewer ships in a native
+// build. We still cache the bytes (ready for that build); offline we say this
+// plainly rather than opening a viewer that will spin forever.
+const ANDROID_OFFLINE_PDF_MSG =
+  'PDF viewing offline requires the next app update — the record is listed above and its PDF is saved on this device.';
+
 export default function SiteLogbooksViewer() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const { isLocked, unlock } = useInspectorLock();
+  const toast = useToast();
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('daily_jobsite');
   const [logsByDate, setLogsByDate] = useState({});
   const [expandedDate, setExpandedDate] = useState(null);
+  // 'ok' | 'offline' | 'error' — how the LAST server read went. This is the
+  // whole point of the screen: a failed read must NEVER render as "No
+  // Submitted Logs", which tells a DOB inspector no compliance records exist.
+  const [fetchState, setFetchState] = useState('ok');
 
   // Inspector Mode — plain toggle, no PIN. Releasing it restores full
   // navigation and drops the device back on the site dashboard.
@@ -62,56 +86,215 @@ export default function SiteLogbooksViewer() {
     }
   }, [isAuthenticated, siteMode, siteProject]);
 
+  // ===========================================================================
+  //  LIST — cache-first, and a failed read NEVER empties the screen
+  // ===========================================================================
+
+  const scopeKey = siteProject?.id ? `site_logbooks:${siteProject.id}` : '';
+
+  // cacheDocList only stores arrays, so the {date: logs} map round-trips as an
+  // array of {date, logs} entries.
+  const datesToList = (dates) => Object.entries(dates || {})
+    .map(([date, logs]) => ({ date, logs: Array.isArray(logs) ? logs : [] }))
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, CACHE_DATE_LIMIT);
+
+  const listToDates = (list) => {
+    const out = {};
+    for (const entry of (Array.isArray(list) ? list : [])) {
+      if (entry?.date && Array.isArray(entry.logs)) out[entry.date] = entry.logs;
+    }
+    return out;
+  };
+
+  // Inline activity photos are base64 blobs — megabytes each. If the full
+  // write is rejected, drop them and keep the compliance TEXT, which is what
+  // an inspector is actually reading.
+  const stripPhotoBlobs = (list) => list.map((entry) => ({
+    date: entry.date,
+    logs: (entry.logs || []).map((log) => {
+      const activities = log?.data?.activities;
+      if (!Array.isArray(activities)) return log;
+      return {
+        ...log,
+        data: {
+          ...log.data,
+          activities: activities.map((act) => (
+            Array.isArray(act?.photos)
+              ? { ...act, photos: act.photos.map(({ base64, ...rest }) => rest) }
+              : act
+          )),
+        },
+      };
+    }),
+  }));
+
+  const writeListThrough = async (list) => {
+    if (await cacheDocList(scopeKey, list)) return;
+    await cacheDocList(scopeKey, stripPhotoBlobs(list));
+  };
+
+  const flattenLogs = (dates) => Object.values(dates || {}).flat();
+
+  // Immutable once submitted, but an amendment bumps updated_at — key the
+  // cached bytes on it so a corrected record re-downloads instead of serving
+  // a stale PDF.
+  const pdfVersion = (log) => String(log?.updated_at || log?.submitted_at || log?.created_at || '0');
+
+  // 🔒 Relative API paths only. The JWT rides in the Authorization HEADER
+  // (docCache does this), never in a URL — a URL-borne token leaks into
+  // browser history, the share sheet and crash logs.
+  const logPdfPath = (logbookId) => `/api/reports/logbook/${logbookId}/pdf`;
+  const dayPdfPath = (date) => `/api/reports/project/${siteProject?.id}/date/${date}/pdf`;
+
   const fetchLogbooks = async () => {
     setLoading(true);
-    try {
-      const result = await logbooksAPI.getSubmitted(siteProject.id);
-      setLogsByDate(result?.dates || {});
-    } catch (e) {
-      console.error('Failed to fetch logbooks:', e);
-      setLogsByDate({});
-    } finally {
+
+    // 1. CACHE FIRST — paint whatever this device already holds before the
+    //    network is touched, so a dead zone shows records immediately.
+    const cachedDates = listToDates(await readCachedDocList(scopeKey));
+    if (Object.keys(cachedDates).length > 0) {
+      setLogsByDate(cachedDates);
       setLoading(false);
     }
+
+    // 2. Then refresh. On failure we KEEP the cached list — the old
+    //    `setLogsByDate({})` was the bug: offline it rendered a confident
+    //    "No Submitted Logs" to a DOB inspector.
+    const r = await settleFetch(() => logbooksAPI.getSubmitted(siteProject.id));
+    setFetchState(r.status);
+
+    if (r.status === 'ok') {
+      const dates = r.data?.dates || {};
+      setLogsByDate(dates);
+      const list = datesToList(dates);
+      writeListThrough(list).catch(() => {});
+
+      // 3. Fire-and-forget: put each submitted log's PDF on disk so the
+      //    bytes are here in the dead zone. NOT awaited — never on the
+      //    render path.
+      const submitted = flattenLogs(dates).filter(l => l.status === 'submitted' && (l.id || l._id));
+      warmDocCache(submitted, {
+        idOf: (l) => l.id || l._id,
+        versionOf: pdfVersion,
+        urlOf: (l) => logPdfPath(l.id || l._id),
+      }).catch(() => {});
+    } else {
+      console.warn(
+        `Logbooks load ${r.status} — keeping ${Object.keys(cachedDates).length} cached date(s)`,
+        r.error,
+      );
+    }
+
+    setLoading(false);
   };
 
-  // PDF handlers
-  const BASE_URL = 'https://api.levelog.com';
+  // ===========================================================================
+  //  PDF handlers — local file only, no token in any URL
+  // ===========================================================================
 
-  const handleViewLogPdf = async (logbookId) => {
+  const notify = (type, title, message) => {
+    if (toast && typeof toast[type] === 'function') toast[type](title, message);
+    else console.warn(`${title}: ${message}`);
+  };
+
+  // Hand the OS a LOCAL file. iOS previews a file:// PDF directly; Android
+  // goes through expo-sharing's FileProvider. Nothing token-bearing leaves
+  // the app.
+  const openLocalPdf = async (uri, filename) => {
+    const Sharing = require('expo-sharing');
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(uri, {
+        mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: filename,
+      });
+      return true;
+    }
+    if (Platform.OS === 'ios') {
+      await Linking.openURL(uri);
+      return true;
+    }
+    return false;
+  };
+
+  const handleViewLogPdf = async (log, date) => {
+    const logbookId = log?.id || log?._id;
+    if (!logbookId) return;
     try {
-      const token = await getToken();
-      const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
-      await Linking.openURL(url);
+      const local = await ensureCachedDocFile({
+        fileId: logbookId,
+        cacheVersion: pdfVersion(log),
+        remoteUrl: logPdfPath(logbookId),
+      });
+      if (!local) {
+        notify('warning', 'PDF not on this device',
+          'This PDF has not been saved here yet — reconnect to download it. The record itself is shown above.');
+        return;
+      }
+      // ⚠️ ANDROID LIMIT — see ANDROID_OFFLINE_PDF_MSG.
+      if (Platform.OS === 'android' && fetchState === 'offline') {
+        notify('info', 'Saved on this device', ANDROID_OFFLINE_PDF_MSG);
+        return;
+      }
+      const filename = `LeveLog_${log.log_type || 'log'}_${log.date || date}.pdf`;
+      if (!(await openLocalPdf(local, filename))) {
+        notify('warning', 'Cannot open PDF here', ANDROID_OFFLINE_PDF_MSG);
+      }
     } catch (e) {
       console.error('PDF open failed:', e);
+      notify('error', 'Could not open PDF', 'The record is shown above.');
     }
   };
 
-  const handleShareLogPdf = async (logbookId, logType, date) => {
+  const handleShareLogPdf = async (log, date) => {
+    const logbookId = log?.id || log?._id;
+    if (!logbookId) return;
     try {
-      const Sharing = require('expo-sharing');
-      const FileSystem = require('expo-file-system');
-      const token = await getToken();
-      const url = `${BASE_URL}/api/reports/logbook/${logbookId}/pdf?token=${token}`;
-      const filename = `LeveLog_${logType}_${date}.pdf`;
-      const fileUri = FileSystem.cacheDirectory + filename;
-      const download = await FileSystem.downloadAsync(url, fileUri);
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(download.uri, { mimeType: 'application/pdf', dialogTitle: 'Share Logbook PDF' });
+      const local = await ensureCachedDocFile({
+        fileId: logbookId,
+        cacheVersion: pdfVersion(log),
+        remoteUrl: logPdfPath(logbookId),
+      });
+      if (!local) {
+        notify('warning', 'PDF not on this device', 'Reconnect to download this PDF before sharing it.');
+        return;
+      }
+      const filename = `LeveLog_${log.log_type || 'log'}_${log.date || date}.pdf`;
+      if (!(await openLocalPdf(local, filename))) {
+        notify('warning', 'Sharing unavailable', 'This device cannot share files.');
       }
     } catch (e) {
       console.error('PDF share failed:', e);
+      notify('error', 'Could not share PDF', 'The record is shown above.');
     }
   };
 
   const handleCombinedPdf = async (date) => {
+    if (!siteProject?.id) return;
     try {
-      const token = await getToken();
-      const url = `${BASE_URL}/api/reports/project/${siteProject.id}/date/${date}/pdf?token=${token}`;
-      await Linking.openURL(url);
+      // The full-day report is generated server-side, so offline it exists
+      // only if a previous open cached it. Same header auth, same local open.
+      // Version it on the newest log of the day so an amendment re-downloads.
+      const dayVersion = (logsByDate?.[date] || []).map(pdfVersion).sort().pop() || date;
+      const local = await ensureCachedDocFile({
+        fileId: `day_${siteProject.id}_${date}`,
+        cacheVersion: dayVersion,
+        remoteUrl: dayPdfPath(date),
+      });
+      if (!local) {
+        notify('warning', 'Full day report unavailable offline',
+          'This combined report is built on the server — reconnect to generate it. The individual records are shown below.');
+        return;
+      }
+      if (Platform.OS === 'android' && fetchState === 'offline') {
+        notify('info', 'Saved on this device', ANDROID_OFFLINE_PDF_MSG);
+        return;
+      }
+      if (!(await openLocalPdf(local, `LeveLog_FullDay_${date}.pdf`))) {
+        notify('warning', 'Cannot open PDF here', ANDROID_OFFLINE_PDF_MSG);
+      }
     } catch (e) {
       console.error('Combined PDF failed:', e);
+      notify('error', 'Could not open report', 'The individual records are shown below.');
     }
   };
 
@@ -125,6 +308,8 @@ export default function SiteLogbooksViewer() {
   }
 
   const sortedDates = Object.keys(filteredDates).sort((a, b) => b.localeCompare(a));
+  // Records actually on screen for this tab — what the offline banner reports.
+  const visibleLogCount = Object.values(filteredDates).reduce((n, logs) => n + logs.length, 0);
 
   const formatDate = (dateStr) => {
     try {
@@ -496,15 +681,26 @@ export default function SiteLogbooksViewer() {
               <Text style={s.loadingText}>Loading logbooks...</Text>
             </View>
           ) : sortedDates.length === 0 ? (
-            <GlassCard style={s.emptyCard}>
-              <FileText size={40} strokeWidth={1} color={colors.text.muted} />
-              <Text style={s.emptyTitle}>No Submitted Logs</Text>
-              <Text style={s.emptyText}>
-                Submitted {LOG_TABS.find(t => t.key === activeTab)?.label || ''} entries will appear here.
-              </Text>
-            </GlassCard>
+            // HONEST EMPTY STATE: "No Submitted Logs" is a claim about the
+            // RECORD, so it may only be made when the SERVER answered. A
+            // failed read says so instead.
+            fetchState === 'ok' ? (
+              <GlassCard style={s.emptyCard}>
+                <FileText size={40} strokeWidth={1} color={colors.text.muted} />
+                <Text style={s.emptyTitle}>No Submitted Logs</Text>
+                <Text style={s.emptyText}>
+                  Submitted {LOG_TABS.find(t => t.key === activeTab)?.label || ''} entries will appear here.
+                </Text>
+              </GlassCard>
+            ) : (
+              <OfflineNotice mode={fetchState} cachedCount={0} />
+            )
           ) : (
-            sortedDates.map((date) => {
+            <>
+            {fetchState !== 'ok' && (
+              <OfflineNotice mode={fetchState} cachedCount={visibleLogCount} />
+            )}
+            {sortedDates.map((date) => {
               const logs = filteredDates[date];
               const isExpanded = expandedDate === date;
 
@@ -570,15 +766,15 @@ export default function SiteLogbooksViewer() {
                             <View style={s.pdfActions}>
                               <Pressable
                                 style={s.pdfActionBtn}
-                                onPress={() => handleViewLogPdf(log.id || log._id)}
-                                onLongPress={() => handleShareLogPdf(log.id || log._id, log.log_type, log.date || date)}
+                                onPress={() => handleViewLogPdf(log, date)}
+                                onLongPress={() => handleShareLogPdf(log, date)}
                               >
                                 <Download size={14} strokeWidth={1.5} color="#3b82f6" />
                                 <Text style={s.pdfActionText}>PDF</Text>
                               </Pressable>
                               <Pressable
                                 style={s.pdfActionBtn}
-                                onPress={() => handleShareLogPdf(log.id || log._id, log.log_type, log.date || date)}
+                                onPress={() => handleShareLogPdf(log, date)}
                               >
                                 <Share2 size={14} strokeWidth={1.5} color="#3b82f6" />
                                 <Text style={s.pdfActionText}>Share</Text>
@@ -591,7 +787,8 @@ export default function SiteLogbooksViewer() {
                   )}
                 </View>
               );
-            })
+            })}
+            </>
           )}
         </ScrollView>
 

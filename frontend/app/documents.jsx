@@ -25,9 +25,18 @@ import GlassButton from '../src/components/GlassButton';
 import { GlassSkeleton } from '../src/components/GlassSkeleton';
 import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
+import OfflineNotice from '../src/components/OfflineNotice';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dropboxAPI } from '../src/utils/api';
+import { settleFetch } from '../src/utils/offlineState';
+import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
+import {
+  cacheDocList,
+  readCachedDocList,
+  ensureCachedDocFile,
+  warmDocCache,
+} from '../src/utils/docCache';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
@@ -35,6 +44,11 @@ import { useTheme } from '../src/context/ThemeContext';
 // PDFViewer auto-resolves: .native.jsx on native, .jsx (web fallback) on web
 import PDFViewer from '../src/components/PDFViewer';
 import HeaderBrand from '../src/components/HeaderBrand';
+
+const extOf = (fileName) => String(fileName || '').split('.').pop()?.toLowerCase() || '';
+// PDFs are the only type with an offline story — everything else opens via
+// Linking against a REMOTE url and cannot work without a connection.
+const isPdf = (fileName) => extOf(fileName) === 'pdf';
 
 // File type icon mapping
 const getFileIcon = (fileName) => {
@@ -95,6 +109,11 @@ export default function DocumentsScreen() {
   const [uploading, setUploading] = useState(false);
   const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
   const [selectedPdfFile, setSelectedPdfFile] = useState(null);
+  // 'ok' | 'offline' | 'error', tracked separately for the project list and the
+  // file list so a failure in either one never renders as "nothing exists".
+  const [projectsState, setProjectsState] = useState('ok');
+  const [filesState, setFilesState] = useState('ok');
+  const offline = projectsState === 'offline' || filesState === 'offline';
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -108,47 +127,82 @@ export default function DocumentsScreen() {
     }
   }, [isAuthenticated]);
 
+  // Projects with Dropbox enabled — the only ones this screen can list files for.
+  const dropboxOnly = (list) =>
+    (Array.isArray(list) ? list : []).filter((p) => p.dropbox_enabled && p.dropbox_folder);
+
   const fetchProjects = async () => {
     setLoading(true);
-    try {
-      const projectsData = await projectsAPI.getAll();
-      const projectList = Array.isArray(projectsData) ? projectsData : [];
 
-      // Filter to projects with Dropbox enabled
-      const dropboxProjects = projectList.filter(
-        (p) => p.dropbox_enabled && p.dropbox_folder
-      );
+    // Cache-first, so an offline user still gets a project to select instead of
+    // "No projects have Dropbox folders linked yet" — which reads as a config
+    // problem rather than a network one.
+    const cached = dropboxOnly(await readCachedProjectList());
+    let picked = null;
+    if (cached.length) {
+      setProjects(cached);
+      picked = cached[0];
+      setSelectedProject(picked);
+    }
+
+    const r = await settleFetch(() => projectsAPI.getAll());
+    if (r.status === 'ok') {
+      const projectList = Array.isArray(r.data) ? r.data : [];
+      cacheProjectList(projectList);
+      const dropboxProjects = dropboxOnly(projectList);
       setProjects(dropboxProjects);
+      setProjectsState('ok');
 
       // Auto-select first project
       if (dropboxProjects.length > 0) {
-        setSelectedProject(dropboxProjects[0]);
-        await fetchFiles(dropboxProjects[0]._id || dropboxProjects[0].id);
+        picked = dropboxProjects[0];
+        setSelectedProject(picked);
+      } else {
+        picked = null;
+        setSelectedProject(null);
       }
-    } catch (error) {
-      console.error('Failed to fetch projects:', error);
-    } finally {
-      setLoading(false);
+    } else {
+      // Keep whatever the cache gave us — never fall back to an empty list.
+      console.error('Failed to fetch projects:', r.error);
+      setProjectsState(r.status);
     }
+
+    if (picked) await fetchFiles(picked._id || picked.id);
+    setLoading(false);
   };
 
   const fetchFiles = async (projectId) => {
     if (!projectId) return;
+    const scopeKey = `docs:${projectId}`;
     setRefreshing(true);
-    try {
-      const response = await dropboxAPI.getProjectFiles(projectId);
-      setFiles(Array.isArray(response?.files) ? response.files : Array.isArray(response) ? response : []);
-    } catch (error) {
-      console.error('Failed to fetch files:', error);
-      if (error.response?.status === 404) {
-        setFiles([]);
-        if (!selectedProject?.dropbox_folder) {
-          toast.warning('Not Connected', 'This project does not have a Dropbox folder linked. Ask your admin to connect it.');
-        }
+
+    const cached = await readCachedDocList(scopeKey);
+    if (cached.length) setFiles(cached);
+
+    const r = await settleFetch(() => dropboxAPI.getProjectFiles(projectId));
+    if (r.status === 'ok') {
+      const list = Array.isArray(r.data?.files)
+        ? r.data.files
+        : Array.isArray(r.data) ? r.data : [];
+      setFiles(list);
+      setFilesState('ok');
+      cacheDocList(scopeKey, list);
+      // Fire-and-forget byte warm so these PDFs survive the next dead zone.
+      warmDocCache(list.filter((f) => isPdf(f?.name)), { limit: 15 }).catch(() => {});
+    } else if (r.error?.response?.status === 404) {
+      // A real server answer — the empty state here is honest.
+      setFiles([]);
+      setFilesState('ok');
+      cacheDocList(scopeKey, []);
+      if (!selectedProject?.dropbox_folder) {
+        toast.warning('Not Connected', 'This project does not have a Dropbox folder linked. Ask your admin to connect it.');
       }
-    } finally {
-      setRefreshing(false);
+    } else {
+      // Any other failure KEEPS the cached list.
+      console.error('Failed to fetch files:', r.error);
+      setFilesState(r.status);
     }
+    setRefreshing(false);
   };
 
   const handleProjectChange = (project) => {
@@ -166,11 +220,50 @@ export default function DocumentsScreen() {
   const handleOpenFile = async (file) => {
     if (!selectedProject) return;
 
-    const ext = file.name?.split('.').pop()?.toLowerCase();
+    const ext = extOf(file.name);
     if (ext === 'pdf') {
+      // Prefer the copy already on disk. PDFViewer prefers `directUrl`, so
+      // pointing that at the cached uri is the whole integration — and iOS'
+      // WKWebView renders a local file:// through PDFKit with no network.
+      const local = await ensureCachedDocFile({
+        fileId: file?.id || file?._id,
+        cacheVersion: file?.cache_version ?? 0,
+        remoteUrl: file?.r2_url || file?.directUrl,
+      });
+
+      if (local && Platform.OS === 'ios') {
+        setSelectedPdfFile({ ...file, directUrl: local });
+        setPdfViewerVisible(true);
+        return;
+      }
+
+      if (offline) {
+        // ⚠️ ANDROID LIMIT: PDFViewer.native.jsx renders Android PDFs through
+        // the REMOTE mozilla.github.io/pdf.js viewer, so a cached file still
+        // draws nothing offline. Be honest instead of opening a blank viewer.
+        // (Resolved only by bundling a viewer natively — a rebuild, not OTA.)
+        toast.info(
+          local ? 'Saved — but the viewer needs signal' : 'Not saved on this device',
+          local
+            ? 'This PDF is saved on this device. Its viewer still needs a connection, so it opens as soon as you reconnect.'
+            : 'No saved copy of this document is on this device yet. Reconnect to load it.',
+        );
+        return;
+      }
+
       // If file has r2_url, pass it directly instead of calling getFileUrl
       setSelectedPdfFile(file.r2_url ? { ...file, directUrl: file.r2_url } : file);
       setPdfViewerVisible(true);
+      return;
+    }
+
+    // ⚠️ NON-PDF LIMIT: .docx/.xlsx hand a REMOTE url to another app. There is
+    // no offline path for these, so don't let the tap fail silently.
+    if (offline) {
+      toast.info(
+        'Not available offline',
+        `${(ext || 'This file type').toUpperCase()} files open in another app over the network. Reconnect to open ${file.name}.`,
+      );
       return;
     }
 
@@ -277,17 +370,23 @@ export default function DocumentsScreen() {
               <GlassSkeleton width="100%" height={80} borderRadiusValue={borderRadius.xl} />
             </>
           ) : projects.length === 0 ? (
-            /* No Projects with Dropbox */
-            <GlassCard style={s.emptyCard}>
-              <IconPod size={80} style={s.emptyIcon}>
-                <Cloud size={32} strokeWidth={1.5} color={colors.text.muted} />
-              </IconPod>
-              <Text style={s.emptyTitle}>No Documents Available</Text>
-              <Text style={s.emptyText}>
-                No projects have Dropbox folders linked yet.{'\n'}
-                Contact your administrator to set up document access.
-              </Text>
-            </GlassCard>
+            projectsState !== 'ok' ? (
+              /* A failed load is NOT "nobody has linked a folder" — saying so
+                 sends the user to their admin over a dead cell tower. */
+              <OfflineNotice mode={projectsState} cachedCount={0} />
+            ) : (
+              /* No Projects with Dropbox */
+              <GlassCard style={s.emptyCard}>
+                <IconPod size={80} style={s.emptyIcon}>
+                  <Cloud size={32} strokeWidth={1.5} color={colors.text.muted} />
+                </IconPod>
+                <Text style={s.emptyTitle}>No Documents Available</Text>
+                <Text style={s.emptyText}>
+                  No projects have Dropbox folders linked yet.{'\n'}
+                  Contact your administrator to set up document access.
+                </Text>
+              </GlassCard>
+            )
           ) : (
             <>
               {/* Project Selector */}
@@ -364,6 +463,15 @@ export default function DocumentsScreen() {
                 </View>
               )}
 
+              {/* Cached-vs-live disclosure, above the list it describes. */}
+              {(filesState !== 'ok' || projectsState !== 'ok') && (
+                <OfflineNotice
+                  mode={filesState !== 'ok' ? filesState : projectsState}
+                  cachedCount={files.length}
+                  style={s.mb12}
+                />
+              )}
+
               {/* File List */}
               {files.length > 0 ? (
                 files.map((file, index) => {
@@ -396,7 +504,8 @@ export default function DocumentsScreen() {
                     </Pressable>
                   );
                 })
-              ) : selectedProject ? (
+              ) : selectedProject && filesState === 'ok' ? (
+                /* "No Documents" ONLY when the server actually returned none. */
                 <GlassCard style={s.emptyCard}>
                   <IconPod size={64} style={s.emptyIcon}>
                     <FolderOpen size={28} strokeWidth={1.5} color={colors.text.muted} />

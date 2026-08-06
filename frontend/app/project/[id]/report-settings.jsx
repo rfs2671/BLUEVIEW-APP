@@ -34,6 +34,9 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { readCachedProject } from '../../../src/utils/projectCache';
+import { isOfflineError, settleFetch } from '../../../src/utils/offlineState';
 
 export default function ReportSettingsScreen() {
   const { colors, isDark } = useTheme();
@@ -56,8 +59,12 @@ export default function ReportSettingsScreen() {
   
   // NEW: Track if there are unsaved changes
   const [hasChanges, setHasChanges] = useState(false);
+  // 'ok' | 'offline' | 'error'. Anything but 'ok' means the email list on
+  // screen is a cached copy (or nothing), and that saving is impossible.
+  const [fetchState, setFetchState] = useState('ok');
 
   const isAdmin = user?.role === 'admin';
+  const readOnly = fetchState !== 'ok';
 
   // NEW: Refetch whenever screen comes into focus to catch any backend updates
   useFocusEffect(
@@ -80,18 +87,31 @@ export default function ReportSettingsScreen() {
       return;
     }
     setLoading(true);
-    try {
-      const projectData = await projectsAPI.getById(projectId);
-      if (!projectData) {
+    const r = await settleFetch(async () => {
+      const data = await projectsAPI.getById(projectId);
+      if (!data) {
         throw new Error('Project not found on server');
       }
+      return data;
+    });
 
+    // Offline fallback: cacheProject() has already stored this project from
+    // the list/detail screens, so show the saved settings instead of blanking.
+    let projectData = r.data;
+    if (r.status !== 'ok') {
+      console.error('Failed to fetch project:', r.error);
+      projectData = await readCachedProject(projectId);
+    }
+    setFetchState(r.status);
+
+    if (projectData) {
       setProject(projectData);
       // CRITICAL: Use the backend data as source of truth
       const backendEmailList = projectData.report_email_list || [];
       const backendSendTime = projectData.report_send_time || '18:00';
 
-      console.log('✅ Report settings loaded from backend:', {
+      console.log('✅ Report settings loaded:', {
+        source: r.status === 'ok' ? 'backend' : 'device cache',
         emailCount: backendEmailList.length,
         emails: backendEmailList,
         sendTime: backendSendTime,
@@ -100,20 +120,26 @@ export default function ReportSettingsScreen() {
 
       setEmailList(backendEmailList);
       setSendTime(backendSendTime);
-    } catch (error) {
-      console.error('Failed to fetch project:', error);
-      toast.error('Error', 'Could not load project settings');
-    } finally {
-      setLoading(false);
+      // A cached read is not a save target — drop any stale unsaved flag.
+      if (r.status !== 'ok') setHasChanges(false);
     }
+    setLoading(false);
+    return r.status;
   };
 
   // NEW: Refresh handler for pull-to-refresh
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await fetchProject();
-      toast.success('Refreshed', 'Report settings reloaded');
+      // Never claim "Refreshed" for a read that never reached the server.
+      const status = await fetchProject();
+      if (status === 'ok') {
+        toast.success('Refreshed', 'Report settings reloaded');
+      } else if (status === 'offline') {
+        toast.warning('Offline', 'Could not reach the server — showing the saved copy');
+      } else {
+        toast.error('Refresh Failed', 'Could not reload settings');
+      }
     } catch (error) {
       toast.error('Refresh Failed', 'Could not reload settings');
     } finally {
@@ -199,9 +225,15 @@ export default function ReportSettingsScreen() {
       await fetchProject();
     } catch (error) {
       console.error('Failed to save settings:', error);
-      const errorMsg = error.response?.data?.detail || error.message || 'Could not save settings';
-      toast.error('Save Failed', errorMsg);
-      
+      // Offline writes are NOT queued here — do not imply the list was stored.
+      if (isOfflineError(error)) {
+        setFetchState('offline');
+        toast.error('Not saved', 'You are offline. The email list was NOT saved — reconnect and save again.');
+      } else {
+        const errorMsg = error.response?.data?.detail || error.message || 'Could not save settings';
+        toast.error('Save Failed', errorMsg);
+      }
+
       // NEW: Don't clear hasChanges on failure; user can retry
     } finally {
       setSaving(false);
@@ -288,6 +320,29 @@ export default function ReportSettingsScreen() {
             )}
           </View>
 
+          {/* Offline / failed read — the list below is cached, not live, and
+              cannot be saved from here. */}
+          {readOnly && (
+            <>
+              <OfflineNotice
+                mode={fetchState}
+                cachedCount={project ? 1 : 0}
+                detail={
+                  project
+                    ? 'Showing the saved copy of these settings. They are read-only until you reconnect — saving needs a connection and nothing is queued.'
+                    : 'These settings have no saved copy on this device. Reconnect to load them — this is NOT a statement that no recipients are configured.'
+                }
+              />
+              <GlassButton
+                title="Retry"
+                icon={<RotateCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={handleRefresh}
+                loading={refreshing}
+                style={s.retryBtn}
+              />
+            </>
+          )}
+
           {/* Unsaved Changes Warning */}
           {hasChanges && (
             <GlassCard style={[s.warningCard, { borderColor: semantic.attention, borderWidth: 1 }]}>
@@ -317,14 +372,21 @@ export default function ReportSettingsScreen() {
                 keyboardType="email-address"
                 autoCapitalize="none"
                 style={s.emailInput}
-                onSubmitEditing={handleAddEmail}
+                onSubmitEditing={readOnly ? undefined : handleAddEmail}
+                editable={!readOnly}
               />
               <GlassButton
                 variant="icon"
                 icon={<Plus size={20} strokeWidth={1.5} color={colors.text.primary} />}
                 onPress={handleAddEmail}
+                disabled={readOnly}
               />
             </View>
+            {readOnly && (
+              <Text style={s.offlineHint}>
+                Editing needs a connection — the recipient list lives on the server.
+              </Text>
+            )}
           </GlassCard>
 
           {/* Email List */}
@@ -349,6 +411,15 @@ export default function ReportSettingsScreen() {
                 </GlassCard>
               ))}
             </View>
+          ) : readOnly ? (
+            // A failed read is not "nobody is on the distribution list".
+            <GlassCard style={s.emptyCard}>
+              <Mail size={40} strokeWidth={1} color={colors.text.subtle} />
+              <Text style={s.emptyTitle}>List Unavailable</Text>
+              <Text style={s.emptyText}>
+                Reconnect to see who receives the daily report for this project.
+              </Text>
+            </GlassCard>
           ) : (
             <GlassCard style={s.emptyCard}>
               <Mail size={40} strokeWidth={1} color={colors.text.subtle} />
@@ -368,9 +439,11 @@ export default function ReportSettingsScreen() {
                 <Pressable
                   key={time}
                   onPress={() => handleSendTimeChange(time)}
+                  disabled={readOnly}
                   style={[
                     s.timeOption,
                     sendTime === time && s.timeOptionActive,
+                    readOnly && s.timeOptionDisabled,
                   ]}
                 >
                   <Text style={[
@@ -386,11 +459,17 @@ export default function ReportSettingsScreen() {
 
           {/* Save Button */}
           <GlassButton
-            title={saving ? 'Saving...' : 'Save Settings'}
+            title={
+              saving
+                ? 'Saving...'
+                : readOnly
+                  ? 'Saving needs a connection'
+                  : 'Save Settings'
+            }
             icon={<Save size={20} strokeWidth={1.5} color={colors.text.primary} />}
             onPress={handleSave}
             loading={saving}
-            disabled={!hasChanges || saving}
+            disabled={!hasChanges || saving || readOnly}
             style={s.saveButton}
           />
         </ScrollView>
@@ -606,6 +685,18 @@ function buildStyles(colors, isDark) {
     timeOptionActive: {
       backgroundColor: 'rgba(59, 130, 246, 0.2)',
       borderColor: '#3b82f6',
+    },
+    timeOptionDisabled: {
+      opacity: 0.4,
+    },
+    offlineHint: {
+      fontSize: 12,
+      color: colors.text.subtle,
+      marginTop: spacing.sm,
+    },
+    retryBtn: {
+      alignSelf: 'flex-start',
+      marginBottom: spacing.lg,
     },
     timeOptionText: {
       fontSize: 13,

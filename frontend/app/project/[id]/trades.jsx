@@ -30,6 +30,9 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import { withAlpha } from '../../../src/styles/semanticColors';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { readCachedProject } from '../../../src/utils/projectCache';
+import { isOfflineError, settleFetch } from '../../../src/utils/offlineState';
 
 /**
  * Per-project subcontractor roster editor.
@@ -79,8 +82,12 @@ export default function ProjectTradesScreen() {
   const [newCompany, setNewCompany] = useState('');
   const [showSuggest, setShowSuggest] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // 'ok' | 'offline' | 'error'. Anything but 'ok' means the roster on screen is
+  // a cached copy (or nothing) — and that saving is impossible right now.
+  const [fetchState, setFetchState] = useState('ok');
 
   const isAdmin = user?.role === 'admin';
+  const readOnly = fetchState !== 'ok';
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -96,8 +103,17 @@ export default function ProjectTradesScreen() {
 
   const fetchProject = async () => {
     setLoading(true);
-    try {
-      const data = await projectsAPI.getById(projectId);
+    // The project list/detail screens already write every project through
+    // cacheProject() — read it back here instead of blanking out offline.
+    const r = await settleFetch(() => projectsAPI.getById(projectId));
+    let data = r.data;
+    if (r.status !== 'ok') {
+      console.error('Failed to fetch project:', r.error);
+      data = await readCachedProject(projectId);
+    }
+    setFetchState(r.status);
+
+    if (data) {
       setProject(data);
       const rows = Array.isArray(data.trade_assignments)
         ? data.trade_assignments
@@ -105,20 +121,16 @@ export default function ProjectTradesScreen() {
       setAssignments(
         rows
           .filter(
-            (r) => r && typeof r === 'object' && r.trade && r.company
+            (r2) => r2 && typeof r2 === 'object' && r2.trade && r2.company
           )
-          .map((r) => ({
-            trade: String(r.trade).trim(),
-            company: String(r.company).trim(),
+          .map((r2) => ({
+            trade: String(r2.trade).trim(),
+            company: String(r2.company).trim(),
           }))
       );
       setDirty(false);
-    } catch (err) {
-      console.error('Failed to fetch project:', err);
-      toast.error('Error', 'Could not load project');
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   const addAssignment = () => {
@@ -167,7 +179,13 @@ export default function ProjectTradesScreen() {
       setDirty(false);
     } catch (err) {
       console.error('Failed to save:', err);
-      toast.error('Error', err.response?.data?.detail || 'Could not save');
+      // NOT queued and NOT saved — say so plainly rather than implying it stuck.
+      if (isOfflineError(err)) {
+        setFetchState('offline');
+        toast.error('Not saved', 'You are offline. The roster was NOT saved — reconnect and save again.');
+      } else {
+        toast.error('Error', err.response?.data?.detail || 'Could not save');
+      }
     } finally {
       setSaving(false);
     }
@@ -236,6 +254,26 @@ export default function ProjectTradesScreen() {
               <Text style={s.subtitleText}>{project.name}</Text>
             )}
           </View>
+
+          {readOnly && (
+            <>
+              <OfflineNotice
+                mode={fetchState}
+                cachedCount={project ? 1 : 0}
+                detail={
+                  project
+                    ? 'Showing the saved copy of this project. The roster is read-only until you reconnect — saving needs a connection and nothing is queued.'
+                    : 'This project has no saved copy on this device. Reconnect to load its roster — this is NOT a statement that no subcontractors are configured.'
+                }
+              />
+              <GlassButton
+                title="Retry"
+                icon={<RotateCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={fetchProject}
+                style={s.retryBtn}
+              />
+            </>
+          )}
 
           <GlassCard style={s.infoCard}>
             <HardHat size={24} strokeWidth={1.5} color={colors.text.primary} />
@@ -318,12 +356,19 @@ export default function ProjectTradesScreen() {
               style={({ pressed }) => [
                 s.addBtn,
                 pressed && { opacity: 0.8 },
+                readOnly && s.addBtnDisabled,
               ]}
               onPress={addAssignment}
+              disabled={readOnly}
             >
               <Plus size={18} strokeWidth={2} color="#fff" />
               <Text style={s.addBtnText}>Add Assignment</Text>
             </Pressable>
+            {readOnly && (
+              <Text style={s.offlineHint}>
+                Editing needs a connection — the roster is stored on the server.
+              </Text>
+            )}
           </GlassCard>
 
           <GlassCard style={s.card}>
@@ -331,7 +376,16 @@ export default function ProjectTradesScreen() {
               ROSTER ({assignments.length})
             </Text>
 
-            {assignments.length === 0 ? (
+            {assignments.length === 0 && readOnly ? (
+              // A failed read is not "nobody is configured" — that claim would
+              // send an admin re-entering a roster the server already has.
+              <View style={s.emptyState}>
+                <Text style={s.emptyText}>Roster unavailable offline.</Text>
+                <Text style={s.emptySubtext}>
+                  Reconnect to see the trades configured for this project.
+                </Text>
+              </View>
+            ) : assignments.length === 0 ? (
               <View style={s.emptyState}>
                 <Text style={s.emptyText}>No subcontractors added yet.</Text>
                 <Text style={s.emptySubtext}>
@@ -361,15 +415,23 @@ export default function ProjectTradesScreen() {
           </GlassCard>
 
           <GlassButton
-            title={saving ? 'Saving…' : dirty ? 'Save Changes' : 'Saved'}
+            title={
+              saving
+                ? 'Saving…'
+                : readOnly
+                  ? 'Saving needs a connection'
+                  : dirty
+                    ? 'Save Changes'
+                    : 'Saved'
+            }
             icon={
-              !saving && dirty ? (
+              !saving && dirty && !readOnly ? (
                 <Save size={18} strokeWidth={1.5} color={colors.text.primary} />
               ) : null
             }
             onPress={save}
             loading={saving}
-            disabled={saving || !dirty}
+            disabled={saving || !dirty || readOnly}
             style={s.saveBtn}
           />
         </ScrollView>
@@ -509,6 +571,18 @@ function buildStyles(colors, isDark) {
       color: '#fff',
       fontSize: 14,
       fontWeight: '600',
+    },
+    addBtnDisabled: {
+      opacity: 0.4,
+    },
+    offlineHint: {
+      fontSize: 12,
+      color: colors.text.subtle,
+      marginTop: spacing.sm,
+    },
+    retryBtn: {
+      alignSelf: 'flex-start',
+      marginBottom: spacing.lg,
     },
     emptyState: {
       paddingVertical: spacing.lg,

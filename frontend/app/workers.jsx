@@ -22,12 +22,50 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useWorkers } from '../src/hooks/useWorkers';
 import { useProjects } from '../src/hooks/useProjects';
-import { useCheckIns } from '../src/hooks/useCheckIns';
 import OfflineIndicator from '../src/components/OfflineIndicator';
+import OfflineNotice from '../src/components/OfflineNotice';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 import { withAlpha } from '../src/styles/semanticColors';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { checkinsAPI } from '../src/utils/api';
+import { settleFetch } from '../src/utils/offlineState';
+
+/**
+ * OFFLINE SIGN-IN LOG.
+ *
+ * useCheckIns().getTodayCheckIns() catches its own error and returns [], so a
+ * dead zone rendered "No check-ins recorded for this date" and "0 Workers" —
+ * a confident, false claim about who was on site. The API call is made
+ * directly here so the rejection is visible, then classified by settleFetch:
+ *   ok      -> render + write through to AsyncStorage
+ *   offline -> serve the saved roster for that date, labelled as saved
+ *   error   -> say so; never an empty state
+ */
+const CHECKINS_PREFIX = 'bv_checkins:';
+
+// Same New York calendar date the API is queried with (checkinsAPI.getByDate),
+// so the cache key and the request can never disagree about "which day".
+const dayKey = (date) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(date);
+
+async function cacheCheckIns(date, list) {
+  if (!Array.isArray(list)) return;
+  try {
+    await AsyncStorage.setItem(`${CHECKINS_PREFIX}${dayKey(date)}`, JSON.stringify(list));
+  } catch (_e) { /* non-fatal — the network read still succeeded */ }
+}
+
+async function readCachedCheckIns(date) {
+  try {
+    const raw = await AsyncStorage.getItem(`${CHECKINS_PREFIX}${dayKey(date)}`);
+    const list = raw ? JSON.parse(raw) : null;
+    return Array.isArray(list) ? list : null;
+  } catch (_e) {
+    return null;
+  }
+}
 
 export default function WorkersScreen() {
   const { colors, isDark } = useTheme();
@@ -42,8 +80,11 @@ export default function WorkersScreen() {
   const [checkInsLoading, setCheckInsLoading] = useState(true);
   const loading = checkInsLoading;
   const { projects, loading: projectsLoading } = useProjects();
-  const { getTodayCheckIns } = useCheckIns();
   const [todayCheckIns, setTodayCheckIns] = useState([]);
+  // 'ok' | 'offline' | 'error' — 'ok' is the ONLY state allowed to render the
+  // "No check-ins recorded" empty state.
+  const [fetchState, setFetchState] = useState('ok');
+  const [fromCache, setFromCache] = useState(false);
 
   const formatTime = (isoString) => {
     if (!isoString) return '--:--';
@@ -84,18 +125,32 @@ export default function WorkersScreen() {
     }
   }, [isAuthenticated, authLoading]);
 
-  // Fetch today's check-ins
-  useEffect(() => {
-  const fetchCheckIns = async () => {
-    if (isAuthenticated) {
-      setCheckInsLoading(true);
-      const checkIns = await getTodayCheckIns(null, selectedDate);
-      setTodayCheckIns(Array.isArray(checkIns) ? checkIns : []);
-      setCheckInsLoading(false);
+  // Fetch the selected date's check-ins (cache-first fallback, write-through)
+  const fetchCheckIns = async (date) => {
+    setCheckInsLoading(true);
+    const r = await settleFetch(() => checkinsAPI.getByDate(date));
+
+    if (r.status === 'ok') {
+      const list = Array.isArray(r.data) ? r.data : [];
+      setTodayCheckIns(list);
+      setFetchState('ok');
+      setFromCache(false);
+      cacheCheckIns(date, list); // write-through
+    } else {
+      console.error('Failed to fetch check-ins:', r.error);
+      const cached = await readCachedCheckIns(date);
+      setTodayCheckIns(cached || []);
+      setFetchState(r.status);
+      setFromCache(!!cached);
     }
+    setCheckInsLoading(false);
   };
-  fetchCheckIns();
-}, [isAuthenticated, selectedDate]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchCheckIns(selectedDate);
+    }
+  }, [isAuthenticated, selectedDate]);
 
   const uniqueProjects = new Set(todayCheckIns.map((c) => c.projectName || c.projectId)).size;
   const uniqueCompanies = new Set(todayCheckIns.map((c) => c.workerCompany)).size;
@@ -193,6 +248,22 @@ export default function WorkersScreen() {
             )}
           </View>
 
+          {/* Offline / error banner — the stats above and the list below are
+              only as honest as this fetch was. */}
+          {!loading && fetchState !== 'ok' && (
+            <OfflineNotice
+              mode={fetchState}
+              cachedCount={fromCache ? todayCheckIns.length : 0}
+              detail={
+                fetchState === 'error'
+                  ? 'Could not load the sign-in log for this date. The counts above are not a record of who was on site.'
+                  : fromCache
+                    ? `Offline — showing the sign-in log saved on this device for ${formatDate(selectedDate)}. Anyone who signed in since then is not listed.`
+                    : 'Offline — this date was never loaded on this device, so there is nothing saved. This is NOT a record that nobody signed in.'
+              }
+            />
+          )}
+
           {/* Checkins List */}
           <View style={s.checkinsList}>
             {loading ? (
@@ -289,10 +360,15 @@ export default function WorkersScreen() {
                   })}
                 </View>
               ))
-            ) : (
+            ) : fetchState === 'ok' ? (
+              // Only an ANSWERED server response earns the empty state.
               <View style={s.emptyState}>
                 <Users size={48} strokeWidth={1} color={colors.text.subtle} />
                 <Text style={s.emptyText}>No check-ins recorded for this date</Text>
+              </View>
+            ) : (
+              <View style={s.emptyState}>
+                <GlassButton title="Retry" onPress={() => fetchCheckIns(selectedDate)} />
               </View>
             )}
           </View>

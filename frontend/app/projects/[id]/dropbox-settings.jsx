@@ -37,6 +37,9 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
 import { semantic, withAlpha } from '../../../src/styles/semanticColors';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { readCachedProject } from '../../../src/utils/projectCache';
+import { settleFetch } from '../../../src/utils/offlineState';
 
 const DROPBOX_BLUE = '#0061FF';
 
@@ -71,6 +74,11 @@ export default function ProjectDropboxSettingsScreen() {
   const [loadingSiteVisibility, setLoadingSiteVisibility] = useState(false);
   const [savingSiteVisibility, setSavingSiteVisibility] = useState(false);
 
+  // 'ok' | 'offline' | 'error'. Critical here: offline, dropboxAPI.getStatus()
+  // fails and `{connected:false}` used to render "Dropbox Not Connected" —
+  // a flat lie about the company's integration.
+  const [fetchState, setFetchState] = useState('ok');
+
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
 
@@ -91,15 +99,36 @@ export default function ProjectDropboxSettingsScreen() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [projectData, status] = await Promise.all([
-        projectsAPI.getById(projectId).catch(() => null),
-        dropboxAPI.getStatus().catch(() => ({ connected: false })),
+      const [projectRes, statusRes] = await Promise.all([
+        settleFetch(() => projectsAPI.getById(projectId)),
+        settleFetch(() => dropboxAPI.getStatus()),
       ]);
+
+      // Offline fallback for the project — cacheProject() already stored it.
+      let projectData = projectRes.data;
+      if (projectRes.status !== 'ok') {
+        console.warn('Project fetch failed, using device cache:', projectRes.error?.message);
+        projectData = await readCachedProject(projectId);
+      }
+      const status =
+        statusRes.status === 'ok' && statusRes.data
+          ? statusRes.data
+          : { connected: false };
+
+      // Worst status of the two wins — a reachable server is required before
+      // ANY of this screen's claims (connected / not connected) are honest.
+      const netState =
+        projectRes.status !== 'ok'
+          ? projectRes.status
+          : statusRes.status !== 'ok'
+            ? statusRes.status
+            : 'ok';
+      setFetchState(netState);
 
       setProject(projectData);
       setDropboxStatus(status);
 
-      if (projectData?.dropbox_folder_path) {
+      if (netState === 'ok' && projectData?.dropbox_folder_path) {
         setDropboxEnabled(true);
         setSelectedFolder(projectData.dropbox_folder_path);
         setLastSynced(projectData.dropbox_last_synced);
@@ -273,13 +302,57 @@ export default function ProjectDropboxSettingsScreen() {
           {/* Title */}
           <View style={s.titleSection}>
             <Text style={s.titleLabel}>PROJECT SETTINGS</Text>
-            <Text style={s.titleText}>{project?.name || 'Loading...'}</Text>
+            {/* Don't sit on "Loading..." forever once the load has finished */}
+            <Text style={s.titleText}>
+              {project?.name || (loading ? 'Loading...' : 'Project unavailable')}
+            </Text>
           </View>
 
           {loading ? (
             <View style={s.loadingContainer}>
               <GlassSkeleton width="100%" height={200} borderRadiusValue={borderRadius.xxl} />
             </View>
+          ) : fetchState !== 'ok' ? (
+            // NEVER fall through to "Dropbox Not Connected" here: getStatus()
+            // failing is not the same as the company having no Dropbox.
+            <>
+              <OfflineNotice
+                mode={fetchState}
+                cachedCount={project ? 1 : 0}
+                detail={
+                  fetchState === 'error'
+                    ? 'Could not read Dropbox settings. This is NOT a statement that Dropbox is disconnected.'
+                    : 'Offline — Dropbox settings cannot be read or changed. This is NOT a statement that Dropbox is disconnected; linking, syncing and visibility changes all need a connection.'
+                }
+              />
+
+              {/* What the device already knows about this project, read-only. */}
+              {project?.dropbox_folder_path ? (
+                <GlassCard style={s.folderCard}>
+                  <Text style={s.cardLabel}>LINKED FOLDER (SAVED COPY)</Text>
+                  <View style={s.selectedFolder}>
+                    <IconPod size={44}>
+                      <FolderOpen size={20} strokeWidth={1.5} color={DROPBOX_BLUE} />
+                    </IconPod>
+                    <View style={s.folderInfo}>
+                      <Text style={s.folderPath}>{project.dropbox_folder_path}</Text>
+                      <Text style={s.folderMeta}>
+                        {project.dropbox_last_synced
+                          ? `Last synced ${new Date(project.dropbox_last_synced).toLocaleString()}`
+                          : 'Sync time unknown'}
+                      </Text>
+                    </View>
+                  </View>
+                </GlassCard>
+              ) : null}
+
+              <GlassButton
+                title="Retry"
+                icon={<RefreshCw size={16} strokeWidth={1.5} color={colors.text.primary} />}
+                onPress={fetchData}
+                style={s.retryBtn}
+              />
+            </>
           ) : !dropboxStatus.connected ? (
             <GlassCard style={s.notConnectedCard}>
               <Cloud size={48} strokeWidth={1} color={colors.text.muted} />
@@ -628,6 +701,10 @@ function buildStyles(colors, isDark) {
     maxWidth: 280,
   },
   goToAdminBtn: {
+    marginTop: spacing.md,
+  },
+  retryBtn: {
+    alignSelf: 'flex-start',
     marginTop: spacing.md,
   },
   toggleCard: {
