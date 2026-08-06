@@ -2651,16 +2651,36 @@ LOGBOOK_TYPE_REGISTRY = [
     },
 ]
 
-# ── Tier 1 (2): pre-shift timing taxonomy (machinery live; classification is
-#    counsel's to fill). The lawyer lists which logs are legally immediate/
-#    pre-shift here; ANYTHING NOT LISTED defaults to "end_of_day", so no log is
-#    wrongly excluded from batching or force-frozen until counsel decides. Flip a
-#    log to "immediate_preshift" (config only, no code change) to activate the
-#    rule below for it. Values: "immediate_preshift" | "end_of_day".
+# ── TIMING TAXONOMY — the counsel-defined freeze model. ─────────────────────
+# Two behaviors, and which one applies is a LEGAL classification, not a UI choice:
+#
+#   "immediate"  (9 logs) — the SIGNATURE IS THE FREEZE. Signing finalizes the
+#       record instantly; it is never reopened and never batched. New information
+#       later in the day becomes a NEW DISCRETE LOG (an 11am orientation, a
+#       post-alteration scaffold inspection), never an edit of the signed one.
+#       Corrections go through the amendment-as-child path (linked child +
+#       required reason), never an in-place unlock.
+#
+#   "end_of_day" (2 logs) — the DAILY NARRATIVE. Stays open and accumulating all
+#       day (deliveries, visitors, progress); intermediate saves do NOT freeze it.
+#       It freezes once, at the end-of-day "Submit and Sign".
+#
+# Anything unlisted defaults to end_of_day (the safer default: nothing is
+# force-frozen by accident).
 LOGBOOK_TIMING_CLASS = {
-    # "scaffold_maintenance": "immediate_preshift",   # <- counsel fills these in
-    # "excavation_monitoring": "immediate_preshift",
-    # "toolbox_talk": "immediate_preshift",
+    # ── IMMEDIATE — sign = freeze, not batchable ──
+    "preshift_signin": "immediate",
+    "toolbox_talk": "immediate",
+    "subcontractor_orientation": "immediate",
+    "osha_log": "immediate",
+    "scaffold_maintenance": "immediate",
+    "hot_work": "immediate",
+    "concrete_operations": "immediate",
+    "crane_operations": "immediate",
+    "excavation_monitoring": "immediate",
+    # ── DAILY NARRATIVE — open all day, frozen by the EOD Submit and Sign ──
+    "daily_jobsite": "end_of_day",
+    "ssc_daily_safety_log": "end_of_day",
 }
 
 
@@ -2669,9 +2689,21 @@ def logbook_timing_class(log_type: str) -> str:
 
 
 def is_immediate_preshift(log_type: str) -> bool:
-    """Tier 1 (2): true for logs that must be signed-now-and-frozen and EXCLUDED
-    from the end-of-day batch. False for everything until counsel classifies it."""
-    return logbook_timing_class(log_type) == "immediate_preshift"
+    """True for sign-and-freeze-now logs: frozen on signature, EXCLUDED from the
+    end-of-day batch, and re-filed as a NEW discrete log rather than reopened."""
+    return logbook_timing_class(log_type) == "immediate"
+
+
+def logbook_timing_meta(log_type: str) -> dict:
+    """The per-type freeze contract, surfaced to clients so the UI cannot invent
+    its own rule (sign-freezes vs finalize-freezes is a legal distinction)."""
+    immediate = is_immediate_preshift(log_type)
+    return {
+        "timing_class": "immediate" if immediate else "end_of_day",
+        "is_batchable": not immediate,
+        "freeze_on_sign": immediate,
+        "freeze_on_finalize": not immediate,
+    }
 
 # ==================== SIGNATURE AUDIT TRAIL MODELS ====================
  
@@ -14332,6 +14364,16 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         # with its locked original — never let a fresh upsert match/clobber it.
         "is_amendment": {"$ne": True},
     }
+    # FREEZE MODEL — an IMMEDIATE log is never reopened. Once signed (locked) it
+    # is a closed record, so a later same-day filing is a NEW DISCRETE LOG (the
+    # 11am orientation, the post-alteration scaffold inspection), not an edit.
+    # Excluding locked rows from the dedupe is what makes that possible: an
+    # unlocked draft still upserts normally, but a LOCKED one no longer matches,
+    # so the insert below creates the next instance instead of 423-ing the CP out
+    # of filing it. (END_OF_DAY logs deliberately keep the 423 — the daily
+    # narrative is one record per day; corrections go through /amend.)
+    if is_immediate_preshift(data.log_type):
+        dedupe_filter["is_locked"] = {"$ne": True}
     if data.log_type == "subcontractor_orientation":
         orientation_worker_id = (data.data or {}).get("worker_id")
         # worker_id MUST be a non-null, non-empty value: in Mongo
@@ -14388,8 +14430,19 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
         "cp_name": data.cp_name,
         "status": data.status,
-        # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
+        # FREEZE MODEL: an IMMEDIATE log freezes the moment it is signed — the
+        # signature IS the freeze, there is no separate finalize step for these.
         "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
+        "timing_class": logbook_timing_class(data.log_type),
+        # Which filing of the day this is (1st scaffold inspection, 2nd, ...).
+        # Only meaningful for IMMEDIATE types, which can legitimately recur.
+        "instance_seq": (await db.logbooks.count_documents({
+            "project_id": data.project_id,
+            "log_type": data.log_type,
+            "date": data.date,
+            "is_deleted": {"$ne": True},
+            "is_amendment": {"$ne": True},
+        })) + 1,
         "created_by": current_user.get("id"),
         # Task B (sibling): same full_name-first preference for the stored author.
         "created_by_name": current_user.get("full_name") or current_user.get("name"),
@@ -14707,9 +14760,11 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
 @api_router.get("/logbook-types")
 async def get_logbook_types(current_user = Depends(get_current_user)):
     """Return the full logbook type registry for UI rendering."""
-    # Tier 1 (2): annotate each type with its timing_class (default end_of_day) so
-    # the client can apply the pre-shift sign-now-freeze / batch-exclusion rules.
-    return [{**e, "timing_class": logbook_timing_class(e["key"])} for e in LOGBOOK_TYPE_REGISTRY]
+    # Annotate each type with its full freeze contract (timing_class,
+    # is_batchable, freeze_on_sign, freeze_on_finalize) so the client applies the
+    # counsel-defined rule instead of inventing one. sign-freezes vs
+    # finalize-freezes is a LEGAL distinction, so it is served, not hardcoded.
+    return [{**e, **logbook_timing_meta(e["key"])} for e in LOGBOOK_TYPE_REGISTRY]
 
 # ==================== SAFETY STAFF ENDPOINTS ====================
 
