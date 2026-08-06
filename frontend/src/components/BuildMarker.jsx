@@ -7,7 +7,7 @@ import * as Updates from 'expo-updates';
 // never a question again. `bundle: embedded` = running the JS baked into the APK;
 // a short id = running an OTA on top. Bump BUILD_TAG on every push so the running
 // app names which fix-batch it contains — glance at the marker and KNOW.
-export const BUILD_TAG = 'cam-snapshot-fast-capture';
+export const BUILD_TAG = 'cam-stage-timing';
 
 export default function BuildMarker() {
   const version = Constants.expoConfig?.version ?? Constants.manifest?.version ?? '?';

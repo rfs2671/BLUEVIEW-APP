@@ -191,8 +191,17 @@ export default function DailyJobsiteLog() {
   // copied to persistent storage so they survive quit/reopen; base64 is NOT
   // stored (built only at server-save). No server call; `status` omitted so an
   // autosave never downgrades a submitted log.
+  //
+  // LATENCY (camera): every capture calls setActivities, so this effect used to
+  // fire 800ms after EACH shot and run persistActivityPhotos (a file copy per
+  // photo in the log) plus a JSON.stringify + AsyncStorage write of the whole
+  // draft — landing squarely on the JS thread while the CP is lining up the
+  // next frame, and getting more expensive with every photo taken. While the
+  // camera is OPEN the draft is not worth that: `cameraVisible` is in the deps,
+  // so closing the camera re-runs this immediately and writes everything the
+  // session captured, and handleSave persists independently of it either way.
   useEffect(() => {
-    if (loading) return undefined;
+    if (loading || cameraVisible) return undefined;
     const t = setTimeout(async () => {
       try {
         const persistedActivities = await persistActivityPhotos(activities);
@@ -215,7 +224,7 @@ export default function DailyJobsiteLog() {
     }, 800);
     return () => clearTimeout(t);
   }, [
-    loading, projectId, date, projectAddress, weather, weatherTemp, weatherWind,
+    loading, cameraVisible, projectId, date, projectAddress, weather, weatherTemp, weatherWind,
     generalDescription, activities, equipmentOnSite, checklistItems, observations,
     visitorsDeliveries, timeIn, timeOut, areasVisited, cpSignature, cpName,
   ]);
@@ -512,7 +521,9 @@ export default function DailyJobsiteLog() {
 
   /**
    * onCapture from CameraCaptureModal — the RAW sensor URI, handed over the
-   * instant takePhoto resolves.
+   * instant the capture resolves. `report(stage, ms)` is the modal's timing
+   * badge: the stages below happen AFTER the modal's own measurement window
+   * closes, so this is the only place they can be timed.
    *
    * NOTHING IS AWAITED HERE. The photo is appended immediately in `pending`
    * state so the strip and the activity row both react on the same frame, and
@@ -525,9 +536,10 @@ export default function DailyJobsiteLog() {
    * than a small one, but infinitely better than a lost one. handleSave still
    * encodes it.
    */
-  const handleCameraCapture = (uri) => {
+  const handleCameraCapture = (uri, report) => {
     if (cameraTargetIndex == null || !uri) return;
     const target = cameraTargetIndex;
+    const tIn = Date.now();
     const existing = activitiesRef.current[target]?.photos || [];
     if (existing.length >= MAX_PHOTOS_PER_ACTIVITY) {
       toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
@@ -542,9 +554,21 @@ export default function DailyJobsiteLog() {
     }));
     setSessionShotIds(prev => [...prev, id]);
 
+    // TEMP camera-speed diagnostic (pairs with the modal's timing badge).
+    // The two setState calls above are BATCHED by React 18: they commit — and
+    // re-render this entire form — only after handleShutter has returned, so
+    // the modal's own `handoff` number cannot include them. rAF fires on the
+    // frame that commit actually paints, which is the CP's real "the photo
+    // appeared" moment. If the missing seconds are a render storm on this
+    // screen, THIS is the number that shows it.
+    requestAnimationFrame(() => report?.('paint', Date.now() - tIn));
+
+    const tCompressStart = Date.now();
     const job = compressUnderCap(uri)
       .then((smallUri) => {
+        const compressMs = Date.now() - tCompressStart;
         if (smallUri) compressedUriRef.current[id] = smallUri;
+        report?.('compress', compressMs);
         setActivities(prev => prev.map((a, i) => {
           if (i !== target) return a;
           return {
@@ -557,6 +581,7 @@ export default function DailyJobsiteLog() {
       })
       .catch((err) => {
         console.warn('photo compression failed, keeping original:', err?.message);
+        report?.('compress', Date.now() - tCompressStart);
         setActivities(prev => prev.map((a, i) => {
           if (i !== target) return a;
           return {

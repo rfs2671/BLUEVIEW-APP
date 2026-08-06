@@ -17,14 +17,28 @@ async function _ensurePhotoDir() {
   } catch (_e) { /* non-fatal */ }
 }
 
+// Source uri -> persistent dest already copied this session.
+//
+// LATENCY: the persisted uri is NOT written back into screen state (the draft
+// gets it, the form keeps its cache uri), so without this every debounced
+// autosave re-copied EVERY photo in the log — O(photos) file copies per
+// keystroke/capture, on the same JS thread the camera shutter needs. A given
+// source uri always yields identical bytes, so one copy per source is enough.
+// Process-scoped on purpose: a fresh launch re-copies, which is also the repair
+// path if the documentDirectory file ever went missing.
+const _persistedByUri = new Map();
+
 export async function persistPhoto(uri, id) {
   if (Platform.OS === 'web' || !FileSystem.documentDirectory) return uri;
   if (!uri || typeof uri !== 'string' || uri.startsWith(PHOTO_DIR)) return uri;
+  const cached = _persistedByUri.get(uri);
+  if (cached) return cached;
   try {
     await _ensurePhotoDir();
     const ext = ((uri.split('?')[0].split('.').pop()) || 'jpg').slice(0, 5);
     const dest = `${PHOTO_DIR}${id || Date.now()}_${Math.abs((id || '').length || 0)}.${ext}`;
     await FileSystem.copyAsync({ from: uri, to: dest });
+    _persistedByUri.set(uri, dest);
     return dest;
   } catch (_e) {
     return uri; // fall back to the original uri if the copy fails

@@ -67,10 +67,23 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
   const [backLens, setBackLens] = useState('wide'); // 'ultra' | 'wide' — default main wide sensor
   const [capturing, setCapturing] = useState(false);
   const [zoom, setZoom] = useState(1);
-  // TEMP camera-speed diagnostic — remove after the bottleneck is found. Shows the
-  // sensor-read time (takePhoto) and the total in-modal time on-screen, so we
-  // MEASURE where the 3-5s goes instead of guessing at the format again.
+  // TEMP camera-speed diagnostic — remove after the bottleneck is found.
+  //
+  // STAGE BREAKDOWN, not one number. The previous badge only timed what happens
+  // INSIDE this modal (take + handoff) and therefore could not see the stage
+  // that is most likely to be the missing seconds: React 18 BATCHES the caller's
+  // setState calls, so the screen-wide re-render they trigger runs AFTER
+  // handleShutter has already returned and is invisible to `handoff`. The
+  // caller now closes that loop itself through the `report` callback handed to
+  // onCapture (see handleShutter), so the badge shows:
+  //   take     — the native capture call (takeSnapshot / takePhoto)
+  //   handoff  — everything else still on the synchronous capture path
+  //   paint    — caller's state update → the frame it actually paints on
+  //   compress — the caller's BACKGROUND compress ladder, end to end
   const [captureTiming, setCaptureTiming] = useState(null);
+  // Which shot owns the badge. A late `report` from an older shot is dropped so
+  // the numbers on screen always describe one single capture.
+  const shotSeqRef = useRef(0);
   const currentZoomRef = useRef(1);
   const baseZoomRef = useRef(1);
   // TEMP (item 6): guards the one-time capability dump below.
@@ -226,9 +239,16 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
     if (!camera.current || capturing) return;
     setCapturing(true);
     const t0 = Date.now();
+    const seq = (shotSeqRef.current += 1);
     // Logged BEFORE capture because a hanging capture never reaches the timing
-    // badge — this line is the only record of WHICH device/lens the capture used.
-    console.log('[CAM] shutter device=%s pos=%s lens=%s', device?.id, position, backLens);
+    // badge — this line is the only record of WHICH device/lens/METHOD the
+    // capture used. `method` proves on-device which branch the running bundle
+    // took, so a stale OTA can never be mistaken for a slow snapshot.
+    console.log(
+      '[CAM] shutter #%d method=%s device=%s pos=%s lens=%s',
+      seq, Platform.OS === 'android' ? 'takeSnapshot' : 'takePhoto',
+      device?.id, position, backLens,
+    );
     try {
       // SPEED (the real fix): `takePhoto` is CameraX ImageCapture — sensor read +
       // autofocus/AE convergence + full JPEG encode — inherently ~3s on Android,
@@ -246,11 +266,26 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
         : await camera.current.takePhoto({ flash: 'off', enableShutterSound: false });
       const tShot = Date.now();
       const srcUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
-      onCapture(srcUri);
+      // Handed to the caller so IT can time the stages this modal cannot see.
+      // `ms` is passed explicitly by the caller when it measured a span of its
+      // own (the compress ladder); omitted, it means "now, since handoff".
+      // Only ever called asynchronously (rAF / promise), so the initial
+      // setCaptureTiming below has always landed before the first report.
+      const report = (stage, ms) => {
+        if (seq !== shotSeqRef.current) return; // a newer shot owns the badge
+        const elapsed = typeof ms === 'number' ? ms : Date.now() - tShot;
+        console.log('[CAM] #%d %s=%dms', seq, stage, elapsed);
+        setCaptureTiming((prev) => (prev && prev.seq === seq ? { ...prev, [stage]: elapsed } : prev));
+      };
+      onCapture(srcUri, report);
       const tHandoff = Date.now();
       // take = the native capture call; handoff = everything else in the modal.
-      const timing = { take: tShot - t0, handoff: tHandoff - tShot, total: tHandoff - t0 };
-      console.log('[CAM] capture=%dms handoff=%dms total=%dms', timing.take, timing.handoff, timing.total);
+      // paint/compress arrive later, via report(), from the caller.
+      const timing = {
+        seq, take: tShot - t0, handoff: tHandoff - tShot, total: tHandoff - t0,
+        paint: null, compress: null,
+      };
+      console.log('[CAM] #%d capture=%dms handoff=%dms total=%dms', seq, timing.take, timing.handoff, timing.total);
       setCaptureTiming(timing);
     } catch (e) {
       console.warn('vision-camera capture failed:', e?.message);
@@ -313,8 +348,14 @@ function CameraSurface({ active, shots, onCapture, onDeleteShot, onClose }) {
       />
       {captureTiming && (
         <View pointerEvents="none" style={styles.timingBadge}>
+          {/* Two compact lines: the synchronous capture path on top, the stages
+              the caller reports back underneath. `…` = still running, so a
+              stage that never lands is visibly the one that hangs. */}
           <Text style={styles.timingText}>
-            capture {captureTiming.take}ms · handoff {captureTiming.handoff}ms · total {captureTiming.total}ms
+            #{captureTiming.seq} take {captureTiming.take} · handoff {captureTiming.handoff} · total {captureTiming.total}ms
+          </Text>
+          <Text style={styles.timingText}>
+            paint {captureTiming.paint ?? '…'} · compress {captureTiming.compress ?? '…'}ms
           </Text>
         </View>
       )}
