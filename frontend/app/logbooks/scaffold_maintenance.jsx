@@ -17,6 +17,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -215,6 +216,7 @@ export default function ScaffoldMaintenanceLog() {
       // written but the client errored, so recordSignatureEvent never fired and
       // the CP was trained to press Submit twice. Hoisting fixes both.
       let created = null;
+      let pushOk = true;
       // Best-effort server push. Offline this throws and is swallowed — the key
       // is recorded in the pending-push list for the Phase B reconnect flush.
       try {
@@ -233,11 +235,26 @@ export default function ScaffoldMaintenanceLog() {
         }
         await clearPending(key);
       } catch (pushErr) {
+        pushOk = false;
         await markPending(key);
         console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      // FREEZE MODEL — scaffold_maintenance is an IMMEDIATE log: THE SIGNATURE IS
+      // THE FREEZE. Submitting finalizes the inspection in one action; there is no
+      // separate Finalize step and it is never reopened (a post-alteration
+      // re-inspection is a NEW log; corrections go through the amendment-as-child
+      // path). This runs AFTER the local writeDraft (so the frozen draft holds the
+      // signed content) and AFTER the server push attempt — on SUCCESS OR FAILURE,
+      // so a sidewalk-shed inspection signed with no signal still freezes. It sits
+      // ahead of the autoSave below on purpose: that call is unguarded, and a CP
+      // profile hiccup must not be what leaves a signed inspection unfrozen.
+      if (submitStatus === 'submitted') {
+        await freezeIfImmediate(key, 'scaffold_maintenance');
+        setLocked(true);
+      }
+
+      await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
 
       if (submitStatus === 'submitted' && cpSignature) {
         const docId = existingLogId || created?.id || created?._id;
@@ -253,7 +270,14 @@ export default function ScaffoldMaintenanceLog() {
         }
       }
 
-      toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'Scaffold log saved');
+      toast.success(
+        submitStatus === 'submitted' ? 'Signed & Locked' : 'Saved',
+        submitStatus === 'submitted'
+          ? (pushOk
+            ? 'Scaffold inspection signed and locked. Corrections require an amendment.'
+            : 'Scaffold inspection signed and locked on this device. It will sync when you reconnect.')
+          : 'Scaffold log saved'
+      );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
@@ -430,10 +454,13 @@ export default function ScaffoldMaintenanceLog() {
           </View>
           )}
 
+          {/* logType drives the freeze model: for an IMMEDIATE log the LockBar
+              hides Finalize (the signature already froze it) and offers only the
+              Amend path. No canFinalize prop — it would contradict that. */}
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
+            logType="scaffold_maintenance"
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />

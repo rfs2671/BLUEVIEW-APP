@@ -18,6 +18,7 @@ import { logbooksAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -209,6 +210,7 @@ export default function OshaLogBook() {
 
       let created = null;
       let savedId = existingLogId;
+      let pushOk = true;
       try {
         if (existingLogId) {
           await logbooksAPI.update(existingLogId, {
@@ -225,11 +227,24 @@ export default function OshaLogBook() {
         if (savedId) setDraftBackendId(key, savedId);
         clearPending(key);
       } catch (pushErr) {
+        pushOk = false;
         markPending(key);
         console.warn('OSHA log deferred push (kept local draft):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      // FREEZE ON SIGN — osha_log is an IMMEDIATE log: the SIGNATURE IS THE
+      // FREEZE. "Submit & Sign" finalizes the register in one action (there is
+      // no separate Finalize step, and it is never reopened). This runs after
+      // the local writeDraft above — so the frozen draft holds the SIGNED
+      // content — and after the push attempt on BOTH paths, because the register
+      // is signed at the gate with no signal: the freeze must not need the
+      // server. Corrections from here go through Amend (a linked child).
+      if (submitStatus === 'submitted') {
+        await freezeIfImmediate(key, 'osha_log');
+        setLocked(true);
+      }
+
+      await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
       if (submitStatus === 'submitted' && cpSignature) {
         const docId = existingLogId || created?.id || created?._id;
         if (docId) {
@@ -243,8 +258,12 @@ export default function OshaLogBook() {
         }
       }
       toast.success(
-        submitStatus === 'submitted' ? 'OSHA log submitted' : 'Draft saved',
-        submitStatus === 'submitted' ? 'Submitted' : 'Saved'
+        submitStatus === 'submitted' ? 'Signed & Locked' : 'Draft saved',
+        submitStatus !== 'submitted'
+          ? 'Saved'
+          : pushOk
+            ? 'Signed — this log is now locked. Corrections require an amendment.'
+            : 'Signed — locked on this device and will sync when you are back online.'
       );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
@@ -453,10 +472,14 @@ export default function OshaLogBook() {
           </View>
           )}
 
+          {/* logType drives the FREEZE MODEL: osha_log is IMMEDIATE, so the bar
+              hides Finalize (the signature already froze the log) and offers
+              only Amend once locked. canFinalize stays false for that reason. */}
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
+            logType="osha_log"
+            canFinalize={false}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />

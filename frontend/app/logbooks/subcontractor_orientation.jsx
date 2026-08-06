@@ -33,6 +33,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { settleFetch } from '../../src/utils/offlineState';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
@@ -318,6 +319,14 @@ export default function SubcontractorOrientation() {
   };
 
   // CP signs an existing orientation document — LOCAL FIRST, then best-effort push.
+  //
+  // FREEZE-ON-SIGN: subcontractor_orientation is an IMMEDIATE log, so THE
+  // SIGNATURE IS THE FREEZE — signing finalizes THAT record in one action and it
+  // is never reopened. There is no separate Finalize step, and the freeze must
+  // hold with no signal (a first-day worker is oriented AT THE GATE), so it is
+  // applied to the on-device draft whether or not the push lands. New
+  // information later is a NEW orientation record; corrections go through the
+  // amendment-as-child path.
   const handleSignExisting = async (orientation, cpSig, cpN) => {
     const id = recordIdOf(orientation);
     const key = draftKey({
@@ -365,6 +374,17 @@ export default function SubcontractorOrientation() {
       } else {
         await markPending(key);
       }
+
+      // 4. THE SIGNATURE IS THE FREEZE. Applied after the draft write and after
+      //    the push attempt — success OR failure — so a gate-side sign in a dead
+      //    zone is locked on device immediately, not only once it syncs. The
+      //    row flips to is_locked so the card re-renders read-only (its sign
+      //    panel disappears) and LogbookLockBar shows the amend path.
+      const froze = await freezeIfImmediate(key, LOG_TYPE);
+      if (froze) {
+        next = next.map(o => (sameRecord(o, orientation) ? { ...o, is_locked: true } : o));
+      }
+
       setOrientations(next);
       await writeCachedList(projectId, next);
 
@@ -388,8 +408,17 @@ export default function SubcontractorOrientation() {
       }
 
       const who = orientation.data?.worker_name || 'worker';
-      if (landed) toast.success('Signed', `Orientation for ${who} signed`);
-      else toast.success('Signed on this device', `Orientation for ${who} syncs when you reconnect`);
+      if (landed) {
+        toast.success(
+          'Signed & locked',
+          `Orientation for ${who} is signed and locked. Corrections require an amendment.`,
+        );
+      } else {
+        toast.success(
+          'Signed & locked on this device',
+          `Orientation for ${who} is signed and locked on this device — it syncs when you reconnect.`,
+        );
+      }
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not save signature');
@@ -420,6 +449,14 @@ export default function SubcontractorOrientation() {
   };
 
   // Create a brand new manual orientation — LOCAL FIRST, then best-effort push.
+  //
+  // FREEZE-ON-SIGN also applies at creation: a record created WITH a CP
+  // signature ('submitted') is signed, so it is frozen in the same action.
+  // Created WITHOUT one it is a plain draft and stays open until someone signs
+  // it from its card. Creating a SECOND orientation for the same worker on the
+  // same day is a NEW DISCRETE RECORD (its own minted workerId, its own draft)
+  // and is deliberately never blocked — that is the correct path for new
+  // information later in the day.
   const handleCreateNew = async () => {
     if (!newName.trim() || !newCompany.trim()) {
       toast.warning('Required', 'Worker name and company are required');
@@ -481,11 +518,40 @@ export default function SubcontractorOrientation() {
         next = next.map(o => (o._local_id === ident.workerId ? { ...created, _pending: false } : o));
         setOrientations(next);
         await writeCachedList(projectId, next);
-        toast.success('Created', 'Orientation record added');
+        if (status === 'submitted') {
+          toast.success('Signed & locked', 'Orientation signed and locked. Corrections require an amendment.');
+        } else {
+          toast.success('Created', 'Orientation record added');
+        }
       } catch (pushErr) {
         await markPending(key);
         console.warn('Orientation push deferred (will sync on reconnect):', pushErr?.message);
-        toast.success('Saved on this device', 'Orientation recorded — it syncs when you reconnect');
+        if (status === 'submitted') {
+          toast.success(
+            'Signed & locked on this device',
+            'Orientation signed and locked on this device — it syncs when you reconnect.',
+          );
+        } else {
+          toast.success('Saved on this device', 'Orientation recorded — it syncs when you reconnect');
+        }
+      }
+
+      // Signed at creation => frozen at creation. Runs AFTER the push branch so
+      // the success path's setDraftBackendId still lands (writeDraft no-ops once
+      // the draft is finalized), and it runs on the failure path too so an
+      // offline gate-side orientation is locked on device right away. An unsigned
+      // draft is NOT frozen — it is still open for a signature from its card.
+      if (status === 'submitted') {
+        const froze = await freezeIfImmediate(key, LOG_TYPE);
+        if (froze) {
+          next = next.map(o => (
+            (o._local_id === ident.workerId || workerIdOf(o) === ident.workerId)
+              ? { ...o, is_locked: true }
+              : o
+          ));
+          setOrientations(next);
+          await writeCachedList(projectId, next);
+        }
       }
 
       // Reset form and retire the in-progress draft pointer
@@ -819,13 +885,16 @@ export default function SubcontractorOrientation() {
                           </View>
                         )}
 
-                        {/* Per-card lock / finalize / amend. Finalize is offered
-                            once the row is signed; a finalized row shows the
+                        {/* Per-card lock / amend. An orientation is an IMMEDIATE
+                            log: signing already froze this row, so Finalize is
+                            never offered (canFinalize false, and logType makes
+                            the bar hide it regardless). A locked row shows the
                             read-only banner + Amend (which mints a new child row). */}
                         <LogbookLockBar
                           locked={isLocked}
                           logId={orient.id || orient._id}
-                          canFinalize={!isLocked && isSigned && !orient._pending}
+                          canFinalize={false}
+                          logType={LOG_TYPE}
                           onFinalized={fetchData}
                           onAmended={fetchData}
                         />

@@ -12,6 +12,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -187,6 +188,7 @@ export default function ConcreteOperationsLog() {
       // NOTE: a submit made offline has no server id yet, so the signature-audit
       // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
+      let pushOk = true;
       try {
         if (existingLogId) {
           await logbooksAPI.update(existingLogId, {
@@ -203,6 +205,7 @@ export default function ConcreteOperationsLog() {
         await setDraftBackendId(key, savedId);
         await clearPending(key);
       } catch (pushErr) {
+        pushOk = false;
         await markPending(key);
         console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
@@ -228,9 +231,25 @@ export default function ConcreteOperationsLog() {
         }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
 
+      // FREEZE MODEL — concrete_operations is an IMMEDIATE log: THE SIGNATURE IS
+      // THE FREEZE. Submitting finalizes the record in one action; there is no
+      // separate Finalize step and it is never reopened (corrections go through
+      // the amendment-as-child path). This runs AFTER the local writeDraft (so
+      // the frozen draft holds the signed content) and AFTER the server push
+      // attempt — on SUCCESS OR FAILURE, because a slab pour is signed off
+      // below grade with no signal and the freeze cannot wait on a round-trip.
+      if (submitStatus === 'submitted') {
+        await freezeIfImmediate(key, LOG_TYPE);
+        setLocked(true);
+      }
+
       toast.success(
-        submitStatus === 'submitted' ? 'Submitted' : 'Saved',
-        submitStatus === 'submitted' ? 'Concrete log submitted' : 'Saved on this device'
+        submitStatus === 'submitted' ? 'Signed & Locked' : 'Saved',
+        submitStatus === 'submitted'
+          ? (pushOk
+            ? 'Concrete log signed and locked. Corrections require an amendment.'
+            : 'Concrete log signed and locked on this device. It will sync when you reconnect.')
+          : 'Saved on this device'
       );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
@@ -458,10 +477,13 @@ export default function ConcreteOperationsLog() {
           </View>
           )}
 
+          {/* logType drives the freeze model: for an IMMEDIATE log the LockBar
+              hides Finalize (the signature already froze it) and offers only the
+              Amend path. No canFinalize prop — it would contradict that. */}
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
+            logType={LOG_TYPE}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />

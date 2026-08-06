@@ -124,8 +124,17 @@ export async function writeDraft(key, patch) {
     // refuses further edits, mirroring the backend 423 guard. Only a patch that
     // explicitly sets `finalized` (the markFinalized call) passes, so the lock
     // itself can be recorded. Corrections happen through an amendment (a NEW key).
+    // A finalized draft's CONTENT is immutable. Two exceptions, both metadata:
+    //   • `finalized` itself (so markFinalized can set the flag), and
+    //   • `backend_id` — binding the server id after a deferred push is
+    //     bookkeeping, not a content edit. Without this the reconnect drain
+    //     could never record where a log signed OFFLINE finally landed.
     if (prev?.finalized && patch.finalized === undefined) {
-      return false;
+      const onlyBackendId =
+        patch.backend_id !== undefined &&
+        patch.data === undefined && patch.cp_signature === undefined &&
+        patch.cp_name === undefined && patch.status === undefined;
+      if (!onlyBackendId) return false;
     }
     const merged = {
       data: patch.data !== undefined ? patch.data : (prev?.data || {}),

@@ -12,6 +12,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -188,6 +189,7 @@ export default function CraneOperationsLog() {
       // NOTE: a submit made offline has no server id yet, so the signature-audit
       // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
+      let pushed = true;
       try {
         if (existingLogId) {
           await logbooksAPI.update(existingLogId, {
@@ -204,6 +206,7 @@ export default function CraneOperationsLog() {
         await setDraftBackendId(key, savedId);
         await clearPending(key);
       } catch (pushErr) {
+        pushed = false;
         await markPending(key);
         console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
@@ -229,9 +232,27 @@ export default function CraneOperationsLog() {
         }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
 
+      // FREEZE-ON-SIGN — crane_operations is an IMMEDIATE log: the SIGNATURE IS
+      // THE FREEZE. Submitting finalizes the record in one action (there is no
+      // separate "Finalize" step) and it is never reopened; a later lift record
+      // is a NEW discrete log, and a correction is an amendment.
+      //
+      // The draft above is written FIRST, then frozen, and the freeze runs on
+      // BOTH push outcomes — a CP signing with no signal must still end up with
+      // a locked record on device, so the freeze can never wait on the server.
+      // The backend applies the same lock when the deferred push lands.
+      if (submitStatus === 'submitted') {
+        await freezeIfImmediate(key, LOG_TYPE);
+        setLocked(true);
+      }
+
       toast.success(
-        submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ? 'Crane log submitted successfully' : 'Draft saved'
+        submitStatus === 'submitted' ? 'Signed & Locked' : 'Draft Saved',
+        submitStatus === 'submitted'
+          ? (pushed
+            ? 'Crane log signed and locked. Corrections require an amendment.'
+            : 'Crane log signed and locked on this device. It will sync when you are back online.')
+          : 'Draft saved'
       );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
@@ -450,11 +471,13 @@ export default function CraneOperationsLog() {
           </View>
           )}
 
+          {/* logType drives the freeze model: this is an IMMEDIATE log, so the
+              bar shows NO Finalize button (the submit already froze it) and
+              offers only the Amend path once locked. */}
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
-            onFinalized={() => setLocked(true)}
+            logType={LOG_TYPE}
             onAmended={fetchData}
           />
         </ScrollView>

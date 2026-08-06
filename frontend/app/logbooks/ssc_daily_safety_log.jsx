@@ -31,6 +31,10 @@ export default function SSCDailySafetyLog() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // The end-of-day Submit & Sign outlives handleSave's own `saving` window (it
+  // finalizes afterwards), so it carries its own busy flag — which also blocks
+  // a double-tap from double-finalizing.
+  const [signing, setSigning] = useState(false);
   const [existingLogId, setExistingLogId] = useState(null);
   // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
   // renders read-only and only the Amend path can change anything.
@@ -256,16 +260,82 @@ export default function SSCDailySafetyLog() {
         }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
 
-      toast.success(
-        submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ? 'Safety log submitted successfully' : 'Draft saved'
-      );
-      if (submitStatus === 'submitted') router.back();
+      // DAILY NARRATIVE: the only 'submitted' caller is the end-of-day
+      // Submit & Sign below, which still has to finalize + freeze AFTER this
+      // returns. Announcing "submitted" (or leaving the screen) from here would
+      // report success before the log is actually locked, so that path owns its
+      // own toast and navigation. Save Draft is untouched.
+      if (submitStatus !== 'submitted') {
+        toast.success('Draft Saved', 'Draft saved');
+      }
+      // Hand back the server id so the caller can /finalize THIS document.
+      // `null` = saved locally but not yet on the server (offline).
+      return savedId || null;
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not save safety log');
+      // `undefined` (not null) = the save itself failed and has already been
+      // reported — the caller must NOT freeze a log that was never written.
+      return undefined;
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * THE end-of-day action for this daily narrative log — one button, one freeze.
+   *
+   * Save Draft fills this log all day and never freezes it. There is deliberately
+   * no separate "Submit" any more: a log that could be submitted repeatedly and
+   * finalized separately can sit REQUIRED-but-unfrozen forever. This is the
+   * single closing action, and its order is what makes it hold OFFLINE:
+   *
+   *   1. handleSave('submitted') — content + signature into the local draft
+   *      first, server push best-effort (markPending on failure; draftSync
+   *      drains it and re-applies /finalize on reconnect).
+   *   2. server /finalize when the doc has an id — best-effort, never fatal.
+   *   3. LOCAL freeze, unconditionally: an EOD sign with no signal must still be
+   *      frozen on this device. It MUST come after (1) — writeDraft refuses
+   *      content patches once a draft is finalized.
+   *   4. flip the form read-only.
+   */
+  const handleSubmitAndSign = async () => {
+    if (saving || signing) return;
+    // Signed record: no signature, no submit.
+    if (!cpSignature) {
+      toast.warning('Signature required', 'Sign the log before submitting — this is a signed record.');
+      return;
+    }
+    setSigning(true);
+    try {
+      const key = draftKey({ projectId, logType: LOG_TYPE, date });
+      const savedId = await handleSave('submitted');
+      if (savedId === undefined) return;  // save failed and already reported
+
+      let serverLocked = false;
+      if (savedId) {
+        try {
+          await logbooksAPI.finalize(savedId);
+          serverLocked = true;
+        } catch (finalizeErr) {
+          // Offline / server refused. The local freeze below still stands and
+          // the reconnect drain re-applies /finalize once the push lands.
+          console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
+        }
+      }
+
+      await markFinalized(key);
+      setLocked(true);
+
+      toast.success(
+        'Submitted & Signed',
+        serverLocked
+          ? 'This log is now locked. Corrections require an amendment.'
+          : 'Signed and locked on this device. It will sync when you are back online.'
+      );
+      router.back();
+    } finally {
+      setSigning(false);
     }
   };
 
@@ -469,30 +539,43 @@ export default function SSCDailySafetyLog() {
           </GlassCard>
           </View>
 
-          {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
+          {/* Actions — hidden when finalized; the LockBar handles amend.
+              TWO actions only: fill it all day (Save Draft, never freezes) and
+              close it once (Submit & Sign, freezes). There is no third
+              "Submit" that leaves a REQUIRED daily log unfrozen. */}
           {!locked && (
-          <View style={s.buttonRow}>
+          <View style={s.buttonColumn}>
             <GlassButton
-              title={saving ? 'Saving...' : 'Save Draft'}
+              title={saving && !signing ? 'Saving...' : 'Save Draft'}
               icon={<Save size={16} strokeWidth={1.5} color={colors.text.primary} />}
               onPress={() => handleSave('draft')}
-              loading={saving}
-              style={{ flex: 1 }}
+              loading={saving && !signing}
+              style={{ width: '100%' }}
             />
             <GlassButton
-              title={saving ? 'Saving...' : 'Submit'}
+              title={signing ? 'Submitting...' : 'Submit & Sign (End of Day)'}
               icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
-              onPress={() => handleSave('submitted')}
-              loading={saving}
-              style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
+              onPress={handleSubmitAndSign}
+              loading={signing}
+              style={{ width: '100%', backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
+            <Text style={s.signHint}>
+              Signing closes the day: this log locks and corrections then require an amendment.
+            </Text>
           </View>
           )}
 
+          {/* DAILY NARRATIVE log: stays open and accumulating all day;
+              intermediate saves do NOT freeze it. It freezes once, at the
+              end-of-day Submit & Sign above — which is why canFinalize is
+              false: that single button owns finalization, and a second
+              "Finalize" here would be the same two-button trap. logType and the
+              Amend path stay so a locked narrative log can still be amended. */}
           <LogbookLockBar
+            logType={LOG_TYPE}
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
+            canFinalize={false}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />
@@ -525,7 +608,10 @@ function buildStyles(colors, isDark) {
     toggleLabel: { color: colors.text.secondary, fontSize: 14 },
     toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
     toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
-    buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+    // Stacked, not side-by-side: the end-of-day action is irreversible, so it
+    // gets its own full-width row and cannot be mistaken for the save next to it.
+    buttonColumn: { gap: spacing.sm, marginTop: spacing.lg },
+    signHint: { fontSize: 12, color: colors.text.muted, textAlign: 'center', marginTop: spacing.xs },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     chip: {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,

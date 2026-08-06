@@ -16,6 +16,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
@@ -260,6 +261,7 @@ export default function ToolboxTalkLog() {
       // NOTE: a submit made offline has no server id yet, so the signature-audit
       // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
+      let pushOk = true;
       try {
         if (existingLogId) {
           await logbooksAPI.update(existingLogId, {
@@ -276,8 +278,21 @@ export default function ToolboxTalkLog() {
         await setDraftBackendId(key, savedId);
         await clearPending(key);
       } catch (pushErr) {
+        pushOk = false;
         await markPending(key);
         console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
+      }
+
+      // FREEZE ON SIGN — toolbox_talk is an IMMEDIATE log: the SIGNATURE IS THE
+      // FREEZE. "Submit & Sign" finalizes the record in one action (there is no
+      // separate Finalize step, and it is never reopened). This runs after the
+      // local writeDraft above — so the frozen draft holds the SIGNED content —
+      // and after the push attempt on BOTH paths, because the talk is signed at
+      // the muster point with no signal: the freeze must not need the server. A
+      // later talk that day is a NEW log; corrections go through Amend.
+      if (submitStatus === 'submitted') {
+        await freezeIfImmediate(key, 'toolbox_talk');
+        setLocked(true);
       }
 
       await autoSave(cpName, cpSignature).catch(() => {});
@@ -293,7 +308,13 @@ export default function ToolboxTalkLog() {
         }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
       }
 
-      toast.success(submitStatus === 'submitted' ? 'Submitted' : 'Saved', 'Tool Box Talk saved');
+      toast.success(
+        submitStatus === 'submitted' ? 'Signed & Locked' : 'Saved',
+        submitStatus !== 'submitted'
+          ? 'Tool Box Talk saved'
+          : pushOk
+            ? 'Signed — this log is now locked. Corrections require an amendment.'
+            : 'Signed — locked on this device and will sync when you are back online.');
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
       console.error(e);
@@ -503,10 +524,14 @@ export default function ToolboxTalkLog() {
           </View>
           )}
 
+          {/* logType drives the FREEZE MODEL: toolbox_talk is IMMEDIATE, so the
+              bar hides Finalize (the signature already froze the log) and offers
+              only Amend once locked. canFinalize stays false for that reason. */}
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
-            canFinalize={!locked && !!existingLogId}
+            logType="toolbox_talk"
+            canFinalize={false}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
           />

@@ -55,11 +55,15 @@ async function pushOne(key) {
     await clearPending(key);
     return { key, ok: false, reason: 'no-draft' };
   }
-  // A finalized (locked) log must never be re-pushed — the server would 423.
-  if (draft.finalized) {
-    await clearPending(key);
-    return { key, ok: false, reason: 'finalized' };
-  }
+  // NOTE — a `finalized` draft is NOT skipped. It used to be, and that was a
+  // data-loss bug: a log signed and FROZEN OFFLINE (the whole point of
+  // sign-freeze for below-grade pre-work) is finalized locally BEFORE it has
+  // ever reached the server, so skipping it here silently dropped a signed
+  // compliance record from the sync queue forever. Being in the pending index
+  // IS the proof its push has not landed, so it must be sent. After the content
+  // lands we apply the server-side lock too, so the freeze survives the round
+  // trip. (A draft whose push already succeeded was cleared from the index and
+  // never reaches this code, so there is no re-push of an already-locked doc.)
 
   const body = {
     data: draft.data || {},
@@ -68,9 +72,19 @@ async function pushOne(key) {
     status: draft.status || 'draft',
   };
 
+  // Re-apply the freeze server-side once the content has landed, so a log signed
+  // offline is locked on the server too. Best-effort: the content is already
+  // safe, and an immediate type auto-locks on `status: submitted` anyway — this
+  // is what covers the END_OF_DAY logs, whose freeze is an explicit /finalize.
+  const applyRemoteFreeze = async (id) => {
+    if (!draft.finalized || !id) return;
+    try { await logbooksAPI.finalize(id); } catch (_e) { /* already locked, or retry next drain */ }
+  };
+
   try {
     if (draft.backend_id) {
       await logbooksAPI.update(draft.backend_id, body);
+      await applyRemoteFreeze(draft.backend_id);
       await clearPending(key);
       return { key, ok: true, mode: 'update' };
     }
@@ -82,6 +96,7 @@ async function pushOne(key) {
     });
     const newId = created?.id || created?._id;
     if (newId) await setDraftBackendId(key, newId);
+    await applyRemoteFreeze(newId);
     await clearPending(key);
     return { key, ok: true, mode: 'create' };
   } catch (e) {

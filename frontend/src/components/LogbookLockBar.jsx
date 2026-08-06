@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, Pressable, Modal, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
 import { Lock, FileEdit, CheckCircle2, X } from 'lucide-react-native';
 import { logbooksAPI } from '../utils/api';
+import { isImmediateLog } from '../utils/logbookTiming';
 import { useToast } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
@@ -24,7 +25,13 @@ import { spacing, borderRadius } from '../styles/theme';
  *   onAmended    fn       — called after a successful amend (editor re-loads; its
  *                           fetch prefers the non-locked child → becomes editable)
  */
-export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized, onAmended }) {
+export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized, onAmended, logType }) {
+  // FREEZE MODEL: for an IMMEDIATE log the SIGNATURE is the freeze — submitting
+  // finalizes it in one action, so a separate "Finalize" button must never
+  // appear (offering it would imply the signed log is still open). The Amend
+  // path below still applies once it is locked. The 2 daily-narrative logs keep
+  // Finalize as their explicit end-of-day Submit & Sign.
+  const signFreezes = isImmediateLog(logType);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [amendOpen, setAmendOpen] = useState(false);
@@ -111,7 +118,7 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
     );
   }
 
-  if (canFinalize && logId) {
+  if (canFinalize && logId && !signFreezes) {
     return (
       <View style={s.wrap}>
         <Pressable style={[s.btn, s.finalizeBtn, busy && s.btnDisabled]} onPress={doFinalize} disabled={busy}>
