@@ -1,0 +1,10 @@
+# Vendored pdf.js build — bundled so cached PDFs open OFFLINE on Android.
+#
+# These are third-party build artifacts, not our source. The repo runs with
+# core.autocrlf=true, which would rewrite the line endings INSIDE a 377KB /
+# 1.1MB minified JavaScript file on every checkout — changing the bytes we
+# verified against the official pdfjs-dist tarball, and differing between a
+# Windows dev machine and the Linux EAS build machine. Mark them binary so git
+# never transforms them: what we vetted is exactly what ships.
+frontend/assets/pdfjs/pdf.min.txt        -text
+frontend/assets/pdfjs/pdf.worker.min.txt -text
