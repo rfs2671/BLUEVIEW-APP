@@ -2651,6 +2651,28 @@ LOGBOOK_TYPE_REGISTRY = [
     },
 ]
 
+# ── Tier 1 (2): pre-shift timing taxonomy (machinery live; classification is
+#    counsel's to fill). The lawyer lists which logs are legally immediate/
+#    pre-shift here; ANYTHING NOT LISTED defaults to "end_of_day", so no log is
+#    wrongly excluded from batching or force-frozen until counsel decides. Flip a
+#    log to "immediate_preshift" (config only, no code change) to activate the
+#    rule below for it. Values: "immediate_preshift" | "end_of_day".
+LOGBOOK_TIMING_CLASS = {
+    # "scaffold_maintenance": "immediate_preshift",   # <- counsel fills these in
+    # "excavation_monitoring": "immediate_preshift",
+    # "toolbox_talk": "immediate_preshift",
+}
+
+
+def logbook_timing_class(log_type: str) -> str:
+    return LOGBOOK_TIMING_CLASS.get(log_type, "end_of_day")
+
+
+def is_immediate_preshift(log_type: str) -> bool:
+    """Tier 1 (2): true for logs that must be signed-now-and-frozen and EXCLUDED
+    from the end-of-day batch. False for everything until counsel classifies it."""
+    return logbook_timing_class(log_type) == "immediate_preshift"
+
 # ==================== SIGNATURE AUDIT TRAIL MODELS ====================
  
 class SignatureEventCreate(BaseModel):
@@ -2660,6 +2682,10 @@ class SignatureEventCreate(BaseModel):
     event_type: str     # "cp_sign", "superintendent_sign", "worker_sign"
     signer_name: str
     signer_role: str    # "cp", "site_device", "worker", "admin"
+    # Tier 1 (4): the CAPACITY the person is signing in — e.g. "Construction
+    # Superintendent" vs "Competent Person - <discipline>". Distinct from the
+    # login role; makes §3301.13.13 "signed as Superintendent" provable.
+    acting_capacity: Optional[str] = None
     signature_data: Dict[str, Any]  # The actual {paths, signerName, timestamp} or base64
     content_snapshot: Dict[str, Any]  # Full JSON of document at sign-time
     device_info: Optional[Dict[str, Any]] = None  # {site_device_id, hardware_fingerprint, user_agent}
@@ -11396,6 +11422,8 @@ async def create_signature_event(
     content_snapshot: dict,
     device_info: dict = None,
     ip_address: str = None,
+    acting_capacity: str = None,
+    authenticated_role: str = None,
 ) -> str:
     """Create a signature event in the audit ledger.
     Returns the inserted event_id as a string."""
@@ -11417,9 +11445,13 @@ async def create_signature_event(
         "event_type": event_type,
         "version": version,
         "signer": {
-            "user_id": signer_user_id,
+            "user_id": signer_user_id,           # authenticated user id (server-set)
             "name": signer_name,
-            "role": signer_role,
+            "role": signer_role,                 # client-claimed role
+            # Tier 1 (4): server-verified role + the acting capacity, so the record
+            # proves WHO signed and IN WHAT CAPACITY (§3301.13.13).
+            "authenticated_role": authenticated_role,
+            "acting_capacity": acting_capacity,
         },
         "device": device_info or {},
         "content_snapshot": content_snapshot,
@@ -11459,8 +11491,12 @@ async def record_signature_event(
         content_snapshot=data.content_snapshot,
         device_info=data.device_info,
         ip_address=ip_address,
+        acting_capacity=data.acting_capacity,
+        # Tier 1 (4): the server-verified role of the authenticated signer — the
+        # trustworthy counterpart to the client-claimed signer_role.
+        authenticated_role=current_user.get("role"),
     )
-    
+
     return {"event_id": event_id, "message": "Signature event recorded"}
  
  
@@ -14328,6 +14364,9 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
                 "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
                 "cp_name": data.cp_name,
                 "status": data.status,
+                # Tier 1 (2): an immediate/pre-shift log freezes on submit
+                # (sign-now-and-lock). No-op until counsel classifies a log.
+                "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
                 "updated_at": now,
             }}
         )
@@ -14349,6 +14388,8 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
         "cp_signature": _finalize_cp_signature(data.cp_signature, data.date, now),
         "cp_name": data.cp_name,
         "status": data.status,
+        # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
+        "is_locked": (data.status == "submitted") and is_immediate_preshift(data.log_type),
         "created_by": current_user.get("id"),
         # Task B (sibling): same full_name-first preference for the stored author.
         "created_by_name": current_user.get("full_name") or current_user.get("name"),
@@ -14411,6 +14452,12 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
         update["cp_name"] = data.cp_name
     if data.status is not None:
         update["status"] = data.status
+        # Tier 1 (2): an immediate/pre-shift log freezes on submit (sign-now-lock).
+        # No-op until counsel classifies a log as immediate_preshift.
+        if data.status == "submitted":
+            _lt = await db.logbooks.find_one({"_id": to_query_id(logbook_id)}, {"log_type": 1})
+            if _lt and is_immediate_preshift(_lt.get("log_type")):
+                update["is_locked"] = True
     result = await db.logbooks.update_one({"_id": to_query_id(logbook_id)}, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Logbook not found")
@@ -14660,7 +14707,9 @@ async def update_scaffold_info(project_id: str, data: Dict[str, Any], current_us
 @api_router.get("/logbook-types")
 async def get_logbook_types(current_user = Depends(get_current_user)):
     """Return the full logbook type registry for UI rendering."""
-    return LOGBOOK_TYPE_REGISTRY
+    # Tier 1 (2): annotate each type with its timing_class (default end_of_day) so
+    # the client can apply the pre-shift sign-now-freeze / batch-exclusion rules.
+    return [{**e, "timing_class": logbook_timing_class(e["key"])} for e in LOGBOOK_TYPE_REGISTRY]
 
 # ==================== SAFETY STAFF ENDPOINTS ====================
 
