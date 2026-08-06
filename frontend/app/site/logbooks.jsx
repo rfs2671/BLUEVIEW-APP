@@ -525,8 +525,16 @@ export default function SiteLogbooksViewer() {
                 read "Signed", which told an inspector the opposite. */}
             <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Title', flex: 1 }, { text: 'Company', flex: 1 }, { text: 'In', flex: 0.8 }, { text: 'Present', flex: 0.7 }]} />
             {attendees.map((a, i) => (
-              <DocTableRow key={i} cells={[{ text: a.name || 'Unknown', flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
+              <DocTableRow key={i} cells={[{ text: `${a.name || 'Unknown'}${a.gate_confirmed ? ' †' : ''}`, flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
             ))}
+            {/* The PDF carries gate-confirm as its own column; this phone-width
+                viewer would be unreadable at 6 columns, so it rides as a dagger
+                on the name with a legend. Same data either way. */}
+            {attendees.some(a => a.gate_confirmed) && (
+              <Text style={s.rosterLegend}>
+                † Confirmed attending at gate check-in (optional; not a required signature)
+              </Text>
+            )}
           </>
         )}
 
@@ -904,6 +912,7 @@ function buildStyles(colors, isDark) {
   docInfoRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   docInfoText: { fontSize: 16, color: colors.text.secondary, flex: 1 },
   docParagraph: { fontSize: 16, color: colors.text.secondary, lineHeight: 24, paddingLeft: 2 },
+  rosterLegend: { fontSize: 12, color: colors.text.muted, lineHeight: 17, paddingLeft: 2, marginTop: spacing.xs, fontStyle: 'italic' },
 
   // Photo row
   photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, paddingVertical: spacing.xs, paddingLeft: spacing.sm },

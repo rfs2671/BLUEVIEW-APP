@@ -9389,6 +9389,7 @@ async def register_and_checkin(data: dict):
     # under a "Worker Signatures" heading on a toolbox-talk record.
     toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
 
+
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
     # so they legitimately submit no company. It is re-required below, but
@@ -12088,11 +12089,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             # Workers are not required to sign a toolbox talk — the CP signature
             # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
             present = "&#10003;" if a.get("signed") else "&mdash;"
+            # Optional worker self-confirm taken at the gate. Distinct column
+            # on purpose: it is the WORKER's voluntary tap, whereas Present is
+            # the CP's mark. Neither is a legal attestation.
+            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
+                f'<td {TD}>{gate}</td>'
                 f'<td {TD}>{present}</td></tr>'
             )
 
@@ -12110,8 +12116,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Present</th></tr>'
-            + (att_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th></tr>'
+            + (att_rows or f'<tr><td colspan="6" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
@@ -15871,11 +15877,16 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             # Workers are not required to sign a toolbox talk — the CP signature
             # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
             present = "&#10003;" if a.get("signed") else "&mdash;"
+            # Optional worker self-confirm taken at the gate. Distinct column
+            # on purpose: it is the WORKER's voluntary tap, whereas Present is
+            # the CP's mark. Neither is a legal attestation.
+            gate = "&#10003;" if a.get("gate_confirmed") else "&mdash;"
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
                 f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
+                f'<td {TD}>{gate}</td>'
                 f'<td {TD}>{present}</td></tr>'
             )
 
@@ -15893,8 +15904,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Present</th></tr>'
-            + (att_rows or f'<tr><td colspan="5" {TD}>&mdash;</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Confirmed</th><th {TH}>Present</th></tr>'
+            + (att_rows or f'<tr><td colspan="6" {TD}>&mdash;</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig
