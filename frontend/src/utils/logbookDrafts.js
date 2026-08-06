@@ -87,7 +87,7 @@ export function draftKey({ projectId, logType, date, workerId }) {
   return workerId ? `${base}:${workerId}` : base;
 }
 
-/** Returns { data, cp_signature, cp_name, status, backend_id } or null. */
+/** Returns { data, cp_signature, cp_name, status, backend_id, finalized } or null. */
 export async function readDraft(key) {
   try {
     const raw = await AsyncStorage.getItem(key);
@@ -99,6 +99,11 @@ export async function readDraft(key) {
       cp_name: p.cp_name ?? null,
       status: p.status || 'draft',
       backend_id: p.backend_id ?? null,
+      // BUGFIX: writeDraft/markFinalized persist `finalized`, but readDraft did
+      // not return it — so every editor's `draft.finalized` lock check was
+      // silently ALWAYS FALSE and the offline finalize-lock never engaged (only
+      // the server's is_locked did). Returning it makes the offline lock real.
+      finalized: p.finalized ?? false,
     };
   } catch (_e) {
     return null;

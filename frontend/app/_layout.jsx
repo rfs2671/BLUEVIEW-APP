@@ -12,6 +12,7 @@ import { FeatureFlagsProvider } from '../src/context/FeatureFlagsContext';
 import { InspectorLockProvider, useInspectorLock } from '../src/context/InspectorLockContext';
 import { initSentry, captureException as sentryCaptureException } from '../src/lib/sentry';
 import { registerRateLimitToast } from '../src/utils/api';
+import { setupDraftAutoSync } from '../src/utils/draftSync';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useIsDesktop } from '../src/hooks/useIsDesktop';
 import DesktopShell from '../src/components/DesktopShell';
@@ -277,6 +278,15 @@ function AppShell() {
     });
     return () => registerRateLimitToast(null);
   }, [toast]);
+
+  // Offline drafts: drain the pending-push index on every reconnect (and once
+  // at startup). markPending() used to only RECORD a failed push — nothing ever
+  // re-sent it, so "syncs when you reconnect" was not actually built. This is
+  // the drain. It only re-sends pushes the user already initiated.
+  useEffect(() => {
+    const unsubscribe = setupDraftAutoSync();
+    return () => { if (typeof unsubscribe === 'function') unsubscribe(); };
+  }, []);
 
   // One Stack element, optionally wrapped. On mobile the rendered tree is
   // <View><StatusBar/><RouteGuard/><Stack/></View> — exactly as before.
