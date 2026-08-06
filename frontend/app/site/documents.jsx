@@ -219,22 +219,20 @@ export default function SiteDocumentsScreen() {
       remoteUrl: file?.r2_url || file?.directUrl,
     });
 
-    if (local && Platform.OS === 'ios') {
+    // Android can now render a cached file too — PDFViewer stages a local
+    // pdf.js copy for `file://` sources. Android still takes the REMOTE viewer
+    // while online, so the online path is byte-for-byte what it was; drop the
+    // `|| offline` to prefer the cached copy there as well.
+    if (local && (Platform.OS === 'ios' || offline)) {
       setSelectedPdfFile({ ...file, directUrl: local });
       setPdfViewerVisible(true);
       return;
     }
 
     if (offline) {
-      // ⚠️ ANDROID LIMIT: PDFViewer.native.jsx draws Android PDFs through the
-      // REMOTE mozilla.github.io/pdf.js viewer, so even a fully cached file
-      // renders nothing without signal. Say that, rather than opening a viewer
-      // that sits blank. (Fixed by bundling a viewer natively — a rebuild.)
       toast.info(
-        local ? 'Saved — but the viewer needs signal' : 'Not saved on this device',
-        local
-          ? 'This document is saved on this tablet. Its PDF viewer still needs a connection, so it opens as soon as you have signal.'
-          : 'No saved copy of this document is on this tablet yet. Reconnect to load it.',
+        'Not saved on this tablet',
+        'No saved copy of this document is on this tablet yet. Reconnect to load it.',
       );
       return;
     }

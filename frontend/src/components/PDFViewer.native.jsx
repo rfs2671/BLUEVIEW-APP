@@ -17,6 +17,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { spacing } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
+import { ensurePdfJsViewer, localViewerUrlFor, isLocalFileUri, pdfJsViewerDir } from '../utils/pdfjsViewer';
 
 const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://api.levelog.com';
 
@@ -26,6 +27,9 @@ const API_BASE = process.env.EXPO_PUBLIC_API_URL || process.env.NEXT_PUBLIC_API_
 // accepts the request (WebViews can't set Authorization headers).
 async function resolvePdfSrc(rawUrl) {
   if (!rawUrl) return null;
+  // A cached `file://` uri from docCache is already final — it has no API base
+  // to resolve against and must never be given a `?token=`.
+  if (isLocalFileUri(rawUrl)) return rawUrl;
   let abs = rawUrl;
   if (rawUrl.startsWith('/')) abs = `${API_BASE}${rawUrl}`;
   if (abs.includes('/api/projects/') && abs.includes('/files/') && abs.endsWith('/content')) {
@@ -45,12 +49,28 @@ function pdfJsViewerUrl(pdfUrl) {
   return `https://mozilla.github.io/pdf.js/web/viewer.html?file=${encodeURIComponent(pdfUrl)}`;
 }
 
-function webViewSourceForPdf(pdfUrl) {
+/**
+ * Three cases, and only the third is new:
+ *   iOS (any url)          — hand it straight to WKWebView/PDFKit. A local
+ *                            `file://` already works there, which is why iOS
+ *                            never needed a bundled viewer.
+ *   Android + REMOTE url   — the hosted mozilla.github.io viewer, EXACTLY as
+ *                            before. The online path is deliberately untouched.
+ *   Android + LOCAL file:// — the pdf.js copy staged on disk by pdfjsViewer.js.
+ *                            This is the offline case; without it a cached PDF
+ *                            renders nothing.
+ */
+function webViewSourceForPdf(pdfUrl, localViewerUri) {
   if (Platform.OS === 'ios') {
     // PDFKit via WKWebView: smooth native zoom/scroll.
     return { uri: pdfUrl };
   }
-  // Android: pdf.js fallback.
+  if (isLocalFileUri(pdfUrl)) {
+    // No staged viewer yet -> caller keeps showing the loader / error.
+    if (!localViewerUri) return null;
+    return { uri: localViewerUrlFor(localViewerUri, pdfUrl) };
+  }
+  // Android, remote url: pdf.js fallback (unchanged).
   return { uri: pdfJsViewerUrl(pdfUrl) };
 }
 
@@ -60,6 +80,10 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   const [url, setUrl] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // `file://` uri of the locally staged pdf.js viewer.html — Android + offline
+  // only. Null on iOS and on the online path.
+  const [localViewerUri, setLocalViewerUri] = useState(null);
+  const [errorHint, setErrorHint] = useState('');
 
   // Annotation state
   const [annotations, setAnnotations] = useState([]);
@@ -75,12 +99,53 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
   // input, annotation taps) don't create a new object reference and force a
   // WebView reload. Without this, every pinch-zoom-induced re-render dropped
   // the user back to page 1.
-  const webViewSource = useMemo(() => (url ? webViewSourceForPdf(url) : null), [url]);
+  const webViewSource = useMemo(
+    () => (url ? webViewSourceForPdf(url, localViewerUri) : null),
+    [url, localViewerUri]
+  );
+
+  const isLocalPdf = isLocalFileUri(url);
+  const needsLocalViewer = isLocalPdf && Platform.OS === 'android';
+
+  // Stage the offline pdf.js viewer on disk the first time an Android device
+  // opens a cached `file://` PDF. Cheap and memoised after that — it only
+  // copies two assets and writes one HTML file.
+  useEffect(() => {
+    if (!visible || !needsLocalViewer) { setLocalViewerUri(null); return; }
+    let mounted = true;
+    setLoading(true);
+    ensurePdfJsViewer()
+      .then((res) => {
+        if (!mounted) return;
+        if (res?.ok) {
+          setLocalViewerUri(res.viewerUri);
+          setLoading(false);
+          return;
+        }
+        // ⚠️ Most likely `assets-missing`: assets/pdfjs/*.txt is still the
+        // documented placeholder rather than a real pdf.js build.
+        setErrorHint(
+          res?.reason === 'assets-missing'
+            ? 'The offline PDF viewer is not installed in this build.'
+            : 'The offline PDF viewer could not be prepared.'
+        );
+        setError(true);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setErrorHint('The offline PDF viewer could not be prepared.');
+        setError(true);
+        setLoading(false);
+      });
+    return () => { mounted = false; };
+  }, [visible, needsLocalViewer]);
 
   useEffect(() => {
     if (visible && projectId) {
       setLoading(true);
       setError(false);
+      setErrorHint('');
       setUrl(null);
       // Direct-upload files expose their URL on the record itself (either
       // `directUrl` pushed by construction-plans.jsx or the raw `r2_url`
@@ -243,7 +308,10 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           >
             <MapPin size={20} strokeWidth={1.5} color="#fff" />
           </Pressable>
-          {url && (
+          {/* A cached `file://` can't be handed to another app (Android throws
+              FileUriExposedException), and there's nothing to open externally
+              offline anyway. */}
+          {url && !isLocalPdf && (
             <Pressable onPress={() => Linking.openURL(url)} style={styles.iconBtn}>
               <ExternalLink size={20} strokeWidth={1.5} color="#fff" />
             </Pressable>
@@ -261,19 +329,25 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
           <View style={styles.center}>
             <FileText size={48} strokeWidth={1} color="#64748b" />
             <Text style={styles.errorTitle}>Could not load document</Text>
-            <Text style={styles.errorSub}>The file may be unavailable or corrupted.</Text>
-            {url && (
+            <Text style={styles.errorSub}>
+              {errorHint || 'The file may be unavailable or corrupted.'}
+            </Text>
+            {url && !isLocalPdf && (
               <Pressable style={styles.actionBtn} onPress={() => Linking.openURL(url)}>
                 <Text style={styles.actionText}>Open Externally</Text>
               </Pressable>
             )}
-            <Pressable style={[styles.actionBtn, { backgroundColor: withAlpha('#ffffff', 0.1) }]} onPress={() => { setError(false); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
-              <Text style={styles.actionText}>Try Again</Text>
-            </Pressable>
+            {!!file?.path && !isLocalPdf && (
+              <Pressable style={[styles.actionBtn, { backgroundColor: withAlpha('#ffffff', 0.1) }]} onPress={() => { setError(false); setErrorHint(''); setLoading(true); dropboxAPI.getFileUrl(projectId, file.path).then(r => { setUrl(r.url); setLoading(false); }).catch(() => { setError(true); setLoading(false); }); }}>
+                <Text style={styles.actionText}>Try Again</Text>
+              </Pressable>
+            )}
           </View>
         )}
 
-        {!loading && !error && url && (
+        {/* `webViewSource` is null while the offline viewer is still staging —
+            gate on it so the WebView is never mounted with a null source. */}
+        {!loading && !error && url && webViewSource && (
           <View
             style={{ flex: 1 }}
             onLayout={(e) => setContainerLayout(e.nativeEvent.layout)}
@@ -286,10 +360,32 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
               {
                 source: webViewSource,
                 style: { flex: 1, backgroundColor: '#050a12' },
-                originWhitelist: ['*'],
+                originWhitelist: ['*', 'file://'],
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 mixedContentMode: 'always',
+                // ── Local-file access ──────────────────────────────────────
+                // Required for the offline viewer, and ONLY meaningful for it:
+                //  allowFileAccess              — open a file:// url at all.
+                //  allowFileAccessFromFileURLs  — THE critical one. The staged
+                //    viewer.html is itself a file://, and pdf.js reads the PDF
+                //    bytes with XHR; Android WebView blocks file:// -> file://
+                //    XHR by default, which is precisely why a cached PDF used
+                //    to render nothing.
+                //  allowUniversalAccessFromFileURLs — some WebView builds gate
+                //    the above behind this; harmless otherwise.
+                // Scoped to the local case so a remote page is never granted
+                // read access to the app's document directory.
+                allowFileAccess: isLocalPdf,
+                allowFileAccessFromFileURLs: isLocalPdf,
+                allowUniversalAccessFromFileURLs: isLocalPdf,
+                // iOS-only prop, and deliberately left unset on iOS: iOS loads
+                // the PDF itself (PDFKit), where the default single-file read
+                // access is correct — pointing it at the viewer directory would
+                // instead REVOKE access to the PDF. It is set only for the
+                // staged-viewer case, which needs directory-wide access so
+                // viewer.html can load its sibling pdf.min.js.
+                allowingReadAccessToURL: needsLocalViewer ? pdfJsViewerDir() : undefined,
                 // Keep in-memory page cache across zoom/pan so the viewer
                 // doesn't re-fetch when the user pinches.
                 cacheEnabled: true,
@@ -302,6 +398,21 @@ export default function PDFViewer({ visible, file, projectId, onClose }) {
                 // (some Android builds re-mount the native view otherwise).
                 androidLayerType: 'hardware',
                 onError: () => setError(true),
+                // The staged viewer reports its own failures (blocked XHR, a
+                // corrupt file) — surface them instead of leaving a dark page.
+                onMessage: (e) => {
+                  let msg = null;
+                  try { msg = JSON.parse(e?.nativeEvent?.data || '{}'); } catch (_err) { return; }
+                  if (msg?.type === 'pdf-error') {
+                    console.warn('Offline PDF viewer error:', msg.code, msg.detail);
+                    setErrorHint(
+                      msg.code === 'xhr-blocked'
+                        ? 'This device blocked the saved copy from being read.'
+                        : 'The saved copy of this document could not be rendered.'
+                    );
+                    setError(true);
+                  }
+                },
                 startInLoadingState: true,
                 renderLoading: () => (
                   <View style={[styles.center, { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }]}>

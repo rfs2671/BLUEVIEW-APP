@@ -295,22 +295,20 @@ export default function ConstructionPlansScreen() {
         remoteUrl: file?.r2_url || file?.directUrl,
       });
 
-      if (local && Platform.OS === 'ios') {
+      // Android can now render a cached plan too — PDFViewer stages a local
+      // pdf.js copy for `file://` sources. Android still takes the REMOTE
+      // viewer while online, so the online path is byte-for-byte what it was;
+      // drop the `|| offline` to prefer the cached copy there as well.
+      if (local && (Platform.OS === 'ios' || offline)) {
         setSelectedPdfFile({ ...file, directUrl: local });
         setPdfViewerVisible(true);
         return;
       }
 
       if (offline) {
-        // ⚠️ ANDROID LIMIT: PDFViewer.native.jsx renders Android PDFs through
-        // the REMOTE mozilla.github.io/pdf.js viewer, so a cached plan still
-        // draws nothing offline. Say so rather than opening a blank viewer.
-        // (Only a natively bundled viewer fixes this — a rebuild, not OTA.)
         toast.info(
-          local ? 'Saved — but the viewer needs signal' : 'Not saved on this device',
-          local
-            ? 'This plan is saved on this device. Its PDF viewer still needs a connection, so it opens as soon as you reconnect.'
-            : 'No saved copy of this plan is on this device yet. Reconnect to load it.',
+          'Not saved on this device',
+          'No saved copy of this plan is on this device yet. Reconnect to load it.',
         );
         return;
       }
