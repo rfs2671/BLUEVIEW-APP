@@ -32,15 +32,27 @@ import {
   XCircle,
   Home,
   LogOut,
+  CloudOff,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import SignaturePad from '../../src/components/SignaturePad';
+import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dailyLogsAPI, csRegistrationAPI } from '../../src/utils/api';
+import {
+  draftKey,
+  readDraft,
+  writeDraft,
+  setDraftBackendId,
+  markPending,
+  clearPending,
+  getPendingKeys,
+} from '../../src/utils/logbookDrafts';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, surface, withAlpha } from '../../src/styles/semanticColors';
@@ -60,6 +72,17 @@ const SAFETY_CHECKLIST_ITEMS = [
   { id: 'hazards', label: 'Hazards' },
   { id: 'base_conditions', label: 'Base Conditions' },
 ];
+
+// ── Offline draft identity ──────────────────────────────────────────────────
+// This screen is the superintendent's REQUIRED §3301.13.13 daily log. Until
+// now the typed log lived ONLY in React state: a failed save just toasted, and
+// navigating away or an OS kill silently destroyed a legally required record.
+// It now uses the same local-first draft store as the CP logbooks
+// (src/utils/logbookDrafts.js), keyed by the log's natural identity
+// (project + log type + date) — the same key the server dedups on.
+const LOG_TYPE = 'site_daily_log';
+
+const todayStr = () => new Date().toISOString().split('T')[0];
 
 export default function SiteDailyLogsScreen() {
   // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
@@ -84,6 +107,17 @@ export default function SiteDailyLogsScreen() {
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
   const [csLicenseNumber, setCsLicenseNumber] = useState('');
+
+  // The server id of TODAY's log, kept independently of `existingLog` and
+  // persisted in the local draft. `existingLog` is only ever set from a
+  // SUCCESSFUL list read, so when the read failed it stayed null and the next
+  // save took the CREATE branch — duplicating a log that already existed on the
+  // server. This id survives that failed read, so the save still UPDATEs.
+  const [existingLogId, setExistingLogId] = useState(null);
+  // 'ok' | 'offline' | 'error' — a failed load must never render as "no logs".
+  const [fetchState, setFetchState] = useState('ok');
+  // True when the local draft holds changes the server has not accepted yet.
+  const [pendingSync, setPendingSync] = useState(false);
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -116,23 +150,91 @@ export default function SiteDailyLogsScreen() {
     }
   }, [isAuthenticated, siteMode, siteProject]);
 
+  // The draft key for TODAY's log on the active project (null before a project
+  // is known, so no draft can ever be written to the wrong key).
+  const currentDraftKey = () =>
+    (siteProject?.id ? draftKey({ projectId: siteProject.id, logType: LOG_TYPE, date: todayStr() }) : null);
+
+  // Debounced autosave of the WHOLE form (fields + both signatures) to the
+  // local draft. No network. This is what makes a navigate-away or a process
+  // kill non-destructive: whatever is on screen is already on disk within a
+  // second. `status` is deliberately not written here so an autosave can never
+  // downgrade a submitted log back to a draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const key = currentDraftKey();
+    if (!key) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(key, { data: formData }).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [loading, siteProject?.id, formData]);
+
   const fetchLogs = async () => {
     if (!siteProject?.id) return;
     setLoading(true);
+    const key = currentDraftKey();
     try {
-      const logs = await dailyLogsAPI.getByProject(siteProject.id);
-      const logsList = Array.isArray(logs) ? logs : [];
-      setAllLogs(logsList);
+      // ── 1. LOCAL FIRST ────────────────────────────────────────────────────
+      // The on-device draft is what the superintendent actually typed, so it is
+      // read and rendered BEFORE any network call. Offline, this is the whole
+      // screen; online, it is just replaced a moment later by the server copy.
+      let draft = null;
+      let draftPending = false;
+      try {
+        draft = await readDraft(key);
+        draftPending = (await getPendingKeys()).includes(key);
+      } catch (e) {
+        console.warn('Draft read failed (non-blocking):', e?.message);
+      }
+      const hasDraftData = !!draft?.data && Object.keys(draft.data).length > 0;
+      if (hasDraftData) setFormData((prev) => ({ ...prev, ...draft.data }));
+      if (draft?.backend_id) setExistingLogId(draft.backend_id);
+      setPendingSync(draftPending);
 
-      const today = new Date().toISOString().split('T')[0];
-      const todayLog = logsList.find((l) => l.date === today);
+      // ── 2. THEN THE SERVER ────────────────────────────────────────────────
+      const res = await settleFetch(() => dailyLogsAPI.getByProject(siteProject.id));
 
-      if (todayLog) {
-        setExistingLog(todayLog);
-        populateFormFromLog(todayLog);
+      if (res.status === 'ok') {
+        setFetchState('ok');
+        const logsList = Array.isArray(res.data) ? res.data : [];
+        setAllLogs(logsList);
+
+        const today = todayStr();
+        const todayLog = logsList.find((l) => l.date === today);
+
+        if (todayLog) {
+          const serverId = todayLog.id || todayLog._id;
+          setExistingLog(todayLog);
+          setExistingLogId(serverId);
+          setDraftBackendId(key, serverId).catch(() => {});
+          // A draft with an un-pushed change WINS over the server copy —
+          // otherwise reconnecting would silently overwrite work done offline.
+          // Otherwise hydrate from the server and write through to the draft,
+          // so the device copy and the server copy agree.
+          if (!draftPending) {
+            const form = formFromLog(todayLog);
+            setFormData(form);
+            writeDraft(key, { data: form, backend_id: serverId }).catch(() => {});
+          }
+        } else {
+          setExistingLog(null);
+          // The list is sorted date-descending, so a successful read without
+          // today's date is authoritative: any id we were holding is stale and
+          // must not be reused, or the next save would PUT to a deleted doc.
+          if (draft?.backend_id) {
+            setExistingLogId(null);
+            writeDraft(key, { backend_id: null }).catch(() => {});
+          }
+          // Only wipe the form when there is nothing local to lose. A draft
+          // with no server twin is a log typed offline today — it stays.
+          if (!hasDraftData) resetForm();
+        }
       } else {
-        setExistingLog(null);
-        resetForm();
+        // NOT an empty state. Keep the draft-hydrated form and whatever list is
+        // already in state; the UI renders <OfflineNotice> instead of "no logs".
+        setFetchState(res.status);
+        console.warn('Failed to fetch logs:', res.error?.message);
       }
 
       // Auto-fill superintendent from CS registration. Non-blocking —
@@ -155,29 +257,30 @@ export default function SiteDailyLogsScreen() {
         setCsLicenseNumber('');
       }
     } catch (error) {
-      console.error('Failed to fetch logs:', error);
-      setAllLogs([]);
+      // Never strand the screen in its skeleton state — the draft above is
+      // already on screen, so this is only a guard, not a data path.
+      console.error('Failed to load daily log:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const populateFormFromLog = (log) => {
-    setFormData({
-      weather: log.weather || 'sunny',
-      notes: log.notes || '',
-      worker_count: log.worker_count || 0,
-      safety_checklist: log.safety_checklist || {},
-      corrective_actions: log.corrective_actions || '',
-      corrective_actions_na: log.corrective_actions_na || false,
-      incident_log: log.incident_log || '',
-      incident_log_na: log.incident_log_na || false,
-      superintendent_name: log.superintendent_signature?.signer_name || '',
-      superintendent_signature: log.superintendent_signature || null,
-      competent_person_name: log.competent_person_signature?.signer_name || '',
-      competent_person_signature: log.competent_person_signature || null,
-    });
-  };
+  // Server log -> form shape. Split out of the old populateFormFromLog so the
+  // SAME object can be both put on screen and written through to the draft.
+  const formFromLog = (log) => ({
+    weather: log.weather || 'sunny',
+    notes: log.notes || '',
+    worker_count: log.worker_count || 0,
+    safety_checklist: log.safety_checklist || {},
+    corrective_actions: log.corrective_actions || '',
+    corrective_actions_na: log.corrective_actions_na || false,
+    incident_log: log.incident_log || '',
+    incident_log_na: log.incident_log_na || false,
+    superintendent_name: log.superintendent_signature?.signer_name || '',
+    superintendent_signature: log.superintendent_signature || null,
+    competent_person_name: log.competent_person_signature?.signer_name || '',
+    competent_person_signature: log.competent_person_signature || null,
+  });
 
   const resetForm = () => {
     setFormData({
@@ -211,8 +314,9 @@ export default function SiteDailyLogsScreen() {
 
   const handleSubmit = async () => {
     setSaving(true);
+    const key = currentDraftKey();
     try {
-      const today = new Date().toISOString().split('T')[0];
+      const today = todayStr();
       const logData = {
         project_id: siteProject.id,
         date: today,
@@ -238,15 +342,46 @@ export default function SiteDailyLogsScreen() {
         competent_person_signature: formData.competent_person_signature,
       };
 
-      if (existingLog) {
-        await dailyLogsAPI.update(existingLog.id || existingLog._id, logData);
-        toast.success('Updated', 'Daily log updated');
-      } else {
-        const newLog = await dailyLogsAPI.create(logData);
-        setExistingLog(newLog);
-        toast.success('Created', 'Daily log created');
+      // LOCAL FIRST. The device copy is written before anything touches the
+      // network, so from here on the log cannot be lost — the server push below
+      // is best-effort and its failure only delays the sync.
+      await writeDraft(key, { data: formData, status: 'submitted' });
+
+      // Prefer the id we know about from ANY source: the loaded log, or the one
+      // persisted in the draft when the load failed. Falling back to CREATE
+      // because a load failed is what duplicated server logs.
+      const targetId = existingLog?.id || existingLog?._id || existingLogId;
+
+      try {
+        let savedId = targetId;
+        if (targetId) {
+          const updated = await dailyLogsAPI.update(targetId, logData);
+          if (updated?.id || updated?._id) setExistingLog(updated);
+          toast.success('Updated', 'Daily log updated');
+        } else {
+          const newLog = await dailyLogsAPI.create(logData);
+          savedId = newLog?.id || newLog?._id || null;
+          setExistingLog(newLog);
+          toast.success('Created', 'Daily log created');
+        }
+        setExistingLogId(savedId);
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+        setPendingSync(false);
+        fetchLogs();
+      } catch (pushErr) {
+        // The log IS saved — on this device. Say that, because "Could not save
+        // log" reads as "your entry is gone" and pushes a superintendent to
+        // retype a required record they still have.
+        await markPending(key);
+        setPendingSync(true);
+        console.warn('Daily log server push deferred (will sync on reconnect):', pushErr?.message);
+        if (isOfflineError(pushErr)) {
+          toast.success('Saved on this device', 'No connection — this log will sync when you are back online.');
+        } else {
+          toast.warning('Saved on this device', 'The server rejected the sync. Your log is safe here and will retry.');
+        }
       }
-      fetchLogs();
     } catch (error) {
       console.error('Failed to save:', error);
       toast.error('Error', 'Could not save log');
@@ -279,8 +414,13 @@ export default function SiteDailyLogsScreen() {
   };
 
   const previousLogs = allLogs.filter(
-    (log) => log.date !== new Date().toISOString().split('T')[0]
+    (log) => log.date !== todayStr()
   );
+
+  // A log exists on the server if we loaded it OR if the draft remembers its
+  // id from a previous successful push — the label and the save branch must
+  // agree, or the button says "Submit" while the save correctly UPDATEs.
+  const hasServerLog = !!(existingLog || existingLogId);
 
   const renderSafetyCheckItem = (item) => {
     const checkData = formData.safety_checklist[item.id] || { status: 'unchecked' };
@@ -378,13 +518,33 @@ export default function SiteDailyLogsScreen() {
               <View style={styles.dateCard}>
                 <Calendar size={18} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={styles.dateText}>{formatDate(new Date())}</Text>
-                {existingLog && (
+                {pendingSync ? (
+                  <View style={styles.pendingBadge}>
+                    <CloudOff size={12} strokeWidth={2} color={semantic.attention} />
+                    <Text style={styles.pendingText}>Saved on device</Text>
+                  </View>
+                ) : hasServerLog ? (
                   <View style={styles.existingBadge}>
                     <Check size={12} strokeWidth={2} color="#4ade80" />
                     <Text style={styles.existingText}>Saved</Text>
                   </View>
-                )}
+                ) : null}
               </View>
+
+              {/* A failed load must not be silent here either: without this the
+                  form looks like a blank new day even when today's log exists
+                  on a server we simply could not reach. */}
+              {fetchState !== 'ok' && (
+                <OfflineNotice
+                  mode={fetchState}
+                  cachedCount={hasServerLog || pendingSync ? 1 : 0}
+                  detail={
+                    fetchState === 'offline'
+                      ? 'Offline — this is your on-device copy of today’s log. Keep working; it saves here and syncs when you reconnect.'
+                      : 'Could not load today’s log from the server. You are seeing the on-device copy — anything you enter is saved here.'
+                  }
+                />
+              )}
 
               {/* Weather */}
               <GlassCard style={styles.section}>
@@ -501,12 +661,18 @@ export default function SiteDailyLogsScreen() {
                 ) : null}
               </View>
 
-              <GlassButton title={saving ? 'Saving...' : existingLog ? 'Update Log' : 'Submit Log'}
+              <GlassButton title={saving ? 'Saving...' : hasServerLog ? 'Update Log' : 'Submit Log'}
                 onPress={handleSubmit} loading={saving} style={styles.submitBtn} />
             </>
           ) : (
             /* Previous Logs */
-            previousLogs.length > 0 ? (
+            <>
+            {/* "No Previous Logs" on a failed load asserts to a DOB inspector
+                that no records exist. Say what actually happened instead. */}
+            {fetchState !== 'ok' && (
+              <OfflineNotice mode={fetchState} cachedCount={previousLogs.length} />
+            )}
+            {previousLogs.length > 0 ? (
               <View style={styles.previousList}>
                 {previousLogs.map((log) => {
                   const WeatherIcon = getWeatherIcon(log.weather);
@@ -546,12 +712,13 @@ export default function SiteDailyLogsScreen() {
                   );
                 })}
               </View>
-            ) : (
+            ) : fetchState === 'ok' ? (
               <GlassCard style={styles.emptyCard}>
                 <History size={32} strokeWidth={1.5} color={colors.text.muted} />
                 <Text style={styles.emptyTitle}>No Previous Logs</Text>
               </GlassCard>
-            )
+            ) : null}
+            </>
           )}
         </ScrollView>
 
@@ -654,6 +821,9 @@ function buildStyles(colors, isDark) {
   dateText: { flex: 1, fontSize: 18, color: colors.text.primary },
   existingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: semantic.verifiedBg, paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full },
   existingText: { fontSize: 14, fontWeight: '500', color: '#4ade80' },
+  // "Saved on device" — the log is safe locally but has not reached the server.
+  pendingBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: withAlpha(semantic.attention, 0.15), paddingHorizontal: spacing.sm, paddingVertical: 4, borderRadius: borderRadius.full, borderWidth: 1, borderColor: withAlpha(semantic.attention, 0.4) },
+  pendingText: { fontSize: 14, fontWeight: '500', color: semantic.attention },
   section: { marginBottom: spacing.lg },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   sectionTitle: { fontSize: 18, fontWeight: '500', color: colors.text.primary },

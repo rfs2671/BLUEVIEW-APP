@@ -38,6 +38,7 @@ import {
   PenTool,
   Clock,
   Eye,
+  CloudOff,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -53,6 +54,16 @@ import { sentenceCase } from '../src/utils/textFormat';
 import { useProjects } from '../src/hooks/useProjects';
 import { useDailyLogs } from '../src/hooks/useDailyLogs';
 import OfflineIndicator from '../src/components/OfflineIndicator';
+import OfflineNotice from '../src/components/OfflineNotice';
+import {
+  draftKey,
+  readDraft,
+  writeDraft,
+  setDraftBackendId,
+  markPending,
+  clearPending,
+} from '../src/utils/logbookDrafts';
+import { isOfflineError, settleFetch } from '../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
@@ -80,6 +91,14 @@ const SAFETY_CHECKLIST_ITEMS = [
   { id: 'base_conditions', label: 'Base Conditions' },
 ];
 
+// Offline draft identity for this screen. One draft per (project, day), which
+// is the same natural key the backend dedups on — see src/utils/logbookDrafts.js.
+const LOG_TYPE = 'daily_log';
+
+// The screen has always keyed "today" off the UTC date slice; keep that exact
+// convention so the draft key and the server lookup agree with existing rows.
+const todayISO = () => new Date().toISOString().split('T')[0];
+
 export default function DailyLogScreen() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -97,6 +116,15 @@ export default function DailyLogScreen() {
   const [saving, setSaving] = useState(false);
   const [selectedPreviousLog, setSelectedPreviousLog] = useState(null);
   const [csLicenseNumber, setCsLicenseNumber] = useState('');
+  // OFFLINE vs EMPTY: 'ok' | 'offline' | 'error' for the project-logs read. Only
+  // 'ok' may render the "No Logs Found" empty state.
+  const [logsFetchState, setLogsFetchState] = useState('ok');
+  // Server id for TODAY's log, learned either from the server read or from the
+  // local draft. This is what makes a save after a FAILED load update the
+  // existing document instead of creating a duplicate for the same day.
+  const [backendLogId, setBackendLogId] = useState(null);
+  // True when a signed log lives on this device but has not landed on the server.
+  const [draftPending, setDraftPending] = useState(false);
 
   const [formData, setFormData] = useState({
     weather: 'sunny',
@@ -116,7 +144,7 @@ export default function DailyLogScreen() {
 
   const isAdmin = user?.role === 'admin';
   const { projects: projectsList, loading: projectsLoading } = useProjects();
-  const { dailyLogs, loading: logsLoading, createDailyLog, updateDailyLog } = useDailyLogs(selectedProject?._id || selectedProject?.id);
+  const { dailyLogs, loading: logsLoading, createDailyLog, updateDailyLog, getProjectLogs } = useDailyLogs(selectedProject?._id || selectedProject?.id);
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -134,6 +162,29 @@ export default function DailyLogScreen() {
       fetchProjects();
     }
   }, [isAuthenticated, siteMode, siteProject]);
+
+  // Autosave EVERY field change (and both signatures) to the LOCAL draft.
+  // Debounced so typing doesn't thrash AsyncStorage, and it makes no network
+  // call — this is what lets a superintendent fill and sign the whole log in a
+  // dead zone, quit the app, and come back to exactly what they entered.
+  // `status` is deliberately omitted so an autosave never downgrades a
+  // submitted log back to 'draft'.
+  useEffect(() => {
+    if (loading) return undefined;
+    const projectId = getProjectId(selectedProject);
+    if (!projectId) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date: todayISO() }),
+        {
+          data: { ...formData },
+          cp_signature: formData.competent_person_signature,
+          cp_name: formData.competent_person_name,
+        },
+      ).catch(() => {});
+    }, 800);
+    return () => clearTimeout(t);
+  }, [loading, selectedProject, formData]);
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -155,44 +206,85 @@ export default function DailyLogScreen() {
   const fetchAndPrefillCS = async (projectId) => {
     // Auto-fill superintendent from CS registration. Non-blocking —
     // CS lookup failure must never break the daily log flow.
-    try {
-      const csData = await csRegistrationAPI.getForProject(projectId);
-      if (csData?.registered && csData.full_name) {
-        // Only pre-fill if the field is empty — do not overwrite a
-        // superintendent who has already signed today's log.
-        setFormData((prev) => ({
-          ...prev,
-          superintendent_name: prev.superintendent_name || csData.full_name,
-        }));
-        setCsLicenseNumber(csData.license_number || '');
-      } else {
-        setCsLicenseNumber('');
-      }
-    } catch (e) {
-      console.warn('CS lookup failed (non-blocking):', e?.message);
+    const r = await settleFetch(() => csRegistrationAPI.getForProject(projectId));
+    if (r.status !== 'ok') {
+      // OFFLINE vs EMPTY: a failed lookup is NOT "no CS registered". Leave the
+      // name and licence badge exactly as they are rather than blanking them,
+      // which would read as "this project has no Construction Superintendent".
+      console.warn('CS lookup unavailable (non-blocking):', r.status, r.error?.message);
+      return;
+    }
+    const csData = r.data;
+    if (csData?.registered && csData.full_name) {
+      // Only pre-fill if the field is empty — do not overwrite a
+      // superintendent who has already signed today's log.
+      setFormData((prev) => ({
+        ...prev,
+        superintendent_name: prev.superintendent_name || csData.full_name,
+      }));
+      setCsLicenseNumber(csData.license_number || '');
+    } else {
       setCsLicenseNumber('');
     }
   };
 
   const fetchLogsForProject = async (projectId) => {
+    const today = todayISO();
+    const key = draftKey({ projectId, logType: LOG_TYPE, date: today });
     try {
-      setAllLogs(dailyLogs);
-      const today = new Date().toISOString().split('T')[0];
-      const todayLog = dailyLogs.find((l) => l.date === today);
-
-      if (todayLog) {
-        setExistingLog(todayLog);
-        populateFormFromLog(todayLog);
+      // 1) CACHE-FIRST. The on-device draft is the source of truth for TODAY's
+      //    in-progress log and is read before any network call, so an offline
+      //    superintendent reopens exactly what they typed and signed.
+      const draft = await readDraft(key);
+      if (draft) {
+        populateFormFromDraft(draft.data);
+        setBackendLogId(draft.backend_id || null);
+        // A submitted draft with no server id has never landed upstream.
+        setDraftPending(draft.status === 'submitted' && !draft.backend_id);
       } else {
-        setExistingLog(null);
-        resetForm();
+        setDraftPending(false);
+      }
+
+      // 2) Best-effort server read, settled so a dead zone can never be
+      //    mistaken for "this project has no logs".
+      const r = await getProjectLogs(projectId);
+      if (r.status === 'ok') {
+        setLogsFetchState('ok');
+        setAllLogs(r.data);
+        const todayLog = r.data.find((l) => l.date === today) || null;
+        setExistingLog(todayLog);
+        if (todayLog) {
+          // Bind the server id into the draft so the NEXT save updates this
+          // document rather than creating a second log for the same day.
+          const serverId = todayLog.id || todayLog._id || null;
+          setBackendLogId(serverId);
+          if (serverId) {
+            await setDraftBackendId(key, serverId);
+            setDraftPending(false);
+          }
+          // The local draft is the NEWER, unsynced copy — it wins. Only hydrate
+          // the form from the server when there is nothing on this device.
+          if (!draft) populateFormFromLog(todayLog);
+        } else if (!draft) {
+          resetForm();
+        }
+      } else {
+        // OFFLINE / error: keep whatever logs we already have on screen and
+        // record the state so the list renders <OfflineNotice/> instead of the
+        // "No Logs Found" empty card. Never wipe a draft-backed form here.
+        setLogsFetchState(r.status);
+        if (!draft) {
+          setExistingLog(null);
+          resetForm();
+        }
       }
       // Always fetch CS — fills the superintendent name if the form is
       // fresh, and gives us the license number for the badge regardless.
       await fetchAndPrefillCS(projectId);
     } catch (error) {
       console.error('Failed to fetch logs:', error);
-      setAllLogs([]);
+      // Do NOT setAllLogs([]) — an exception here is not evidence of no logs.
+      setLogsFetchState(isOfflineError(error) ? 'offline' : 'error');
     } finally {
       setLoading(false);
     }
@@ -213,6 +305,20 @@ export default function DailyLogScreen() {
       superintendent_signature: log.superintendent_signature || null,
       competent_person_name: log.competent_person_signature?.signer_name || '',
       competent_person_signature: log.competent_person_signature || null,
+    });
+  };
+
+  // Rehydrate from the local draft. The draft stores the form verbatim, so we
+  // copy back only known form keys and only when they are defined — a partial
+  // or older draft can never blank a field the form already has.
+  const populateFormFromDraft = (data) => {
+    if (!data || typeof data !== 'object') return;
+    setFormData((prev) => {
+      const next = { ...prev };
+      Object.keys(prev).forEach((k) => {
+        if (data[k] !== undefined) next[k] = data[k];
+      });
+      return next;
     });
   };
 
@@ -273,10 +379,16 @@ export default function DailyLogScreen() {
     }
 
     setSaving(true);
+    const projectId = getProjectId(selectedProject);
+    const today = todayISO();
+    const key = draftKey({ projectId, logType: LOG_TYPE, date: today });
+    // The id we already know for today — from the server read OR, when that
+    // read failed, from the local draft. Without this a save after a failed
+    // load would POST a duplicate log for the same day.
+    const knownId = existingLog?.id || existingLog?._id || backendLogId || null;
     try {
-      const today = new Date().toISOString().split('T')[0];
       const logData = {
-        project_id: selectedProject._id || selectedProject.id,
+        project_id: projectId,
         date: today,
         weather: formData.weather,
         notes: formData.notes,
@@ -292,15 +404,54 @@ export default function DailyLogScreen() {
         superintendent_signature: formData.superintendent_signature,
         competent_person_signature: formData.competent_person_signature,
       };
-      if (existingLog) {
-        await updateDailyLog(existingLog.id || existingLog._id, logData);
-        toast.success('Updated', 'Daily log updated successfully');
-      } else {
-        const newLog = await createDailyLog(logData);
-        setExistingLog(newLog);
-        toast.success('Created', 'Daily log created successfully');
+
+      // 1) LOCAL FIRST. The signed log is durable on this device before a single
+      //    byte goes to the network, so a failed push can never lose it.
+      await writeDraft(key, {
+        data: { ...formData },
+        cp_signature: formData.competent_person_signature,
+        cp_name: formData.competent_person_name,
+        status: 'submitted',
+        backend_id: knownId,
+      });
+
+      // 2) Best-effort push. Failure is NOT data loss — the draft above already
+      //    holds everything, so we record the key for the reconnect flush and
+      //    tell the user the truth.
+      try {
+        let savedId = knownId;
+        if (knownId) {
+          await updateDailyLog(knownId, logData);
+        } else {
+          const newLog = await createDailyLog(logData);
+          savedId = newLog?.id || newLog?._id || null;
+          setExistingLog(newLog);
+        }
+        setBackendLogId(savedId);
+        if (savedId) await setDraftBackendId(key, savedId);
+        await clearPending(key);
+        setDraftPending(false);
+        if (knownId) {
+          toast.success('Updated', 'Daily log updated successfully');
+        } else {
+          toast.success('Created', 'Daily log created successfully');
+        }
+        await fetchLogsForProject(projectId);
+      } catch (pushErr) {
+        await markPending(key);
+        setDraftPending(true);
+        if (pushErr?.offline || isOfflineError(pushErr)) {
+          toast.success(
+            'Saved on this device',
+            'Your daily log and signatures are stored on this device and will sync when you reconnect.'
+          );
+        } else {
+          toast.error(
+            'Not synced yet',
+            `${pushErr?.userMessage || pushErr?.response?.data?.detail || 'The server rejected this save.'} Your daily log is saved on this device.`
+          );
+        }
       }
-      await fetchLogsForProject(selectedProject._id || selectedProject.id);
     } catch (error) {
       console.error('Failed to save log:', error);
       toast.error('Error', error.response?.data?.detail || 'Could not save daily log');
@@ -338,7 +489,7 @@ export default function DailyLogScreen() {
   };
 
   const previousLogs = allLogs.filter(
-    (log) => log.date !== new Date().toISOString().split('T')[0]
+    (log) => log.date !== todayISO()
   );
 
   const renderSafetyCheckItem = (item) => {
@@ -527,6 +678,16 @@ export default function DailyLogScreen() {
                 </View>
               )}
 
+              {/* OFFLINE vs EMPTY — a failed read is never rendered as
+                  "No Logs Found"; that would assert to an inspector that no
+                  daily logs exist for this project. */}
+              {logsFetchState !== 'ok' && (
+                <OfflineNotice
+                  mode={logsFetchState === 'offline' ? 'offline' : 'error'}
+                  cachedCount={previousLogs.length}
+                />
+              )}
+
               {previousLogs.length > 0 ? (
                 <View style={s.previousLogsList}>
                   {previousLogs.map((log) => {
@@ -560,7 +721,7 @@ export default function DailyLogScreen() {
                     );
                   })}
                 </View>
-              ) : (
+              ) : logsFetchState === 'ok' ? (
                 <GlassCard style={s.emptyCard}>
                   <IconPod size={64}>
                     <History size={28} strokeWidth={1.5} color={colors.text.muted} />
@@ -570,7 +731,7 @@ export default function DailyLogScreen() {
                     Daily logs for this project will appear here.
                   </Text>
                 </GlassCard>
-              )}
+              ) : null}
             </>
           ) : (
             <>
@@ -591,6 +752,16 @@ export default function DailyLogScreen() {
                   </View>
                 )}
               </View>
+
+              {/* A push that never landed is not a loss — say so plainly. */}
+              {draftPending && (
+                <View style={s.pendingBanner}>
+                  <CloudOff size={14} strokeWidth={1.5} color={semantic.attention} />
+                  <Text style={s.pendingText}>
+                    Saved on this device — will sync when you reconnect.
+                  </Text>
+                </View>
+              )}
 
               <GlassCard style={s.section}>
                 <Text style={s.sectionTitle}>Weather Conditions</Text>
@@ -1120,6 +1291,23 @@ function buildStyles(colors, isDark) {
     fontSize: 11,
     fontWeight: '500',
     color: '#4ade80',
+  },
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: withAlpha(semantic.attention, 0.1),
+    borderWidth: 1,
+    borderColor: withAlpha(semantic.attention, 0.4),
+    borderRadius: borderRadius.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  pendingText: {
+    flex: 1,
+    fontSize: 12,
+    color: semantic.attention,
   },
   section: {
     marginBottom: spacing.lg,

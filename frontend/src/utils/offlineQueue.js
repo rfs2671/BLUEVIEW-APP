@@ -45,11 +45,19 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || process.env.EXPO_PUBLIC_API_U
  * Offline queue item structure:
  * {
  *   id: string,
- *   type: 'create' | 'update' | 'delete',
+ *   type: 'create' | 'update' | 'delete' | 'review',
  *   table: 'workers' | 'projects' | 'check_ins' | 'daily_logs',
  *   data: object,
  *   timestamp: number,
  *   retries: number,
+ *
+ *   // Optional, added for sub-resource actions (see processQueueItem).
+ *   // Existing create/update/delete callers set none of these and are
+ *   // routed exactly as before.
+ *   path: string,        // appended to the table endpoint, e.g. '/{id}/review'
+ *   method: string,      // HTTP verb for a `path` item (default POST)
+ *   dedupeKey: string,   // replaces an earlier queued item with the same key
+ *   meta: object,        // client-only; never sent to the API
  * }
  */
 
@@ -78,10 +86,21 @@ async function saveQueue(queue) {
 }
 
 /**
- * Add item to queue
+ * Add item to queue.
+ *
+ * If the item carries a `dedupeKey`, any earlier queued item with the same key
+ * is dropped first, so re-deciding the same thing offline (approve, then send
+ * home) leaves ONE pending action — the last one — instead of replaying both
+ * against the server in order. Items without a `dedupeKey` are appended
+ * unconditionally, exactly as before.
  */
 export async function addToQueue(item) {
   const queue = await getQueue();
+  if (item.dedupeKey) {
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      if (queue[i].dedupeKey === item.dedupeKey) queue.splice(i, 1);
+    }
+  }
   queue.push({
     ...item,
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
@@ -116,7 +135,13 @@ async function processQueueItem(item, token) {
   let url = `${API_URL}${endpoint}`;
   let method = 'POST';
 
-  if (item.type === 'update' && item.data._id) {
+  if (item.path) {
+    // Sub-resource action on an existing row — the collection endpoint alone
+    // cannot express it. e.g. a check-in review decision:
+    //   POST /api/checkins/{id}/review  { decision }
+    url = `${url}${item.path}`;
+    method = item.method || 'POST';
+  } else if (item.type === 'update' && item.data._id) {
     url = `${url}/${item.data._id}`;
     method = 'PUT';
   } else if (item.type === 'delete' && item.data._id) {
@@ -223,6 +248,59 @@ export async function getQueueSize() {
 export async function clearQueue() {
   await AsyncStorage.removeItem(QUEUE_KEY);
   console.log('🗑️ Queue cleared');
+}
+
+/* ---------------------------------------------------------------------------
+ * Check-in review decisions (site-device screen)
+ *
+ * An Approve / Send-home decision on a flagged check-in is a compliance record,
+ * so it must survive a dead zone: the site tablet takes the decision, we store
+ * it here, and the existing processQueue()/auto-processing drain posts it on
+ * reconnect. Routed through the generic `path` support above — attribution
+ * (reviewed_by) is still derived server-side from the token, never sent.
+ * ------------------------------------------------------------------------- */
+
+const REVIEW_DEDUPE_PREFIX = 'check_ins:review:';
+
+/** Queue an offline Approve / Send-home decision. decision: 'approved' | 'sent_home'. */
+export async function queueCheckInReview(checkinId, decision) {
+  if (!checkinId || !decision) return;
+  await addToQueue({
+    type: 'review',
+    table: 'check_ins',
+    path: `/${checkinId}/review`,
+    method: 'POST',
+    data: { decision },
+    dedupeKey: `${REVIEW_DEDUPE_PREFIX}${checkinId}`,
+    meta: { checkinId, decision },
+  });
+}
+
+/**
+ * Decisions still waiting to sync, keyed by check-in id:
+ *   { [checkinId]: { decision, queuedAt } }
+ * The screen merges this over both live and cached rows so a pending decision
+ * keeps showing after an app restart instead of looking like it never happened.
+ */
+export async function getQueuedCheckInReviews() {
+  const queue = await getQueue();
+  const byCheckin = {};
+  for (const item of queue) {
+    const checkinId = item.meta && item.meta.checkinId;
+    if (item.table === 'check_ins' && item.type === 'review' && checkinId) {
+      byCheckin[checkinId] = { decision: item.meta.decision, queuedAt: item.timestamp };
+    }
+  }
+  return byCheckin;
+}
+
+/** Drop a queued decision — used when the same decision just landed online. */
+export async function clearQueuedCheckInReview(checkinId) {
+  if (!checkinId) return;
+  const queue = await getQueue();
+  const key = `${REVIEW_DEDUPE_PREFIX}${checkinId}`;
+  const remaining = queue.filter((item) => item.dedupeKey !== key);
+  if (remaining.length !== queue.length) await saveQueue(remaining);
 }
 
 /**

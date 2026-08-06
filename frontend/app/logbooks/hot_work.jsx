@@ -8,9 +8,12 @@ import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
 import LogbookLockBar from '../../src/components/LogbookLockBar';
+import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
+import { settleFetch } from '../../src/utils/offlineState';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -64,6 +67,10 @@ export default function HotWorkPermitLog() {
   // Tier 1 (1)b: true when the loaded log is finalized (is_locked) — the form
   // renders read-only and only the Amend path can change anything.
   const [locked, setLocked] = useState(false);
+  // 'ok' | 'offline' | 'error' — how the LAST server hydrate went. Only used
+  // when there is no local draft: a failed load must not masquerade as a blank
+  // new permit (the old `.catch(() => [])` did exactly that).
+  const [fetchState, setFetchState] = useState('ok');
 
   // Form fields
   const [workType, setWorkType] = useState('');
@@ -81,19 +88,77 @@ export default function HotWorkPermitLog() {
     fetchData();
   }, [projectId, date]);
 
+  // Phase A — autosave every field change to the LOCAL draft (AsyncStorage).
+  // Debounced so typing doesn't thrash storage; makes no server call. This is
+  // what lets the CP fill the permit with zero network and reopen to the same
+  // draft. `status` is intentionally omitted so an autosave never downgrades a
+  // submitted permit back to draft.
+  useEffect(() => {
+    if (loading) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date }),
+        {
+          data: {
+            work_type: workType,
+            location,
+            worker_name: workerName,
+            worker_cert_number: workerCertNumber,
+            start_time: startTime,
+            end_time: endTime,
+            fire_watch_end_time: fireWatchEndTime,
+            fire_watch_name: fireWatchName,
+            precautions,
+          },
+          cp_signature: cpSignature,
+          cp_name: cpName,
+        },
+      ).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, [
+    loading, projectId, date, workType, location, workerName, workerCertNumber,
+    startTime, endTime, fireWatchEndTime, fireWatchName, precautions,
+    cpSignature, cpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
-      const existingLogs = await logbooksAPI.getByProject(projectId, LOG_TYPE, date).catch(() => []);
-
-      const arr = Array.isArray(existingLogs) ? existingLogs : [];
-      // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
-      // locked original that shares (project, type, date).
-      const existing = arr.find(l => !l.is_locked) || arr[0] || null;
+      // Phase A — local-first: read the on-device draft first. Only if there is
+      // no local copy do we hydrate once from the server, and that hydrate is
+      // offline-AWARE: a failed load is reported (OfflineNotice) instead of
+      // silently rendering an empty permit that the CP would fill from scratch.
+      const key = draftKey({ projectId, logType: LOG_TYPE, date });
+      let existing = await readDraft(key);
+      // Tier 1 (1)b: a draft marked finalized locks; a server doc's is_locked locks.
+      let isLocked = !!existing?.finalized;
       if (existing) {
-        // Tier 1 (1)b: a finalized server doc locks the form read-only.
-        if (existing.is_locked) setLocked(true);
-        setExistingLogId(existing.id || existing._id);
+        setFetchState('ok');
+      } else {
+        const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE, date));
+        setFetchState(r.status);
+        const arr = Array.isArray(r.data) ? r.data : [];
+        // Prefer the EDITABLE (non-locked) doc — an amendment child — over a
+        // locked original that shares (project, type, date).
+        const serverLog = arr.find(l => !l.is_locked) || arr[0] || null;
+        if (serverLog) {
+          isLocked = !!serverLog.is_locked;
+          existing = {
+            data: serverLog.data || {},
+            cp_signature: serverLog.cp_signature,
+            cp_name: serverLog.cp_name,
+            status: serverLog.status,
+            backend_id: serverLog.id || serverLog._id,
+          };
+        }
+      }
+      if (isLocked) {
+        setLocked(true);
+        markFinalized(key);  // lock the offline draft too (mirrors the backend 423)
+      }
+      if (existing) {
+        setExistingLogId(existing.backend_id || null);
         const d = existing.data || {};
         if (d.work_type) setWorkType(d.work_type);
         if (d.location) setLocation(d.location);
@@ -119,42 +184,49 @@ export default function HotWorkPermitLog() {
 
   const handleSave = async (submitStatus = 'draft') => {
     setSaving(true);
+    const key = draftKey({ projectId, logType: LOG_TYPE, date });
+    const data = {
+      work_type: workType,
+      location,
+      worker_name: workerName,
+      worker_cert_number: workerCertNumber,
+      start_time: startTime,
+      end_time: endTime,
+      fire_watch_end_time: fireWatchEndTime,
+      fire_watch_name: fireWatchName,
+      precautions,
+    };
     try {
-      const payload = {
-        project_id: projectId,
-        log_type: LOG_TYPE,
-        date,
-        data: {
-          work_type: workType,
-          location,
-          worker_name: workerName,
-          worker_cert_number: workerCertNumber,
-          start_time: startTime,
-          end_time: endTime,
-          fire_watch_end_time: fireWatchEndTime,
-          fire_watch_name: fireWatchName,
-          precautions,
-        },
-        cp_signature: cpSignature,
-        cp_name: cpName,
-        status: submitStatus,
-      };
+      // Phase A — write the LOCAL draft first. Source of truth, needs no network,
+      // so an offline CP completes the permit without the "could not save" failure.
+      await writeDraft(key, { data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus });
 
+      // Best-effort server push. Offline this throws and is swallowed — the key
+      // is recorded in the pending-push list for the Phase B reconnect flush.
+      // NOTE: a submit made offline has no server id yet, so the signature-audit
+      // record below is skipped until the draft syncs (a Phase B reconcile item).
       let savedId = existingLogId;
-      if (existingLogId) {
-        await logbooksAPI.update(existingLogId, {
-          data: payload.data,
-          cp_signature: cpSignature,
-          cp_name: cpName,
-          status: submitStatus,
-        });
-      } else {
-        const created = await logbooksAPI.create(payload);
-        savedId = created.id || created._id;
-        setExistingLogId(savedId);
+      try {
+        if (existingLogId) {
+          await logbooksAPI.update(existingLogId, {
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+        } else {
+          const created = await logbooksAPI.create({
+            project_id: projectId, log_type: LOG_TYPE, date,
+            data, cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+          });
+          savedId = created.id || created._id;
+          setExistingLogId(savedId);
+        }
+        await setDraftBackendId(key, savedId);
+        await clearPending(key);
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Logbook server push deferred (will sync on reconnect):', pushErr?.message);
       }
 
-      await autoSave(cpName, cpSignature);
+      await autoSave(cpName, cpSignature).catch(() => {});
 
       if (submitStatus === 'submitted' && cpSignature && savedId) {
         recordSignatureEvent({
@@ -168,7 +240,7 @@ export default function HotWorkPermitLog() {
             log_type: LOG_TYPE,
             date,
             project_id: projectId,
-            data: payload.data,
+            data,
             status: submitStatus,
           },
           user,
@@ -177,7 +249,7 @@ export default function HotWorkPermitLog() {
 
       toast.success(
         submitStatus === 'submitted' ? 'Submitted' : 'Draft Saved',
-        submitStatus === 'submitted' ? 'Hot work permit submitted successfully' : 'Draft saved'
+        submitStatus === 'submitted' ? 'Hot work permit submitted' : 'Saved on this device'
       );
       if (submitStatus === 'submitted') router.back();
     } catch (e) {
@@ -218,6 +290,18 @@ export default function HotWorkPermitLog() {
           contentContainerStyle={s.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* The load FAILED and there was no local draft to fall back on — say
+              so. Without this the screen opens a blank permit, which reads as
+              "no permit exists for today" and invites a duplicate entry. */}
+          {fetchState !== 'ok' && (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Could not check for an existing permit. You can still fill this in — it saves on this device and syncs when you reconnect.'
+                : undefined}
+            />
+          )}
+
           {/* Tier 1 (1)b: a finalized log renders read-only. pointerEvents 'none'
               makes EVERY field below non-interactive (no per-field editable flags
               to miss). Scrolling still works; the LockBar stays interactive. */}

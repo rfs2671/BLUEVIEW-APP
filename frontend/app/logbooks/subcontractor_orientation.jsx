@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,15 +20,20 @@ import {
   ChevronDown,
   ChevronUp,
   Plus,
+  CloudOff,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import SignaturePad from '../../src/components/SignaturePad';
 import LogbookLockBar from '../../src/components/LogbookLockBar';
+import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
+import { settleFetch } from '../../src/utils/offlineState';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -83,6 +88,113 @@ const ORIENTATION_SECTIONS = [
 
 const ALL_KEYS = ORIENTATION_SECTIONS.flatMap(s => s.items.map(i => i.key));
 
+const LOG_TYPE = 'subcontractor_orientation';
+
+/**
+ * Phase A, MULTI-RECORD variant.
+ *
+ * Every other logbook editor is ONE document per (project, type, date), so the
+ * single-doc draft pattern fits. This screen is a MANAGER over N per-worker
+ * orientation documents, so it needs two separate offline stores:
+ *
+ *   1. the LIST cache (below) — so an offline open shows the REAL roster
+ *      instead of "No orientations yet", which on a gate screen reads as a
+ *      false compliance claim (no one has been oriented).
+ *   2. a per-worker DRAFT (logbookDrafts, keyed with draftKey's optional
+ *      `workerId` discriminator) — so an unsaved manual entry survives a quit,
+ *      and so a sign/create made in a dead zone is durable and gets replayed by
+ *      the Phase B reconnect flush.
+ *
+ * This is the screen where offline matters most: a first-day worker is oriented
+ * AT THE GATE, which is exactly where the signal is worst.
+ */
+const LIST_CACHE_PREFIX = 'bv_orientations:';
+const DRAFT_PTR_PREFIX = 'bv_orientation_draft_ptr:';
+
+const todayISO = () => new Date().toISOString().split('T')[0];
+
+const recordIdOf = (o) => o?.id || o?._id || null;
+const workerIdOf = (o) => o?.data?.worker_id || null;
+
+/** Same underlying orientation? Server id when both have one, else worker id. */
+const sameRecord = (a, b) => {
+  const ai = recordIdOf(a);
+  const bi = recordIdOf(b);
+  if (ai && bi) return ai === bi;
+  const aw = workerIdOf(a);
+  return !!aw && aw === workerIdOf(b);
+};
+
+async function readCachedList(projectId) {
+  try {
+    const raw = await AsyncStorage.getItem(LIST_CACHE_PREFIX + projectId);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+async function writeCachedList(projectId, list) {
+  try {
+    await AsyncStorage.setItem(LIST_CACHE_PREFIX + projectId, JSON.stringify(Array.isArray(list) ? list : []));
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Pointer to the manual entry currently being typed: { workerId, date }. The
+ * draft itself lives under the worker-scoped draftKey; this is just how we find
+ * it again after a cold start (AsyncStorage has no "the draft I was on" index).
+ */
+async function readDraftPointer(projectId) {
+  try {
+    const raw = await AsyncStorage.getItem(DRAFT_PTR_PREFIX + projectId);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+async function writeDraftPointer(projectId, ptr) {
+  try {
+    if (ptr) await AsyncStorage.setItem(DRAFT_PTR_PREFIX + projectId, JSON.stringify(ptr));
+    else await AsyncStorage.removeItem(DRAFT_PTR_PREFIX + projectId);
+  } catch (_e) { /* non-fatal — the draft itself is already safe locally */ }
+}
+
+/**
+ * Fold a fresh server list over the local one. Records written offline are the
+ * whole point, so they must NOT be wiped by the first successful refresh:
+ *   • a pending record the server has never seen  -> kept, still flagged
+ *   • a pending edit the server has now caught up on -> flag cleared, server
+ *     copy wins (this is how a card stops saying "not yet synced" after the
+ *     Phase B reconnect flush drained it)
+ *   • a pending edit the server has NOT caught up on -> the local copy wins
+ *     (otherwise a signature captured in a dead zone visibly disappears the
+ *     moment the phone finds signal)
+ */
+function mergeWithPending(serverList, localList) {
+  const pendingByWorker = new Map();
+  localList.forEach((o) => {
+    const w = workerIdOf(o);
+    if (o?._pending && w) pendingByWorker.set(w, o);
+  });
+  const merged = serverList.map((srv) => {
+    const w = workerIdOf(srv);
+    const local = w ? pendingByWorker.get(w) : null;
+    if (!local) return srv;
+    pendingByWorker.delete(w);
+    const synced = srv.status === local.status
+      && (srv.cp_signature || null) === (local.cp_signature || null);
+    if (synced) return srv;
+    return { ...srv, ...local, id: recordIdOf(srv), _id: srv._id, _pending: true };
+  });
+  return [...pendingByWorker.values(), ...merged];
+}
+
 export default function SubcontractorOrientation() {
   // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*
   // at import (the DARK palette), so on the light theme this screen rendered
@@ -97,6 +209,15 @@ export default function SubcontractorOrientation() {
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // 'ok' | 'offline' | 'error' — how the LAST roster refresh went. Drives the
+  // OfflineNotice; an empty list is only ever presented as "none exist" when
+  // the server actually answered.
+  const [fetchState, setFetchState] = useState('ok');
+  // { workerId, date } for the manual entry in progress, or null.
+  const [draftIdent, setDraftIdent] = useState(null);
+  // Resume the in-progress draft ONCE per mount — fetchData also runs as the
+  // finalize/amend callback, and that must not re-open a form the CP closed.
+  const resumedRef = useRef(false);
 
   // All orientation documents for this project
   const [orientations, setOrientations] = useState([]);
@@ -117,14 +238,78 @@ export default function SubcontractorOrientation() {
     fetchData();
   }, [projectId]);
 
+  // Autosave the in-progress manual entry to its per-worker draft. Debounced,
+  // no server call; `status` omitted so an autosave never downgrades a record.
+  useEffect(() => {
+    if (loading || !showAddForm || !draftIdent) return undefined;
+    const t = setTimeout(() => {
+      writeDraft(
+        draftKey({ projectId, logType: LOG_TYPE, date: draftIdent.date, workerId: draftIdent.workerId }),
+        {
+          data: {
+            worker_id: draftIdent.workerId,
+            worker_name: newName,
+            worker_company: newCompany,
+            worker_trade: newTrade,
+            osha_number: newOsha,
+            orientation_number: newOrientationNum,
+            checklist: newChecklist,
+            language_provided: 'en',
+          },
+          cp_signature: newCpSignature,
+          cp_name: newCpName,
+        },
+      ).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, [
+    loading, showAddForm, draftIdent, projectId, newName, newCompany, newTrade,
+    newOsha, newOrientationNum, newChecklist, newCpSignature, newCpName,
+  ]);
+
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [logs] = await Promise.all([
-        // Get ALL orientation docs for this project (no date filter — these are ongoing)
-        logbooksAPI.getByProject(projectId, 'subcontractor_orientation').catch(() => []),
-      ]);
-      setOrientations(Array.isArray(logs) ? logs : []);
+      // Cache-first: paint the locally cached roster before touching the network,
+      // so the gate screen is usable immediately and stays truthful offline.
+      const cached = await readCachedList(projectId);
+      if (cached.length > 0) setOrientations(cached);
+
+      // Resume a manual entry that was interrupted (app quit / phone locked).
+      if (!resumedRef.current) {
+        resumedRef.current = true;
+        const ptr = await readDraftPointer(projectId);
+        if (ptr?.workerId) {
+          setDraftIdent(ptr);
+          const d = await readDraft(draftKey({
+            projectId, logType: LOG_TYPE, date: ptr.date, workerId: ptr.workerId,
+          }));
+          const f = d?.data || {};
+          if (f.worker_name || f.worker_company || f.worker_trade || f.osha_number
+            || f.orientation_number || Object.keys(f.checklist || {}).length > 0) {
+            setNewName(f.worker_name || '');
+            setNewCompany(f.worker_company || '');
+            setNewTrade(f.worker_trade || '');
+            setNewOsha(f.osha_number || '');
+            setNewOrientationNum(f.orientation_number || '');
+            setNewChecklist(f.checklist || {});
+            if (d?.cp_signature) setNewCpSignature(d.cp_signature);
+            if (d?.cp_name) setNewCpName(d.cp_name);
+            setShowAddForm(true);
+          }
+        }
+      }
+
+      // Get ALL orientation docs for this project (no date filter — these are
+      // ongoing). Offline-aware: a failed refresh keeps the cache on screen and
+      // says so, instead of the old `.catch(() => [])` blank roster.
+      const r = await settleFetch(() => logbooksAPI.getByProject(projectId, LOG_TYPE));
+      setFetchState(r.status);
+      if (r.status === 'ok') {
+        const merged = mergeWithPending(Array.isArray(r.data) ? r.data : [], cached);
+        setOrientations(merged);
+        await writeCachedList(projectId, merged);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -132,84 +317,178 @@ export default function SubcontractorOrientation() {
     }
   };
 
-  // CP signs an existing orientation document
+  // CP signs an existing orientation document — LOCAL FIRST, then best-effort push.
   const handleSignExisting = async (orientation, cpSig, cpN) => {
-    const id = orientation.id || orientation._id;
+    const id = recordIdOf(orientation);
+    const key = draftKey({
+      projectId,
+      logType: LOG_TYPE,
+      date: orientation.date || todayISO(),
+      workerId: workerIdOf(orientation),
+    });
     try {
-      await logbooksAPI.update(id, {
+      // 1. The signature is durable on device before any network is attempted.
+      await writeDraft(key, {
+        data: orientation.data || {},
         cp_signature: cpSig,
         cp_name: cpN,
         status: 'submitted',
       });
-      // Update local state
-      setOrientations(prev =>
-        prev.map(o =>
-          (o.id || o._id) === id
-            ? { ...o, cp_signature: cpSig, cp_name: cpN, status: 'submitted' }
-            : o
-        )
-      );
-      // Record audit event for CP signing the orientation
-      // recordSignatureEvent imported at top level
-      recordSignatureEvent({
-        documentType: 'logbook', documentId: id, eventType: 'cp_sign',
-        signerName: cpN, signerRole: user?.role || 'cp',
-        signatureData: cpSig,
-        contentSnapshot: {
-          log_type: 'subcontractor_orientation',
-          worker_name: orientation.data?.worker_name,
-          worker_company: orientation.data?.worker_company,
-          language_provided: orientation.data?.language_provided || 'en',
-          project_id: orientation.project_id,
-        },
-        user,
-      }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
 
-      toast.success('Signed', `Orientation for ${orientation.data?.worker_name} signed`);
+      // 2. Show it as signed immediately, flagged unsynced until the push lands.
+      let next = orientations.map(o => (
+        sameRecord(o, orientation)
+          ? { ...o, cp_signature: cpSig, cp_name: cpN, status: 'submitted', _pending: true }
+          : o
+      ));
+
+      // 3. Best-effort push. A record created offline has no server id yet, so
+      //    there is nothing to update — it stays pending and the Phase B
+      //    reconnect flush replays the draft.
+      let landed = false;
+      if (id) {
+        try {
+          await logbooksAPI.update(id, {
+            cp_signature: cpSig,
+            cp_name: cpN,
+            status: 'submitted',
+          });
+          landed = true;
+        } catch (pushErr) {
+          console.warn('Orientation signature push deferred (will sync on reconnect):', pushErr?.message);
+        }
+      }
+
+      if (landed) {
+        await clearPending(key);
+        next = next.map(o => (sameRecord(o, orientation) ? { ...o, _pending: false } : o));
+      } else {
+        await markPending(key);
+      }
+      setOrientations(next);
+      await writeCachedList(projectId, next);
+
+      // Record audit event for CP signing the orientation. Only meaningful once
+      // the row exists server-side; an offline sign is audited when it syncs.
+      // recordSignatureEvent imported at top level
+      if (landed) {
+        recordSignatureEvent({
+          documentType: 'logbook', documentId: id, eventType: 'cp_sign',
+          signerName: cpN, signerRole: user?.role || 'cp',
+          signatureData: cpSig,
+          contentSnapshot: {
+            log_type: LOG_TYPE,
+            worker_name: orientation.data?.worker_name,
+            worker_company: orientation.data?.worker_company,
+            language_provided: orientation.data?.language_provided || 'en',
+            project_id: orientation.project_id || projectId,
+          },
+          user,
+        }).catch(e => console.warn('Signature audit failed (non-blocking):', e?.message));
+      }
+
+      const who = orientation.data?.worker_name || 'worker';
+      if (landed) toast.success('Signed', `Orientation for ${who} signed`);
+      else toast.success('Signed on this device', `Orientation for ${who} syncs when you reconnect`);
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not save signature');
     }
   };
 
-  // Create a brand new manual orientation
+  /**
+   * Open the manual-entry form, minting the identity the draft is keyed by.
+   *
+   * Per-worker dedup key for the orientation upsert. A manual entry has no
+   * real worker_id (no NFC registration), so mint a stable, non-null one:
+   * the server keys the (project, log_type, date) upsert on data.worker_id
+   * for orientations, and a null/omitted id is rejected 400 (a null would
+   * collide every manual entry onto one row). Unique per entry so two
+   * manual entries never overwrite each other — and it doubles as the
+   * draftKey discriminator, so each worker gets an independent draft.
+   */
+  const openAddForm = async () => {
+    if (!draftIdent) {
+      const ident = {
+        workerId: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+        date: todayISO(),
+      };
+      setDraftIdent(ident);
+      await writeDraftPointer(projectId, ident);
+    }
+    setShowAddForm(true);
+  };
+
+  // Create a brand new manual orientation — LOCAL FIRST, then best-effort push.
   const handleCreateNew = async () => {
     if (!newName.trim() || !newCompany.trim()) {
       toast.warning('Required', 'Worker name and company are required');
       return;
     }
     setSaving(true);
+    const ident = draftIdent || {
+      workerId: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      date: todayISO(),
+    };
+    const key = draftKey({ projectId, logType: LOG_TYPE, date: ident.date, workerId: ident.workerId });
+    const status = newCpSignature ? 'submitted' : 'draft';
+    const data = {
+      worker_id: ident.workerId,
+      worker_name: newName.trim(),
+      worker_company: newCompany.trim(),
+      worker_trade: newTrade.trim(),
+      osha_number: newOsha.trim(),
+      orientation_number: newOrientationNum.trim(),
+      checklist: newChecklist,
+      completed_at: new Date().toISOString(),
+      worker_signature: null,
+      language_provided: 'en',
+    };
     try {
-      const today = new Date().toISOString().split('T')[0];
-      // Per-worker dedup key for the orientation upsert. A manual entry has no
-      // real worker_id (no NFC registration), so mint a stable, non-null one:
-      // the server keys the (project, log_type, date) upsert on data.worker_id
-      // for orientations, and a null/omitted id is rejected 400 (a null would
-      // collide every manual entry onto one row). Unique per create so two
-      // manual entries never overwrite each other.
-      const manualWorkerId = `manual_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      const created = await logbooksAPI.create({
+      // 1. The orientation is durable on device before any network is attempted
+      //    — this is what makes a gate-side orientation possible with no signal.
+      await writeDraft(key, { data, cp_signature: newCpSignature, cp_name: newCpName, status });
+
+      const localRecord = {
+        _local_id: ident.workerId,
         project_id: projectId,
-        log_type: 'subcontractor_orientation',
-        date: today,
+        log_type: LOG_TYPE,
+        date: ident.date,
+        data,
         cp_signature: newCpSignature,
         cp_name: newCpName,
-        status: newCpSignature ? 'submitted' : 'draft',
-        data: {
-          worker_id: manualWorkerId,
-          worker_name: newName.trim(),
-          worker_company: newCompany.trim(),
-          worker_trade: newTrade.trim(),
-          osha_number: newOsha.trim(),
-          orientation_number: newOrientationNum.trim(),
-          checklist: newChecklist,
-          completed_at: new Date().toISOString(),
-          worker_signature: null,
-          language_provided: 'en',
-        },
-      });
-      setOrientations(prev => [created, ...prev]);
-      // Reset form
+        status,
+        _pending: true,
+      };
+      let next = [localRecord, ...orientations];
+      setOrientations(next);
+      await writeCachedList(projectId, next);
+
+      // 2. Best-effort push; on failure the key goes in the pending-push list
+      //    for the Phase B reconnect flush and the card stays flagged.
+      try {
+        const created = await logbooksAPI.create({
+          project_id: projectId,
+          log_type: LOG_TYPE,
+          date: ident.date,
+          cp_signature: newCpSignature,
+          cp_name: newCpName,
+          status,
+          data,
+        });
+        await setDraftBackendId(key, created.id || created._id);
+        await clearPending(key);
+        next = next.map(o => (o._local_id === ident.workerId ? { ...created, _pending: false } : o));
+        setOrientations(next);
+        await writeCachedList(projectId, next);
+        toast.success('Created', 'Orientation record added');
+      } catch (pushErr) {
+        await markPending(key);
+        console.warn('Orientation push deferred (will sync on reconnect):', pushErr?.message);
+        toast.success('Saved on this device', 'Orientation recorded — it syncs when you reconnect');
+      }
+
+      // Reset form and retire the in-progress draft pointer
       setNewName('');
       setNewCompany('');
       setNewTrade('');
@@ -217,8 +496,9 @@ export default function SubcontractorOrientation() {
       setNewOrientationNum('');
       setNewChecklist({});
       setShowAddForm(false);
-      await autoSave(newCpName, newCpSignature);
-      toast.success('Created', 'Orientation record added');
+      setDraftIdent(null);
+      await writeDraftPointer(projectId, null);
+      await autoSave(newCpName, newCpSignature).catch(() => {});
     } catch (e) {
       console.error(e);
       toast.error('Error', 'Could not create orientation');
@@ -275,11 +555,24 @@ export default function SubcontractorOrientation() {
           showsVerticalScrollIndicator={false}
         >
 
+          {/* The roster refresh failed. Say so — and say whether what is on
+              screen is a saved copy. An empty list here must never be presented
+              as "nobody has been oriented". */}
+          {fetchState !== 'ok' && (
+            <OfflineNotice
+              mode={fetchState}
+              cachedCount={orientations.length}
+              detail={fetchState === 'offline' && orientations.length === 0
+                ? 'No saved orientations on this device yet. You can still record a new one below — it syncs when you reconnect.'
+                : undefined}
+            />
+          )}
+
           {/* Add new button */}
           <GlassButton
             title="+ Add Manual Orientation"
             icon={<Plus size={16} strokeWidth={1.5} color={colors.text.primary} />}
-            onPress={() => setShowAddForm(!showAddForm)}
+            onPress={() => (showAddForm ? setShowAddForm(false) : openAddForm())}
             style={styles.addBtn}
           />
 
@@ -372,16 +665,19 @@ export default function SubcontractorOrientation() {
             </GlassCard>
           )}
 
-          {/* Existing orientation cards */}
+          {/* Existing orientation cards. The "none yet" card is only honest when
+              the server actually answered — otherwise the notice above stands in. */}
           {orientations.length === 0 ? (
-            <GlassCard style={styles.emptyCard}>
-              <ShieldCheck size={40} strokeWidth={1} color={colors.text.subtle} />
-              <Text style={styles.emptyTitle}>No orientations yet</Text>
-              <Text style={styles.emptySubtitle}>
-                Orientations are automatically created when workers register via NFC.
-                You can also add one manually above.
-              </Text>
-            </GlassCard>
+            fetchState === 'ok' ? (
+              <GlassCard style={styles.emptyCard}>
+                <ShieldCheck size={40} strokeWidth={1} color={colors.text.subtle} />
+                <Text style={styles.emptyTitle}>No orientations yet</Text>
+                <Text style={styles.emptySubtitle}>
+                  Orientations are automatically created when workers register via NFC.
+                  You can also add one manually above.
+                </Text>
+              </GlassCard>
+            ) : null
           ) : (
             <>
               <Text style={styles.listLabel}>ORIENTATION RECORDS</Text>
@@ -393,7 +689,7 @@ export default function SubcontractorOrientation() {
                 const { checked, total } = getChecklistCompletion(d.checklist);
 
                 return (
-                  <GlassCard key={orient._id || orient.id || index} style={styles.orientCard}>
+                  <GlassCard key={orient._id || orient.id || orient._local_id || index} style={styles.orientCard}>
 
                     {/* Card header — always visible */}
                     <Pressable
@@ -416,6 +712,12 @@ export default function SubcontractorOrientation() {
                               })
                             : orient.date}
                         </Text>
+                        {orient._pending && (
+                          <View style={styles.pendingRow}>
+                            <CloudOff size={11} strokeWidth={1.8} color={semantic.attention} />
+                            <Text style={styles.pendingText}>Saved on this device — syncs when you reconnect</Text>
+                          </View>
+                        )}
                       </View>
                       <View style={styles.orientRight}>
                         <View style={[styles.statusBadge, isSigned ? styles.statusSigned : styles.statusPending]}>
@@ -523,7 +825,7 @@ export default function SubcontractorOrientation() {
                         <LogbookLockBar
                           locked={isLocked}
                           logId={orient.id || orient._id}
-                          canFinalize={!isLocked && isSigned}
+                          canFinalize={!isLocked && isSigned && !orient._pending}
                           onFinalized={fetchData}
                           onAmended={fetchData}
                         />
@@ -732,6 +1034,8 @@ function buildStyles(colors, isDark) {
   orientName: { fontSize: 15, fontWeight: '500', color: colors.text.primary },
   orientMeta: { fontSize: 12, color: colors.text.muted, marginTop: 1 },
   orientDate: { fontSize: 11, color: colors.text.subtle, marginTop: 2 },
+  pendingRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  pendingText: { fontSize: 10, color: semantic.attention, fontWeight: '600', flexShrink: 1 },
   orientRight: { alignItems: 'flex-end', gap: spacing.xs },
   statusBadge: {
     flexDirection: 'row',
