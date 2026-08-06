@@ -49,6 +49,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
 import { projectsAPI, checkinsAPI } from '../../src/utils/api';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
@@ -61,6 +63,14 @@ const TRANSLATIONS = {
     empty: 'Nothing to review',
     emptyHint: 'No flagged check-ins on this project.',
     loadError: 'Could not load flagged check-ins',
+    // OFFLINE vs EMPTY. "Nothing to review" is a compliance claim — it must
+    // only ever appear when the SERVER said the list is empty.
+    offlineLoad: 'Not loaded — this device cannot reach the server. This is NOT a confirmation that there is nothing to review.',
+    errorLoad: 'The flagged check-ins could not be read. Pull to refresh or try again.',
+    offlineProjects: 'Your project list could not be loaded, so this screen has nothing to select. Reconnect and pull to refresh.',
+    errorProjects: 'Your project list could not be read. Pull to refresh or try again.',
+    offlineWrite: 'Offline — nothing recorded',
+    offlineWriteHint: 'The decision was NOT saved. Reconnect and try again.',
     expiredSst: 'Expired SST',
     expiredOn: 'expired',
     needsTrade: 'No trade assigned',
@@ -105,6 +115,12 @@ const TRANSLATIONS = {
     empty: 'Nada que revisar',
     emptyHint: 'No hay registros marcados en este proyecto.',
     loadError: 'No se pudieron cargar los registros marcados',
+    offlineLoad: 'No se cargó — este dispositivo no puede comunicarse con el servidor. Esto NO confirma que no haya nada que revisar.',
+    errorLoad: 'No se pudieron leer los registros marcados. Deslice para actualizar o inténtelo de nuevo.',
+    offlineProjects: 'No se pudo cargar su lista de proyectos, por lo que no hay nada que seleccionar. Reconéctese y deslice para actualizar.',
+    errorProjects: 'No se pudo leer su lista de proyectos. Deslice para actualizar o inténtelo de nuevo.',
+    offlineWrite: 'Sin conexión — no se registró nada',
+    offlineWriteHint: 'La decisión NO se guardó. Reconéctese e inténtelo de nuevo.',
     expiredSst: 'SST vencida',
     expiredOn: 'venció',
     needsTrade: 'Sin oficio asignado',
@@ -160,6 +176,11 @@ export default function CheckInReviewScreen() {
   const [selectedProject, setSelectedProject] = useState(null);
   const [showPicker, setShowPicker] = useState(false);
   const [items, setItems] = useState([]);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' per fetch. checkinsAPI.getFlagged
+  // has no cache, so a failed read has nothing to fall back on; it must say so
+  // rather than render the "Nothing to review" all-clear.
+  const [projectsState, setProjectsState] = useState('ok');
+  const [flaggedState, setFlaggedState] = useState('ok');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [actingId, setActingId] = useState(null);
@@ -181,8 +202,13 @@ export default function CheckInReviewScreen() {
   useEffect(() => {
     if (!isAuthenticated) return;
     (async () => {
-      try {
-        const data = await projectsAPI.getAll().catch(() => []);
+      // The old `.catch(() => [])` + `setProjects([])` rendered "No projects
+      // assigned to you yet." on any offline load — a statement about the
+      // user's account, made from a network failure.
+      const r = await settleFetch(() => projectsAPI.getAll());
+      setProjectsState(r.status);
+      if (r.status === 'ok') {
+        const data = r.data;
         const list = Array.isArray(data) ? data : (data?.items || []);
         const isCP = user?.role === 'cp';
         const visible = isCP
@@ -196,30 +222,36 @@ export default function CheckInReviewScreen() {
           const target = visible.find((p) => (p._id || p.id) === params.projectId) || visible[0];
           setSelectedProject(target);
         }
-      } catch (e) {
-        setProjects([]);
-      } finally {
-        setLoading(false);
+      } else {
+        console.error('Failed to load projects for review:', r.error);
       }
+      setLoading(false);
     })();
   }, [isAuthenticated, user]);
 
   const projectId = selectedProject?._id || selectedProject?.id;
 
   const fetchFlagged = useCallback(async () => {
-    if (!projectId) { setItems([]); return; }
-    try {
-      const data = await checkinsAPI.getFlagged(projectId);
-      setItems(data?.items || []);
-      setRoster(data?.trade_assignments || []);
-    } catch (e) {
-      toast.error(t('loadError'), e?.response?.data?.detail || '');
+    if (!projectId) { setItems([]); setFlaggedState('ok'); return; }
+    const r = await settleFetch(() => checkinsAPI.getFlagged(projectId));
+    setFlaggedState(r.status);
+    if (r.status === 'ok') {
+      setItems(r.data?.items || []);
+      setRoster(r.data?.trade_assignments || []);
+    } else {
+      // Clear the previous project's rows — but the render branches on
+      // flaggedState BEFORE the empty state, so this never reads as "all clear".
       setItems([]);
       setRoster([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      toast.error(
+        t('loadError'),
+        r.status === 'offline'
+          ? t('offlineLoad')
+          : (r.error?.response?.data?.detail || t('errorLoad')),
+      );
     }
+    setLoading(false);
+    setRefreshing(false);
   }, [projectId, t]);
 
   useEffect(() => {
@@ -249,7 +281,14 @@ export default function CheckInReviewScreen() {
         decision === 'approved' ? t('approvedToast') : t('sentHomeToast'),
       );
     } catch (e) {
-      toast.error(t('reviewFailed'), e?.response?.data?.detail || '');
+      // No write queue here (out of scope) — so the ONLY honest outcome is to
+      // leave the row untouched and say plainly that nothing was recorded.
+      toast.error(
+        isOfflineError(e) ? t('offlineWrite') : t('reviewFailed'),
+        isOfflineError(e)
+          ? t('offlineWriteHint')
+          : (e?.response?.data?.detail || ''),
+      );
     } finally {
       setActingId(null);
     }
@@ -283,7 +322,14 @@ export default function CheckInReviewScreen() {
       setAssignPickerId(null);
       toast.success(t('assigned'), t('assignedToast'));
     } catch (e) {
-      toast.error(t('assignFailed'), e?.response?.data?.detail || '');
+      // Same rule as handleReview: the picker stays open and the row keeps its
+      // "no trade assigned" flag, because nothing reached the server.
+      toast.error(
+        isOfflineError(e) ? t('offlineWrite') : t('assignFailed'),
+        isOfflineError(e)
+          ? t('offlineWriteHint')
+          : (e?.response?.data?.detail || ''),
+      );
     } finally {
       setActingId(null);
     }
@@ -330,7 +376,14 @@ export default function CheckInReviewScreen() {
           <Text style={s.subtitle}>{t('subtitle')}</Text>
 
           {/* Project picker */}
-          {projects.length === 0 && !loading ? (
+          {projects.length === 0 && !loading && projectsState !== 'ok' ? (
+            /* The project LIST failed to load — "No projects assigned to you
+               yet" would be a claim about the account, not the network. */
+            <OfflineNotice
+              mode={projectsState}
+              detail={projectsState === 'offline' ? t('offlineProjects') : t('errorProjects')}
+            />
+          ) : projects.length === 0 && !loading ? (
             <GlassCard style={s.emptyCard}>
               <Text style={s.emptyText}>{t('noProjects')}</Text>
             </GlassCard>
@@ -360,6 +413,14 @@ export default function CheckInReviewScreen() {
             <View style={s.centered}>
               <ActivityIndicator size="small" color={colors.text.secondary} />
             </View>
+          ) : flaggedState !== 'ok' ? (
+            /* The flagged list FAILED to load. The green-check "Nothing to
+               review" all-clear below is a compliance assertion — it may only
+               render when the server actually answered with an empty list. */
+            <OfflineNotice
+              mode={flaggedState}
+              detail={flaggedState === 'offline' ? t('offlineLoad') : t('errorLoad')}
+            />
           ) : items.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <Check size={28} strokeWidth={1.5} color="#4ade80" />

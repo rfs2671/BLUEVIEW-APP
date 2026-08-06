@@ -33,6 +33,8 @@ import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import { useTheme } from '../../../src/context/ThemeContext';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useFeatureFlag } from '../../../src/hooks/useFeatureFlag';
@@ -67,6 +69,15 @@ export default function ComplianceAuditScreen() {
   const [drawerLoading, setDrawerLoading] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. This is a COMPLIANCE view:
+  // a failed audit read used to become `{ days: [] }`, i.e. a blank calendar
+  // that reads as "30 clean days", and a failed drawer read used to become
+  // "No deficiencies or missing entries for this day". Both are assertions we
+  // are not entitled to make when the server never answered.
+  const [fetchState, setFetchState] = useState('ok');
+  const [drawerState, setDrawerState] = useState('ok');
+  const [exportState, setExportState] = useState('ok');
+
   useEffect(() => {
     // Auth gate, identical to /project/[id]/activity.
     if (!authLoading && !isAuthenticated) {
@@ -78,17 +89,19 @@ export default function ComplianceAuditScreen() {
     if (!v2LogbookEnabled || !projectId) return;
     let cancelled = false;
     (async () => {
-      try {
-        setLoading(true);
-        const r = await apiClient.get(
-          `/api/projects/${projectId}/logbook/audit`,
-        );
-        if (!cancelled) setAuditData(r.data || null);
-      } catch (_e) {
-        if (!cancelled) setAuditData({ days: [] });
-      } finally {
-        if (!cancelled) setLoading(false);
+      setLoading(true);
+      const res = await settleFetch(() =>
+        apiClient.get(`/api/projects/${projectId}/logbook/audit`),
+      );
+      if (cancelled) return;
+      setFetchState(res.status);
+      if (res.status === 'ok') {
+        setAuditData(res.data?.data || null);
+      } else {
+        // NOT `{ days: [] }` — an unrendered calendar beats a falsely clean one.
+        setAuditData(null);
       }
+      setLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -104,29 +117,28 @@ export default function ComplianceAuditScreen() {
     setSelectedDay(dayKey);
     setDrawerEntries([]);
     setDrawerLoading(true);
-    try {
-      // Fetch missing + deficiencies + attestations and merge
-      // by date — small N, three round-trips is fine for v0.
-      const [missing, deficiencies, attestations] = await Promise.all([
-        apiClient.get(`/api/projects/${projectId}/logbook/missing`),
-        apiClient.get(`/api/projects/${projectId}/logbook/deficiencies`),
-        apiClient.get(`/api/projects/${projectId}/logbook/attestations`),
-      ]);
-      const all = [
-        ...(missing.data?.entries || []),
-        ...(deficiencies.data?.entries || []),
-        ...(attestations.data?.entries || []),
-      ].filter((e) => (e.entry_date || '').slice(0, 10) === dayKey);
-      setDrawerEntries(all);
-    } catch (_e) {
-      setDrawerEntries([]);
-    } finally {
-      setDrawerLoading(false);
-    }
+    // Fetch missing + deficiencies + attestations and merge
+    // by date — small N, three round-trips is fine for v0. Each settles
+    // independently so one unreachable endpoint cannot silently turn the
+    // whole day into "nothing to report".
+    const [missing, deficiencies, attestations] = await Promise.all([
+      settleFetch(() => apiClient.get(`/api/projects/${projectId}/logbook/missing`)),
+      settleFetch(() => apiClient.get(`/api/projects/${projectId}/logbook/deficiencies`)),
+      settleFetch(() => apiClient.get(`/api/projects/${projectId}/logbook/attestations`)),
+    ]);
+    const parts = [missing, deficiencies, attestations];
+    const failure = parts.find((r) => r.status !== 'ok');
+    setDrawerState(failure ? failure.status : 'ok');
+    const all = parts
+      .flatMap((r) => (r.status === 'ok' ? (r.data?.data?.entries || []) : []))
+      .filter((e) => (e.entry_date || '').slice(0, 10) === dayKey);
+    setDrawerEntries(all);
+    setDrawerLoading(false);
   };
 
   const onExport = async () => {
     setExportBusy(true);
+    setExportState('ok');
     try {
       const r = await apiClient.get(
         `/api/projects/${projectId}/logbook/export?format=pdf`,
@@ -141,8 +153,11 @@ export default function ComplianceAuditScreen() {
         a.click();
         window.URL.revokeObjectURL(url);
       }
-    } catch (_e) {
-      // Soft-fail; the user sees the button stop spinning.
+    } catch (e) {
+      // Was a silent soft-fail — the spinner just stopped and the user was
+      // left to assume the PDF had been produced. The PDF is rendered
+      // server-side, so offline there is nothing to export.
+      setExportState(isOfflineError(e) ? 'offline' : 'error');
     } finally {
       setExportBusy(false);
     }
@@ -193,11 +208,27 @@ export default function ComplianceAuditScreen() {
             Daily compliance status for the last 30 days. Tap a day for detail.
           </Text>
 
+          {exportState !== 'ok' && (
+            <OfflineNotice
+              mode={exportState}
+              detail={exportState === 'offline'
+                ? 'The audit PDF is generated on the server — it could not be exported offline. No file was produced.'
+                : 'The audit PDF could not be exported. No file was produced.'}
+            />
+          )}
+
           <GlassCard style={styles.calendarCard} hoverEffect={false}>
             {loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={colors.text.primary} />
               </View>
+            ) : fetchState !== 'ok' ? (
+              <OfflineNotice
+                mode={fetchState}
+                detail={fetchState === 'offline'
+                  ? 'The audit calendar could not be loaded. A blank calendar would read as 30 compliant days — it is not. Reconnect before relying on this for an inspection.'
+                  : 'The audit calendar could not be loaded, so compliance status is unknown for this period.'}
+              />
             ) : (
               <View>
                 {weeks.map((week, wi) => (
@@ -254,6 +285,13 @@ export default function ComplianceAuditScreen() {
               </View>
               {drawerLoading ? (
                 <ActivityIndicator size="small" color={colors.text.primary} />
+              ) : drawerState !== 'ok' ? (
+                <OfflineNotice
+                  mode={drawerState}
+                  detail={drawerState === 'offline'
+                    ? 'This day could not be loaded. It is NOT a finding of "no deficiencies" — reconnect to see the real entries.'
+                    : 'This day could not be loaded, so deficiencies and missing entries are unknown.'}
+                />
               ) : drawerEntries.length === 0 ? (
                 <Text style={styles.emptyText}>
                   No deficiencies or missing entries for this day.

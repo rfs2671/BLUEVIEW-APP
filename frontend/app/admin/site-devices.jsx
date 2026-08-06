@@ -31,6 +31,8 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
@@ -70,6 +72,12 @@ export default function SiteDevicesScreen() {
   const [loading, setLoading] = useState(true);
   const [devices, setDevices] = useState([]);
   const [projects, setProjects] = useState([]);
+
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. "No Site Devices" must only
+  // appear when the server actually said so.
+  const [fetchState, setFetchState] = useState('ok');
+  const [projectsState, setProjectsState] = useState('ok');
+
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showCredentials, setShowCredentials] = useState(null);
   const [newDevice, setNewDevice] = useState({
@@ -103,19 +111,32 @@ export default function SiteDevicesScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [devicesData, projectsData] = await Promise.all([
-        siteDevicesAPI.getAll().catch(() => []),
-        projectsAPI.getAll().catch(() => []),
-      ]);
-      setDevices(Array.isArray(devicesData) ? devicesData : []);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Load Error', 'Could not load site devices');
-    } finally {
-      setLoading(false);
+    // settleFetch replaces `.catch(() => [])`: an unreachable server used to
+    // look exactly like "this admin has created no devices".
+    const [devicesRes, projectsRes] = await Promise.all([
+      settleFetch(() => siteDevicesAPI.getAll()),
+      settleFetch(() => projectsAPI.getAll()),
+    ]);
+
+    setFetchState(devicesRes.status);
+    if (devicesRes.status === 'ok') {
+      setDevices(Array.isArray(devicesRes.data) ? devicesRes.data : []);
+    } else {
+      console.error('Failed to fetch devices:', devicesRes.error);
     }
+
+    setProjectsState(projectsRes.status);
+    if (projectsRes.status === 'ok') {
+      setProjects(Array.isArray(projectsRes.data) ? projectsRes.data : []);
+    } else {
+      console.error('Failed to fetch projects:', projectsRes.error);
+    }
+
+    if (devicesRes.status === 'error' || projectsRes.status === 'error') {
+      toast.error('Load Error', 'Could not load site devices');
+    }
+
+    setLoading(false);
   };
 
   const handleCreateDevice = async () => {
@@ -147,7 +168,12 @@ export default function SiteDevicesScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to create device:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not create site device');
+      // Credentials are minted server-side — offline there is nothing to show.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Creating a site device needs a connection. No credentials were issued.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not create site device');
+      }
     } finally {
       setSaving(false);
     }
@@ -171,7 +197,11 @@ export default function SiteDevicesScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to delete device:', error);
-      toast.error('Error', 'Could not delete site device');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Deleting needs a connection. The device was not deleted.');
+      } else {
+        toast.error('Error', 'Could not delete site device');
+      }
     }
   };
 
@@ -182,7 +212,11 @@ export default function SiteDevicesScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to update device:', error);
-      toast.error('Error', 'Could not update device');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Enabling/disabling a device needs a connection. Nothing changed.');
+      } else {
+        toast.error('Error', 'Could not update device');
+      }
     }
   };
 
@@ -290,6 +324,13 @@ export default function SiteDevicesScreen() {
                 </GlassCard>
               ))}
             </View>
+          ) : fetchState !== 'ok' ? (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Site devices could not be loaded because the server is unreachable. This does not mean no devices are registered.'
+                : undefined}
+            />
           ) : (
             <GlassCard style={s.emptyCard}>
               <IconPod size={64}>
@@ -328,6 +369,14 @@ export default function SiteDevicesScreen() {
                 {/* Project Selector */}
                 <View style={s.formGroup}>
                   <Text style={s.formLabel}>PROJECT</Text>
+                  {projectsState !== 'ok' && (
+                    <OfflineNotice
+                      mode={projectsState}
+                      detail={projectsState === 'offline'
+                        ? 'Projects could not be loaded, so this picker may be empty or incomplete. Creating a device also needs a connection.'
+                        : 'Projects could not be loaded, so this picker may be empty or incomplete.'}
+                    />
+                  )}
                   <Pressable
                     style={s.selectorCard}
                     onPress={() => setShowProjectPicker(!showProjectPicker)}

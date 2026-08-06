@@ -36,6 +36,8 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -55,6 +57,10 @@ export default function PendingDeletionScreen() {
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [confirmText, setConfirmText] = useState('');
   const [purging, setPurging] = useState(false);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. "Nothing pending deletion"
+  // is a clearance statement about an irreversible queue; it must never be
+  // rendered off a failed read.
+  const [fetchState, setFetchState] = useState('ok');
 
   const isOwner = user?.role === 'owner';
   const s = useMemo(() => buildStyles(colors), [colors]);
@@ -66,16 +72,18 @@ export default function PendingDeletionScreen() {
 
   const fetchItems = useCallback(async () => {
     if (!isOwner) { setLoading(false); return; }
-    try {
-      const data = await projectsAPI.pendingDeletion();
-      setItems(data?.items || []);
-    } catch (e) {
-      toast.error('Load failed', e?.response?.data?.detail || '');
+    const res = await settleFetch(() => projectsAPI.pendingDeletion());
+    setFetchState(res.status);
+    if (res.status === 'ok') {
+      setItems(res.data?.items || []);
+    } else {
       setItems([]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (res.status === 'error') {
+        toast.error('Load failed', res.error?.response?.data?.detail || '');
+      }
     }
+    setLoading(false);
+    setRefreshing(false);
   }, [isOwner]);
 
   useEffect(() => { fetchItems(); }, [fetchItems]);
@@ -93,7 +101,13 @@ export default function PendingDeletionScreen() {
       setConfirmTarget(null);
       setConfirmText('');
     } catch (e) {
-      toast.error('Delete failed', e?.response?.data?.detail || '');
+      // The purge is irreversible and server-side only — an offline failure
+      // means NOTHING was deleted, and must not read as an ambiguous error.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Permanent deletion needs a connection. Nothing was deleted.');
+      } else {
+        toast.error('Delete failed', e?.response?.data?.detail || '');
+      }
     } finally {
       setPurging(false);
     }
@@ -159,6 +173,13 @@ export default function PendingDeletionScreen() {
             <View style={s.centered}>
               <ActivityIndicator size="small" color={colors.text.secondary} />
             </View>
+          ) : fetchState !== 'ok' ? (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'The deletion queue could not be loaded. Do NOT read this as "nothing pending" — projects may be awaiting review. Purging also needs a connection.'
+                : 'The deletion queue could not be loaded, so pending projects are unknown.'}
+            />
           ) : items.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <Text style={s.emptyText}>Nothing pending deletion</Text>

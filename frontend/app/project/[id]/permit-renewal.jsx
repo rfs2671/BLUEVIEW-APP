@@ -33,6 +33,8 @@ import {
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../../src/components/GlassCard';
 import GlassButton from '../../../src/components/GlassButton';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '../../../src/context/ThemeContext';
@@ -324,6 +326,10 @@ export default function PermitRenewalScreen() {
   const [preparing, setPreparing] = useState(null);
   const [projectName, setProjectName] = useState('');
   const [renewalData, setRenewalData] = useState(null);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. "No Renewals Pending" tells
+  // a GC no permit needs action; an unreachable server is not entitled to say
+  // that, and a missed renewal window is an expired permit.
+  const [fetchState, setFetchState] = useState('ok');
 
   // MR.7: filing_jobs cache, keyed by permit_renewal_id. Populated
   // lazily on expand (we don't pre-fetch jobs for every renewal in
@@ -332,24 +338,27 @@ export default function PermitRenewalScreen() {
   // to render FilingStatusCard instead of the File button; the full
   // list drives FilingHistorySection underneath.
   const [filingJobsByRenewalId, setFilingJobsByRenewalId] = useState({});
+  // Per-renewal read state for the filing_jobs cache. FilingHistorySection
+  // auto-hides when the list is empty, so a failed read used to silently
+  // erase a permit's filing history rather than saying it is unknown.
+  const [filingJobsStateById, setFilingJobsStateById] = useState({});
 
   const fetchFilingJobsFor = async (renewalId) => {
     if (!renewalId) return;
-    try {
-      const resp = await apiClient.get(
-        `/api/permit-renewals/${renewalId}/filing-jobs`
-      );
+    const res = await settleFetch(() =>
+      apiClient.get(`/api/permit-renewals/${renewalId}/filing-jobs`)
+    );
+    setFilingJobsStateById((prev) => ({ ...prev, [renewalId]: res.status }));
+    if (res.status === 'ok') {
       setFilingJobsByRenewalId((prev) => ({
         ...prev,
-        [renewalId]: resp.data?.filing_jobs || [],
+        [renewalId]: res.data?.data?.filing_jobs || [],
       }));
-    } catch (e) {
-      // Soft fail — the panel renders the idle File button when no
-      // jobs are loaded, which is the correct fall-back state.
+    } else {
       console.warn(
         '[permit-renewal] filing_jobs fetch failed for',
         renewalId,
-        e?.message || e
+        res.error?.message || res.error
       );
     }
   };
@@ -396,19 +405,24 @@ export default function PermitRenewalScreen() {
 
   const fetchRenewals = async () => {
     if (!loading) setRefreshing(true);
-    try {
-      const data = await renewalAPI.list(projectId);
+    const res = await settleFetch(() => renewalAPI.list(projectId));
+    setFetchState(res.status);
+    if (res.status === 'ok') {
+      const data = res.data || {};
       setRenewals(data.renewals || []);
       if (data.renewals?.length > 0 && data.renewals[0].project_name) {
         setProjectName(data.renewals[0].project_name);
       }
-    } catch (error) {
-      console.error('Failed to fetch renewals:', error);
-      toast.error('Error', 'Could not load permit renewals');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    } else {
+      console.error('Failed to fetch renewals:', res.error);
+      if (res.status === 'offline') {
+        toast.warning('Offline', 'Renewals are unavailable offline — this is not "nothing pending".');
+      } else {
+        toast.error('Error', 'Could not load permit renewals');
+      }
     }
+    setLoading(false);
+    setRefreshing(false);
   };
 
   // ── Prepare Renewal (triggers RPA) ────────────────────────────────
@@ -426,16 +440,22 @@ export default function PermitRenewalScreen() {
       );
       await fetchRenewals();
     } catch (error) {
-      const detail = error.response?.data?.detail;
-      if (typeof detail === 'object' && detail.blocking_reasons) {
-        toast.error('Not Eligible', detail.blocking_reasons.join('\n'));
+      // Eligibility is decided server-side — an unreachable network is not a
+      // "Not Eligible" verdict, and nothing was prepared.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Preparing a renewal needs a connection. Eligibility was not checked and nothing was prepared.');
       } else {
-        toast.error(
-          'Error',
-          typeof detail === 'string'
-            ? detail
-            : 'Could not prepare renewal'
-        );
+        const detail = error.response?.data?.detail;
+        if (typeof detail === 'object' && detail.blocking_reasons) {
+          toast.error('Not Eligible', detail.blocking_reasons.join('\n'));
+        } else {
+          toast.error(
+            'Error',
+            typeof detail === 'string'
+              ? detail
+              : 'Could not prepare renewal'
+          );
+        }
       }
     } finally {
       setPreparing(null);
@@ -701,10 +721,19 @@ export default function PermitRenewalScreen() {
             // there).
             const filingJobsForThisRenewal =
               filingJobsByRenewalId[renewal.id] || [];
+            const filingJobsState = filingJobsStateById[renewal.id] || 'ok';
             const refetchRenewals = () => fetchRenewals();
             if (ActionRenderer) {
               return (
                 <View style={s.expandedSection}>
+                  {filingJobsState !== 'ok' && (
+                    <OfflineNotice
+                      mode={filingJobsState}
+                      detail={filingJobsState === 'offline'
+                        ? 'Filing history could not be loaded for this permit, so nothing below reflects past filings. Filing itself needs a connection.'
+                        : 'Filing history could not be loaded for this permit.'}
+                    />
+                  )}
                   <ActionRenderer
                     renewal={renewal}
                     onRenewalChange={refetchRenewals}
@@ -1072,7 +1101,14 @@ export default function PermitRenewalScreen() {
           </GlassCard>
 
           {/* Cards */}
-          {renewals.length === 0 ? (
+          {renewals.length === 0 && fetchState !== 'ok' ? (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Permit renewals could not be loaded. Do NOT read this as "nothing pending" — a permit may be approaching expiry. Preparing and filing both need a connection.'
+                : 'Permit renewals could not be loaded, so pending renewals are unknown.'}
+            />
+          ) : renewals.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <ShieldCheck
                 size={48}

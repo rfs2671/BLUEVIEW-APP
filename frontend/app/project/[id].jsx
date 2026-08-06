@@ -65,6 +65,8 @@ import { useCheckIns } from '../../src/hooks/useCheckIns';
 import OfflineIndicator from '../../src/components/OfflineIndicator';
 import { projectsAPI, checkinsAPI, checklistsAPI, whatsappAPI } from '../../src/utils/api';
 import { cacheProject, readCachedProject } from '../../src/utils/projectCache';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import apiClient from '../../src/utils/api';
 import { isValidBin } from '../../src/utils/bin';
 import * as NfcHelper from '../../src/utils/nfcHelper';
@@ -172,6 +174,22 @@ export default function ProjectDetailScreen() {
   // (?project_id). Desktop-only; fetch is gated on isDesktop below.
   const [dobExposure, setDobExposure] = useState(null);
   const [dobExpLoading, setDobExpLoading] = useState(true);
+  // ── OFFLINE vs EMPTY ────────────────────────────────────────────────────
+  // Every sub-panel on this screen used to `.catch(() => [])`, so a dead zone
+  // rendered "No workers on site", "No site devices registered", "No checklists
+  // assigned", "No files in this folder" and 0-valued stat tiles — each an
+  // assertion about the project that the app never actually verified.
+  // 'ok' | 'offline' | 'error' per read; the render branches on these BEFORE
+  // reaching any empty state.
+  const [projectState, setProjectState] = useState('ok');
+  const [projectFromCache, setProjectFromCache] = useState(false);
+  const [dobExpState, setDobExpState] = useState('ok');
+  const [nfcState, setNfcState] = useState('ok');
+  const [devicesState, setDevicesState] = useState('ok');
+  const [onSiteState, setOnSiteState] = useState('ok');
+  const [checklistsState, setChecklistsState] = useState('ok');
+  const [dropboxState, setDropboxState] = useState('ok');
+  const [waGroupsState, setWaGroupsState] = useState('ok');
   const { getProjectById } = useProjects();
   const { getActiveCheckIns } = useCheckIns();
   const [stats, setStats] = useState({
@@ -243,9 +261,13 @@ export default function ProjectDetailScreen() {
         setDobExpLoading(true);
         const r = await apiClient.get(`/api/projects/dob-summary?project_id=${projectId}`);
         const row = r?.data?.by_project?.[projectId] || null;
-        if (!cancelled) setDobExposure(row);
+        if (!cancelled) { setDobExposure(row); setDobExpState('ok'); }
       } catch (_e) {
-        if (!cancelled) setDobExposure(null);
+        if (!cancelled) {
+          setDobExposure(null);
+          // UNKNOWN, not zero — DeskTile renders "—" off this state.
+          setDobExpState(isOfflineError(_e) ? 'offline' : 'error');
+        }
       } finally {
         if (!cancelled) setDobExpLoading(false);
       }
@@ -277,10 +299,14 @@ export default function ProjectDetailScreen() {
       // state, plans). We deliberately do NOT mirror those columns locally;
       // that recreates the divergence every time the server model grows.
       let projectData = null;
+      let projectError = null;
       try {
         projectData = await projectsAPI.getById(projectId);
         cacheProject(projectData);  // P1: cache for offline selection
+        setProjectState('ok');
+        setProjectFromCache(false);
       } catch (e) {
+        projectError = e;
         console.warn('Server project fetch failed, using local fallback:', e?.message);
       }
       if (!projectData) {
@@ -288,27 +314,35 @@ export default function ProjectDetailScreen() {
         // WatermelonDB getProjectById stays as a last resort but is empty in
         // practice (dormant store), which is why offline used to error here.
         projectData = await readCachedProject(projectId) || await getProjectById(projectId);
+        // Cached data is fine to show — but the screen has to SAY it is a saved
+        // copy, otherwise stale fields read as current server truth.
+        setProjectState(isOfflineError(projectError) ? 'offline' : 'error');
+        setProjectFromCache(!!projectData);
       }
       setProject(projectData);
 
-        try {
-          const tags = await projectsAPI.getNfcTags(projectId);
-          setNfcTags(Array.isArray(tags) ? tags : []);
-        } catch (e) {
-          setNfcTags(projectData?.nfc_tags || []);
+        {
+          const nfcR = await settleFetch(() => projectsAPI.getNfcTags(projectId));
+          setNfcState(nfcR.status);
+          if (nfcR.status === 'ok') {
+            setNfcTags(Array.isArray(nfcR.data) ? nfcR.data : []);
+          } else {
+            // The project payload carries its own tag list — a real (possibly
+            // cached) fallback, not a fabricated empty.
+            setNfcTags(projectData?.nfc_tags || []);
+          }
         }
 
       // Fetch site devices for this project
       if (isAdmin) {
-        try {
-          const devices = await siteDevicesAPI.getByProject(projectId);
-          setSiteDevices(Array.isArray(devices) ? devices : []);
-        } catch (e) {
-          setSiteDevices([]);
+        const devR = await settleFetch(() => siteDevicesAPI.getByProject(projectId));
+        setDevicesState(devR.status);
+        if (devR.status === 'ok') {
+          setSiteDevices(Array.isArray(devR.data) ? devR.data : []);
         }
 
         // Fetch Dropbox files if connected
-        if (projectData.dropbox_enabled && projectData.dropbox_folder) {
+        if (projectData?.dropbox_enabled && projectData?.dropbox_folder) {
           fetchDropboxFiles();
         }
       }
@@ -319,45 +353,59 @@ export default function ProjectDetailScreen() {
         const isActive = waStatus?.company_active === true;
         setWhatsappActive(isActive);
         if (isActive) {
-          const groups = await whatsappAPI.getGroups(projectId).catch(() => []);
-          setWhatsappGroups(Array.isArray(groups) ? groups : []);
+          const groupsR = await settleFetch(() => whatsappAPI.getGroups(projectId));
+          setWaGroupsState(groupsR.status);
+          if (groupsR.status === 'ok') {
+            setWhatsappGroups(Array.isArray(groupsR.data) ? groupsR.data : []);
+          }
         }
       } catch (e) {
+        // Status itself is unknown — the card stays hidden rather than claiming
+        // anything about linked groups.
         setWhatsappActive(false);
       }
 
       // Fetch active check-ins for this project
-      try {
-        const workers = await getActiveCheckIns(projectId);
-        
-        // Group workers by company
-        const grouped = workers.reduce((acc, worker) => {
-          const company = worker.company || 'Unassigned';
-          if (!acc[company]) {
-            acc[company] = [];
-          }
-          acc[company].push(worker);
-          return acc;
-        }, {});
+      {
+        const workersR = await settleFetch(() => getActiveCheckIns(projectId));
+        setOnSiteState(workersR.status);
+        if (workersR.status === 'ok') {
+          const workers = Array.isArray(workersR.data) ? workersR.data : [];
 
-        const companiesArray = Object.entries(grouped).map(([name, workers]) => ({
-          name,
-          workers,
-        }));
+          // Group workers by company
+          const grouped = workers.reduce((acc, worker) => {
+            const company = worker.company || 'Unassigned';
+            if (!acc[company]) {
+              acc[company] = [];
+            }
+            acc[company].push(worker);
+            return acc;
+          }, {});
 
-        setWorkersByCompany(companiesArray);
-        setStats({
-          onSiteWorkers: workers.length,
-          subcontractors: companiesArray.length,
-          subcontractorCount: companiesArray.length,
-        });
-      } catch (e) {
-        setStats({ onSiteWorkers: 0, subcontractors: 0, subcontractorCount: 0 });
-        setWorkersByCompany([]);
+          const companiesArray = Object.entries(grouped).map(([name, workers]) => ({
+            name,
+            workers,
+          }));
+
+          setWorkersByCompany(companiesArray);
+          setStats({
+            onSiteWorkers: workers.length,
+            subcontractors: companiesArray.length,
+            subcontractorCount: companiesArray.length,
+          });
+        }
+        // On failure: leave stats/workersByCompany untouched. The ON SITE tile
+        // renders "—" and the ON-SITE WORKERS section renders a notice, so
+        // nothing here ever says "no workers on site" on our behalf.
       }
     } catch (error) {
       console.error('Failed to fetch project:', error);
-      toast.error('Error', 'Could not load project details');
+      toast.error(
+        isOfflineError(error) ? 'Offline' : 'Error',
+        isOfflineError(error)
+          ? 'Could not reach the server — some sections are unavailable.'
+          : 'Could not load project details',
+      );
     } finally {
       fetchChecklists();
       setLoading(false);
@@ -367,31 +415,31 @@ export default function ProjectDetailScreen() {
 
   const fetchDropboxFiles = async () => {
     setLoadingFiles(true);
-    try {
-      const result = await dropboxAPI.getFiles(projectId);
+    const r = await settleFetch(() => dropboxAPI.getFiles(projectId));
+    setDropboxState(r.status);
+    if (r.status === 'ok') {
       // The endpoint returns a BARE ARRAY (not {files:[...]}); reading
       // result.files left this [] on every project. Match the Array.isArray
       // pattern the other file consumers use.
-      setDropboxFiles(Array.isArray(result) ? result : []);
-    } catch (error) {
-      console.error('Failed to fetch Dropbox files:', error);
-      setDropboxFiles([]);
-    } finally {
-      setLoadingFiles(false);
+      setDropboxFiles(Array.isArray(r.data) ? r.data : []);
+    } else {
+      console.error('Failed to fetch Dropbox files:', r.error);
+      // Do NOT blank to [] — that renders "No files in this folder", a claim
+      // about the folder we never got to look at.
     }
+    setLoadingFiles(false);
   };
 
   const fetchChecklists = async () => {
     setLoadingChecklists(true);
-    try {
-      const data = await checklistsAPI.getByProject(projectId);
-      setChecklists(data);
-    } catch (error) {
-      console.error('Failed to fetch checklists:', error);
-      setChecklists([]);
-    } finally {
-      setLoadingChecklists(false);
+    const r = await settleFetch(() => checklistsAPI.getByProject(projectId));
+    setChecklistsState(r.status);
+    if (r.status === 'ok') {
+      setChecklists(Array.isArray(r.data) ? r.data : []);
+    } else {
+      console.error('Failed to fetch checklists:', r.error);
     }
+    setLoadingChecklists(false);
   };
   
   const onRefresh = () => {
@@ -643,6 +691,7 @@ export default function ProjectDetailScreen() {
     // last_dob_sync_at IS declared on the model, so the badge now tells the truth.
     const neverSynced = !project?.last_dob_sync_at;
     const exp = dobExposure || {};
+    const dobUnknown = dobExpLoading || dobExpState !== 'ok';
     const cls = project?.project_class;
     const clsLabel = cls === 'major_b' ? 'MAJOR B' : cls === 'major_a' ? 'MAJOR A' : null;
     const Dot = () => <Text style={[deskStyles.headerDot, { color: tokenText.muted }]}>·</Text>;
@@ -670,19 +719,33 @@ export default function ProjectDetailScreen() {
           {/* LEFT (primary) — DOB exposure, forecast, operational tiles. */}
           <View style={deskStyles.colLeft}>
             <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>DOB EXPOSURE</Text>
+            {!dobExpLoading && dobExpState !== 'ok' && (
+              <OfflineNotice
+                mode={dobExpState}
+                detail={
+                  dobExpState === 'offline'
+                    ? 'Exposure counts could not be fetched. The tiles show "—" because the totals are unknown, not zero.'
+                    : 'The server could not return exposure counts. The tiles show "—" because the totals are unknown, not zero.'
+                }
+              />
+            )}
             <View style={deskStyles.tileRow}>
-              <DeskTile loading={dobExpLoading} value={exp.open_violations} label="Open violations" token={semantic.criticalText} />
-              <DeskTile loading={dobExpLoading} value={exp.permits_expiring} label="Permits expiring <30d" token={semantic.attention} />
-              <DeskTile loading={dobExpLoading} value={exp.open_complaints} label="Open complaints" token={semantic.attention} />
+              {/* `loading` == "no number to show" (renders "—"). A failed
+                  dob-summary is exactly that: unknown, not zero. */}
+              <DeskTile loading={dobUnknown} value={exp.open_violations} label="Open violations" token={semantic.criticalText} />
+              <DeskTile loading={dobUnknown} value={exp.permits_expiring} label="Permits expiring <30d" token={semantic.attention} />
+              <DeskTile loading={dobUnknown} value={exp.open_complaints} label="Open complaints" token={semantic.attention} />
             </View>
 
             <CompliancePanel projectId={projectId} />
 
             <Text style={[deskStyles.sectionLabel, { color: tokenText.secondary }]}>ON SITE</Text>
             <View style={deskStyles.tileRow}>
-              <DeskTile value={stats.onSiteWorkers} label="On site" token={tokenText.primary} />
-              <DeskTile value={nfcTags.length} label="NFC tags" token={tokenText.primary} />
-              <DeskTile value={siteDevices.length} label="Devices" token={tokenText.primary} />
+              {/* A read that never landed shows "—". Rendering 0 here would
+                  assert an empty site / no tags / no devices. */}
+              <DeskTile loading={onSiteState !== 'ok'} value={stats.onSiteWorkers} label="On site" token={tokenText.primary} />
+              <DeskTile loading={nfcState !== 'ok' && nfcTags.length === 0} value={nfcTags.length} label="NFC tags" token={tokenText.primary} />
+              <DeskTile loading={devicesState !== 'ok'} value={siteDevices.length} label="Devices" token={tokenText.primary} />
             </View>
           </View>
 
@@ -735,7 +798,20 @@ export default function ProjectDetailScreen() {
       <AnimatedBackground>
         <SafeAreaView style={s.container}>
           <View style={s.loadingContainer}>
-            <Text style={s.loadingText}>Project not found</Text>
+            {/* "Project not found" is what a 404 means. When the read FAILED and
+                nothing is cached, the project's existence is unknown. */}
+            {projectState !== 'ok' ? (
+              <OfflineNotice
+                mode={projectState}
+                detail={
+                  projectState === 'offline'
+                    ? 'This project could not be loaded and no copy is saved on this device. It has not been deleted — reconnect and try again.'
+                    : 'This project could not be read from the server. Try again.'
+                }
+              />
+            ) : (
+              <Text style={s.loadingText}>Project not found</Text>
+            )}
             <GlassButton title="Go Back" onPress={() => router.back()} />
           </View>
         </SafeAreaView>
@@ -770,6 +846,13 @@ export default function ProjectDetailScreen() {
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text.primary} />
           }
         >
+          {/* The project object on screen is a saved copy, not a live read.
+              Say so once, at the top, rather than letting stale fields pass as
+              current server state. */}
+          {projectState !== 'ok' && projectFromCache && (
+            <OfflineNotice mode={projectState} cachedCount={1} />
+          )}
+
           {isDesktop ? renderDesktopTop() : (
           <>
           {/* Project Header */}
@@ -834,21 +917,25 @@ export default function ProjectDetailScreen() {
               <IconPod style={s.statIcon}>
                 <Users size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={s.statValue}>{stats.onSiteWorkers}</Text>
+              {/* "—" when the check-in read failed: unknown, never a 0 that
+                  claims the site is empty. */}
+              <Text style={s.statValue}>{onSiteState === 'ok' ? stats.onSiteWorkers : '—'}</Text>
               <Text style={s.statLabel}>ON SITE</Text>
             </StatCard>
             <StatCard style={s.statCard}>
               <IconPod style={s.statIcon}>
                 <Wifi size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={s.statValue}>{nfcTags.length}</Text>
+              <Text style={s.statValue}>
+                {nfcState !== 'ok' && nfcTags.length === 0 ? '—' : nfcTags.length}
+              </Text>
               <Text style={s.statLabel}>NFC TAGS</Text>
             </StatCard>
             <StatCard style={s.statCard}>
               <IconPod style={s.statIcon}>
                 <Smartphone size={18} strokeWidth={1.5} color={colors.text.secondary} />
               </IconPod>
-              <Text style={s.statValue}>{siteDevices.length}</Text>
+              <Text style={s.statValue}>{devicesState === 'ok' ? siteDevices.length : '—'}</Text>
               <Text style={s.statLabel}>DEVICES</Text>
             </StatCard>
           </View>
@@ -930,6 +1017,19 @@ export default function ProjectDetailScreen() {
                       {whatsappGroups.length} group{whatsappGroups.length !== 1 ? 's' : ''} linked · {whatsappGroups.reduce((sum, g) => sum + (g.message_count || 0), 0)} messages
                     </Text>
                   </>
+                ) : waGroupsState !== 'ok' ? (
+                  /* The group list never loaded — "Link a WhatsApp Group"
+                     would imply none are linked. */
+                  <>
+                    <Text style={{ color: colors.text.secondary, fontSize: 13, fontWeight: '600' }}>
+                      WhatsApp status unavailable
+                    </Text>
+                    <Text style={{ color: colors.text.muted, fontSize: 12, marginTop: 2 }}>
+                      {waGroupsState === 'offline'
+                        ? 'Linked groups could not be fetched offline'
+                        : 'Linked groups could not be read from the server'}
+                    </Text>
+                  </>
                 ) : (
                   <>
                     <Text style={{ color: colors.text.secondary, fontSize: 13, fontWeight: '600' }}>
@@ -1007,6 +1107,10 @@ export default function ProjectDetailScreen() {
                     </GlassCard>
                   ))}
                 </View>
+              ) : nfcState !== 'ok' ? (
+                /* The tag list failed to load AND the project payload carried
+                   none — "No NFC tags registered" would be a guess. */
+                <OfflineNotice mode={nfcState} />
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <Wifi size={40} strokeWidth={1} color={colors.text.subtle} />
@@ -1064,6 +1168,8 @@ export default function ProjectDetailScreen() {
                     </GlassCard>
                   ))}
                 </View>
+              ) : devicesState !== 'ok' ? (
+                <OfflineNotice mode={devicesState} />
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <Smartphone size={40} strokeWidth={1} color={colors.text.subtle} />
@@ -1123,6 +1229,10 @@ export default function ProjectDetailScreen() {
                           </View>
                         ))}
                       </View>
+                    ) : dropboxState !== 'ok' ? (
+                      /* We never got to look in the folder — don't report it
+                         as empty. */
+                      <OfflineNotice mode={dropboxState} />
                     ) : (
                       <View style={s.noFiles}>
                         <Text style={s.noFilesText}>No files in this folder</Text>
@@ -1162,6 +1272,17 @@ export default function ProjectDetailScreen() {
                 </View>
               </GlassCard>
             ))
+          ) : onSiteState !== 'ok' ? (
+            /* "No workers on site" is a safety claim. It may only render when
+               the check-in endpoint actually answered with an empty list. */
+            <OfflineNotice
+              mode={onSiteState}
+              detail={
+                onSiteState === 'offline'
+                  ? 'Check-ins could not be fetched, so who is on site is unknown. This is NOT a confirmation that the site is empty.'
+                  : 'Check-ins could not be read from the server, so who is on site is unknown.'
+              }
+            />
           ) : (
             <GlassCard style={s.emptyCard}>
               <Users size={40} strokeWidth={1} color={colors.text.subtle} />
@@ -1259,6 +1380,8 @@ export default function ProjectDetailScreen() {
                 );
               })}
             </View>
+          ) : checklistsState !== 'ok' ? (
+            <OfflineNotice mode={checklistsState} />
           ) : (
             <GlassCard style={s.emptyCard}>
               <ClipboardList size={40} strokeWidth={1} color={colors.text.subtle} />

@@ -27,6 +27,8 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, safetyStaffAPI } from '../../src/utils/api';
@@ -69,6 +71,12 @@ export default function SafetyStaffScreen() {
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [staff, setStaff] = useState([]);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. This is a COMPLIANCE screen:
+  // a failed staff read must never render "No Safety Staff" or the §3310
+  // "No SSC/SSM registered" banner, which assert non-compliance.
+  const [projectsState, setProjectsState] = useState('ok');
+  const [staffState, setStaffState] = useState('ok');
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingStaff, setEditingStaff] = useState(null);
@@ -106,8 +114,10 @@ export default function SafetyStaffScreen() {
 
   const fetchProjects = async () => {
     setLoading(true);
-    try {
-      const projs = await projectsAPI.getAll().catch(() => []);
+    const res = await settleFetch(() => projectsAPI.getAll());
+    setProjectsState(res.status);
+    if (res.status === 'ok') {
+      const projs = res.data;
       const arr = Array.isArray(projs) ? projs : (projs?.items || []);
       const major = arr.filter(
         (p) => p.project_class === 'major_a' || p.project_class === 'major_b'
@@ -116,25 +126,27 @@ export default function SafetyStaffScreen() {
       if (major.length && !selectedProjectId) {
         setSelectedProjectId(major[0]._id || major[0].id);
       }
-    } catch (e) {
-      console.error('Load projects failed:', e);
-      toast.error('Load Error', 'Could not load projects');
-    } finally {
-      setLoading(false);
+    } else {
+      console.error('Load projects failed:', res.error);
+      if (res.status === 'error') toast.error('Load Error', 'Could not load projects');
     }
+    setLoading(false);
   };
 
   const fetchStaff = async (projectId) => {
     setStaffLoading(true);
-    try {
-      const data = await safetyStaffAPI.getByProject(projectId).catch(() => []);
+    const res = await settleFetch(() => safetyStaffAPI.getByProject(projectId));
+    setStaffState(res.status);
+    if (res.status === 'ok') {
+      const data = res.data;
       setStaff(Array.isArray(data) ? data : (data?.items || []));
-    } catch (e) {
-      console.error('Load staff failed:', e);
+    } else {
+      // Keep the list empty but flag WHY — the render must not claim the
+      // project has no registered SSC/SSM.
+      console.error('Load staff failed:', res.error);
       setStaff([]);
-    } finally {
-      setStaffLoading(false);
     }
+    setStaffLoading(false);
   };
 
   const selectedProject = projects.find(
@@ -196,7 +208,12 @@ export default function SafetyStaffScreen() {
       fetchStaff(selectedProjectId);
     } catch (e) {
       console.error('Add safety staff failed:', e);
-      toast.error('Error', e.response?.data?.detail || 'Could not register staff');
+      // No offline queue here — the registration did NOT reach the server.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Registering safety staff needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', e.response?.data?.detail || 'Could not register staff');
+      }
     } finally {
       setSaving(false);
     }
@@ -219,7 +236,11 @@ export default function SafetyStaffScreen() {
       fetchStaff(selectedProjectId);
     } catch (e) {
       console.error('Edit safety staff failed:', e);
-      toast.error('Error', e.response?.data?.detail || 'Could not update');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving needs a connection. Your changes were not saved.');
+      } else {
+        toast.error('Error', e.response?.data?.detail || 'Could not update');
+      }
     } finally {
       setSaving(false);
     }
@@ -246,14 +267,20 @@ export default function SafetyStaffScreen() {
       fetchStaff(selectedProjectId);
     } catch (e) {
       console.error('Delete safety staff failed:', e);
-      toast.error('Error', 'Could not remove');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Removing needs a connection. The registration was not removed.');
+      } else {
+        toast.error('Error', 'Could not remove');
+      }
     }
   };
 
   const hasSSC = staff.some((s) => s.role === 'ssc');
   const hasSSM = staff.some((s) => s.role === 'ssm');
-  const needsSSC = selectedProject?.project_class === 'major_a' && !hasSSC;
-  const needsSSM = selectedProject?.project_class === 'major_b' && !hasSSM;
+  // Only assert a §3310 gap when the staff list actually came from the server.
+  const staffKnown = staffState === 'ok' && !staffLoading;
+  const needsSSC = staffKnown && selectedProject?.project_class === 'major_a' && !hasSSC;
+  const needsSSM = staffKnown && selectedProject?.project_class === 'major_b' && !hasSSM;
 
   const renderRoleBadge = (role) => (
     <View
@@ -337,6 +364,13 @@ export default function SafetyStaffScreen() {
               <GlassSkeleton width="100%" height={60} borderRadiusValue={borderRadius.xl} style={s.mb12} />
               <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} />
             </>
+          ) : projects.length === 0 && projectsState !== 'ok' ? (
+            <OfflineNotice
+              mode={projectsState}
+              detail={projectsState === 'offline'
+                ? 'Projects could not be loaded because the server is unreachable. This is not a statement that no Major A/B projects exist.'
+                : undefined}
+            />
           ) : projects.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <IconPod size={64}>
@@ -464,6 +498,13 @@ export default function SafetyStaffScreen() {
                     );
                   })}
                 </View>
+              ) : staffState !== 'ok' ? (
+                <OfflineNotice
+                  mode={staffState}
+                  detail={staffState === 'offline'
+                    ? 'Safety staff for this project could not be loaded. Do NOT read this as "no SSC/SSM registered" — reconnect to confirm §3310 compliance.'
+                    : 'Safety staff for this project could not be loaded, so registration status is unknown.'}
+                />
               ) : (
                 <GlassCard style={s.emptyCard}>
                   <IconPod size={64}>

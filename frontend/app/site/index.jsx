@@ -17,6 +17,8 @@ import GlassButton from '../../src/components/GlassButton';
 import { useAuth } from '../../src/context/AuthContext';
 import { useInspectorLock } from '../../src/context/InspectorLockContext';
 import { dailyLogsAPI, checkinsAPI } from '../../src/utils/api';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -31,6 +33,12 @@ export default function SiteDeviceHomeScreen() {
   const [todayLogsCount, setTodayLogsCount] = useState(0);
   const [workersOnSite, setWorkersOnSite] = useState(0);
   const [loading, setLoading] = useState(true);
+  // OFFLINE vs EMPTY. Both badges below are gated on `count > 0`, so a failed
+  // fetch used to make them silently VANISH — on a kiosk that reads as "no logs
+  // today / nobody on site", a confident zero the app never actually saw.
+  // 'ok' | 'offline' | 'error', tracked per fetch.
+  const [logsState, setLogsState] = useState('ok');
+  const [workersState, setWorkersState] = useState('ok');
 
   // Redirect if not authenticated or not in site mode
   useEffect(() => {
@@ -53,24 +61,39 @@ export default function SiteDeviceHomeScreen() {
   const fetchCounts = async () => {
     if (!siteProject?.id) return;
 
-    try {
-      // Get today's date for filtering logs
-      const today = new Date().toISOString().split('T')[0];
+    // Get today's date for filtering logs
+    const today = new Date().toISOString().split('T')[0];
 
-      // Fetch today's logs count
-      const logs = await dailyLogsAPI.getByProject(siteProject.id);
-      const todayLogs = Array.isArray(logs) ? logs.filter(log => log.date === today) : [];
+    // Each count settles INDEPENDENTLY — the old shared try meant a failed logs
+    // read skipped the check-in read entirely, so one dead endpoint reported
+    // BOTH counts as zero.
+    const [logsR, checkinsR] = await Promise.all([
+      settleFetch(() => dailyLogsAPI.getByProject(siteProject.id)),
+      settleFetch(() => checkinsAPI.getActiveByProject(siteProject.id)),
+    ]);
+
+    setLogsState(logsR.status);
+    if (logsR.status === 'ok') {
+      const todayLogs = Array.isArray(logsR.data)
+        ? logsR.data.filter(log => log.date === today)
+        : [];
       setTodayLogsCount(todayLogs.length);
-
-      // Fetch active checkins (workers on site)
-      const activeCheckins = await checkinsAPI.getActiveByProject(siteProject.id);
-      setWorkersOnSite(Array.isArray(activeCheckins) ? activeCheckins.length : 0);
-    } catch (error) {
-      console.error('Failed to fetch counts:', error);
-    } finally {
-      setLoading(false);
+    } else {
+      console.error('Failed to fetch today\'s logs:', logsR.error);
     }
+
+    setWorkersState(checkinsR.status);
+    if (checkinsR.status === 'ok') {
+      setWorkersOnSite(Array.isArray(checkinsR.data) ? checkinsR.data.length : 0);
+    } else {
+      console.error('Failed to fetch active check-ins:', checkinsR.error);
+    }
+
+    setLoading(false);
   };
+
+  // Badge copy for a count we could NOT read. Never a number.
+  const unknownBadge = (state) => (state === 'offline' ? 'Offline' : 'Unavailable');
 
   const handleNavigate = (path) => {
     router.push(path);
@@ -115,6 +138,20 @@ export default function SiteDeviceHomeScreen() {
 
         {/* Main Content */}
         <View style={s.content}>
+          {/* One explicit banner when either count could not be read. The tiles
+              still open — only the NUMBERS are unknown, and they say so. */}
+          {!loading && (logsState !== 'ok' || workersState !== 'ok') && (
+            <OfflineNotice
+              mode={logsState === 'error' || workersState === 'error' ? 'error' : 'offline'}
+              style={s.offlineBanner}
+              detail={
+                logsState === 'error' || workersState === 'error'
+                  ? "Today's counts could not be read from the server. The badges show no number rather than a zero."
+                  : "Today's counts are unavailable while this device is offline. The badges show no number rather than a zero."
+              }
+            />
+          )}
+
           {/* Top Row: Log Books + Daily Logs */}
           <View style={s.gridRow}>
             <Pressable
@@ -126,11 +163,15 @@ export default function SiteDeviceHomeScreen() {
                   <ClipboardList size={64} strokeWidth={1.5} color="#3b82f6" />
                 </View>
                 <Text style={s.buttonLabel}>Log Books</Text>
-                {!loading && todayLogsCount > 0 && (
+                {!loading && logsState !== 'ok' ? (
+                  <View style={[s.badge, s.badgeUnknown]}>
+                    <Text style={[s.badgeText, s.badgeTextUnknown]}>{unknownBadge(logsState)}</Text>
+                  </View>
+                ) : !loading && todayLogsCount > 0 ? (
                   <View style={s.badge}>
                     <Text style={s.badgeText}>{todayLogsCount} today</Text>
                   </View>
-                )}
+                ) : null}
               </GlassCard>
             </Pressable>
 
@@ -173,11 +214,15 @@ export default function SiteDeviceHomeScreen() {
                     <UserCheck size={64} strokeWidth={1.5} color={semantic.neutral} />
                   </View>
                   <Text style={s.buttonLabel}>Worker Sign In</Text>
-                  {!loading && workersOnSite > 0 && (
+                  {!loading && workersState !== 'ok' ? (
+                    <View style={[s.badge, s.badgeUnknown]}>
+                      <Text style={[s.badgeText, s.badgeTextUnknown]}>{unknownBadge(workersState)}</Text>
+                    </View>
+                  ) : !loading && workersOnSite > 0 ? (
                     <View style={s.badge}>
                       <Text style={s.badgeText}>{workersOnSite} on site</Text>
                     </View>
-                  )}
+                  ) : null}
                 </GlassCard>
               </Pressable>
             )}
@@ -300,6 +345,19 @@ function buildStyles(colors, isDark) {
       fontSize: 15,
       fontWeight: '600',
       color: colors.text.primary,
+    },
+    // Count could not be read — visually distinct from a real count so nobody
+    // reads it as data.
+    badgeUnknown: {
+      backgroundColor: withAlpha('#f59e0b', 0.12),
+      borderColor: withAlpha('#f59e0b', 0.35),
+    },
+    badgeTextUnknown: {
+      color: '#fbbf24',
+    },
+    offlineBanner: {
+      marginTop: 0,
+      marginBottom: 0,
     },
     // Inspector Mode lock bar (below the grid, not flex — fixed row).
     lockBar: {

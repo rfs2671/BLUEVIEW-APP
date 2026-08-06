@@ -37,6 +37,8 @@ import GlassInput from '../../src/components/GlassInput';
 import GCAutocomplete from '../../src/components/GCAutocomplete';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import apiClient from '../../src/utils/api';
@@ -176,6 +178,15 @@ export default function OwnerPortalScreen() {
   const [admins, setAdmins] = useState([]);
   const [unmigratedAdmins, setUnmigratedAdmins] = useState([]);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' for the companies read and
+  // (separately) the admins read. A failed load must never render
+  // "No companies yet" or the "admins without companies" migration banner.
+  const [companiesState, setCompaniesState] = useState('ok');
+  const [adminsState, setAdminsState] = useState('ok');
+  // Per-company filing-rep read state, keyed by company id. Filing reps gate
+  // manual renewal filings, so "none configured" is a consequential claim.
+  const [filingRepsStateByCompany, setFilingRepsStateByCompany] = useState({});
+
   // Modal states
   const [showCreateCompanyModal, setShowCreateCompanyModal] = useState(false);
   const [showCreateAdminModal, setShowCreateAdminModal] = useState(false);
@@ -238,24 +249,38 @@ export default function OwnerPortalScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [companiesData, adminsData] = await Promise.all([
-        ownerAPI.getCompanies(),
-        ownerAPI.getAdmins(),
-      ]);
+    // Each read settles on its own. A bare Promise.all rejected the WHOLE load
+    // when one endpoint was unreachable, so the portal rendered as if the
+    // operator had no companies and no admins.
+    const [companiesRes, adminsRes] = await Promise.all([
+      settleFetch(() => ownerAPI.getCompanies()),
+      settleFetch(() => ownerAPI.getAdmins()),
+    ]);
 
-      setCompanies(Array.isArray(companiesData) ? companiesData : []);
-      setAdmins(Array.isArray(adminsData) ? adminsData : []);
-
-      // Find admins without company_id
-      const unmigrated = adminsData.filter(a => !a.company_id);
-      setUnmigratedAdmins(unmigrated);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Error', 'Could not load data');
-    } finally {
-      setLoading(false);
+    setCompaniesState(companiesRes.status);
+    if (companiesRes.status === 'ok') {
+      setCompanies(Array.isArray(companiesRes.data) ? companiesRes.data : []);
+    } else {
+      console.error('Failed to fetch companies:', companiesRes.error);
     }
+
+    setAdminsState(adminsRes.status);
+    if (adminsRes.status === 'ok') {
+      const adminsData = Array.isArray(adminsRes.data) ? adminsRes.data : [];
+      setAdmins(adminsData);
+      // Find admins without company_id
+      setUnmigratedAdmins(adminsData.filter(a => !a.company_id));
+    } else {
+      console.error('Failed to fetch admins:', adminsRes.error);
+      // Without a real admins list we cannot claim anyone is unmigrated.
+      setUnmigratedAdmins([]);
+    }
+
+    if (companiesRes.status === 'error' || adminsRes.status === 'error') {
+      toast.error('Error', 'Could not load data');
+    }
+
+    setLoading(false);
   };
 
   const handleCreateCompany = async () => {
@@ -282,7 +307,12 @@ export default function OwnerPortalScreen() {
       toast.success('Created', gcSelection ? 'Company created with GC license linked' : 'Company created successfully');
     } catch (error) {
       console.error('Failed to create company:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not create company');
+      // Nothing is queued — say plainly that the company was NOT created.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Creating a company needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not create company');
+      }
     }
   };
 
@@ -311,7 +341,11 @@ export default function OwnerPortalScreen() {
       toast.success('Created', 'Admin account created successfully');
     } catch (error) {
       console.error('Failed to create admin:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not create admin');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Creating an admin needs a connection. No account was created.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not create admin');
+      }
     }
   };
 
@@ -331,16 +365,20 @@ export default function OwnerPortalScreen() {
     setExpandedFilingRepsCompanyId(company.id);
     if (filingRepsByCompany[company.id] === undefined) {
       setFilingRepsLoadingId(company.id);
-      try {
-        const reps = await ownerAPI.listFilingReps(company.id);
-        setFilingRepsByCompany((prev) => ({ ...prev, [company.id]: reps || [] }));
-      } catch (e) {
-        console.error('Failed to load filing reps:', e);
-        toast.error('Error', 'Could not load filing representatives');
+      const res = await settleFetch(() => ownerAPI.listFilingReps(company.id));
+      setFilingRepsStateByCompany((prev) => ({ ...prev, [company.id]: res.status }));
+      if (res.status === 'ok') {
+        setFilingRepsByCompany((prev) => ({ ...prev, [company.id]: res.data || [] }));
+      } else {
+        console.error('Failed to load filing reps:', res.error);
+        // Empty list + a recorded failure state — the render shows the
+        // offline notice, not "No filing representatives configured".
         setFilingRepsByCompany((prev) => ({ ...prev, [company.id]: [] }));
-      } finally {
-        setFilingRepsLoadingId(null);
+        if (res.status === 'error') {
+          toast.error('Error', 'Could not load filing representatives');
+        }
       }
+      setFilingRepsLoadingId(null);
     }
   };
 
@@ -398,8 +436,12 @@ export default function OwnerPortalScreen() {
       setShowFilingRepModal(false);
     } catch (e) {
       console.error('Failed to save filing rep:', e);
-      const detail = e.response?.data?.detail;
-      toast.error('Error', typeof detail === 'string' ? detail : 'Could not save filing representative.');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving a filing representative needs a connection. Nothing was saved.');
+      } else {
+        const detail = e.response?.data?.detail;
+        toast.error('Error', typeof detail === 'string' ? detail : 'Could not save filing representative.');
+      }
     } finally {
       setSavingFilingRep(false);
     }
@@ -421,7 +463,11 @@ export default function OwnerPortalScreen() {
             toast.success('Removed', `${rep.name} removed from filing representatives.`);
           } catch (e) {
             console.error('Failed to remove filing rep:', e);
-            toast.error('Error', 'Could not remove filing representative.');
+            if (isOfflineError(e)) {
+              toast.error('Offline', 'Removing needs a connection. The filing representative was not removed.');
+            } else {
+              toast.error('Error', 'Could not remove filing representative.');
+            }
           }
         }},
       ],
@@ -436,7 +482,11 @@ export default function OwnerPortalScreen() {
       toast.success('Primary Set', `${rep.name} is now the primary filing representative.`);
     } catch (e) {
       console.error('Failed to set primary:', e);
-      toast.error('Error', 'Could not set primary filing representative.');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Setting the primary rep needs a connection. Nothing changed.');
+      } else {
+        toast.error('Error', 'Could not set primary filing representative.');
+      }
     }
   };
 
@@ -469,7 +519,11 @@ export default function OwnerPortalScreen() {
     toast.success('Deleted', 'Company deleted successfully');
   } catch (error) {
     console.error('Failed to delete company:', error);
-    toast.error('Error', error.response?.data?.detail || 'Could not delete company');
+    if (isOfflineError(error)) {
+      toast.error('Offline', 'Deleting needs a connection. The company was not deleted.');
+    } else {
+      toast.error('Error', error.response?.data?.detail || 'Could not delete company');
+    }
   } finally {
     setShowDeleteCompanyModal(false);
     setSelectedCompany(null);
@@ -490,7 +544,11 @@ export default function OwnerPortalScreen() {
       setSelectedAdmin(null);
     } catch (error) {
       console.error('Failed to delete admin:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not delete admin');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Deleting needs a connection. The admin account was not deleted.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not delete admin');
+      }
     }
   };
 
@@ -528,7 +586,11 @@ export default function OwnerPortalScreen() {
       fetchData(); // Refresh data
     } catch (error) {
       console.error('Migration failed:', error);
-      toast.error('Error', error.response?.data?.detail || 'Migration failed');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Migration needs a connection. No admins were migrated.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Migration failed');
+      }
     }
   };
 
@@ -601,8 +663,19 @@ export default function OwnerPortalScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
+          {/* A failed load is reported here rather than being rendered as an
+              operator with no companies and no admins. */}
+          {!loading && (companiesState !== 'ok' || adminsState !== 'ok') && (
+            <OfflineNotice
+              mode={companiesState !== 'ok' ? companiesState : adminsState}
+              detail={(companiesState === 'offline' || adminsState === 'offline')
+                ? 'Companies and/or admin accounts could not be loaded because the server is unreachable. Anything missing below is unknown, not absent — and creating or deleting needs a connection.'
+                : 'Companies and/or admin accounts could not be loaded, so the lists below may be incomplete.'}
+            />
+          )}
+
           {/* Migration Banner */}
-          {unmigratedAdmins.length > 0 && (
+          {adminsState === 'ok' && unmigratedAdmins.length > 0 && (
             <Pressable onPress={handleOpenMigration} style={styles.migrationBanner}>
               <AlertTriangle size={20} strokeWidth={1.5} color={semantic.attention} />
               <View style={styles.migrationText}>
@@ -748,6 +821,13 @@ export default function OwnerPortalScreen() {
                         <View style={styles.filingRepsBlock}>
                           {filingRepsLoadingId === company.id ? (
                             <Text style={styles.filingRepsLoading}>Loading…</Text>
+                          ) : (filingRepsStateByCompany[company.id] || 'ok') !== 'ok' ? (
+                            <OfflineNotice
+                              mode={filingRepsStateByCompany[company.id]}
+                              detail={filingRepsStateByCompany[company.id] === 'offline'
+                                ? 'Filing representatives could not be loaded. Do not read this as "none configured".'
+                                : undefined}
+                            />
                           ) : (filingRepsByCompany[company.id] || []).length === 0 ? (
                             <Text style={styles.filingRepsEmpty}>
                               No filing representatives configured. Add one to enable manual renewal filings.
@@ -807,6 +887,13 @@ export default function OwnerPortalScreen() {
                   );
                 })}
               </View>
+            ) : companiesState !== 'ok' ? (
+              <OfflineNotice
+                mode={companiesState}
+                detail={companiesState === 'offline'
+                  ? 'The company list could not be loaded. This is not "no companies" — reconnect to see them.'
+                  : undefined}
+              />
             ) : (
               <GlassCard style={styles.emptyCard}>
                 <Building2 size={40} strokeWidth={1} color={colors.text.subtle} />
@@ -828,7 +915,16 @@ export default function OwnerPortalScreen() {
               />
             </View>
 
-            {companies.length === 0 && (
+            {companies.length === 0 && companiesState !== 'ok' && (
+              <OfflineNotice
+                mode={companiesState}
+                detail={companiesState === 'offline'
+                  ? 'Companies could not be loaded, so admin accounts cannot be created right now. Creating an admin needs a connection.'
+                  : 'Companies could not be loaded, so admin accounts cannot be created right now.'}
+              />
+            )}
+
+            {companies.length === 0 && companiesState === 'ok' && (
               <View style={styles.infoBox}>
                 <AlertTriangle size={16} strokeWidth={1.5} color={semantic.attention} />
                 <Text style={styles.infoText}>Create a company first before adding admins</Text>
@@ -1080,6 +1176,13 @@ export default function OwnerPortalScreen() {
                         </Pressable>
                       </View>
                     ))
+                  ) : adminsState !== 'ok' ? (
+                    <OfflineNotice
+                      mode={adminsState}
+                      detail={adminsState === 'offline'
+                        ? 'Admin accounts could not be loaded, so this company’s admins are unknown — not necessarily none.'
+                        : undefined}
+                    />
                   ) : (
                     <Text style={styles.emptyText}>No admins in this company</Text>
                   )}

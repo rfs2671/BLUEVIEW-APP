@@ -41,6 +41,8 @@ import {
 import AnimatedBackground from '../../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../../src/components/GlassCard';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { settleFetch } from '../../../src/utils/offlineState';
 import FloatingNav from '../../../src/components/FloatingNav';
 import TacticalRecommendations from '../../../src/components/TacticalRecommendations';
 import { useAuth } from '../../../src/context/AuthContext';
@@ -87,7 +89,10 @@ export default function DefconScreen() {
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. The tier falls back to
+  // NORMAL when `data` is null, so a failed read must be reported explicitly
+  // and must never be allowed to imply an all-clear risk posture.
+  const [fetchState, setFetchState] = useState('ok');
 
   useEffect(() => {
     if (authLoading) return;
@@ -101,15 +106,14 @@ export default function DefconScreen() {
     if (!isAuthenticated || !projectId) return;
     let cancelled = false;
     setLoading(true);
-    setError(null);
-    projectsAPI.getDefconStatus(projectId)
-      .then((resp) => { if (!cancelled) setData(resp); })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err?.response?.status || 'error');
-        setData(null);
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
+    setFetchState('ok');
+    (async () => {
+      const res = await settleFetch(() => projectsAPI.getDefconStatus(projectId));
+      if (cancelled) return;
+      setFetchState(res.status);
+      setData(res.status === 'ok' ? res.data : null);
+      setLoading(false);
+    })();
     return () => { cancelled = true; };
   }, [isAuthenticated, projectId]);
 
@@ -151,16 +155,16 @@ export default function DefconScreen() {
             </View>
           )}
 
-          {error && !loading && (
-            <GlassCard style={styles.card}>
-              <Text style={[styles.muted, { color: colors.text.muted }]}>
-                Defcon status unavailable right now. Refresh the page or
-                try again later.
-              </Text>
-            </GlassCard>
+          {fetchState !== 'ok' && !loading && (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Defcon status could not be loaded because the server is unreachable. Treat the risk tier as UNKNOWN — not as NORMAL.'
+                : 'Defcon status is unavailable right now. Refresh the page or try again later.'}
+            />
           )}
 
-          {data && !loading && !error && (
+          {data && !loading && fetchState === 'ok' && (
             <>
               {/* ── 1. Tier hero ── */}
               <View

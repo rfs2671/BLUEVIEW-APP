@@ -37,6 +37,8 @@ import GlassButton from '../src/components/GlassButton';
 import GlassInput from '../src/components/GlassInput';
 import FloatingNav from '../src/components/FloatingNav';
 import CpNav from '../src/components/CpNav';
+import OfflineNotice from '../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
@@ -101,6 +103,14 @@ export default function SettingsScreen() {
   const [insLoading, setInsLoading]       = useState(false);
   const [insRefreshing, setInsRefreshing] = useState(false);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' per read. A failed insurance
+  // read left insData null, which rendered "Company not linked to a DOB
+  // license"; a failed projects read rendered "No projects found". Both are
+  // false statements about the company when the server never answered.
+  const [insState, setInsState]           = useState('ok');
+  const [projectsState, setProjectsState] = useState('ok');
+  const [gcNameState, setGcNameState]     = useState('ok');
+
   // Manual insurance entry form
   const [showInsuranceForm, setShowInsuranceForm] = useState(false);
   const [insGL, setInsGL] = useState('');
@@ -123,28 +133,31 @@ export default function SettingsScreen() {
   // Load projects (admin only)
   useEffect(() => {
     if (!isAuthenticated || authLoading || !isAdmin) return;
-    apiClient.get('/api/projects')
-      .then(resp => {
-        // Backend `GET /api/projects` returns the paginated_query
-        // shape `{items, total, limit, skip, has_more}`. Older callers
-        // received a bare array; this loader was on the array path
-        // and silently fell through to [] when the response shape
-        // changed, producing the "No projects found" warning even
-        // when projects existed. Mirror the defensive read in
-        // src/utils/api.js (`projectsAPI.getAll`) so both shapes work.
-        const data = resp.data;
-        const p = Array.isArray(data) ? data : (data?.items || []);
-        setProjects(p);
-        const firstId = p[0]?.id || p[0]?._id || '';
-        if (firstId) {
-          setSelectedProjectId(firstId);
-          fetchGcName(firstId);
-        }
-      })
-      .catch((e) => {
-        console.error('Failed to load projects for GC name:', e);
-        setProjects([]);
-      });
+    (async () => {
+      const res = await settleFetch(() => apiClient.get('/api/projects'));
+      setProjectsState(res.status);
+      if (res.status !== 'ok') {
+        // NOT setProjects([]) — that produced the same "No projects found"
+        // warning as a company that genuinely has none.
+        console.error('Failed to load projects for GC name:', res.error);
+        return;
+      }
+      // Backend `GET /api/projects` returns the paginated_query
+      // shape `{items, total, limit, skip, has_more}`. Older callers
+      // received a bare array; this loader was on the array path
+      // and silently fell through to [] when the response shape
+      // changed, producing the "No projects found" warning even
+      // when projects existed. Mirror the defensive read in
+      // src/utils/api.js (`projectsAPI.getAll`) so both shapes work.
+      const data = res.data?.data;
+      const p = Array.isArray(data) ? data : (data?.items || []);
+      setProjects(p);
+      const firstId = p[0]?.id || p[0]?._id || '';
+      if (firstId) {
+        setSelectedProjectId(firstId);
+        fetchGcName(firstId);
+      }
+    })();
   }, [isAuthenticated, authLoading, isAdmin]);
 
   // Load insurance (admin only)
@@ -155,14 +168,14 @@ export default function SettingsScreen() {
 
   const fetchInsurance = async () => {
     setInsLoading(true);
-    try {
-      const resp = await apiClient.get('/api/admin/company/insurance');
-      setInsData(resp.data);
-    } catch (e) {
-      console.error('Failed to load insurance:', e);
-    } finally {
-      setInsLoading(false);
+    const res = await settleFetch(() => apiClient.get('/api/admin/company/insurance'));
+    setInsState(res.status);
+    if (res.status === 'ok') {
+      setInsData(res.data?.data);
+    } else {
+      console.error('Failed to load insurance:', res.error);
     }
+    setInsLoading(false);
   };
 
   const handleRefreshInsurance = async () => {
@@ -181,7 +194,12 @@ export default function SettingsScreen() {
       if (resp.data.warning) toast.info('License refreshed', resp.data.warning);
       else toast.success('Refreshed', 'License data updated');
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not refresh license');
+      // The refresh hits DOB through our backend — offline nothing was checked.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Refreshing the license needs a connection. Nothing was re-verified.');
+      } else {
+        toast.error('Error', e?.response?.data?.detail || 'Could not refresh license');
+      }
     } finally {
       setInsRefreshing(false);
     }
@@ -213,7 +231,13 @@ export default function SettingsScreen() {
       setShowInsuranceForm(false);
       toast.success('Saved', 'Insurance expiry dates updated.');
     } catch (e) {
-      toast.error('Invalid dates', e?.response?.data?.detail || 'Could not save insurance.');
+      // "Invalid dates" is a server validation verdict — do not imply it when
+      // the request never arrived.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving insurance dates needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Invalid dates', e?.response?.data?.detail || 'Could not save insurance.');
+      }
     } finally {
       setSavingInsurance(false);
     }
@@ -222,14 +246,16 @@ export default function SettingsScreen() {
   const fetchGcName = async (projId) => {
     if (!projId) return;
     setLoadingGc(true);
-    try {
-      const resp = await apiClient.get(`/api/projects/${projId}/dob-config`);
-      setGcLegalName(resp.data?.gc_legal_name || '');
-    } catch {
+    const res = await settleFetch(() => apiClient.get(`/api/projects/${projId}/dob-config`));
+    setGcNameState(res.status);
+    if (res.status === 'ok') {
+      setGcLegalName(res.data?.data?.gc_legal_name || '');
+    } else {
+      // A blank field reads as "no GC name is set" — flag the failure instead
+      // of letting the admin overwrite a value they never saw.
       setGcLegalName('');
-    } finally {
-      setLoadingGc(false);
     }
+    setLoadingGc(false);
   };
 
   const handleSaveGcName = async () => {
@@ -246,7 +272,11 @@ export default function SettingsScreen() {
       setGcLegalName(resp.data?.gc_legal_name || gcLegalName.trim());
       toast.success('Saved', 'GC Legal Name updated — used for permit renewal eligibility checks.');
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not save GC name');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving the GC legal name needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', e?.response?.data?.detail || 'Could not save GC name');
+      }
     } finally {
       setSavingGc(false);
     }
@@ -262,7 +292,12 @@ export default function SettingsScreen() {
       await authAPI.updateProfile({ name: name.trim() });
       toast.success('Saved', 'Your name has been updated');
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not update name');
+      // Profile edits are server-side only — nothing is queued offline.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving your name needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', e?.response?.data?.detail || 'Could not update name');
+      }
     } finally {
       setSavingName(false);
     }
@@ -286,6 +321,10 @@ export default function SettingsScreen() {
         trimmed ? 'Phone number updated' : 'Phone number removed'
       );
     } catch (e) {
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving your phone number needs a connection. Nothing was saved.');
+        return;
+      }
       const status = e?.response?.status;
       const detail = e?.response?.data?.detail;
       if (status === 409) {
@@ -319,7 +358,13 @@ export default function SettingsScreen() {
       setNewPw('');
       setConfirmPw('');
     } catch (e) {
-      toast.error('Error', e?.response?.data?.detail || 'Could not change password');
+      // The current password is verified server-side — offline we did not even
+      // get to check it, so this is not a wrong-password result.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Changing your password needs a connection. Your password is unchanged.');
+      } else {
+        toast.error('Error', e?.response?.data?.detail || 'Could not change password');
+      }
     } finally {
       setSavingPw(false);
     }
@@ -488,6 +533,13 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color={colors.text.muted} />
                   </View>
                 </GlassCard>
+              ) : insState !== 'ok' ? (
+                <OfflineNotice
+                  mode={insState}
+                  detail={insState === 'offline'
+                    ? 'Insurance and DOB license details could not be loaded. This is NOT "company not linked" — reconnect to see the real license and coverage status.'
+                    : 'Insurance and DOB license details could not be loaded, so coverage status is unknown.'}
+                />
               ) : !gcResolved ? (
                 <GlassCard style={[s.card, { backgroundColor: semantic.attentionBg, borderColor: semantic.attentionBorder }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.sm }}>
@@ -769,18 +821,35 @@ export default function SettingsScreen() {
                     </View>
                   )}
 
-                  {projects.length === 0 ? (
+                  {projects.length === 0 && projectsState !== 'ok' ? (
+                    <OfflineNotice
+                      mode={projectsState}
+                      detail={projectsState === 'offline'
+                        ? 'Projects could not be loaded. This is not "no projects" — reconnect before setting the GC name.'
+                        : 'Projects could not be loaded, so the GC name cannot be set right now.'}
+                    />
+                  ) : projects.length === 0 ? (
                     <Text style={[s.hintText, { color: semantic.attention, marginTop: 8 }]}>
                       No projects found. Create a project first, then set the GC name here.
                     </Text>
                   ) : (
-                    <GlassInput
-                      value={gcLegalName}
-                      onChangeText={setGcLegalName}
-                      placeholder="e.g. Blue Elm Construction Inc"
-                      autoCapitalize="words"
-                      editable={!loadingGc}
-                    />
+                    <>
+                      {gcNameState !== 'ok' && (
+                        <OfflineNotice
+                          mode={gcNameState}
+                          detail={gcNameState === 'offline'
+                            ? 'The saved GC legal name could not be loaded, so this field is blank — it is not necessarily unset. Saving now would overwrite the stored value.'
+                            : 'The saved GC legal name could not be loaded, so this field may not reflect what is stored.'}
+                        />
+                      )}
+                      <GlassInput
+                        value={gcLegalName}
+                        onChangeText={setGcLegalName}
+                        placeholder="e.g. Blue Elm Construction Inc"
+                        autoCapitalize="words"
+                        editable={!loadingGc}
+                      />
+                    </>
                   )}
                 </View>
 

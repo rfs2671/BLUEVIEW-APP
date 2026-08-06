@@ -28,6 +28,8 @@ import FloatingNav from '../src/components/FloatingNav';
 import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { checklistsAPI } from '../src/utils/api';
+import OfflineNotice from '../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
@@ -41,6 +43,10 @@ export default function ChecklistsScreen() {
 
   const [loading, setLoading] = useState(true);
   const [assignments, setAssignments] = useState([]);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. On a failed load this screen
+  // used to fall through to "No Checklists / You don't have any assigned
+  // checklists yet", which is a claim about the server, not about the network.
+  const [fetchState, setFetchState] = useState('ok');
   const [selectedAssignment, setSelectedAssignment] = useState(null);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
   const [itemCompletions, setItemCompletions] = useState({});
@@ -62,15 +68,16 @@ export default function ChecklistsScreen() {
 
   const fetchAssignments = async () => {
     setLoading(true);
-    try {
-      const data = await checklistsAPI.getAssigned();
-      setAssignments(data);
-    } catch (error) {
-      console.error('Failed to fetch assignments:', error);
-      toast.error('Error', 'Could not load checklists');
-    } finally {
-      setLoading(false);
+    const r = await settleFetch(() => checklistsAPI.getAssigned());
+    setFetchState(r.status);
+    if (r.status === 'ok') {
+      setAssignments(Array.isArray(r.data) ? r.data : []);
+    } else {
+      console.error('Failed to fetch assignments:', r.error);
+      // Keep whatever we already had on screen; the banner below explains why
+      // it may be stale. Never blank the list into a confident empty state.
     }
+    setLoading(false);
   };
 
   const handleOpenChecklist = async (assignment) => {
@@ -104,11 +111,17 @@ export default function ChecklistsScreen() {
       setShowCompletionModal(true);
     } catch (error) {
       console.error('Failed to load checklist details:', error);
-      toast.error('Error', 'Could not load checklist');
+      toast.error(
+        isOfflineError(error) ? 'Offline' : 'Error',
+        isOfflineError(error)
+          ? 'This checklist is not saved on this device — reconnect to open it.'
+          : 'Could not load checklist',
+      );
     }
   };
 
   const toggleItemCheck = (itemId) => {
+    const previous = itemCompletions;
     const newCompletions = {
       ...itemCompletions,
       [itemId]: {
@@ -118,7 +131,9 @@ export default function ChecklistsScreen() {
       },
     };
     setItemCompletions(newCompletions);
-    handleSave(newCompletions);
+    // `previous` is the rollback: a tick that never reached the server must not
+    // stay ticked on screen — that is a failed write looking like a success.
+    handleSave(newCompletions, previous);
   };
 
   const updateItemNote = (itemId, note) => {
@@ -132,8 +147,10 @@ export default function ChecklistsScreen() {
     });
   };
 
-  const handleSave = async (completions = itemCompletions) => {
-    if (!selectedAssignment) return;
+  // Returns true only when the server actually accepted the write. Callers use
+  // that to decide whether it is honest to close the sheet.
+  const handleSave = async (completions = itemCompletions, revertTo = null) => {
+    if (!selectedAssignment) return true; // nothing to save == nothing failed
 
     setSaving(true);
     try {
@@ -142,17 +159,37 @@ export default function ChecklistsScreen() {
       });
       // Refresh assignments to update progress
       fetchAssignments();
+      return true;
     } catch (error) {
       console.error('Failed to save:', error);
-      toast.error('Error', 'Could not save progress');
+      if (revertTo) setItemCompletions(revertTo);
+      toast.error(
+        isOfflineError(error) ? 'Not saved — offline' : 'Not saved',
+        isOfflineError(error)
+          ? 'Your change was not recorded. Reconnect and tap it again.'
+          : 'Could not save progress. Try again.',
+      );
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
-  const handleClose = () => {
-    // Save on close
-    handleSave();
+  // "Done" — flush any pending note, and only DISMISS if the save landed.
+  // Closing the sheet on a failed write reads as "saved", which is the lie this
+  // change exists to kill. The X / back button uses handleDismiss instead, so a
+  // user offline is never trapped in the sheet.
+  const handleClose = async () => {
+    const ok = await handleSave();
+    if (!ok) return;
+    setShowCompletionModal(false);
+    setSelectedAssignment(null);
+  };
+
+  // Explicit close WITHOUT claiming a save. Item ticks are written (and rolled
+  // back) individually on tap and notes on blur, so this discards nothing that
+  // was ever reported as saved.
+  const handleDismiss = () => {
     setShowCompletionModal(false);
     setSelectedAssignment(null);
   };
@@ -193,6 +230,10 @@ export default function ChecklistsScreen() {
               <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} style={s.mb16} />
               <GlassSkeleton width="100%" height={120} borderRadiusValue={borderRadius.xl} />
             </>
+          ) : fetchState !== 'ok' && assignments.length === 0 ? (
+            /* The LOAD failed and we have nothing to show. "No Checklists"
+               would assert none are assigned — say what actually happened. */
+            <OfflineNotice mode={fetchState} />
           ) : assignments.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <AlertCircle size={48} strokeWidth={1.5} color={colors.text.muted} />
@@ -201,6 +242,10 @@ export default function ChecklistsScreen() {
             </GlassCard>
           ) : (
             <View style={s.assignmentsList}>
+              {/* Stale list served after a failed refresh — flag it. */}
+              {fetchState !== 'ok' && (
+                <OfflineNotice mode={fetchState} cachedCount={assignments.length} />
+              )}
               {assignments.map((assignment) => {
                 const progress = getProgress(assignment);
                 const complete = isComplete(assignment);
@@ -267,7 +312,7 @@ export default function ChecklistsScreen() {
           visible={showCompletionModal}
           animationType="slide"
           transparent
-          onRequestClose={handleClose}
+          onRequestClose={handleDismiss}
         >
           <View style={s.modalOverlay}>
             <View style={s.modalContent}>
@@ -276,7 +321,7 @@ export default function ChecklistsScreen() {
                   <Text style={s.modalTitle}>{selectedAssignment?.checklist?.title}</Text>
                   <Text style={s.modalSubtitle}>{selectedAssignment?.project_name}</Text>
                 </View>
-                <Pressable onPress={handleClose}>
+                <Pressable onPress={handleDismiss}>
                   <X size={24} strokeWidth={1.5} color={colors.text.muted} />
                 </Pressable>
               </View>

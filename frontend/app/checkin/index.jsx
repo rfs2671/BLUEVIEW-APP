@@ -27,6 +27,8 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, workersAPI, checkinsAPI } from '../../src/utils/api';
@@ -53,6 +55,13 @@ export default function CheckInScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [showWorkerPicker, setShowWorkerPicker] = useState(false);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. Both pickers used
+  // `.catch(() => [])`, so offline the whole form was unfillable: empty
+  // project and worker dropdowns with no explanation at all.
+  const [projectsState, setProjectsState] = useState('ok');
+  const [workersState, setWorkersState] = useState('ok');
+  const formBlocked = projectsState !== 'ok' || workersState !== 'ok';
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace('/login');
@@ -66,26 +75,36 @@ export default function CheckInScreen() {
   }, [isAuthenticated]);
 
   const fetchData = async () => {
-    try {
-      const [projectsData, workersData] = await Promise.all([
-        projectsAPI.getAll().catch(() => []),
-        workersAPI.getAll().catch(() => []),
-      ]);
+    const [projectsRes, workersRes] = await Promise.all([
+      settleFetch(() => projectsAPI.getAll()),
+      settleFetch(() => workersAPI.getAll()),
+    ]);
 
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-      setWorkers(Array.isArray(workersData) ? workersData : []);
-
+    setProjectsState(projectsRes.status);
+    if (projectsRes.status === 'ok') {
+      const projectsData = Array.isArray(projectsRes.data) ? projectsRes.data : [];
+      setProjects(projectsData);
       if (projectId) {
         const proj = projectsData.find(p => (p._id || p.id) === projectId);
         setProject(proj);
         setSelectedProject(projectId);
       }
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Error', 'Could not load data');
-    } finally {
-      setLoading(false);
+    } else {
+      console.error('Failed to fetch projects:', projectsRes.error);
     }
+
+    setWorkersState(workersRes.status);
+    if (workersRes.status === 'ok') {
+      setWorkers(Array.isArray(workersRes.data) ? workersRes.data : []);
+    } else {
+      console.error('Failed to fetch workers:', workersRes.error);
+    }
+
+    if (projectsRes.status === 'error' || workersRes.status === 'error') {
+      toast.error('Error', 'Could not load data');
+    }
+
+    setLoading(false);
   };
 
   const handleSelectProject = (proj) => {
@@ -103,21 +122,34 @@ export default function CheckInScreen() {
       return;
     }
 
+    // A check-in is recorded on the server; there is no local queue. Never
+    // report success for a write that did not happen — the old
+    // `?.(...) || Promise.resolve()` resolved (and toasted "Checked In")
+    // even when no check-in call existed to make.
+    if (typeof checkinsAPI.checkIn !== 'function') {
+      toast.error('Unavailable', 'Check-in is not available on this build. No check-in was recorded.');
+      return;
+    }
+
     setCheckingIn(true);
     try {
       // API call to check in worker
-      await checkinsAPI.checkIn?.({
+      await checkinsAPI.checkIn({
         project_id: selectedProject,
         worker_id: selectedWorker._id || selectedWorker.id,
         timestamp: new Date().toISOString(),
-      }) || Promise.resolve();
-      
+      });
+
       toast.success('Checked In', `${selectedWorker.name} has been checked in`);
       setSelectedWorker(null);
       setShowWorkerPicker(false);
     } catch (error) {
       console.error('Check-in failed:', error);
-      toast.error('Error', 'Check-in failed. Please try again.');
+      if (isOfflineError(error)) {
+        toast.error('Offline', `Check-in needs a connection. ${selectedWorker.name} was NOT checked in.`);
+      } else {
+        toast.error('Error', 'Check-in failed. Please try again.');
+      }
     } finally {
       setCheckingIn(false);
     }
@@ -177,6 +209,18 @@ export default function CheckInScreen() {
             <Text style={s.titleText}>Check-In</Text>
           </View>
 
+          {/* A check-in is a server-side write against server-side rosters —
+              if either list failed to load, say so up front rather than
+              presenting an empty, unusable form. */}
+          {formBlocked && (
+            <OfflineNotice
+              mode={projectsState !== 'ok' ? projectsState : workersState}
+              detail={(projectsState === 'offline' || workersState === 'offline')
+                ? 'Projects and/or workers could not be loaded, so this form cannot be filled in. Check-in requires a connection — nothing is saved on this device.'
+                : 'Projects and/or workers could not be loaded, so this form may be incomplete.'}
+            />
+          )}
+
           {/* Project Selection */}
           <GlassCard style={s.projectCard}>
             <Text style={s.cardLabel}>SELECT PROJECT</Text>
@@ -211,8 +255,13 @@ export default function CheckInScreen() {
                     <Text style={s.projectItemName}>{proj.name}</Text>
                   </Pressable>
                 ))}
-                {projects.length === 0 && (
+                {projects.length === 0 && projectsState === 'ok' && (
                   <Text style={s.emptyText}>No projects available</Text>
+                )}
+                {projects.length === 0 && projectsState !== 'ok' && (
+                  <Text style={s.emptyText}>
+                    Projects could not be loaded — this is not an empty list.
+                  </Text>
                 )}
               </View>
             )}
@@ -350,9 +399,16 @@ export default function CheckInScreen() {
                     </View>
                   </Pressable>
                 ))}
-                {filteredWorkers.length === 0 && (
+                {filteredWorkers.length === 0 && workersState !== 'ok' ? (
+                  <OfflineNotice
+                    mode={workersState}
+                    detail={workersState === 'offline'
+                      ? 'The worker roster could not be loaded. This is not "no workers" — reconnect to check anyone in.'
+                      : undefined}
+                  />
+                ) : filteredWorkers.length === 0 ? (
                   <Text style={s.emptyText}>No workers found</Text>
-                )}
+                ) : null}
               </ScrollView>
             </GlassCard>
           )}

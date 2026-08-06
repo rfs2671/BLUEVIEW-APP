@@ -43,6 +43,8 @@ import { spacing, borderRadius, typography } from '../../../src/styles/theme';
 import { semantic, chrome, border, surface, text, withAlpha } from '../../../src/styles/semanticColors';
 import { useTheme } from '../../../src/context/ThemeContext';
 import HeaderBrand from '../../../src/components/HeaderBrand';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import InfoTooltip from '../../../src/components/InfoTooltip';
 // daysUntil moved to a shared util so workers/[id].jsx can use the SAME
 // definition and threshold for credential expiry (it previously had none).
@@ -100,6 +102,11 @@ export default function DOBLogsScreen() {
   const [savingConfig, setSavingConfig] = useState(false);
   const [preparingId, setPreparingId] = useState(null);
   const [renewalResult, setRenewalResult] = useState(null); // result from prepare call
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. This is a COMPLIANCE VIEW:
+  // "BIN Has No DOB Records" / "No Records Found" are statements about the
+  // city's data. When the fetch never reached a server we have no basis for
+  // them, and the tiles (open violations, open complaints) would read 0.
+  const [fetchState, setFetchState] = useState('ok');
 
   useEffect(() => {
     if (authLoading) return;
@@ -115,26 +122,40 @@ export default function DOBLogsScreen() {
 
   const fetchLogs = async () => {
     if (!loading) setRefreshing(true);
-    try {
-      // date_range:'all' — the record LIST must not decay on detected_at either
-      // (default '30d' empties the list ~30 days after the sync stamp). Tile
-      // numbers come from dob-summary; both are fetched together.
-      const [data, summaryData] = await Promise.all([
-        dobAPI.getLogs(projectId, { limit: 200, date_range: 'all' }),
-        dobAPI.getSummary(projectId).catch(() => null),
-      ]);
+    // date_range:'all' — the record LIST must not decay on detected_at either
+    // (default '30d' empties the list ~30 days after the sync stamp). Tile
+    // numbers come from dob-summary; both are fetched together, each settling
+    // independently so one failure can't blank the other.
+    const [logsRes, summaryRes] = await Promise.all([
+      settleFetch(() => dobAPI.getLogs(projectId, { limit: 200, date_range: 'all' })),
+      settleFetch(() => dobAPI.getSummary(projectId)),
+    ]);
+
+    setFetchState(logsRes.status);
+    if (logsRes.status === 'ok') {
+      const data = logsRes.data || {};
       setProjectName(data.project_name || '');
       setNycBin(data.nyc_bin || '');
       setTrackDobStatus(data.track_dob_status || false);
       setAllLogs(data.logs || []);
-      setSummary(summaryData?.by_project?.[projectId] || null);
-    } catch (error) {
-      console.error('Failed to fetch DOB logs:', error);
-      toast.error('Error', 'Could not load DOB compliance data');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    } else {
+      console.error('Failed to fetch DOB logs:', logsRes.error);
+      if (logsRes.status === 'error') {
+        toast.error('Error', 'Could not load DOB compliance data');
+      } else {
+        toast.warning('Offline', 'DOB records are unavailable offline — this is not a clean record.');
+      }
     }
+
+    if (summaryRes.status === 'ok') {
+      setSummary(summaryRes.data?.by_project?.[projectId] || null);
+    } else {
+      // Leave the tiles unknown rather than asserting zero open exposure.
+      setSummary(null);
+    }
+
+    setLoading(false);
+    setRefreshing(false);
   };
 
   const handleSync = async () => {
@@ -144,6 +165,12 @@ export default function DOBLogsScreen() {
       toast.success('Sync Complete', result.new_records > 0 ? `${result.new_records} new record(s) found.` : 'No new records found.');
       await fetchLogs();
     } catch (error) {
+      // Sync pulls from NYC DOB via our backend — impossible offline, and a
+      // failed sync must not be mistaken for "no new records found".
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Syncing needs a connection. No DOB data was checked.');
+        return;
+      }
       const detail = error.response?.data?.detail || 'Sync failed';
       error.response?.status === 429 ? toast.warning('Rate Limited', detail) : toast.error('Sync Error', detail);
     } finally { setSyncing(false); }
@@ -168,7 +195,11 @@ export default function DOBLogsScreen() {
         try { await fetchLogs(); } catch (_) {}
       }, 8000);
     } catch (error) {
-      toast.error('Error', error.response?.data?.detail || 'Could not save config');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Saving DOB configuration needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not save config');
+      }
     } finally { setSavingConfig(false); }
   };
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
@@ -191,7 +222,9 @@ export default function DOBLogsScreen() {
   const permitsNoExpiry = summary?.permits_no_expiry ?? 0;
   // Always "{open} of {total}" — the VERIFY acceptance shows "2 of 2" even when
   // equal, so the count always states the subset relationship explicitly.
-  const ofText = (open, total) => `${open} of ${total}`;
+  // When the read failed there is no basis for "0 of 0" — an em dash says
+  // "unknown" instead of asserting a clean DOB record.
+  const ofText = (open, total) => (fetchState === 'ok' ? `${open} of ${total}` : '—');
 
   // Open/active status per record — drives the card badge and open-first sort,
   // mirroring dob-summary's open definitions.
@@ -353,6 +386,12 @@ export default function DOBLogsScreen() {
       setRenewalResult(resp.data);
       toast.success('Renewal Prepared', 'Review details below — complete on DOB NOW.');
     } catch (error) {
+      // "Not Eligible" is an eligibility verdict from the server — never infer
+      // it from an unreachable network.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Preparing a renewal needs a connection. Eligibility was not checked.');
+        return;
+      }
       const detail = error.response?.data?.detail;
       if (typeof detail === 'object' && detail.blocking_reasons) {
         toast.error('Not Eligible', detail.blocking_reasons.join('\n'));
@@ -1004,6 +1043,20 @@ export default function DOBLogsScreen() {
             // ambiguous between "still loading", "BIN not configured", "BIN set
             // but no DOB records", and "filter excludes everything").
             if (loading) return null; // RefreshControl / spinner covers this
+
+            // (0) The read FAILED — outranks every empty state below. Showing
+            // "BIN Has No DOB Records" here would assert a clean DOB history
+            // to whoever is reading the screen, including an inspector.
+            if (fetchState !== 'ok') {
+              return (
+                <OfflineNotice
+                  mode={fetchState}
+                  detail={fetchState === 'offline'
+                    ? 'DOB records could not be loaded because the server is unreachable. This screen is NOT showing that the project is clean — reconnect before relying on it.'
+                    : 'DOB records could not be loaded, so permits, violations and complaints are unknown for this project.'}
+                />
+              );
+            }
 
             // --- Empty states, most specific first ---
 

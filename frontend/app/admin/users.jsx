@@ -30,6 +30,8 @@ import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import FloatingNav from '../../src/components/FloatingNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { adminUsersAPI, projectsAPI } from '../../src/utils/api';
@@ -49,7 +51,12 @@ export default function AdminUsersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
-  
+
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. The old `.catch(() => [])`
+  // turned an unreachable server into a confident "No users found".
+  const [fetchState, setFetchState] = useState('ok');
+  const [projectsState, setProjectsState] = useState('ok');
+
   // Modal states
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -79,30 +86,40 @@ export default function AdminUsersScreen() {
   }, [isAuthenticated]);
 
   const fetchData = async () => {
-    try {
-      // Fetch real data from API
-      const [usersData, projectsData] = await Promise.all([
-        adminUsersAPI.getAll().catch(() => []),
-        projectsAPI.getAll().catch(() => []),
-      ]);
-      
+    // Fetch real data from API. settleFetch replaces `.catch(() => [])` so an
+    // unreachable server is reported, not rendered as "no users".
+    const [usersRes, projectsRes] = await Promise.all([
+      settleFetch(() => adminUsersAPI.getAll()),
+      settleFetch(() => projectsAPI.getAll()),
+    ]);
+
+    setFetchState(usersRes.status);
+    if (usersRes.status === 'ok') {
       // FILTER: Only show CPs and workers, exclude admins
-      const filteredUsers = Array.isArray(usersData) 
-        ? usersData.filter(u => u.role !== 'admin')
+      const filteredUsers = Array.isArray(usersRes.data)
+        ? usersRes.data.filter(u => u.role !== 'admin')
         : [];
-      
       setUsers(filteredUsers);
-      setProjects(Array.isArray(projectsData) ? projectsData.map(p => ({
+    } else {
+      console.error('Failed to fetch users:', usersRes.error);
+    }
+
+    setProjectsState(projectsRes.status);
+    if (projectsRes.status === 'ok') {
+      setProjects(Array.isArray(projectsRes.data) ? projectsRes.data.map(p => ({
         id: p.id || p._id,
         name: p.name,
       })) : []);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Error', 'Could not load users');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    } else {
+      console.error('Failed to fetch projects:', projectsRes.error);
     }
+
+    if (usersRes.status === 'error' || projectsRes.status === 'error') {
+      toast.error('Error', 'Could not load users');
+    }
+
+    setLoading(false);
+    setRefreshing(false);
   };
 
   const onRefresh = () => {
@@ -132,7 +149,12 @@ export default function AdminUsersScreen() {
       toast.success('Added', 'User created successfully');
     } catch (error) {
       console.error('Failed to create user:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not create user');
+      // Nothing is queued offline — be explicit that the user was NOT created.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Creating a user needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not create user');
+      }
     }
   };
 
@@ -166,7 +188,11 @@ export default function AdminUsersScreen() {
       toast.success('Updated', 'User updated successfully');
     } catch (error) {
       console.error('Failed to update user:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not update user');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Saving needs a connection. Your changes were not saved.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not update user');
+      }
     }
   };
 
@@ -184,7 +210,11 @@ export default function AdminUsersScreen() {
         toast.success('Deleted', 'User removed');
       } catch (error) {
         console.error('Failed to delete user:', error);
-        toast.error('Error', error.response?.data?.detail || 'Could not delete user');
+        if (isOfflineError(error)) {
+          toast.error('Offline', 'Deleting needs a connection. The user was not deleted.');
+        } else {
+          toast.error('Error', error.response?.data?.detail || 'Could not delete user');
+        }
       }
     };
 
@@ -217,7 +247,11 @@ export default function AdminUsersScreen() {
       toast.success('Updated', 'Projects assigned');
     } catch (error) {
       console.error('Failed to assign projects:', error);
-      toast.error('Error', 'Could not assign projects');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Assigning projects needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', 'Could not assign projects');
+      }
     }
   };
 
@@ -404,7 +438,16 @@ export default function AdminUsersScreen() {
                 );
               })}
 
-              {users.length === 0 && (
+              {users.length === 0 && fetchState !== 'ok' && (
+                <OfflineNotice
+                  mode={fetchState}
+                  detail={fetchState === 'offline'
+                    ? 'The user list could not be loaded because the server is unreachable. This does not mean there are no users.'
+                    : undefined}
+                />
+              )}
+
+              {users.length === 0 && fetchState === 'ok' && (
                 <GlassCard style={s.emptyCard}>
                   <Users size={48} strokeWidth={1} color={colors.text.subtle} />
                   <Text style={s.emptyText}>No users found</Text>
@@ -541,6 +584,14 @@ export default function AdminUsersScreen() {
             <GlassCard variant="modal" style={s.modal}>
               <Text style={s.modalTitle}>Assign Projects</Text>
               <Text style={s.modalSubtitle}>Select projects for {selectedUser?.name}</Text>
+              {projectsState !== 'ok' && (
+                <OfflineNotice
+                  mode={projectsState}
+                  detail={projectsState === 'offline'
+                    ? 'The project list could not be loaded, so it may be incomplete. Saving an assignment also needs a connection.'
+                    : 'The project list could not be loaded, so it may be incomplete.'}
+                />
+              )}
               <View style={s.projectsList}>
                 {projects.map((proj) => (
                   <Pressable

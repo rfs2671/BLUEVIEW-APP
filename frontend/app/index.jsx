@@ -32,6 +32,8 @@ import { useAuth } from '../src/context/AuthContext';
 import { useTheme } from '../src/context/ThemeContext';
 import { workersAPI, projectsAPI, checkinsAPI } from '../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../src/utils/projectCache';
+import OfflineNotice from '../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../src/utils/offlineState';
 import apiClient from '../src/utils/api';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import HeaderBrand from '../src/components/HeaderBrand';
@@ -243,12 +245,22 @@ export default function DashboardScreen() {
   // exposure-card accordion (which projects contribute to each count).
   const [dobByProject, setDobByProject] = useState({});
   const [dobLoading, setDobLoading] = useState(true);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. dob-summary used to fall back
+  // to null, and RollupCard renders `value ?? 0`, so an unreachable server
+  // painted "0 open violations" across the portfolio. Treated as unknown now.
+  const [dobState, setDobState] = useState('ok');
   // Which exposure card is expanded ('violations' | 'permits' | 'complaints' |
   // 'never'), or null for the calm default state. One at a time.
   const [expandedCard, setExpandedCard] = useState(null);
   // On-site-now count per project, keyed by project id. Desktop only.
   const [onSite, setOnSite] = useState({});
   const [onSiteLoading, setOnSiteLoading] = useState(true);
+  // 'ok' when every per-project lookup answered; otherwise the failure kind.
+  const [onSiteState, setOnSiteState] = useState('ok');
+  // Reads that back the (currently unmounted) totals. Tracked so a failure is
+  // never silently rendered as a zero if these are ever surfaced again.
+  const [workersState, setWorkersState] = useState('ok');
+  const [checkinsState, setCheckinsState] = useState('ok');
 
   const [layoutReady, setLayoutReady] = useState(false);
 
@@ -298,9 +310,15 @@ export default function DashboardScreen() {
         if (!cancelled) {
           setDobTotals(r?.data?.totals || null);
           setDobByProject(r?.data?.by_project || {});
+          setDobState('ok');
         }
       } catch (_e) {
-        if (!cancelled) { setDobTotals(null); setDobByProject({}); }
+        if (!cancelled) {
+          setDobTotals(null);
+          setDobByProject({});
+          // UNKNOWN, not zero — the cards render "—" off this state.
+          setDobState(isOfflineError(_e) ? 'offline' : 'error');
+        }
       } finally {
         if (!cancelled) setDobLoading(false);
       }
@@ -324,6 +342,7 @@ export default function DashboardScreen() {
     if (!isDesktop || !isAuthenticated || isPending) return undefined;
     if (!Array.isArray(projects) || projects.length === 0) {
       setOnSite({});
+      setOnSiteState('ok');
       setOnSiteLoading(false);
       return undefined;
     }
@@ -331,20 +350,33 @@ export default function DashboardScreen() {
     (async () => {
       try {
         setOnSiteLoading(true);
-        const entries = await Promise.all(projects.map(async (p) => {
+        const results = await Promise.all(projects.map(async (p) => {
           const pid = p.id || p._id;
-          try {
-            const rows = await getActiveCheckIns(pid);
-            return [pid, Array.isArray(rows) ? rows.length : 0];
-          } catch (_e) {
-            // One project failing must not blank the whole section; that site
-            // reports null and renders "—" rather than a fabricated 0.
-            return [pid, null];
-          }
+          // One project failing must not blank the whole section; that site
+          // reports null and renders "—" rather than a fabricated 0.
+          const r = await settleFetch(() => getActiveCheckIns(pid));
+          return {
+            pid,
+            n: r.status === 'ok' ? (Array.isArray(r.data) ? r.data.length : 0) : null,
+            status: r.status,
+          };
         }));
-        if (!cancelled) setOnSite(Object.fromEntries(entries));
+        if (!cancelled) {
+          setOnSite(Object.fromEntries(results.map((x) => [x.pid, x.n])));
+          // ANY failed lookup makes the section's totals unknown, so the
+          // "No workers checked in today." line below must not speak for them.
+          const failed = results.filter((x) => x.status !== 'ok');
+          setOnSiteState(
+            failed.length === 0
+              ? 'ok'
+              : (failed.some((f) => f.status === 'error') ? 'error' : 'offline'),
+          );
+        }
       } catch (_e) {
-        if (!cancelled) setOnSite({});
+        if (!cancelled) {
+          setOnSite({});
+          setOnSiteState(isOfflineError(_e) ? 'offline' : 'error');
+        }
       } finally {
         if (!cancelled) setOnSiteLoading(false);
       }
@@ -401,30 +433,50 @@ export default function DashboardScreen() {
       // Each read is individually resilient so one offline endpoint doesn't blank
       // the dashboard. The projects read reports whether it came from server or
       // cache so we can show a definitive offline confirmation.
-      const [workersData, projectsResult, activeCheckInsData] = await Promise.all([
-        workersAPI.getAll().catch(() => []),
+      const [workersResult, projectsResult, checkinsResult] = await Promise.all([
+        // Was `.catch(() => [])` — a silent swallow that reported "0 workers"
+        // for an unreachable server. settleFetch keeps the failure kind.
+        settleFetch(() => workersAPI.getAll()),
         projectsAPI.getAll()
           .then((d) => { cacheProjectList(d); return { list: d, online: true }; })
-          .catch(() => ({ list: _cachedProjects, online: false })),
-        checkinsAPI.getByDate(new Date()).catch(() => []),
+          .catch((e) => ({ list: _cachedProjects, online: false, offline: isOfflineError(e) })),
+        settleFetch(() => checkinsAPI.getByDate(new Date())),
       ]);
-      setWorkers(Array.isArray(workersData) ? workersData : []);
+      setWorkersState(workersResult.status);
+      // Only overwrite on a real answer — a failed read leaves the last known
+      // list alone instead of collapsing it to zero.
+      if (workersResult.status === 'ok') {
+        setWorkers(Array.isArray(workersResult.data) ? workersResult.data : []);
+      }
       const _pList = Array.isArray(projectsResult.list) ? projectsResult.list : [];
       setProjects(_pList);
       // VISIBLE CONFIRM when the server was unreachable — tells you on-device
       // whether the cache was populated (write worked) or empty (need to open
       // online on THIS bundle first). Ends the code-vs-test guessing.
       if (!projectsResult.online) {
+        // A 4xx/5xx is not "Offline" — the server answered. Label it honestly.
+        const offline = projectsResult.offline;
         if (_pList.length > 0) {
-          toast.success('Offline', `Loaded ${_pList.length} cached projects`);
+          toast.success(
+            offline ? 'Offline' : 'Showing saved copy',
+            `Loaded ${_pList.length} cached project${_pList.length === 1 ? '' : 's'}`,
+          );
         } else {
-          toast.error('Offline', 'No cached projects — open once online on this version first');
+          toast.error(
+            offline ? 'Offline' : 'Could not load',
+            offline
+              ? 'No cached projects — open once online on this version first'
+              : 'The server could not return your projects.',
+          );
         }
       }
-      const active = Array.isArray(activeCheckInsData)
-        ? activeCheckInsData.filter(c => !c.check_out_time && !c.checkout_time)
-        : [];
-      setActiveCheckIns(active);
+      setCheckinsState(checkinsResult.status);
+      if (checkinsResult.status === 'ok') {
+        const active = Array.isArray(checkinsResult.data)
+          ? checkinsResult.data.filter(c => !c.check_out_time && !c.checkout_time)
+          : [];
+        setActiveCheckIns(active);
+      }
     } catch (error) {
       console.error('Failed to fetch dashboard data:', error);
       // Last resort — hydrate projects from cache so selection still works offline.
@@ -458,6 +510,16 @@ export default function DashboardScreen() {
     activeProjects: projects.filter(p => p.status === 'active' || !p.status).length,
     onSiteNow: activeCheckIns.length,
   };
+
+  // Worst outcome across the dashboard's supporting reads (workers, today's
+  // check-ins). A dead zone must not pass as a quietly complete dashboard, so
+  // the failure gets a banner rather than being swallowed into empty arrays.
+  const dashboardFetchState =
+    workersState === 'error' || checkinsState === 'error'
+      ? 'error'
+      : workersState === 'offline' || checkinsState === 'offline'
+        ? 'offline'
+        : 'ok';
 
   if (authLoading) {
     return (
@@ -526,10 +588,15 @@ export default function DashboardScreen() {
     const rowTarget = (key, p) =>
       key === 'never' ? `/project/${pidOf(p)}` : `/project/${pidOf(p)}/dob-logs`;
 
+    // `loading` on a RollupCard means "no number to show" — it renders "—" and
+    // drops the expand affordance. A failed dob-summary is exactly that state:
+    // unknown, NOT zero. Without this the cards asserted 0 open violations
+    // portfolio-wide whenever the request died.
+    const dobUnknown = dobLoading || dobState !== 'ok';
     const cards = [
-      { key: 'violations', value: ov, label: 'Open violations', token: semantic.criticalText, loading: dobLoading },
-      { key: 'permits', value: pe, label: 'Permits expiring <30d', token: semantic.attention, loading: dobLoading },
-      { key: 'complaints', value: oc, label: 'Open complaints', token: semantic.attention, loading: dobLoading },
+      { key: 'violations', value: ov, label: 'Open violations', token: semantic.criticalText, loading: dobUnknown },
+      { key: 'permits', value: pe, label: 'Permits expiring <30d', token: semantic.attention, loading: dobUnknown },
+      { key: 'complaints', value: oc, label: 'Open complaints', token: semantic.attention, loading: dobUnknown },
       { key: 'never', value: neverSynced, label: 'Never synced', token: semantic.attention, loading },
     ];
     const openCard = cards.find((c) => c.key === expandedCard) || null;
@@ -540,11 +607,25 @@ export default function DashboardScreen() {
       .map((p) => ({ p, n: onSite[p.id || p._id] ?? null }))
       .sort((a, b) => (b.n ?? -1) - (a.n ?? -1));
     const totalOnSite = siteRows.reduce((sum, r) => sum + (r.n || 0), 0);
+    // If ANY site's count is unknown, "No workers checked in today." is a claim
+    // we cannot make — fall through to the per-row list, where unknown reads "—".
+    const anyOnSiteUnknown = siteRows.some((r) => r.n == null);
     const openRows = openCard ? contributors(openCard.key) : [];
 
     return (
       <>
+        {renderDataNotice()}
         <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>PORTFOLIO EXPOSURE</Text>
+        {!dobLoading && dobState !== 'ok' && (
+          <OfflineNotice
+            mode={dobState}
+            detail={
+              dobState === 'offline'
+                ? 'Exposure counts could not be fetched. The cards show "—" because the totals are unknown, not zero.'
+                : 'The server could not return exposure counts. The cards show "—" because the totals are unknown, not zero.'
+            }
+          />
+        )}
         <View style={deskStyles.rollupRow}>
           {cards.map((c) => (
             <RollupCard
@@ -608,11 +689,21 @@ export default function DashboardScreen() {
             rather than a column of zeros; a project whose lookup failed shows
             "—", never a fabricated 0. */}
         <Text style={[deskStyles.sectionLabel, { color: text.secondary }]}>ACTIVE BY SITE</Text>
+        {!onSiteLoading && onSiteState !== 'ok' && siteRows.length > 0 && (
+          <OfflineNotice
+            mode={onSiteState}
+            detail={
+              onSiteState === 'offline'
+                ? 'Some sites could not be reached. Those rows show "—": their headcount is unknown, not zero.'
+                : 'Some sites could not be read from the server. Those rows show "—": their headcount is unknown, not zero.'
+            }
+          />
+        )}
         {onSiteLoading ? (
           <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>Checking sites…</Text>
         ) : siteRows.length === 0 ? (
           <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>No projects yet.</Text>
-        ) : totalOnSite === 0 ? (
+        ) : totalOnSite === 0 && !anyOnSiteUnknown ? (
           <Text style={[deskStyles.siteEmpty, { color: text.muted }]}>
             No workers checked in today.
           </Text>
@@ -677,6 +768,22 @@ export default function DashboardScreen() {
           ))}
         </View>
       </>
+    );
+  };
+
+  // Honest banner for supporting reads that never landed. Rendered on every
+  // layout so the failure is visible wherever the user actually is.
+  const renderDataNotice = () => {
+    if (loading || dashboardFetchState === 'ok') return null;
+    return (
+      <OfflineNotice
+        mode={dashboardFetchState}
+        detail={
+          dashboardFetchState === 'offline'
+            ? "Some of today's data could not be fetched. What you see may be incomplete — it is not a confirmation that there is nothing."
+            : "Some of today's data could not be read from the server. What you see may be incomplete."
+        }
+      />
     );
   };
 
@@ -813,6 +920,9 @@ export default function DashboardScreen() {
               {/* B3: 24h first-poll banner */}
               {renderFirstPollBanner()}
 
+              {/* Failed supporting reads — visible, not swallowed. */}
+              {renderDataNotice()}
+
               {/* PR #48 L9 — 3-metric strip removed. */}
 
               {/* B3: empty state when no projects */}
@@ -846,6 +956,9 @@ export default function DashboardScreen() {
                   ) : null}
                 </View>
               </GlassCard>
+
+              {/* Failed supporting reads — visible, not swallowed. */}
+              {renderDataNotice()}
 
               {/* B3: empty state when no projects */}
               {renderProjectsEmptyState()}

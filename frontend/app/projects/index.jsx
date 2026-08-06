@@ -35,6 +35,8 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI } from '../../src/utils/api';
 import { cacheProjectList, readCachedProjectList } from '../../src/utils/projectCache';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { isOfflineError } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useIsDesktop } from '../../src/hooks/useIsDesktop';
@@ -64,6 +66,11 @@ export default function ProjectsScreen() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [projects, setProjects] = useState([]);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' for the last list refresh.
+  // The cache keeps rows on screen, but the screen still has to SAY the list is
+  // a saved copy; and with an empty cache it must not fall through to
+  // "No projects found", which claims the account has none.
+  const [fetchState, setFetchState] = useState('ok');
   // ── FIX #3: Single address field instead of name + location ──
   const [newProject, setNewProject] = useState({
     address: '',
@@ -95,6 +102,7 @@ export default function ProjectsScreen() {
       const data = await projectsAPI.getAll();
       cacheProjectList(data);
       setProjects(Array.isArray(data) ? data : []);
+      setFetchState('ok');
     } catch (error) {
       console.error('Failed to fetch projects:', error);
       // KEEP the already-loaded cached list — the offline refresh failure must
@@ -102,8 +110,23 @@ export default function ProjectsScreen() {
       // rendered (no re-read, no [] path); cacheProjectList only runs on success
       // above, so the stored cache is never overwritten with empty either.
       setProjects(_cached);
-      if (_cached.length > 0) toast.success('Offline', `Loaded ${_cached.length} cached projects`);
-      else toast.error('Offline', 'No cached projects — open once online on this version first');
+      // A 4xx/5xx is NOT "Offline" — the server answered. isOfflineError() is
+      // the discriminator; the banner below renders from the same state.
+      const offline = isOfflineError(error);
+      setFetchState(offline ? 'offline' : 'error');
+      if (_cached.length > 0) {
+        toast.success(
+          offline ? 'Offline' : 'Showing saved copy',
+          `Loaded ${_cached.length} cached project${_cached.length === 1 ? '' : 's'}`,
+        );
+      } else {
+        toast.error(
+          offline ? 'Offline' : 'Could not load',
+          offline
+            ? 'No cached projects — open once online on this version first'
+            : 'The server could not return your projects. Pull to refresh.',
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -221,6 +244,12 @@ export default function ProjectsScreen() {
             />
           </View>
 
+          {/* The last refresh failed. Say so ABOVE the list, whether the list is
+              a cached copy (cachedCount) or nothing at all. */}
+          {!loading && fetchState !== 'ok' && (
+            <OfflineNotice mode={fetchState} cachedCount={projects.length} />
+          )}
+
           {/* Projects List */}
           <View style={s.projectsList}>
             {loading ? (
@@ -337,6 +366,18 @@ export default function ProjectsScreen() {
                   </Pressable>
                 </GlassListItem>
               ))
+            ) : projects.length === 0 && fetchState !== 'ok' ? (
+              /* Nothing loaded AND nothing cached. "No projects found" would
+                 assert the account has none — it doesn't; we just couldn't
+                 read them. (A search that matches nothing is still honest.) */
+              <View style={s.emptyState}>
+                <Building2 size={48} strokeWidth={1} color={colors.text.subtle} />
+                <Text style={s.emptyText}>
+                  {fetchState === 'offline'
+                    ? 'Your projects could not be loaded and none are saved on this device.'
+                    : 'Your projects could not be read from the server.'}
+                </Text>
+              </View>
             ) : (
               <View style={s.emptyState}>
                 <Building2 size={48} strokeWidth={1} color={colors.text.subtle} />

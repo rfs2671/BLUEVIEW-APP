@@ -44,6 +44,8 @@ import { useToast } from '../src/components/Toast';
 import { useAuth } from '../src/context/AuthContext';
 import { projectsAPI, dailyLogsAPI, reportsAPI, getToken } from '../src/utils/api';
 import apiClient from '../src/utils/api';
+import OfflineNotice from '../src/components/OfflineNotice';
+import { settleFetch } from '../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
@@ -75,16 +77,22 @@ export default function ReportsScreen() {
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [showProjectPicker, setShowProjectPicker] = useState(false);
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' per fetch. A failed load must
+  // never fall through to this screen's confident empty copy ("No Data
+  // Available"), which asserts the day has no report.
+  const [projectsState, setProjectsState] = useState('ok');
 
   // Today's preview
   const [preview, setPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewState, setPreviewState] = useState('ok');
   const [previewDate, setPreviewDate] = useState(new Date().toISOString().split('T')[0]);
 
   // History
   const [history, setHistory] = useState([]);
   const [historyTotal, setHistoryTotal] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyState, setHistoryState] = useState('ok');
 
   const isAdmin = user?.role === 'admin' || user?.role === 'owner';
 
@@ -112,50 +120,55 @@ export default function ReportsScreen() {
 
   const fetchProjects = async () => {
     setLoading(true);
-    try {
-      const projectsData = await projectsAPI.getAll().catch(() => []);
-      const projectList = Array.isArray(projectsData) ? projectsData : [];
+    // The old `.catch(() => [])` made an unreachable server indistinguishable
+    // from an account with no projects — the picker just read "Choose a
+    // project" with an empty dropdown.
+    const r = await settleFetch(() => projectsAPI.getAll());
+    setProjectsState(r.status);
+    if (r.status === 'ok') {
+      const projectList = Array.isArray(r.data) ? r.data : [];
       setProjects(projectList);
       if (projectList.length > 0) {
         setSelectedProject(projectList[0]);
       }
-    } catch (error) {
-      console.error('Failed to fetch projects:', error);
-      toast.error('Load Error', 'Could not load projects');
-    } finally {
-      setLoading(false);
+    } else {
+      console.error('Failed to fetch projects:', r.error);
     }
+    setLoading(false);
   };
 
   const fetchPreview = async () => {
     if (!selectedProject) return;
     setPreviewLoading(true);
-    try {
-      const projectId = selectedProject._id || selectedProject.id;
-      const data = await reportsAPI.getPreview(projectId, previewDate);
-      setPreview(data);
-    } catch (error) {
-      console.error('Failed to fetch preview:', error);
+    const projectId = selectedProject._id || selectedProject.id;
+    const r = await settleFetch(() => reportsAPI.getPreview(projectId, previewDate));
+    setPreviewState(r.status);
+    if (r.status === 'ok') {
+      setPreview(r.data);
+    } else {
+      console.error('Failed to fetch preview:', r.error);
+      // Clear the stale preview but DON'T let the empty state speak for it —
+      // the render branches on previewState first.
       setPreview(null);
-    } finally {
-      setPreviewLoading(false);
     }
+    setPreviewLoading(false);
   };
 
   const fetchHistory = async () => {
     if (!selectedProject) return;
     setHistoryLoading(true);
-    try {
-      const projectId = selectedProject._id || selectedProject.id;
-      const data = await reportsAPI.getHistory(projectId, 30, 0);
-      setHistory(data.history || []);
-      setHistoryTotal(data.total || 0);
-    } catch (error) {
-      console.error('Failed to fetch history:', error);
+    const projectId = selectedProject._id || selectedProject.id;
+    const r = await settleFetch(() => reportsAPI.getHistory(projectId, 30, 0));
+    setHistoryState(r.status);
+    if (r.status === 'ok') {
+      setHistory(r.data?.history || []);
+      setHistoryTotal(r.data?.total || 0);
+    } else {
+      console.error('Failed to fetch history:', r.error);
       setHistory([]);
-    } finally {
-      setHistoryLoading(false);
+      setHistoryTotal(0);
     }
+    setHistoryLoading(false);
   };
 
   const handleRefresh = async () => {
@@ -340,6 +353,12 @@ export default function ReportsScreen() {
             </>
           ) : (
             <>
+              {/* The project list failed to load — say so instead of showing an
+                  empty picker that reads as "you have no projects". */}
+              {projectsState !== 'ok' && (
+                <OfflineNotice mode={projectsState} cachedCount={projects.length} />
+              )}
+
               {/* Project Selector */}
               <Pressable
                 style={s.selectorCard}
@@ -551,6 +570,18 @@ export default function ReportsScreen() {
                         />
                       )}
                     </>
+                  ) : previewState !== 'ok' ? (
+                    /* The preview FETCH failed. "No Data Available" would
+                       assert the day has no report — the exact lie this
+                       screen must not tell. */
+                    <OfflineNotice
+                      mode={previewState}
+                      detail={
+                        previewState === 'offline'
+                          ? `Can't reach the server, so the report for ${formatDate(previewDate)} is unknown. Reconnect and pull to refresh.`
+                          : `Could not read the report for ${formatDate(previewDate)}. Pull to refresh or try again.`
+                      }
+                    />
                   ) : (
                     <GlassCard style={s.emptyCard}>
                       <AlertCircle size={28} strokeWidth={1.5} color={colors.text.subtle} />

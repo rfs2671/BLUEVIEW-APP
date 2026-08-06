@@ -22,6 +22,8 @@ import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, IconPod } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useCheckIns } from '../../src/hooks/useCheckIns';
 import { useProjects } from '../../src/hooks/useProjects';
@@ -48,6 +50,11 @@ export default function NfcCheckInScreen() {
   const [tagInfo, setTagInfo] = useState(null);
   const [workerProfile, setWorkerProfile] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
+  // OFFLINE vs EMPTY, at the gate. 'tag' = the server answered and the tag is
+  // not usable ("not registered"). 'offline' / 'error' = we never got an
+  // answer. To a worker standing at a turnstile those mean opposite things:
+  // one is "your badge is wrong", the other is "we can't reach the server".
+  const [errorKind, setErrorKind] = useState('tag');
   const [pulseAnim] = useState(new Animated.Value(1));
 
   // Registration form fields
@@ -91,12 +98,26 @@ export default function NfcCheckInScreen() {
     try {
       if (!tagId) {
         setStatus('error');
+        setErrorKind('tag');
         setErrorMessage('No NFC tag detected. Please tap an NFC tag to check in.');
         return;
       }
 
-      const info = await apiClient.get(`/api/nfc/tags/${tagId}`);
-      setTagInfo(info.data);
+      // The tag lookup is the discriminator: a 404 means this tag is not
+      // registered to a site; an offline failure means we never asked.
+      const lookup = await settleFetch(() => apiClient.get(`/api/nfc/tags/${tagId}`));
+      if (lookup.status !== 'ok') {
+        console.error('Failed to look up NFC tag:', lookup.error);
+        setStatus('error');
+        setErrorKind(lookup.status);
+        setErrorMessage(
+          lookup.status === 'offline'
+            ? 'This tag could not be checked because the server is unreachable. The tag may well be valid — do not treat this as an unregistered badge.'
+            : (lookup.error?.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.')
+        );
+        return;
+      }
+      setTagInfo(lookup.data?.data);
 
       const storedProfile = await AsyncStorage.getItem(WORKER_PROFILE_KEY);
       const storedWorkerId = await AsyncStorage.getItem(WORKER_ID_KEY);
@@ -111,6 +132,7 @@ export default function NfcCheckInScreen() {
     } catch (error) {
       console.error('Failed to initialize check-in:', error);
       setStatus('error');
+      setErrorKind(isOfflineError(error) ? 'offline' : 'tag');
       setErrorMessage(error.response?.data?.detail || 'Could not find this NFC tag. Contact site admin.');
     }
   };
@@ -136,7 +158,12 @@ export default function NfcCheckInScreen() {
     } catch (error) {
       console.error('Check-in failed:', error);
       setStatus('error');
-      setErrorMessage(error.response?.data?.detail || 'Check-in failed. Please try again.');
+      setErrorKind(isOfflineError(error) ? 'offline' : 'tag');
+      setErrorMessage(
+        isOfflineError(error)
+          ? 'The check-in could not reach the server, so you are NOT checked in. Reconnect and tap again — nothing was recorded on this device.'
+          : (error.response?.data?.detail || 'Check-in failed. Please try again.')
+      );
     }
   };
 
@@ -174,7 +201,13 @@ export default function NfcCheckInScreen() {
       await performCheckIn(result.data.worker_id, formPhone);
     } catch (error) {
       console.error('Registration failed:', error);
-      toast.error('Error', error.response?.data?.detail || 'Registration failed. Please try again.');
+      // Registration mints a server-side worker_id — nothing is stored locally
+      // on failure, so the worker is not registered and not checked in.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Registration needs a connection. You are not registered and not checked in.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Registration failed. Please try again.');
+      }
       setRegistering(false);
     }
   };
@@ -193,17 +226,26 @@ export default function NfcCheckInScreen() {
     );
   }
 
-  // Error state
+  // Error state. A connectivity failure gets the neutral offline treatment —
+  // the red "Check-In Failed" badge reads as "this tag/worker was rejected",
+  // which is a different (and unearned) accusation.
   if (status === 'error') {
+    const isConnectivity = errorKind === 'offline' || errorKind === 'error';
     return (
       <AnimatedBackground>
         <SafeAreaView style={s.container}>
           <View style={s.centerContent}>
-            <View style={s.errorIcon}>
-              <XCircle size={80} strokeWidth={1.5} color={colors.status.error} />
-            </View>
-            <Text style={s.errorTitle}>Check-In Failed</Text>
-            <Text style={s.errorMessage}>{errorMessage}</Text>
+            {isConnectivity ? (
+              <OfflineNotice mode={errorKind} detail={errorMessage} />
+            ) : (
+              <>
+                <View style={s.errorIcon}>
+                  <XCircle size={80} strokeWidth={1.5} color={colors.status.error} />
+                </View>
+                <Text style={s.errorTitle}>Check-In Failed</Text>
+                <Text style={s.errorMessage}>{errorMessage}</Text>
+              </>
+            )}
             <GlassButton
               title="Try Again"
               onPress={() => router.back()}

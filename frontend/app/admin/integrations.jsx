@@ -29,6 +29,8 @@ import {
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard, StatCard, IconPod, GlassListItem } from '../../src/components/GlassCard';
 import GlassButton from '../../src/components/GlassButton';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { dropboxAPI, projectsAPI, whatsappAPI } from '../../src/utils/api';
@@ -61,6 +63,12 @@ export default function AdminIntegrationsScreen() {
   const [activatingWhatsapp, setActivatingWhatsapp] = useState(false);
   const [savingContact, setSavingContact] = useState(false);
 
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. These integrations are
+  // inherently online (OAuth). The old `.catch(() => ({ connected: false }))`
+  // reported "Not Connected" when we simply could not ask, which is a lie
+  // about the account's real state.
+  const [fetchState, setFetchState] = useState('ok');
+
   // Check if user is admin
   const isAdmin = user?.role === 'admin';
 
@@ -80,21 +88,32 @@ export default function AdminIntegrationsScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [status, projectsData, waStatus] = await Promise.all([
-        dropboxAPI.getStatus().catch(() => ({ connected: false })),
-        projectsAPI.getAll().catch(() => []),
-        whatsappAPI.getStatus().catch(() => ({ platform_configured: false, company_active: false })),
-      ]);
-      setDropboxStatus(status);
-      setProjects(Array.isArray(projectsData) ? projectsData : []);
-      setWhatsappStatus(waStatus);
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Load Error', 'Could not load integration status');
-    } finally {
-      setLoading(false);
+    const [statusRes, projectsRes, waRes] = await Promise.all([
+      settleFetch(() => dropboxAPI.getStatus()),
+      settleFetch(() => projectsAPI.getAll()),
+      settleFetch(() => whatsappAPI.getStatus()),
+    ]);
+
+    if (statusRes.status === 'ok') setDropboxStatus(statusRes.data || { connected: false });
+    if (projectsRes.status === 'ok') {
+      setProjects(Array.isArray(projectsRes.data) ? projectsRes.data : []);
     }
+    if (waRes.status === 'ok') {
+      setWhatsappStatus(waRes.data || { platform_configured: false, company_active: false });
+    }
+
+    // Any failed status read means the connection state below is UNKNOWN,
+    // not "disconnected".
+    const failure = [statusRes, projectsRes, waRes].find(r => r.status !== 'ok');
+    setFetchState(failure ? failure.status : 'ok');
+    if (failure) {
+      console.error('Failed to fetch data:', failure.error);
+      if (failure.status === 'error') {
+        toast.error('Load Error', 'Could not load integration status');
+      }
+    }
+
+    setLoading(false);
   };
 
   const handleConnectDropbox = async () => {
@@ -147,31 +166,44 @@ export default function AdminIntegrationsScreen() {
       }
     } catch (error) {
       console.error('Failed to get auth URL:', error);
-      toast.error('Connection Error', error.response?.data?.detail || 'Could not start Dropbox connection');
+      // OAuth cannot start without a network — be explicit rather than generic.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Connecting Dropbox needs a connection — the OAuth flow cannot start offline.');
+      } else {
+        toast.error('Connection Error', error.response?.data?.detail || 'Could not start Dropbox connection');
+      }
     } finally {
       setConnecting(false);
     }
   };
 
   const handleCheckStatus = async () => {
-    try {
-      const status = await dropboxAPI.getStatus();
-      setDropboxStatus(status);
-      if (status?.connected) {
-        toast.success(
-          'Connected',
-          status.account_email
-            ? `Connected as ${status.account_email}`
-            : 'Dropbox connection is active'
-        );
+    // "Not Connected" must only be reported when the server actually answered.
+    const res = await settleFetch(() => dropboxAPI.getStatus());
+    if (res.status !== 'ok') {
+      setFetchState(res.status);
+      if (res.status === 'offline') {
+        toast.error('Offline', 'Cannot check Dropbox — the server is unreachable. Connection status is unknown, not "disconnected".');
       } else {
-        toast.info(
-          'Not Connected',
-          'Dropbox is not linked yet. Click Connect to start the flow.'
-        );
+        toast.error('Error', 'Could not check Dropbox status');
       }
-    } catch (e) {
-      toast.error('Error', 'Could not check Dropbox status');
+      return;
+    }
+    setFetchState('ok');
+    const status = res.data;
+    setDropboxStatus(status);
+    if (status?.connected) {
+      toast.success(
+        'Connected',
+        status.account_email
+          ? `Connected as ${status.account_email}`
+          : 'Dropbox connection is active'
+      );
+    } else {
+      toast.info(
+        'Not Connected',
+        'Dropbox is not linked yet. Click Connect to start the flow.'
+      );
     }
   };
 
@@ -194,7 +226,11 @@ export default function AdminIntegrationsScreen() {
       toast.success('Connected!', result.email ? `Connected as ${result.email}` : 'Dropbox connected successfully');
     } catch (error) {
       console.error('Failed to complete auth:', error);
-      toast.error('Connection Error', error.response?.data?.detail || 'Could not complete Dropbox connection');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Completing the Dropbox connection needs a connection. Nothing was linked.');
+      } else {
+        toast.error('Connection Error', error.response?.data?.detail || 'Could not complete Dropbox connection');
+      }
     } finally {
       setCompletingAuth(false);
     }
@@ -208,7 +244,12 @@ export default function AdminIntegrationsScreen() {
       toast.success('Disconnected', 'Dropbox has been disconnected');
     } catch (error) {
       console.error('Failed to disconnect:', error);
-      toast.error('Error', error.response?.data?.detail || 'Could not disconnect Dropbox');
+      // Do NOT flip the badge to "Not Connected" — the token is still live.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Disconnecting needs a connection. Dropbox is still linked.');
+      } else {
+        toast.error('Error', error.response?.data?.detail || 'Could not disconnect Dropbox');
+      }
     } finally {
       setDisconnecting(false);
     }
@@ -223,7 +264,11 @@ export default function AdminIntegrationsScreen() {
       toast.success('WhatsApp Activated', 'WhatsApp integration is now active');
     } catch (error) {
       console.error('Failed to activate WhatsApp:', error);
-      toast.error('Activation Error', error.response?.data?.detail || 'Could not activate WhatsApp');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Activating WhatsApp needs a connection. Nothing was activated.');
+      } else {
+        toast.error('Activation Error', error.response?.data?.detail || 'Could not activate WhatsApp');
+      }
     } finally {
       setActivatingWhatsapp(false);
     }
@@ -241,8 +286,12 @@ export default function AdminIntegrationsScreen() {
       }
     } catch (error) {
       console.error('Failed to save contact:', error);
-      const detail = error?.response?.data?.detail;
-      toast.error('Error', detail || 'Could not save contact. Please try again.');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'The contact card is fetched from the server — reconnect to save it.');
+      } else {
+        const detail = error?.response?.data?.detail;
+        toast.error('Error', detail || 'Could not save contact. Please try again.');
+      }
     } finally {
       setSavingContact(false);
     }
@@ -305,6 +354,17 @@ export default function AdminIntegrationsScreen() {
             </View>
           ) : (
             <>
+              {/* Integrations are inherently online — say so plainly rather
+                  than letting the cards read as "Not Connected". */}
+              {fetchState !== 'ok' && (
+                <OfflineNotice
+                  mode={fetchState}
+                  detail={fetchState === 'offline'
+                    ? 'Integration status is unknown offline — the badges below are not a reading of your real Dropbox/WhatsApp connection. Connecting and disconnecting both need a connection.'
+                    : 'Integration status could not be read, so the badges below may not reflect your real connection.'}
+                />
+              )}
+
               {/* Dropbox Integration Card */}
               <GlassCard style={s.integrationCard}>
                 {/* Dropbox Header */}

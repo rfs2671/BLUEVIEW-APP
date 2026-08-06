@@ -28,6 +28,8 @@ import GlassButton from '../../src/components/GlassButton';
 import GlassInput from '../../src/components/GlassInput';
 import { GlassSkeleton } from '../../src/components/GlassSkeleton';
 import FloatingNav from '../../src/components/FloatingNav';
+import OfflineNotice from '../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { projectsAPI, csRegistrationAPI } from '../../src/utils/api';
@@ -52,6 +54,11 @@ export default function SuperintendentScreen() {
   const [loading, setLoading] = useState(true);
   const [registrations, setRegistrations] = useState([]);
   const [projects, setProjects] = useState([]);
+
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error'. "No Superintendents
+  // Registered" is a compliance claim; never render it off a failed read.
+  const [fetchState, setFetchState] = useState('ok');
+  const [projectsState, setProjectsState] = useState('ok');
 
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -90,19 +97,34 @@ export default function SuperintendentScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [regs, projs] = await Promise.all([
-        csRegistrationAPI.getAll().catch(() => []),
-        projectsAPI.getAll().catch(() => []),
-      ]);
+    // settleFetch replaces `.catch(() => [])` so an unreachable server is
+    // reported instead of rendering as "nobody is registered".
+    const [regsRes, projsRes] = await Promise.all([
+      settleFetch(() => csRegistrationAPI.getAll()),
+      settleFetch(() => projectsAPI.getAll()),
+    ]);
+
+    setFetchState(regsRes.status);
+    if (regsRes.status === 'ok') {
+      const regs = regsRes.data;
       setRegistrations(Array.isArray(regs) ? regs : (regs?.items || []));
-      setProjects(Array.isArray(projs) ? projs : (projs?.items || []));
-    } catch (e) {
-      console.error('Load failed:', e);
-      toast.error('Load Error', 'Could not load superintendent registrations');
-    } finally {
-      setLoading(false);
+    } else {
+      console.error('Load registrations failed:', regsRes.error);
     }
+
+    setProjectsState(projsRes.status);
+    if (projsRes.status === 'ok') {
+      const projs = projsRes.data;
+      setProjects(Array.isArray(projs) ? projs : (projs?.items || []));
+    } else {
+      console.error('Load projects failed:', projsRes.error);
+    }
+
+    if (regsRes.status === 'error' || projsRes.status === 'error') {
+      toast.error('Load Error', 'Could not load superintendent registrations');
+    }
+
+    setLoading(false);
   };
 
   const resetForm = () => {
@@ -168,10 +190,16 @@ export default function SuperintendentScreen() {
       }
     } catch (e) {
       console.error('Register CS failed:', e);
-      toast.error(
-        'Error',
-        e.response?.data?.detail || 'Could not register superintendent'
-      );
+      // The one-job conflict check runs server-side — offline we cannot
+      // register at all, and nothing is queued.
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Registering a superintendent needs a connection. Nothing was saved.');
+      } else {
+        toast.error(
+          'Error',
+          e.response?.data?.detail || 'Could not register superintendent'
+        );
+      }
     } finally {
       setSaving(false);
     }
@@ -207,7 +235,11 @@ export default function SuperintendentScreen() {
       fetchData();
     } catch (e) {
       console.error('Edit CS failed:', e);
-      toast.error('Error', e.response?.data?.detail || 'Could not update');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Saving needs a connection. Your changes were not saved.');
+      } else {
+        toast.error('Error', e.response?.data?.detail || 'Could not update');
+      }
     } finally {
       setSaving(false);
     }
@@ -223,7 +255,11 @@ export default function SuperintendentScreen() {
       toast.success('Updated', newActive ? 'Marked active' : 'Marked inactive');
       fetchData();
     } catch (e) {
-      toast.error('Error', 'Could not change active status');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Changing active status needs a connection. Nothing changed.');
+      } else {
+        toast.error('Error', 'Could not change active status');
+      }
     }
   };
 
@@ -250,7 +286,11 @@ export default function SuperintendentScreen() {
       fetchData();
     } catch (e) {
       console.error('Delete CS failed:', e);
-      toast.error('Error', 'Could not remove registration');
+      if (isOfflineError(e)) {
+        toast.error('Offline', 'Removing needs a connection. The registration was not removed.');
+      } else {
+        toast.error('Error', 'Could not remove registration');
+      }
     }
   };
 
@@ -396,6 +436,13 @@ export default function SuperintendentScreen() {
                 </GlassCard>
               ))}
             </View>
+          ) : fetchState !== 'ok' ? (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Superintendent registrations could not be loaded. This is NOT a finding that no superintendent is registered — reconnect to check the one-job rule.'
+                : 'Superintendent registrations could not be loaded, so registration status is unknown.'}
+            />
           ) : (
             <GlassCard style={s.emptyCard}>
               <IconPod size={64}>
@@ -433,6 +480,14 @@ export default function SuperintendentScreen() {
               <ScrollView style={s.modalScroll}>
                 <View style={s.formGroup}>
                   <Text style={s.formLabel}>PROJECT</Text>
+                  {projectsState !== 'ok' && (
+                    <OfflineNotice
+                      mode={projectsState}
+                      detail={projectsState === 'offline'
+                        ? 'Projects could not be loaded, so this picker may be empty or incomplete. Registering also needs a connection.'
+                        : 'Projects could not be loaded, so this picker may be empty or incomplete.'}
+                    />
+                  )}
                   <Pressable
                     style={s.selectorCard}
                     onPress={() => setShowProjectPicker(!showProjectPicker)}

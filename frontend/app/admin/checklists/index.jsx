@@ -28,6 +28,8 @@ import GlassButton from '../../../src/components/GlassButton';
 import GlassInput from '../../../src/components/GlassInput';
 import { GlassSkeleton } from '../../../src/components/GlassSkeleton';
 import FloatingNav from '../../../src/components/FloatingNav';
+import OfflineNotice from '../../../src/components/OfflineNotice';
+import { settleFetch, isOfflineError } from '../../../src/utils/offlineState';
 import { useToast } from '../../../src/components/Toast';
 import { useAuth } from '../../../src/context/AuthContext';
 import { checklistsAPI, projectsAPI, adminUsersAPI } from '../../../src/utils/api';
@@ -46,6 +48,14 @@ export default function AdminChecklistsScreen() {
   const [checklists, setChecklists] = useState([]);
   const [projects, setProjects] = useState([]);
   const [users, setUsers] = useState([]);
+
+  // OFFLINE vs EMPTY — 'ok' | 'offline' | 'error' per read. A failed load must
+  // never render "No Checklists", which asserts none exist.
+  const [fetchState, setFetchState] = useState('ok');
+  // Projects + users feed the Assign pickers; if they fail the pickers are
+  // empty for a reason the admin cannot see otherwise.
+  const [supportState, setSupportState] = useState('ok');
+  const [assignmentsState, setAssignmentsState] = useState('ok');
 
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -90,21 +100,40 @@ export default function AdminChecklistsScreen() {
 
   const fetchData = async () => {
     setLoading(true);
-    try {
-      const [checklistsData, projectsData, usersData] = await Promise.all([
-        checklistsAPI.getAll(),
-        projectsAPI.getAll(),
-        adminUsersAPI.getAll(),
-      ]);
-      setChecklists(checklistsData);
-      setProjects(projectsData);
-      setUsers(usersData.filter(u => u.role !== 'owner'));
-    } catch (error) {
-      console.error('Failed to fetch data:', error);
-      toast.error('Error', 'Could not load checklists');
-    } finally {
-      setLoading(false);
+    // Each read settles independently: a bare Promise.all rejected the WHOLE
+    // load when one endpoint was unreachable, killing the screen.
+    const [checklistsRes, projectsRes, usersRes] = await Promise.all([
+      settleFetch(() => checklistsAPI.getAll()),
+      settleFetch(() => projectsAPI.getAll()),
+      settleFetch(() => adminUsersAPI.getAll()),
+    ]);
+
+    setFetchState(checklistsRes.status);
+    if (checklistsRes.status === 'ok') {
+      setChecklists(Array.isArray(checklistsRes.data) ? checklistsRes.data : []);
     }
+
+    const supportFail = [projectsRes, usersRes].find(r => r.status !== 'ok');
+    setSupportState(supportFail ? supportFail.status : 'ok');
+    if (projectsRes.status === 'ok') {
+      setProjects(Array.isArray(projectsRes.data) ? projectsRes.data : []);
+    }
+    if (usersRes.status === 'ok') {
+      const list = Array.isArray(usersRes.data) ? usersRes.data : [];
+      setUsers(list.filter(u => u.role !== 'owner'));
+    }
+
+    const failure = [checklistsRes, projectsRes, usersRes].find(r => r.status !== 'ok');
+    if (failure) {
+      console.error('Failed to fetch data:', failure.error);
+      if (failure.status === 'offline') {
+        toast.warning('Offline', 'Could not reach the server — showing what is loaded.');
+      } else {
+        toast.error('Error', 'Could not load checklists');
+      }
+    }
+
+    setLoading(false);
   };
 
   const resetForm = () => {
@@ -143,14 +172,17 @@ export default function AdminChecklistsScreen() {
 
   const handleViewAssignments = async (checklist) => {
     setSelectedChecklist(checklist);
-    try {
-      const data = await checklistsAPI.getAssignments(checklist.id);
-      setAssignments(data);
-      setShowViewModal(true);
-    } catch (error) {
-      console.error('Failed to fetch assignments:', error);
-      toast.error('Error', 'Could not load assignments');
+    // Still open the modal on failure — but showing the OFFLINE notice, not
+    // "No assignments yet", which would read as "this is assigned to nobody".
+    const res = await settleFetch(() => checklistsAPI.getAssignments(checklist.id));
+    setAssignmentsState(res.status);
+    if (res.status === 'ok') {
+      setAssignments(Array.isArray(res.data) ? res.data : []);
+    } else {
+      setAssignments([]);
+      console.error('Failed to fetch assignments:', res.error);
     }
+    setShowViewModal(true);
   };
 
   const addItem = () => {
@@ -196,7 +228,13 @@ export default function AdminChecklistsScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to create:', error);
-      toast.error('Error', 'Could not create checklist');
+      // Writes need the network — say so instead of a generic failure. Nothing
+      // is queued, so the checklist was NOT created.
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Creating a checklist needs a connection. Nothing was saved.');
+      } else {
+        toast.error('Error', 'Could not create checklist');
+      }
     } finally {
       setSaving(false);
     }
@@ -231,7 +269,11 @@ export default function AdminChecklistsScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to update:', error);
-      toast.error('Error', 'Could not update checklist');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Saving needs a connection. Your changes were not saved.');
+      } else {
+        toast.error('Error', 'Could not update checklist');
+      }
     } finally {
       setSaving(false);
     }
@@ -260,7 +302,11 @@ export default function AdminChecklistsScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to assign:', error);
-      toast.error('Error', 'Could not assign checklist');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Assigning needs a connection. Nothing was assigned.');
+      } else {
+        toast.error('Error', 'Could not assign checklist');
+      }
     } finally {
       setSaving(false);
     }
@@ -275,7 +321,11 @@ export default function AdminChecklistsScreen() {
       fetchData();
     } catch (error) {
       console.error('Failed to delete:', error);
-      toast.error('Error', 'Could not delete checklist');
+      if (isOfflineError(error)) {
+        toast.error('Offline', 'Deleting needs a connection. The checklist was not deleted.');
+      } else {
+        toast.error('Error', 'Could not delete checklist');
+      }
     } finally {
       setSaving(false);
     }
@@ -327,6 +377,13 @@ export default function AdminChecklistsScreen() {
               <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} style={s.mb16} />
               <GlassSkeleton width="100%" height={100} borderRadiusValue={borderRadius.xl} />
             </>
+          ) : fetchState !== 'ok' && checklists.length === 0 ? (
+            <OfflineNotice
+              mode={fetchState}
+              detail={fetchState === 'offline'
+                ? 'Checklists could not be loaded because the server is unreachable. This is not an empty list.'
+                : undefined}
+            />
           ) : checklists.length === 0 ? (
             <GlassCard style={s.emptyCard}>
               <ClipboardList size={48} strokeWidth={1.5} color={colors.text.muted} />
@@ -505,6 +562,14 @@ export default function AdminChecklistsScreen() {
               </View>
 
               <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
+                {supportState !== 'ok' && (
+                  <OfflineNotice
+                    mode={supportState}
+                    detail={supportState === 'offline'
+                      ? 'Projects and users could not be loaded, so these lists may be incomplete. Assigning also needs a connection.'
+                      : 'Projects and users could not be loaded, so these lists may be incomplete.'}
+                  />
+                )}
                 <Text style={s.sectionLabel}>SELECT PROJECTS</Text>
                 {projects.map((project) => (
                   <Pressable
@@ -587,7 +652,14 @@ export default function AdminChecklistsScreen() {
               </View>
 
               <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
-                {assignments.length === 0 ? (
+                {assignmentsState !== 'ok' ? (
+                  <OfflineNotice
+                    mode={assignmentsState}
+                    detail={assignmentsState === 'offline'
+                      ? 'Assignments could not be loaded. This does not mean the checklist is unassigned.'
+                      : undefined}
+                  />
+                ) : assignments.length === 0 ? (
                   <Text style={s.emptyText}>No assignments yet</Text>
                 ) : (
                   assignments.map((assignment) => (
