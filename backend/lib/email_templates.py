@@ -342,6 +342,109 @@ def render_completed(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
     return subject, html, text
 
 
+def render_project_daily_report(ctx: Dict[str, Any]) -> Tuple[str, str, str]:
+    """The daily compliance report NOTIFICATION — not the report itself.
+
+    Deliverability fix: this email used to carry generate_combined_report()'s
+    full 680px branded document as its HTML body — a nested-table card shell,
+    a letter-spaced wordmark header, one remote <img> plus one outbound link
+    per site photo, and a two-line "open in HTML" text stub. Gmail read that
+    shape as bulk and filed it under Promotions, so compliance reports were
+    only findable by searching. The permit-renewal triggers in this module
+    reach the inbox from the same domain and sender, so the template was the
+    variable — this makes the daily report structurally identical to them.
+
+    The full document still ships, as a PDF attachment (or, when rendering
+    fails, as a link) — which is also what moves the branded layout, the
+    remote images, and the per-photo links out of the message body.
+    """
+    project = ctx.get("project_name") or "—"
+    date = ctx.get("report_date") or "—"
+    logs = int(ctx.get("logbook_count") or 0)
+    workers = int(ctx.get("worker_count") or 0)
+    expiring = int(ctx.get("expiring_permits") or 0)
+    attached = bool(ctx.get("attached"))
+    link = ctx.get("action_link") or "#"
+
+    # Subject is deliberately unchanged from the pre-fix scheduler: it already
+    # read transactional, and churning it would reset sender reputation.
+    subject = f"Daily Report - {project} - {date}"
+
+    def _plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    summary = (
+        f"{_plural(logs, 'compliance log')} and "
+        f"{_plural(workers, 'worker check-in')} recorded."
+    )
+    expiring_line = (
+        f"{_plural(expiring, 'permit')} on this project "
+        f"{'expires' if expiring == 1 else 'expire'} within 30 days."
+    ) if expiring else ""
+
+    delivery_html = (
+        "The full report is attached as a PDF."
+        if attached else
+        "The full report is available in LeveLog."
+    )
+
+    details = (
+        '<div style="background:#f9fafb;border-radius:6px;padding:16px;margin:16px 0;">'
+        + _detail_row("Project", project)
+        + _detail_row("Address", ctx.get("project_address") or "—")
+        + _detail_row("Date", date)
+        + _detail_row("Compliance logs", str(logs))
+        + _detail_row("Worker check-ins", str(workers))
+        + (_detail_row("Permits expiring (30d)", str(expiring)) if expiring else "")
+        + '</div>'
+    )
+
+    body = (
+        _greeting(ctx)
+        + f'<p style="margin:0 0 16px;font-size:14px;color:#374151;line-height:1.5;">'
+          f'Daily report for <b>{project}</b> on <b>{date}</b>. {summary}'
+          f'</p>'
+        + (
+            f'<p style="margin:0 0 16px;font-size:14px;color:#b45309;line-height:1.5;">'
+            f'{expiring_line}'
+            f'</p>' if expiring_line else ""
+        )
+        + details
+        + f'<p style="margin:0;font-size:13px;color:#6b7280;line-height:1.5;">'
+          f'{delivery_html}'
+          f'</p>'
+    )
+
+    html = _card(
+        header_color="#0A1929",
+        header_emoji="📋",
+        header_title="Daily Construction Report",
+        header_subtitle=f"{project} — {date}",
+        body_html=body,
+        action_label="View in LeveLog",
+        action_url=link,
+    )
+
+    text = (
+        f"Hi {ctx.get('recipient_name') or 'there'},\n\n"
+        f"Daily report for {project} on {date}.\n\n"
+        f"{summary}\n"
+        + (f"{expiring_line}\n" if expiring_line else "")
+        + f"\n"
+        f"Project: {project}\n"
+        f"Address: {ctx.get('project_address') or '—'}\n"
+        f"Date: {date}\n"
+        f"Compliance logs: {logs}\n"
+        f"Worker check-ins: {workers}\n"
+        + (f"Permits expiring within 30 days: {expiring}\n" if expiring else "")
+        + f"\n"
+        f"{'The full report is attached as a PDF.' if attached else 'The full report is available in LeveLog.'}\n"
+        f"View in LeveLog: {link}\n\n"
+        f"— LeveLog Compliance"
+    )
+    return subject, html, text
+
+
 # ── Trigger registry ───────────────────────────────────────────────
 
 TRIGGER_RENDERERS = {
@@ -350,6 +453,7 @@ TRIGGER_RENDERERS = {
     "renewal_t_minus_7":   render_t_minus_7,
     "filing_stuck":        render_stuck,
     "renewal_completed":   render_completed,
+    "project_daily_report": render_project_daily_report,
 }
 
 VALID_TRIGGER_TYPES = frozenset(TRIGGER_RENDERERS.keys())

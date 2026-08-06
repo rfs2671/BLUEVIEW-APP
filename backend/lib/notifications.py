@@ -220,6 +220,7 @@ async def send_notification(
     html: str,
     text: str,
     metadata: Optional[Dict[str, Any]] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Single send + log entry. Returns the inserted notification_log
     document (without _id, since the caller usually doesn't need it).
@@ -428,13 +429,20 @@ async def send_notification(
     try:
         import resend
         resend.api_key = RESEND_API_KEY
-        result = resend.Emails.send({
+        payload: Dict[str, Any] = {
             "from": NOTIFICATION_FROM_ADDRESS,
             "to": [recipient],
             "subject": subject,
             "html": html,
             "text": text,
-        })
+        }
+        # Only added when the caller actually supplies one, so every existing
+        # caller's Resend payload stays byte-for-byte what it was — same
+        # default-pass contract the preferences step above documents.
+        # Shape per Resend: [{"filename": str, "content": <base64 str>}].
+        if attachments:
+            payload["attachments"] = attachments
+        result = resend.Emails.send(payload)
         # The Resend SDK returns a dict like {"id": "..."}. Defensive:
         # accept both dict and object responses.
         if isinstance(result, dict):

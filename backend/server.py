@@ -9389,7 +9389,6 @@ async def register_and_checkin(data: dict):
     # under a "Worker Signatures" heading on a toolbox-talk record.
     toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
 
-
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
     # so they legitimately submit no company. It is re-required below, but
@@ -20649,6 +20648,58 @@ async def reset_and_resync_dob_logs(project_id: str, current_user=Depends(get_ad
 
 # ==================== REPORT EMAIL SCHEDULER ====================
 
+async def _count_permits_expiring_soon(project_id: str, within_days: int = 30) -> int:
+    """Permits on this project expiring within `within_days` — the one
+    attention line on the daily report email.
+
+    Mirrors the reminder scanner's date strategy verbatim: current_expiration
+    is an Optional[str] stored in MIXED formats (ISO and M/D/YYYY both seen in
+    production), so a Mongo range query on the raw string silently mis-sorts.
+    Scan this project's eligible renewals and partition in Python instead;
+    volume is low (single tenant, <100 active renewals).
+
+    Returns 0 on ANY failure. This is a summary line on a notification — it
+    must never be the reason a compliance report fails to send, and a wrong
+    number on a compliance email is worse than no number.
+    """
+    try:
+        from dateutil import parser as dateparser
+        today_utc = datetime.now(timezone.utc).date()
+
+        # project_id form varies across writers (str vs ObjectId), so match
+        # both rather than silently counting zero.
+        pid_variants = [project_id]
+        try:
+            oid = to_query_id(project_id)
+            if oid != project_id:
+                pid_variants.append(oid)
+        except Exception:
+            pass
+
+        count = 0
+        cursor = db.permit_renewals.find({
+            "project_id": {"$in": pid_variants},
+            "status": {"$in": list(REMINDER_ELIGIBLE_STATUSES)},
+            "is_deleted": {"$ne": True},
+        })
+        async for renewal in cursor:
+            exp_str = renewal.get("current_expiration")
+            if not exp_str:
+                continue
+            try:
+                exp_date = dateparser.parse(str(exp_str)).date()
+            except Exception:
+                continue
+            if 0 <= (exp_date - today_utc).days <= within_days:
+                count += 1
+        return count
+    except Exception as e:
+        logger.warning(
+            f"expiring-permit count failed for project {project_id}: {e!r}"
+        )
+        return 0
+
+
 async def check_and_send_reports():
     """Called every minute. Sends report emails for projects whose send time matches now."""
     if not RESEND_API_KEY:
@@ -20680,9 +20731,15 @@ async def check_and_send_reports():
         if already_sent:
             continue
 
-        # Skip if no data exists for today (avoid blank reports)
+        # Skip if no data exists for today (avoid blank reports).
+        # These counts now also feed the email's summary line, so they are
+        # bound BEFORE the try: a failed data check falls through to "sending
+        # anyway" below, and unbound names would turn that into a NameError
+        # that silently drops the report entirely.
+        logbook_count = 0
+        checkin_count = 0
         try:
-            has_logbooks = await db.logbooks.count_documents({
+            logbook_count = await db.logbooks.count_documents({
                 "project_id": project_id,
                 "date": today,
                 "status": "submitted",
@@ -20694,12 +20751,12 @@ async def check_and_send_reports():
                 "is_deleted": {"$ne": True},
             })
             day_start, day_end = get_day_range_est(today)
-            has_checkins = await db.checkins.count_documents({
+            checkin_count = await db.checkins.count_documents({
                 "project_id": project_id,
                 "check_in_time": {"$gte": day_start, "$lt": day_end},
                 "is_deleted": {"$ne": True},
             })
-            if not has_logbooks and not has_daily_log and not has_checkins:
+            if not logbook_count and not has_daily_log and not checkin_count:
                 logger.info(
                     f"Report skipped for {project_name} — no data for {today}"
                 )
@@ -20708,12 +20765,63 @@ async def check_and_send_reports():
             logger.warning(f"Data check failed for {project_name}, sending anyway: {e}")
 
         try:
-            html = await generate_combined_report(project_id, today)
-            subject = f"Daily Report - {project_name} - {today}"
-            text = (
-                f"Daily Report for {project_name} on {today}.\n"
-                f"Open the email in HTML for the full content."
-            )
+            # DELIVERABILITY — the report DOCUMENT is no longer the email body.
+            #
+            # This used to inline generate_combined_report()'s 680px branded
+            # card (nested tables, letter-spaced wordmark header, one remote
+            # <img> + one outbound link per site photo) with a two-line
+            # "open in HTML" text stub. Gmail read that as bulk and filed
+            # compliance reports under Promotions. The permit-renewal triggers
+            # reach the inbox from the SAME domain and sender, so the template
+            # was the only variable — the body now uses their exact
+            # render_for_trigger path and the document rides as a PDF.
+            report_html = await generate_combined_report(project_id, today)
+
+            # Render the PDF off the event loop: weasyprint is CPU-bound and
+            # fetches every photo over HTTP, so doing it inline would stall the
+            # once-a-minute scheduler for every other project due this tick.
+            attachments = None
+            try:
+                def _render_pdf(h: str) -> bytes:
+                    from weasyprint import HTML
+                    return HTML(string=h).write_pdf()
+
+                pdf_bytes = await asyncio.to_thread(_render_pdf, report_html)
+                # Resend caps a message at 40MB; base64 inflates by ~4/3. Stay
+                # well under and fall back to the link rather than having the
+                # send rejected outright — a delivered summary beats a bounce.
+                if pdf_bytes and len(pdf_bytes) <= 15 * 1024 * 1024:
+                    safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', project_name) or "report"
+                    attachments = [{
+                        "filename": f"Levelog_Report_{safe_name}_{today}.pdf",
+                        "content": base64.b64encode(pdf_bytes).decode("ascii"),
+                    }]
+                else:
+                    logger.warning(
+                        f"Daily report PDF for {project_name} {today} too large "
+                        f"({len(pdf_bytes or b'')} bytes) — sending link only"
+                    )
+            except Exception as e:
+                # Never let a render failure cost the notification itself.
+                logger.warning(
+                    f"Daily report PDF render failed for {project_name} {today} "
+                    f"({e!r}) — sending link only"
+                )
+
+            expiring_permits = await _count_permits_expiring_soon(project_id)
+
+            from lib.email_templates import render_for_trigger
+            subject, html, text = render_for_trigger("project_daily_report", {
+                "recipient_name": "",          # per-recipient names aren't stored
+                "project_name": project_name,
+                "project_address": project.get("address", ""),
+                "report_date": today,
+                "logbook_count": logbook_count,
+                "worker_count": checkin_count,
+                "expiring_permits": expiring_permits,
+                "attached": bool(attachments),
+                "action_link": f"{APP_BASE_URL.rstrip('/')}/reports",
+            })
             # MR.14 fix — route through send_notification.
             # entity_id keys per (project, date) so a recurring cron
             # tick (every minute) at the same target time only sends
@@ -20731,10 +20839,12 @@ async def check_and_send_reports():
                         subject=subject,
                         html=html,
                         text=text,
+                        attachments=attachments,
                         metadata={
                             "project_id": project_id,
                             "project_name": project_name,
                             "date": today,
+                            "pdf_attached": bool(attachments),
                         },
                     )
                     if result.get("status") == "sent":
