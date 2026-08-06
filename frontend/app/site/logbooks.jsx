@@ -47,6 +47,17 @@ const CACHE_DATE_LIMIT = 60;
 const ANDROID_OFFLINE_PDF_MSG =
   'PDF viewing offline requires the next app update — the record is listed above and its PDF is saved on this device.';
 
+// Roster check-in time -> "7:42 AM". The toolbox roster carries the four
+// §3301.12.3 fields (name, title, company, date/time); this renders the time.
+// Falls back to the raw value rather than printing an error onto a record an
+// inspector is reading.
+const rosterClock = (v) => {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v).slice(0, 16);
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+};
+
 export default function SiteLogbooksViewer() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -507,9 +518,14 @@ export default function SiteLogbooksViewer() {
         <DocSectionLabel icon={Users} label={`Attendees (${attendees.length})`} color="#8b5cf6" />
         {attendees.length > 0 && (
           <>
-            <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Company', flex: 1 }, { text: 'Signed', flex: 0.6 }]} />
+            {/* ROSTER, not a worker attestation. "Present" is a CP-marked
+                boolean — workers are not required to sign a toolbox talk. The
+                CP signature over this roster is the legal attestation
+                (NYC DOB §3301.12.3 / OSHA 29 CFR 1926.21). The column used to
+                read "Signed", which told an inspector the opposite. */}
+            <DocTableRow isHeader cells={[{ text: 'Name', flex: 1.5 }, { text: 'Title', flex: 1 }, { text: 'Company', flex: 1 }, { text: 'In', flex: 0.8 }, { text: 'Present', flex: 0.7 }]} />
             {attendees.map((a, i) => (
-              <DocTableRow key={i} cells={[{ text: a.name || 'Unknown', flex: 1.5 }, { text: a.company || '', flex: 1 }, { text: a.signed ? '✓' : '—', flex: 0.6 }]} />
+              <DocTableRow key={i} cells={[{ text: a.name || 'Unknown', flex: 1.5 }, { text: a.title || '—', flex: 1 }, { text: a.company || '', flex: 1 }, { text: rosterClock(a.time), flex: 0.8 }, { text: a.signed ? '✓' : '—', flex: 0.7 }]} />
             ))}
           </>
         )}

@@ -57,6 +57,16 @@ const TOPICS = {
   ],
 };
 
+// Renders an ISO check-in timestamp as a short local clock time ("7:12 AM").
+// Falls back to the raw string so a legacy non-ISO value still shows something
+// rather than "Invalid Date" on a legal record.
+const formatClock = (value) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+};
+
 export default function ToolboxTalkLog() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -166,15 +176,39 @@ export default function ToolboxTalkLog() {
         setLocation(projectData.address || projectData.location || '');
       }
 
-      // Build attendee list from check-ins
+      // ROSTER MODEL (counsel-approved) — the check-in list BUILDS the roster:
+      // a worker present on site today is on the roster. That is a record of
+      // presence, NOT a legal attestation. The CP's fresh, time-stamped
+      // signature at the conclusion of the talk is the sole legal anchor
+      // (NYC DOB §3301.12.3, OSHA 29 CFR 1926.21). Workers do not sign.
       const checkinList = Array.isArray(checkins) ? checkins : [];
-      const autoAttendees = checkinList.map((c) => ({
-        worker_id: c.worker_id,
-        name: c.worker_name || '',
-        company: c.company || '',
-        signed: false,
-        signature: null,
-      }));
+      const autoAttendees = checkinList
+        // Workers TURNED AWAY at the gate (cert block) never entered the site.
+        // They exist in this response so the OSHA log can prove who lacked a
+        // card — they must never appear on an ATTENDANCE roster.
+        .filter((c) => c.blocked !== true && c.source !== 'cert_block')
+        .map((c) => ({
+          worker_id: c.worker_id,
+          // §3301.12.3 roster fields: name, title, company, time.
+          name: c.worker_name || '',
+          title: c.trade || '',
+          company: c.company || '',
+          time: c.check_in_time || '',
+          // Optional gate confirmation ("Confirm attending toolbox talk"). A
+          // worker who did NOT tap is still fully on the roster — this is a
+          // courtesy marker, never a deficiency flag.
+          gate_confirmed: c.toolbox_talk_confirmed === true,
+          gate_confirmed_at: c.toolbox_talk_confirmed_at || null,
+          // CP-tapped presence marker (see "Present" column) — not a signature.
+          signed: false,
+          // DELIBERATELY NULL. The worker's stored gate signature attests to the
+          // §3301.11 site orientation captured once on day one; site/logbooks.jsx
+          // renders any non-null `signature`/`worker_signature` under a heading
+          // reading "Worker Signatures", so carrying it here would misrepresent
+          // its provenance on a toolbox-talk record. Gate confirmation is
+          // recorded as name + timestamp instead.
+          signature: null,
+        }));
 
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
@@ -223,14 +257,27 @@ export default function ToolboxTalkLog() {
     setCheckedTopics(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const toggleAttendeeSign = (index) => {
+  // "Present" toggle — a CP-tapped boolean, NOT a worker signature. The stored
+  // field stays `signed` so already-saved logs (and the record viewer in
+  // site/logbooks.jsx) keep reading the same key.
+  const toggleAttendeePresent = (index) => {
     setAttendees(prev => prev.map((a, i) =>
       i === index ? { ...a, signed: !a.signed } : a
     ));
   };
 
   const addAttendee = () => {
-    setAttendees(prev => [...prev, { worker_id: null, name: '', company: '', signed: false }]);
+    setAttendees(prev => [...prev, {
+      worker_id: null,
+      name: '',
+      title: '',
+      company: '',
+      time: '',
+      gate_confirmed: false,
+      gate_confirmed_at: null,
+      signed: false,
+      signature: null,
+    }]);
   };
 
   const updateAttendee = (index, field, value) => {
@@ -325,7 +372,7 @@ export default function ToolboxTalkLog() {
   };
 
   const checkedCount = Object.values(checkedTopics).filter(Boolean).length;
-  const signedCount = attendees.filter(a => a.signed).length;
+  const presentCount = attendees.filter(a => a.signed).length;
 
   if (loading) {
     return (
@@ -359,7 +406,7 @@ export default function ToolboxTalkLog() {
               <Text style={s.statText}>{checkedCount} topics</Text>
             </View>
             <View style={s.statBadge}>
-              <Text style={s.statText}>{signedCount} signed</Text>
+              <Text style={s.statText}>{presentCount} present</Text>
             </View>
           </View>
         </View>
@@ -434,42 +481,74 @@ export default function ToolboxTalkLog() {
             ))}
           </GlassCard>
 
-          {/* Worker Sign-In */}
+          {/* Attendance Roster — §3301.12.3 name / title / company / time.
+              The roster records WHO WAS PRESENT; the CP signature below is the
+              attestation. No worker signature is captured or displayed here. */}
           <GlassCard style={s.section}>
             <View style={s.sectionHeaderRow}>
               <Users size={16} strokeWidth={1.5} color={colors.text.muted} />
-              <Text style={s.sectionHeader}>Attendees</Text>
+              <Text style={s.sectionHeader}>Attendance Roster</Text>
               <Text style={s.attendeeCount}>{attendees.length} workers</Text>
             </View>
             <Text style={s.sectionSubtitle}>
-              Workers auto-populated from today's check-ins. Tap to mark as signed.
+              Roster auto-built from today's check-ins. The Competent Person's
+              signature below is the required attestation — workers are not
+              required to sign.
             </Text>
 
             {/* Table Header */}
             <View style={s.tableHeader}>
-              <Text style={[s.tableHeaderText, { flex: 2 }]}>Name</Text>
-              <Text style={[s.tableHeaderText, { flex: 2 }]}>Company</Text>
-              <Text style={[s.tableHeaderText, { flex: 1, textAlign: 'center' }]}>Signed</Text>
+              <Text style={[s.tableHeaderText, { flex: 2 }]}>Name / Title</Text>
+              <Text style={[s.tableHeaderText, { flex: 2 }]}>Company / Time In</Text>
+              <Text style={[s.tableHeaderText, { flex: 1, textAlign: 'center' }]}>Present</Text>
             </View>
 
-            {attendees.map((attendee, index) => (
+            {attendees.map((attendee, index) => {
+              const timeIn = formatClock(attendee.time);
+              const confirmedAt = formatClock(attendee.gate_confirmed_at || attendee.time);
+              return (
               <View key={index} style={s.attendeeRow}>
-                <TextInput
-                  style={[s.attendeeInput, { flex: 2 }]}
-                  value={attendee.name}
-                  onChangeText={(v) => updateAttendee(index, 'name', v)}
-                  placeholder="Name"
-                  placeholderTextColor={colors.text.subtle}
-                />
-                <TextInput
-                  style={[s.attendeeInput, { flex: 2 }]}
-                  value={attendee.company}
-                  onChangeText={(v) => updateAttendee(index, 'company', v)}
-                  placeholder="Company"
-                  placeholderTextColor={colors.text.subtle}
-                />
+                <View style={s.attendeeMain}>
+                  <View style={s.attendeeLine}>
+                    <TextInput
+                      style={[s.attendeeInput, { flex: 2 }]}
+                      value={attendee.name}
+                      onChangeText={(v) => updateAttendee(index, 'name', v)}
+                      placeholder="Name"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                    <TextInput
+                      style={[s.attendeeInput, { flex: 2 }]}
+                      value={attendee.company}
+                      onChangeText={(v) => updateAttendee(index, 'company', v)}
+                      placeholder="Company"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                  </View>
+                  {/* Secondary line keeps title + check-in time on the record
+                      without a fifth column crushing the phone layout. */}
+                  <View style={s.attendeeLine}>
+                    <TextInput
+                      style={[s.attendeeMetaInput, { flex: 2 }]}
+                      value={attendee.title || ''}
+                      onChangeText={(v) => updateAttendee(index, 'title', v)}
+                      placeholder="Title / Trade"
+                      placeholderTextColor={colors.text.subtle}
+                    />
+                    <Text style={[s.attendeeMetaText, { flex: 2 }]} numberOfLines={1}>
+                      {timeIn ? `In ${timeIn}` : '—'}
+                    </Text>
+                  </View>
+                  {/* Optional, honest marker. Its absence means only that the
+                      worker did not tap at the gate — never a deficiency. */}
+                  {attendee.gate_confirmed ? (
+                    <Text style={s.gateConfirmText} numberOfLines={1}>
+                      {confirmedAt ? `Confirmed at gate · ${confirmedAt}` : 'Confirmed at gate'}
+                    </Text>
+                  ) : null}
+                </View>
                 <Pressable
-                  onPress={() => toggleAttendeeSign(index)}
+                  onPress={() => toggleAttendeePresent(index)}
                   style={[s.signedToggle, attendee.signed && s.signedToggleActive]}
                 >
                   {attendee.signed
@@ -478,7 +557,8 @@ export default function ToolboxTalkLog() {
                   }
                 </Pressable>
               </View>
-            ))}
+              );
+            })}
 
             <GlassButton
               title="+ Add Worker"
@@ -646,6 +726,7 @@ function buildStyles(colors, isDark) {
   topicLabelActive: { color: '#93c5fd', fontWeight: '500' },
   tableHeader: {
     flexDirection: 'row',
+    gap: spacing.sm,
     paddingBottom: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: withAlpha('#ffffff', 0.08),
@@ -666,12 +747,34 @@ function buildStyles(colors, isDark) {
     borderBottomWidth: 1,
     borderBottomColor: withAlpha('#ffffff', 0.04),
   },
+  // Roster row: name/company on the primary line, title/time-in beneath, so
+  // the four §3301.12.3 fields fit a phone without a horizontal scroll.
+  attendeeMain: { flex: 4, gap: 2 },
+  attendeeLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   attendeeInput: {
     fontSize: 13,
     color: colors.text.primary,
     padding: spacing.xs,
     backgroundColor: withAlpha('#ffffff', 0.04),
     borderRadius: borderRadius.sm,
+  },
+  attendeeMetaInput: {
+    fontSize: 11,
+    color: colors.text.muted,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+    backgroundColor: withAlpha('#ffffff', 0.02),
+    borderRadius: borderRadius.sm,
+  },
+  attendeeMetaText: {
+    fontSize: 11,
+    color: colors.text.muted,
+    paddingHorizontal: spacing.xs,
+  },
+  gateConfirmText: {
+    fontSize: 10,
+    color: semantic.verified,
+    paddingHorizontal: spacing.xs,
   },
   signedToggle: {
     flex: 1,

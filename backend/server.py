@@ -9377,6 +9377,17 @@ async def register_and_checkin(data: dict):
     # apart from "no card". None on the returning/no-photo path.
     card_ocr_attempts = data.get("card_ocr_attempts")
     card_ocr_failure_reason = data.get("card_ocr_failure_reason")
+    # TOOLBOX ROSTER (optional): the worker tapped "Confirm attending toolbox
+    # talk" at the gate. This is a ROSTER ENHANCEMENT for GCs/insurers — it is
+    # NOT a legal attestation and NOT a gate. Under NYC DOB §3301.12.3 / OSHA
+    # 29 CFR 1926.21 the CP's signature over the roster is the sole legal
+    # anchor; a worker who does not tap is still on the roster purely by having
+    # checked in. Recorded as attributed name + server timestamp (ESRA: intent,
+    # attribution, association) — deliberately NOT by replaying the worker's
+    # stored signature image, which was captured once on day 1 attesting to the
+    # §3301.11 site orientation and would misrepresent provenance if rendered
+    # under a "Worker Signatures" heading on a toolbox-talk record.
+    toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
 
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
@@ -9744,6 +9755,11 @@ async def register_and_checkin(data: dict):
         # than never supplied. None when the card read cleanly or no photo path.
         "card_ocr_attempts": _ocr_attempts,
         "card_ocr_failure_reason": _ocr_failure_reason,
+        # Optional gate confirmation for the toolbox-talk roster (see above).
+        # Name + server timestamp, so the roster can show WHO confirmed and WHEN
+        # without implying the worker signed a legal attestation.
+        "toolbox_talk_confirmed": toolbox_confirm,
+        "toolbox_talk_confirmed_at": now if toolbox_confirm else None,
     }
 
     result = await db.checkins.insert_one(checkin_record)
@@ -12068,12 +12084,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         
         att_rows = ""
         for a in data.get("attendees", []):
-            signed = "&#10003;" if a.get("signed") else "&mdash;"
-            # PR G: attendee name/company are short-entry.
+            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
+            # Workers are not required to sign a toolbox talk — the CP signature
+            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
+            present = "&#10003;" if a.get("signed") else "&mdash;"
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
-                f'<td {TD}>{signed}</td></tr>'
+                f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
+                f'<td {TD}>{present}</td></tr>'
             )
 
         tb_sig = render_signature_html(logbook.get("cp_signature"), "CP Signature")
@@ -12090,8 +12110,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
-            + (att_rows or f'<tr><td colspan="3" {TD}>—</td></tr>')
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Present</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>—</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(logbook.get("cp_name", "N/A")))
             + tb_sig
@@ -15103,6 +15123,16 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "worker_signature": worker.get("signature") if worker else None,
             "signin_id": None,
             "source": "legacy_checkin",
+            # TOOLBOX ROSTER: optional gate confirmation (name + when), so the
+            # toolbox-talk roster can show "confirmed at gate" per worker. Absent
+            # /false simply means they did not tap — they are still on the roster
+            # by virtue of checking in. The CP's signature remains the only legal
+            # attestation.
+            "toolbox_talk_confirmed": bool(c.get("toolbox_talk_confirmed")),
+            "toolbox_talk_confirmed_at": (
+                c.get("toolbox_talk_confirmed_at").isoformat()
+                if isinstance(c.get("toolbox_talk_confirmed_at"), datetime) else None
+            ),
         })
 
     # ── PASS 3 (Task 9): workers TURNED AWAY for missing OSHA today ──────
@@ -15438,6 +15468,18 @@ def _signature_affirmation_html(sig):
         '✓ AFFIRMED for this document</div>' + claim_line + recv_line
     )
 
+
+def _roster_clock(v) -> str:
+    """HH:MM for a roster row's check-in time. The toolbox roster carries the
+    §3301.12.3 required fields (name, title, company, date/time); this renders
+    the time compactly for the PDF. Falls back to the raw value rather than
+    printing a parse error onto a legal record."""
+    if not v:
+        return "&mdash;"
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return str(v)[:16]
 
 def _capitalize_first(text):
     """RULE 1 (short entry): capitalize the first letter, preserve everything
@@ -15825,12 +15867,16 @@ async def generate_combined_report(project_id: str, date: str) -> str:
         topic_list = ", ".join(k.replace("_", " ").title() for k, v in topics.items() if v)
         att_rows = ""
         for a in td_data.get("attendees", []):
-            signed = "&#10003;" if a.get("signed") else "&mdash;"
-            # PR G: attendee name/company short-entry.
+            # ROSTER (not a worker attestation): "Present" is a CP-marked boolean.
+            # Workers are not required to sign a toolbox talk — the CP signature
+            # below is the legal attestation (NYC DOB §3301.12.3 / OSHA 1926.21).
+            present = "&#10003;" if a.get("signed") else "&mdash;"
             att_rows += (
                 f'<tr><td {TD}>{_capitalize_first(a.get("name", ""))}</td>'
+                f'<td {TD}>{_capitalize_first(a.get("title", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(a.get("company", ""))}</td>'
-                f'<td {TD}>{signed}</td></tr>'
+                f'<td {TD}>{_roster_clock(a.get("time"))}</td>'
+                f'<td {TD}>{present}</td></tr>'
             )
 
         tb_sig = render_signature_html(toolbox.get("cp_signature"), "CP Signature")
@@ -15847,8 +15893,8 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             + bold_para("Topics", topic_list or "None")
             + '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
               'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
-            + f'<tr><th {TH}>Name</th><th {TH}>Company</th><th {TH}>Signed</th></tr>'
-            + (att_rows or EMPTY_3)
+            + f'<tr><th {TH}>Name</th><th {TH}>Title</th><th {TH}>Company</th><th {TH}>In</th><th {TH}>Present</th></tr>'
+            + (att_rows or f'<tr><td colspan="5" {TD}>&mdash;</td></tr>')
             + '</table>'
             + bold_para("CP", _capitalize_first(toolbox.get("cp_name", "N/A")))
             + tb_sig
