@@ -466,7 +466,11 @@ export default function SiteLogbooksViewer() {
             {activities.map((act, i) => (
               <React.Fragment key={i}>
                 <DocTableRow cells={[
-                  { text: `${act.crew_name || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
+                  // crew_id, NOT crew_name — the CP types a crew IDENTIFIER
+                  // (daily_jobsite.jsx EMPTY_ACTIVITY `crew_id`, auto-seeded
+                  // C1/C2/...). crew_name has no writer anywhere in the repo,
+                  // so this cell showed company only on every record.
+                  { text: `${act.crew_id || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
                   { text: String(act.num_workers || 0), flex: 0.6 },
                   { text: act.work_description || 'N/A', flex: 2 },
                   { text: act.work_locations || 'N/A', flex: 1 },

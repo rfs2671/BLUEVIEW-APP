@@ -12552,7 +12552,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             act_rows += (
                 # PR G: crew/company/location are short-entry (capitalize first);
                 # work description is prose (sentence case). num_workers excluded.
-                f'<tr><td {TD}>{_capitalize_first(act.get("crew_name", ""))}</td>'
+                # crew_id, NOT crew_name. The CP types a crew IDENTIFIER
+                # (daily_jobsite.jsx EMPTY_ACTIVITY `crew_id`, and the auto-seed
+                # writes `C1`, `C2`, ...). Nothing in the repo has ever written
+                # crew_name, so this column rendered empty on every record while
+                # generate_combined_report read the same row correctly.
+                f'<tr><td {TD}>{_capitalize_first(act.get("crew_id", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
                 f'<td {TD}>{act.get("num_workers", 0)}</td>'
                 f'<td {TD}>{_sentence_case(act.get("work_description", "N/A"))}</td>'
