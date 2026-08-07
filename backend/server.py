@@ -14585,6 +14585,18 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     an amendment. This is the explicit finalize primitive; the future end-of-day
     batch-sign flow calls the same lock. It does NOT fire on an intermediate
     draft/submitted save — a working log stays editable until finalized here.
+
+    COMPLETENESS GATE. Finalizing is the act that makes a log immutable, so an
+    empty or unsigned document must not be able to reach that state — once
+    locked it can only be corrected by an amendment. Two conditions only:
+    the log must have content, and it must carry a CP signature. There are no
+    per-field rules here; what counts as a complete `data` payload differs per
+    log type and belongs to the editors, not to the lock.
+
+    The rejection returns a machine CODE, not prose. This codebase's convention
+    is that the server names the condition and the client owns the wording (see
+    the BLOCK_LABELS map in backend/checkin.html, which maps the cert-gate codes
+    to bilingual copy) — there is no server-side bilingual error precedent.
     """
     now = datetime.now(timezone.utc)
     existing = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
@@ -14596,6 +14608,18 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
             raise HTTPException(status_code=403, detail="Not assigned to this project")
     if existing.get("is_locked"):
         return serialize_id(existing)  # idempotent — already finalized
+    # Sits AFTER the is_locked early-return so re-finalizing an already-locked
+    # log stays idempotent, and BEFORE the update_one so a rejected finalize
+    # mutates nothing at all. `existing` is the full document from the fetch
+    # above — no extra query.
+    if not existing.get("data"):
+        raise HTTPException(
+            status_code=400, detail={"code": "FINALIZE_EMPTY_LOG"},
+        )
+    if not existing.get("cp_signature"):
+        raise HTTPException(
+            status_code=400, detail={"code": "FINALIZE_MISSING_CP_SIGNATURE"},
+        )
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {
