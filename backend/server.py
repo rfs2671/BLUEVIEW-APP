@@ -10829,11 +10829,18 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         )
     cert_warnings = cert_result.get("warnings", [])
 
+    # Trade/company are PER PROJECT. This used to read worker.get("trade") /
+    # worker.get("company") off the global worker document — whatever some
+    # unrelated project last wrote there. Read the pairing for THIS project
+    # instead; when there is none, the row carries no trade rather than
+    # another job's trade.
+    _pair = await _get_worker_project_trade(worker["_id"], str(project["_id"]))
+
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
+        "worker_company": _pair["company"] if _pair else None,
+        "worker_trade": _pair["trade"] if _pair else None,
         "project_id": str(project["_id"]),
         "project_name": project.get("name"),
         "company_id": project.get("company_id"),
@@ -10846,7 +10853,7 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         "is_deleted": False,
         "cert_warnings": cert_warnings,
     }
-    
+
     result = await db.checkins.insert_one(checkin_record)
     checkin_record["id"] = str(result.inserted_id)
     checkin_record.pop("_id", None)
@@ -10922,11 +10929,17 @@ async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
 
     # Create check-in record
     now = datetime.now(timezone.utc)
+    # Trade/company are PER PROJECT. This used to read worker.get("trade") /
+    # worker.get("company") off the global worker document — whatever some
+    # unrelated project last wrote there. Read the pairing for THIS project
+    # instead; when there is none, the row carries no trade rather than
+    # another job's trade.
+    _pair = await _get_worker_project_trade(worker["_id"], str(project["_id"]))
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
+        "worker_company": _pair["company"] if _pair else None,
+        "worker_trade": _pair["trade"] if _pair else None,
         "project_id": str(project["_id"]),
         "project_name": project.get("name"),
         "company_id": project.get("company_id"),
