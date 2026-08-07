@@ -12535,11 +12535,99 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             'style="margin:12px 0;"><tr><td style="background-color:#f1f5f9;'
             f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">{content}</td></tr></table>'
         )
-    
+
+    def sub_title(text):
+        return f'<h3 style="color:#0A1929;margin:16px 0 8px;font-size:14px;">{text}</h3>'
+
+    # ── ABSENT MEANS ABSENT ──────────────────────────────────────────────────
+    # This renderer is read by a DOB inspector. A key the CP never filled must
+    # produce NOTHING — no dash, no "N/A", no empty table row. A placeholder
+    # says "this was asked and left blank", which is a different (and false)
+    # statement about the record. False and 0 ARE captured values and render.
+    def has(d, key):
+        if not isinstance(d, dict) or key not in d:
+            return False
+        v = d[key]
+        if isinstance(v, bool):
+            return True
+        if v is None:
+            return False
+        if isinstance(v, str):
+            return v.strip() != ""
+        if isinstance(v, (list, dict, tuple, set)):
+            return len(v) > 0
+        return True
+
+    _raw = lambda v: v
+    _yn = lambda v: "Yes" if v else "No"
+
+    def field_lines(d, specs):
+        """[(key, label, fmt)] -> one info_box line per key that IS there."""
+        out = []
+        for key, label, fmt in specs:
+            if has(d, key):
+                out.append(f'<strong style="color:#0A1929;">{label}:</strong> {fmt(d.get(key))}')
+        return out
+
+    def maybe_info_box(lines):
+        return info_box("<br />".join(lines)) if lines else ""
+
+    def rows_table(headers, rows_html):
+        head = "".join(f'<th {TH}>{h}</th>' for h in headers)
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            f'<tr>{head}</tr>{rows_html}</table>'
+        )
+
+    def cell(v):
+        """A row cell for a value that may not be there. Empty, never a dash."""
+        return f'<td {TD}>{"" if v is None else v}</td>'
+
+    def key_label(k):
+        """Fallback label for a map key the label list does not know.
+
+        A snake_case key becomes Title Case. Anything else is rendered VERBATIM
+        — the kiosk keys its orientation checklist by the item's full English
+        sentence (backend/checkin.html:674-687, 1574-1579), and title-casing a
+        sentence turns a compliance line into nonsense.
+        """
+        s = str(k)
+        return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
+
+    def toggle_block(d, key, items, title, col_label):
+        """A sparse toggle map, rendered for the keys the DOCUMENT carries.
+
+        The editors seed these maps as {} and write a key only once the CP taps
+        it, so `key present and False` is an explicit No while `key absent` is
+        untouched. Only the present keys are rendered; an untouched item is not
+        listed at all. Keys the label list does not know (a map written by an
+        older build) still render, under their own key name.
+        """
+        m = d.get(key)
+        if not isinstance(m, dict) or not m:
+            return ""
+        labels = dict(items)
+        ordered = [k for k, _ in items if k in m]
+        ordered += [k for k in m.keys() if k not in labels]
+        rows = ""
+        for k in ordered:
+            rows += (f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
+                     f'<td {TD}>{_yn(m.get(k))}</td></tr>')
+        return sub_title(title) + rows_table([col_label, "Confirmed"], rows)
+
     # Build type-specific content
     body_html = ""
     type_title = ""
-    
+
+    # Top-level attestation, shared by every branch below. Rendered only when
+    # it is actually on the document.
+    cp_name_line = (
+        bold_para("CP", _capitalize_first(logbook.get("cp_name") or ""))
+        if logbook.get("cp_name") else ""
+    )
+    cp_sig_block = render_signature_html(logbook.get("cp_signature"), "CP Signature")
+
     if log_type == "daily_jobsite":
         type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
         weather_str = f'{data.get("weather", "N/A")} {data.get("weather_temp", "")}'
@@ -12695,10 +12783,456 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + ps_sig
         )
     
+    # ══════════════════════════════════════════════════════════════════════
+    #  THE OTHER EIGHT TYPES
+    #
+    #  Until this block existed, every one of these fell to the `else` below
+    #  and rendered a single "Status: submitted" line — a BLANK compliance
+    #  record for hot work, crane, excavation, concrete, scaffold, the SSC
+    #  daily log, the OSHA/SST log and subcontractor orientation.
+    #
+    #  Key names and section ordering follow generate_combined_report, which
+    #  already renders all eight correctly; the payload keys themselves come
+    #  from the editors that write them (cited per branch). Where this
+    #  renderer DIFFERS from the combined report, it differs one way only: an
+    #  absent key renders nothing here, rather than "— Not recorded".
+    # ══════════════════════════════════════════════════════════════════════
+
+    elif log_type == "hot_work":
+        # frontend/app/logbooks/hot_work.jsx:189-199 (save) / :103-113 (draft);
+        # PRECAUTION_ITEMS :28-36.
+        type_title = "Hot Work Permit"
+        HW_PRECAUTIONS = [
+            ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
+            ("fire_extinguisher_present", "Fire Extinguisher Present"),
+            ("sprinklers_operational", "Sprinklers Operational"),
+            ("combustibles_covered", "Combustibles Covered / Protected"),
+            ("fire_watch_assigned", "Fire Watch Assigned"),
+            ("ventilation_adequate", "Ventilation Adequate"),
+            ("permit_posted", "Permit Posted at Location"),
+        ]
+        hw_lines = field_lines(data, [
+            ("work_type", "Work Type", _raw),
+            ("location", "Location", _capitalize_first),
+            ("worker_name", "Worker", _capitalize_first),
+            ("worker_cert_number", "Worker Cert #", _raw),
+            ("start_time", "Start Time", _raw),
+            ("end_time", "End Time", _raw),
+            ("fire_watch_name", "Fire Watch", _capitalize_first),
+        ])
+        # The editor captures NO real fire-watch end time — it DERIVES
+        # fire_watch_end_time as work end + 30 min (hot_work.jsx:42-54).
+        # FDNY can require 60, so it is labelled as the computed default it
+        # is and never asserted as a recorded watch-until.
+        if has(data, "fire_watch_end_time"):
+            hw_lines.append(
+                '<strong style="color:#0A1929;">Fire Watch Until:</strong> '
+                f'{data.get("fire_watch_end_time")} '
+                '<span style="color:#94a3b8;">(default: work end + 30 min)</span>'
+            )
+        body_html = (
+            maybe_info_box(hw_lines)
+            + toggle_block(data, "precautions", HW_PRECAUTIONS,
+                           "Pre-Work Precautions", "Precaution")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "crane_operations":
+        # frontend/app/logbooks/crane_operations.jsx:174-181 (save);
+        # PRE_OP_CHECKLIST_ITEMS :24-40; EMPTY_LOAD_ENTRY :42-47.
+        type_title = "Crane Operations"
+        CRANE_PREOP = [
+            ("wire_ropes", "Wire Ropes Inspected"),
+            ("hooks_latches", "Hooks & Latches Secure"),
+            ("brakes", "Brakes Functional"),
+            ("outriggers", "Outriggers Deployed"),
+            ("load_chart", "Load Chart Available"),
+            ("boom_condition", "Boom Condition OK"),
+            ("anti_two_block", "Anti Two-Block Device"),
+            ("fire_extinguisher", "Fire Extinguisher Present"),
+            ("signals_reviewed", "Signals Reviewed"),
+            ("area_barricaded", "Area Barricaded"),
+            ("wind_speed_checked", "Wind Speed Checked"),
+            ("power_lines_clear", "Power Lines Clear"),
+            ("load_weight_known", "Load Weight Known"),
+            ("rigging_inspected", "Rigging Inspected"),
+            ("swing_radius_clear", "Swing Radius Clear"),
+        ]
+        # load_weight / radius are unit-less strings exactly as the operator
+        # typed them — the editor captures no unit, so none is printed.
+        load_rows = ""
+        for le in (data.get("load_entries") or []):
+            if not isinstance(le, dict):
+                continue
+            if not any(has(le, k) for k in ("time", "description", "load_weight", "radius")):
+                continue      # an untouched EMPTY_LOAD_ENTRY seed, not a lift
+            load_rows += (
+                "<tr>"
+                + cell(le.get("time"))
+                + cell(_capitalize_first(le.get("description", "")))
+                + cell(le.get("load_weight"))
+                + cell(le.get("radius"))
+                + "</tr>"
+            )
+        lift_html = (
+            sub_title("Lift Log")
+            + rows_table(["Time", "Description", "Load Weight", "Radius"], load_rows)
+        ) if load_rows else ""
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("crane_type", "Crane Type", _capitalize_first),
+                ("crane_id", "Crane ID", _raw),
+                ("operator_name", "Operator", _capitalize_first),
+                ("operator_license", "Operator License", _raw),
+            ]))
+            + toggle_block(data, "pre_operation_checklist", CRANE_PREOP,
+                           "Pre-Operation Checklist", "Item")
+            + lift_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "excavation_monitoring":
+        # frontend/app/logbooks/excavation_monitoring.jsx:184-194 (save);
+        # EMPTY_ADJACENT_BUILDING :27-31; `delta` is derived at save (:180-183).
+        type_title = "Excavation Monitoring"
+        exc_lines = field_lines(data, [
+            # excavation_depth is a raw number — the editor captures no unit.
+            ("excavation_depth", "Excavation Depth", _raw),
+            ("soil_type", "Soil Type", _raw),
+            ("protection_system", "Protection System", _raw),
+            ("groundwater_observed", "Groundwater Observed", _yn),
+            ("atmospheric_testing", "Atmospheric Testing", _yn),
+        ])
+        # The over-threshold flag is only meaningful ALONGSIDE a reading. With
+        # no reading it is not rendered at all — a bare "Within threshold" over
+        # no measurement is a finding the CP never made.
+        v_thr = str(data.get("vibration_threshold") or "").strip()
+        v_cur = str(data.get("vibration_current") or "").strip()
+        vib_lines = []
+        if v_thr:
+            vib_lines.append(f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr}')
+        if v_cur:
+            vib_lines.append(f'<strong style="color:#0A1929;">Current:</strong> {v_cur}')
+        if v_thr and v_cur and has(data, "vibration_over_threshold"):
+            status = (
+                '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
+                if data.get("vibration_over_threshold") else "Within threshold"
+            )
+            vib_lines.append(f'<strong style="color:#0A1929;">Status:</strong> {status}')
+        vib_html = (sub_title("Vibration") + info_box("<br />".join(vib_lines))) if vib_lines else ""
+
+        # Units and per-reading timestamps are NOT captured, so there is no
+        # unit in the headers and no time column — readings render as entered.
+        bld_rows = ""
+        for b in (data.get("adjacent_buildings") or []):
+            if not isinstance(b, dict):
+                continue
+            if not any(has(b, k) for k in ("address", "baseline_reading", "current_reading", "delta")):
+                continue
+            bld_rows += (
+                "<tr>"
+                + cell(_capitalize_first(b.get("address", "")))
+                + cell(b.get("baseline_reading"))
+                + cell(b.get("current_reading"))
+                + cell(b.get("delta"))
+                + "</tr>"
+            )
+        bld_html = (
+            sub_title("Adjacent-Structure Monitoring Points")
+            + rows_table(["Location", "Baseline", "Current", "Movement (&Delta;)"], bld_rows)
+        ) if bld_rows else ""
+
+        body_html = (
+            maybe_info_box(exc_lines) + vib_html + bld_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "concrete_operations":
+        # frontend/app/logbooks/concrete_operations.jsx:171-179 (save);
+        # FORMWORK_ITEMS :26-31; EMPTY_SLUMP_TEST :33-37.
+        type_title = "Concrete Operations"
+        FORMWORK_ITEMS = [
+            ("shores_plumb", "Shores Plumb"),
+            ("bracing_adequate", "Bracing Adequate"),
+            ("formwork_clean", "Formwork Clean"),
+            ("no_gaps", "No Gaps"),
+        ]
+        slump_rows = ""
+        for st in (data.get("slump_tests") or []):
+            if not isinstance(st, dict):
+                continue
+            t = str(st.get("time", "")).strip()
+            v = str(st.get("value", "")).strip()
+            p = st.get("pass")
+            if not t and not v and p is None:
+                continue      # an untouched EMPTY_SLUMP_TEST seed
+            # `pass` is TRI-STATE (EMPTY_SLUMP_TEST seeds it null). Null is
+            # rendered as nothing — never as a Fail the CP did not record.
+            if p is True:
+                result = '<span style="color:#15803d;font-weight:600;">Pass</span>'
+            elif p is False:
+                result = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
+            else:
+                result = ""
+            slump_rows += "<tr>" + cell(t) + cell(v) + cell(result) + "</tr>"
+        slump_html = (
+            sub_title("Slump Tests")
+            + rows_table(["Time", "Slump", "Result"], slump_rows)
+        ) if slump_rows else ""
+
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("pour_location", "Pour Location", _capitalize_first),
+                ("concrete_supplier", "Supplier", _capitalize_first),
+                ("mix_design", "Mix Design", _raw),
+                # volume_ordered / temperature are unit-less as entered.
+                ("volume_ordered", "Volume Ordered", _raw),
+                ("weather_conditions", "Weather", _raw),
+                ("temperature", "Temperature", _raw),
+            ]))
+            + slump_html
+            + toggle_block(data, "formwork_checklist", FORMWORK_ITEMS,
+                           "Formwork Inspection", "Item")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "scaffold_maintenance":
+        # frontend/app/logbooks/scaffold_maintenance.jsx:194
+        #   const data = { general_info: generalInfo, answers };
+        # GENERAL_INFO_FIELDS :27-36 + shed_type (:38, :89) and drawings_on_site
+        # (:90); MAINTENANCE_QUESTIONS :41-61; ANSWER_OPTIONS :63 = YES/NO/N/A.
+        type_title = "Scaffold Maintenance Inspection"
+        gi = data.get("general_info") or {}
+        answers = data.get("answers") or {}
+        SCAFFOLD_QUESTIONS = [
+            ("signs_on_parapets", "Are the signs on the parapets?"),
+            ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
+            ("scaffold_pins_bolts", "Are the scaffold pins and bolts installed?"),
+            ("legs_poles_plumb", "Are the legs and poles plumb, braced and not displaced?"),
+            ("tie_ins_spaced", "Are tie-ins correctly spaced, properly secured and the correct amount?"),
+            ("cross_braces", "Are cross braces fully attached, not bent, and not missing?"),
+            ("pipe_clamps_tight", "Are pipe clamps tight?"),
+            ("window_jacks_tight", "Are window jacks tight?"),
+            ("planks_secured", "Are all the planks secured?"),
+            ("decking_planks_condition", "Are decking and planks in good condition?"),
+            ("deck_fully_planked", "Is deck fully planked?"),
+            ("gaps_open_spaces", "Are there gaps or open spaces on decking?"),
+            ("guardrails_toe_boards", "Are the guardrails and toe boards secured at all places where required?"),
+            ("netting_extension", "Is the netting extension of full length and height?"),
+            ("netting_secured", "Is the netting secured?"),
+            ("parapet_height", "Is the parapet the proper height and secured?"),
+            ("lights_working", "Are the lights working?"),
+            ("deck_clean", "Is the deck clean and free of debris?"),
+            ("drawings_on_site", "Drawings on site for inspection?"),
+        ]
+        # Answers are YES / NO / N/A strings, not booleans — an N/A the CP
+        # CHOSE is a real answer and is rendered as chosen. An UNANSWERED
+        # question is not listed.
+        q_labels = dict(SCAFFOLD_QUESTIONS)
+        q_order = [k for k, _ in SCAFFOLD_QUESTIONS if has(answers, k)]
+        q_order += [k for k in answers.keys() if k not in q_labels and has(answers, k)]
+        q_rows = ""
+        for k in q_order:
+            q_rows += (f'<tr><td {TD}>{q_labels.get(k) or key_label(k)}</td>'
+                       f'<td {TD}>{answers.get(k)}</td></tr>')
+        q_html = (
+            sub_title("Inspection Checklist")
+            + rows_table(["Question", "Answer"], q_rows)
+        ) if q_rows else ""
+
+        # general_info.drawings_on_site is a dead duplicate of the answers
+        # question of the same key — only the answer is rendered.
+        body_html = (
+            maybe_info_box(field_lines(gi, [
+                ("scaffold_erector", "Scaffold Erector", _capitalize_first),
+                ("renters_name", "Renter", _capitalize_first),
+                ("permit_number", "Permit #", _raw),
+                ("phone", "Phone #", _raw),
+                ("installation_date", "Installation Date", _raw),
+                ("expiration_date", "Expiration", _raw),
+                ("scaffold_height", "Scaffold Height", _raw),
+                ("num_platforms", "Platforms Decked", _raw),
+                ("shed_type", "Shed Type", _raw),
+            ]))
+            + q_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "ssc_daily_safety_log":
+        # frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save).
+        type_title = "SSC Daily Safety Log"
+        SSC_FLAGS = [
+            ("incidents_reported", "Incidents Reported"),
+            ("safety_meetings_held", "Safety Meetings Held"),
+            ("fire_protection_in_place", "Fire Protection in Place"),
+            ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
+            ("ppe_compliance", "PPE Compliance"),
+        ]
+        flag_rows = ""
+        for key, label in SSC_FLAGS:
+            if has(data, key):
+                flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{_yn(data.get(key))}</td></tr>'
+        # These five are ToggleRows seeded false, so a rendered "No" may be an
+        # untouched default rather than a deliberate negative finding. Say so —
+        # a bare "No" must not read as an affirmative safety-violation
+        # attestation on a DOB record.
+        flags_html = (
+            sub_title("Compliance")
+            + rows_table(["Item", "Status"], flag_rows)
+            + '<p style="color:#94a3b8;font-size:11px;font-style:italic;margin:2px 0 0;">'
+              'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
+        ) if flag_rows else ""
+
+        narrative = ""
+        for key, label in (
+            ("site_conditions", "Site Conditions"),
+            ("safety_violations_observed", "Safety Violations Observed"),
+            ("corrective_actions_taken", "Corrective Actions Taken"),
+        ):
+            if has(data, key):
+                narrative += bold_para(label, _sentence_case(data.get(key)))
+        # Incident detail is only meaningful when an incident was reported.
+        if data.get("incidents_reported") and has(data, "incident_details"):
+            narrative += bold_para("Incident Details", _sentence_case(data.get("incident_details")))
+        narrative_html = (sub_title("Narrative") + narrative) if narrative else ""
+
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("project_address", "Project Address", _capitalize_first),
+                ("ssp_number", "Site Safety Plan #", _raw),
+                ("weather", "Weather", _raw),
+                ("workers_on_site_count", "Workers on Site", _raw),
+            ]))
+            + flags_html
+            + narrative_html
+            + cp_name_line
+            + render_signature_html(logbook.get("cp_signature"), "SSC / SSM Signature")
+        )
+
+    elif log_type == "osha_log":
+        # frontend/app/logbooks/osha_log.jsx:200  data: { entries };
+        # EMPTY_ENTRY :28-37.
+        #
+        # NOTE vs generate_combined_report: that renderer adds a Review column
+        # by joining each row back to the worker's LIVE certifications. That is
+        # a database read, not a payload key, and this function renders one
+        # stored document — the snapshot is rendered as stored, with no
+        # invented review state.
+        type_title = "OSHA / SST Certification Log"
+        osha_rows = ""
+        for e in (data.get("entries") or []):
+            if not isinstance(e, dict):
+                continue
+            if not any(has(e, k) for k in
+                       ("worker_name", "company", "certification_type", "card_number", "expiration")):
+                continue      # an untouched EMPTY_ENTRY seed
+            # card_number / expiration are identifiers — rendered raw.
+            osha_rows += (
+                "<tr>"
+                + cell(_capitalize_first(e.get("worker_name", "")))
+                + cell(_capitalize_first(e.get("company", "")))
+                + cell(e.get("certification_type"))
+                + cell(e.get("card_number"))
+                + cell(e.get("expiration"))
+                + cell("&#10003;" if e.get("signed") else "")
+                + "</tr>"
+            )
+        body_html = (
+            (rows_table(["Worker", "Company", "Cert Type", "Card #", "Expiration", "Signed"],
+                        osha_rows) if osha_rows else "")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "subcontractor_orientation":
+        # ONE DOCUMENT PER WORKER (server.py:14945 comment). Payload keys:
+        #   frontend/app/logbooks/subcontractor_orientation.jsx:472-483 (manual
+        #   entry) and backend/server.py:9900-9912 (the kiosk registration
+        #   path), which write the same field names.
+        # Checklist labels: ORIENTATION_SECTIONS, subcontractor_orientation.jsx:49-87.
+        type_title = "Subcontractor Safety Orientation"
+        ORIENTATION_ITEMS = [
+            ("hard_hats", "Hard hats required at all times on site"),
+            ("safety_boots", "Safety boots required (steel toe, ANSI rated)"),
+            ("safety_glasses", "Safety glasses / eye protection required"),
+            ("high_vis", "High-visibility vest required near traffic"),
+            ("no_horseplay", "No horseplay, running, or unsafe behavior"),
+            ("report_hazards", "Report all hazards to CP immediately"),
+            ("fall_protection_required", "Fall protection required at 6 ft and above"),
+            ("harness_inspection", "Inspect harness before each use"),
+            ("ladder_safety", "Three-point contact on ladders at all times"),
+            ("scaffold_rules", "Only use scaffold as erected — no modifications"),
+            ("emergency_exits", "Emergency exit locations reviewed"),
+            ("first_aid", "First aid kit location reviewed"),
+            ("emergency_contact", "Emergency contact numbers provided"),
+            ("incident_reporting", "All incidents must be reported immediately"),
+            ("no_drugs_alcohol", "Zero tolerance for drugs and alcohol on site"),
+            ("sign_in_out", "Must sign in and out every day"),
+            ("authorized_areas", "Only enter authorized work areas"),
+            ("housekeeping", "Keep work area clean at all times"),
+        ]
+        orient_lines = field_lines(data, [
+            ("worker_name", "Worker", _capitalize_first),
+            ("worker_trade", "Trade", _capitalize_first),
+            ("worker_company", "Company", _capitalize_first),
+            ("osha_number", "OSHA / SST #", _raw),
+            ("orientation_number", "Orientation #", _raw),
+            ("language_provided", "Language Provided", _raw),
+        ])
+        if has(data, "completed_at"):
+            orient_lines.append(
+                '<strong style="color:#0A1929;">Completed:</strong> '
+                f'{str(data.get("completed_at"))[:19].replace("T", " ")}'
+            )
+
+        # The kiosk writes {checked: bool, checked_at: iso} per item and keys it
+        # by the item's full English sentence (backend/checkin.html:674-687,
+        # 1574-1579); the in-app editor writes key -> bool. Both shapes render.
+        checklist = data.get("checklist")
+        chk_rows = ""
+        if isinstance(checklist, dict):
+            labels = dict(ORIENTATION_ITEMS)
+            order = [k for k, _ in ORIENTATION_ITEMS if k in checklist]
+            order += [k for k in checklist.keys() if k not in labels]
+            for k in order:
+                v = checklist.get(k)
+                checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
+                chk_rows += (
+                    f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
+                    f'<td {TD}>{"&#10003;" if checked else "No"}</td></tr>'
+                )
+        chk_html = (
+            sub_title("Safety Topics Reviewed")
+            + rows_table(["Topic", "Reviewed"], chk_rows)
+        ) if chk_rows else ""
+
+        # LOAD-BEARING: worker_signature is written as null on manual entries
+        # (subcontractor_orientation.jsx:481). When the key is THERE and empty,
+        # say UNSIGNED — an unattested acknowledgment must never be presented
+        # as complete. When the key is absent entirely, say nothing.
+        worker_sig_html = ""
+        if "worker_signature" in data:
+            if data.get("worker_signature"):
+                worker_sig_html = render_signature_html(
+                    data.get("worker_signature"), "Worker Acknowledgment",
+                )
+            else:
+                worker_sig_html = (
+                    '<p style="color:#b91c1c;font-weight:700;margin:6px 0;">'
+                    'Worker acknowledgment: UNSIGNED</p>'
+                )
+
+        body_html = (
+            maybe_info_box(orient_lines)
+            + chk_html
+            + worker_sig_html
+            + cp_name_line
+            + render_signature_html(logbook.get("cp_signature"), "Conducted By (CP)")
+        )
+
     else:
         type_title = log_type.replace("_", " ").title()
         body_html = bold_para("Status", logbook.get("status", "N/A"))
-    
+
     # Wrap in full HTML document
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
