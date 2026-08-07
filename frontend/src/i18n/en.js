@@ -126,6 +126,11 @@ export default {
     fItem: 'Item',
     fConfirmed: 'Confirmed',
     fStatus: 'Status',
+    // A field on the form that the CP never filled. Stated, not implied: the
+    // same words the report/PDF surface prints (server.py
+    // generate_combined_report), so one record reads the same on both. A blank
+    // would be ambiguous — never asked, or asked and unanswered?
+    fNotRecorded: '— Not recorded',
 
     // Hot work
     hwWorkType: 'Work Type',

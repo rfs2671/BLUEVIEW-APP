@@ -12539,11 +12539,30 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     def sub_title(text):
         return f'<h3 style="color:#0A1929;margin:16px 0 8px;font-size:14px;">{text}</h3>'
 
-    # ── ABSENT MEANS ABSENT ──────────────────────────────────────────────────
+    # ── ABSENT IS STATED, NEVER IMPLIED ──────────────────────────────────────
     # This renderer is read by a DOB inspector. A key the CP never filled must
-    # produce NOTHING — no dash, no "N/A", no empty table row. A placeholder
-    # says "this was asked and left blank", which is a different (and false)
-    # statement about the record. False and 0 ARE captured values and render.
+    # never render as a VALUE — no invented "None", no silent "No". It renders
+    # "— Not recorded", the same words generate_combined_report already prints
+    # for the same fact (server.py:17486, :17553, :17612, :17696, :17862,
+    # :17916, :17932). Two compliance surfaces must not disagree about one
+    # record, and a blank is ambiguous: an inspector cannot tell whether the
+    # field was never asked or asked and left unanswered.
+    #
+    # TWO KINDS OF ABSENCE, and they are NOT the same:
+    #   (a) a FIELD missing from a section that IS being rendered
+    #       -> "— Not recorded"
+    #   (b) a ROW missing from a repeating list (load_entries,
+    #       adjacent_buildings, slump_tests, osha entries)
+    #       -> DROPPED, exactly as the combined report drops it. A row that
+    #          does not exist is not an unrecorded field, and printing one
+    #          would invent a record of work nobody logged.
+    # A whole SECTION whose payload is entirely absent stays absent too — a
+    # page of "— Not recorded" rows for a log that was never filled is the
+    # same fabrication in a different direction.
+    #
+    # False and 0 ARE captured values and render as captured.
+    NOT_RECORDED = "&mdash; Not recorded"
+
     def has(d, key):
         if not isinstance(d, dict) or key not in d:
             return False
@@ -12562,11 +12581,22 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     _yn = lambda v: "Yes" if v else "No"
 
     def field_lines(d, specs):
-        """[(key, label, fmt)] -> one info_box line per key that IS there."""
+        """[(key, label, fmt)] -> one info_box line per spec, ALWAYS.
+
+        Case (a): a key the CP never filled still gets its line, reading
+        "— Not recorded". The label is on the form either way, so a silent
+        omission would hide which questions went unanswered.
+
+        The one exception is the whole-section case: if NOT ONE of the specs
+        is on the document there is no section to annotate, and the box is not
+        rendered at all rather than fabricating a full page of absences.
+        """
+        if not any(has(d, key) for key, *_rest in specs):
+            return []
         out = []
         for key, label, fmt in specs:
-            if has(d, key):
-                out.append(f'<strong style="color:#0A1929;">{label}:</strong> {fmt(d.get(key))}')
+            val = fmt(d.get(key)) if has(d, key) else NOT_RECORDED
+            out.append(f'<strong style="color:#0A1929;">{label}:</strong> {val}')
         return out
 
     def maybe_info_box(lines):
@@ -12581,7 +12611,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         )
 
     def cell(v):
-        """A row cell for a value that may not be there. Empty, never a dash."""
+        """A cell inside a row that EXISTS — case (b) territory.
+
+        An empty cell stays empty. The ROW is the record here, and the
+        combined report prints a bare em-dash in the same place
+        (server.py:17562-17565); neither form asserts a value.
+        """
         return f'<td {TD}>{"" if v is None else v}</td>'
 
     def key_label(k):
@@ -12595,25 +12630,41 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         s = str(k)
         return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
 
-    def toggle_block(d, key, items, title, col_label):
-        """A sparse toggle map, rendered for the keys the DOCUMENT carries.
+    def toggle_map_rows(m, items):
+        """Rows for a sparse toggle map — case (a) over a FIXED checklist.
 
         The editors seed these maps as {} and write a key only once the CP taps
         it, so `key present and False` is an explicit No while `key absent` is
-        untouched. Only the present keys are rendered; an untouched item is not
-        listed at all. Keys the label list does not know (a map written by an
-        older build) still render, under their own key name.
+        untouched. An untouched item reads "— Not recorded", never a silent
+        "No" — the same convention generate_combined_report uses for these
+        exact checklists (server.py:17482-17487, :17549-17554, :17912-17917).
+
+        The full checklist is only asserted once the map is keyed the way the
+        in-app editor keys it. The kiosk keys its orientation checklist by the
+        item's full English SENTENCE (backend/checkin.html:674-687), so a map
+        carrying none of the known keys renders only what it carries — listing
+        18 snake_case items as unrecorded against a kiosk document would be a
+        finding about a form that was never used.
         """
-        m = d.get(key)
         if not isinstance(m, dict) or not m:
             return ""
         labels = dict(items)
-        ordered = [k for k, _ in items if k in m]
+        known_present = [k for k, _ in items if k in m]
+        ordered = [k for k, _ in items] if known_present else []
         ordered += [k for k in m.keys() if k not in labels]
         rows = ""
         for k in ordered:
+            val = _yn(m.get(k)) if k in m else NOT_RECORDED
             rows += (f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
-                     f'<td {TD}>{_yn(m.get(k))}</td></tr>')
+                     f'<td {TD}>{val}</td></tr>')
+        return rows
+
+    def toggle_block(d, key, items, title, col_label):
+        """A titled table for a sparse toggle map. An absent/empty map is a
+        whole absent SECTION and renders nothing at all."""
+        rows = toggle_map_rows(d.get(key), items)
+        if not rows:
+            return ""
         return sub_title(title) + rows_table([col_label, "Confirmed"], rows)
 
     # Build type-specific content
@@ -12793,9 +12844,10 @@ async def generate_single_logbook_html(logbook: dict) -> str:
     #
     #  Key names and section ordering follow generate_combined_report, which
     #  already renders all eight correctly; the payload keys themselves come
-    #  from the editors that write them (cited per branch). Where this
-    #  renderer DIFFERS from the combined report, it differs one way only: an
-    #  absent key renders nothing here, rather than "— Not recorded".
+    #  from the editors that write them (cited per branch). Absence follows it
+    #  too: a field missing from a rendered section reads "— Not recorded",
+    #  and a missing ROW in a repeating list is dropped. One record must not
+    #  read differently on two compliance surfaces.
     # ══════════════════════════════════════════════════════════════════════
 
     elif log_type == "hot_work":
@@ -12811,6 +12863,15 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("ventilation_adequate", "Ventilation Adequate"),
             ("permit_posted", "Permit Posted at Location"),
         ]
+        # The editor captures NO real fire-watch end time — it DERIVES
+        # fire_watch_end_time as work end + 30 min (hot_work.jsx:42-54).
+        # FDNY can require 60, so it is labelled as the computed default it
+        # is and never asserted as a recorded watch-until. It rides in the
+        # spec list so an absent one reads "— Not recorded" like any other
+        # field rather than vanishing.
+        _fw_default = (
+            lambda v: f'{v} <span style="color:#94a3b8;">(default: work end + 30 min)</span>'
+        )
         hw_lines = field_lines(data, [
             ("work_type", "Work Type", _raw),
             ("location", "Location", _capitalize_first),
@@ -12819,17 +12880,8 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("start_time", "Start Time", _raw),
             ("end_time", "End Time", _raw),
             ("fire_watch_name", "Fire Watch", _capitalize_first),
+            ("fire_watch_end_time", "Fire Watch Until", _fw_default),
         ])
-        # The editor captures NO real fire-watch end time — it DERIVES
-        # fire_watch_end_time as work end + 30 min (hot_work.jsx:42-54).
-        # FDNY can require 60, so it is labelled as the computed default it
-        # is and never asserted as a recorded watch-until.
-        if has(data, "fire_watch_end_time"):
-            hw_lines.append(
-                '<strong style="color:#0A1929;">Fire Watch Until:</strong> '
-                f'{data.get("fire_watch_end_time")} '
-                '<span style="color:#94a3b8;">(default: work end + 30 min)</span>'
-            )
         body_html = (
             maybe_info_box(hw_lines)
             + toggle_block(data, "precautions", HW_PRECAUTIONS,
@@ -12904,22 +12956,28 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("atmospheric_testing", "Atmospheric Testing", _yn),
         ])
         # The over-threshold flag is only meaningful ALONGSIDE a reading. With
-        # no reading it is not rendered at all — a bare "Within threshold" over
-        # no measurement is a finding the CP never made.
+        # no reading the STATUS reads "— Not recorded" — a bare "Within
+        # threshold" over no measurement is a finding the CP never made
+        # (generate_combined_report does the same, server.py:17606-17612).
+        # With neither reading there is no vibration section to annotate and
+        # the whole block is dropped.
         v_thr = str(data.get("vibration_threshold") or "").strip()
         v_cur = str(data.get("vibration_current") or "").strip()
-        vib_lines = []
-        if v_thr:
-            vib_lines.append(f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr}')
-        if v_cur:
-            vib_lines.append(f'<strong style="color:#0A1929;">Current:</strong> {v_cur}')
-        if v_thr and v_cur and has(data, "vibration_over_threshold"):
-            status = (
-                '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
-                if data.get("vibration_over_threshold") else "Within threshold"
-            )
-            vib_lines.append(f'<strong style="color:#0A1929;">Status:</strong> {status}')
-        vib_html = (sub_title("Vibration") + info_box("<br />".join(vib_lines))) if vib_lines else ""
+        vib_html = ""
+        if v_thr or v_cur:
+            if v_thr and v_cur and has(data, "vibration_over_threshold"):
+                status = (
+                    '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
+                    if data.get("vibration_over_threshold") else "Within threshold"
+                )
+            else:
+                status = NOT_RECORDED
+            vib_lines = [
+                f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr or NOT_RECORDED}',
+                f'<strong style="color:#0A1929;">Current:</strong> {v_cur or NOT_RECORDED}',
+                f'<strong style="color:#0A1929;">Status:</strong> {status}',
+            ]
+            vib_html = sub_title("Vibration") + info_box("<br />".join(vib_lines))
 
         # Units and per-reading timestamps are NOT captured, so there is no
         # unit in the headers and no time column — readings render as entered.
@@ -13027,14 +13085,18 @@ async def generate_single_logbook_html(logbook: dict) -> str:
         ]
         # Answers are YES / NO / N/A strings, not booleans — an N/A the CP
         # CHOSE is a real answer and is rendered as chosen. An UNANSWERED
-        # question is not listed.
+        # question reads "— Not recorded", never a silent "NO", matching
+        # generate_combined_report (server.py:17694-17697). If the form was
+        # never answered at all there is no checklist to annotate and the
+        # table is dropped.
         q_labels = dict(SCAFFOLD_QUESTIONS)
-        q_order = [k for k, _ in SCAFFOLD_QUESTIONS if has(answers, k)]
+        q_answered = [k for k, _ in SCAFFOLD_QUESTIONS if has(answers, k)]
+        q_order = [k for k, _ in SCAFFOLD_QUESTIONS] if q_answered else []
         q_order += [k for k in answers.keys() if k not in q_labels and has(answers, k)]
         q_rows = ""
         for k in q_order:
             q_rows += (f'<tr><td {TD}>{q_labels.get(k) or key_label(k)}</td>'
-                       f'<td {TD}>{answers.get(k)}</td></tr>')
+                       f'<td {TD}>{answers.get(k) if has(answers, k) else NOT_RECORDED}</td></tr>')
         q_html = (
             sub_title("Inspection Checklist")
             + rows_table(["Question", "Answer"], q_rows)
@@ -13068,10 +13130,16 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
             ("ppe_compliance", "PPE Compliance"),
         ]
+        # The five are a fixed list: once ANY of them is on the document the
+        # rest read "— Not recorded" rather than dropping out of the table.
+        # (generate_combined_report prints "No" for an absent flag here,
+        # server.py:17856-17857 — this renderer will not assert a negative
+        # finding from a key that is not on the record.)
         flag_rows = ""
-        for key, label in SSC_FLAGS:
-            if has(data, key):
-                flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{_yn(data.get(key))}</td></tr>'
+        if any(has(data, key) for key, _ in SSC_FLAGS):
+            for key, label in SSC_FLAGS:
+                val = _yn(data.get(key)) if has(data, key) else NOT_RECORDED
+                flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
         # These five are ToggleRows seeded false, so a rendered "No" may be an
         # untouched default rather than a deliberate negative finding. Say so —
         # a bare "No" must not read as an affirmative safety-violation
@@ -13083,17 +13151,31 @@ async def generate_single_logbook_html(logbook: dict) -> str:
               'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
         ) if flag_rows else ""
 
-        narrative = ""
-        for key, label in (
+        # An unwritten narrative reads "— Not recorded", never an asserted
+        # "none" that could pass for a negative finding the CP never made
+        # (generate_combined_report, server.py:17859-17862). All three go
+        # together: once the narrative section exists, every prompt on it is
+        # accounted for.
+        NARRATIVE_FIELDS = (
             ("site_conditions", "Site Conditions"),
             ("safety_violations_observed", "Safety Violations Observed"),
             ("corrective_actions_taken", "Corrective Actions Taken"),
-        ):
-            if has(data, key):
-                narrative += bold_para(label, _sentence_case(data.get(key)))
-        # Incident detail is only meaningful when an incident was reported.
-        if data.get("incidents_reported") and has(data, "incident_details"):
-            narrative += bold_para("Incident Details", _sentence_case(data.get("incident_details")))
+        )
+        # Incident detail is only meaningful when an incident was reported —
+        # but if one WAS, a missing detail is an unanswered question, not
+        # silence.
+        show_incident = bool(data.get("incidents_reported"))
+        narrative = ""
+        if show_incident or any(has(data, k) for k, _ in NARRATIVE_FIELDS):
+            for key, label in NARRATIVE_FIELDS:
+                val = _sentence_case(data.get(key)) if has(data, key) else NOT_RECORDED
+                narrative += bold_para(label, val)
+            if show_incident:
+                detail = (
+                    _sentence_case(data.get("incident_details"))
+                    if has(data, "incident_details") else NOT_RECORDED
+                )
+                narrative += bold_para("Incident Details", detail)
         narrative_html = (sub_title("Narrative") + narrative) if narrative else ""
 
         body_html = (
@@ -13177,28 +13259,33 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             ("osha_number", "OSHA / SST #", _raw),
             ("orientation_number", "Orientation #", _raw),
             ("language_provided", "Language Provided", _raw),
+            ("completed_at", "Completed",
+             lambda v: str(v)[:19].replace("T", " ")),
         ])
-        if has(data, "completed_at"):
-            orient_lines.append(
-                '<strong style="color:#0A1929;">Completed:</strong> '
-                f'{str(data.get("completed_at"))[:19].replace("T", " ")}'
-            )
 
         # The kiosk writes {checked: bool, checked_at: iso} per item and keys it
         # by the item's full English sentence (backend/checkin.html:674-687,
         # 1574-1579); the in-app editor writes key -> bool. Both shapes render.
+        # An item the editor's map does not carry reads "— Not recorded"; a map
+        # keyed the kiosk way carries none of the known keys, so it renders only
+        # its own sentences (see toggle_map_rows).
         checklist = data.get("checklist")
         chk_rows = ""
-        if isinstance(checklist, dict):
+        if isinstance(checklist, dict) and checklist:
             labels = dict(ORIENTATION_ITEMS)
-            order = [k for k, _ in ORIENTATION_ITEMS if k in checklist]
+            known_present = [k for k, _ in ORIENTATION_ITEMS if k in checklist]
+            order = [k for k, _ in ORIENTATION_ITEMS] if known_present else []
             order += [k for k in checklist.keys() if k not in labels]
             for k in order:
-                v = checklist.get(k)
-                checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
+                if k not in checklist:
+                    val = NOT_RECORDED
+                else:
+                    v = checklist.get(k)
+                    checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
+                    val = "&#10003;" if checked else "No"
                 chk_rows += (
                     f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
-                    f'<td {TD}>{"&#10003;" if checked else "No"}</td></tr>'
+                    f'<td {TD}>{val}</td></tr>'
                 )
         chk_html = (
             sub_title("Safety Topics Reviewed")

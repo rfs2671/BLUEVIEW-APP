@@ -12,9 +12,19 @@
  *
  * WHAT IS ASSERTED
  *   Every type has a tab; every type renders the REAL payload keys the editor
- *   writes; a key the CP never filled renders NOTHING (the placeholders are
- *   asserted ABSENT, because a placeholder claims the question was asked and
- *   left blank); crew_id renders and crew_name does not.
+ *   writes; crew_id renders and crew_name does not.
+ *
+ *   ABSENCE, in the two forms it takes:
+ *     (a) a FIELD missing from a section that IS rendered reads exactly
+ *         "— Not recorded" — the words server.py generate_combined_report
+ *         already prints for the same fact, so one record does not read
+ *         differently on two compliance surfaces. NO OTHER placeholder may
+ *         appear: every remaining "N/A" / bare dash / "undefined" is asserted
+ *         absent, so an absence can never pass for a value.
+ *     (b) a ROW missing from a repeating list is DROPPED. An untouched EMPTY_*
+ *         seed row must NOT come back as a row of "— Not recorded" — that
+ *         would invent a record of work nobody logged.
+ *   And false / 0 are captured VALUES, never absences.
  *
  * HOW
  *   The repo has no JS test runner (see RiskScoreCircle.bandFor.test.cjs).
@@ -134,6 +144,13 @@ const doc = (log_type, data, extra) => ({
   cp_name: 'Ada CP', data, ...(extra || {}),
 });
 
+// The ONE sanctioned way to say "the app has no value for this".
+const NOT_RECORDED = t('fNotRecorded');
+// An info-box field renders "Label: — Not recorded" in a single Text; a table
+// cell is its own Text, so the collector joins it to its label with ' | '.
+const fieldIsNotRecorded = (out, label) => out.includes(`${label}: ${NOT_RECORDED}`);
+const rowIsNotRecorded = (out, label) => out.includes(`${label} | ${NOT_RECORDED}`);
+
 // ════════════════════════════════════════════════════════════════════════════
 //  0 — every type has a tab, or the renderer is unreachable
 // ════════════════════════════════════════════════════════════════════════════
@@ -167,8 +184,8 @@ ok(['Welding', 'west cellar', 'bob welder', 'FDNY-P99-1234', '08:00', '12:00',
   'hot_work: work_type / location / worker_name / worker_cert_number / times / fire_watch_name render');
 ok(hotWork.includes(t('p_area_cleared')) && hotWork.includes(t('p_sprinklers_operational')),
   'hot_work: the precautions the document carries render, with their editor labels');
-ok(!hotWork.includes(t('p_permit_posted')),
-  'hot_work: a precaution key the document does NOT carry is not listed');
+ok(rowIsNotRecorded(hotWork, t('p_permit_posted')),
+  'hot_work: a precaution key the document does NOT carry reads "— Not recorded", never a silent ✕');
 ok(hotWork.includes(t('hwFireWatchDefault')),
   'hot_work: fire_watch_end_time is labelled as the derived work-end + 30 min default');
 
@@ -185,9 +202,9 @@ const crane = render(doc('crane_operations', {
 ok(['tower crane', 'TC-14', 'dana operator', 'NYC-CO-8821', '09:15',
   'steel beam pick', '4200', '60'].every((v) => crane.includes(v)),
   'crane_operations: crane_type / crane_id / operator / license / load_entries render');
-ok(crane.includes(t('c_wire_ropes')) && crane.includes(t('c_brakes'))
-  && !crane.includes(t('c_outriggers')),
-  'crane_operations: only the pre_operation_checklist keys the document carries are listed');
+ok(crane.includes(`${t('c_wire_ropes')} | ✓`) && crane.includes(`${t('c_brakes')} | ✕`)
+  && rowIsNotRecorded(crane, t('c_outriggers')),
+  'crane_operations: a checked item, an explicit ✕, and an untouched one that reads "— Not recorded"');
 
 // frontend/app/logbooks/excavation_monitoring.jsx:184-194 ; :27-31 ; :180-183
 const exc = render(doc('excavation_monitoring', {
@@ -205,8 +222,8 @@ ok(['14', 'Hard Clay', 'Shoring', '0.50', '0.62', '12 elm street', '0.35']
   'excavation_monitoring: depth / soil / protection / vibration / adjacent_buildings render');
 ok(exc.includes(t('exOver')),
   'excavation_monitoring: over-threshold status renders when BOTH readings are present');
-ok(exc.includes(t('exGroundwater')) && exc.includes(t('exAtmospheric')),
-  'excavation_monitoring: a captured FALSE boolean still renders (false is a value)');
+ok(exc.includes(`${t('exGroundwater')}: ✓`) && exc.includes(`${t('exAtmospheric')}: ✕`),
+  'excavation_monitoring: a captured FALSE boolean renders as ✕ (false is a value, not an absence)');
 
 // frontend/app/logbooks/concrete_operations.jsx:171-179 ; :26-31 ; :33-37
 const concrete = render(doc('concrete_operations', {
@@ -225,8 +242,9 @@ ok(['level 3 slab', 'ready mix co', '4000PSI-A2', '45', 'Clear', '68',
   'concrete_operations: pour / supplier / mix / volume / weather / temp / slump_tests render');
 ok(concrete.includes(t('coPass')) && concrete.includes(t('coFail')),
   'concrete_operations: slump pass and fail both render');
-ok(concrete.includes(t('fw_shores_plumb')) && !concrete.includes(t('fw_bracing_adequate')),
-  'concrete_operations: only the formwork_checklist keys the document carries are listed');
+ok(concrete.includes(`${t('fw_shores_plumb')} | ✓`) && concrete.includes(`${t('fw_no_gaps')} | ✕`)
+  && rowIsNotRecorded(concrete, t('fw_bracing_adequate')),
+  'concrete_operations: a formwork key the document does NOT carry reads "— Not recorded", never a silent ✕');
 
 // frontend/app/logbooks/scaffold_maintenance.jsx:194 ; :27-36 ; :41-61 ; :63
 const scaffold = render(doc('scaffold_maintenance', {
@@ -243,10 +261,10 @@ ok(['ace scaffold', 'hudson builders', 'SH-2026-114', '2026-05-01', '2027-05-01'
   'scaffold_maintenance: every general_info field the document carries renders');
 ok(scaffold.includes(t('q_signs_on_parapets')) && scaffold.includes(t('q_lights_working')),
   'scaffold_maintenance: answered questions render with the DOB form wording');
-ok(!scaffold.includes(t('q_pipe_clamps_tight')),
-  'scaffold_maintenance: an UNANSWERED question is not listed');
-ok(scaffold.includes('N/A'),
-  'scaffold_maintenance: an N/A the CP CHOSE is a real answer and survives');
+ok(rowIsNotRecorded(scaffold, t('q_pipe_clamps_tight')),
+  'scaffold_maintenance: an UNANSWERED question reads "— Not recorded", never a silent NO');
+ok(scaffold.includes(`${t('q_deck_clean')} | N/A`),
+  'scaffold_maintenance: an N/A the CP CHOSE is a real answer and survives as chosen');
 
 // frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206
 const ssc = render(doc('ssc_daily_safety_log', {
@@ -290,9 +308,10 @@ const orientation = render(doc('subcontractor_orientation', {
 ok(['ann worker', 'hudson builders', 'carpenter', 'SST-55110', 'OR-9',
   '2026-08-07 13:22:04'].every((v) => orientation.includes(v)),
   'subcontractor_orientation: worker fields and completed_at render');
-ok(orientation.includes(t('o_hard_hats')) && orientation.includes(t('o_housekeeping'))
-  && !orientation.includes(t('o_harness_inspection')),
-  'subcontractor_orientation: only the checklist keys the document carries are listed');
+ok(orientation.includes(`${t('o_hard_hats')} | ✓`)
+  && orientation.includes(`${t('o_housekeeping')} | ✕`)
+  && rowIsNotRecorded(orientation, t('o_harness_inspection')),
+  'subcontractor_orientation: an untouched checklist key reads "— Not recorded", never a silent ✕');
 ok(orientation.includes(t('orUnsigned')),
   'subcontractor_orientation: worker_signature present-and-null reads UNSIGNED, never complete');
 
@@ -306,13 +325,21 @@ const kioskOrientation = render(doc('subcontractor_orientation', {
 ok(kioskOrientation.includes(SENTENCE)
   && !kioskOrientation.includes('Site-Specific Hazards And Hazardous'),
   'subcontractor_orientation: a kiosk sentence key renders VERBATIM, not title-cased into nonsense');
+const ORIENT_LABELS = [...src.matchAll(/\['[a-z_]+', t\('(o_[a-z_]+)'\)\]/g)].map((m) => t(m[1]));
+ok(ORIENT_LABELS.length === 18 && ORIENT_LABELS.every((l) => !kioskOrientation.includes(l)),
+  `subcontractor_orientation: a kiosk-keyed map does not drag in the ${ORIENT_LABELS.length} in-app checklist items as fabricated "— Not recorded" rows for a form it never used`);
 
 // ════════════════════════════════════════════════════════════════════════════
-//  2 — an ABSENT key renders NOTHING
+//  2 — an ABSENT FIELD says so, in the one sanctioned form
 // ════════════════════════════════════════════════════════════════════════════
-// A dash / "N/A" / "Not recorded" tells a DOB inspector the CP was asked and
-// left it blank. That is a different statement than "never captured".
+// "— Not recorded" states plainly that the app has no value, and it is what
+// generate_combined_report already prints. Anything ELSE — a bare dash, an
+// "N/A" the CP did not choose, an "undefined" — either invents a value or
+// leaves an inspector unable to tell "never asked" from "asked and blank".
+// So the sanctioned string is stripped out first and the rest of the render is
+// held to the old rule: no placeholder survives.
 const PLACEHOLDERS = ['N/A', 'Not recorded', 'No data available', '—', 'undefined', 'null'];
+const residue = (out) => out.split(NOT_RECORDED).join('');
 
 const SPARSE = {
   hot_work: { work_type: 'Cutting' },
@@ -331,14 +358,33 @@ const KEPT = {
   subcontractor_orientation: 'solo worker',
 };
 
+// The field that is absent in each sparse payload and MUST say so. osha_log is
+// not listed: it is rows only, so its absences are case (b), not case (a).
+const ABSENT_FIELD = {
+  hot_work: t('fLocation'),
+  crane_operations: t('crOperator'),
+  excavation_monitoring: t('exDepth'),
+  concrete_operations: t('coSupplier'),
+  scaffold_maintenance: t('scErector'),
+  ssc_daily_safety_log: t('sscAddress'),
+  subcontractor_orientation: t('orTrade'),
+};
+
 for (const [type, data] of Object.entries(SPARSE)) {
   const out = render(doc(type, data, { cp_name: null, cp_signature: null }));
-  const found = PLACEHOLDERS.filter((p) => out.includes(p));
+  const found = PLACEHOLDERS.filter((p) => residue(out).includes(p));
   ok(found.length === 0,
-    `${type}: an unfilled key renders NOTHING${found.length ? ` — found ${JSON.stringify(found)} in ${JSON.stringify(out)}` : ''}`);
+    `${type}: no placeholder OTHER than the sanctioned "— Not recorded"${found.length ? ` — found ${JSON.stringify(found)} in ${JSON.stringify(out)}` : ''}`);
   ok(out.includes(KEPT[type]),
     `${type}: ...and the one key that WAS filled still renders (the rule is not "render nothing")`);
+  if (ABSENT_FIELD[type]) {
+    ok(fieldIsNotRecorded(out, ABSENT_FIELD[type]),
+      `${type}: the absent "${ABSENT_FIELD[type]}" reads exactly "${NOT_RECORDED}" — not blank, not invented`);
+  }
 }
+ok(!render(doc('osha_log', SPARSE.osha_log, { cp_name: null, cp_signature: null }))
+  .includes(NOT_RECORDED),
+  'osha_log: a row-only type has no fields to mark absent — its empty cells stay empty (case b)');
 
 // An untouched EMPTY_* seed row is not a record line.
 const seedOnly = [
@@ -351,6 +397,8 @@ for (const [type, data, titleKey] of seedOnly) {
   const out = render(doc(type, data, { cp_name: null, cp_signature: null }));
   ok(!out.includes(t(titleKey)),
     `${type}: a table of nothing but untouched EMPTY_* seed rows is not rendered at all`);
+  ok(!out.includes(NOT_RECORDED),
+    `${type}: ...and the dropped seed row does NOT come back as a row of "— Not recorded" (case b, not case a)`);
 }
 
 // The excavation over-threshold flag is meaningless without a reading.
@@ -359,6 +407,18 @@ const noReading = render(doc('excavation_monitoring',
   { cp_name: null, cp_signature: null }));
 ok(!noReading.includes(t('exWithin')) && !noReading.includes(t('exOver')),
   'excavation_monitoring: over/within threshold is suppressed unless BOTH readings are there');
+ok(!noReading.includes(t('exVibration')),
+  'excavation_monitoring: with NEITHER reading the whole vibration section stays absent, not a block of "— Not recorded"');
+
+// One reading IS a section — and the status it cannot support says so.
+const oneReading = render(doc('excavation_monitoring',
+  { vibration_threshold: '0.50', vibration_over_threshold: false },
+  { cp_name: null, cp_signature: null }));
+ok(oneReading.includes(`${t('exThreshold')}: 0.50`)
+  && fieldIsNotRecorded(oneReading, t('exCurrent'))
+  && fieldIsNotRecorded(oneReading, t('fStatus'))
+  && !oneReading.includes(t('exWithin')),
+  'excavation_monitoring: a half-recorded vibration reads "— Not recorded" for the rest, never a fabricated "within threshold"');
 
 // Concrete slump `pass` is tri-state: null is not Fail.
 const nullPass = render(doc('concrete_operations',
@@ -372,6 +432,26 @@ const noSigKey = render(doc('subcontractor_orientation', { worker_name: 'ann wor
   { cp_name: null, cp_signature: null }));
 ok(!noSigKey.includes(t('orUnsigned')) && !noSigKey.includes(t('orAck')),
   'subcontractor_orientation: an ABSENT worker_signature key says nothing (not UNSIGNED)');
+
+// ════════════════════════════════════════════════════════════════════════════
+//  2b — false and 0 are ANSWERS, never absences
+// ════════════════════════════════════════════════════════════════════════════
+const falsy = render(doc('ssc_daily_safety_log', {
+  workers_on_site_count: 0,
+  incidents_reported: false,
+  ppe_compliance: true,
+  site_conditions: '',
+  corrective_actions_taken: 'reset the guardrail.',
+}, { cp_name: null, cp_signature: null }));
+ok(falsy.includes(`${t('sscWorkers')}: 0`),
+  '0 workers on site is a COUNT the CP recorded — it renders as 0, not as "— Not recorded"');
+ok(falsy.includes(`${t('s_incidents_reported')} | ✕`)
+  && falsy.includes(`${t('s_ppe_compliance')} | ✓`),
+  'a captured false renders as an explicit ✕ and a captured true as ✓ — neither is an absence');
+ok(rowIsNotRecorded(falsy, t('s_safety_meetings_held')),
+  '...while the toggle the document never carried reads "— Not recorded" alongside them');
+ok(fieldIsNotRecorded(falsy, t('sscSiteConditions')),
+  'an empty-string narrative is still an absence, and says so');
 
 // ════════════════════════════════════════════════════════════════════════════
 //  3 — crew_id, not the phantom crew_name

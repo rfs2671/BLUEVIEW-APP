@@ -18,11 +18,20 @@ WHAT IS ASSERTED
   Per type: the REAL payload keys render, taken from the editor that writes
   them — not from a hand-copied list, and not invented.
 
-  ABSENCE: a key the CP never filled must render NOTHING. Every renderer is
-  driven twice, once with a full payload and once with a sparse one, and the
-  sparse pass asserts the placeholders ("N/A", "Not recorded", em-dash rows)
-  do NOT appear. On a compliance record a placeholder claims the question was
-  asked and left blank, which is a different statement than "not captured".
+  ABSENCE, in the two forms it takes:
+    (a) a FIELD missing from a section that IS rendered reads exactly
+        "&mdash; Not recorded" — the words generate_combined_report already
+        prints for the same fact (server.py:17486, :17553, :17612, :17696,
+        :17862, :17916), so one record does not read differently on two
+        compliance surfaces. NO OTHER placeholder is tolerated: every renderer
+        is driven twice, once full and once sparse, and the sparse pass strips
+        the sanctioned string and asserts nothing else ("N/A", a bare em-dash,
+        "No data available") survives. An absence must never pass for a value.
+    (b) a ROW missing from a repeating list is DROPPED. An untouched EMPTY_*
+        seed row must NOT come back as a row of "&mdash; Not recorded" — that
+        would invent a record of work nobody logged. Same for a whole section
+        whose payload is entirely absent.
+  False and 0 are captured VALUES and render as captured, never as absences.
 
   The admin surface: get_report_preview counts photos stamped
   enhance_status="failed", and still 403s a non-admin.
@@ -93,19 +102,44 @@ def body_of(html: str) -> str:
     return html[start:end] if start >= 0 and end > start else html
 
 
-# The strings that must NEVER appear for a key the CP did not fill.
+# The ONE sanctioned way to say "the app has no value for this", copied from
+# the convention generate_combined_report already prints.
+NOT_RECORDED = "&mdash; Not recorded"
+
+# Everything else that must NEVER appear for a key the CP did not fill.
 PLACEHOLDERS = ["N/A", "Not recorded", "&mdash;", "No data available"]
 
 
 def assert_no_placeholders(case: unittest.TestCase, html: str, label: str):
-    body = body_of(html)
+    """The sanctioned string is stripped first; anything left over is a
+    placeholder that either invents a value or leaves an inspector unable to
+    tell "never asked" from "asked and left blank"."""
+    body = body_of(html).replace(NOT_RECORDED, "")
     for p in PLACEHOLDERS:
         case.assertNotIn(
             p, body,
             f"{label}: rendered the placeholder {p!r} for a key the payload "
-            f"does not carry — that tells an inspector the CP was asked and "
-            f"left it blank.\n{body}",
+            f"does not carry, and it is not the sanctioned {NOT_RECORDED!r}.\n{body}",
         )
+
+
+def assert_field_not_recorded(case: unittest.TestCase, html: str, label: str):
+    """Case (a): the field is on the form, the app has no value, and it SAYS
+    so in the one sanctioned form — not blank, not invented."""
+    case.assertIn(
+        f'<strong style="color:#0A1929;">{label}:</strong> {NOT_RECORDED}',
+        body_of(html),
+        f"absent {label!r} did not render {NOT_RECORDED!r}",
+    )
+
+
+def assert_row_not_recorded(case: unittest.TestCase, html: str, label: str):
+    """Case (a) over a fixed checklist: an untouched item says so rather than
+    rendering a silent 'No' the CP never gave."""
+    case.assertRegex(
+        body_of(html), re.escape(label) + r"</td><td[^>]*>" + re.escape(NOT_RECORDED),
+        f"untouched checklist item {label!r} did not render {NOT_RECORDED!r}",
+    )
 
 
 def assert_not_the_blank_fallback(case: unittest.TestCase, html: str, log_type: str):
@@ -284,7 +318,9 @@ class EightTypesRenderTest(unittest.TestCase):
             self.assertIn(expect, html, f"crane lost {expect!r}")
         # an untouched EMPTY_LOAD_ENTRY seed is not a lift and is not a row
         self.assertEqual(html.count("<tr><td"), html.count("<tr><td"))
-        self.assertNotIn("Load Chart Available", html)   # key absent from the map
+        # a checklist key the map does not carry says so, never a silent "No"
+        assert_row_not_recorded(self, html, "Load Chart Available")
+        self.assertRegex(html, r"Outriggers Deployed</td><td[^>]*>No<")
 
     def test_excavation_monitoring(self):
         html = render(doc("excavation_monitoring", EXCAVATION_FULL))
@@ -303,7 +339,8 @@ class EightTypesRenderTest(unittest.TestCase):
                        "Clear", "68", "10:05", "4.5", "Pass", "13:40", "6.0",
                        "Fail", "Shores Plumb", "No Gaps"):
             self.assertIn(expect, html, f"concrete lost {expect!r}")
-        self.assertNotIn("Bracing Adequate", html)       # key absent from the map
+        # a formwork key the map does not carry says so, never a silent "No"
+        assert_row_not_recorded(self, html, "Bracing Adequate")
 
     def test_scaffold_maintenance(self):
         html = render(doc("scaffold_maintenance", SCAFFOLD_FULL))
@@ -316,7 +353,8 @@ class EightTypesRenderTest(unittest.TestCase):
             self.assertIn(expect, html, f"scaffold lost {expect!r}")
         # an N/A the CP CHOSE is a real answer and survives
         self.assertRegex(html, r"Is the deck clean and free of debris\?</td><td[^>]*>N/A<")
-        self.assertNotIn("Are pipe clamps tight?", html)  # unanswered
+        # an UNANSWERED question says so, never a silent "NO"
+        assert_row_not_recorded(self, html, "Are pipe clamps tight?")
 
     def test_ssc_daily_safety_log(self):
         html = render(doc("ssc_daily_safety_log", SSC_FULL))
@@ -349,7 +387,8 @@ class EightTypesRenderTest(unittest.TestCase):
         # worker_signature is written as null on manual entries — an
         # unattested acknowledgment must never read as complete.
         self.assertIn("UNSIGNED", html)
-        self.assertNotIn("Inspect harness before each use", html)  # not in map
+        # an item the editor's map does not carry says so, never a silent "No"
+        assert_row_not_recorded(self, html, "Inspect harness before each use")
 
     def test_kiosk_orientation_checklist_shape_also_renders(self):
         """The kiosk writes {checked, checked_at} and keys the map by the
@@ -363,10 +402,13 @@ class EightTypesRenderTest(unittest.TestCase):
         }))
         self.assertIn(sentence, html)
         self.assertNotIn("Site-Specific Hazards And Hazardous", html)
+        # ...and the 18 in-app items are NOT dragged in as fabricated absences
+        # against a document that was filled on a different form.
+        self.assertNotIn("Hard hats required at all times on site", html)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-#  2 — an ABSENT key renders NOTHING
+#  2 — an ABSENT FIELD says so, in the one sanctioned form
 # ══════════════════════════════════════════════════════════════════════════
 
 SPARSE = {
@@ -382,13 +424,42 @@ SPARSE = {
 }
 
 
-class AbsentKeyRendersNothingTest(unittest.TestCase):
+# The field that is absent in each sparse payload and MUST say so. osha_log is
+# not listed: it renders rows only, so its absences are case (b), not case (a).
+ABSENT_FIELD = {
+    "hot_work": "Location",
+    "crane_operations": "Operator",
+    "excavation_monitoring": "Excavation Depth",
+    "concrete_operations": "Supplier",
+    "scaffold_maintenance": "Scaffold Erector",
+    "ssc_daily_safety_log": "Project Address",
+    "subcontractor_orientation": "Trade",
+}
 
-    def test_no_placeholder_for_any_unfilled_key(self):
+
+class AbsentKeyIsStatedTest(unittest.TestCase):
+
+    def test_no_placeholder_other_than_the_sanctioned_one(self):
         for log_type, data in SPARSE.items():
             with self.subTest(log_type=log_type):
                 html = render(doc(log_type, data, cp_name=None))
                 assert_no_placeholders(self, html, log_type)
+
+    def test_an_absent_field_reads_not_recorded(self):
+        """Not blank, and not an invented value: the app has no value for the
+        field and the record says exactly that — the same words
+        generate_combined_report prints."""
+        for log_type, label in ABSENT_FIELD.items():
+            with self.subTest(log_type=log_type):
+                html = render(doc(log_type, SPARSE[log_type], cp_name=None))
+                assert_field_not_recorded(self, html, label)
+
+    def test_a_row_only_type_has_no_field_absences_to_state(self):
+        """osha_log renders rows and nothing else. Its empty CELLS stay empty:
+        the row is the record, and there is no unanswered form field."""
+        body = body_of(render(doc("osha_log", SPARSE["osha_log"], cp_name=None)))
+        self.assertNotIn(NOT_RECORDED, body)
+        self.assertIn("Solo worker", body)
 
     def test_the_one_captured_key_still_renders(self):
         """The absence rule must not be satisfied by rendering nothing at
@@ -409,7 +480,10 @@ class AbsentKeyRendersNothingTest(unittest.TestCase):
 
     def test_empty_seed_rows_are_dropped_not_rendered_blank(self):
         """Every row editor seeds one EMPTY_* row. An untouched seed is not a
-        record line and must not appear as an empty row."""
+        record line: it must not appear as an empty row, and it must not come
+        back as a row of "— Not recorded" either. A row that does not exist is
+        not an unrecorded field — printing one would invent a record of work
+        nobody logged (case b, not case a)."""
         cases = [
             ("crane_operations", {"load_entries": [{"time": "", "description": "",
                                                     "load_weight": "", "radius": ""}]}),
@@ -428,15 +502,55 @@ class AbsentKeyRendersNothingTest(unittest.TestCase):
                 # is a <table> with none, so <th matches only a real table.
                 self.assertNotIn("<th ", body,
                                  f"{log_type} rendered a table for seed rows only")
+                self.assertNotIn(
+                    NOT_RECORDED, body,
+                    f"{log_type} turned a dropped seed row into a row of "
+                    f"{NOT_RECORDED!r} — that is a record of work nobody logged")
 
     def test_excavation_over_threshold_is_suppressed_without_both_readings(self):
         """The flag is meaningless without a reading — a bare "Within
-        threshold" over no measurement is a finding the CP never made."""
+        threshold" over no measurement is a finding the CP never made. With
+        NEITHER reading there is no vibration section to annotate at all."""
         html = render(doc("excavation_monitoring", {
             "vibration_over_threshold": False, "soil_type": "Rock",
         }, cp_name=None))
         self.assertNotIn("Within threshold", html)
         self.assertNotIn("Over threshold", html)
+        self.assertNotIn("Vibration", body_of(html))
+
+    def test_a_half_recorded_vibration_states_what_is_missing(self):
+        """One reading IS a section — and the status it cannot support reads
+        "— Not recorded", exactly as generate_combined_report renders it
+        (server.py:17606-17612)."""
+        html = render(doc("excavation_monitoring", {
+            "vibration_threshold": "0.50", "vibration_over_threshold": False,
+        }, cp_name=None))
+        self.assertIn("Vibration", body_of(html))
+        self.assertIn('<strong style="color:#0A1929;">Threshold:</strong> 0.50', html)
+        assert_field_not_recorded(self, html, "Current")
+        assert_field_not_recorded(self, html, "Status")
+        self.assertNotIn("Within threshold", html)
+
+    def test_false_and_zero_are_captured_values_not_absences(self):
+        """0 photos, 0 workers, a `false` on a checklist — each is an ANSWER.
+        None of them may render as "— Not recorded"."""
+        html = render(doc("ssc_daily_safety_log", {
+            "workers_on_site_count": 0,
+            "incidents_reported": False,
+            "ppe_compliance": True,
+            "site_conditions": "",
+            "corrective_actions_taken": "reset the guardrail.",
+        }, cp_name=None))
+        self.assertIn('<strong style="color:#0A1929;">Workers on Site:</strong> 0', html)
+        self.assertRegex(html, r"Incidents Reported</td><td[^>]*>No<")
+        self.assertRegex(html, r"PPE Compliance</td><td[^>]*>Yes<")
+        # ...while a flag the document never carried says so alongside them
+        assert_row_not_recorded(self, html, "Safety Meetings Held")
+        # an empty-string narrative is still an absence, and says so
+        self.assertIn(
+            '<strong style="color:#0A1929;">Site Conditions:</strong> ' + NOT_RECORDED,
+            html,
+        )
 
     def test_concrete_null_pass_never_renders_as_fail(self):
         html = render(doc("concrete_operations", {

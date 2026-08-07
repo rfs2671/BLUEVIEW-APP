@@ -103,6 +103,7 @@ export default {
     fItem: 'Elemento',
     fConfirmed: 'Confirmado',
     fStatus: 'Estado',
+    fNotRecorded: '— Sin registrar',
 
     hwWorkType: 'Tipo de Trabajo',
     hwWorkerCert: 'N.º de Certificado del Trabajador',

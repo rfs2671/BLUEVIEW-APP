@@ -684,10 +684,22 @@ export default function SiteLogbooksViewer() {
   //  (server.py generate_single_logbook_html) key for key.
   // ===========================================================================
 
-  // ABSENT MEANS ABSENT. A key the CP never filled renders NOTHING — no dash,
-  // no "N/A", no empty row. A placeholder says the question was asked and left
-  // blank, which is a different claim about a compliance record. false and 0
-  // ARE captured values and do render.
+  // ABSENT IS STATED, NEVER IMPLIED. A key the CP never filled renders
+  // "— Not recorded" — the same words the PDF/report surface already prints
+  // for the same fact (server.py generate_combined_report). One record must
+  // not read differently on two compliance surfaces, and a blank is ambiguous:
+  // an inspector cannot tell whether the field was never asked or asked and
+  // left unanswered.
+  //
+  // TWO KINDS OF ABSENCE, and they are NOT the same:
+  //   (a) a FIELD missing from a section that IS rendered -> "— Not recorded"
+  //   (b) a ROW missing from a repeating list (load_entries,
+  //       adjacent_buildings, slump_tests, osha entries) -> DROPPED. A row
+  //       that does not exist is not an unrecorded field, and printing one
+  //       would invent a record of work nobody logged.
+  // A whole SECTION whose payload is entirely absent stays absent too.
+  //
+  // false and 0 ARE captured values and do render.
   const hasVal = (d, key) => {
     if (!d || typeof d !== 'object' || !(key in d)) return false;
     const v = d[key];
@@ -714,27 +726,43 @@ export default function SiteLogbooksViewer() {
       : str;
   };
 
-  // Info rows for the keys that ARE on the document, in the order given.
+  // Info rows for every field on the form, in the order given. Case (a): a key
+  // the CP never filled still gets its row, reading "— Not recorded", so an
+  // inspector can see WHICH questions went unanswered. The exception is the
+  // whole-section case — if not one spec is on the document there is no
+  // section to annotate and the box is not rendered at all.
   const DocFields = ({ data, specs }) => {
-    const rows = specs.filter(([key]) => hasVal(data, key));
-    if (rows.length === 0) return null;
+    if (!specs.some(([key]) => hasVal(data, key))) return null;
     return (
       <View style={s.docInfoBox}>
-        {rows.map(([key, label, fmt]) => (
-          <DocInfoRow key={key} text={`${label}: ${fmt ? fmt(data[key]) : data[key]}`} />
+        {specs.map(([key, label, fmt]) => (
+          <DocInfoRow
+            key={key}
+            text={`${label}: ${hasVal(data, key)
+              ? (fmt ? fmt(data[key]) : data[key])
+              : t('fNotRecorded')}`}
+          />
         ))}
       </View>
     );
   };
 
-  // A sparse toggle map. The editors seed these as {} and write a key only
-  // once the CP taps it, so `present and false` is an explicit no while
-  // `absent` is untouched — only the present keys are listed.
+  // A sparse toggle map over a FIXED checklist — case (a). The editors seed
+  // these as {} and write a key only once the CP taps it, so `present and
+  // false` is an explicit no while `absent` is untouched: an untouched item
+  // reads "— Not recorded", never a silent ✕. An absent or empty map is a
+  // whole absent section and renders nothing.
+  //
+  // The full checklist is only asserted once the map is keyed the way the
+  // in-app editor keys it. The kiosk keys its orientation checklist by the
+  // item's full English SENTENCE (backend/checkin.html:674-687), so a map
+  // carrying none of the known keys renders only what it carries.
   const ToggleTable = ({ map, items, title, colLabel, icon }) => {
     if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
     const labels = Object.fromEntries(items);
     const known = new Set(items.map(([k]) => k));
-    const order = items.filter(([k]) => k in map).map(([k]) => k)
+    const anyKnown = items.some(([k]) => k in map);
+    const order = (anyKnown ? items.map(([k]) => k) : [])
       .concat(Object.keys(map).filter((k) => !known.has(k)));
     if (order.length === 0) return null;
     return (
@@ -744,15 +772,17 @@ export default function SiteLogbooksViewer() {
         {order.map((k) => (
           <DocTableRow key={k} cells={[
             { text: labels[k] || keyLabel(k), flex: 3 },
-            { text: flag(map[k]), flex: 0.8 },
+            { text: k in map ? flag(map[k]) : t('fNotRecorded'), flex: 0.8 },
           ]} />
         ))}
       </>
     );
   };
 
-  // A row list. An entirely untouched EMPTY_* seed row is dropped rather than
-  // rendered as a blank record line; a missing CELL renders empty, not a dash.
+  // A row list — case (b). An entirely untouched EMPTY_* seed row is DROPPED
+  // rather than rendered as a line of "— Not recorded": a row that does not
+  // exist is not an unrecorded field. Inside a row that DOES exist, a missing
+  // cell stays empty — the row itself is the record.
   const RowTable = ({ title, icon, headers, rows }) => {
     if (!rows.length) return null;
     return (
@@ -875,9 +905,10 @@ export default function SiteLogbooksViewer() {
     const data = log.data || {};
     const thr = String(data.vibration_threshold || '').trim();
     const cur = String(data.vibration_current || '').trim();
-    // The over-threshold flag is only meaningful ALONGSIDE a reading. With no
-    // reading it is not shown — a bare "Within threshold" over no measurement
-    // is a finding the CP never made.
+    // The over-threshold flag is only meaningful ALONGSIDE a reading. Without
+    // both readings the STATUS reads "— Not recorded" — a bare "Within
+    // threshold" over no measurement is a finding the CP never made. With
+    // NEITHER reading there is no vibration section to annotate at all.
     const showStatus = !!thr && !!cur && hasVal(data, 'vibration_over_threshold');
     // Units and per-reading timestamps are NOT captured, so no unit rides in
     // the headers and there is no time column.
@@ -898,15 +929,16 @@ export default function SiteLogbooksViewer() {
           ['groundwater_observed', t('exGroundwater'), flag],
           ['atmospheric_testing', t('exAtmospheric'), flag],
         ]} />
-        {(thr || cur || showStatus) && (
+        {(!!thr || !!cur) && (
           <>
             <DocSectionLabel icon={AlertTriangle} label={t('exVibration')} color={semantic.neutral} />
             <View style={s.docInfoBox}>
-              {!!thr && <DocInfoRow text={`${t('exThreshold')}: ${thr}`} />}
-              {!!cur && <DocInfoRow text={`${t('exCurrent')}: ${cur}`} />}
-              {showStatus && (
-                <DocInfoRow text={`${t('fStatus')}: ${data.vibration_over_threshold ? t('exOver') : t('exWithin')}`} />
-              )}
+              <DocInfoRow text={`${t('exThreshold')}: ${thr || t('fNotRecorded')}`} />
+              <DocInfoRow text={`${t('exCurrent')}: ${cur || t('fNotRecorded')}`} />
+              <DocInfoRow text={`${t('fStatus')}: ${showStatus
+                ? (data.vibration_over_threshold ? t('exOver') : t('exWithin'))
+                : t('fNotRecorded')}`}
+              />
             </View>
           </>
         )}
@@ -1007,12 +1039,15 @@ export default function SiteLogbooksViewer() {
     const labels = Object.fromEntries(questions);
     const known = new Set(questions.map(([k]) => k));
     // Answers are YES / NO / N/A strings. An N/A the CP CHOSE is a real answer
-    // and shows as chosen; an UNANSWERED question is not listed at all.
-    const order = questions.filter(([k]) => hasVal(answers, k)).map(([k]) => k)
+    // and shows as chosen; an UNANSWERED question reads "— Not recorded",
+    // never a silent NO. A form with no answers at all is a whole absent
+    // section and drops the table.
+    const anyAnswered = questions.some(([k]) => hasVal(answers, k));
+    const order = (anyAnswered ? questions.map(([k]) => k) : [])
       .concat(Object.keys(answers).filter((k) => !known.has(k) && hasVal(answers, k)));
     const rows = order.map((k) => [
       { text: labels[k] || keyLabel(k), flex: 3 },
-      { text: String(answers[k]), flex: 0.8 },
+      { text: hasVal(answers, k) ? String(answers[k]) : t('fNotRecorded'), flex: 0.8 },
     ]);
     return (
       <View style={s.docContent}>
@@ -1043,20 +1078,29 @@ export default function SiteLogbooksViewer() {
   // frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save)
   const renderSscDailySafetyLog = (log) => {
     const data = log.data || {};
-    const flags = [
+    // The five compliance toggles are a fixed list: once ANY of them is on the
+    // document the rest read "— Not recorded" rather than dropping out of the
+    // table. None at all is a whole absent section.
+    const FLAGS = [
       ['incidents_reported', t('s_incidents_reported')],
       ['safety_meetings_held', t('s_safety_meetings_held')],
       ['fire_protection_in_place', t('s_fire_protection_in_place')],
       ['housekeeping_satisfactory', t('s_housekeeping_satisfactory')],
       ['ppe_compliance', t('s_ppe_compliance')],
-    ].filter(([k]) => hasVal(data, k));
-    const narrative = [
+    ];
+    const flags = FLAGS.some(([k]) => hasVal(data, k)) ? FLAGS : [];
+    // An unwritten narrative reads "— Not recorded", never an asserted "none"
+    // that could pass for a negative finding the CP never made.
+    const NARRATIVE = [
       ['site_conditions', t('sscSiteConditions')],
       ['safety_violations_observed', t('sscViolations')],
       ['corrective_actions_taken', t('sscCorrective')],
-    ].filter(([k]) => hasVal(data, k));
-    // Incident detail is only meaningful when an incident was reported.
-    const showIncident = !!data.incidents_reported && hasVal(data, 'incident_details');
+    ];
+    // Incident detail is only meaningful when an incident was reported — but
+    // if one WAS, a missing detail is an unanswered question, not silence.
+    const showIncident = !!data.incidents_reported;
+    const narrative = (showIncident || NARRATIVE.some(([k]) => hasVal(data, k)))
+      ? NARRATIVE : [];
     return (
       <View style={s.docContent}>
         <DocFields data={data} specs={[
@@ -1071,7 +1115,8 @@ export default function SiteLogbooksViewer() {
             <DocTableRow isHeader cells={[{ text: t('fItem'), flex: 3 }, { text: t('fStatus'), flex: 0.8 }]} />
             {flags.map(([k, label]) => (
               <DocTableRow key={k} cells={[
-                { text: label, flex: 3 }, { text: flag(data[k]), flex: 0.8 },
+                { text: label, flex: 3 },
+                { text: hasVal(data, k) ? flag(data[k]) : t('fNotRecorded'), flex: 0.8 },
               ]} />
             ))}
             {/* These five are ToggleRows seeded false, so a rendered "off" may
@@ -1084,10 +1129,15 @@ export default function SiteLogbooksViewer() {
           <>
             <DocSectionLabel icon={FileText} label={t('sscNarrative')} color={semantic.neutral} />
             {narrative.map(([k, label]) => (
-              <Text key={k} style={s.docParagraph}>{`${label}: ${data[k]}`}</Text>
+              <Text key={k} style={s.docParagraph}>
+                {`${label}: ${hasVal(data, k) ? data[k] : t('fNotRecorded')}`}
+              </Text>
             ))}
             {showIncident && (
-              <Text style={s.docParagraph}>{`${t('sscIncidentDetails')}: ${data.incident_details}`}</Text>
+              <Text style={s.docParagraph}>
+                {`${t('sscIncidentDetails')}: ${hasVal(data, 'incident_details')
+                  ? data.incident_details : t('fNotRecorded')}`}
+              </Text>
             )}
           </>
         )}
@@ -1160,19 +1210,24 @@ export default function SiteLogbooksViewer() {
     const data = log.data || {};
     // The kiosk writes {checked, checked_at} per item and keys it by the item's
     // full English sentence (backend/checkin.html:674-687, 1574-1579); the
-    // in-app editor writes key -> bool. Both shapes render.
+    // in-app editor writes key -> bool. Both shapes render. An item the
+    // editor's map does not carry reads "— Not recorded"; a map keyed the
+    // kiosk way carries none of the known keys, so it renders only its own
+    // sentences rather than 18 fabricated absences.
     const checklist = data.checklist;
     const items = ORIENTATION_ITEMS();
     const labels = Object.fromEntries(items);
     const known = new Set(items.map(([k]) => k));
-    const order = (checklist && typeof checklist === 'object' && !Array.isArray(checklist))
-      ? items.filter(([k]) => k in checklist).map(([k]) => k)
+    const isMap = !!checklist && typeof checklist === 'object' && !Array.isArray(checklist);
+    const anyKnown = isMap && items.some(([k]) => k in checklist);
+    const order = isMap
+      ? (anyKnown ? items.map(([k]) => k) : [])
         .concat(Object.keys(checklist).filter((k) => !known.has(k)))
       : [];
     const checkedOf = (v) => (v && typeof v === 'object' ? !!v.checked : !!v);
     const rows = order.map((k) => [
       { text: labels[k] || keyLabel(k), flex: 3 },
-      { text: flag(checkedOf(checklist[k])), flex: 0.8 },
+      { text: k in checklist ? flag(checkedOf(checklist[k])) : t('fNotRecorded'), flex: 0.8 },
     ]);
     return (
       <View style={s.docContent}>
