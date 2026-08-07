@@ -1448,9 +1448,21 @@ class TradeAssignment(BaseModel):
     """One subcontractor assignment on a project.
     trade: the construction trade (e.g. 'HVAC / Mechanical')
     company: the sub doing that trade on this project (e.g. 'Air Star')
+    id: stable server-minted row id. DECLARED so Pydantic v2 does not
+        silently drop it (default model_config is extra="ignore", so an
+        undeclared `id` never reaches the handler at all — a frontend-only
+        fix is impossible). It is nonetheless SERVER-OWNED: update_project
+        discards whatever the client sends and re-derives the id by
+        matching the row against the stored roster (see
+        _merge_trade_assignments).
+    status: "inactive" marks a soft-deleted row. MUST stay a string —
+        ProjectResponse.trade_assignments is List[Dict[str, str]], so a
+        bool (or a None id) in the stored array 500s every later GET.
     """
     trade: str
     company: str
+    id: Optional[str] = None
+    status: Optional[str] = None
 
 
 class ProjectGate(BaseModel):
@@ -8694,7 +8706,21 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
-    
+
+    # Roster rows carry a STABLE, SERVER-MINTED id. The $set below replaces
+    # the whole array, so the ids cannot come from the client — they are
+    # re-derived here by matching each submitted row against the stored
+    # roster. Note the dict-comprehension above only filters None at the TOP
+    # level, so an `id: None` inside a row would still reach Mongo and then
+    # 500 the ProjectResponse read-back; _merge_trade_assignments emits
+    # strings only.
+    if update_data.get("trade_assignments") is not None:
+        _existing_project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        update_data["trade_assignments"] = _merge_trade_assignments(
+            (_existing_project or {}).get("trade_assignments") or [],
+            update_data["trade_assignments"],
+        )
+
     # Normalize email list to lowercase if present
     if "report_email_list" in update_data and update_data["report_email_list"] is not None:
         update_data["report_email_list"] = [e.lower() for e in update_data["report_email_list"]]
@@ -9360,6 +9386,114 @@ def _roster_key(value) -> str:
     leading/trailing whitespace, internal whitespace, and renames.
     """
     return str(value or "").strip().casefold()
+
+
+def _assignment_is_inactive(row) -> bool:
+    """True for a soft-deleted roster row.
+
+    Soft-delete state is the STRING "inactive" on the row's `status` key,
+    NOT a boolean: ProjectResponse.trade_assignments is
+    List[Dict[str, str]], so a bool stored in the array makes every later
+    GET /projects/{id} fail validation with a 500.
+    """
+    if not isinstance(row, dict):
+        return False
+    return _roster_key(row.get("status")) == "inactive"
+
+
+def _active_assignments(project) -> List[Dict[str, Any]]:
+    """The project's roster rows that are still selectable.
+
+    Rows are passed through UNMODIFIED (no rebuild) so callers that
+    compare the raw stored rows keep seeing exactly what Mongo holds.
+    """
+    rows = (project or {}).get("trade_assignments") or []
+    return [r for r in rows if not _assignment_is_inactive(r)]
+
+
+def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str]]:
+    """Merge a client-submitted roster onto the stored one, server-side.
+
+    Ids are SERVER-OWNED. The client's `id` is discarded outright; an
+    existing row's id is carried forward when the incoming row matches it
+    on the SAME normalization the check-in strict-roster match uses
+    (_roster_key over trade + company), and only a genuinely new pair
+    mints one. Without this, PUT /projects/{id} — which $sets the whole
+    array — would let any id-less client wipe every id on the roster.
+
+    Rows the client omits are NOT dropped either: they are retained with
+    status "inactive". Nothing here ever hard-deletes a roster row, so an
+    older client (or a stale tab) cannot destroy roster history.
+
+    Every emitted value is a string — `id: None` must never reach Mongo,
+    because ProjectResponse.trade_assignments is List[Dict[str, str]] and
+    a None value 500s the read-back on this very request.
+    """
+    existing_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for row in existing_rows or []:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if not t or not c:
+            continue
+        existing_by_key.setdefault((_roster_key(t), _roster_key(c)), row)
+
+    merged: List[Dict[str, str]] = []
+    seen_keys = set()
+    for row in incoming_rows or []:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if not t or not c:
+            continue
+        key = (_roster_key(t), _roster_key(c))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        prior = existing_by_key.get(key) or {}
+        row_id = str(prior.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
+        out: Dict[str, str] = {"trade": t, "company": c, "id": row_id}
+        # Only an explicit "inactive" is persisted; an active row keeps the
+        # historical {trade, company, id} shape with no status key.
+        if _assignment_is_inactive(row):
+            out["status"] = "inactive"
+        merged.append(out)
+
+    # Anything the client left out is soft-deleted, never dropped.
+    for key, row in existing_by_key.items():
+        if key in seen_keys:
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        row_id = str(row.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
+        merged.append({
+            "trade": t, "company": c, "id": row_id, "status": "inactive",
+        })
+    return merged
+
+
+def _cp_corrected_worker_trade(worker):
+    """The (trade, company) a CP explicitly assigned to this worker, else None.
+
+    Written ONLY by POST /checkins/{id}/assign-trade, which stamps
+    trade_source="cp_assignment" alongside the pair. The marker is what
+    makes the pair trustworthy enough to reuse on a later check-in — a
+    trade the worker typed for themselves carries no such marker and must
+    still be flagged for review.
+    """
+    if not isinstance(worker, dict):
+        return None
+    if str(worker.get("trade_source") or "") != "cp_assignment":
+        return None
+    t = str(worker.get("trade") or "").strip()
+    c = str(worker.get("company") or "").strip()
+    if not t or t.casefold() == "unassigned":
+        return None
+    if not c or c.casefold() == "unassigned":
+        return None
+    return (t, c)
 
 
 @api_router.post("/checkin/register-and-checkin")
