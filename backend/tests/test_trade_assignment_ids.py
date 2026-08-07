@@ -13,7 +13,9 @@ server-side (_merge_trade_assignments). These tests pin:
     same read-back
   • rows the client omits are soft-deleted, never hard-deleted
   • inactive rows are hidden from every consumer that offers a NEW
-    selection
+    selection — with ONE deliberate exception: assign-trade accepts them,
+    because a CP may correct a check-in from any day and the sub may have
+    been soft-deleted since
 """
 
 from __future__ import annotations
@@ -334,6 +336,35 @@ _MIXED_ROSTER = [
 ]
 
 
+def _assign_trade(trade, company):
+    """POST assign-trade against a project whose roster is _MIXED_ROSTER."""
+    db = _FakeDb()
+    db.checkins.set_find_one({
+        "_id": "chk1", "project_id": "proj1", "worker_id": "w1",
+        "needs_trade_assignment": True,
+    })
+    db.projects.set_find_one(_project_doc(trade_assignments=_MIXED_ROSTER))
+    db.workers.set_find_one({"_id": "w1", "name": "Jane", "trade": ""})
+
+    user = {
+        "_id": "u1", "id": "u1", "role": "admin", "company_id": "co_test",
+        "full_name": "Ada Admin", "assigned_projects": [],
+    }
+
+    async def _fake_user():
+        return user
+
+    server.app.dependency_overrides[server.get_current_user] = _fake_user
+    try:
+        with patch.object(server, "db", db):
+            return TestClient(server.app).post(
+                "/api/checkins/chk1/assign-trade",
+                json={"trade": trade, "company": company},
+            )
+    finally:
+        server.app.dependency_overrides.clear()
+
+
 class InactiveHiddenTest(unittest.TestCase):
 
     def test_active_assignments_helper_drops_only_inactive(self):
@@ -380,32 +411,47 @@ class InactiveHiddenTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertIn("not assigned to this project", resp.json()["detail"])
 
-    def test_assign_trade_rejects_an_inactive_pair(self):
+    def test_assign_trade_accepts_an_inactive_pair(self):
+        """The ONE consumer that allows inactive rows.
+
+        A CP may correct a check-in from any day — same-day is not
+        enforced — so a sub soft-deleted since that check-in must still be
+        selectable for it, or the flag on that old row can never be
+        cleared. Safe because assign-trade only fills an empty worker
+        trade and never overwrites one.
+        """
+        resp = _assign_trade("Electrician", "Volt LLC")
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_inactive_pair_is_rejected_at_checkin_but_accepted_by_assign_trade(self):
+        """The asymmetry stated in one place: inactive stays un-selectable
+        for a NEW check-in, and selectable when correcting an old one."""
         db = _FakeDb()
-        db.checkins.set_find_one({
-            "_id": "chk1", "project_id": "proj1", "worker_id": "w1",
-            "needs_trade_assignment": True,
+        db.nfc_tags.set_find_one({
+            "tag_id": "t1", "project_id": "proj1", "status": "active",
         })
         db.projects.set_find_one(_project_doc(trade_assignments=_MIXED_ROSTER))
-        db.workers.set_find_one({"_id": "w1", "name": "Jane", "trade": ""})
+        with patch.object(server, "db", db):
+            gate = TestClient(server.app).post(
+                "/api/checkin/register-and-checkin",
+                json={
+                    "project_id": "proj1", "tag_id": "t1", "name": "Jane",
+                    "phone": "5551234567",
+                    "trade": "Electrician", "company": "Volt LLC",
+                },
+            )
+        self.assertEqual(gate.status_code, 400, gate.text)
 
-        user = {
-            "_id": "u1", "id": "u1", "role": "admin", "company_id": "co_test",
-            "full_name": "Ada Admin", "assigned_projects": [],
-        }
+        assigned = _assign_trade("Electrician", "Volt LLC")
+        self.assertEqual(assigned.status_code, 200, assigned.text)
+        self.assertIs(
+            assigned.json()["needs_trade_assignment"], False,
+        )
 
-        async def _fake_user():
-            return user
-
-        server.app.dependency_overrides[server.get_current_user] = _fake_user
-        try:
-            with patch.object(server, "db", db):
-                resp = TestClient(server.app).post(
-                    "/api/checkins/chk1/assign-trade",
-                    json={"trade": "Electrician", "company": "Volt LLC"},
-                )
-        finally:
-            server.app.dependency_overrides.clear()
+    def test_assign_trade_still_rejects_a_pair_that_is_not_on_the_roster(self):
+        """Allowing inactive rows is not a general escape hatch — a pair the
+        roster has never held is still a 400."""
+        resp = _assign_trade("Plumber", "Rogue LLC")
         self.assertEqual(resp.status_code, 400, resp.text)
 
     def test_flagged_roster_passthrough_hides_inactive(self):

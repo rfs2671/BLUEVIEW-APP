@@ -10948,6 +10948,9 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     The submitted {trade, company} must be one of the project's configured
     trade_assignments — the same strict-roster rule the check-in itself
     enforces, so this cannot introduce a pair the roster doesn't know.
+    Soft-deleted (inactive) rows count here, unlike everywhere else: a CP
+    may correct a check-in from any day, so a sub removed since that
+    check-in must still be selectable for it.
 
     The worker document is updated too (so their next check-in prefills
     correctly), but only when it has no trade yet — an assignment on one
@@ -10984,10 +10987,20 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     # Strict roster: the pair must exist on the project now that the admin has
     # configured trades. Prevents the assign action from becoming a back door
     # around the same validation register_and_checkin applies.
-    # Soft-deleted rows are excluded — the CP must not be able to assign a
-    # worker to a sub that has been removed from the project.
+    #
+    # INACTIVE (soft-deleted) rows are ACCEPTED here — and ONLY here. A CP may
+    # correct a check-in from ANY day; same-day is not enforced. So a sub that
+    # has been removed from the project since that check-in must still be
+    # selectable, otherwise correcting an old row 400s and the flag can never
+    # be cleared. Every other consumer (site-info, register_and_checkin,
+    # /checkin/submit, the flagged passthrough) still filters through
+    # _active_assignments, so a removed sub is never a valid NEW selection.
+    #
+    # This is safe because this path only fills a trade the worker document
+    # does not have and never overwrites one — an inactive pair can therefore
+    # describe history, but cannot rewrite it.
     allowed_pairs = set()
-    for row in _active_assignments(project):
+    for row in (project or {}).get("trade_assignments") or []:
         if not isinstance(row, dict):
             continue
         rt = str(row.get("trade") or "").strip()
