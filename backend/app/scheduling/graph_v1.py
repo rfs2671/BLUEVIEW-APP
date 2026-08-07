@@ -1,13 +1,12 @@
 """graph_v1 — NYC residential interior construction sequence (seed template).
 
 =====================================================================
-RULE CONTENTS PENDING NYC DOB DOMAIN-EXPERT SIGN-OFF — architecture
-stable, sequence VALUES PROVISIONAL. The node set, edge directions, and
-gate placements below encode a standard NYC residential interior fit-out
-sequence, but they have NOT been reviewed by a DOB/expediting expert.
-Treat every node and edge as provisional until sign-off. The engine
-(instantiation, pruning/healing, edge-type-aware layering) is the stable
-part; these contents are data and are expected to change.
+RULE CONTENT PROVENANCE — the node set, edge directions, and gate
+placements below were approved by the operator via direct instruction.
+There is NO signed sign-off document for this content. The engine
+(instantiation, pruning/healing, edge-type-aware layering) is the
+stable part; these contents are data and change when the operator
+changes them.
 =====================================================================
 
 Templates are UNINSTANTIATED: per_floor nodes are expanded once per floor
