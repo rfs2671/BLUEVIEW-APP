@@ -15113,6 +15113,108 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     return serialize_id(updated)
 
 
+async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
+    """Drop the FULL-SIZE inline base64 from a finalized log's photos.
+
+    WHY. Every activity photo is stored twice: as an object in R2, and inlined
+    as base64 under data.activities[].photos[]. Nothing ever removed the inline
+    copy, and base64 inflates the 150KB client-side cap (compressPhoto.js) to
+    ~200KB per photo. That is what walks the document toward MongoDB's 16MB
+    ceiling, and it fails at the worst possible moment: on the end-of-day save
+    of a signed record, after the CP has already done all the work.
+
+    WHY HERE. This runs on finalize, after is_locked is set — NOT inside
+    _enhance_logbook_photos. That task is holding the bytes it has just
+    uploaded and has every incentive to declare its own upload a success. The
+    writer must not be the thing that verifies the writer.
+
+    THE THREE CONDITIONS, all required:
+      1. enhance_status == "done"
+      2. both enhanced_r2_key and thumb_r2_key present
+      3. a live head_object on BOTH keys succeeds
+
+    (3) is the one that carries the weight. (1) and (2) record what the writer
+    BELIEVED at the time; head_object is the only one that asks R2 what it
+    actually HAS. Anything short of all three and the base64 stays, permanently.
+
+    WHAT SURVIVES. The thumbnail base64 is written from the bytes R2 really
+    returns, in the SAME update that unsets the full-size copy, so there is no
+    instant where a photo has neither. It is never purged, under any condition:
+    a small photo beats no photo on a signed legal record, and this must never
+    remove the last copy. See _logbook_photo_sources, whose final rung it is.
+
+    IDEMPOTENT. A photo with no `base64` is skipped, so a second finalize (and
+    the backfill script) can never purge twice, and a purge is never retried
+    into a hole. Keys come from the photo document, never recomputed from
+    (ai, pi) via _logbook_photo_r2_key — activity rows can be reordered, and a
+    recomputed key would then point at a different photo's object.
+    """
+    if not (_r2_client and R2_BUCKET_NAME):
+        return 0            # nothing to prove anything with — keep every byte
+    activities = ((doc or {}).get("data") or {}).get("activities") or []
+    now = datetime.now(timezone.utc)
+    purged = 0
+
+    for ai, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            continue
+        for pi, photo in enumerate(activity.get("photos") or []):
+            if not isinstance(photo, dict) or not photo.get("base64"):
+                continue        # never had one, or already purged
+            if photo.get("enhance_status") != "done":
+                continue        # condition 1
+            enh_key = photo.get("enhanced_r2_key")
+            thumb_key = photo.get("thumb_r2_key")
+            if not enh_key or not thumb_key:
+                continue        # condition 2
+
+            try:
+                # Condition 3. Blocking boto3 off the event loop, as everywhere
+                # else in this file. Either head raising for ANY reason —
+                # missing object, credentials, R2 unreachable — means the proof
+                # was not obtained, and no proof means no purge.
+                for key in (enh_key, thumb_key):
+                    await asyncio.to_thread(
+                        _r2_client.head_object, Bucket=R2_BUCKET_NAME, Key=key,
+                    )
+                # Materialise the retained copy from the bytes R2 actually
+                # returns, BEFORE anything is removed.
+                thumb_b64 = photo.get("thumb_base64")
+                if not thumb_b64:
+                    obj = await asyncio.to_thread(
+                        _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=thumb_key,
+                    )
+                    thumb_b64 = base64.b64encode(obj["Body"].read()).decode("ascii")
+            except Exception as e:
+                logger.warning(
+                    "[photo-purge] R2 did not confirm logbook=%s a=%d p=%d: %r "
+                    "- full-size base64 KEPT", logbook_id, ai, pi, e,
+                )
+                continue
+            if not thumb_b64:
+                continue        # empty object; refuse to trade a copy for nothing
+
+            field = f"data.activities.{ai}.photos.{pi}"
+            await db.logbooks.update_one(
+                {"_id": to_query_id(logbook_id)},
+                {
+                    "$set": {
+                        f"{field}.thumb_base64": thumb_b64,
+                        f"{field}.base64_purged_at": now,
+                    },
+                    "$unset": {f"{field}.base64": ""},
+                },
+            )
+            purged += 1
+
+    if purged:
+        logger.info(
+            "[photo-purge] logbook=%s dropped full-size base64 from %d photo(s)",
+            logbook_id, purged,
+        )
+    return purged
+
+
 @api_router.post("/logbooks/{logbook_id}/finalize")
 async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_user)):
     """Tier 1 (1): END-OF-DAY FINALIZATION — locks the log immutable.
@@ -15167,6 +15269,19 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
             "updated_at": now,
         }},
     )
+    # Reclaim the inline full-size photo bytes now that the log is locked. Only
+    # ever after the lock, and never in the enhance task — see the docstring on
+    # _purge_finalized_photo_base64. `existing` is the pre-lock document; the
+    # update above touched no photo field, so its activities are current.
+    #
+    # Guarded because a finalize that SUCCEEDED must not be reported as failed
+    # over a storage optimisation. The log is already locked at this point; a
+    # skipped purge only means the bytes stay, which is the safe direction and
+    # exactly what happens whenever R2 cannot be reached.
+    try:
+        await _purge_finalized_photo_base64(logbook_id, existing)
+    except Exception as e:
+        logger.warning("[photo-purge] skipped for logbook=%s: %r", logbook_id, e)
     await audit_log("logbook_finalize", str(current_user.get("id", "")), "logbook", logbook_id, {
         "log_type": existing.get("log_type"), "project_id": existing.get("project_id"), "date": existing.get("date"),
     })
