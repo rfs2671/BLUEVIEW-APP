@@ -29,9 +29,33 @@ _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 sys.path.insert(0, str(_BACKEND))
 
+_FRONTEND = _BACKEND.parent / "frontend"
+_I18N = _FRONTEND / "src" / "i18n"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+
+
+def _catalogue_src(locale):
+    """Raw source of one translation catalogue."""
+    return (_I18N / f"{locale}.js").read_text(encoding="utf-8")
+
+
+def _catalogue_entries(locale, namespace):
+    """{key: literal} DEFINED under one namespace of a catalogue.
+
+    The assign-trade strings used to be declared in a `const TRANSLATIONS`
+    map inside app/logbooks/review.jsx. They now live in
+    frontend/src/i18n/{en,es}.js under the `review` namespace — see
+    frontend/src/i18n/index.js. The screen reaches them via `useT('review')`.
+    """
+    src = _catalogue_src(locale)
+    block = re.search(
+        r"\n  %s: \{(.*?)\n  \}," % re.escape(namespace), src, re.S,
+    )
+    assert block is not None, f"namespace {namespace!r} not found in {locale}.js"
+    return dict(re.findall(r"^    (\w+): '(.*)',$", block.group(1), re.M))
 
 
 class _Result:
@@ -240,16 +264,30 @@ class AssignTradeFrontendTest(unittest.TestCase):
         self.assertIn("roster.map", self.src)
 
     def test_assign_strings_bilingual(self):
-        en = set(re.findall(r"^    (\w+):", re.search(
-            r"  en: \{(.*?)\n  \},", self.src, re.S).group(1), re.M))
-        es = set(re.findall(r"^    (\w+):", re.search(
-            r"  es: \{(.*?)\n  \},", self.src, re.S).group(1), re.M))
+        """The assign-trade copy exists in EN and ES.
+
+        Definitions live in src/i18n/{en,es}.js since the i18n migration; the
+        screen consumes them through `useT('review')` (asserted separately).
+        """
+        en = _catalogue_entries("en", "review")
+        es = _catalogue_entries("es", "review")
         for key in ("assignTrade", "chooseTrade", "assigned", "assignFailed",
                     "noRoster", "cancel"):
             self.assertIn(key, en, f"missing EN {key}")
             self.assertIn(key, es, f"missing ES {key}")
-        self.assertEqual(en - es, set())
-        self.assertEqual(es - en, set())
+            # Present is not enough — the ES entry must be a real translation,
+            # not the English literal copied across.
+            self.assertNotEqual(es[key], en[key], f"ES {key} is untranslated")
+        self.assertEqual(es["assignTrade"], "Asignar oficio")
+        self.assertEqual(set(en) - set(es), set())
+        self.assertEqual(set(es) - set(en), set())
+
+    def test_assign_screen_consumes_the_translation_layer(self):
+        """The keys above must be reached through src/i18n, not re-declared."""
+        self.assertIn("from '../../src/i18n'", self.src)
+        self.assertIn("useT('review')", self.src)
+        for key in ("assignTrade", "chooseTrade", "noRoster"):
+            self.assertIn(f"t('{key}')", self.src, f"{key} never rendered")
 
     def test_api_client_method_exists(self):
         api = (_BACKEND.parent / "frontend" / "src" / "utils"

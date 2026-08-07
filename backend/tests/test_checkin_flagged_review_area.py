@@ -31,9 +31,33 @@ _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 sys.path.insert(0, str(_BACKEND))
 
+_FRONTEND = _BACKEND.parent / "frontend"
+_I18N = _FRONTEND / "src" / "i18n"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+
+
+def _catalogue_src(locale):
+    """Raw source of one translation catalogue."""
+    return (_I18N / f"{locale}.js").read_text(encoding="utf-8")
+
+
+def _catalogue_keys(locale, namespace):
+    """Key names DEFINED under one namespace of a catalogue.
+
+    These definitions used to be a `const TRANSLATIONS` map inside
+    app/logbooks/review.jsx. They now live in frontend/src/i18n/{en,es}.js,
+    one namespace per screen — see frontend/src/i18n/index.js. Same strings,
+    new home; the screen reads them through `useT('review')`.
+    """
+    src = _catalogue_src(locale)
+    block = re.search(
+        r"\n  %s: \{(.*?)\n  \},"% re.escape(namespace), src, re.S,
+    )
+    assert block is not None, f"namespace {namespace!r} not found in {locale}.js"
+    return set(re.findall(r"^    (\w+):", block.group(1), re.M))
 
 
 class _Result:
@@ -292,15 +316,29 @@ class ReviewScreenRoutingTest(unittest.TestCase):
             self.assertNotIn(extra, block, f"CP allowlist widened with {extra}")
 
     def test_review_screen_is_bilingual(self):
-        src = (_BACKEND.parent / "frontend" / "app" / "logbooks"
-               / "review.jsx").read_text(encoding="utf-8")
-        self.assertIn("const TRANSLATIONS", src)
-        en = set(re.findall(r"^    (\w+):", re.search(
-            r"  en: \{(.*?)\n  \},", src, re.S).group(1), re.M))
-        es = set(re.findall(r"^    (\w+):", re.search(
-            r"  es: \{(.*?)\n  \},", src, re.S).group(1), re.M))
+        """Every review string exists in BOTH catalogues.
+
+        The definitions moved out of review.jsx into src/i18n/{en,es}.js, so
+        the parity check follows them there. The screen half of the invariant
+        — that review.jsx actually reads the layer — is asserted below.
+        """
+        en = _catalogue_keys("en", "review")
+        es = _catalogue_keys("es", "review")
+        self.assertTrue(en, "review namespace is empty in en.js")
         self.assertEqual(en - es, set(), f"missing ES: {sorted(en - es)}")
         self.assertEqual(es - en, set(), f"missing EN: {sorted(es - en)}")
+        # Spot-check that ES is really Spanish and not an English copy.
+        self.assertIn("'Revisión de Registros'", _catalogue_src("es"))
+        self.assertIn("'Check-In Review'", _catalogue_src("en"))
+
+    def test_review_screen_consumes_the_translation_layer(self):
+        """review.jsx must render through src/i18n, not a local string map."""
+        src = (_FRONTEND / "app" / "logbooks"
+               / "review.jsx").read_text(encoding="utf-8")
+        self.assertIn("from '../../src/i18n'", src)
+        self.assertIn("useT('review')", src)
+        self.assertNotIn("const TRANSLATIONS", src,
+                         "review.jsx re-grew a local string map")
 
 
 if __name__ == "__main__":
