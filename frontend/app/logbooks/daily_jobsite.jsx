@@ -25,6 +25,13 @@ import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos, markFinalized } from '../../src/utils/logbookDrafts';
+// The finalize-gate mechanism LogbookLockBar and the reconnect drain already
+// share. Reused here rather than reimplemented: finalizeErrorCode is the ONE
+// place a FINALIZE_* code is pulled out of an axios error (and the one place
+// that guarantees the server's English `detail` never reaches a screen), and
+// clearFinalizeError is what makes the drain's persistent "NOT LOCKED ON THE
+// SERVER" banner go away once this screen finalizes for real.
+import { finalizeErrorCode, clearFinalizeError } from '../../src/utils/draftSync';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -228,6 +235,21 @@ export default function DailyJobsiteLog() {
   // server refusal reads identically wherever the CP meets it. See
   // handleSubmitAndSign.
   const tFinalize = useT('finalize');
+  /**
+   * The server names the condition, the client owns the wording — the same rule
+   * LogbookLockBar's gateCopy follows, over the same `finalize` namespace, so a
+   * refusal reads identically whether the CP meets it here (on screen, at the
+   * moment he presses Submit & Sign) or on the LockBar's banner (surfaced later,
+   * from a background drain that had no screen to show it on). `translate`
+   * returns the KEY on a miss, which is how an unmapped code is detected; the
+   * server's English `detail` is never rendered.
+   */
+  const gateCopy = (code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  };
   // The cap is one number in one place; the copy takes it rather than repeating
   // it, so the message can never drift from what is enforced.
   const capMessage = () => t('photoCapBody').replace('{n}', String(MAX_PHOTOS_PER_SUBCONTRACTOR));
@@ -1046,11 +1068,36 @@ export default function DailyJobsiteLog() {
    *   1. handleSave('submitted') — content, photos and signature into the local
    *      draft first, server push best-effort (markPending on failure;
    *      draftSync drains it and re-applies /finalize on reconnect).
-   *   2. server /finalize when the doc has an id — best-effort, never fatal.
-   *   3. LOCAL freeze, unconditionally: an EOD sign with no signal must still be
-   *      frozen on this device. It MUST come after (1) — writeDraft refuses
-   *      content patches once a draft is finalized.
+   *   2. server /finalize when the doc has an id.
+   *   3. LOCAL freeze — but ONLY when the server has not REFUSED. An EOD sign
+   *      with no signal must still be frozen on this device; a log the server
+   *      has actively rejected must not be. It MUST come after (1) —
+   *      writeDraft refuses content patches once a draft is finalized.
    *   4. flip the form read-only.
+   *
+   * REFUSAL IS NOT OFFLINE. Step 2 used to treat every failure as "offline":
+   *
+   *     } catch (finalizeErr) { console.warn('Finalize deferred...'); }
+   *     await markFinalized(_key); setLocked(true);
+   *     toast.success('Submitted & Signed', '...will sync when you are back online.');
+   *
+   * The server's finalize gate rejects an empty or unsigned log with a machine
+   * code (FINALIZE_EMPTY_LOG / FINALIZE_MISSING_CP_SIGNATURE). Run through that
+   * catch, a REFUSAL produced three compounding lies:
+   *
+   *   • the CP was told the log was signed, locked and would sync. It never
+   *     would — the server had said no, and would keep saying no.
+   *   • markFinalized makes the local draft IMMUTABLE (logbookDrafts.js
+   *     writeDraft), so he could not fix the very condition being refused.
+   *   • the content push had SUCCEEDED, so there was no pending key, so the
+   *     reconnect drain would never retry it either. Silent, permanent, and
+   *     the CP's own device showed FINALIZED.
+   *
+   * So a 4xx from the server is handled as what it is: the draft stays
+   * EDITABLE, nothing claims success, and the reason is shown in the CP's
+   * language. finalizeErrorCode + the `finalize` i18n namespace are
+   * LogbookLockBar's, reused verbatim so the same refusal reads identically
+   * wherever it surfaces. Being genuinely offline is unchanged.
    */
   const handleSubmitAndSign = async () => {
     if (saving || signing) return;
@@ -1070,9 +1117,25 @@ export default function DailyJobsiteLog() {
         try {
           await logbooksAPI.finalize(savedId);
           serverLocked = true;
+          await clearFinalizeError(savedId);
         } catch (finalizeErr) {
-          // Offline / server refused. The local freeze below still stands and
-          // the reconnect drain re-applies /finalize once the push lands.
+          // A REFUSAL is any answer the server actually gave in the 4xx range —
+          // it looked at this log and said no. Being offline produces no
+          // response at all, and a 5xx is the server failing rather than
+          // judging, so both keep the deferred behaviour below.
+          const status = finalizeErr?.response?.status;
+          const refused = typeof status === 'number' && status >= 400 && status < 500;
+          if (refused) {
+            // NOT frozen locally, NOT announced as success, NOT navigated away
+            // from: the CP has to be able to fix what was refused, on this
+            // screen, right now. The content save above already landed, so
+            // nothing he has entered is at risk.
+            console.warn('Finalize REFUSED by the server:', status, finalizeErrorCode(finalizeErr));
+            toast.error(tFinalize('errorTitle'), gateCopy(finalizeErrorCode(finalizeErr)));
+            return;
+          }
+          // Offline (or the server erred). The local freeze below still stands
+          // and the reconnect drain re-applies /finalize once the push lands.
           console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
         }
       }
