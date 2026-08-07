@@ -69,9 +69,9 @@ def _reset_server_ip_limiters():
     Looked up through sys.modules rather than imported at conftest load so
     this stays a no-op for tests that never import server (and so conftest
     does not force server's heavy import on collection). server.RateLimiter
-    keeps its state in a single `_hits` defaultdict(list) (server.py:562,
-    mutated at server.py:567 and 570); clearing that dict is exactly the
-    reset the class never got a method for. No test asserts on these two
+    RateLimiter now exposes reset() (added alongside this change), so this
+    calls the public method instead of reaching into the private `_hits`
+    dict — the reach broke the moment the class changed. No test asserts on these two
     limiters, so clearing them cannot mask a real expectation — the one
     suite test that does assert a 429 (test_c2_rate_limits.py:577) exercises
     the lib/rate_limits.py middleware, a different object with a different
@@ -81,9 +81,14 @@ def _reset_server_ip_limiters():
     if server is None:
         return
     for name in ("checkin_rate_limiter", "auth_rate_limiter"):
-        hits = getattr(getattr(server, name, None), "_hits", None)
-        if hits is not None:
-            hits.clear()
+        limiter = getattr(server, name, None)
+        reset = getattr(limiter, "reset", None)
+        if callable(reset):
+            reset()
+        else:  # pragma: no cover — older server.py without RateLimiter.reset
+            hits = getattr(limiter, "_hits", None)
+            if hits is not None:
+                hits.clear()
 
 
 @pytest.fixture(autouse=True)

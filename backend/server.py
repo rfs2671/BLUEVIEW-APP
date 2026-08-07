@@ -570,6 +570,12 @@ class RateLimiter:
         self._hits[key].append(now)
         return True
 
+    def reset(self) -> None:
+        """Clear all state. Used by tests; should not be called in
+        production. Mirrors _FixedWindowCounter.reset in lib/rate_limits.py
+        so a test fixture never has to reach into the private _hits dict."""
+        self._hits.clear()
+
 auth_rate_limiter = RateLimiter(max_requests=10, window_seconds=60)  # 10 req/min per IP
 checkin_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)  # 30 req/min per IP — shift start bursts
 
@@ -9524,8 +9530,13 @@ async def register_and_checkin(data: dict, request: Request):
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "")[:400]
     device_fp = (device_info or {}).get("fingerprint_id") if isinstance(device_info, dict) else None
-    if not checkin_rate_limiter.is_allowed(f"reg:{client_ip}"):
-        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
+    # RATE LIMIT REMOVED (operator ruling). This endpoint is the live gate.
+    # Workers on their own phones behind one site WiFi — or a shared gate
+    # tablet — all present a SINGLE client IP, so a per-IP cap made worker
+    # 31 at shift start get a 429 at the gate. A config artifact must never
+    # stop a man from working. Dropped outright, not tuned: no per-worker
+    # limit and no raised threshold were substituted. client_ip / user_agent
+    # / device_fp below are still captured as presence evidence.
 
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
