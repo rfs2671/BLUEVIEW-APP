@@ -42,6 +42,23 @@ const MOBILE_CAPTURE = Platform.OS !== 'web';
 let photoSeq = 0;
 const newPhotoId = () => `cap_${Date.now()}_${(photoSeq += 1)}`;
 
+// A saved photo's full-size `base64` is DROPPED when its log is finalized —
+// server.py _purge_finalized_photo_base64, and only once R2 has confirmed both
+// derivatives. `thumb_base64` is the ~400px copy written in its place and is
+// never removed, so it is the last inline copy any screen can count on.
+const inlinePhotoData = (b64) => (
+  !b64 ? null : (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`)
+);
+
+// Has the backend already purged this photo's full-size copy? If so its `uri`
+// must NOT be re-encoded on save: that would push the full-size base64 straight
+// back into the document the purge just shrank, and it would do it without any
+// of the R2 proof the purge required. Nothing is lost by sending it as-is —
+// R2 holds the derivatives and thumb_base64 rides along in the payload.
+const isPurgedPhoto = (photo) => Boolean(
+  photo && (photo.base64_purged_at || photo.thumb_base64),
+);
+
 const uriToBase64 = async (uri) => {
   try {
     if (!uri) return null;
@@ -653,9 +670,27 @@ export default function DailyJobsiteLog() {
       });
       return;
     }
-    const local = photo.uri || (photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : null);
+    const local = photo.uri
+      || inlinePhotoData(photo.base64)
+      || inlinePhotoData(photo.thumb_base64);
     if (local) setPhotoLightbox({ uri: local, label: 'Original' });
   };
+
+  // Tile source for the activity grid. The local capture first (nothing to
+  // fetch), then whichever inline copy survives, then the served thumbnail —
+  // which is all a finalized log's photo has left once its full-size base64
+  // has been purged.
+  const photoTileUri = (photo, activityIndex, photoIndex) => (
+    photo?.uri
+    || inlinePhotoData(photo?.base64)
+    || inlinePhotoData(photo?.thumb_base64)
+    || (existingLogId
+      ? logbooksAPI.getLogbookPhotoUrl(
+        existingLogId, activityIndex, photoIndex, 'thumb', photo?.enhance_status || '',
+      )
+      : null)
+    || undefined
+  );
 
   const addActivity = () => setActivities(prev => {
     // A freshly added row is what the CP means to work on next, so it becomes
@@ -717,8 +752,9 @@ export default function DailyJobsiteLog() {
           // was before keep-shooting existed — and spread the REST through, so
           // fields the backend adds (enhance_status, r2 keys) survive a re-save.
           const { pending, id, ...stored } = photo; // eslint-disable-line no-unused-vars
-          if (stored.base64 || !stored.uri) {
-            convertedPhotos.push(stored); // already encoded, or nothing to encode
+          if (stored.base64 || !stored.uri || isPurgedPhoto(stored)) {
+            // already encoded, nothing to encode, or deliberately not re-encoded
+            convertedPhotos.push(stored);
             continue;
           }
           // Prefer the compressed derivative if its job finished. Read from the
@@ -1098,8 +1134,7 @@ export default function DailyJobsiteLog() {
                           ) : (
                             <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
                               <Image
-                                source={{ uri: photo.uri || (photo.base64 ?
-                                  `data:image/jpeg;base64,${photo.base64}` : undefined) }}
+                                source={{ uri: photoTileUri(photo, i, pi) }}
                                 style={s.photoImage}
                               />
                             </Pressable>

@@ -58,6 +58,30 @@ const rosterClock = (v) => {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 };
 
+// A stored activity photo has more than one copy, and which ones exist changes
+// over the record's life. `base64` is the full-size original; the backend drops
+// it when the log is FINALIZED, and only after R2 has confirmed both
+// derivatives (server.py _purge_finalized_photo_base64). `thumb_base64` is the
+// ~400px copy written in its place and never removed.
+const inlinePhoto = (b64) => (
+  !b64 ? null : (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`)
+);
+
+// THIS SCREEN IS READ OFFLINE (docCache, OfflineNotice), so an inline copy
+// always beats a URL — an inspector in a dead zone must still see the photo.
+// The served thumbnail is the rung below, for a record whose full-size copy is
+// gone; `uri` is a path on the CP's own phone and stays last, where it was.
+const logbookPhotoUri = (photo, log, activityIndex, photoIndex) => {
+  if (!photo) return null;
+  return inlinePhoto(photo.base64)
+    || inlinePhoto(photo.thumb_base64)
+    || logbooksAPI.getLogbookPhotoUrl(
+      log?.id || log?._id, activityIndex, photoIndex, 'thumb', photo.enhance_status || '',
+    )
+    || photo.uri
+    || null;
+};
+
 export default function SiteLogbooksViewer() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -450,9 +474,7 @@ export default function SiteLogbooksViewer() {
                 {(act.photos || []).length > 0 && (
                   <View style={s.photoRow}>
                     {act.photos.map((photo, pi) => {
-                      const uri = photo.base64
-                        ? (photo.base64.startsWith('data:') ? photo.base64 : `data:image/jpeg;base64,${photo.base64}`)
-                        : photo.uri;
+                      const uri = logbookPhotoUri(photo, log, i, pi);
                       if (!uri) return null;
                       return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
                     })}
