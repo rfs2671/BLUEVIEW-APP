@@ -216,7 +216,8 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("roof_mep", "mep", "roof MEP"),
         _wp("masonry", "masonry", "masonry"),
         _wp("facade", "facade", "facade"),
-        _wp("window_install", "glazing", "window install"),
+        _wp("window_and_exterior_door_install", "glazing",
+            "Window and exterior door install"),
         _wp("facade_closeout", "facade", "facade close-out"),
 
         # ── interior fit-out ─────────────────────────────────────────
@@ -383,26 +384,26 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("finished_roofing", "flashing"),
         _e("finished_roofing", "roof_mep"),
         # "any floor stripped and reshored / CFS floor complete -> masonry,
-        # facade, window install, framing"
+        # facade, window and exterior door install, framing"
         _e("reshore", "facade"),
-        _e("reshore", "window_install"),
+        _e("reshore", "window_and_exterior_door_install"),
         _e("reshore", "interior_framing"),
         _e("subfloor_sheathing", "masonry"),
         _e("subfloor_sheathing", "facade"),
-        _e("subfloor_sheathing", "window_install"),
+        _e("subfloor_sheathing", "window_and_exterior_door_install"),
         _e("subfloor_sheathing", "interior_framing"),
         _e("pour_topping_slab", "masonry"),
         _e("pour_topping_slab", "facade"),
-        _e("pour_topping_slab", "window_install"),
+        _e("pour_topping_slab", "window_and_exterior_door_install"),
         _e("pour_topping_slab", "interior_framing"),
-        _e("masonry", "window_install"),
+        _e("masonry", "window_and_exterior_door_install"),
         _e("masonry", "waterproofing"),
         _e("masonry", "flashing"),
-        _e("facade", "window_install"),
+        _e("facade", "window_and_exterior_door_install"),
         _e("facade", "waterproofing"),
         _e("facade", "flashing"),
-        _e("window_install", "facade_closeout"),
-        _e("window_install", "interior_framing"),
+        _e("window_and_exterior_door_install", "facade_closeout"),
+        _e("window_and_exterior_door_install", "interior_framing"),
 
         # ── interior fit-out ─────────────────────────────────────────
         # DERIVED (not verbatim in the approved rules): "building envelope

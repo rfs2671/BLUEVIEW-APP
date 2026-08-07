@@ -331,3 +331,35 @@ def test_cfs_wall_panels_offers_the_roof_deck_next():
     sug = _ids(_rank(prior_activity_ids=["cfs_wall_panels"],
                      structural_system="cfs"), "suggested")
     assert "cfs_roof_framing_deck" in sug
+
+
+# ── 14. window install renamed to include exterior doors ─────────────
+def test_window_chip_is_renamed_to_include_exterior_doors():
+    g = build_sequence_rules_v1()
+    by_id = {n.id: n for n in g.nodes}
+    assert "window_install" not in by_id                 # old id is gone
+    assert by_id["window_and_exterior_door_install"].scope == (
+        "Window and exterior door install")
+    labels = {n.scope for n in g.nodes}
+    assert "window install" not in labels                # old label is gone
+
+
+def test_renamed_window_node_keeps_all_its_rule_edges():
+    succ = _succ()
+    # every "floor complete" source still offers it, and it still opens
+    # facade close-out and interior framing
+    for src in ("reshore", "subfloor_sheathing", "pour_topping_slab",
+                "masonry", "facade"):
+        assert "window_and_exterior_door_install" in succ[src], src
+    assert {"facade_closeout", "interior_framing"} <= set(
+        succ["window_and_exterior_door_install"])
+
+
+def test_floor_complete_offers_masonry_facade_window_and_framing():
+    # "any floor stripped and reshored / CFS floor complete -> masonry,
+    #  facade, window and exterior door install, framing"
+    succ = _succ()
+    expected = {"masonry", "facade", "window_and_exterior_door_install",
+                "interior_framing"}
+    for src in ("reshore", "subfloor_sheathing", "pour_topping_slab"):
+        assert expected <= set(succ[src]), src
