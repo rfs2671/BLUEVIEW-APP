@@ -10284,6 +10284,21 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             if t and c:
                 assignments.append({"trade": t, "company": c})
 
+        # Resolve the EXISTING worker before the roster check — same
+        # read-only query the create-or-update block below runs, hoisted
+        # because the per-project pairing is keyed on their worker_id and
+        # decides whether the roster check runs at all.
+        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
+        formatted_phone = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
+
+        # PER-PROJECT PAIRING: this worker already answered trade + company
+        # on THIS project, so the answer stands — no re-prompt, no flag. On
+        # any OTHER project this finds nothing and he picks again.
+        existing_pair = await _get_worker_project_trade(
+            worker.get("_id") if worker else None, checkin_data.project_id,
+        )
+
         # A project with no configured trades used to hard-400 here, which
         # blocked a real worker standing at the gate over a pure config gap.
         # Admit them instead, mark the trade pending, and flag the check-in
@@ -10294,7 +10309,12 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         # Why the trade is pending — selects the CP-notification copy below.
         # "" means the trade resolved normally and no notification fires.
         trade_flag_reason = ""
-        if not assignments:
+        if existing_pair:
+            # Already answered for THIS project — the stored pairing wins over
+            # whatever the client sent, and nothing is flagged for the CP.
+            checkin_data.trade = existing_pair["trade"]
+            checkin_data.company = existing_pair["company"]
+        elif not assignments:
             needs_trade_assignment = True
             trade_flag_reason = "no_roster"
             checkin_data.trade = str(checkin_data.trade or "").strip() or "UNASSIGNED"
@@ -10326,17 +10346,14 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         company_id = project.get("company_id")
         now = datetime.now(timezone.utc)
 
-        # Find or create worker
-        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
-        formatted_phone = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
-
+        # `worker` was already resolved above (the pairing lookup needed it).
         if not worker:
+            # NOTE: no `trade` / `company` here. Those are per-project and
+            # live in worker_project_trades; a worker-level copy is what bled
+            # across jobs.
             new_worker = {
                 "name": checkin_data.name,
                 "phone": checkin_data.phone,
-                "company": checkin_data.company,
-                "trade": checkin_data.trade,
                 "admin_id": admin_id,
                 "company_id": company_id,
                 "created_at": now,
@@ -10352,10 +10369,10 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             update_fields = {}
             if worker.get("name") != checkin_data.name:
                 update_fields["name"] = checkin_data.name
-            if worker.get("company") != checkin_data.company:
-                update_fields["company"] = checkin_data.company
-            if worker.get("trade") != checkin_data.trade:
-                update_fields["trade"] = checkin_data.trade
+            # THE BLEED, REMOVED: `company` and `trade` used to be written
+            # here from the CURRENT check-in, so the next project read back
+            # this job's answer. Both are per-project now; only genuinely
+            # worker-level fields are still written.
             if not worker.get("admin_id"):
                 update_fields["admin_id"] = admin_id
             if not worker.get("company_id"):
@@ -10413,10 +10430,13 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "worker_id": str(worker["_id"]),
             "worker_name": worker.get("name"),
             "worker_phone": worker.get("phone"),
-            "worker_company": worker.get("company"),
-            "worker_trade": worker.get("trade"),
-            "company": worker.get("company"),
-            "trade": worker.get("trade"),
+            # Trade/company come from the PROJECT-SCOPED resolution above —
+            # the stored pairing when one exists, otherwise this visit's
+            # validated pick. Not read off the worker document any more.
+            "worker_company": checkin_data.company,
+            "worker_trade": checkin_data.trade,
+            "company": checkin_data.company,
+            "trade": checkin_data.trade,
             "project_id": checkin_data.project_id,
             "project_name": project.get("name"),
             "admin_id": admin_id,
@@ -10437,6 +10457,16 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         }
 
         result = await db.checkins.insert_one(checkin_record)
+
+        # FIRST check-in on this project with a resolved trade — store the
+        # pairing so every later visit HERE reads it instead of re-prompting.
+        # Skipped when one already exists and when the trade is still pending
+        # (UNASSIGNED must never become a stored answer).
+        if not existing_pair and not needs_trade_assignment:
+            await _store_worker_project_trade(
+                str(worker["_id"]), checkin_data.project_id,
+                checkin_data.trade, checkin_data.company,
+            )
 
         # Tell the CP + admins this check-in needs a trade assigned. The
         # check-in is ALREADY written above; this dispatch is failure-isolated
