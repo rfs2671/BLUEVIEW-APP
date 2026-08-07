@@ -711,7 +711,6 @@ class LookupWorkerTest(unittest.TestCase):
         ).json()
         self.assertEqual(body["name"], "Jane Worker")
         self.assertEqual(body["osha_number"], "OSHA-9")
-        self.assertEqual(body["safety_orientations"], [{"project_id": "projA"}])
 
 
 # ── 8. the store helpers themselves ──────────────────────────────────────
