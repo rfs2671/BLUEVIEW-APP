@@ -9546,7 +9546,13 @@ async def register_and_checkin(data: dict):
                 update_fields["safety_orientations"] = existing_orientations
         
         await db.workers.update_one({"_id": worker["_id"]}, {"$set": update_fields})
-    
+        # The check-in row built below reads company/trade/name off this
+        # in-memory dict, which still holds the values loaded from the DB
+        # BEFORE the update above. Without this refresh a returning worker who
+        # changed employer freezes the STALE company onto today's check-in.
+        # Same idiom as the certifications refresh further down.
+        worker.update(update_fields)
+
     # Save orientation as a proper logbook document so CP can view/sign it
     if safety_orientation:
         worker_id_str = str(worker["_id"])
@@ -10063,7 +10069,12 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                     {"_id": worker["_id"]},
                     {"$set": update_fields}
                 )
-        
+                # The check-in row built below reads company/trade/name off this
+                # in-memory dict, which still holds the pre-update values.
+                # Without this refresh a returning worker who changed employer
+                # freezes the STALE company onto today's check-in.
+                worker.update(update_fields)
+
         # Check if already checked in today (EST-aligned)
         today_start, today_end = get_today_range_est()
         existing_checkin = await db.checkins.find_one({
