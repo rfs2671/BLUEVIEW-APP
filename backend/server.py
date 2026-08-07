@@ -9635,7 +9635,27 @@ async def register_and_checkin(data: dict):
         worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
     if not worker and osha_number:
         worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
-    
+
+    # A CP already corrected this worker's trade. Reuse that pair instead of
+    # writing UNASSIGNED and re-raising the same flag the CP just cleared —
+    # otherwise the same worker lands back on the review screen every day.
+    # Only a pair carrying the cp_assignment marker qualifies; a trade the
+    # worker typed for themselves still gets flagged.
+    if needs_trade_assignment:
+        _corrected = _cp_corrected_worker_trade(worker)
+        if _corrected and (
+            # no_roster: the project has no roster to check against, so the
+            # CP's decision is the only trade information that exists.
+            trade_flag_reason == "no_roster"
+            # not_listed: the roster exists, so the corrected pair must still
+            # be ON it. A correction that has since been removed from the
+            # roster must NOT become a back door around the strict match.
+            or (_roster_key(_corrected[0]), _roster_key(_corrected[1])) in allowed_pairs
+        ):
+            trade, company = _corrected
+            needs_trade_assignment = False
+            trade_flag_reason = ""
+
     if not worker:
         # Create new worker with full data
         worker = {
@@ -10190,7 +10210,18 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
         formatted_phone = format_phone(raw_digits)
         worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
-        
+
+        # A CP already corrected this worker's trade — reuse it rather than
+        # stamping UNASSIGNED over it and re-flagging. Same rule as
+        # register_and_checkin; only reachable on the empty-roster path,
+        # since a project WITH a roster still requires a dropdown match.
+        if needs_trade_assignment:
+            _corrected = _cp_corrected_worker_trade(worker)
+            if _corrected:
+                checkin_data.trade, checkin_data.company = _corrected
+                needs_trade_assignment = False
+                trade_flag_reason = ""
+
         if not worker:
             new_worker = {
                 "name": checkin_data.name,
@@ -11032,14 +11063,36 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
         }},
     )
 
-    # Keep the worker doc in step, but never clobber an existing trade.
+    # Persist the correction against the WORKER, not just this check-in.
+    # It previously only filled a worker whose trade was empty, so the same
+    # worker re-flagged on every subsequent check-in and the CP re-corrected
+    # the same person daily. The CP's decision is now authoritative and
+    # overwrites whatever the worker doc held.
+    #
+    # This is deliberately cross-project and cross-company: the worker
+    # document is not project-scoped, so a correction made on one project
+    # follows the worker everywhere. trade_source marks the pair as
+    # CP-assigned — that marker (not the trade value alone) is what lets a
+    # later check-in reuse the pair without re-raising
+    # needs_trade_assignment (see _cp_corrected_worker_trade).
     worker_id = checkin.get("worker_id")
     if worker_id:
         worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
-        if worker and not (worker.get("trade") or "").strip():
+        if worker:
+            # Company travels with the trade: assign-trade validates the
+            # PAIR against the roster, so persisting only half of a
+            # validated pair would leave the worker doc incoherent (and the
+            # suppression below needs both).
             await db.workers.update_one(
                 {"_id": to_query_id(worker_id)},
-                {"$set": {"trade": trade, "updated_at": now}},
+                {"$set": {
+                    "trade": trade,
+                    "company": company,
+                    "trade_source": "cp_assignment",
+                    "trade_assigned_by": user_id,
+                    "trade_assigned_at": now,
+                    "updated_at": now,
+                }},
             )
 
     await audit_log(
