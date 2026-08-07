@@ -15286,6 +15286,15 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
     Dedup key: lower(name)+lower(company). New-system rows win on
     collision because their signature is the day's attestation, not
     a static profile image.
+
+    FIX 1 — every row additionally carries five flag fields so the pre-shift
+    roster can name WHY a worker is flagged and act on it without a second
+    lookup: checkin_id, sst_status, needs_trade_assignment, review_decision,
+    cert_warnings. Only PASS 2 (legacy `checkins`) can populate them — they
+    are fields OF a checkins row. Pass 1 (gate sign_ins) and pass 3
+    (compliance_alerts) have no such row, so they emit checkin_id=None and
+    the rest null/false/[]; a null checkin_id is the UI's signal that no
+    action can be offered. Nothing new is persisted by this change.
     """
     from zoneinfo import ZoneInfo
     eastern = ZoneInfo("America/New_York")
@@ -15380,6 +15389,30 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 "worker_signature": None,               # new system: frontend uses signin_id
                 "signin_id": first_signin_id,           # → /api/signatures/{signin_id}
                 "source": "gate_checkin",
+                # ── Flag fields (FIX 1) ──────────────────────────────────────
+                # The gate system writes `sign_ins` + `worker_enrollments` ONLY:
+                # card_audit.py contains no reference to the `checkins`
+                # collection at all (see _write_cookie_signin, card_audit.py:1283
+                # and the enrollment path at card_audit.py:1926 — both insert a
+                # sign_ins row and stop). So a gate-signed worker has NO
+                # checkins row, and therefore NO id to POST against
+                # /checkins/{checkin_id}/review or /assign-trade.
+                #
+                # checkin_id is emitted as null rather than fabricated. The
+                # per-check-in cert snapshot (sst_status / cert_warnings /
+                # review_decision) and needs_trade_assignment are all fields of
+                # a checkins row, so they do not exist for this population
+                # either — they are reported as null/false/[] , never guessed.
+                # The UI must offer NO action when checkin_id is null.
+                #
+                # (Enrollment also hard-requires a trade — card_audit.py:1832
+                # rejects a submission with no `trade` — so a gate worker can
+                # never be in the needs_trade_assignment state to begin with.)
+                "checkin_id": None,
+                "sst_status": None,
+                "needs_trade_assignment": False,
+                "review_decision": None,
+                "cert_warnings": [],
             })
     except Exception as _e:
         logger.warning(f"checkins-today new-system merge failed: {_e!r}")
@@ -15432,6 +15465,25 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 c.get("toolbox_talk_confirmed_at").isoformat()
                 if isinstance(c.get("toolbox_talk_confirmed_at"), datetime) else None
             ),
+            # ── Flag fields (FIX 1) ──────────────────────────────────────────
+            # ADMITTED-WITH-WARNINGS state, read straight off the checkins row
+            # that already holds it. Nothing new is persisted anywhere: the
+            # pre-shift roster needs a reason to display AND an id to POST
+            # against, and both already exist here.
+            #
+            #   checkin_id             → POST /checkins/{checkin_id}/review
+            #                            (decision "approved" | "sent_home")
+            #                            and POST /checkins/{checkin_id}/assign-trade
+            #   sst_status             → frozen at check-in (server.py ~:9826)
+            #   cert_warnings          → EXPIRED_SST / SST_UNKNOWN entries
+            #   needs_trade_assignment → cleared by assign-trade
+            #   review_decision        → null until a CP decides; re-review
+            #                            overwrites it, so it is never final
+            "checkin_id": str(c.get("_id")) if c.get("_id") is not None else None,
+            "sst_status": c.get("sst_status"),
+            "needs_trade_assignment": bool(c.get("needs_trade_assignment")),
+            "review_decision": c.get("review_decision"),
+            "cert_warnings": c.get("cert_warnings") or [],
         })
 
     # ── PASS 3 (Task 9): workers TURNED AWAY for missing OSHA today ──────
@@ -15478,6 +15530,19 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "blocked": True,
             "cert_cleared": False,
             "blocks": [b.get("type") for b in (a.get("blocks") or []) if isinstance(b, dict)],
+            # ── Flag fields (FIX 1) ──────────────────────────────────────────
+            # These rows come from compliance_alerts, NOT checkins — a blocked
+            # worker never reaches the checkins insert (register_and_checkin
+            # returns at server.py:9796, before it). There is no row to review
+            # or assign a trade on, so checkin_id is null and the snapshot
+            # fields are null/false/[]. This is the BLOCKED population, which is
+            # out of scope for the admitted-with-warnings actions: the null
+            # checkin_id is what makes the UI offer none.
+            "checkin_id": None,
+            "sst_status": None,
+            "needs_trade_assignment": False,
+            "review_decision": None,
+            "cert_warnings": [],
         })
 
     return result
