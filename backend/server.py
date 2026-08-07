@@ -10251,6 +10251,30 @@ async def lookup_worker(data: dict):
     project_id = data.get("project_id")
     pair = await _get_worker_project_trade(worker["_id"], project_id)
 
+    # Site safety orientation is PER PROJECT under §3301.11, so the answer
+    # this endpoint gives must be per project too. The full
+    # safety_orientations list used to be shipped to the gate page, which
+    # then did the project match itself. Compute it here instead and return
+    # ONE project-scoped boolean:
+    #
+    #   - project-scoped, never "has any orientation". A worker oriented at
+    #     8 Walworth is NOT oriented at 588 Thomas S Boyland; a global
+    #     boolean would skip his site orientation there and write a false
+    #     compliance record.
+    #   - no project_id in the request means no project to be oriented on,
+    #     so the answer is False and the gate runs orientation. Failing
+    #     closed here is the safe direction: the cost is a repeated
+    #     orientation, not a missing one.
+    #
+    # osha_number stays the REAL value, deliberately — it is not a display
+    # field. checkin.html forwards it back into the register-and-checkin
+    # payload for returning workers (checkin.html:1142).
+    _orientations = worker.get("safety_orientations") or []
+    oriented_on_this_project = bool(project_id) and any(
+        isinstance(o, dict) and str(o.get("project_id")) == str(project_id)
+        for o in _orientations
+    )
+
     return {
         "found": True,
         "worker_id": str(worker["_id"]),
@@ -10259,7 +10283,7 @@ async def lookup_worker(data: dict):
         "company": pair["company"] if pair else None,
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
-        "safety_orientations": worker.get("safety_orientations", []),
+        "oriented_on_this_project": oriented_on_this_project,
     }
    
 @api_router.post("/checkin/submit")

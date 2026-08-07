@@ -920,7 +920,9 @@ function cropImage(dataUrl, box) {
 
     if (lookup && lookup.found) {
       returningWorker = lookup;
-      const oriented = (lookup.safety_orientations || []).some(o => o.project_id === projectId);
+      // Server-computed and scoped to THIS project (server.py lookup_worker).
+      // The page no longer receives the worker's full orientation history.
+      const oriented = lookup.oriented_on_this_project === true;
       if (oriented) {
         showReturningScreen(lookup);
       } else {
@@ -1039,7 +1041,10 @@ async function lookupWorker() {
     
     if (res.found) {
       returningWorker = res;
-      const oriented = (res.safety_orientations || []).some(o => o.project_id === projectId);
+      // Same server-computed, project-scoped flag as the saved-identity path.
+      // Strict === true so a missing/undefined field fails CLOSED and the
+      // worker is sent through orientation rather than silently skipping it.
+      const oriented = res.oriented_on_this_project === true;
       if (oriented) {
         localStorage.setItem(LS_WORKER_ID, res.worker_id);
         localStorage.setItem(LS_WORKER_PHONE, phone);
