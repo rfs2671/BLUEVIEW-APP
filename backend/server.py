@@ -10232,17 +10232,35 @@ async def lookup_worker(data: dict):
     
     if not worker:
         return {"found": False}
-    
+
+    # Trade/company are PER PROJECT and are answered ONLY from the pairing
+    # for the project in this request. This used to return
+    # worker.get("trade") / worker.get("company") — a global value the
+    # worker may have picked on a completely different job — which the
+    # check-in page then pre-filled and submitted here.
+    #
+    # No pairing for THIS project (including a request that names no
+    # project) means NO trade and NO company come back, and the worker is
+    # asked to pick. There is deliberately no fallback to the worker
+    # document: a trade from another job is not a better guess than none,
+    # it is a wrong answer that looks confirmed.
+    #
+    # NOTE (scoped): only the trade source changes here. name / phone and
+    # this endpoint's (absent) auth are untouched — the PII question on
+    # them is a separate, still-pending operator decision.
+    project_id = data.get("project_id")
+    pair = await _get_worker_project_trade(worker["_id"], project_id)
+
     return {
         "found": True,
         "worker_id": str(worker["_id"]),
         "name": worker.get("name"),
-        "trade": worker.get("trade"),
-        "company": worker.get("company"),
+        "trade": pair["trade"] if pair else None,
+        "company": pair["company"] if pair else None,
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
         "safety_orientations": worker.get("safety_orientations", []),
-    }   
+    }
    
 @api_router.post("/checkin/submit")
 async def submit_checkin(checkin_data: PublicCheckInSubmit):
