@@ -3187,10 +3187,13 @@ def _same_company(actor: dict, target: dict) -> bool:
 # 404 (not 403) when the project does not exist or is deleted — that matches the
 # existing project-detail behavior and does not confirm ids to a prober. 403
 # when it exists but the caller has no claim to it.
-async def require_project_access(
-    project_id: str,
-    current_user = Depends(get_current_user),
-) -> dict:
+#
+# The rules live in `_assert_project_access`, a plain coroutine, so endpoints
+# whose project id arrives in the BODY (or off a stored document) can apply the
+# exact same check — FastAPI can only resolve `require_project_access` as a
+# dependency when {project_id} is in the path. `require_project_access` below is
+# a thin Depends wrapper over it; every existing dependency site is unchanged.
+async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     project = await db.projects.find_one({
         "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
     })
@@ -3215,6 +3218,13 @@ async def require_project_access(
         return project
 
     raise HTTPException(status_code=403, detail="Not authorized for this project")
+
+
+async def require_project_access(
+    project_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    return await _assert_project_access(project_id, current_user)
 
 
 async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
@@ -11196,7 +11206,14 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     log_dict["is_deleted"] = False
-	
+
+    # The project id arrives in the BODY, so it is caller-controlled and has to
+    # be authorized before anything is read or written under it. Runs FIRST so
+    # the duplicate-check 409 below cannot be used to probe another tenant's
+    # logs. 404 when the project does not exist, which also closes the old
+    # silent path that inserted a log with no company_id at all.
+    project = await _assert_project_access(log_data.project_id, current_user)
+
     # Prevent duplicate log for same project + date
     existing = await db.daily_logs.find_one({
         "project_id": log_data.project_id,
@@ -11205,12 +11222,9 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     })
     if existing:
         raise HTTPException(status_code=409, detail="A daily log already exists for this project and date.")
-    
-    # Get project to inject company_id
-    project = await db.projects.find_one({"_id": to_query_id(log_data.project_id), "is_deleted": {"$ne": True}})
-    if project:
-        log_dict["company_id"] = project.get("company_id")
-    
+
+    log_dict["company_id"] = project.get("company_id")
+
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
 
@@ -11248,12 +11262,21 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     
     if existing.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is locked and cannot be edited.")
-    
+
+    # Authorize against the STORED project id, never the body: the body is the
+    # thing being authorized, so trusting it would let a caller name a project
+    # they do have access to while writing to a log belonging to another.
+    await _assert_project_access(str(existing.get("project_id") or ""), current_user)
+
     update_data.pop("id", None)
     update_data.pop("_id", None)
     update_data.pop("created_at", None)
     update_data.pop("created_by", None)
-    
+    # $set takes this dict wholesale, so an unpopped project_id/company_id would
+    # RE-PARENT the log into another tenant. Ownership is set at creation only.
+    update_data.pop("project_id", None)
+    update_data.pop("company_id", None)
+
     now = datetime.now(timezone.utc)
     update_data["updated_at"] = now
     update_data["updated_by"] = current_user.get("id")

@@ -32,10 +32,15 @@ front of check-in and must never break it), and require_project_access branch 1
 authorizes a device for its provisioned project only. Both are asserted so a
 future edit cannot quietly break the kiosk.
 
-DELIBERATELY NOT COVERED HERE — the kiosk write path. POST /daily-logs takes
-project_id in the BODY, not the path, so require_project_access cannot read it;
-it needs a device-scoped body-param guard and is pending a separate decision.
-Same shape for PUT /daily-logs/{log_id}. Also excluded: hard-delete (platform
+NOT COVERED BY THE PINS BELOW, BUT NO LONGER OPEN — the kiosk write path. POST
+/daily-logs takes project_id in the BODY, not the path, so it cannot declare
+`Depends(require_project_access)` and the decorator pins here cannot see it. The
+rules were extracted into `_assert_project_access` (a plain coroutine over the
+same three branches, site-device included) and both endpoints now call it: the
+create with the body's project_id, the update with the STORED project_id so the
+body cannot re-parent a log. PUT also pops project_id/company_id out of the $set
+dict. Those two routes are covered by test_daily_logs_tenant_isolation.py
+instead. Also excluded: hard-delete (platform
 operator — require_project_access has no operator bypass and would break the
 cross-company purge), assign-projects and cs-registrations (no {project_id} in
 the path), repair-file-names (deliberately unfiltered for legacy rows), and
