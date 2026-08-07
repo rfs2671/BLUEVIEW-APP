@@ -11156,9 +11156,10 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     may correct a check-in from any day, so a sub removed since that
     check-in must still be selectable for it.
 
-    The worker document is updated too (so their next check-in prefills
-    correctly), but only when it has no trade yet — an assignment on one
-    project must not silently overwrite a trade set elsewhere.
+    The answer is also stored as the worker's pairing for THIS project in
+    worker_project_trades, so their next check-in here reads it instead of
+    being flagged again. Nothing is written to the global worker document:
+    an assignment on one project must not answer for any other.
     """
     trade = str((data or {}).get("trade") or "").strip()
     company = str((data or {}).get("company") or "").strip()
@@ -11200,9 +11201,9 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     # /checkin/submit, the flagged passthrough) still filters through
     # _active_assignments, so a removed sub is never a valid NEW selection.
     #
-    # This is safe because this path only fills a trade the worker document
-    # does not have and never overwrites one — an inactive pair can therefore
-    # describe history, but cannot rewrite it.
+    # The pair is scoped to this ONE project when it is stored below, so an
+    # inactive pair can describe this project's history without reaching any
+    # other project the worker has been on.
     allowed_pairs = set()
     for row in (project or {}).get("trade_assignments") or []:
         if not isinstance(row, dict):
@@ -11246,24 +11247,22 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
         }},
     )
 
-    # Keep the worker doc in step, but never clobber an existing trade.
+    # Record the CP's answer where trade actually lives: the PAIRING for
+    # this worker on THIS project. The next check-in here reads it and stops
+    # asking; a check-in on any other project is unaffected, which is the
+    # whole point of the pair key.
     #
-    # Trade is confirmed PER PROJECT at check-in: a worker checking in on a
-    # new project re-confirms trade and company against that project's
-    # roster, even if they have checked in elsewhere before. The CP assigns
-    # a trade ONLY where none was captured; he never changes one that is
-    # already set. So this fills an empty trade and stops there — it does
-    # not write company, and it stores no cp_assignment provenance, because
-    # nothing downstream is allowed to treat a worker-level trade as a
-    # substitute for the per-project confirmation.
+    # This REPLACES the previous fill-if-empty write of `trade` onto the
+    # global worker document. That write was correct under the earlier
+    # ruling and is wrong under this one: even guarded by "only when empty",
+    # a worker-level trade is a single slot for a man who can hold different
+    # trades on different jobs, and whichever project filled it first
+    # answered for all the others.
     worker_id = checkin.get("worker_id")
     if worker_id:
-        worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
-        if worker and not (worker.get("trade") or "").strip():
-            await db.workers.update_one(
-                {"_id": to_query_id(worker_id)},
-                {"$set": {"trade": trade, "updated_at": now}},
-            )
+        await _store_worker_project_trade(
+            worker_id, project_id_str, trade, company,
+        )
 
     await audit_log(
         "checkin_assign_trade", user_id, "checkin", checkin_id,
