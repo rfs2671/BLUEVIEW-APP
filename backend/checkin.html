@@ -907,7 +907,13 @@ function cropImage(dataUrl, box) {
     let lookup = null;
     let lookupErr = null;
     try {
-      lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone });
+      // project_id is REQUIRED: trade/company are stored per worker PER
+      // PROJECT, so a lookup that names no project can never find this
+      // gate's pairing and every returning worker gets re-prompted for
+      // trade + company. projectId is resolved above (path segment, the
+      // ?project_id query param, or the tag's own /info) before any screen
+      // is shown, so it is always populated by the time we get here.
+      lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone, project_id: projectId });
     } catch (e) {
       lookupErr = e;
     }
@@ -1023,7 +1029,12 @@ async function lookupWorker() {
 
   showLoading(t('lookingUp'));
   try {
-    const res = await api('/checkin/lookup-worker', 'POST', { phone });
+    // Same rule as the saved-identity lookup above — without project_id the
+    // per-project (trade, company) pairing is unreachable and the worker is
+    // asked to pick again on a project he has already answered for. This
+    // path is also what the phone-input Enter key runs (keydown handler
+    // below calls lookupWorker()), so both entry points are covered here.
+    const res = await api('/checkin/lookup-worker', 'POST', { phone, project_id: projectId });
     hideLoading();
     
     if (res.found) {
