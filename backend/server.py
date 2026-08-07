@@ -129,6 +129,65 @@ def _logbook_photo_r2_key(project_id: str, logbook_id: str, ai: int, pi: int, ki
     return f"logbook-photos/{project_id}/{logbook_id}/{ai}-{pi}-{kind}.jpg"
 
 
+# A stored photo can carry up to four copies of itself, and WHICH ones exist
+# changes over the record's life:
+#
+#   base64          the full-size original, inlined in the logbook document.
+#                   DROPPED at finalize by _purge_finalized_photo_base64, but
+#                   only once R2 has been proven to hold both derivatives.
+#   thumb_base64    the ~400px copy written in its place. NEVER removed. This
+#                   is the last-resort copy: small beats absent on a signed
+#                   legal record.
+#   enhanced_r2_key / thumb_r2_key   the two objects the enhance pass uploads.
+#
+# Every reader must ask "which copies does this photo still have", never "does
+# it have base64" — the latter was the same question only while base64 was the
+# only copy, and it silently becomes "was this photo never taken" afterwards.
+def _logbook_photo_sources(photo: dict, v: str = "") -> list:
+    """Ordered (kind, value) copies to try for one serve request.
+
+    kind is "r2" (an object key) or "b64" (inline data). The requested
+    derivative leads and every other surviving copy follows, so no single
+    missing copy can 404 a photo another copy could have served.
+
+    With no variant asked for, ORIGINAL STILL MEANS ORIGINAL: the inline
+    full-size copy leads while it exists, and the derivatives stand in only
+    once the purge has taken it. That keeps the lightbox's "Original" label
+    honest instead of quietly serving an enhanced render under it.
+
+    `original_r2_key` is read because the ladder is specified in terms of an
+    original object; nothing writes that field today (the enhance pass uploads
+    enhanced + thumb and nothing else), so the rung is inert until something
+    does. It is listed, not assumed.
+    """
+    if not isinstance(photo, dict):
+        return []
+    enhanced = photo.get("enhanced_r2_key")
+    thumb = photo.get("thumb_r2_key")
+    original = photo.get("original_r2_key")
+    full_b64 = photo.get("base64")
+    thumb_b64 = photo.get("thumb_base64")
+    if v == "thumb":
+        order = [("r2", thumb), ("r2", enhanced), ("r2", original),
+                 ("b64", full_b64), ("b64", thumb_b64)]
+    elif v == "enhanced":
+        order = [("r2", enhanced), ("r2", thumb), ("r2", original),
+                 ("b64", full_b64), ("b64", thumb_b64)]
+    else:
+        order = [("b64", full_b64), ("r2", original), ("r2", enhanced),
+                 ("r2", thumb), ("b64", thumb_b64)]
+    out = []
+    for kind, val in order:
+        if val and (kind, val) not in out:
+            out.append((kind, val))
+    return out
+
+
+def _logbook_photo_is_renderable(photo: dict) -> bool:
+    """Has this photo ANY copy left to serve? Emit it if so."""
+    return bool(_logbook_photo_sources(photo))
+
+
 def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
     """Blocking: decode -> enhance -> upload both derivatives to R2.
 
@@ -14639,10 +14698,20 @@ async def get_logbook_activity_photo(
     `v` selects a derivative: "thumb" (long edge 400) or "enhanced" (long edge
     1800). Anything else serves the untouched original.
 
-    EVERY failure path falls back to the original rather than 404-ing. A photo
+    EVERY failure path falls back to another copy rather than 404-ing. A photo
     that failed enhancement, or whose R2 object is missing, still renders in the
     report — losing a photo to a failed enhance is the one outcome this feature
     must never produce.
+
+    The ladder is _logbook_photo_sources: the requested derivative, then the
+    remaining R2 objects, then the inline full-size base64 while it exists, and
+    finally the RETAINED THUMBNAIL base64 that the finalize purge is forbidden
+    to remove. Only an empty ladder 404s. That last rung is what lets the purge
+    exist at all: with the full-size copy gone, R2 being unreachable at read
+    time has to degrade to a small photo, never to no photo.
+
+    Deliberately unauthenticated: the people reading an emailed daily report
+    have no login here.
     """
     from fastapi.responses import Response
     logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
@@ -14657,25 +14726,29 @@ async def get_logbook_activity_photo(
         raise HTTPException(status_code=404, detail="Photo not found")
     photo = photos[photo_index]
 
-    key = photo.get("thumb_r2_key") if v == "thumb" else (
-        photo.get("enhanced_r2_key") if v == "enhanced" else None
-    )
-    if key and _r2_client and R2_BUCKET_NAME:
+    for kind, val in _logbook_photo_sources(photo, v):
+        if kind == "r2":
+            if not (_r2_client and R2_BUCKET_NAME):
+                continue
+            try:
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=val,
+                )
+                return Response(content=obj["Body"].read(), media_type="image/jpeg")
+            except Exception as e:
+                logger.warning(
+                    "[photo-enhance] R2 fetch failed key=%s, trying the next copy: %r",
+                    val, e,
+                )
+            continue
         try:
-            obj = await asyncio.to_thread(
-                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key,
-            )
-            return Response(content=obj["Body"].read(), media_type="image/jpeg")
+            return Response(content=base64.b64decode(val), media_type="image/jpeg")
         except Exception as e:
             logger.warning(
-                "[photo-enhance] R2 fetch failed key=%s, serving original: %r", key, e,
+                "[photo-enhance] inline copy would not decode for %s/%d/%d: %r",
+                logbook_id, activity_index, photo_index, e,
             )
-
-    b64 = photo.get("base64", "")
-    if not b64:
-        raise HTTPException(status_code=404, detail="Photo data not available")
-    image_data = base64.b64decode(b64)
-    return Response(content=image_data, media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail="Photo data not available")
 
 # ==================== CP PROFILE ENDPOINTS ====================
 
@@ -16345,7 +16418,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             # Photos as URL-based <img> tags
             photos = ""
             for pi, photo in enumerate(act.get("photos") or []):
-                if photo.get("base64"):
+                # Emit on ANY surviving copy, not on base64. The full-size
+                # inline copy is dropped at finalize once R2 is proven to hold
+                # the derivatives, and a photo skipped here does not render as
+                # a broken image — it vanishes, so the report reads "no photos
+                # taken" on a day photos were taken. That is a false
+                # compliance record, which is worse than a missing image.
+                if _logbook_photo_is_renderable(photo):
                     # Grid cell shows the THUMBNAIL (long edge 400, ~25-40KB)
                     # and links to the full-size ENHANCED image. Previously the
                     # 140px cell pointed at the full original, so an email with
