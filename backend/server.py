@@ -10144,36 +10144,43 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             if t and c:
                 assignments.append({"trade": t, "company": c})
 
+        # A project with no configured trades used to hard-400 here, which
+        # blocked a real worker standing at the gate over a pure config gap.
+        # Admit them instead, mark the trade pending, and flag the check-in
+        # for the CP — the same fail-open register_and_checkin already does.
+        # The strict roster match below is UNCHANGED for projects that DO
+        # have trades.
+        needs_trade_assignment = False
+        # Why the trade is pending — selects the CP-notification copy below.
+        # "" means the trade resolved normally and no notification fires.
+        trade_flag_reason = ""
         if not assignments:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "This project has no subcontractors configured yet. "
-                    "Ask the project admin to set up the check-in trade list."
+            needs_trade_assignment = True
+            trade_flag_reason = "no_roster"
+            checkin_data.trade = str(checkin_data.trade or "").strip() or "UNASSIGNED"
+            checkin_data.company = str(checkin_data.company or "").strip() or "UNASSIGNED"
+        else:
+            submitted_trade = str(checkin_data.trade or "").strip()
+            submitted_company = str(checkin_data.company or "").strip()
+            match = next(
+                (
+                    a for a in assignments
+                    if a["trade"].lower() == submitted_trade.lower()
+                    and a["company"].lower() == submitted_company.lower()
                 ),
+                None,
             )
-
-        submitted_trade = str(checkin_data.trade or "").strip()
-        submitted_company = str(checkin_data.company or "").strip()
-        match = next(
-            (
-                a for a in assignments
-                if a["trade"].lower() == submitted_trade.lower()
-                and a["company"].lower() == submitted_company.lower()
-            ),
-            None,
-        )
-        if not match:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Please pick your trade and company from the dropdown. "
-                    "Custom entries are not allowed."
-                ),
-            )
-        # Canonicalize to the admin's exact casing.
-        checkin_data.trade = match["trade"]
-        checkin_data.company = match["company"]
+            if not match:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Please pick your trade and company from the dropdown. "
+                        "Custom entries are not allowed."
+                    ),
+                )
+            # Canonicalize to the admin's exact casing.
+            checkin_data.trade = match["trade"]
+            checkin_data.company = match["company"]
 
         admin_id = project.get("admin_id")
         company_id = project.get("company_id")
@@ -10283,19 +10290,60 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "updated_at": now,
             "is_deleted": False,
             "cert_warnings": cert_warnings,
+            # True when the project had no trades configured, so the worker
+            # checked in without one. The CP assigns the real trade later via
+            # POST /checkins/{id}/assign-trade.
+            "needs_trade_assignment": needs_trade_assignment,
         }
-        
+
         result = await db.checkins.insert_one(checkin_record)
-        
+
+        # Tell the CP + admins this check-in needs a trade assigned. The
+        # check-in is ALREADY written above; this dispatch is failure-isolated
+        # so a notification problem can never block a worker at the gate.
+        # Mirrors the register_and_checkin dispatch.
+        if needs_trade_assignment:
+            try:
+                from zoneinfo import ZoneInfo
+                _nt_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            except Exception:
+                _nt_today = now.strftime("%Y-%m-%d")
+            _nt_message = (
+                f"{worker.get('name') or 'A worker'} checked in at "
+                f"{project.get('name') or 'the site'} but this project has no "
+                f"trades configured, so no trade could be selected. Add the "
+                f"project's trades and assign this worker."
+            )
+            try:
+                await _notifications_inbox.dispatch_notification(
+                    db,
+                    project=project,
+                    kind="checkin_needs_trade",
+                    severity="warning",
+                    title="Check-in needs a trade assigned",
+                    message=_nt_message,
+                    source_kind="checkin",
+                    source_id=f"needs-trade:{str(worker['_id'])}:{_nt_today}",
+                    metadata={
+                        "checkin_id": str(result.inserted_id),
+                        "worker_id": str(worker["_id"]),
+                        "reason": trade_flag_reason,
+                    },
+                    deeplink_anchor="workforce",
+                )
+            except Exception as e:
+                logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")
+
         return {
             "success": True,
             "message": "Check-in successful",
             "checkin_id": str(result.inserted_id),
             "worker_name": worker.get("name"),
             "project_name": project.get("name"),
-            "check_in_time": now.isoformat()
+            "check_in_time": now.isoformat(),
+            "needs_trade_assignment": needs_trade_assignment,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
