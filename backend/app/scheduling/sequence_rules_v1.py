@@ -173,6 +173,13 @@ def build_sequence_rules_v1() -> SequenceGraph:
             branch=FLAG_CAST_IN_PLACE),
         _wp("reshore", "concrete", "reshore", branch=FLAG_CAST_IN_PLACE),
         _wp("patching", "concrete", "patching", branch=FLAG_CAST_IN_PLACE),
+        # OPERATOR NOTE: the top floor slab is rarely the actual top of
+        # structure in NYC; the concrete phase is finished once the bulkhead /
+        # elevator overrun slab is poured and stripped.
+        _wp("pour_bulkhead_slab", "concrete",
+            "Pour bulkhead / elevator overrun slab", branch=FLAG_CAST_IN_PLACE),
+        _wp("strip_bulkhead_formwork", "concrete", "strip bulkhead formwork",
+            branch=FLAG_CAST_IN_PLACE),
 
         # ── 3B superstructure — cold-formed steel ────────────────────
         _wp("cfs_wall_panels", "cfs", "load-bearing CFS wall panels / studs",
@@ -310,6 +317,14 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("reshore", "columns_shearwall_rebar"),          # floor N+1 activities
         _e("reshore", "masonry"),
         _e("reshore", "mep_rough_in"),                     # MEP rough-in on floor N
+        # OPERATOR NOTE: the top floor slab is rarely the actual top of
+        # structure in NYC; the concrete phase is finished once the bulkhead /
+        # elevator overrun slab is poured and stripped. So the cast-in-place
+        # route to top-out runs through the bulkhead pour, not off pour_slab.
+        _e("pour_slab", "pour_bulkhead_slab"),
+        _e("strip_formwork", "pour_bulkhead_slab"),
+        _e("pour_bulkhead_slab", "strip_bulkhead_formwork"),
+        _e("pour_bulkhead_slab", "top_floor_structure_complete"),
 
         # ── 3B cold-formed steel ─────────────────────────────────────
         _e("cfs_wall_panels", "floor_joists_decking"),
@@ -342,12 +357,10 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("hoist_jump", BRANCH_ENTRY_CFS),
 
         # ── topping out + envelope ───────────────────────────────────
-        # DERIVED (not verbatim in the approved rules): the approved rules name
-        # "top floor structure complete" as a source but give it no predecessor.
-        # These two edges only OFFER the top-out chip after a floor structure is
-        # poured; the CP decides whether the building is actually topped out.
-        _e("pour_slab", "top_floor_structure_complete"),
-        _e("pour_topping_slab", "top_floor_structure_complete"),
+        # "top floor structure complete" is reached from the bulkhead pour (3A)
+        # and from the roof framing / metal deck (3B) — see those sections. The
+        # two DERIVED pour_slab / pour_topping_slab edges that previously stood
+        # in for a predecessor were rejected by the operator and removed.
         _e("top_floor_structure_complete", "temporary_roof"),
         _e("top_floor_structure_complete", "parapets"),
         _e("top_floor_structure_complete", "bulkhead"),

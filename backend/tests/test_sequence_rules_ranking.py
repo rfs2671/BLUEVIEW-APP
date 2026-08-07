@@ -31,7 +31,17 @@ from app.scheduling.sequence_rules_v1 import (  # noqa: E402
     OTHER_ACTIVITY_ID,
     RULES_VERSION,
     build_sequence_rules_v1,
+    successors_by_id,
 )
+
+
+def _succ():
+    return successors_by_id(build_sequence_rules_v1())
+
+
+def _preds(target):
+    return sorted({e.from_node for e in build_sequence_rules_v1().edges
+                   if e.to_node == target})
 
 
 def _rank(**kw):
@@ -260,3 +270,36 @@ def test_ranking_covers_every_offered_node_exactly_once():
     ids = _ids(r)
     assert len(ids) == len(set(ids))
     assert set(ids) == {n.id for n in g.nodes}
+
+
+# ── 12. topping out (3A) — the concrete bulkhead branch ──────────────
+def test_bulkhead_slab_is_the_cast_in_place_route_to_top_out():
+    succ = _succ()
+    assert "pour_bulkhead_slab" in succ["pour_slab"]
+    assert "pour_bulkhead_slab" in succ["strip_formwork"]
+    assert succ["pour_bulkhead_slab"] == ["strip_bulkhead_formwork",
+                                          "top_floor_structure_complete"]
+
+
+def test_rejected_derived_top_out_edges_are_gone():
+    succ = _succ()
+    assert "top_floor_structure_complete" not in succ["pour_slab"]
+    assert "top_floor_structure_complete" not in succ.get("pour_topping_slab", [])
+
+
+def test_bulkhead_nodes_are_tagged_to_the_cast_in_place_branch():
+    g = build_sequence_rules_v1()
+    by_id = {n.id: n for n in g.nodes}
+    bulkhead = {"pour_bulkhead_slab", "strip_bulkhead_formwork"}
+    for nid in bulkhead:
+        assert by_id[nid].requires == [FLAG_CAST_IN_PLACE]
+    # ...so a CFS project is never offered them, and a concrete one always is.
+    assert not (bulkhead & set(_ids(_rank(structural_system="cfs"))))
+    assert bulkhead <= set(_ids(_rank(structural_system="cast_in_place")))
+
+
+def test_pouring_a_slab_offers_the_bulkhead_pour_next():
+    sug = _ids(_rank(prior_activity_ids=["pour_slab"],
+                     structural_system="cast_in_place"), "suggested")
+    assert "pour_bulkhead_slab" in sug
+    assert "top_floor_structure_complete" not in sug
