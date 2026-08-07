@@ -50,6 +50,7 @@ import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
+import { useT } from '../src/i18n';
 
 const TABS = [
   { key: 'today', label: "Today's Report" },
@@ -70,6 +71,7 @@ export default function ReportsScreen() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const toast = useToast();
+  const t = useT('reportPreview');
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -546,6 +548,21 @@ export default function ReportsScreen() {
                             </Text>
                           </View>
                         </View>
+
+                        {/* PHOTO ENHANCEMENT FAILURES — admin-only, soft, and
+                            non-blocking. A photo stamped enhance_status
+                            "failed" by the background enhance pass
+                            (server.py:250-256) has no R2 derivative, so it is
+                            the photo most likely to be MISSING from this
+                            report. Nothing read that field before. This says
+                            so and gets out of the way — it does not gate the
+                            preview, the PDF, or the send, and it is not shown
+                            to the CP or on the kiosk/inspector screen. */}
+                        {preview.failed_photo_count > 0 && (
+                          <Text style={s.photoIssueLine}>
+                            {t('failedPhotos').replace('{n}', String(preview.failed_photo_count))}
+                          </Text>
+                        )}
                       </GlassCard>
 
                       {/* View Full Report Button */}
@@ -901,6 +918,14 @@ function buildStyles(colors, isDark) {
       fontSize: 12,
       color: colors.text.muted,
       marginTop: 2,
+    },
+    // Soft: muted, no badge, no icon, no border. It reports a processing
+    // problem, not a compliance one.
+    photoIssueLine: {
+      fontSize: 12,
+      color: colors.text.muted,
+      marginTop: spacing.sm,
+      fontStyle: 'italic',
     },
     statusBadge: {
       paddingHorizontal: spacing.sm,

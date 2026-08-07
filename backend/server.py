@@ -18174,13 +18174,35 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
 
     # Build summary of what sections are filled
     logbook_summary = []
+    total_failed_photos = 0
     for lb in logbooks:
+        # PHOTO ENHANCEMENT FAILURES.
+        # _enhance_logbook_photos stamps enhance_status="failed" + enhance_error
+        # on a photo whose enhance/upload pass raised (server.py:250-256).
+        # Nothing read either field. A failed enhancement means the photo has no
+        # R2 derivative, so it survives on its inline base64 alone — and it is
+        # the photo most likely to be MISSING from the day's report. Counted
+        # here so an admin can see it before the report goes out.
+        #
+        # ADMIN-ONLY BY CONSTRUCTION: this endpoint 403s anyone who is not
+        # admin/owner (above), and the count is deliberately absent from the CP
+        # editor and from the kiosk/inspector screen — it is our plumbing, not
+        # an inspector's business.
+        failed_photos = 0
+        for activity in ((lb.get("data") or {}).get("activities") or []):
+            if not isinstance(activity, dict):
+                continue
+            for photo in (activity.get("photos") or []):
+                if isinstance(photo, dict) and photo.get("enhance_status") == "failed":
+                    failed_photos += 1
+        total_failed_photos += failed_photos
         logbook_summary.append({
             "log_type": lb.get("log_type"),
             "status": lb.get("status", "draft"),
             "has_signature": bool(lb.get("cp_signature")),
             "cp_name": lb.get("cp_name"),
             "updated_at": lb.get("updated_at").isoformat() if isinstance(lb.get("updated_at"), datetime) else str(lb.get("updated_at", "")),
+            "failed_photo_count": failed_photos,
         })
 
     # Check if report was already sent today
@@ -18195,6 +18217,9 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         "date": date,
         "checkin_count": checkin_count,
         "logbooks": logbook_summary,
+        # Sum of the per-logbook counts above, so the panel has one number to
+        # show without walking the list.
+        "failed_photo_count": total_failed_photos,
         "has_daily_log": bool(daily_log),
         "daily_log_status": daily_log.get("status") if daily_log else None,
         "daily_log_weather": daily_log.get("weather") if daily_log else None,
