@@ -42,6 +42,26 @@ const MOBILE_CAPTURE = Platform.OS !== 'web';
 let photoSeq = 0;
 const newPhotoId = () => `cap_${Date.now()}_${(photoSeq += 1)}`;
 
+// ── Activity row identity ───────────────────────────────────────────────────
+// `activity_id` is a stable per-row id, minted on the device when the row is
+// created (seeded from headcount, or added by hand) and then stored with the
+// row. Nothing had one before: rows were identified only by their INDEX in
+// data.activities[], which changes the moment a row is added, removed or
+// reordered. An index is fine for rendering and useless for anything that has
+// to still mean the same row later — including the photo cap below, which has
+// to group a subcontractor's rows without a roster id to group them by.
+//
+// It is deliberately client-minted and NOT server-owned: a row can be created
+// with no signal at all (the whole point of the offline draft), so an id that
+// required a round-trip would simply not exist for the rows that need it most.
+let activitySeq = 0;
+const newActivityId = () => `act_${Date.now()}_${(activitySeq += 1)}`;
+
+// The one normalization used to match a typed company name against the day's
+// roster names. Mirrors _roster_key in backend/server.py (strip + casefold),
+// so a case-only or whitespace edit still resolves to the same subcontractor.
+const rosterKey = (v) => String(v || '').trim().toLowerCase();
+
 // A saved photo's full-size `base64` is DROPPED when its log is finalized —
 // server.py _purge_finalized_photo_base64, and only once R2 has confirmed both
 // derivatives. `thumb_base64` is the ~400px copy written in its place and is
@@ -113,6 +133,15 @@ const CHECKLIST_ITEMS = [
 ];
 
 const EMPTY_ACTIVITY = () => ({
+  // Stable row identity — see newActivityId above.
+  activity_id: newActivityId(),
+  // The project roster row this activity is accountable to
+  // (project.trade_assignments[].id, minted server-side as `srv_<uuid4hex>`).
+  // A hand-added row has no roster identity until the CP names a company that
+  // is actually on the day's roster, so it starts NULL and stays null for an
+  // "Other"/unbound sub. Null is the honest answer; a placeholder id here
+  // would silently merge two unrelated subcontractors.
+  subcontractor_id: null,
   crew_id: '',
   company: '',
   num_workers: '',
@@ -180,6 +209,13 @@ export default function DailyJobsiteLog() {
   const viewportHRef = useRef(0);
   const lastEditedRef = useRef(null);
   const activitiesRef = useRef([]);
+  // rosterKey(sub_name) -> subcontractor_id, built from the day's headcount.
+  // Only names that resolve to EXACTLY ONE roster id are in here: a company
+  // working two trades today has two roster rows and therefore two ids, and
+  // there is no way to tell from a typed company name which one the CP meant.
+  // An ambiguous name is left out, which resolves to null — unbound, its own
+  // photo bucket. Guessing would attach a row to the wrong roster entry.
+  const rosterIdByCompanyRef = useRef(new Map());
   const [fabTargetIndex, setFabTargetIndex] = useState(0);
   // Resolve the camera permission dialog HERE, at screen mount, so it is not
   // sitting between the capture tap and the preview. No-op on web.
@@ -297,6 +333,26 @@ export default function DailyJobsiteLog() {
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
 
+      // Build the company -> roster id map from the day's headcount BEFORE the
+      // existing-log branch: an already-saved log still has to re-resolve a
+      // company the CP retypes, and stored rows from before this change carry
+      // no subcontractor_id at all.
+      {
+        const idsByName = new Map();      // rosterKey(name) -> Set(ids)
+        for (const r of (Array.isArray(headcount) ? headcount : [])) {
+          const id = r?.subcontractor_id;
+          const name = rosterKey(r?.sub_name);
+          if (!id || !name) continue;
+          if (!idsByName.has(name)) idsByName.set(name, new Set());
+          idsByName.get(name).add(id);
+        }
+        const unique = new Map();
+        for (const [name, ids] of idsByName) {
+          if (ids.size === 1) unique.set(name, [...ids][0]);
+        }
+        rosterIdByCompanyRef.current = unique;
+      }
+
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
       const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
@@ -329,19 +385,28 @@ export default function DailyJobsiteLog() {
         // straight from the backend aggregation. No per-worker rows,
         // no per-worker signatures.
         const rows = Array.isArray(headcount) ? headcount : [];
-        const autoActivities = rows.map((r, i) => ({
-          crew_id: `C${i + 1}`,
+        const autoActivities = rows.map((r, i) => {
           // PR B: 'UNASSIGNED' is a placeholder (worker's sub not on the roster
           // at check-in), not a company. Seed the field EMPTY so it reads as
           // pending and prompts the CP to assign the accountable sub — never
           // stamp the sentinel onto the 3301-02. The headcount is preserved.
-          company: (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
-            ? r.sub_name : '',
-          num_workers: String(r.worker_count_today ?? 0),
-          work_description: r.trade || '',
-          work_locations: '',
-          photos: [],
-        }));
+          const company = (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
+            ? r.sub_name : '';
+          return {
+            activity_id: newActivityId(),
+            // Carried through from GET /daily-headcount, which resolves it
+            // against project.trade_assignments server-side. A row whose
+            // company was blanked above has no accountable sub yet, so it
+            // must not keep an id either — the two have to agree.
+            subcontractor_id: company ? (r.subcontractor_id || null) : null,
+            crew_id: `C${i + 1}`,
+            company,
+            num_workers: String(r.worker_count_today ?? 0),
+            work_description: r.trade || '',
+            work_locations: '',
+            photos: [],
+          };
+        });
         if (autoActivities.length > 0) setActivities(autoActivities);
 
         // FIX #1: Auto-fetch weather if no existing log
@@ -377,7 +442,20 @@ export default function DailyJobsiteLog() {
 
   const updateActivity = (index, field, value) => {
     lastEditedRef.current = index;
-    setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== index) return a;
+      const next = { ...a, [field]: value };
+      // Retyping the COMPANY re-resolves the roster binding. It cannot be left
+      // alone: a row seeded as "Acme" carries Acme's roster id, and renaming it
+      // to a different sub while keeping that id is a fabricated binding — the
+      // renamed row would then share Acme's photo bucket and be reported
+      // against Acme. Unknown or ambiguous name -> null, which is the honest
+      // "no roster identity" and gives the row its own bucket.
+      if (field === 'company') {
+        next.subcontractor_id = rosterIdByCompanyRef.current.get(rosterKey(value)) || null;
+      }
+      return next;
+    }));
   };
 
   /**

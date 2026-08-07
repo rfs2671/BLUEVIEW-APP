@@ -16600,7 +16600,17 @@ async def get_project_daily_headcount(
     Used by Daily Jobsite Log — a per-company headcount report, NOT a
     per-worker signature roster. The response is flat:
 
-        [{"sub_name": "...", "trade": "...", "worker_count_today": N}, ...]
+        [{"sub_name": "...", "trade": "...", "worker_count_today": N,
+          "subcontractor_id": "srv_..." | None}, ...]
+
+    `subcontractor_id` is the project roster row's server-minted id
+    (project.trade_assignments[].id, see _merge_trade_assignments). It is
+    what lets the Daily Jobsite Log key an activity row on the
+    SUBCONTRACTOR instead of on its position in the array. It is None
+    whenever the (sub, trade) pair has no roster row — an "UNASSIGNED"
+    check-in, or a sub the admin has not entered yet. None is the honest
+    answer there and callers must treat it as "no roster identity"; a
+    fabricated id would silently merge two unrelated subs.
 
     Workers are counted, not listed. No signatures. The three logbooks
     that DO need per-worker signature autofill (preshift_signin,
@@ -16695,8 +16705,34 @@ async def get_project_daily_headcount(
             buckets[key] = row
         row["worker_count_today"] += 1
 
+    # ── Roster identity for each (sub, trade) pair ─────────────────────
+    # Resolved from the project doc already fetched above (no extra query),
+    # on the SAME normalization the check-in strict-roster match uses
+    # (_roster_key over company + trade), so a case-only or whitespace edit
+    # still resolves to the same row. An active row always wins; a
+    # soft-deleted row still supplies the id it was minted with rather than
+    # losing it, because the day's work really was done by that sub.
+    roster_ids: Dict[tuple, str] = {}
+    for _assignment in (project.get("trade_assignments") or []):
+        if not isinstance(_assignment, dict):
+            continue
+        _rid = str(_assignment.get("id") or "").strip()
+        if not _rid:
+            continue
+        _rkey = (_roster_key(_assignment.get("company")), _roster_key(_assignment.get("trade")))
+        if _assignment_is_inactive(_assignment):
+            roster_ids.setdefault(_rkey, _rid)
+        else:
+            roster_ids[_rkey] = _rid
+
     # Stable order: by sub_name, then trade
     rows = sorted(buckets.values(), key=lambda r: ((r["sub_name"] or "").lower(), (r["trade"] or "").lower()))
+    for row in rows:
+        # Absent from the roster -> None, never a minted id. A headcount read
+        # must not create roster identity; only the admin's roster does.
+        row["subcontractor_id"] = roster_ids.get(
+            (_roster_key(row.get("sub_name")), _roster_key(row.get("trade")))
+        )
     return rows
 
 
