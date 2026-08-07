@@ -24,8 +24,23 @@
  * claims success, markFinalized is never reached, the draft is still writable
  * afterwards (proved by running the real writeDraft over it, not by inferring
  * it), the screen is not navigated away from, and the reason is shown in the
- * CP's language through the SAME mechanism LogbookLockBar uses. A genuine
- * offline finalize keeps today's behaviour exactly.
+ * CP's language through the SAME mechanism LogbookLockBar uses — as a toast AND
+ * as a recorded refusal, since the toast is gone in four seconds and an unlocked
+ * compliance record has to still say so afterwards. That record is written by
+ * draftSync's real recordFinalizeError into a real store, and LogbookLockBar's
+ * real mount effect is then run over it to prove the banner actually appears.
+ *
+ * THERE ARE THREE OUTCOMES, NOT TWO, and only one may promise a sync:
+ *
+ *   offline (no response at all) — the draft IS queued and the drain WILL
+ *     re-apply /finalize, so the freeze and the promise are both true. Unchanged.
+ *   4xx — the server judged this log and said no. A refusal.
+ *   5xx — the server FAILED. Nothing locked, nothing queued (the content push
+ *     succeeded, so there is no pending key to retry), so "signed and locked, it
+ *     will sync when you are back online" is the same lie on a rarer path. It is
+ *     a retryable failure and says so, reusing the existing generic copy.
+ *
+ * Offline is decided by the app-wide isOfflineError, not by a second predicate.
  *
  * Run:  node src/utils/dailyJobsiteFinalizeRefusal.test.cjs
  */
@@ -40,6 +55,7 @@ const screenSrc = fs.readFileSync(path.join(FRONTEND, 'app', 'logbooks', 'daily_
 const barSrc = fs.readFileSync(path.join(SRC, 'components', 'LogbookLockBar.jsx'), 'utf8');
 const draftSyncSrc = fs.readFileSync(path.join(UTILS, 'draftSync.js'), 'utf8');
 const draftsSrc = fs.readFileSync(path.join(UTILS, 'logbookDrafts.js'), 'utf8');
+const offlineSrc = fs.readFileSync(path.join(UTILS, 'offlineState.js'), 'utf8');
 
 let passed = 0, failed = 0;
 function ok(cond, label) {
@@ -135,6 +151,14 @@ function loadDraftSync() {
 // finalizeErrorCode is pure, so one instance serves every caller below.
 const { finalizeErrorCode } = loadDraftSync();
 
+// The app-wide OFFLINE predicate — the real one, so "offline" in this test is
+// the same thing it is in every other screen.
+const { isOfflineError } = (() => {
+  const body = offlineSrc.replace(/^export (async function|function|const) /gm, '$1 ');
+  // eslint-disable-next-line no-new-func
+  return new Function(`${body}\nreturn { isOfflineError };`)();
+})();
+
 // logbookDrafts — the REAL store, over an in-memory AsyncStorage, so "the draft
 // is still editable" is demonstrated rather than asserted from the absence of a
 // call.
@@ -197,6 +221,7 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
       return S.recordFinalizeError(id, code, k);
     },
     finalizeErrorCode,
+    isOfflineError,
     setLocked: (v) => { calls.locked.push(v); },
     router: { back: () => { calls.back += 1; } },
     console: { warn: (...a) => calls.warns.push(a.join(' ')) },
@@ -346,11 +371,85 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(!banner.shown, 'offline: and no "NOT LOCKED ON THE SERVER" banner is raised');
   }
 
-  // ── 4. A 5xx is the server FAILING, not judging ───────────────────────────
+  // ── 4. A 5xx IS NOT BEING OFFLINE EITHER ──────────────────────────────────
+  // The server FAILED rather than judged. Nothing is locked and nothing is
+  // queued — the content push succeeded, so there is no pending key for the
+  // drain to retry — so "signed and locked, it will sync when you are back
+  // online" is the same lie as the refusal case on a rarer path.
+  for (const status of [500, 502, 503]) {
+    const { calls, D, S } = await run({ finalizeError: rejection(status, null) });
+
+    ok(!calls.toasts.some((t) => t.kind === 'success'),
+      `${status}: NO success toast — the log is not locked anywhere`);
+    ok(!JSON.stringify(calls.toasts).includes('back online'),
+      `${status}: the CP is NOT told it will sync when he is back online — nothing is queued`);
+    ok(!JSON.stringify(calls.toasts).includes('locked'),
+      `${status}: and nothing claims it is locked`);
+    ok(calls.finalized.length === 0,
+      `${status}: markFinalized is NOT called — the draft must stay retryable`);
+    ok(calls.locked.length === 0, `${status}: the form is not flipped read-only`);
+    ok(calls.back === 0, `${status}: the CP is left on the screen, where the retry button is`);
+
+    const wrote = await D.writeDraft(KEY, { data: { general_description: 'Shoring, slab prep.' } });
+    const after = await D.readDraft(KEY);
+    ok(wrote === true && after.finalized === false
+      && after.data.general_description === 'Shoring, slab prep.',
+      `${status}: the draft is still editable — press Submit & Sign again when the server is well`);
+
+    const err = calls.toasts.find((t) => t.kind === 'error');
+    ok(!!err && err.title === I.translate('finalize', 'errorTitle', 'en'),
+      `${status}: an error IS shown, from the shared finalize namespace`);
+    const body = err ? err.body : '';
+    ok(body === GENERIC.en,
+      `${status}: reusing the existing generic "could not be finalized, please try again" copy`);
+    ok(!/back online|offline/i.test(body),
+      `${status}: which does not describe it as an offline condition`);
+    ok(!body.includes(String(status)) && !body.includes('status code'),
+      `${status}: no HTTP status or axios prose reaches the CP`);
+
+    const es = await run({ finalizeError: rejection(status, null), locale: 'es' });
+    const esErr = es.calls.toasts.find((t) => t.kind === 'error');
+    ok(esErr && esErr.body === GENERIC.es && esErr.body !== GENERIC.en,
+      `${status}: and a Spanish-speaking CP gets it in Spanish`);
+
+    // NOT recorded: the banner's own copy says the log is frozen on this device
+    // and queued. On a 5xx it is neither, so raising it would be a third lie.
+    ok(calls.recorded.length === 0,
+      `${status}: no refusal is recorded — the server named no condition to fix`);
+    ok(!(await bannerFor(S, 'log123')).shown,
+      `${status}: so no "NOT LOCKED ON THE SERVER" banner, whose copy would not be true here`);
+  }
+
+  // ── 4b. THE THREE BRANCHES ARE GENUINELY DISTINCT ─────────────────────────
   {
-    const { calls } = await run({ finalizeError: rejection(500, null) });
-    ok(calls.finalized.length === 1 && calls.toasts.some((t) => t.kind === 'success'),
-      '500: treated as a deferred push like offline — the server did not reject the CONTENT');
+    const off = (await run({ finalizeError: offline() })).calls;
+    const five = (await run({ finalizeError: rejection(500, null) })).calls;
+    const four = (await run({ finalizeError: rejection(400, 'FINALIZE_EMPTY_LOG') })).calls;
+
+    ok(off.finalized.length === 1 && five.finalized.length === 0 && four.finalized.length === 0,
+      '3-way: ONLY a genuine offline freezes the log locally');
+    ok(off.toasts.some((t) => t.kind === 'success')
+      && !five.toasts.some((t) => t.kind === 'success')
+      && !four.toasts.some((t) => t.kind === 'success'),
+      '3-way: ONLY a genuine offline claims success');
+    ok(off.recorded.length === 0 && five.recorded.length === 0 && four.recorded.length === 1,
+      '3-way: ONLY a refusal — a condition the server named — is recorded for the banner');
+    const b5 = (five.toasts.find((t) => t.kind === 'error') || {}).body;
+    const b4 = (four.toasts.find((t) => t.kind === 'error') || {}).body;
+    ok(!!b5 && !!b4 && b5 !== b4,
+      '3-way: a server failure and a refusal do not read the same to the CP');
+
+    // The predicate is the app's, not a second one invented here.
+    ok(/import \{ isOfflineError \} from '\.\.\/\.\.\/src\/utils\/offlineState'/.test(screenSrc),
+      '3-way: offline is decided by the app-wide isOfflineError, the same predicate settleFetch uses');
+    ok(/const offline = isOfflineError\(finalizeErr\);/.test(submitSrc),
+      '3-way: ...and it is applied to the finalize error itself');
+    ok(!/error\.response|!finalizeErr\?\.response/.test(submitSrc),
+      '3-way: handleSubmitAndSign does not re-derive "offline" from the response object');
+
+    // isOfflineError's own contract, so the branch above cannot be read wrong.
+    ok(/if \(error\.response\) return false;/.test(offlineSrc),
+      '3-way: isOfflineError is false whenever a server answered — a 5xx can never take the offline branch');
   }
 
   // ── 5. A SUCCESSFUL finalize ──────────────────────────────────────────────

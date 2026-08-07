@@ -34,6 +34,10 @@ import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearP
 // is the other half: it RAISES that same banner, so a refusal taken here in the
 // foreground leaves the identical durable trace a background one does.
 import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// The app-wide OFFLINE discriminator (src/utils/offlineState.js), the same one
+// settleFetch is built on. "Offline" here has to mean what it means everywhere
+// else — no response at all — and not be a second, local guess at it.
+import { isOfflineError } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -1071,9 +1075,9 @@ export default function DailyJobsiteLog() {
    *      draft first, server push best-effort (markPending on failure;
    *      draftSync drains it and re-applies /finalize on reconnect).
    *   2. server /finalize when the doc has an id.
-   *   3. LOCAL freeze — but ONLY when the server has not REFUSED. An EOD sign
+   *   3. LOCAL freeze — but ONLY when the server never ANSWERED. An EOD sign
    *      with no signal must still be frozen on this device; a log the server
-   *      has actively rejected must not be. It MUST come after (1) —
+   *      rejected, or failed on, must not be. It MUST come after (1) —
    *      writeDraft refuses content patches once a draft is finalized.
    *   4. flip the form read-only.
    *
@@ -1101,7 +1105,13 @@ export default function DailyJobsiteLog() {
    * lasts four seconds and the record is what is still there when he comes
    * back. finalizeErrorCode, recordFinalizeError and the `finalize` i18n
    * namespace are LogbookLockBar's, reused verbatim so the same refusal reads
-   * identically wherever it surfaces. Being genuinely offline is unchanged.
+   * identically wherever it surfaces.
+   *
+   * A 5xx is neither of those and gets its own third branch: the server FAILED
+   * rather than judged, so there is nothing to name and nothing queued — it is
+   * simply retryable, and must not be frozen or announced as synced either.
+   * Only a genuine offline (isOfflineError — no response at all) keeps the
+   * freeze and the sync promise, and that path is untouched.
    */
   const handleSubmitAndSign = async () => {
     if (saving || signing) return;
@@ -1123,12 +1133,37 @@ export default function DailyJobsiteLog() {
           serverLocked = true;
           await clearFinalizeError(savedId);
         } catch (finalizeErr) {
-          // A REFUSAL is any answer the server actually gave in the 4xx range —
-          // it looked at this log and said no. Being offline produces no
-          // response at all, and a 5xx is the server failing rather than
-          // judging, so both keep the deferred behaviour below.
+          // THREE OUTCOMES, NOT TWO. Only ONE of them may say "it will sync
+          // when you are back online", because only one of them is true:
+          //
+          //   OFFLINE — no response at all. The draft IS queued and the drain
+          //     WILL re-apply /finalize on reconnect, so the sync promise is
+          //     accurate and the local freeze is exactly right. Unchanged.
+          //   4xx    — the server looked at this log and said no. It will keep
+          //     saying no. Handled below as a refusal.
+          //   5xx    — the server FAILED rather than judged. Nothing is queued
+          //     (the content push succeeded, so there is no pending key and the
+          //     drain has nothing to retry) and nothing is locked. Telling the
+          //     CP it is "signed and locked and will sync" is the same lie as
+          //     the refusal case, just on a rarer path — so it is not told.
+          //
+          // isOfflineError is the app-wide predicate settleFetch uses; offline
+          // is not re-derived here, so this screen cannot drift from the rest
+          // of the app about what being offline means.
+          const offline = isOfflineError(finalizeErr);
           const status = finalizeErr?.response?.status;
           const refused = typeof status === 'number' && status >= 400 && status < 500;
+          if (!offline && !refused) {
+            // A server error is retryable and nothing else: the log is NOT
+            // frozen, so Submit & Sign can simply be pressed again once the
+            // server is well. No record is written — the persistent banner says
+            // the log is frozen on this device only, and it is not frozen at
+            // all. genericError ("could not be finalized. Please try again") is
+            // the existing bilingual copy for exactly this.
+            console.warn('Finalize FAILED server-side — not locked, not queued:', status || finalizeErr?.message);
+            toast.error(tFinalize('errorTitle'), gateCopy(null));
+            return;
+          }
           if (refused) {
             // NOT frozen locally, NOT announced as success, NOT navigated away
             // from: the CP has to be able to fix what was refused, on this
@@ -1148,8 +1183,10 @@ export default function DailyJobsiteLog() {
             toast.error(tFinalize('errorTitle'), gateCopy(code));
             return;
           }
-          // Offline (or the server erred). The local freeze below still stands
-          // and the reconnect drain re-applies /finalize once the push lands.
+          // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
+          // no signal must still hold — and the reconnect drain re-applies
+          // /finalize once the push lands, which is what makes the sync promise
+          // in the toast below a true statement.
           console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
         }
       }
