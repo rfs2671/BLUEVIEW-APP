@@ -195,6 +195,11 @@ def build_sequence_rules_v1() -> SequenceGraph:
             branch=FLAG_CFS),
         _wp("curing_topping_slab", "concrete", "curing (topping slab)",
             branch=FLAG_CFS),
+        # OPERATOR NOTE: this includes CFS bulkheads and parapets; CFS roofs
+        # generally do NOT get a concrete topping slab — the structure is done
+        # once the corrugated deck is screwed down.
+        _wp("cfs_roof_framing_deck", "cfs", "Install roof framing and metal deck",
+            branch=FLAG_CFS),
 
         # ── 3C both branches ─────────────────────────────────────────
         _wp("crane_jump", "crane", "crane jump"),
@@ -337,6 +342,12 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("pour_topping_slab", "curing_topping_slab"),
         _e("pour_topping_slab", "cfs_wall_panels"),
         _e("curing_topping_slab", "cfs_wall_panels"),
+        # OPERATOR NOTE: this includes CFS bulkheads and parapets; CFS roofs
+        # generally do NOT get a concrete topping slab — the structure is done
+        # once the corrugated deck is screwed down. So the CFS route to top-out
+        # runs through the roof deck, not through the topping slab pour.
+        _e("cfs_wall_panels", "cfs_roof_framing_deck"),
+        _e("cfs_roof_framing_deck", "top_floor_structure_complete"),
 
         # ── 3C both branches ─────────────────────────────────────────
         # "any floor structure complete" = pour_slab (3A), and for 3B the floor

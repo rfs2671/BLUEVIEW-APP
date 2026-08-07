@@ -303,3 +303,31 @@ def test_pouring_a_slab_offers_the_bulkhead_pour_next():
                      structural_system="cast_in_place"), "suggested")
     assert "pour_bulkhead_slab" in sug
     assert "top_floor_structure_complete" not in sug
+
+
+# ── 13. topping out (3B) — the CFS roof framing branch ───────────────
+def test_roof_framing_deck_is_the_cfs_route_to_top_out():
+    succ = _succ()
+    assert "cfs_roof_framing_deck" in succ["cfs_wall_panels"]
+    assert succ["cfs_roof_framing_deck"] == ["top_floor_structure_complete"]
+
+
+def test_roof_framing_deck_is_tagged_to_the_cfs_branch():
+    g = build_sequence_rules_v1()
+    by_id = {n.id: n for n in g.nodes}
+    assert by_id["cfs_roof_framing_deck"].requires == [FLAG_CFS]
+    assert "cfs_roof_framing_deck" not in _ids(
+        _rank(structural_system="cast_in_place"))
+    assert "cfs_roof_framing_deck" in _ids(_rank(structural_system="cfs"))
+
+
+def test_top_out_has_exactly_the_two_operator_supplied_predecessors():
+    assert _preds("top_floor_structure_complete") == [
+        "cfs_roof_framing_deck", "pour_bulkhead_slab",
+    ]
+
+
+def test_cfs_wall_panels_offers_the_roof_deck_next():
+    sug = _ids(_rank(prior_activity_ids=["cfs_wall_panels"],
+                     structural_system="cfs"), "suggested")
+    assert "cfs_roof_framing_deck" in sug
