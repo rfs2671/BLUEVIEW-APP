@@ -9202,8 +9202,12 @@ async def get_checkin_info(project_id: str, tag_id: str):
 
         # Per-project trade/company assignments. Admins set these via
         # PUT /api/projects/{id} with trade_assignments: [{trade, company}].
-        # Sanitize + drop any rows missing either field.
-        raw_assignments = project.get("trade_assignments") or []
+        # Sanitize + drop any rows missing either field. Soft-deleted rows
+        # are dropped HERE, server-side: checkin.html builds its <select>
+        # with the ARRAY INDEX as the option value and resolves the pick
+        # back by index, so filtering on the client would desynchronize
+        # that index. Filtering here keeps the two in step.
+        raw_assignments = _active_assignments(project)
         assignments: List[Dict[str, str]] = []
         for row in raw_assignments:
             if not isinstance(row, dict):
@@ -9563,7 +9567,9 @@ async def register_and_checkin(data: dict):
     # frontend already forces a dropdown pick, but a modified client could
     # still POST arbitrary values — reject them here so the workforce list
     # matches who's actually been assigned to the project.
-    raw_assignments = project.get("trade_assignments") or []
+    # Soft-deleted rows are excluded: a removed sub must never be a valid
+    # NEW selection, even from a stale client that still has it cached.
+    raw_assignments = _active_assignments(project)
     allowed_pairs = set()
     for row in raw_assignments:
         if not isinstance(row, dict):
@@ -10126,8 +10132,9 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         # per-project subcontractor roster. Workers can only submit a
         # pair that the admin pre-configured. Matching is case/whitespace
         # tolerant so the DB values get canonicalized to the admin's
-        # exact casing for consistent reporting.
-        raw_assignments = project.get("trade_assignments") or []
+        # exact casing for consistent reporting. Soft-deleted rows are
+        # excluded — a removed sub is never a valid new selection.
+        raw_assignments = _active_assignments(project)
         assignments = []
         for row in raw_assignments:
             if not isinstance(row, dict):
@@ -10871,7 +10878,10 @@ async def get_flagged_project_checkins(
     return {
         "project_id": project_id,
         "project_name": project.get("name"),
-        "trade_assignments": project.get("trade_assignments") or [],
+        # The review screen offers these as the choices for assign-trade, so
+        # soft-deleted rows are excluded. Surviving rows are passed through
+        # untouched — this filters the list, it does not reshape the rows.
+        "trade_assignments": _active_assignments(project),
         "items": results,
         "count": len(results),
     }
@@ -10929,8 +10939,10 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     # Strict roster: the pair must exist on the project now that the admin has
     # configured trades. Prevents the assign action from becoming a back door
     # around the same validation register_and_checkin applies.
+    # Soft-deleted rows are excluded — the CP must not be able to assign a
+    # worker to a sub that has been removed from the project.
     allowed_pairs = set()
-    for row in (project.get("trade_assignments") or []):
+    for row in _active_assignments(project):
         if not isinstance(row, dict):
             continue
         rt = str(row.get("trade") or "").strip()
