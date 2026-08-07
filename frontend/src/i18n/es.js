@@ -68,6 +68,7 @@ export default {
     code_FINALIZE_MISSING_CP_SIGNATURE: 'Este registro no está firmado. Fírmelo antes de finalizarlo — un registro finalizado solo se corrige mediante una enmienda.',
     notLockedTitle: 'NO SE BLOQUEÓ EN EL SERVIDOR',
     notLockedHint: 'Este registro está congelado solo en este dispositivo. Permanece en cola y se reintentará, pero el servidor seguirá rechazándolo hasta que se corrija el problema anterior.',
+    notLockedHintEditor: 'El servidor rechazó este registro, por lo que NO está bloqueado. Su borrador sigue siendo editable: corrija el problema indicado arriba y vuelva a enviarlo.',
   },
 
   // ── app/logbooks/daily_jobsite.jsx — el límite de fotos por actividad ──────

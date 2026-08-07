@@ -79,6 +79,7 @@ export default {
     // background with no screen, so this is the next place the CP can see it.
     notLockedTitle: 'NOT LOCKED ON THE SERVER',
     notLockedHint: 'This log is frozen on this device only. It stays queued and will retry, but the server keeps refusing it until the problem above is fixed.',
+    notLockedHintEditor: 'The server refused this log, so it is NOT locked. Your draft is still editable — fix the problem above and submit again.',
   },
 
   // ── app/logbooks/daily_jobsite.jsx — the activity photo cap ────────────────

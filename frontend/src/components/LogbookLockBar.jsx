@@ -41,6 +41,7 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
   const [reason, setReason] = useState('');
   // A finalize the SERVER refused for THIS log on a background reconnect drain.
   const [refusedCode, setRefusedCode] = useState(undefined);
+  const [refusedSource, setRefusedSource] = useState('drain');
 
   /**
    * COMPLETENESS GATE — the server names the condition, this owns the wording.
@@ -66,7 +67,15 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
     let alive = true;
     if (!logId) { setRefusedCode(undefined); return undefined; }
     readFinalizeError(logId)
-      .then((rec) => { if (alive) setRefusedCode(rec ? (rec.code || null) : undefined); })
+      .then((rec) => {
+        if (!alive) return;
+        setRefusedCode(rec ? (rec.code || null) : undefined);
+        // A DRAIN refusal is genuinely queued and will retry. A FOREGROUND
+        // editor refusal left the draft editable with no pending key, so
+        // nothing retries it. Same banner, different truth — the hint must
+        // differ, or the app asserts a retry that cannot happen.
+        setRefusedSource(rec ? (rec.source || 'drain') : 'drain');
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, [logId]);
@@ -94,7 +103,9 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
       <View style={s.warnTextWrap}>
         <Text style={s.warnTitle}>{t('notLockedTitle')}</Text>
         <Text style={s.warnBody}>{gateCopy(refusedCode)}</Text>
-        <Text style={s.warnBody}>{t('notLockedHint')}</Text>
+        <Text style={s.warnBody}>
+          {t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
+        </Text>
       </View>
     </View>
   );

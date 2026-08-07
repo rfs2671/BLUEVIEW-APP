@@ -1179,7 +1179,7 @@ export default function DailyJobsiteLog() {
             // record raises LogbookLockBar's persistent "NOT LOCKED ON THE
             // SERVER" banner on this log, and the successful finalize above
             // already clears it.
-            await recordFinalizeError(savedId, code, _key);
+            await recordFinalizeError(savedId, code, _key, 'editor');
             toast.error(tFinalize('errorTitle'), gateCopy(code));
             return;
           }

@@ -93,7 +93,7 @@ export async function recordFinalizeError(logId, code, key) {
   try {
     const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);
     const map = raw ? JSON.parse(raw) : {};
-    map[String(logId)] = { code: code || null, key, at: Date.now() };
+    map[String(logId)] = { code: code || null, key, at: Date.now(), source };
     await AsyncStorage.setItem(FINALIZE_ERROR_KEY, JSON.stringify(map));
   } catch (_e) { /* non-fatal — the draft is still pending either way */ }
 }
