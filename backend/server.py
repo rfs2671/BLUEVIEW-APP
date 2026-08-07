@@ -9387,6 +9387,99 @@ async def get_project_companies(project_id: str):
     return companies
 
 
+# ── worker_project_trades: a worker's trade + company, PER PROJECT ──────
+#
+# THE RULE (operator, final): a worker's trade and company belong to the
+# {worker, project} PAIR, never to the worker alone. A framer on one job may
+# be a painter for a different sub on the next. So:
+#   • first check-in on a project — the worker picks trade + company and the
+#     pairing is stored here;
+#   • later check-ins on the SAME project — read the pairing; do not
+#     re-prompt and do not raise needs_trade_assignment;
+#   • a DIFFERENT project — no pairing exists, so he picks again, entirely
+#     independently of what he picked elsewhere.
+# Nothing writes trade or company to the global `workers` document. A single
+# worker-level trade cannot represent two simultaneous jobs, and writing one
+# is exactly how a value bled across projects before.
+#
+# ── ACCEPTED DEBT (deliberate — do NOT "fix" this by merging the two) ──
+# `worker_enrollments` (backend/card_audit.py — model at card_audit.py:272-291,
+# unique index at card_audit.py:2281) ALREADY implements this same
+# per-worker-per-project rule, correctly, for the gate/NFC card system: it
+# carries `trade` + `sub_name` on a row keyed (project_id, card_id), so a
+# card-holder's trade is likewise scoped to one project.
+#
+# We are NOT reusing it and NOT merging into it, because the two systems
+# identify a person by DIFFERENT primary keys that the codebase never joins:
+#   • worker_enrollments  → card_id (a physical NFC card, per project)
+#   • worker_project_trades / checkins / workers → worker_id (a phone- or
+#     OSHA-number-resolved `workers` document)
+# There is no card_id on a `workers` doc and no worker_id on an enrollment.
+# Unifying the two identity systems is a real project with a migration and a
+# reconciliation policy for people who exist in one system but not the other;
+# it is explicitly out of scope here. Until that project happens, the two
+# collections are parallel implementations of one rule over two disjoint
+# populations, and that duplication is ACCEPTED, not accidental.
+WORKER_PROJECT_TRADES_COLLECTION = "worker_project_trades"
+
+
+async def _get_worker_project_trade(worker_id, project_id):
+    """The stored {trade, company} for this worker on this project, or None.
+
+    Returns None when either key is missing or no pairing exists. NEVER falls
+    back to the `workers` document — a value from another project is worse
+    than no value, because it is silently wrong instead of visibly absent.
+    """
+    if not worker_id or not project_id:
+        return None
+    row = await db[WORKER_PROJECT_TRADES_COLLECTION].find_one({
+        "worker_id": str(worker_id),
+        "project_id": str(project_id),
+    })
+    if not row:
+        return None
+    trade = str(row.get("trade") or "").strip()
+    company = str(row.get("company") or "").strip()
+    if not trade:
+        # A pairing with no trade tells us nothing; treat it as absent so the
+        # caller re-prompts rather than freezing an empty trade onto the row.
+        return None
+    return {"trade": trade, "company": company}
+
+
+async def _store_worker_project_trade(worker_id, project_id, trade, company):
+    """Upsert the pairing for this worker on this project.
+
+    Callers must only reach here on a RESOLVED trade — never with the
+    "UNASSIGNED" sentinel a flagged check-in carries, because storing that
+    would make the next visit read UNASSIGNED back and silently skip the
+    needs_trade_assignment flag the CP still has to clear.
+    Failure-isolated: a gate check-in must never fail because a bookkeeping
+    write did.
+    """
+    trade = str(trade or "").strip()
+    company = str(company or "").strip()
+    if not worker_id or not project_id or not trade or trade == "UNASSIGNED":
+        return
+    try:
+        await db[WORKER_PROJECT_TRADES_COLLECTION].update_one(
+            {"worker_id": str(worker_id), "project_id": str(project_id)},
+            {"$set": {
+                "worker_id": str(worker_id),
+                "project_id": str(project_id),
+                "trade": trade,
+                "company": company,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[worker_project_trades] upsert failed for "
+            f"worker={worker_id} project={project_id}: {e!r}"
+        )
+
+
 def _roster_key(value) -> str:
     """The ONE roster-match normalization rule: strip surrounding whitespace
     then casefold. Used for MATCHING a submitted (trade, company) against the
@@ -29984,6 +30077,24 @@ async def startup_event():
         db.risk_scores,
         keys=[("company_id", 1), ("project_id", 1), ("calculated_at", -1)],
         name="risk_scores_company_project_calculated",
+    )
+
+    # worker_project_trades — the per-worker-per-project trade/company store.
+    # See the collection's contract + the ACCEPTED-DEBT note on
+    # worker_enrollments at WORKER_PROJECT_TRADES_COLLECTION above.
+    #
+    # UNIQUE on (worker_id, project_id): the pairing IS the identity of the
+    # row, so the DB — not application code — guarantees one trade per worker
+    # per project. Both gate paths upsert on exactly this key, so a
+    # double-tap at the gate can never mint a second, divergent pairing.
+    # Created through _ensure_index_resilient like every other index here, so
+    # a future key-shape change drops-and-recreates instead of bricking
+    # startup on an IndexKeySpecsConflict.
+    await _ensure_index_resilient(
+        db[WORKER_PROJECT_TRADES_COLLECTION],
+        keys=[("worker_id", 1), ("project_id", 1)],
+        name="worker_project_trades_worker_project_unique",
+        unique=True,
     )
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same
