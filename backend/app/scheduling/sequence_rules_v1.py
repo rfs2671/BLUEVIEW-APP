@@ -221,7 +221,8 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("facade_closeout", "facade", "facade close-out"),
 
         # ── interior fit-out ─────────────────────────────────────────
-        _wp("building_envelope_closed", "gc", "building envelope closed"),
+        _wp("building_envelope_closed", "gc",
+            "Building envelope closed / Dried-in"),
         _wp("interior_framing", "carpentry", "framing (layout, track and studs)"),
         _wp("insulation_prep", "insulation", "insulation prep"),
         _wp("mep_rough_in", "mep", "MEP rough-in"),
@@ -404,13 +405,12 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("facade", "flashing"),
         _e("window_and_exterior_door_install", "facade_closeout"),
         _e("window_and_exterior_door_install", "interior_framing"),
+        # The dried-in milestone is offered off the window / exterior door
+        # install. The DERIVED facade_closeout edge that previously stood in
+        # for a predecessor was rejected by the operator and removed.
+        _e("window_and_exterior_door_install", "building_envelope_closed"),
 
         # ── interior fit-out ─────────────────────────────────────────
-        # DERIVED (not verbatim in the approved rules): "building envelope
-        # closed" is named as a source with no predecessor. Facade close-out is
-        # what closes the envelope, so it offers the chip; nothing is asserted
-        # about whether the envelope IS closed.
-        _e("facade_closeout", "building_envelope_closed"),
         _e("building_envelope_closed", "interior_framing"),
         _e("building_envelope_closed", "insulation_prep"),
         # framing <-> MEP rough-in is CONCURRENT: the mutual pair keeps both

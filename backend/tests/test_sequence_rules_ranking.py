@@ -363,3 +363,28 @@ def test_floor_complete_offers_masonry_facade_window_and_framing():
                 "interior_framing"}
     for src in ("reshore", "subfloor_sheathing", "pour_topping_slab"):
         assert expected <= set(succ[src]), src
+
+
+# ── 15. the dried-in milestone ───────────────────────────────────────
+def test_envelope_node_is_relabelled_dried_in():
+    g = build_sequence_rules_v1()
+    by_id = {n.id: n for n in g.nodes}
+    assert by_id["building_envelope_closed"].scope == (
+        "Building envelope closed / Dried-in")
+
+
+def test_dried_in_is_offered_only_off_the_window_and_door_install():
+    assert _preds("building_envelope_closed") == [
+        "window_and_exterior_door_install",
+    ]
+
+
+def test_rejected_derived_facade_closeout_edge_is_gone():
+    succ = _succ()
+    assert "building_envelope_closed" not in succ.get("facade_closeout", [])
+
+
+def test_window_and_door_install_offers_the_dried_in_chip():
+    sug = _ids(_rank(prior_activity_ids=["window_and_exterior_door_install"]),
+               "suggested")
+    assert "building_envelope_closed" in sug
