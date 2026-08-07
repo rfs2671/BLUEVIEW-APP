@@ -1,14 +1,21 @@
-"""A CP's trade correction sticks to the WORKER, not just the check-in.
+"""Trade is confirmed PER PROJECT — a worker-level trade is never a shortcut.
 
-POST /checkins/{id}/assign-trade previously wrote the trade onto the
-worker only when the worker had none, so the same person re-flagged on
-every subsequent check-in and the CP re-corrected them daily. The
-correction is now authoritative on the worker document and is marked
-trade_source="cp_assignment"; the gate paths reuse that marked pair
-instead of re-raising needs_trade_assignment.
+An earlier change made POST /checkins/{id}/assign-trade authoritative on
+the WORKER document (trade + company + trade_source="cp_assignment") and
+let both gate paths reuse that marked pair to suppress
+needs_trade_assignment. That ruling was superseded.
 
-This is deliberately cross-project and cross-company — the worker doc is
-not project-scoped.
+The rule this file locks in:
+  • a worker re-confirms trade and company on every project, even if he
+    has checked in elsewhere before — the gate never reads a worker-level
+    trade to decide the flag;
+  • the CP assigns a trade ONLY where none was captured (fill-if-empty,
+    never overwrite) — asserted in test_checkin_assign_trade.py;
+  • no cp_assignment provenance is written anywhere.
+
+The Fix 5 `worker.update(update_fields)` refreshes that follow each
+worker update_one are guarded here too — without them a returning worker
+who changed employer freezes the STALE company onto today's check-in.
 """
 
 from __future__ import annotations
@@ -90,15 +97,11 @@ class _FakeDb:
 
 
 _ROSTER = [{"trade": "Carpenter", "company": "Acme Co", "id": "srv_1"}]
-_CORRECTED_WORKER = {
-    "_id": "w1", "name": "Jane", "trade": "Carpenter", "company": "Acme Co",
-    "trade_source": "cp_assignment",
-}
 
 _NO_CERT_GATE = {"cleared": True, "warnings": [], "blocks": []}
 
 
-# ── assign-trade writes the correction onto the worker ───────────────────
+# ── assign-trade touches only the trade, and only when it is empty ───────
 
 def _assign_db(worker):
     db = _FakeDb()
@@ -135,36 +138,40 @@ def _assign(db, body=None):
         server.app.dependency_overrides.clear()
 
 
-class AssignTradePersistsToWorkerTest(unittest.TestCase):
+class AssignTradeWorkerWriteIsMinimalTest(unittest.TestCase):
 
-    def test_correction_is_written_to_the_worker(self):
+    def test_no_cp_assignment_provenance_is_written(self):
+        """trade_source / trade_assigned_* on the WORKER were the state the
+        superseded ruling needed. Nothing may write them again."""
         db = _assign_db({"_id": "w1", "name": "Jane", "trade": ""})
         resp = _assign(db)
         self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(db.workers.last_set("trade"), "Carpenter")
-        self.assertEqual(db.workers.last_set("company"), "Acme Co")
-        self.assertEqual(db.workers.last_set("trade_source"), "cp_assignment")
-        self.assertEqual(db.workers.last_set("trade_assigned_by"), "u1")
+        for field in ("trade_source", "trade_assigned_by", "trade_assigned_at"):
+            self.assertIsNone(
+                db.workers.last_set(field), f"worker.{field} was written",
+            )
 
-    def test_correction_overwrites_a_trade_the_worker_already_carried(self):
-        """The CP's decision is authoritative. This is the behaviour change
-        that stops the same worker re-flagging every day; it is deliberately
-        cross-project."""
-        db = _assign_db({"_id": "w1", "name": "Jane", "trade": "Electrician"})
-        resp = _assign(db)
-        self.assertEqual(resp.status_code, 200, resp.text)
+    def test_company_is_not_persisted_to_the_worker(self):
+        """Company is confirmed per project too; assign-trade fills the
+        empty trade and nothing else."""
+        db = _assign_db({"_id": "w1", "name": "Jane", "trade": ""})
+        _assign(db)
         self.assertEqual(db.workers.last_set("trade"), "Carpenter")
+        self.assertIsNone(db.workers.last_set("company"))
 
     def test_the_checkin_row_is_still_updated_and_unflagged(self):
+        """The revert removes only the worker-document overwrite — the
+        check-in row keeps every field assign-trade has always set."""
         db = _assign_db({"_id": "w1", "name": "Jane", "trade": ""})
         _assign(db)
         self.assertEqual(db.checkins.last_set("trade"), "Carpenter")
-        self.assertIs(
-            db.checkins.last_set("needs_trade_assignment"), False,
-        )
+        self.assertEqual(db.checkins.last_set("company"), "Acme Co")
+        self.assertEqual(db.checkins.last_set("worker_trade"), "Carpenter")
+        self.assertEqual(db.checkins.last_set("worker_company"), "Acme Co")
+        self.assertIs(db.checkins.last_set("needs_trade_assignment"), False)
 
 
-# ── the marker suppresses re-flagging at the gate ────────────────────────
+# ── the gate never reuses a worker-level trade ───────────────────────────
 
 def _gate_db(*, roster, worker=None):
     db = _FakeDb()
@@ -201,72 +208,43 @@ _REG_BODY = {
     "name": "Jane", "phone": "5551234567",
 }
 
+# The exact shape the superseded ruling would have reused at the gate.
+_MARKED_WORKER = {
+    "_id": "w1", "name": "Jane", "trade": "Carpenter", "company": "Acme Co",
+    "trade_source": "cp_assignment",
+}
 
-class CorrectedTradeSuppressesReflagTest(unittest.TestCase):
 
-    def test_no_roster_reuses_the_corrected_pair_and_does_not_reflag(self):
-        db = _gate_db(roster=[], worker=dict(_CORRECTED_WORKER))
+class TradeIsConfirmedPerProjectTest(unittest.TestCase):
+
+    def test_no_roster_still_flags_a_worker_with_a_prior_trade(self):
+        """A worker who confirmed Carpenter/Acme on another project still
+        gets flagged here — trade is confirmed per project."""
+        db = _gate_db(roster=[], worker=dict(_MARKED_WORKER))
         resp = _register(db, dict(_REG_BODY))
         self.assertEqual(resp.status_code, 200, resp.text)
         row = db.checkins.inserted[-1]
-        self.assertIs(row["needs_trade_assignment"], False)
-        self.assertEqual(row["trade"], "Carpenter")
-        self.assertEqual(row["company"], "Acme Co")
+        self.assertIs(row["needs_trade_assignment"], True)
+        self.assertEqual(row["trade"], "UNASSIGNED")
 
-    def test_an_unmarked_trade_is_still_flagged(self):
-        """A trade the worker typed for themselves carries no CP marker and
-        must still reach a human."""
-        db = _gate_db(roster=[], worker={
-            "_id": "w1", "name": "Jane", "trade": "Carpenter",
-            "company": "Acme Co",
-        })
-        resp = _register(db, dict(_REG_BODY))
-        self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertIs(
-            db.checkins.inserted[-1]["needs_trade_assignment"], True,
-        )
-
-    def test_an_unassigned_placeholder_does_not_count_as_corrected(self):
-        db = _gate_db(roster=[], worker={
-            "_id": "w1", "name": "Jane", "trade": "UNASSIGNED",
-            "company": "UNASSIGNED", "trade_source": "cp_assignment",
-        })
-        _register(db, dict(_REG_BODY))
-        self.assertIs(
-            db.checkins.inserted[-1]["needs_trade_assignment"], True,
-        )
-
-    def test_not_listed_reuses_a_corrected_pair_that_is_on_the_roster(self):
-        db = _gate_db(roster=_ROSTER, worker=dict(_CORRECTED_WORKER))
+    def test_not_listed_still_flags_even_when_the_pair_is_on_the_roster(self):
+        db = _gate_db(roster=_ROSTER, worker=dict(_MARKED_WORKER))
         resp = _register(db, dict(_REG_BODY, trade_not_listed=True))
         self.assertEqual(resp.status_code, 200, resp.text)
-        row = db.checkins.inserted[-1]
-        self.assertIs(row["needs_trade_assignment"], False)
-        self.assertEqual(row["trade"], "Carpenter")
-
-    def test_not_listed_still_flags_when_the_corrected_pair_left_the_roster(self):
-        """A correction that has since been removed from the roster must not
-        become a back door around the strict match."""
-        db = _gate_db(
-            roster=[{"trade": "Plumber", "company": "Pipes Inc"}],
-            worker=dict(_CORRECTED_WORKER),
-        )
-        _register(db, dict(_REG_BODY, trade_not_listed=True))
         self.assertIs(
             db.checkins.inserted[-1]["needs_trade_assignment"], True,
         )
 
-    def test_submit_endpoint_also_reuses_the_corrected_pair(self):
-        db = _gate_db(roster=[], worker=dict(_CORRECTED_WORKER))
+    def test_submit_endpoint_also_flags(self):
+        db = _gate_db(roster=[], worker=dict(_MARKED_WORKER))
         resp = _submit(db, {
             "project_id": "proj1", "tag_id": "t1", "name": "Jane",
             "phone": "5551234567", "trade": "", "company": "",
         })
         self.assertEqual(resp.status_code, 200, resp.text)
         row = db.checkins.inserted[-1]
-        self.assertIs(row["needs_trade_assignment"], False)
-        self.assertEqual(row["trade"], "Carpenter")
-        self.assertEqual(row["company"], "Acme Co")
+        self.assertIs(row["needs_trade_assignment"], True)
+        self.assertEqual(row["trade"], "UNASSIGNED")
 
 
 class WorkerRefreshNotRegressedTest(unittest.TestCase):

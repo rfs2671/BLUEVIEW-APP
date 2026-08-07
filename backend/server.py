@@ -9478,28 +9478,6 @@ def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str
     return merged
 
 
-def _cp_corrected_worker_trade(worker):
-    """The (trade, company) a CP explicitly assigned to this worker, else None.
-
-    Written ONLY by POST /checkins/{id}/assign-trade, which stamps
-    trade_source="cp_assignment" alongside the pair. The marker is what
-    makes the pair trustworthy enough to reuse on a later check-in — a
-    trade the worker typed for themselves carries no such marker and must
-    still be flagged for review.
-    """
-    if not isinstance(worker, dict):
-        return None
-    if str(worker.get("trade_source") or "") != "cp_assignment":
-        return None
-    t = str(worker.get("trade") or "").strip()
-    c = str(worker.get("company") or "").strip()
-    if not t or t.casefold() == "unassigned":
-        return None
-    if not c or c.casefold() == "unassigned":
-        return None
-    return (t, c)
-
-
 @api_router.post("/checkin/register-and-checkin")
 async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
@@ -9647,26 +9625,6 @@ async def register_and_checkin(data: dict, request: Request):
         worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
     if not worker and osha_number:
         worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
-
-    # A CP already corrected this worker's trade. Reuse that pair instead of
-    # writing UNASSIGNED and re-raising the same flag the CP just cleared —
-    # otherwise the same worker lands back on the review screen every day.
-    # Only a pair carrying the cp_assignment marker qualifies; a trade the
-    # worker typed for themselves still gets flagged.
-    if needs_trade_assignment:
-        _corrected = _cp_corrected_worker_trade(worker)
-        if _corrected and (
-            # no_roster: the project has no roster to check against, so the
-            # CP's decision is the only trade information that exists.
-            trade_flag_reason == "no_roster"
-            # not_listed: the roster exists, so the corrected pair must still
-            # be ON it. A correction that has since been removed from the
-            # roster must NOT become a back door around the strict match.
-            or (_roster_key(_corrected[0]), _roster_key(_corrected[1])) in allowed_pairs
-        ):
-            trade, company = _corrected
-            needs_trade_assignment = False
-            trade_flag_reason = ""
 
     if not worker:
         # Create new worker with full data
@@ -10229,17 +10187,6 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
         formatted_phone = format_phone(raw_digits)
         worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
-
-        # A CP already corrected this worker's trade — reuse it rather than
-        # stamping UNASSIGNED over it and re-flagging. Same rule as
-        # register_and_checkin; only reachable on the empty-roster path,
-        # since a project WITH a roster still requires a dropdown match.
-        if needs_trade_assignment:
-            _corrected = _cp_corrected_worker_trade(worker)
-            if _corrected:
-                checkin_data.trade, checkin_data.company = _corrected
-                needs_trade_assignment = False
-                trade_flag_reason = ""
 
         if not worker:
             new_worker = {
@@ -11082,36 +11029,23 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
         }},
     )
 
-    # Persist the correction against the WORKER, not just this check-in.
-    # It previously only filled a worker whose trade was empty, so the same
-    # worker re-flagged on every subsequent check-in and the CP re-corrected
-    # the same person daily. The CP's decision is now authoritative and
-    # overwrites whatever the worker doc held.
+    # Keep the worker doc in step, but never clobber an existing trade.
     #
-    # This is deliberately cross-project and cross-company: the worker
-    # document is not project-scoped, so a correction made on one project
-    # follows the worker everywhere. trade_source marks the pair as
-    # CP-assigned — that marker (not the trade value alone) is what lets a
-    # later check-in reuse the pair without re-raising
-    # needs_trade_assignment (see _cp_corrected_worker_trade).
+    # Trade is confirmed PER PROJECT at check-in: a worker checking in on a
+    # new project re-confirms trade and company against that project's
+    # roster, even if they have checked in elsewhere before. The CP assigns
+    # a trade ONLY where none was captured; he never changes one that is
+    # already set. So this fills an empty trade and stops there — it does
+    # not write company, and it stores no cp_assignment provenance, because
+    # nothing downstream is allowed to treat a worker-level trade as a
+    # substitute for the per-project confirmation.
     worker_id = checkin.get("worker_id")
     if worker_id:
         worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
-        if worker:
-            # Company travels with the trade: assign-trade validates the
-            # PAIR against the roster, so persisting only half of a
-            # validated pair would leave the worker doc incoherent (and the
-            # suppression below needs both).
+        if worker and not (worker.get("trade") or "").strip():
             await db.workers.update_one(
                 {"_id": to_query_id(worker_id)},
-                {"$set": {
-                    "trade": trade,
-                    "company": company,
-                    "trade_source": "cp_assignment",
-                    "trade_assigned_by": user_id,
-                    "trade_assigned_at": now,
-                    "updated_at": now,
-                }},
+                {"$set": {"trade": trade, "updated_at": now}},
             )
 
     await audit_log(
