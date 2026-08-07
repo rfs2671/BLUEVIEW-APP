@@ -388,3 +388,100 @@ def test_window_and_door_install_offers_the_dried_in_chip():
     sug = _ids(_rank(prior_activity_ids=["window_and_exterior_door_install"]),
                "suggested")
     assert "building_envelope_closed" in sug
+
+
+# ── 16. corrected interior fit-out entry rule ────────────────────────
+DRIED_IN = "building_envelope_closed"
+
+
+def _reachable_without_dried_in():
+    """Every node reachable from the cold-start set without ever passing
+    THROUGH the dried-in milestone."""
+    succ = _succ()
+    seen, stack = set(COLD_START_IDS), list(COLD_START_IDS)
+    while stack:
+        cur = stack.pop()
+        if cur == DRIED_IN:          # do not traverse past the milestone
+            continue
+        for nxt in succ.get(cur, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return seen
+
+
+# HARD REQUIREMENT 1 — framing and MEP rough-in do NOT require dried-in.
+def test_framing_and_mep_rough_in_do_not_require_the_dried_in_milestone():
+    reachable = _reachable_without_dried_in()
+    assert "interior_framing" in reachable
+    assert "mep_rough_in" in reachable
+    # and dried-in no longer opens them at all
+    succ = _succ()
+    assert "interior_framing" not in succ[DRIED_IN]
+    assert "insulation_prep" not in succ[DRIED_IN]
+
+
+# HARD REQUIREMENT 2 — insulation and drywall are reachable ONLY from dried-in.
+def test_insulation_and_drywall_are_reachable_only_from_dried_in():
+    reachable = _reachable_without_dried_in()
+    assert "insulation" not in reachable
+    assert "drywall" not in reachable
+    # the only ways in: dried-in for both, plus insulation -> drywall, which is
+    # itself only reachable through dried-in.
+    assert _preds("insulation") == [DRIED_IN]
+    assert _preds("drywall") == sorted([DRIED_IN, "insulation"])
+
+
+def test_dried_in_opens_insulation_and_drywall_only():
+    assert _succ()[DRIED_IN] == ["insulation", "drywall"]
+
+
+def test_firestopping_opens_inspection_only():
+    # the earlier firestopping -> insulation edge was corrected away
+    assert _succ()["firestopping"] == ["inspection"]
+
+
+def test_corrected_interior_fit_out_chain_is_encoded_exactly():
+    succ = _succ()
+    assert set(succ["interior_framing"]) == {"mep_rough_in", "blocking",
+                                             "inspection"}
+    assert set(succ["mep_rough_in"]) == {"firestopping", "inspection",
+                                         "interior_framing"}
+    assert set(succ["insulation"]) == {"drywall", "inspection"}
+    assert set(succ["drywall"]) == {"taping", "finishes", "flooring", "paint"}
+    assert set(succ["taping"]) == {"paint", "flooring", "millwork"}
+    for src in ("finishes", "flooring", "paint"):
+        assert set(succ[src]) == {"fixtures", "punch_list", "final_inspection"}, src
+
+
+def test_framing_before_dried_in_is_offered_in_the_ranking():
+    # a CP who stripped and reshored a floor is offered framing and, once
+    # framing is logged, MEP rough-in — with no dried-in entry anywhere.
+    sug = _ids(_rank(prior_activity_ids=["reshore"],
+                     structural_system="cast_in_place"), "suggested")
+    assert "interior_framing" in sug and "mep_rough_in" in sug
+    assert DRIED_IN not in sug
+    assert "insulation" not in sug and "drywall" not in sug
+
+
+def test_dried_in_ranking_offers_insulation_and_drywall():
+    sug = _ids(_rank(prior_activity_ids=[DRIED_IN]), "suggested")
+    assert {"insulation", "drywall"} <= set(sug)
+    assert "interior_framing" not in sug
+
+
+# ── 17. invariants re-verified after the operator corrections ────────
+def test_no_hard_edge_type_was_introduced_by_the_corrections():
+    g = build_sequence_rules_v1()
+    assert {e.edge_type for e in g.edges} == {"soft_parallel_open"}
+
+
+def test_rules_still_never_block_any_entry():
+    # every node in the graph is still emitted as a chip for a mid-project
+    # state, and "Other" is still last.
+    g = build_sequence_rules_v1()
+    r = _rank(prior_activity_ids=[DRIED_IN])
+    ids = _ids(r)
+    assert set(ids) == {n.id for n in g.nodes}
+    assert ids[-1] == OTHER_ACTIVITY_ID
+    assert all(c.selected is False for c in r.chips)

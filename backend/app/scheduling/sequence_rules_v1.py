@@ -224,6 +224,10 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("building_envelope_closed", "gc",
             "Building envelope closed / Dried-in"),
         _wp("interior_framing", "carpentry", "framing (layout, track and studs)"),
+        # insulation_prep has no rule edge: its only edge came from the
+        # "building envelope closed -> framing, insulation prep" rule the
+        # operator corrected away. Kept as a loggable chip (it lands in the
+        # catalogue band); the operator has not asked for it to be removed.
         _wp("insulation_prep", "insulation", "insulation prep"),
         _wp("mep_rough_in", "mep", "MEP rough-in"),
         _wp("blocking", "carpentry", "blocking"),
@@ -411,8 +415,12 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("window_and_exterior_door_install", "building_envelope_closed"),
 
         # ── interior fit-out ─────────────────────────────────────────
-        _e("building_envelope_closed", "interior_framing"),
-        _e("building_envelope_closed", "insulation_prep"),
+        # OPERATOR CORRECTION: interior metal stud framing and MEP rough-in can
+        # physically START BEFORE the envelope is closed, so they are opened by
+        # the floor-complete edges above, NOT by the dried-in milestone. ONLY
+        # insulation and drywall strictly require dried-in, to prevent moisture
+        # damage. (This replaces an earlier, wrong "building envelope closed ->
+        # framing, insulation prep" rule.)
         # framing <-> MEP rough-in is CONCURRENT: the mutual pair keeps both
         # offered whichever one was logged.
         _e("interior_framing", "mep_rough_in"),
@@ -421,8 +429,11 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _e("mep_rough_in", "firestopping"),
         _e("mep_rough_in", "inspection"),
         _e("mep_rough_in", "interior_framing"),            # continue framing
+        # Firestopping opens inspection ONLY. The earlier firestopping ->
+        # insulation edge was corrected away: insulation now comes off dried-in.
         _e("firestopping", "inspection"),
-        _e("firestopping", "insulation"),
+        _e("building_envelope_closed", "insulation"),
+        _e("building_envelope_closed", "drywall"),
         _e("insulation", "drywall"),
         _e("insulation", "inspection"),
         _e("drywall", "taping"),
