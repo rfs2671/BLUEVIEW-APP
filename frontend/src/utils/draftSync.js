@@ -79,8 +79,16 @@ export function finalizeErrorCode(e) {
  * and renders a persistent banner. Keyed by logbook id, not by draft key, so the
  * banner can only ever appear on the log it belongs to. Cleared on the first
  * finalize that succeeds, from either path.
+ *
+ * EXPORTED, because the drain is no longer the only writer. An editor that
+ * takes a refusal in the foreground shows a toast — and a toast is gone in four
+ * seconds, so if the CP walks off the screen the refusal has left no trace and
+ * the log reads as merely unfinalized. Recording it here as well means the SAME
+ * durable banner LogbookLockBar already renders for a background refusal also
+ * survives a foreground one. Storage key and record shape are unchanged; the
+ * two writers are indistinguishable to the reader by design.
  */
-async function recordFinalizeError(logId, code, key) {
+export async function recordFinalizeError(logId, code, key) {
   if (!logId) return;
   try {
     const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);

@@ -30,8 +30,10 @@ import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearP
 // place a FINALIZE_* code is pulled out of an axios error (and the one place
 // that guarantees the server's English `detail` never reaches a screen), and
 // clearFinalizeError is what makes the drain's persistent "NOT LOCKED ON THE
-// SERVER" banner go away once this screen finalizes for real.
-import { finalizeErrorCode, clearFinalizeError } from '../../src/utils/draftSync';
+// SERVER" banner go away once this screen finalizes for real. recordFinalizeError
+// is the other half: it RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
@@ -1095,9 +1097,11 @@ export default function DailyJobsiteLog() {
    *
    * So a 4xx from the server is handled as what it is: the draft stays
    * EDITABLE, nothing claims success, and the reason is shown in the CP's
-   * language. finalizeErrorCode + the `finalize` i18n namespace are
-   * LogbookLockBar's, reused verbatim so the same refusal reads identically
-   * wherever it surfaces. Being genuinely offline is unchanged.
+   * language — as a toast AND as a recorded refusal, because the toast alone
+   * lasts four seconds and the record is what is still there when he comes
+   * back. finalizeErrorCode, recordFinalizeError and the `finalize` i18n
+   * namespace are LogbookLockBar's, reused verbatim so the same refusal reads
+   * identically wherever it surfaces. Being genuinely offline is unchanged.
    */
   const handleSubmitAndSign = async () => {
     if (saving || signing) return;
@@ -1130,8 +1134,18 @@ export default function DailyJobsiteLog() {
             // from: the CP has to be able to fix what was refused, on this
             // screen, right now. The content save above already landed, so
             // nothing he has entered is at risk.
-            console.warn('Finalize REFUSED by the server:', status, finalizeErrorCode(finalizeErr));
-            toast.error(tFinalize('errorTitle'), gateCopy(finalizeErrorCode(finalizeErr)));
+            const code = finalizeErrorCode(finalizeErr);
+            console.warn('Finalize REFUSED by the server:', status, code);
+            // BOTH, deliberately. The toast is the immediate answer to the
+            // button he just pressed; the record is what outlives it. A toast
+            // is gone in four seconds, and if he walks off this screen while it
+            // fades, an unlocked compliance record is left with nothing at all
+            // saying so — the exact silence this whole path exists to end. The
+            // record raises LogbookLockBar's persistent "NOT LOCKED ON THE
+            // SERVER" banner on this log, and the successful finalize above
+            // already clears it.
+            await recordFinalizeError(savedId, code, _key);
+            toast.error(tFinalize('errorTitle'), gateCopy(code));
             return;
           }
           // Offline (or the server erred). The local freeze below still stands

@@ -69,6 +69,8 @@ function decl(text, anchor) {
 const submitSrc = decl(screenSrc, 'const handleSubmitAndSign = async () => {');
 const gateCopySrc = decl(screenSrc, 'const gateCopy = (code) => {');
 const barGateCopySrc = decl(barSrc, 'const gateCopy = (code) =>');
+// LogbookLockBar's mount effect — the READER of what the editor now writes.
+const barEffectSrc = decl(barSrc, 'useEffect(() => {').replace(/^useEffect\(\(\) =>\s*/, '');
 
 // ── the i18n layer (same technique as src/i18n/i18n.test.cjs) ────────────────
 function loadI18n() {
@@ -101,13 +103,16 @@ const gateCopyFor = (locale) =>
   // eslint-disable-next-line no-new-func
   new Function('tFinalize', `${gateCopySrc};\nreturn gateCopy;`)(tFor(locale));
 
-// draftSync's finalizeErrorCode — the real one, not a stand-in.
-const { finalizeErrorCode } = (() => {
+// draftSync — the REAL module over an in-memory AsyncStorage, so the refusal the
+// editor records and the refusal LogbookLockBar reads are the same bytes in the
+// same store rather than two independent beliefs about a key name.
+function loadDraftSync() {
+  const store = {};
   const body = draftSyncSrc
     .replace(/^import[\s\S]*?;\s*$/gm, '')
     .replace(/^export (async function|function|const) /gm, '$1 ');
   // eslint-disable-next-line no-new-func
-  return new Function('__env', `
+  const mod = new Function('__env', `
     const AsyncStorage = __env.AsyncStorage;
     const NetInfo = __env.NetInfo;
     const logbooksAPI = {};
@@ -117,12 +122,18 @@ const { finalizeErrorCode } = (() => {
     const clearPending = async () => {};
     const console = { log: () => {}, warn: () => {} };
     ${body}
-    return { finalizeErrorCode };
+    return { finalizeErrorCode, recordFinalizeError, readFinalizeError, clearFinalizeError };
   `)({
-    AsyncStorage: { getItem: async () => null, setItem: async () => {} },
+    AsyncStorage: {
+      getItem: async (k) => (k in store ? store[k] : null),
+      setItem: async (k, v) => { store[k] = v; },
+    },
     NetInfo: { addEventListener: () => () => {} },
   });
-})();
+  return { ...mod, store };
+}
+// finalizeErrorCode is pure, so one instance serves every caller below.
+const { finalizeErrorCode } = loadDraftSync();
 
 // logbookDrafts — the REAL store, over an in-memory AsyncStorage, so "the draft
 // is still editable" is demonstrated rather than asserted from the absence of a
@@ -163,9 +174,11 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
   await D.writeDraft(KEY, {
     data: { general_description: 'Shoring.' }, cp_signature: 'sig', cp_name: 'Casey', status: 'submitted',
   });
+  // The real recorder/reader/clearer, sharing one store — see loadDraftSync.
+  const S = loadDraftSync();
 
   const calls = {
-    toasts: [], finalized: [], cleared: [], locked: [], back: 0, warns: [],
+    toasts: [], finalized: [], cleared: [], recorded: [], locked: [], back: 0, warns: [],
   };
   const env = {
     saving: false,
@@ -176,7 +189,13 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
     date: '2026-08-07',
     draftKey: D.draftKey,
     markFinalized: async (k) => { calls.finalized.push(k); return D.markFinalized(k); },
-    clearFinalizeError: async (id) => { calls.cleared.push(id); },
+    // Spied but NOT stubbed: the real draftSync functions run, against the real
+    // store, so what the screen writes is what LogbookLockBar will later read.
+    clearFinalizeError: async (id) => { calls.cleared.push(id); return S.clearFinalizeError(id); },
+    recordFinalizeError: async (id, code, k) => {
+      calls.recorded.push({ id, code, key: k });
+      return S.recordFinalizeError(id, code, k);
+    },
     finalizeErrorCode,
     setLocked: (v) => { calls.locked.push(v); },
     router: { back: () => { calls.back += 1; } },
@@ -201,7 +220,25 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
     ...names.map((n) => env[n]),
   );
   await fn();
-  return { calls, D };
+  return { calls, D, S };
+}
+
+/**
+ * Run LogbookLockBar's REAL mount effect over a store, and answer the only
+ * question that matters: does the banner appear on this log, and saying what?
+ *
+ * `undefined` = no refusal on record (no banner). The effect is the component's
+ * own source, and readFinalizeError is draftSync's own, so this proves the two
+ * sides agree about the key and the record shape — not that they each match a
+ * literal copied into this file.
+ */
+async function bannerFor(S, logId) {
+  let refusedCode = 'UNSET';
+  // eslint-disable-next-line no-new-func
+  await new Function('logId', 'readFinalizeError', 'setRefusedCode',
+    `return (async () => ${barEffectSrc})();`)(logId, S.readFinalizeError, (v) => { refusedCode = v; });
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  return { refusedCode, shown: refusedCode !== undefined };
 }
 
 const GENERIC = { en: I.translate('finalize', 'genericError', 'en'), es: I.translate('finalize', 'genericError', 'es') };
@@ -210,7 +247,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 (async () => {
   // ── 1. A FINALIZE_* REFUSAL ────────────────────────────────────────────────
   for (const code of CODES) {
-    const { calls, D } = await run({ finalizeError: rejection(400, code) });
+    const { calls, D, S } = await run({ finalizeError: rejection(400, code) });
 
     ok(!calls.toasts.some((t) => t.kind === 'success'),
       `${code}: NO success toast — nothing claims the log was signed and locked`);
@@ -248,21 +285,49 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     ok(esErr.body === I.translate('finalize', `code_${code}`, 'es'),
       `${code}: a Spanish-speaking CP gets the Spanish reason`);
     ok(esErr.body !== err.body, `${code}: which is genuinely a different string`);
+
+    // ── AND IT OUTLIVES THE TOAST ──────────────────────────────────────────
+    // The toast above is gone in four seconds. If the CP walks off the screen
+    // while it fades, the refusal has to still be somewhere.
+    ok(calls.recorded.length === 1 && calls.recorded[0].id === 'log123'
+      && calls.recorded[0].code === code,
+      `${code}: the refusal is RECORDED against this logbook id, not just toasted`);
+
+    const raw = S.store.logbook_finalize_errors;
+    ok(typeof raw === 'string', `${code}: written to the shared logbook_finalize_errors key`);
+    const rec = JSON.parse(raw).log123;
+    ok(rec && rec.code === code && rec.key === KEY && typeof rec.at === 'number',
+      `${code}: in the drain's own { code, key, at } shape — the reader is not given a second format`);
+
+    // THE BANNER ACTUALLY APPEARS. LogbookLockBar's real effect, over the real
+    // reader, over the bytes the screen just wrote.
+    const banner = await bannerFor(S, 'log123');
+    ok(banner.shown, `${code}: LogbookLockBar's mount effect finds it — the persistent banner appears`);
+    ok(banner.refusedCode === code, `${code}: carrying THIS code, so the banner names the real reason`);
+    ok(gateCopyFor('en')(banner.refusedCode) === err.body,
+      `${code}: and the banner reads exactly what the toast said`);
+
+    // Nothing was recorded against a DIFFERENT log — the banner cannot leak.
+    const other = await bannerFor(S, 'someOtherLog');
+    ok(!other.shown, `${code}: no banner on any other log`);
   }
 
   // ── 2. A 4xx with NO recognised code is still a refusal ────────────────────
   {
-    const { calls } = await run({ finalizeError: rejection(403, null) });
+    const { calls, S } = await run({ finalizeError: rejection(403, null) });
     ok(calls.finalized.length === 0 && !calls.toasts.some((t) => t.kind === 'success'),
       '403: the server answered and said no — not frozen, not announced as success');
     const err = calls.toasts.find((t) => t.kind === 'error');
     ok(err && err.body === GENERIC.en,
       '403: falls back to the bilingual generic message, never to the server prose');
+    const banner = await bannerFor(S, 'log123');
+    ok(banner.shown && banner.refusedCode === null,
+      '403: recorded with no code — the banner still appears, carrying the generic reason');
   }
 
   // ── 3. A GENUINE OFFLINE FINALIZE IS UNCHANGED ────────────────────────────
   {
-    const { calls, D } = await run({ finalizeError: offline() });
+    const { calls, D, S } = await run({ finalizeError: offline() });
     ok(calls.finalized.length === 1,
       'offline: the log IS frozen on this device — an EOD sign with no signal must still hold');
     ok(calls.locked.length === 1 && calls.locked[0] === true,
@@ -275,6 +340,10 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
     const after = await D.readDraft(KEY);
     ok(after.finalized === true, 'offline: the draft really is frozen locally');
+
+    ok(calls.recorded.length === 0, 'offline: nothing is recorded — the server never refused anything');
+    const banner = await bannerFor(S, 'log123');
+    ok(!banner.shown, 'offline: and no "NOT LOCKED ON THE SERVER" banner is raised');
   }
 
   // ── 4. A 5xx is the server FAILING, not judging ───────────────────────────
@@ -286,7 +355,7 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
 
   // ── 5. A SUCCESSFUL finalize ──────────────────────────────────────────────
   {
-    const { calls } = await run({});
+    const { calls, S } = await run({});
     ok(calls.finalized.length === 1 && calls.locked[0] === true && calls.back === 1,
       'success: frozen, locked and dismissed, as before');
     const s = calls.toasts.find((t) => t.kind === 'success');
@@ -294,6 +363,14 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
       'success: the CP is told corrections now require an amendment');
     ok(calls.cleared.includes('log123'),
       'success: a refusal previously recorded by the drain is CLEARED, so the LockBar banner goes');
+    ok(calls.recorded.length === 0, 'success: nothing recorded');
+
+    // And the clear really removes what a refusal wrote: record, then finalize.
+    await S.recordFinalizeError('log123', 'FINALIZE_EMPTY_LOG', KEY);
+    ok((await bannerFor(S, 'log123')).shown, 'success: (a recorded refusal does raise the banner)');
+    await S.clearFinalizeError('log123');
+    ok(!(await bannerFor(S, 'log123')).shown,
+      'success: ...and the clear on a real finalize takes the banner away again');
   }
 
   // ── 6. An OFFLINE save (no server id at all) still freezes locally ────────
@@ -301,14 +378,16 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     const { calls } = await run({ savedId: null });
     ok(calls.finalized.length === 1 && calls.back === 1,
       'no server id: never reached the server, so it freezes locally and reports the sync promise');
-    ok(calls.cleared.length === 0, 'no server id: nothing to clear');
+    ok(calls.cleared.length === 0 && calls.recorded.length === 0,
+      'no server id: nothing to clear and nothing to record');
   }
 
   // ── 7. A save that FAILED still aborts before anything is frozen ──────────
   {
     const { calls } = await run({ saveFailed: true });
-    ok(calls.finalized.length === 0 && calls.toasts.length === 0 && calls.back === 0,
-      'failed save: returns early — handleSave already reported it, and nothing is frozen');
+    ok(calls.finalized.length === 0 && calls.toasts.length === 0 && calls.back === 0
+      && calls.recorded.length === 0,
+      'failed save: returns early — handleSave already reported it, and nothing is frozen or recorded');
   }
 
   // ── 8. THE MECHANISM IS REUSED, NOT REBUILT ──────────────────────────────
@@ -319,6 +398,22 @@ const CODES = ['FINALIZE_EMPTY_LOG', 'FINALIZE_MISSING_CP_SIGNATURE'];
     'reuse: handleSubmitAndSign never touches response.data.detail — that stays inside finalizeErrorCode');
   ok(/useT\('finalize'\)/.test(screenSrc),
     'reuse: the copy comes from LogbookLockBar`s own `finalize` namespace, not a second catalogue');
+
+  // ── ONE RECORDER, ONE KEY ────────────────────────────────────────────────
+  // The banner only appears if both sides use the same store. They do because
+  // there is only one implementation — asserted here so it stays that way.
+  ok(/^export async function recordFinalizeError\(/m.test(draftSyncSrc),
+    'reuse: recordFinalizeError is EXPORTED from draftSync — the drain is no longer its only writer');
+  ok(/import \{[^}]*recordFinalizeError[^}]*\} from '\.\.\/\.\.\/src\/utils\/draftSync'/.test(screenSrc),
+    'reuse: the screen imports that same recorder rather than writing storage itself');
+  ok(/readFinalizeError/.test(barSrc) && /from '\.\.\/utils\/draftSync'/.test(barSrc),
+    'reuse: LogbookLockBar reads through draftSync too — writer and reader share one module');
+  ok((draftSyncSrc.match(/'logbook_finalize_errors'/g) || []).length === 1,
+    'reuse: the storage key is a single literal in draftSync');
+  ok(!/logbook_finalize_errors/.test(screenSrc) && !/logbook_finalize_errors/.test(barSrc),
+    'reuse: and neither the screen nor the LockBar restates it — there is nothing to drift');
+  ok(!/AsyncStorage/.test(submitSrc),
+    'reuse: handleSubmitAndSign never touches AsyncStorage directly');
 
   // The two gateCopy implementations must follow the SAME rule.
   const norm = (s) => s.replace(/\s+/g, ' ').replace(/^const gateCopy = \(code\) =>\s*\{?/, '').trim();
