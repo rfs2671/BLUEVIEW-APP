@@ -9353,7 +9353,7 @@ def _roster_key(value) -> str:
 
 
 @api_router.post("/checkin/register-and-checkin")
-async def register_and_checkin(data: dict):
+async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
     project_id = data.get("project_id")
     tag_id = data.get("tag_id")
@@ -9388,6 +9388,18 @@ async def register_and_checkin(data: dict):
     # §3301.11 site orientation and would misrepresent provenance if rendered
     # under a "Worker Signatures" heading on a toolbox-talk record.
     toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
+
+    # Task 12 Phase 0: presence evidence + abuse control on this public endpoint.
+    # Capture the caller IP / User-Agent / device fingerprint — all already on the
+    # wire or in headers but previously DROPPED — and rate-limit per IP so a
+    # stale/shared check-in URL can't be scripted at volume. Keyed under "reg:" so
+    # it has its OWN 30/min budget (sized for shift-start bursts), separate from
+    # the upload-osha scan limiter's counter.
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")[:400]
+    device_fp = (device_info or {}).get("fingerprint_id") if isinstance(device_info, dict) else None
+    if not checkin_rate_limiter.is_allowed(f"reg:{client_ip}"):
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment.")
 
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
@@ -9760,6 +9772,13 @@ async def register_and_checkin(data: dict):
         # without implying the worker signed a legal attestation.
         "toolbox_talk_confirmed": toolbox_confirm,
         "toolbox_talk_confirmed_at": now if toolbox_confirm else None,
+        # Task 12 Phase 0: presence evidence (previously received then dropped).
+        # Detective, not preventive — makes a stale-URL / off-site check-in
+        # queryable (one IP/UA/device behind many check-ins, or an IP never on
+        # site) instead of invisible.
+        "source_ip": client_ip,
+        "user_agent": user_agent,
+        "device_fingerprint": device_fp,
     }
 
     result = await db.checkins.insert_one(checkin_record)
