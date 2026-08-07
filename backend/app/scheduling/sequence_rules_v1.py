@@ -31,6 +31,18 @@ offered" (interior framing <-> MEP rough-in). engine._expand_edges skips
 from == to (engine.py:113-114) and _soft_rank_within tolerates soft cycles
 without raising (engine.py:236), so neither is hazardous downstream.
 
+CHIP LABEL HOUSE STYLE
+----------------------
+OPERATOR RULING: every chip label renders lowercase — "pour slab", "strip
+formwork", "other". A WorkPackage's `scope` IS the chip label (sequence_ranking
+builds label_of from it), so the rule is enforced here on the data, not in the
+UI. The ONE exception is an embedded acronym, which keeps its own casing while
+every surrounding word stays lowercase: "under-slab MEP", "MEP rough-in",
+"load-bearing CFS wall panels / studs". LABEL_ACRONYMS below is the closed set
+of those, and tests pin both halves of the rule.
+
+Node IDS are NOT labels and are unaffected by this rule.
+
 STRUCTURAL SYSTEM BRANCHING
 ---------------------------
 Cast-in-place-only nodes carry requires=[FLAG_CAST_IN_PLACE]; cold-formed-steel
@@ -98,6 +110,13 @@ ALWAYS_AVAILABLE_ORDER: Tuple[str, ...] = (
     "inspection", "safety_meeting", "rain_no_work", "shutdown",
 )
 ALWAYS_AVAILABLE_IDS = frozenset(ALWAYS_AVAILABLE_ORDER)
+
+# ── Chip label house style ───────────────────────────────────────────
+# Labels are lowercase (see the module docstring). The closed set of acronyms
+# that keep their own casing inside an otherwise-lowercase label. Anything not
+# listed here must be fully lowercase; add to this tuple only for a real
+# acronym, never to grandfather in a capitalized word.
+LABEL_ACRONYMS: Tuple[str, ...] = ("MEP", "CFS")
 
 
 def _wp(node_id, trade, scope, *, branch=None) -> WorkPackage:
@@ -177,7 +196,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
         # structure in NYC; the concrete phase is finished once the bulkhead /
         # elevator overrun slab is poured and stripped.
         _wp("pour_bulkhead_slab", "concrete",
-            "Pour bulkhead / elevator overrun slab", branch=FLAG_CAST_IN_PLACE),
+            "pour bulkhead / elevator overrun slab", branch=FLAG_CAST_IN_PLACE),
         _wp("strip_bulkhead_formwork", "concrete", "strip bulkhead formwork",
             branch=FLAG_CAST_IN_PLACE),
 
@@ -198,7 +217,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
         # OPERATOR NOTE: this includes CFS bulkheads and parapets; CFS roofs
         # generally do NOT get a concrete topping slab — the structure is done
         # once the corrugated deck is screwed down.
-        _wp("cfs_roof_framing_deck", "cfs", "Install roof framing and metal deck",
+        _wp("cfs_roof_framing_deck", "cfs", "install roof framing and metal deck",
             branch=FLAG_CFS),
 
         # ── 3C both branches ─────────────────────────────────────────
@@ -217,12 +236,12 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("masonry", "masonry", "masonry"),
         _wp("facade", "facade", "facade"),
         _wp("window_and_exterior_door_install", "glazing",
-            "Window and exterior door install"),
+            "window and exterior door install"),
         _wp("facade_closeout", "facade", "facade close-out"),
 
         # ── interior fit-out ─────────────────────────────────────────
         _wp("building_envelope_closed", "gc",
-            "Building envelope closed / Dried-in"),
+            "building envelope closed / dried-in"),
         _wp("interior_framing", "carpentry", "framing (layout, track and studs)"),
         # OPERATOR RULING: insulation_prep is DELETED. Its only edge came from
         # the "building envelope closed -> framing, insulation prep" rule the
@@ -257,7 +276,7 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("shutdown", "gc", "shutdown"),
 
         # ── the escape hatch — always LAST chip ──────────────────────
-        _wp(OTHER_ACTIVITY_ID, "gc", "Other"),
+        _wp(OTHER_ACTIVITY_ID, "gc", "other"),
     ]
 
     edges: List[GraphEdge] = [

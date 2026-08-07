@@ -28,6 +28,7 @@ from app.scheduling.sequence_rules_v1 import (  # noqa: E402
     COLD_START_IDS,
     FLAG_CAST_IN_PLACE,
     FLAG_CFS,
+    LABEL_ACRONYMS,
     OTHER_ACTIVITY_ID,
     RULES_VERSION,
     build_sequence_rules_v1,
@@ -339,7 +340,7 @@ def test_window_chip_is_renamed_to_include_exterior_doors():
     by_id = {n.id: n for n in g.nodes}
     assert "window_install" not in by_id                 # old id is gone
     assert by_id["window_and_exterior_door_install"].scope == (
-        "Window and exterior door install")
+        "window and exterior door install")
     labels = {n.scope for n in g.nodes}
     assert "window install" not in labels                # old label is gone
 
@@ -370,7 +371,7 @@ def test_envelope_node_is_relabelled_dried_in():
     g = build_sequence_rules_v1()
     by_id = {n.id: n for n in g.nodes}
     assert by_id["building_envelope_closed"].scope == (
-        "Building envelope closed / Dried-in")
+        "building envelope closed / dried-in")
 
 
 def test_dried_in_is_offered_only_off_the_window_and_door_install():
@@ -496,3 +497,114 @@ def test_rules_still_never_block_any_entry():
     assert set(ids) == {n.id for n in g.nodes}
     assert ids[-1] == OTHER_ACTIVITY_ID
     assert all(c.selected is False for c in r.chips)
+
+
+# ── 18. chip labels are lowercase house style ────────────────────────
+# OPERATOR RULING: every chip label renders lowercase ("pour slab", "strip
+# formwork"). The only exception is an embedded acronym, which keeps its own
+# casing while the words around it stay lowercase ("under-slab MEP").
+_ACRONYMS = set(LABEL_ACRONYMS)
+
+
+def _offending_words(label):
+    """Words in `label` that break the lowercase rule (acronyms exempted)."""
+    bad = []
+    for word in label.split():
+        if word.strip("()/,.-") in _ACRONYMS:
+            continue
+        if word != word.lower():
+            bad.append(word)
+    return bad
+
+
+def test_the_lowercase_guard_is_not_vacuous():
+    # The guard must actually reject the pre-ruling spellings, and must accept
+    # the acronym-bearing ones — otherwise the invariant tests below pin
+    # nothing.
+    assert _offending_words("Pour bulkhead / elevator overrun slab")
+    assert _offending_words("Install roof framing and metal deck")
+    assert _offending_words("Window and exterior door install")
+    assert _offending_words("Building envelope closed / Dried-in")
+    assert _offending_words("Other")
+    assert _offending_words("building envelope closed / Dried-in")   # any word
+    assert not _offending_words("under-slab MEP")
+    assert not _offending_words("load-bearing CFS wall panels / studs")
+    assert not _offending_words("pour slab")
+
+
+def test_every_node_label_is_lowercase_except_for_acronyms():
+    g = build_sequence_rules_v1()
+    offenders = {n.id: _offending_words(n.scope)
+                 for n in g.nodes if _offending_words(n.scope)}
+    assert offenders == {}
+
+
+def test_no_label_has_a_leading_uppercase_unless_an_acronym_demands_it():
+    g = build_sequence_rules_v1()
+    for n in g.nodes:
+        first = n.scope.split()[0]
+        if first.strip("()/,.-") in _ACRONYMS:
+            continue                     # e.g. "MEP rough-in"
+        assert not first[0].isupper(), (n.id, n.scope)
+
+
+def test_the_four_mixed_case_labels_were_normalized():
+    by_id = {n.id: n for n in build_sequence_rules_v1().nodes}
+    assert by_id["pour_bulkhead_slab"].scope == (
+        "pour bulkhead / elevator overrun slab")
+    assert by_id["cfs_roof_framing_deck"].scope == (
+        "install roof framing and metal deck")
+    assert by_id["window_and_exterior_door_install"].scope == (
+        "window and exterior door install")
+    assert by_id["building_envelope_closed"].scope == (
+        "building envelope closed / dried-in")
+    assert by_id[OTHER_ACTIVITY_ID].scope == "other"
+
+
+def test_acronym_labels_keep_the_acronym_and_lowercase_everything_else():
+    by_id = {n.id: n for n in build_sequence_rules_v1().nodes}
+    assert by_id["under_slab_mep"].scope == "under-slab MEP"
+    assert by_id["mep_sleeves_embeds"].scope == "MEP sleeves and embeds"
+    assert by_id["mep_floor_penetrations"].scope == (
+        "MEP floor penetrations / sleeves")
+    assert by_id["roof_mep"].scope == "roof MEP"
+    assert by_id["mep_rough_in"].scope == "MEP rough-in"
+    assert by_id["cfs_wall_panels"].scope == (
+        "load-bearing CFS wall panels / studs")
+    # ...and those are the ONLY labels carrying an uppercase run.
+    upper = {n.id for n in build_sequence_rules_v1().nodes
+             if any(ch.isupper() for ch in n.scope)}
+    assert upper == {"under_slab_mep", "mep_sleeves_embeds",
+                     "mep_floor_penetrations", "roof_mep", "mep_rough_in",
+                     "cfs_wall_panels"}
+
+
+def test_ranked_chip_labels_follow_the_house_style():
+    # The rendered chip labels, not just the node scopes. Remembered "Other"
+    # entries are CP free text and are preserved verbatim, so they are exempt.
+    r = _rank(prior_activity_ids=["reshore"], structural_system="cast_in_place",
+              remembered_other_labels=["Tank pull"])
+    for c in r.chips:
+        if c.band == "remembered_other":
+            continue
+        assert not _offending_words(c.label), (c.id, c.label)
+    assert r.chips[-1].label == "other"
+
+
+def test_normalizing_labels_changed_no_node_id():
+    # IDs are not labels: the rename touched `scope` only.
+    ids = {n.id for n in build_sequence_rules_v1().nodes}
+    for nid in ("pour_bulkhead_slab", "cfs_roof_framing_deck",
+                "window_and_exterior_door_install", "building_envelope_closed",
+                OTHER_ACTIVITY_ID):
+        assert nid in ids
+
+
+def test_relabelling_broke_no_edge():
+    # Dangling-endpoint and uniqueness re-check, after both operator changes.
+    g = build_sequence_rules_v1()
+    ids = [n.id for n in g.nodes]
+    assert len(ids) == len(set(ids))
+    endpoints = {e.from_node for e in g.edges} | {e.to_node for e in g.edges}
+    assert endpoints <= set(ids)
+    assert {e.edge_type for e in g.edges} == {"soft_parallel_open"}

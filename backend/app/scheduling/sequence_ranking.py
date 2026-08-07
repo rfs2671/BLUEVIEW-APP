@@ -194,7 +194,10 @@ def rank_activities(
 
     # Guarantee #2, enforced structurally: every band above was stripped of the
     # "Other" id, and it is appended exactly once, here, at the end.
-    _emit(OTHER_ACTIVITY_ID, label_of.get(OTHER_ACTIVITY_ID, "Other"), "other")
+    # Lowercase fallback label: chip labels are lowercase house style
+    # (sequence_rules_v1 module docstring), so the defensive default matches
+    # the node's own scope rather than reintroducing a capitalized label.
+    _emit(OTHER_ACTIVITY_ID, label_of.get(OTHER_ACTIVITY_ID, "other"), "other")
 
     return ActivityRanking(
         project_id=project_id,
