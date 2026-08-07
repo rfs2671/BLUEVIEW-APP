@@ -14320,10 +14320,33 @@ async def get_project_logbooks(
 
 @api_router.get("/logbooks/{logbook_id}")
 async def get_logbook(logbook_id: str, current_user = Depends(get_current_user)):
-    """Get a single logbook entry"""
-    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    """Get a single logbook entry.
+
+    This read used to match on `_id` alone — no company, no project, no
+    is_deleted — so any authenticated user could read any company's logbook,
+    including soft-deleted ones, by guessing or harvesting an ObjectId.
+
+    `Depends(require_project_access)` cannot be used: there is no {project_id}
+    in this path for FastAPI to resolve. The by-id idiom applies instead —
+    load the document, load its project, then authorize — the same shape the
+    check-in by-id endpoints use.
+
+    `user_can_act_on_project` has no site-device branch, but no site-device
+    flow reaches this route: the kiosk's only logbook read is
+    /logbooks/project/{id}/submitted (frontend/app/site/logbooks.jsx:175),
+    which is separately guarded. The single caller of this route in the whole
+    repo is logbooksAPI.getById (frontend/src/utils/api.js:815-818), which has
+    no call sites.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
     if not logbook:
         raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
     return serialize_id(logbook)
 
 def _parse_iso_dt(raw):
