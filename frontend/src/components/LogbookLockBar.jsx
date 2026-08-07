@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, Modal, TextInput, StyleSheet, ActivityIndicator } from 'react-native';
-import { Lock, FileEdit, CheckCircle2, X } from 'lucide-react-native';
+import { Lock, FileEdit, CheckCircle2, X, AlertTriangle } from 'lucide-react-native';
 import { logbooksAPI } from '../utils/api';
+import { finalizeErrorCode, readFinalizeError, clearFinalizeError } from '../utils/draftSync';
 import { isImmediateLog } from '../utils/logbookTiming';
+import { useT } from '../i18n';
 import { useToast } from './Toast';
 import { semantic, withAlpha } from '../styles/semanticColors';
 import { spacing, borderRadius } from '../styles/theme';
@@ -33,23 +35,69 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
   // Finalize as their explicit end-of-day Submit & Sign.
   const signFreezes = isImmediateLog(logType);
   const toast = useToast();
+  const t = useT('finalize');
   const [busy, setBusy] = useState(false);
   const [amendOpen, setAmendOpen] = useState(false);
   const [reason, setReason] = useState('');
+  // A finalize the SERVER refused for THIS log on a background reconnect drain.
+  const [refusedCode, setRefusedCode] = useState(undefined);
+
+  /**
+   * COMPLETENESS GATE — the server names the condition, this owns the wording.
+   *
+   * /finalize rejects an empty or unsigned log with a machine code and no prose
+   * (backend/server.py:14638-14645), so a known code maps to bilingual copy and
+   * anything unrecognised falls back to the bilingual generic — the same shape
+   * as BLOCK_LABELS in backend/checkin.html:1508-1518. `translate` returns the
+   * KEY on a miss, which is how an unmapped code is detected. The server's
+   * English `detail` is never rendered.
+   */
+  const gateCopy = (code) => {
+    if (!code) return t('genericError');
+    const key = `code_${code}`;
+    const copy = t(key);
+    return copy && copy !== key ? copy : t('genericError');
+  };
+
+  // Surfaced HERE because the drain that hits it has no screen: it runs off a
+  // NetInfo transition with nothing mounted, so the refusal is recorded against
+  // the logbook id and shown at the next interaction with that exact log.
+  useEffect(() => {
+    let alive = true;
+    if (!logId) { setRefusedCode(undefined); return undefined; }
+    readFinalizeError(logId)
+      .then((rec) => { if (alive) setRefusedCode(rec ? (rec.code || null) : undefined); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [logId]);
 
   const doFinalize = async () => {
     if (!logId || busy) return;
     setBusy(true);
     try {
       await logbooksAPI.finalize(logId);
+      await clearFinalizeError(logId);
+      setRefusedCode(undefined);
       toast.success('Finalized', 'Log locked. Corrections now require an amendment.');
       onFinalized?.();
     } catch (e) {
-      toast.error('Could not finalize', e?.response?.data?.detail || e?.message || 'Please try again');
+      toast.error(t('errorTitle'), gateCopy(finalizeErrorCode(e)));
     } finally {
       setBusy(false);
     }
   };
+
+  // `undefined` = no refusal on record; `null` = refused with no recognised code.
+  const notLockedBanner = refusedCode === undefined ? null : (
+    <View style={s.warnBanner}>
+      <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
+      <View style={s.warnTextWrap}>
+        <Text style={s.warnTitle}>{t('notLockedTitle')}</Text>
+        <Text style={s.warnBody}>{gateCopy(refusedCode)}</Text>
+        <Text style={s.warnBody}>{t('notLockedHint')}</Text>
+      </View>
+    </View>
+  );
 
   const doAmend = async () => {
     if (!logId || busy) return;
@@ -74,6 +122,7 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
   if (locked) {
     return (
       <View style={s.wrap}>
+        {notLockedBanner}
         <View style={s.banner}>
           <Lock size={16} strokeWidth={2} color={semantic.critical} />
           <Text style={s.bannerText}>FINALIZED — read-only. Corrections require an amendment.</Text>
@@ -121,6 +170,7 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
   if (canFinalize && logId && !signFreezes) {
     return (
       <View style={s.wrap}>
+        {notLockedBanner}
         <Pressable style={[s.btn, s.finalizeBtn, busy && s.btnDisabled]} onPress={doFinalize} disabled={busy}>
           {busy ? <ActivityIndicator size="small" color="#ffffff" /> : <CheckCircle2 size={18} strokeWidth={2} color="#ffffff" />}
           <Text style={s.btnText}>{busy ? 'Finalizing…' : 'Finalize (End of Day) — Lock'}</Text>
@@ -128,6 +178,11 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
       </View>
     );
   }
+
+  // A log with no lock control at all (an immediate type, or one that cannot be
+  // finalized from here) still has to be able to say it is not locked on the
+  // server — that is exactly the case the drain leaves behind.
+  if (notLockedBanner) return <View style={s.wrap}>{notLockedBanner}</View>;
 
   return null;
 }
@@ -141,6 +196,17 @@ const s = StyleSheet.create({
     borderRadius: borderRadius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
   },
   bannerText: { color: semantic.critical, fontSize: 13, fontWeight: '700', flex: 1 },
+  // Persistent, not a 4s toast: the drain that produced this had no screen, and
+  // a vanishing notice on a compliance record is how it stayed invisible before.
+  warnBanner: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm,
+    backgroundColor: semantic.attentionBg,
+    borderColor: semantic.attentionBorder, borderWidth: 1,
+    borderRadius: borderRadius.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+  },
+  warnTextWrap: { flex: 1, gap: 2 },
+  warnTitle: { color: semantic.attention, fontSize: 13, fontWeight: '700' },
+  warnBody: { color: semantic.attention, fontSize: 12, lineHeight: 17 },
   btn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: borderRadius.md,
