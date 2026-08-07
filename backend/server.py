@@ -9656,6 +9656,28 @@ async def register_and_checkin(data: dict, request: Request):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Resolve the EXISTING worker before the roster check, because the
+    # per-project pairing below is keyed on their worker_id and decides
+    # whether the roster check runs at all. Read-only find_one, unchanged
+    # query — creation of a brand-new worker still happens further down,
+    # after the validation, exactly as before.
+    worker = None
+    if phone:
+        raw_digits = ''.join(c for c in phone if c.isdigit())
+        formatted = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
+    if not worker and osha_number:
+        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
+
+    # PER-PROJECT PAIRING: this worker already picked a trade + company on
+    # THIS project, so that answer stands. Read it, skip the roster prompt
+    # entirely, and never raise needs_trade_assignment — the trade is not
+    # pending, it is on file. On any OTHER project this lookup finds nothing
+    # and he picks again from scratch, which is the point.
+    existing_pair = await _get_worker_project_trade(
+        worker.get("_id") if worker else None, project_id,
+    )
+
     # Strict-roster enforcement: the submitted {trade, company} MUST match
     # one of the admin-configured trade_assignments for this project. The
     # frontend already forces a dropdown pick, but a modified client could
@@ -9687,7 +9709,14 @@ async def register_and_checkin(data: dict, request: Request):
     # Why the trade is pending — selects the CP-notification copy below.
     # "" means the trade resolved normally and no notification fires.
     trade_flag_reason = ""
-    if not allowed_pairs:
+    if existing_pair:
+        # Already answered for THIS project — the stored pairing wins over
+        # whatever the client sent (a stale or blank client value must not be
+        # able to re-open a question the worker has already closed here), and
+        # nothing is flagged for the CP.
+        trade = existing_pair["trade"]
+        company = existing_pair["company"]
+    elif not allowed_pairs:
         needs_trade_assignment = True
         trade_flag_reason = "no_roster"
         trade = trade or "UNASSIGNED"
@@ -9721,22 +9750,14 @@ async def register_and_checkin(data: dict, request: Request):
     admin_id = project.get("admin_id")
     company_id = project.get("company_id")
     
-    # Find or create worker by phone (or by OSHA number if no phone)
-    worker = None
-    if phone:
-        raw_digits = ''.join(c for c in phone if c.isdigit())
-        formatted = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
-    if not worker and osha_number:
-        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
-
+    # `worker` was already resolved above (the pairing lookup needed it).
     if not worker:
-        # Create new worker with full data
+        # Create new worker with full data.
+        # NOTE: no `trade` / `company` here. Those are per-project and live in
+        # worker_project_trades; a worker-level copy is what bled across jobs.
         worker = {
             "name": name,
             "phone": phone or "",
-            "trade": trade or "",
-            "company": company,
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
@@ -9771,11 +9792,14 @@ async def register_and_checkin(data: dict, request: Request):
             update_fields["osha_number"] = osha_number
         if name:
             update_fields["name"] = name
-        if company:
-            update_fields["company"] = company
-        if trade:
-            update_fields["trade"] = trade
-        
+        # THE BLEED, REMOVED: this used to stamp `company` and `trade` from
+        # the CURRENT check-in onto the global worker document on every
+        # visit, so a framer's next job — a different project, a different
+        # sub — read back the previous job's answer. Both now live only in
+        # worker_project_trades, keyed per project. Everything else here
+        # (name, phone, osha_number, images, certifications, orientations)
+        # is genuinely worker-level and still written.
+
         # Append safety orientation for this project if not already done
         if safety_orientation:
             existing_orientations = worker.get("safety_orientations", [])
@@ -9972,10 +9996,15 @@ async def register_and_checkin(data: dict, request: Request):
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_phone": worker.get("phone"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
-        "company": worker.get("company"),
-        "trade": worker.get("trade"),
+        # Trade/company come from the PROJECT-SCOPED resolution above — the
+        # stored pairing when one exists, otherwise this visit's validated
+        # pick. They are deliberately NOT read off the worker document any
+        # more: that field no longer exists for new workers, and for old ones
+        # it holds whatever the last unrelated project happened to write.
+        "worker_company": company,
+        "worker_trade": trade,
+        "company": company,
+        "trade": trade,
         "project_id": project_id,
         "project_name": project.get("name"),
         "admin_id": admin_id,
@@ -10020,6 +10049,16 @@ async def register_and_checkin(data: dict, request: Request):
     }
 
     result = await db.checkins.insert_one(checkin_record)
+
+    # FIRST check-in on this project with a resolved trade — store the pairing
+    # so every later visit HERE reads it instead of re-prompting. Skipped when
+    # one already exists (nothing changed) and when the trade is still pending
+    # (UNASSIGNED must never become a stored answer — the CP has to assign it,
+    # and _store_worker_project_trade refuses the sentinel besides).
+    if not existing_pair and not needs_trade_assignment:
+        await _store_worker_project_trade(
+            str(worker["_id"]), project_id, trade, company,
+        )
 
     # FIX 1: tell the CP + admins this check-in needs a trade assigned. The
     # check-in is ALREADY written above; this dispatch is failure-isolated so
