@@ -88,7 +88,7 @@ export function finalizeErrorCode(e) {
  * survives a foreground one. Storage key and record shape are unchanged; the
  * two writers are indistinguishable to the reader by design.
  */
-export async function recordFinalizeError(logId, code, key) {
+export async function recordFinalizeError(logId, code, key, source = 'drain') {
   if (!logId) return;
   try {
     const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);
