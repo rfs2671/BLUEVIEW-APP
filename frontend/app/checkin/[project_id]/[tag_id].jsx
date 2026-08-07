@@ -89,24 +89,33 @@ export default function PublicCheckInScreen() {
       toast.warning('Required', 'Please enter your phone number');
       return;
     }
-    if (!workerCompany.trim()) {
-      toast.warning('Required', 'Please enter your company name');
-      return;
-    }
-    if (!workerTrade.trim() || !workerCompany.trim()) {
-      toast.warning('Required', 'Please select your trade & company');
-      return;
-    }
-    // Defense-in-depth: server re-validates against the project roster.
+    // Trade & company can ONLY be set from the roster dropdown on this screen,
+    // so when the project has NO trade_assignments there is nothing to pick and
+    // every guard below is unsatisfiable — an unfilled admin form was stopping a
+    // man from working. Gate the whole trade/company block on a configured
+    // roster: submit fires, the backend admits the check-in and flags it
+    // needs_trade_assignment for the admin/CP to correct later.
+    // With a roster PRESENT the strict match below is unchanged.
     const assignments = projectInfo?.trade_assignments || [];
-    const match = assignments.some(
-      (a) =>
-        (a.trade || '').toLowerCase() === workerTrade.trim().toLowerCase() &&
-        (a.company || '').toLowerCase() === workerCompany.trim().toLowerCase()
-    );
-    if (!match) {
-      toast.warning('Invalid Selection', 'Please pick from the dropdown');
-      return;
+    if (assignments.length > 0) {
+      if (!workerCompany.trim()) {
+        toast.warning('Required', 'Please enter your company name');
+        return;
+      }
+      if (!workerTrade.trim() || !workerCompany.trim()) {
+        toast.warning('Required', 'Please select your trade & company');
+        return;
+      }
+      // Defense-in-depth: server re-validates against the project roster.
+      const match = assignments.some(
+        (a) =>
+          (a.trade || '').toLowerCase() === workerTrade.trim().toLowerCase() &&
+          (a.company || '').toLowerCase() === workerCompany.trim().toLowerCase()
+      );
+      if (!match) {
+        toast.warning('Invalid Selection', 'Please pick from the dropdown');
+        return;
+      }
     }
 
     // Phone validation (basic)
@@ -312,9 +321,9 @@ export default function PublicCheckInScreen() {
                         {(projectInfo?.trade_assignments || []).length === 0 ? (
                           <View style={s.emptyAssignments}>
                             <Text style={s.emptyAssignmentsText}>
-                              This project has no subcontractors configured yet.
-                              Please ask your project admin to set up the
-                              check-in list.
+                              No trades are set up yet for this project — you can
+                              still check in. Your CP will assign your trade
+                              later.
                             </Text>
                           </View>
                         ) : (
