@@ -224,11 +224,10 @@ def build_sequence_rules_v1() -> SequenceGraph:
         _wp("building_envelope_closed", "gc",
             "Building envelope closed / Dried-in"),
         _wp("interior_framing", "carpentry", "framing (layout, track and studs)"),
-        # insulation_prep has no rule edge: its only edge came from the
-        # "building envelope closed -> framing, insulation prep" rule the
-        # operator corrected away. Kept as a loggable chip (it lands in the
-        # catalogue band); the operator has not asked for it to be removed.
-        _wp("insulation_prep", "insulation", "insulation prep"),
+        # OPERATOR RULING: insulation_prep is DELETED. Its only edge came from
+        # the "building envelope closed -> framing, insulation prep" rule the
+        # operator corrected away, which left the node edgeless; the operator
+        # then ruled the node itself out. Insulation comes off dried-in.
         _wp("mep_rough_in", "mep", "MEP rough-in"),
         _wp("blocking", "carpentry", "blocking"),
         _wp("firestopping", "firestopping", "firestopping"),

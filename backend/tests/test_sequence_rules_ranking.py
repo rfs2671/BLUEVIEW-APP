@@ -418,7 +418,6 @@ def test_framing_and_mep_rough_in_do_not_require_the_dried_in_milestone():
     # and dried-in no longer opens them at all
     succ = _succ()
     assert "interior_framing" not in succ[DRIED_IN]
-    assert "insulation_prep" not in succ[DRIED_IN]
 
 
 # HARD REQUIREMENT 2 — insulation and drywall are reachable ONLY from dried-in.
@@ -434,6 +433,18 @@ def test_insulation_and_drywall_are_reachable_only_from_dried_in():
 
 def test_dried_in_opens_insulation_and_drywall_only():
     assert _succ()[DRIED_IN] == ["insulation", "drywall"]
+
+
+def test_insulation_prep_node_is_deleted_and_leaves_no_reference():
+    # OPERATOR RULING: the node was edgeless after the fit-out correction and
+    # was deleted outright. Nothing may refer to it: not a node, not an edge
+    # endpoint, and not a chip in any ranking.
+    g = build_sequence_rules_v1()
+    assert "insulation_prep" not in {n.id for n in g.nodes}
+    endpoints = {e.from_node for e in g.edges} | {e.to_node for e in g.edges}
+    assert "insulation_prep" not in endpoints
+    for prior in ([], [DRIED_IN], ["interior_framing"], ["reshore"]):
+        assert "insulation_prep" not in _ids(_rank(prior_activity_ids=prior)), prior
 
 
 def test_firestopping_opens_inspection_only():
