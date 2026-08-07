@@ -9,8 +9,9 @@ The rule this file locks in:
   • a worker re-confirms trade and company on every project, even if he
     has checked in elsewhere before — the gate never reads a worker-level
     trade to decide the flag;
-  • the CP assigns a trade ONLY where none was captured (fill-if-empty,
-    never overwrite) — asserted in test_checkin_assign_trade.py;
+  • the CP's assignment is stored as the pairing for THAT project in
+    worker_project_trades and nothing is written to the global worker
+    document — asserted in test_checkin_assign_trade.py;
   • no cp_assignment provenance is written anywhere.
 
 The Fix 5 `worker.update(update_fields)` refreshes that follow each
@@ -101,7 +102,19 @@ _ROSTER = [{"trade": "Carpenter", "company": "Acme Co", "id": "srv_1"}]
 _NO_CERT_GATE = {"cleared": True, "warnings": [], "blocks": []}
 
 
-# ── assign-trade touches only the trade, and only when it is empty ───────
+_PAIRINGS = "worker_project_trades"
+
+
+def _pairing_writes(db):
+    """The (query, update) upserts server made against worker_project_trades.
+
+    _store_worker_project_trade calls db[COLLECTION].update_one, which the
+    fake records in `.updated`, so the pairing is observable here.
+    """
+    return db[_PAIRINGS].updated
+
+
+# ── assign-trade writes the pairing, never the worker document ───────────
 
 def _assign_db(worker):
     db = _FakeDb()
@@ -151,13 +164,20 @@ class AssignTradeWorkerWriteIsMinimalTest(unittest.TestCase):
                 db.workers.last_set(field), f"worker.{field} was written",
             )
 
-    def test_company_is_not_persisted_to_the_worker(self):
-        """Company is confirmed per project too; assign-trade fills the
-        empty trade and nothing else."""
+    def test_neither_trade_nor_company_is_persisted_to_the_worker(self):
+        """Trade and company are both confirmed per project, so assign-trade
+        writes the (worker, project) pairing and leaves the global worker
+        document alone."""
         db = _assign_db({"_id": "w1", "name": "Jane", "trade": ""})
         _assign(db)
-        self.assertEqual(db.workers.last_set("trade"), "Carpenter")
+        self.assertIsNone(db.workers.last_set("trade"))
         self.assertIsNone(db.workers.last_set("company"))
+        writes = _pairing_writes(db)
+        self.assertEqual(len(writes), 1, "no pairing was written")
+        query, update = writes[-1]
+        self.assertEqual(query, {"worker_id": "w1", "project_id": "proj1"})
+        self.assertEqual(update["$set"]["trade"], "Carpenter")
+        self.assertEqual(update["$set"]["company"], "Acme Co")
 
     def test_the_checkin_row_is_still_updated_and_unflagged(self):
         """The revert removes only the worker-document overwrite — the
