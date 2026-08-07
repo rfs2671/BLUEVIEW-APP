@@ -17,6 +17,7 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
@@ -28,7 +29,62 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
-const MAX_PHOTOS_PER_ACTIVITY = 5;
+// ── THE PHOTO CAP: 10 PER SUBCONTRACTOR, AGGREGATED ─────────────────────────
+// This was 5 PER ROW while the message it showed said "per subcontractor". Both
+// halves were wrong: a sub with three activity rows could attach 15 photos while
+// being told the limit was 5. The cap is now what the message always claimed —
+// 10 photos for a subcontractor, counted across EVERY row that names it.
+//
+// There is no project-wide cap. The buckets are:
+//
+//   • each distinct subcontractor_id  -> 10, shared across all of its rows
+//   • each row with NO roster id      -> its own 10, NEVER shared with another
+//     ("Other"/unbound)                  unbound row
+//   • each blank-company row          -> its own 10, NEVER merged with another
+//                                        blank
+//
+// The last two are the point. A CP standing on a jobsite with three crews the
+// admin has not entered on the roster yet is looking at an ADMIN failure, not
+// committing an abuse. Making those rows share one bucket would take the
+// evidence he is able to collect away from him as a punishment for someone
+// else's unfinished data entry. Each row gets its own allowance until the
+// roster catches up, and the moment it does the rows collapse into the real
+// subcontractor bucket on their own.
+const MAX_PHOTOS_PER_SUBCONTRACTOR = 10;
+
+/**
+ * Which bucket does this row's photos count against?
+ *
+ * Bound to the roster -> the SUBCONTRACTOR, so every row naming that sub shares
+ * one allowance. Otherwise the ROW itself, keyed on its stable activity_id, so
+ * two unbound rows (and two blank rows) can never collide.
+ *
+ * A row stored before activity_id existed has neither key; it falls back to its
+ * index, which still gives it a bucket of its own. That is the honest reading:
+ * an old row we cannot attribute is exactly the unbound case.
+ */
+const photoBucketKey = (activity, index) => {
+  const subId = String(activity?.subcontractor_id || '').trim();
+  if (subId) return `sub:${subId}`;
+  const rowId = String(activity?.activity_id || '').trim();
+  if (rowId) return `row:${rowId}`;
+  return `row-index:${index}`;
+};
+
+/** Photos already attached to `index`'s bucket, across every row in it. */
+const photosInBucket = (rows, index) => {
+  const key = photoBucketKey(rows?.[index], index);
+  let n = 0;
+  (rows || []).forEach((a, i) => {
+    if (photoBucketKey(a, i) === key) n += (a?.photos || []).length;
+  });
+  return n;
+};
+
+/** How many more photos `index` may still take. Never negative. */
+const bucketRemaining = (rows, index) => Math.max(
+  0, MAX_PHOTOS_PER_SUBCONTRACTOR - photosInBucket(rows, index),
+);
 
 // The in-process camera is native-only (vision-camera cannot run in a browser),
 // and the desktop review view must keep the form it has. Everything gated on
@@ -167,6 +223,14 @@ export default function DailyJobsiteLog() {
   const { user } = useAuth();
   const toast = useToast();
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const t = useT('dailyJobsite');
+  // The finalize namespace is LogbookLockBar's; it is reused verbatim here so a
+  // server refusal reads identically wherever the CP meets it. See
+  // handleSubmitAndSign.
+  const tFinalize = useT('finalize');
+  // The cap is one number in one place; the copy takes it rather than repeating
+  // it, so the message can never drift from what is enforced.
+  const capMessage = () => t('photoCapBody').replace('{n}', String(MAX_PHOTOS_PER_SUBCONTRACTOR));
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -542,9 +606,10 @@ export default function DailyJobsiteLog() {
 
   const pickActivityPhoto = async (activityIndex) => {
     lastEditedRef.current = activityIndex;
-    const current = activities[activityIndex]?.photos || [];
-    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    // Counted across the whole bucket, not just this row — that is the fix.
+    const remaining = bucketRemaining(activities, activityIndex);
+    if (remaining <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -557,7 +622,7 @@ export default function DailyJobsiteLog() {
       quality: 0.6,
       base64: false,
       allowsMultipleSelection: true,
-      selectionLimit: MAX_PHOTOS_PER_ACTIVITY - current.length,
+      selectionLimit: remaining,
     });
     if (result.canceled) return;
     const newPhotos = (result.assets || []).map((asset) => ({
@@ -565,17 +630,24 @@ export default function DailyJobsiteLog() {
       base64: null, // deferred — will be converted at save time
       timestamp: new Date().toISOString(),
     }));
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== activityIndex) return a;
-      return { ...a, photos: [...(a.photos || []), ...newPhotos].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-    }));
+    setActivities(prev => {
+      // Re-measured against `prev`, not against the value read before the
+      // picker opened: a background compress or another row's capture can land
+      // while the CP is choosing, and selectionLimit is a hint the picker is
+      // free to ignore. The trim is what actually enforces the cap.
+      const room = bucketRemaining(prev, activityIndex);
+      if (room <= 0) return prev;
+      return prev.map((a, i) => {
+        if (i !== activityIndex) return a;
+        return { ...a, photos: [...(a.photos || []), ...newPhotos.slice(0, room)] };
+      });
+    });
   };
 
   const takeActivityPhoto = async (activityIndex) => {
     lastEditedRef.current = activityIndex;
-    const current = activities[activityIndex]?.photos || [];
-    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    if (bucketRemaining(activities, activityIndex) <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
     if (capturingRef.current) return;
@@ -591,10 +663,13 @@ export default function DailyJobsiteLog() {
         if (!result || result.canceled) return;
         const asset = result.assets?.[0];
         if (!asset) return;
-        setActivities(prev => prev.map((a, idx) => {
-          if (idx !== activityIndex) return a;
-          return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-        }));
+        setActivities(prev => {
+          if (bucketRemaining(prev, activityIndex) <= 0) return prev;
+          return prev.map((a, idx) => {
+            if (idx !== activityIndex) return a;
+            return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }] };
+          });
+        });
         return;
       }
 
@@ -639,18 +714,26 @@ export default function DailyJobsiteLog() {
     if (cameraTargetIndex == null || !uri) return;
     const target = cameraTargetIndex;
     const tIn = Date.now();
-    const existing = activitiesRef.current[target]?.photos || [];
-    if (existing.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    // Keep-shooting: the CP can fire the shutter repeatedly without the form
+    // re-rendering between frames, so this reads the REF (current rows) and
+    // counts the whole bucket, not this row's array from a stale closure.
+    if (bucketRemaining(activitiesRef.current, target) <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
 
     const id = newPhotoId();
     const shot = { id, uri, base64: null, pending: true, timestamp: new Date().toISOString() };
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== target) return a;
-      return { ...a, photos: [...(a.photos || []), shot] };
-    }));
+    setActivities(prev => {
+      // Second, authoritative check. The guard above reads a ref that is only
+      // refreshed after a commit, so two shutters fired inside one frame would
+      // both pass it; `prev` is always the real current rows.
+      if (bucketRemaining(prev, target) <= 0) return prev;
+      return prev.map((a, i) => {
+        if (i !== target) return a;
+        return { ...a, photos: [...(a.photos || []), shot] };
+      });
+    });
     setSessionShotIds(prev => [...prev, id]);
 
     // TEMP camera-speed diagnostic (pairs with the modal's timing badge).
@@ -1178,12 +1261,16 @@ export default function DailyJobsiteLog() {
                 <View style={s.photosSection}>
                   <View style={s.photosHeader}>
                     <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    {/* No "(0/5)" — an empty counter is chrome for something
+                    {/* No "(0/10)" — an empty counter is chrome for something
                         that does not exist yet. The cap only matters once the
-                        CP is actually accumulating photos. */}
+                        CP is actually accumulating photos.
+                        The count is the BUCKET's, not this row's: the cap is
+                        per subcontractor, and showing a row's own 3 against a
+                        limit of 10 would misstate how much room is left when
+                        that sub already has 7 on another row. */}
                     <Text style={s.activityLabel}>
                       PHOTOS{(act.photos || []).length > 0
-                        ? ` (${(act.photos || []).length}/${MAX_PHOTOS_PER_ACTIVITY})`
+                        ? ` (${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR})`
                         : ''}
                     </Text>
                     {/* The strip fits 2.8 tiles at 390px, so from the third
@@ -1224,7 +1311,13 @@ export default function DailyJobsiteLog() {
                       ))}
                     </ScrollView>
                   )}
-                  {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
+                  {/* The capture controls go when the SUBCONTRACTOR's bucket is
+                      full, which can happen on a row with no photos of its own
+                      — so the reason is stated instead of the buttons simply
+                      vanishing with nothing to explain them. */}
+                  {bucketRemaining(activities, i) <= 0 ? (
+                    <Text style={s.pendingHint}>{t('photoCapRowHint')}</Text>
+                  ) : (
                     <View style={s.photoActions}>
                       {/* Take Photo is the workflow; Gallery is the fallback.
                           They were identical outline pills, which said neither. */}

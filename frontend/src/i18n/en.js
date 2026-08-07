@@ -81,6 +81,18 @@ export default {
     notLockedHint: 'This log is frozen on this device only. It stays queued and will retry, but the server keeps refusing it until the problem above is fixed.',
   },
 
+  // ── app/logbooks/daily_jobsite.jsx — the activity photo cap ────────────────
+  // The cap is 10 photos PER SUBCONTRACTOR, counted across every activity row
+  // that names that sub — not per row. `{n}` is substituted from the single
+  // MAX_PHOTOS_PER_SUBCONTRACTOR constant so the sentence can never claim a
+  // number other than the one being enforced (it claimed 5 while enforcing 5
+  // per row, which for a sub with three rows was 15).
+  dailyJobsite: {
+    photoCapTitle: 'Limit Reached',
+    photoCapBody: 'Maximum {n} photos per subcontractor',
+    photoCapRowHint: 'Photo limit reached for this subcontractor',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)

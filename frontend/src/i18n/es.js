@@ -70,6 +70,15 @@ export default {
     notLockedHint: 'Este registro está congelado solo en este dispositivo. Permanece en cola y se reintentará, pero el servidor seguirá rechazándolo hasta que se corrija el problema anterior.',
   },
 
+  // ── app/logbooks/daily_jobsite.jsx — el límite de fotos por actividad ──────
+  // El límite es de 10 fotos POR SUBCONTRATISTA, sumadas en todas las filas
+  // que lo nombran. `{n}` se sustituye desde la constante única del código.
+  dailyJobsite: {
+    photoCapTitle: 'Límite alcanzado',
+    photoCapBody: 'Máximo {n} fotos por subcontratista',
+    photoCapRowHint: 'Se alcanzó el límite de fotos para este subcontratista',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   signature: {
     verified: 'VERIFICADO',
