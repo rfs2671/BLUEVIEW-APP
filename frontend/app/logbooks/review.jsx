@@ -14,8 +14,12 @@
  * What it shows: check-ins where an expired SST is still unreviewed, or the
  * worker checked in with no trade because the project had none configured.
  *
- * Bilingual (EN/ES) via a local TRANSLATIONS map — the Expo app has no i18n
- * framework, so this mirrors the pattern used in backend/checkin.html.
+ * Bilingual (EN/ES) via src/i18n (namespace `review`, 47 keys). The strings
+ * used to live in a local TRANSLATIONS map here; they moved verbatim, so the
+ * rendered output is unchanged. The language toggle in the header now sets the
+ * app-wide locale rather than screen-local state, which is what makes
+ * SignaturePad's Spanish reachable — none of the 13 screens that render it
+ * pass a `lang` prop.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -53,111 +57,7 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
-
-const TRANSLATIONS = {
-  en: {
-    title: 'Check-In Review',
-    subtitle: 'Workers needing a decision',
-    selectProject: 'Select a project',
-    noProjects: 'No projects assigned to you yet.',
-    empty: 'Nothing to review',
-    emptyHint: 'No flagged check-ins on this project.',
-    loadError: 'Could not load flagged check-ins',
-    // OFFLINE vs EMPTY. "Nothing to review" is a compliance claim — it must
-    // only ever appear when the SERVER said the list is empty.
-    offlineLoad: 'Not loaded — this device cannot reach the server. This is NOT a confirmation that there is nothing to review.',
-    errorLoad: 'The flagged check-ins could not be read. Pull to refresh or try again.',
-    offlineProjects: 'Your project list could not be loaded, so this screen has nothing to select. Reconnect and pull to refresh.',
-    errorProjects: 'Your project list could not be read. Pull to refresh or try again.',
-    offlineWrite: 'Offline — nothing recorded',
-    offlineWriteHint: 'The decision was NOT saved. Reconnect and try again.',
-    expiredSst: 'Expired SST',
-    expiredOn: 'expired',
-    needsTrade: 'No trade assigned',
-    needsTradeHint: 'This project had no trades set up when they checked in.',
-    approve: 'Approve',
-    sendHome: 'Send home',
-    approved: 'Approved',
-    sentHome: 'Sent home',
-    by: 'by',
-    reviewFailed: 'Could not record the decision',
-    approvedToast: 'Worker approved to stay on site',
-    sentHomeToast: 'Sent-home decision recorded',
-    viewCard: 'Tap card to enlarge',
-    noCard: 'No card image on file',
-    checkedInAt: 'Checked in',
-    refresh: 'Refresh',
-    close: 'Close',
-    assignTrade: 'Assign trade',
-    chooseTrade: 'Choose a trade & company',
-    assign: 'Assign',
-    cancel: 'Cancel',
-    assigned: 'Trade assigned',
-    assignedToast: 'Trade assigned to this check-in',
-    assignFailed: 'Could not assign the trade',
-    noRoster: 'This project has no trades configured yet — an admin must add them first.',
-    // Cert-review reason codes (backend stores the CODE; text lives here).
-    unknownSst: 'Unverified SST',
-    admit: 'Admit',
-    admittedUnverified: 'Admitted — credential still unverified',
-    unknownAdmitHint: 'Admitting records entry only — it does not verify the card. The credential stays flagged for review.',
-    reason_CLASS_UNVERIFIED: 'Card class could not be read — verify the card',
-    reason_EXPIRY_IMPLAUSIBLE: 'Expiry date is implausible — re-scan or verify',
-    reason_EXPIRY_UNPARSEABLE: 'Expiry date could not be read — verify the card',
-    reason_EXPIRY_CONFLICT: 'Two scans disagree on the expiry — verify the card',
-    reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
-  },
-  es: {
-    title: 'Revisión de Registros',
-    subtitle: 'Trabajadores que requieren una decisión',
-    selectProject: 'Seleccione un proyecto',
-    noProjects: 'Aún no tiene proyectos asignados.',
-    empty: 'Nada que revisar',
-    emptyHint: 'No hay registros marcados en este proyecto.',
-    loadError: 'No se pudieron cargar los registros marcados',
-    offlineLoad: 'No se cargó — este dispositivo no puede comunicarse con el servidor. Esto NO confirma que no haya nada que revisar.',
-    errorLoad: 'No se pudieron leer los registros marcados. Deslice para actualizar o inténtelo de nuevo.',
-    offlineProjects: 'No se pudo cargar su lista de proyectos, por lo que no hay nada que seleccionar. Reconéctese y deslice para actualizar.',
-    errorProjects: 'No se pudo leer su lista de proyectos. Deslice para actualizar o inténtelo de nuevo.',
-    offlineWrite: 'Sin conexión — no se registró nada',
-    offlineWriteHint: 'La decisión NO se guardó. Reconéctese e inténtelo de nuevo.',
-    expiredSst: 'SST vencida',
-    expiredOn: 'venció',
-    needsTrade: 'Sin oficio asignado',
-    needsTradeHint: 'Este proyecto no tenía oficios configurados cuando se registró.',
-    approve: 'Aprobar',
-    sendHome: 'Enviar a casa',
-    approved: 'Aprobado',
-    sentHome: 'Enviado a casa',
-    by: 'por',
-    reviewFailed: 'No se pudo registrar la decisión',
-    approvedToast: 'Trabajador aprobado para permanecer en el sitio',
-    sentHomeToast: 'Decisión de enviar a casa registrada',
-    viewCard: 'Toque la tarjeta para ampliar',
-    noCard: 'No hay imagen de la tarjeta',
-    checkedInAt: 'Registrado',
-    refresh: 'Actualizar',
-    close: 'Cerrar',
-    assignTrade: 'Asignar oficio',
-    chooseTrade: 'Elija un oficio y empresa',
-    assign: 'Asignar',
-    cancel: 'Cancelar',
-    assigned: 'Oficio asignado',
-    assignedToast: 'Oficio asignado a este registro',
-    assignFailed: 'No se pudo asignar el oficio',
-    noRoster: 'Este proyecto aún no tiene oficios configurados — un administrador debe agregarlos primero.',
-    // Códigos de motivo de revisión (el backend guarda el CÓDIGO; el texto va aquí).
-    unknownSst: 'SST sin verificar',
-    admit: 'Admitir',
-    admittedUnverified: 'Admitido — credencial aún sin verificar',
-    unknownAdmitHint: 'Admitir registra solo la entrada — no verifica la tarjeta. La credencial permanece marcada para revisión.',
-    reason_CLASS_UNVERIFIED: 'No se pudo leer la clase de la tarjeta — verifique la tarjeta',
-    reason_EXPIRY_IMPLAUSIBLE: 'La fecha de vencimiento no es plausible — reescanee o verifique',
-    reason_EXPIRY_UNPARSEABLE: 'No se pudo leer la fecha de vencimiento — verifique la tarjeta',
-    reason_EXPIRY_CONFLICT: 'Dos escaneos no coinciden en el vencimiento — verifique la tarjeta',
-    reason_DUPLICATE_SST: 'Registros SST duplicados — consolide en uno',
-  },
-};
+import { useLocale, setLocale, useT } from '../../src/i18n';
 
 export default function CheckInReviewScreen() {
   const { colors } = useTheme();
@@ -166,11 +66,11 @@ export default function CheckInReviewScreen() {
   const toast = useToast();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
-  const [lang, setLang] = useState('en');
-  const t = useCallback(
-    (key) => TRANSLATIONS[lang][key] || TRANSLATIONS.en[key] || key,
-    [lang],
-  );
+  // Was screen-local `useState('en')`. The locale is now app-wide (src/i18n),
+  // so toggling here also reaches components this screen does not render —
+  // SignaturePad in particular, whose `lang` prop no call site passes.
+  const lang = useLocale();
+  const t = useT('review');
 
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
@@ -358,7 +258,7 @@ export default function CheckInReviewScreen() {
           />
           <Text style={s.headerTitle}>{t('title')}</Text>
           <Pressable
-            onPress={() => setLang((l) => (l === 'en' ? 'es' : 'en'))}
+            onPress={() => setLocale(lang === 'en' ? 'es' : 'en')}
             style={s.langToggle}
             hitSlop={10}
           >

@@ -4,6 +4,7 @@ import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
+import { useT } from '../i18n';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -47,26 +48,6 @@ function PathRenderer({ paths, strokeColor = '#000000', strokeWidth = 2 }) {
   );
 }
 
-// Bilingual copy for the affirmation UI (EN default; CP surfaces are English
-// today, ES provided per the bilingual requirement). Only the affirmation
-// strings are localized here.
-const SIG_STRINGS = {
-  en: {
-    verified: 'VERIFIED',
-    unaffirmed: 'UNAFFIRMED',
-    affirm: 'Affirm for this document',
-    clearResign: 'Clear & Re-sign',
-    unaffirmedHint: 'Inherited signature — tap Affirm to attest for this document.',
-  },
-  es: {
-    verified: 'VERIFICADO',
-    unaffirmed: 'SIN AFIRMAR',
-    affirm: 'Afirmar para este documento',
-    clearResign: 'Borrar y Firmar de nuevo',
-    unaffirmedHint: 'Firma heredada — toque Afirmar para dar fe de este documento.',
-  },
-};
-
 // A signature counts as affirmed for THIS document only when it carries a
 // per-document affirmation stamp. An inherited profile credential does NOT.
 function sigIsAffirmed(sig) {
@@ -85,11 +66,17 @@ const SignaturePad = ({
   // is passed — used on forms where the caller wants the signer to
   // retype/redraw each time instead of inheriting a cached signature.
   autoLock = true,
-  lang = 'en',
+  // Locale OVERRIDE for the affirmation copy. It used to default to 'en' and
+  // was the ONLY way to reach the Spanish strings — and all 13 screens that
+  // render this pad pass nothing, so Spanish was unreachable in the shipped
+  // app. The default is now undefined: unset means "follow the app-wide
+  // locale" (src/i18n), which starts at 'en', so an unset caller renders
+  // exactly what it rendered before. Passing lang still pins one locale.
+  lang,
 }) => {
   const { isDark, colors } = useTheme();
   const styles = buildStyles(colors, isDark);
-  const S = SIG_STRINGS[lang] || SIG_STRINGS.en;
+  const t = useT('signature', lang);
 
   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState([]);
@@ -266,12 +253,12 @@ const SignaturePad = ({
             {isAffirmed ? (
               <View style={styles.signedBadge}>
                 <Check size={12} strokeWidth={2} color={semantic.verified} />
-                <Text style={styles.signedBadgeText}>{S.verified}</Text>
+                <Text style={styles.signedBadgeText}>{t('verified')}</Text>
               </View>
             ) : (
               <View style={styles.unaffirmedBadge}>
                 <AlertTriangle size={12} strokeWidth={2} color={semantic.attention} />
-                <Text style={styles.unaffirmedBadgeText}>{S.unaffirmed}</Text>
+                <Text style={styles.unaffirmedBadgeText}>{t('unaffirmed')}</Text>
               </View>
             )}
           </View>
@@ -291,7 +278,7 @@ const SignaturePad = ({
           {isSigned && isAffirmed ? (
             <Pressable onPress={handleClear} style={styles.clearBtn}>
               <Trash2 size={16} strokeWidth={1.5} color={semantic.neutral} />
-              <Text style={styles.clearText}>{S.clearResign}</Text>
+              <Text style={styles.clearText}>{t('clearResign')}</Text>
             </Pressable>
           ) : isSigned && !isAffirmed ? (
             // Inherited credential — require ONE explicit affirmation for this
@@ -299,11 +286,11 @@ const SignaturePad = ({
             <>
               <Pressable onPress={handleClear} style={styles.actionBtn}>
                 <Trash2 size={16} strokeWidth={1.5} color={colors.text.muted} />
-                <Text style={styles.actionText}>{S.clearResign}</Text>
+                <Text style={styles.actionText}>{t('clearResign')}</Text>
               </Pressable>
               <Pressable onPress={handleAffirm} style={[styles.actionBtn, styles.affirmBtn]}>
                 <Check size={16} strokeWidth={1.5} color="#fff" />
-                <Text style={styles.confirmText}>{S.affirm}</Text>
+                <Text style={styles.confirmText}>{t('affirm')}</Text>
               </Pressable>
             </>
           ) : (
@@ -335,7 +322,7 @@ const SignaturePad = ({
 
       {/* Inherited-but-unaffirmed hint */}
       {isSigned && !isAffirmed && (
-        <Text style={styles.unaffirmedHint}>{S.unaffirmedHint}</Text>
+        <Text style={styles.unaffirmedHint}>{t('unaffirmedHint')}</Text>
       )}
 
       {/* Hint if name is missing */}
