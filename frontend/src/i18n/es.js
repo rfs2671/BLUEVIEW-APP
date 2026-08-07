@@ -58,6 +58,18 @@ export default {
     reason_DUPLICATE_SST: 'Registros SST duplicados — consolide en uno',
   },
 
+  // ── src/components/LogbookLockBar.jsx — la validación de finalización ──────
+  // El servidor solo devuelve un CÓDIGO; el texto vive aquí. Un código no
+  // reconocido cae en `genericError`.
+  finalize: {
+    errorTitle: 'No se pudo finalizar',
+    genericError: 'No se pudo finalizar este registro. Inténtelo de nuevo.',
+    code_FINALIZE_EMPTY_LOG: 'Este registro está vacío. Complételo antes de finalizarlo — un registro finalizado solo se corrige mediante una enmienda.',
+    code_FINALIZE_MISSING_CP_SIGNATURE: 'Este registro no está firmado. Fírmelo antes de finalizarlo — un registro finalizado solo se corrige mediante una enmienda.',
+    notLockedTitle: 'NO SE BLOQUEÓ EN EL SERVIDOR',
+    notLockedHint: 'Este registro está congelado solo en este dispositivo. Permanece en cola y se reintentará, pero el servidor seguirá rechazándolo hasta que se corrija el problema anterior.',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   signature: {
     verified: 'VERIFICADO',

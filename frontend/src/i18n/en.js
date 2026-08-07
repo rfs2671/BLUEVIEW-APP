@@ -60,6 +60,27 @@ export default {
     reason_DUPLICATE_SST: 'Duplicate SST records — resolve to one',
   },
 
+  // ── src/components/LogbookLockBar.jsx — the finalize completeness gate ─────
+  // The server rejects an incomplete finalize with a machine CODE only
+  // (backend/server.py:14638-14645) because the convention here is that the
+  // server names the condition and the CLIENT owns the wording. The `code_`
+  // prefix mirrors review's `reason_` codes: the code is looked up
+  // dynamically, so it must not be able to collide with a UI key in this
+  // namespace. An unmapped code falls back to `genericError`, exactly as
+  // BLOCK_LABELS does in backend/checkin.html:1508-1518. The server's English
+  // `detail` is never rendered.
+  finalize: {
+    errorTitle: 'Could not finalize',
+    genericError: 'This log could not be finalized. Please try again.',
+    code_FINALIZE_EMPTY_LOG: 'This log is empty. Fill it in before finalizing — a finalized log can only be corrected by an amendment.',
+    code_FINALIZE_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before finalizing — a finalized log can only be corrected by an amendment.',
+    // Shown when a log frozen on THIS DEVICE was refused by the server on the
+    // reconnect drain. Persistent, not a toast: the drain runs in the
+    // background with no screen, so this is the next place the CP can see it.
+    notLockedTitle: 'NOT LOCKED ON THE SERVER',
+    notLockedHint: 'This log is frozen on this device only. It stays queued and will retry, but the server keeps refusing it until the problem above is fixed.',
+  },
+
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   // Only the affirmation UI is localized. The rest of the pad (title, "SIGNER
   // NAME", "Draw signature here", "Clear", "Confirm Signature", the two hints)
