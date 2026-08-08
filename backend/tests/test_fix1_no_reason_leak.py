@@ -60,6 +60,10 @@ POISON_VALUES = [
     "EXPIRED_SST",
     "SST_UNKNOWN",
     "sent_home",
+    # sst_status's bare VALUE. Without it a leak of w["sst_status"] renders
+    # "expired" into the record and this suite passes — a hole in its own
+    # purpose, found by mutation-checking the renderers.
+    "expired",
     "chk_leaky_id",
 ]
 
