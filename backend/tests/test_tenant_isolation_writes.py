@@ -124,6 +124,11 @@ TIER3_ACTIONS = [
     ("post", "/projects/{project_id}/model/aggregate"),
     ("patch", "/projects/{project_id}/model/confirm"),
     ("post", "/projects/{project_id}/schedule/generate"),
+    # Track R2 — the capture-time logbook photo upload. A project-scoped write
+    # that spends STORAGE, so it carries both guards like every other one here,
+    # and joining this list is what makes that a pinned fact rather than a
+    # habit. require_project_access branch 3 is the CP's path to it.
+    ("post", "/projects/{project_id}/logbook-photo"),
 ]
 
 CLEAN_ROUTES = TIER1_DESTRUCTIVE + TIER2_SETTINGS + TIER3_ACTIONS
@@ -139,7 +144,7 @@ def _db_with(projects):
 
 
 class ProjectAccessDirections(unittest.TestCase):
-    """require_project_access IS the authorization boundary for all 25 routes."""
+    """require_project_access IS the authorization boundary for all 26 routes."""
 
     def _call(self, project_id, user):
         import server
@@ -272,8 +277,8 @@ class SourcePin(unittest.TestCase):
         """Adding a route to a tier means adding it here too."""
         self.assertEqual(len(TIER1_DESTRUCTIVE), 6)
         self.assertEqual(len(TIER2_SETTINGS), 6)
-        self.assertEqual(len(TIER3_ACTIONS), 13)
-        self.assertEqual(len(CLEAN_ROUTES), 25)
+        self.assertEqual(len(TIER3_ACTIONS), 14)
+        self.assertEqual(len(CLEAN_ROUTES), 26)
 
 
 class WiringPin(unittest.TestCase):

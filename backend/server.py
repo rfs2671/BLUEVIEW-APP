@@ -129,6 +129,62 @@ def _logbook_photo_r2_key(project_id: str, logbook_id: str, ai: int, pi: int, ki
     return f"logbook-photos/{project_id}/{logbook_id}/{ai}-{pi}-{kind}.jpg"
 
 
+# ── THE CAPTURE-TIME KEY ─────────────────────────────────────────────────────
+# A photo is uploaded when it is TAKEN, not when the log is saved, so its key
+# cannot be built out of anything that only exists after a save:
+#
+#   logbook_id  DOES NOT EXIST YET. The editor's `existingLogId` is null until
+#               the first successful push, and a photo taken offline may have no
+#               server document for hours.
+#   (ai, pi)    are POSITIONS. Rows are added, removed and reordered all day; a
+#               positional key stops naming the same photo the moment they are.
+#
+# So the key is (project_id, activity_id, photo_id): all three client-minted,
+# all three stable for the life of the row. `activity_id` is the per-row id
+# minted on the device when the row is created; `photo_id` is the capture id
+# that already existed so a background compress could find its own photo again.
+#
+# BOTH SCHEMES COEXIST, AND NOTHING IS MIGRATED. _logbook_photo_r2_key above
+# still names every object the enhance pass wrote for a photo taken before this
+# change. Those keys are READ OFF THE PHOTO DOCUMENT and never recomputed (see
+# _logbook_photo_sources and _purge_finalized_photo_base64), so an old photo
+# keeps resolving forever without either scheme knowing about the other.
+def _logbook_photo_key_segment(value: str) -> str:
+    """One path segment of an R2 key, built from a client-supplied id.
+
+    The ids are minted on the device, so they are untrusted input on their way
+    into an object key. Everything outside [A-Za-z0-9._-] is replaced, which
+    makes a traversal ('../') or an injected key prefix impossible to express.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "").strip())
+    return cleaned[:80] or "unknown"
+
+
+def _logbook_capture_photo_r2_key(project_id: str, activity_id: str, photo_id: str) -> str:
+    """logbook-photos/{project_id}/{activity_id}/{photo_id}.jpg
+
+    Same `logbook-photos/{project_id}/` prefix as the positional scheme, so the
+    project delete cascade (hard_delete_project) still sweeps both with the one
+    unconditional prefix it already uses.
+    """
+    return (
+        f"logbook-photos/{_logbook_photo_key_segment(project_id)}/"
+        f"{_logbook_photo_key_segment(activity_id)}/"
+        f"{_logbook_photo_key_segment(photo_id)}.jpg"
+    )
+
+
+def _logbook_photo_derivative_key(original_key: str, kind: str) -> str:
+    """The enhanced/thumb object belonging to a capture-scheme original.
+
+    Derived from the ORIGINAL KEY, never from (ai, pi), so the derivatives
+    inherit the original's position-independence instead of reintroducing the
+    very problem the capture key exists to solve.
+    """
+    base = original_key[:-4] if original_key.endswith(".jpg") else original_key
+    return f"{base}-{kind}.jpg"
+
+
 # A stored photo can carry up to four copies of itself, and WHICH ones exist
 # changes over the record's life:
 #
@@ -188,25 +244,32 @@ def _logbook_photo_is_renderable(photo: dict) -> bool:
     return bool(_logbook_photo_sources(photo))
 
 
-def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
-    """Blocking: decode -> enhance -> upload both derivatives to R2.
+def _enhance_bytes_to_r2_sync(raw_bytes: bytes, enh_key: str, thumb_key: str,
+                              retain_thumb_b64: bool) -> dict:
+    """Blocking: enhance -> upload both derivatives -> return the photo patch.
 
-    Runs in _PHOTO_ENHANCE_POOL. Returns the fields to merge into the photo
-    entry. Raises on failure; the caller records the failure and MOVES ON —
-    the original base64 in Mongo is untouched either way, so a failed
-    enhancement can never lose a photo.
+    `retain_thumb_b64` decides whether the ~400px copy is ALSO inlined back into
+    the document, and the two answers are not a preference:
+
+      False, for a photo that arrived as inline base64. The finalize purge
+      materialises that copy itself, from the bytes R2 really returns, in the
+      same update that removes the full-size original — because the writer must
+      not be the thing that verifies the writer (_purge_finalized_photo_base64).
+
+      True, for a photo UPLOADED AT CAPTURE. Such a photo never had an inline
+      copy for the purge to trade, so the purge skips it and thumb_base64 would
+      stay permanently absent. That copy is not an optimisation: it is what the
+      KIOSK draws for an inspector standing on site with no signal, whose
+      reader is inline-first on purpose (app/site/logbooks.jsx logbookPhotoUri).
+      At ~25-40KB it is ~4MB for a hundred photos — comfortably inside the 16MB
+      document ceiling this whole track exists to stay under, and nothing like
+      the ~20.5MB the full-size inline copies came to.
     """
     from lib.photo_enhance import enhance_photo
-
-    raw_bytes = base64.b64decode(b64_data)
     result = enhance_photo(raw_bytes)
-
-    enh_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "enhanced")
-    thumb_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "thumb")
     _upload_to_r2(result.enhanced_jpeg, enh_key, "image/jpeg")
     _upload_to_r2(result.thumbnail_jpeg, thumb_key, "image/jpeg")
-
-    return {
+    patch = {
         "enhanced_r2_key": enh_key,
         "thumb_r2_key": thumb_key,
         "enhance_status": "done",
@@ -214,6 +277,49 @@ def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai:
         "enhanced_w": result.enhanced_size[0],
         "enhanced_h": result.enhanced_size[1],
     }
+    if retain_thumb_b64:
+        patch["thumb_base64"] = base64.b64encode(result.thumbnail_jpeg).decode("ascii")
+    return patch
+
+
+def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
+    """Blocking: decode -> enhance -> upload both derivatives to R2.
+
+    Runs in _PHOTO_ENHANCE_POOL. Returns the fields to merge into the photo
+    entry. Raises on failure; the caller records the failure and MOVES ON —
+    the original base64 in Mongo is untouched either way, so a failed
+    enhancement can never lose a photo.
+
+    This is the INLINE path and its behaviour is unchanged: positional keys,
+    and no retained thumbnail (the finalize purge writes that one).
+    """
+    return _enhance_bytes_to_r2_sync(
+        base64.b64decode(b64_data),
+        _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "enhanced"),
+        _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "thumb"),
+        retain_thumb_b64=False,
+    )
+
+
+def _enhance_r2_original_sync(original_key: str) -> dict:
+    """Blocking: pull a CAPTURE-UPLOADED original back out of R2 and enhance it.
+
+    The photo never passed through Mongo, so there is no inline copy to read —
+    the bytes come from the object the device wrote at capture time. Raises on
+    any failure (missing object, R2 unreachable, undecodable image); the caller
+    records enhance_status="failed" and moves on, and the ORIGINAL OBJECT IS
+    NEVER TOUCHED, so a failed enhancement still cannot lose a photo — exactly
+    the invariant the inline path has always held.
+    """
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise RuntimeError("R2 is not configured")
+    obj = _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=original_key)
+    return _enhance_bytes_to_r2_sync(
+        obj["Body"].read(),
+        _logbook_photo_derivative_key(original_key, "enhanced"),
+        _logbook_photo_derivative_key(original_key, "thumb"),
+        retain_thumb_b64=True,
+    )
 
 
 async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
@@ -238,14 +344,27 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
                 if photo.get("enhance_status") == "done":
                     continue          # idempotent: re-saving a log re-runs nothing
                 b64 = photo.get("base64")
-                if not b64:
+                orig_key = photo.get("original_r2_key")
+                if not b64 and not orig_key:
                     continue          # URI-only entry, nothing to enhance yet
                 field = f"data.activities.{ai}.photos.{pi}"
                 try:
-                    patch = await loop.run_in_executor(
-                        _PHOTO_ENHANCE_POOL,
-                        _enhance_one_photo_sync, b64, project_id, logbook_id, ai, pi,
-                    )
+                    if b64:
+                        # Inline path, unchanged. Deliberately FIRST: a photo
+                        # carrying both (what the backfill script produces
+                        # mid-migration) must keep taking the route whose
+                        # derivatives the finalize purge knows how to prove.
+                        patch = await loop.run_in_executor(
+                            _PHOTO_ENHANCE_POOL,
+                            _enhance_one_photo_sync, b64, project_id, logbook_id, ai, pi,
+                        )
+                    else:
+                        # Uploaded at capture: the bytes are in R2, never in
+                        # Mongo, so they are read back from the object itself.
+                        patch = await loop.run_in_executor(
+                            _PHOTO_ENHANCE_POOL,
+                            _enhance_r2_original_sync, orig_key,
+                        )
                     done += 1
                 except Exception as e:
                     logger.warning(
@@ -15375,6 +15494,115 @@ async def get_logbook_activity_photo(
                 logbook_id, activity_index, photo_index, e,
             )
     raise HTTPException(status_code=404, detail="Photo data not available")
+
+
+# One capture, after the client-side 150KB compression cap (compressPhoto.js).
+# The ceiling is generous because the GALLERY path does not go through that
+# compressor — a picked HEIC off a modern phone is genuinely several MB — and
+# because rejecting a photo the CP has already taken is the one outcome worth
+# avoiding. It is a sanity bound on a single object, not a storage policy.
+_LOGBOOK_PHOTO_MAX_BYTES = 15 * 1024 * 1024
+
+# Content type is decided by the BYTES, never by the multipart header: the
+# header is client-controlled, and this endpoint is the one place arbitrary
+# bytes could be parked in the bucket under an image's name.
+_LOGBOOK_PHOTO_MAGIC = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+)
+
+
+def _logbook_photo_content_type(raw: bytes) -> str:
+    """The image type these bytes actually are, or '' if they are not an image.
+
+    JPEG and PNG are matched on their leading magic. HEIF/HEIC (what an iPhone
+    gallery pick can still be) carries 'ftyp' at offset 4, and WebP is a RIFF
+    container with 'WEBP' at offset 8 — both are checked positionally because
+    neither begins with a fixed signature.
+    """
+    if not raw or len(raw) < 12:
+        return ""
+    for magic, ctype in _LOGBOOK_PHOTO_MAGIC:
+        if raw.startswith(magic):
+            return ctype
+    if raw[4:8] == b"ftyp":
+        return "image/heic"
+    if raw[0:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+@api_router.post(
+    "/projects/{project_id}/logbook-photo",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def upload_logbook_photo(
+    project_id: str,
+    activity_id: str = Form(...),
+    photo_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Store ONE activity photo in R2, at the moment it is TAKEN.
+
+    THE DEFECT THIS CLOSES. Photos used to be inlined as base64 into
+    logbooks.data.activities[].photos[] at SAVE time. base64 inflates the
+    150KB client-side cap to ~200KB per photo, so ten subcontractors with ten
+    photos each is ~20.5MB against MongoDB's 16MB document ceiling: the
+    END-OF-DAY save fails, with the CP's whole day inside it. The finalize
+    purge cannot help — it runs AFTER the save it would have to protect. So
+    the bytes never enter the document at all; the row carries only the key.
+
+    AUTH. require_approved + require_project_access, the pair every other
+    project-scoped write carries (pinned by test_tenant_isolation_writes.py,
+    whose TIER3 bucket this route joins). require_project_access is what
+    authorises the CP: its branch 3 admits a caller with this project in
+    `assigned_projects`, which is how a CP reaches every other write on his own
+    jobsite. No new authorization concept is introduced.
+
+    IDEMPOTENT. The key is a pure function of (project_id, activity_id,
+    photo_id), so a retry after a dropped connection overwrites the same object
+    with the same bytes instead of orphaning one. That is what lets the offline
+    drain retry forever without leaking storage.
+
+    THE STATUS CODES ARE PART OF THE CONTRACT. A device that cannot upload
+    keeps the file and its pending marker and retries; it must be able to tell
+    'this photo is unacceptable' (4xx, stop) from 'storage is unavailable'
+    (5xx, keep trying). Unconfigured or failing R2 is therefore 503/502, never
+    a 400 the client could reasonably read as a reason to give up.
+    """
+    if not str(activity_id or "").strip() or not str(photo_id or "").strip():
+        raise HTTPException(
+            status_code=400, detail="activity_id and photo_id are required",
+        )
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded photo: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded photo is empty.")
+    if len(file_bytes) > _LOGBOOK_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Photo too large. Maximum 15 MB.")
+    content_type = _logbook_photo_content_type(file_bytes)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise HTTPException(
+            status_code=503, detail="Photo storage (R2) is not configured",
+        )
+
+    r2_key = _logbook_capture_photo_r2_key(project_id, activity_id, photo_id)
+    try:
+        await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, content_type)
+    except Exception as e:
+        logger.error(f"logbook photo upload failed (key={r2_key}): {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Photo storage upload failed")
+
+    # `original_r2_key` is the field name on purpose: _logbook_photo_sources
+    # already reads it as the ORIGINAL rung of the serving ladder and has since
+    # Track P, where it was documented as inert because nothing wrote it. This
+    # is the thing that writes it. No reader changes.
+    return {"original_r2_key": r2_key, "bytes": len(file_bytes)}
+
 
 # ==================== CP PROFILE ENDPOINTS ====================
 
