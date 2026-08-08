@@ -1,7 +1,9 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { logbooksAPI } from './api';
 import {
-  getPendingKeys, readDraft, setDraftBackendId, clearPending,
+  getPendingKeys, readDraft, setDraftBackendId, clearPending, writeDraft,
+  uploadPendingActivityPhotos,
 } from './logbookDrafts';
 
 /**
@@ -33,6 +35,9 @@ import {
 const PREFIX = 'logbook_draft:';
 // Handled by dailyLogsAPI with a different payload shape — see note above.
 const SKIP_LOG_TYPES = new Set(['daily_log', 'site_daily_log']);
+// { [logbookId]: { code, key, at } } — the last finalize the SERVER refused for
+// that logbook. See recordFinalizeError below for why this exists.
+const FINALIZE_ERROR_KEY = 'logbook_finalize_errors';
 
 /** `logbook_draft:{projectId}:{logType}:{date}[:{workerId}]` -> parts, or null. */
 export function parseDraftKey(key) {
@@ -42,6 +47,81 @@ export function parseDraftKey(key) {
   const [projectId, logType, date, workerId] = parts;
   if (!projectId || !logType || !date) return null;
   return { projectId, logType, date, workerId: workerId || null };
+}
+
+/**
+ * Pull the finalize completeness-gate CODE out of an axios error.
+ *
+ * The server rejects an incomplete finalize with `detail: {"code": "..."}` and
+ * no prose (backend/server.py:14638-14645) — it names the condition, the client
+ * owns the wording. Anything else (offline, 403, 500, a prose `detail`) returns
+ * null so the caller shows the generic bilingual message; the server's English
+ * `detail` is deliberately never returned from here, so it can never be
+ * rendered.
+ */
+export function finalizeErrorCode(e) {
+  const detail = e?.response?.data?.detail;
+  const code = detail && typeof detail === 'object' ? detail.code : null;
+  return typeof code === 'string' && /^FINALIZE_[A-Z_]+$/.test(code) ? code : null;
+}
+
+/**
+ * WHY THIS EXISTS — the drain has no screen.
+ *
+ * syncPendingDrafts runs from a NetInfo transition and at startup (see
+ * setupDraftAutoSync below), with no component mounted and no toast context, so
+ * a rejection here cannot be shown at the moment it happens. It used to be
+ * swallowed outright, which meant a log the CP signed and froze OFFLINE could be
+ * refused by the server's completeness gate forever with NOTHING on screen ever
+ * saying so — the device shows FINALIZED, the server has no locked record.
+ *
+ * So the rejection is recorded against the logbook id and surfaced at the next
+ * screen interaction instead: LogbookLockBar reads it for the log being viewed
+ * and renders a persistent banner. Keyed by logbook id, not by draft key, so the
+ * banner can only ever appear on the log it belongs to. Cleared on the first
+ * finalize that succeeds, from either path.
+ *
+ * EXPORTED, because the drain is no longer the only writer. An editor that
+ * takes a refusal in the foreground shows a toast — and a toast is gone in four
+ * seconds, so if the CP walks off the screen the refusal has left no trace and
+ * the log reads as merely unfinalized. Recording it here as well means the SAME
+ * durable banner LogbookLockBar already renders for a background refusal also
+ * survives a foreground one. Storage key and record shape are unchanged; the
+ * two writers are indistinguishable to the reader by design.
+ */
+export async function recordFinalizeError(logId, code, key, source = 'drain') {
+  if (!logId) return;
+  try {
+    const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    map[String(logId)] = { code: code || null, key, at: Date.now(), source };
+    await AsyncStorage.setItem(FINALIZE_ERROR_KEY, JSON.stringify(map));
+  } catch (_e) { /* non-fatal — the draft is still pending either way */ }
+}
+
+/** The recorded rejection for a logbook, or null. */
+export async function readFinalizeError(logId) {
+  if (!logId) return null;
+  try {
+    const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw)[String(logId)] || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+/** Drop the record — the log finalized, so the banner must go. */
+export async function clearFinalizeError(logId) {
+  if (!logId) return;
+  try {
+    const raw = await AsyncStorage.getItem(FINALIZE_ERROR_KEY);
+    if (!raw) return;
+    const map = JSON.parse(raw);
+    if (!(String(logId) in map)) return;
+    delete map[String(logId)];
+    await AsyncStorage.setItem(FINALIZE_ERROR_KEY, JSON.stringify(map));
+  } catch (_e) { /* non-fatal */ }
 }
 
 async function pushOne(key) {
@@ -65,28 +145,73 @@ async function pushOne(key) {
   // trip. (A draft whose push already succeeded was cleared from the index and
   // never reaches this code, so there is no re-push of an already-locked doc.)
 
+  // ── PHOTOS FIRST ────────────────────────────────────────────────────────
+  // A daily_jobsite draft can hold photos whose upload never landed: taken in
+  // a dead zone, or dropped mid-upload. Each is a real file in
+  // documentDirectory with `upload_pending` on its row, and THIS is what gets
+  // them into R2 — before the content push, so the document the server
+  // receives NAMES its photos instead of describing them as pending.
+  //
+  // It also closes a hole that predates the R2 work: this drain has always
+  // pushed `draft.data`, and the draft has never stored base64, so a log that
+  // only ever reached the server through the drain arrived with photo entries
+  // that carried no image data at all.
+  //
+  // A photo that still has not uploaded leaves the key PENDING below, even
+  // when the content push succeeds. Nothing else would ever retry it.
+  let data = draft.data || {};
+  let photosStillPending = false;
+  if (Array.isArray(data.activities)) {
+    const shipped = await uploadPendingActivityPhotos(parsed.projectId, data.activities);
+    if (shipped.uploaded > 0) {
+      data = { ...data, activities: shipped.activities };
+      await writeDraft(key, { data });
+    }
+    photosStillPending = shipped.remaining > 0;
+  }
+
   const body = {
-    data: draft.data || {},
+    data,
     cp_signature: draft.cp_signature,
     cp_name: draft.cp_name,
     status: draft.status || 'draft',
   };
 
   // Re-apply the freeze server-side once the content has landed, so a log signed
-  // offline is locked on the server too. Best-effort: the content is already
-  // safe, and an immediate type auto-locks on `status: submitted` anyway — this
-  // is what covers the END_OF_DAY logs, whose freeze is an explicit /finalize.
+  // offline is locked on the server too. This covers the END_OF_DAY logs, whose
+  // freeze is an explicit /finalize (an immediate type auto-locks on
+  // `status: submitted` anyway).
+  //
+  // NO LONGER BEST-EFFORT. This was `catch (_e) {}` and then the caller cleared
+  // the pending key regardless, so a server that REFUSED the freeze produced a
+  // silent, permanent divergence: locked on the device, unlocked and unrecorded
+  // on the server, and dropped from the retry queue so nothing would ever try
+  // again. A refusal now (a) is recorded for the UI to surface and (b) fails the
+  // push, which leaves the key PENDING — the content update above is idempotent,
+  // so the next drain re-sends it and retries the freeze. Retry behaviour is
+  // otherwise unchanged; there is still no cap.
   const applyRemoteFreeze = async (id) => {
-    if (!draft.finalized || !id) return;
-    try { await logbooksAPI.finalize(id); } catch (_e) { /* already locked, or retry next drain */ }
+    if (!draft.finalized || !id) return { ok: true, code: null };
+    try {
+      await logbooksAPI.finalize(id);
+      await clearFinalizeError(id);
+      return { ok: true, code: null };
+    } catch (e) {
+      const code = finalizeErrorCode(e);
+      await recordFinalizeError(id, code, key);
+      return { ok: false, code };
+    }
   };
 
   try {
     if (draft.backend_id) {
       await logbooksAPI.update(draft.backend_id, body);
-      await applyRemoteFreeze(draft.backend_id);
-      await clearPending(key);
-      return { key, ok: true, mode: 'update' };
+      const frozen = await applyRemoteFreeze(draft.backend_id);
+      if (!frozen.ok) {
+        return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: draft.backend_id };
+      }
+      if (!photosStillPending) await clearPending(key);
+      return { key, ok: true, mode: 'update', photosPending: photosStillPending };
     }
     const created = await logbooksAPI.create({
       project_id: parsed.projectId,
@@ -96,9 +221,12 @@ async function pushOne(key) {
     });
     const newId = created?.id || created?._id;
     if (newId) await setDraftBackendId(key, newId);
-    await applyRemoteFreeze(newId);
-    await clearPending(key);
-    return { key, ok: true, mode: 'create' };
+    const frozen = await applyRemoteFreeze(newId);
+    if (!frozen.ok) {
+      return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: newId };
+    }
+    if (!photosStillPending) await clearPending(key);
+    return { key, ok: true, mode: 'create', photosPending: photosStillPending };
   } catch (e) {
     // Still offline, or the server refused. Leave it pending and try later.
     return { key, ok: false, reason: e?.message || 'push-failed' };
@@ -108,16 +236,23 @@ async function pushOne(key) {
 /** Drain every pending logbook draft. Safe to call repeatedly. */
 export async function syncPendingDrafts() {
   let keys = [];
-  try { keys = await getPendingKeys(); } catch (_e) { return { attempted: 0, synced: 0 }; }
-  if (!keys.length) return { attempted: 0, synced: 0 };
+  try { keys = await getPendingKeys(); } catch (_e) { return { attempted: 0, synced: 0, finalizeRefused: 0 }; }
+  if (!keys.length) return { attempted: 0, synced: 0, finalizeRefused: 0 };
 
   let synced = 0;
+  let refused = 0;
   for (const key of keys) {
     const r = await pushOne(key);
     if (r.ok) synced += 1;
+    else if (r.reason === 'finalize-refused') {
+      refused += 1;
+      // Diagnostic only. The user-visible surface is the banner LogbookLockBar
+      // renders from the record written above — this drain has no screen.
+      console.warn(`[draftSync] server refused to finalize ${r.logId} (${r.code || 'no code'}); staying pending`);
+    }
   }
   if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);
-  return { attempted: keys.length, synced };
+  return { attempted: keys.length, synced, finalizeRefused: refused };
 }
 
 /**

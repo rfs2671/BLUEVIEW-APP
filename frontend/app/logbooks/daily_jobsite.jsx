@@ -17,18 +17,95 @@ import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI, projectsAPI, weatherAPI } from '../../src/utils/api';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
+import { useT } from '../../src/i18n';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos, markFinalized } from '../../src/utils/logbookDrafts';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending,
+  persistActivityPhotos, markFinalized,
+  // Track R2 — photos go to R2 as they are TAKEN, so the document never
+  // carries full-size image data. persistPhoto now THROWS on a failed copy
+  // (it used to return the cache uri and say nothing), which is what makes
+  // "a photo taken offline is never lost" a claim this screen can honour.
+  persistPhoto, uploadCapturePhoto, uploadPendingActivityPhotos,
+  photoNeedsUpload, hasPendingPhotoUploads,
+} from '../../src/utils/logbookDrafts';
+// The finalize-gate mechanism LogbookLockBar and the reconnect drain already
+// share. Reused here rather than reimplemented: finalizeErrorCode is the ONE
+// place a FINALIZE_* code is pulled out of an axios error (and the one place
+// that guarantees the server's English `detail` never reaches a screen), and
+// clearFinalizeError is what makes the drain's persistent "NOT LOCKED ON THE
+// SERVER" banner go away once this screen finalizes for real. recordFinalizeError
+// is the other half: it RAISES that same banner, so a refusal taken here in the
+// foreground leaves the identical durable trace a background one does.
+import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../../src/utils/draftSync';
+// The app-wide OFFLINE discriminator (src/utils/offlineState.js), the same one
+// settleFetch is built on. "Offline" here has to mean what it means everywhere
+// else — no response at all — and not be a second, local guess at it.
+import { isOfflineError } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
-const MAX_PHOTOS_PER_ACTIVITY = 5;
+// ── THE PHOTO CAP: 10 PER SUBCONTRACTOR, AGGREGATED ─────────────────────────
+// This was 5 PER ROW while the message it showed said "per subcontractor". Both
+// halves were wrong: a sub with three activity rows could attach 15 photos while
+// being told the limit was 5. The cap is now what the message always claimed —
+// 10 photos for a subcontractor, counted across EVERY row that names it.
+//
+// There is no project-wide cap. The buckets are:
+//
+//   • each distinct subcontractor_id  -> 10, shared across all of its rows
+//   • each row with NO roster id      -> its own 10, NEVER shared with another
+//     ("Other"/unbound)                  unbound row
+//   • each blank-company row          -> its own 10, NEVER merged with another
+//                                        blank
+//
+// The last two are the point. A CP standing on a jobsite with three crews the
+// admin has not entered on the roster yet is looking at an ADMIN failure, not
+// committing an abuse. Making those rows share one bucket would take the
+// evidence he is able to collect away from him as a punishment for someone
+// else's unfinished data entry. Each row gets its own allowance until the
+// roster catches up, and the moment it does the rows collapse into the real
+// subcontractor bucket on their own.
+const MAX_PHOTOS_PER_SUBCONTRACTOR = 10;
+
+/**
+ * Which bucket does this row's photos count against?
+ *
+ * Bound to the roster -> the SUBCONTRACTOR, so every row naming that sub shares
+ * one allowance. Otherwise the ROW itself, keyed on its stable activity_id, so
+ * two unbound rows (and two blank rows) can never collide.
+ *
+ * A row stored before activity_id existed has neither key; it falls back to its
+ * index, which still gives it a bucket of its own. That is the honest reading:
+ * an old row we cannot attribute is exactly the unbound case.
+ */
+const photoBucketKey = (activity, index) => {
+  const subId = String(activity?.subcontractor_id || '').trim();
+  if (subId) return `sub:${subId}`;
+  const rowId = String(activity?.activity_id || '').trim();
+  if (rowId) return `row:${rowId}`;
+  return `row-index:${index}`;
+};
+
+/** Photos already attached to `index`'s bucket, across every row in it. */
+const photosInBucket = (rows, index) => {
+  const key = photoBucketKey(rows?.[index], index);
+  let n = 0;
+  (rows || []).forEach((a, i) => {
+    if (photoBucketKey(a, i) === key) n += (a?.photos || []).length;
+  });
+  return n;
+};
+
+/** How many more photos `index` may still take. Never negative. */
+const bucketRemaining = (rows, index) => Math.max(
+  0, MAX_PHOTOS_PER_SUBCONTRACTOR - photosInBucket(rows, index),
+);
 
 // The in-process camera is native-only (vision-camera cannot run in a browser),
 // and the desktop review view must keep the form it has. Everything gated on
@@ -42,36 +119,96 @@ const MOBILE_CAPTURE = Platform.OS !== 'web';
 let photoSeq = 0;
 const newPhotoId = () => `cap_${Date.now()}_${(photoSeq += 1)}`;
 
-const uriToBase64 = async (uri) => {
-  try {
-    if (!uri) return null;
+// ── Activity row identity ───────────────────────────────────────────────────
+// `activity_id` is a stable per-row id, minted on the device when the row is
+// created (seeded from headcount, or added by hand) and then stored with the
+// row. Nothing had one before: rows were identified only by their INDEX in
+// data.activities[], which changes the moment a row is added, removed or
+// reordered. An index is fine for rendering and useless for anything that has
+// to still mean the same row later — including the photo cap below, which has
+// to group a subcontractor's rows without a roster id to group them by.
+//
+// It is deliberately client-minted and NOT server-owned: a row can be created
+// with no signal at all (the whole point of the offline draft), so an id that
+// required a round-trip would simply not exist for the rows that need it most.
+let activitySeq = 0;
+const newActivityId = () => `act_${Date.now()}_${(activitySeq += 1)}`;
 
-    // Web: fetch the blob URL and convert to base64 via FileReader
-    if (Platform.OS === 'web') {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          // Strip the data:...;base64, prefix
-          const result = reader.result;
-          const b64 = result ? result.split(',')[1] : null;
-          resolve(b64);
-        };
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
-    }
+// The one normalization used to match a typed company name against the day's
+// roster names. Mirrors _roster_key in backend/server.py (strip + casefold),
+// so a case-only or whitespace edit still resolves to the same subcontractor.
+const rosterKey = (v) => String(v || '').trim().toLowerCase();
 
-    // Native: use FileSystem
-    const b64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    return b64;
-  } catch (err) {
-    console.warn('base64 conversion failed for', uri, err?.message);
-    return null;
+// A saved photo's full-size `base64` is DROPPED when its log is finalized —
+// server.py _purge_finalized_photo_base64, and only once R2 has confirmed both
+// derivatives. `thumb_base64` is the ~400px copy written in its place and is
+// never removed, so it is the last inline copy any screen can count on.
+const inlinePhotoData = (b64) => (
+  !b64 ? null : (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`)
+);
+
+// Has the backend already purged this photo's full-size copy? If so its `uri`
+// must NOT be re-encoded on save: that would push the full-size base64 straight
+// back into the document the purge just shrank, and it would do it without any
+// of the R2 proof the purge required. Nothing is lost by sending it as-is —
+// R2 holds the derivatives and thumb_base64 rides along in the payload.
+const isPurgedPhoto = (photo) => Boolean(
+  photo && (photo.base64_purged_at || photo.thumb_base64),
+);
+
+// Patch ONE photo wherever it currently lives, matched by its CAPTURE ID.
+//
+// Not by (row index, photo index): a background upload can land after the CP
+// has added a row, deleted a sibling or switched subs, and both indexes move
+// when he does. The id does not, and it is unique across every row, so this
+// can never patch a different photo than the one it was told about.
+const patchPhoto = (rows, photoId, patch) => (rows || []).map((a) => (
+  ((a.photos || []).some((p) => p.id === photoId))
+    ? { ...a, photos: a.photos.map((p) => (p.id === photoId ? { ...p, ...patch } : p)) }
+    : a
+));
+
+const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
+  ((a.photos || []).some((p) => p.id === photoId))
+    ? { ...a, photos: a.photos.filter((p) => p.id !== photoId) }
+    : a
+));
+
+/**
+ * ONE photo, as it is written into the logbook document.
+ *
+ * THE DOCUMENT NO LONGER CARRIES FULL-SIZE IMAGE DATA. A logbook is one
+ * MongoDB document with a 16MB ceiling, and re-encoding each photo to base64
+ * at save time cost ~200KB apiece: ten subcontractors at ten photos each
+ * measured 20,510,438 bytes, so the END-OF-DAY save was rejected outright,
+ * on a signed record, after the CP had done the whole day. Photos go to R2 as
+ * they are taken; the row carries the key.
+ *
+ * Returns null for a photo with nothing left to send, so the caller can drop
+ * it rather than write an empty entry into a compliance record.
+ */
+const photoForPayload = (photo) => {
+  if (!photo || typeof photo !== 'object') return photo;
+  // Client-side bookkeeping only: `pending` and `id` belong to the background
+  // compressor, `persist_failed` to the retake prompt.
+  const { pending, id, persist_failed, ...stored } = photo; // eslint-disable-line no-unused-vars
+  if (stored.original_r2_key) {
+    // In R2. The markers go with the pending state that is now over.
+    const { upload_pending, upload_rejected, ...done } = stored; // eslint-disable-line no-unused-vars
+    return done;
   }
+  if (stored.base64 || isPurgedPhoto(stored)) {
+    // An existing photo round-tripping through a re-save: an inline copy the
+    // backfill has not moved yet, or a finalized photo whose full-size copy
+    // the purge already took. Passed through EXACTLY as it arrived.
+    return stored;
+  }
+  if (!stored.uri) return null;   // nothing local, nothing stored — not a photo
+  // Taken, held on the device, upload not landed. The row says so: the readers
+  // fall back to the local file, and the reconnect drain uploads it and
+  // re-pushes. Deliberately NOT re-encoded to base64 — one such photo is
+  // ~200KB and a hundred of them is the save this whole change exists to stop.
+  return { ...stored, upload_pending: true };
 };
 const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
 const EQUIPMENT_ITEMS = [
@@ -96,6 +233,15 @@ const CHECKLIST_ITEMS = [
 ];
 
 const EMPTY_ACTIVITY = () => ({
+  // Stable row identity — see newActivityId above.
+  activity_id: newActivityId(),
+  // The project roster row this activity is accountable to
+  // (project.trade_assignments[].id, minted server-side as `srv_<uuid4hex>`).
+  // A hand-added row has no roster identity until the CP names a company that
+  // is actually on the day's roster, so it starts NULL and stays null for an
+  // "Other"/unbound sub. Null is the honest answer; a placeholder id here
+  // would silently merge two unrelated subcontractors.
+  subcontractor_id: null,
   crew_id: '',
   company: '',
   num_workers: '',
@@ -121,6 +267,29 @@ export default function DailyJobsiteLog() {
   const { user } = useAuth();
   const toast = useToast();
   const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const t = useT('dailyJobsite');
+  // The finalize namespace is LogbookLockBar's; it is reused verbatim here so a
+  // server refusal reads identically wherever the CP meets it. See
+  // handleSubmitAndSign.
+  const tFinalize = useT('finalize');
+  /**
+   * The server names the condition, the client owns the wording — the same rule
+   * LogbookLockBar's gateCopy follows, over the same `finalize` namespace, so a
+   * refusal reads identically whether the CP meets it here (on screen, at the
+   * moment he presses Submit & Sign) or on the LockBar's banner (surfaced later,
+   * from a background drain that had no screen to show it on). `translate`
+   * returns the KEY on a miss, which is how an unmapped code is detected; the
+   * server's English `detail` is never rendered.
+   */
+  const gateCopy = (code) => {
+    if (!code) return tFinalize('genericError');
+    const key = `code_${code}`;
+    const copy = tFinalize(key);
+    return copy && copy !== key ? copy : tFinalize('genericError');
+  };
+  // The cap is one number in one place; the copy takes it rather than repeating
+  // it, so the message can never drift from what is enforced.
+  const capMessage = () => t('photoCapBody').replace('{n}', String(MAX_PHOTOS_PER_SUBCONTRACTOR));
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -163,6 +332,13 @@ export default function DailyJobsiteLog() {
   const viewportHRef = useRef(0);
   const lastEditedRef = useRef(null);
   const activitiesRef = useRef([]);
+  // rosterKey(sub_name) -> subcontractor_id, built from the day's headcount.
+  // Only names that resolve to EXACTLY ONE roster id are in here: a company
+  // working two trades today has two roster rows and therefore two ids, and
+  // there is no way to tell from a typed company name which one the CP meant.
+  // An ambiguous name is left out, which resolves to null — unbound, its own
+  // photo bucket. Guessing would attach a row to the wrong roster entry.
+  const rosterIdByCompanyRef = useRef(new Map());
   const [fabTargetIndex, setFabTargetIndex] = useState(0);
   // Resolve the camera permission dialog HERE, at screen mount, so it is not
   // sitting between the capture tap and the preview. No-op on web.
@@ -280,6 +456,26 @@ export default function DailyJobsiteLog() {
       const fullAddress = projectData?.address || projectData?.location || '';
       setProjectAddress(fullAddress);
 
+      // Build the company -> roster id map from the day's headcount BEFORE the
+      // existing-log branch: an already-saved log still has to re-resolve a
+      // company the CP retypes, and stored rows from before this change carry
+      // no subcontractor_id at all.
+      {
+        const idsByName = new Map();      // rosterKey(name) -> Set(ids)
+        for (const r of (Array.isArray(headcount) ? headcount : [])) {
+          const id = r?.subcontractor_id;
+          const name = rosterKey(r?.sub_name);
+          if (!id || !name) continue;
+          if (!idsByName.has(name)) idsByName.set(name, new Set());
+          idsByName.get(name).add(id);
+        }
+        const unique = new Map();
+        for (const [name, ids] of idsByName) {
+          if (ids.size === 1) unique.set(name, [...ids][0]);
+        }
+        rosterIdByCompanyRef.current = unique;
+      }
+
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
       const _existingArr = Array.isArray(existingLogs) ? existingLogs : [];
@@ -312,19 +508,28 @@ export default function DailyJobsiteLog() {
         // straight from the backend aggregation. No per-worker rows,
         // no per-worker signatures.
         const rows = Array.isArray(headcount) ? headcount : [];
-        const autoActivities = rows.map((r, i) => ({
-          crew_id: `C${i + 1}`,
+        const autoActivities = rows.map((r, i) => {
           // PR B: 'UNASSIGNED' is a placeholder (worker's sub not on the roster
           // at check-in), not a company. Seed the field EMPTY so it reads as
           // pending and prompts the CP to assign the accountable sub — never
           // stamp the sentinel onto the 3301-02. The headcount is preserved.
-          company: (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
-            ? r.sub_name : '',
-          num_workers: String(r.worker_count_today ?? 0),
-          work_description: r.trade || '',
-          work_locations: '',
-          photos: [],
-        }));
+          const company = (r.sub_name && r.sub_name.toUpperCase() !== 'UNASSIGNED')
+            ? r.sub_name : '';
+          return {
+            activity_id: newActivityId(),
+            // Carried through from GET /daily-headcount, which resolves it
+            // against project.trade_assignments server-side. A row whose
+            // company was blanked above has no accountable sub yet, so it
+            // must not keep an id either — the two have to agree.
+            subcontractor_id: company ? (r.subcontractor_id || null) : null,
+            crew_id: `C${i + 1}`,
+            company,
+            num_workers: String(r.worker_count_today ?? 0),
+            work_description: r.trade || '',
+            work_locations: '',
+            photos: [],
+          };
+        });
         if (autoActivities.length > 0) setActivities(autoActivities);
 
         // FIX #1: Auto-fetch weather if no existing log
@@ -360,7 +565,20 @@ export default function DailyJobsiteLog() {
 
   const updateActivity = (index, field, value) => {
     lastEditedRef.current = index;
-    setActivities(prev => prev.map((a, i) => i === index ? { ...a, [field]: value } : a));
+    setActivities(prev => prev.map((a, i) => {
+      if (i !== index) return a;
+      const next = { ...a, [field]: value };
+      // Retyping the COMPANY re-resolves the roster binding. It cannot be left
+      // alone: a row seeded as "Acme" carries Acme's roster id, and renaming it
+      // to a different sub while keeping that id is a fabricated binding — the
+      // renamed row would then share Acme's photo bucket and be reported
+      // against Acme. Unknown or ambiguous name -> null, which is the honest
+      // "no roster identity" and gives the row its own bucket.
+      if (field === 'company') {
+        next.subcontractor_id = rosterIdByCompanyRef.current.get(rosterKey(value)) || null;
+      }
+      return next;
+    }));
   };
 
   /**
@@ -445,11 +663,81 @@ export default function DailyJobsiteLog() {
     return crew ? `Crew ${crew}` : `Activity ${fabTargetIndex + 1}`;
   })();
 
+  // ── THE CAPTURE-TIME UPLOAD ───────────────────────────────────────────────
+  //
+  // Photos go to R2 as they are TAKEN, so the log document never carries
+  // full-size image data (see photoForPayload). The upload is driven off
+  // `activities` rather than bolted onto each capture path, because there are
+  // FOUR ways a photo arrives — the in-process shutter, the gallery picker,
+  // the web picker, and a draft rehydrated after the app was killed — and a
+  // guarantee that has to hold for all four should not be written four times.
+  //
+  // CAPTURE NEVER BLOCKS ON THE NETWORK: this runs after the commit that
+  // already painted the photo, and nothing on the shutter path awaits it.
+  //
+  // ONE ATTEMPT PER PHOTO PER SESSION. The id stays in the set whether the
+  // attempt succeeded or failed, so a failure cannot re-trigger this effect
+  // through its own setActivities and spin. Retries belong to handleSave and
+  // to the reconnect drain, which is where the CP is actually waiting for an
+  // answer.
+  const uploadAttemptedRef = useRef(new Set());
+
+  const uploadOneCapture = useCallback(async (activityId, photo) => {
+    const id = photo.id;
+    let localUri = photo.uri;
+    try {
+      localUri = await persistPhoto(photo.uri, id);
+    } catch (_e) {
+      // THE PHOTO DID NOT SAVE, AND THE CP IS TOLD SO.
+      //
+      // persistPhoto used to swallow this and hand back the OS CACHE uri: the
+      // draft then recorded a path the app does not own, the cache was evicted,
+      // and the photo was gone with nothing having reported it. A photo whose
+      // copy failed is now not recorded at all — it is removed from the row, so
+      // nothing on screen claims evidence that does not exist — and the CP is
+      // asked to retake it. He is NOT blocked from finishing the log.
+      setActivities((prev) => dropPhoto(prev, id));
+      setSessionShotIds((prev) => prev.filter((sid) => sid !== id));
+      toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
+      return;
+    }
+    if (localUri !== photo.uri) setActivities((prev) => patchPhoto(prev, id, { uri: localUri }));
+    try {
+      const key = await uploadCapturePhoto({
+        projectId, activityId, photoId: id, uri: localUri,
+      });
+      setActivities((prev) => patchPhoto(prev, id, {
+        original_r2_key: key, upload_pending: false,
+      }));
+    } catch (_e) {
+      // DEFERRED, NOT LOST. The file is in documentDirectory and its uri is in
+      // the draft, so it survives an app kill; the row keeps `upload_pending`,
+      // so every reader falls back to that local file and the CP never sees a
+      // blank tile in his own log; and handleSave and the reconnect drain both
+      // retry it. The key is a pure function of three stable ids, so a retry
+      // overwrites its own object rather than orphaning one.
+      setActivities((prev) => patchPhoto(prev, id, { upload_pending: true }));
+    }
+  }, [projectId, toast, t]);
+
+  useEffect(() => {
+    if (loading || locked || !projectId) return;
+    activities.forEach((a) => ((a && a.photos) || []).forEach((p) => {
+      // `pending` means the background compress has not finished; uploading now
+      // would send the RAW sensor JPEG the entry still points at.
+      if (!p || !p.id || p.pending) return;
+      if (!photoNeedsUpload(p) || uploadAttemptedRef.current.has(p.id)) return;
+      uploadAttemptedRef.current.add(p.id);
+      uploadOneCapture(a.activity_id, p);
+    }));
+  }, [activities, loading, locked, projectId, uploadOneCapture]);
+
   const pickActivityPhoto = async (activityIndex) => {
     lastEditedRef.current = activityIndex;
-    const current = activities[activityIndex]?.photos || [];
-    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    // Counted across the whole bucket, not just this row — that is the fix.
+    const remaining = bucketRemaining(activities, activityIndex);
+    if (remaining <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -462,25 +750,35 @@ export default function DailyJobsiteLog() {
       quality: 0.6,
       base64: false,
       allowsMultipleSelection: true,
-      selectionLimit: MAX_PHOTOS_PER_ACTIVITY - current.length,
+      selectionLimit: remaining,
     });
     if (result.canceled) return;
     const newPhotos = (result.assets || []).map((asset) => ({
+      // A capture id on EVERY entry point, not just the shutter: it is what the
+      // upload drain keys on, and it is the `photo_id` segment of the R2 key.
+      id: newPhotoId(),
       uri: asset.uri,
-      base64: null, // deferred — will be converted at save time
+      base64: null,
       timestamp: new Date().toISOString(),
     }));
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== activityIndex) return a;
-      return { ...a, photos: [...(a.photos || []), ...newPhotos].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-    }));
+    setActivities(prev => {
+      // Re-measured against `prev`, not against the value read before the
+      // picker opened: a background compress or another row's capture can land
+      // while the CP is choosing, and selectionLimit is a hint the picker is
+      // free to ignore. The trim is what actually enforces the cap.
+      const room = bucketRemaining(prev, activityIndex);
+      if (room <= 0) return prev;
+      return prev.map((a, i) => {
+        if (i !== activityIndex) return a;
+        return { ...a, photos: [...(a.photos || []), ...newPhotos.slice(0, room)] };
+      });
+    });
   };
 
   const takeActivityPhoto = async (activityIndex) => {
     lastEditedRef.current = activityIndex;
-    const current = activities[activityIndex]?.photos || [];
-    if (current.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    if (bucketRemaining(activities, activityIndex) <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
     if (capturingRef.current) return;
@@ -496,10 +794,13 @@ export default function DailyJobsiteLog() {
         if (!result || result.canceled) return;
         const asset = result.assets?.[0];
         if (!asset) return;
-        setActivities(prev => prev.map((a, idx) => {
-          if (idx !== activityIndex) return a;
-          return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }].slice(0, MAX_PHOTOS_PER_ACTIVITY) };
-        }));
+        setActivities(prev => {
+          if (bucketRemaining(prev, activityIndex) <= 0) return prev;
+          return prev.map((a, idx) => {
+            if (idx !== activityIndex) return a;
+            return { ...a, photos: [...(a.photos || []), { id: newPhotoId(), uri: asset.uri, base64: null, timestamp: new Date().toISOString() }] };
+          });
+        });
         return;
       }
 
@@ -544,18 +845,26 @@ export default function DailyJobsiteLog() {
     if (cameraTargetIndex == null || !uri) return;
     const target = cameraTargetIndex;
     const tIn = Date.now();
-    const existing = activitiesRef.current[target]?.photos || [];
-    if (existing.length >= MAX_PHOTOS_PER_ACTIVITY) {
-      toast.warning('Limit Reached', `Maximum ${MAX_PHOTOS_PER_ACTIVITY} photos per subcontractor`);
+    // Keep-shooting: the CP can fire the shutter repeatedly without the form
+    // re-rendering between frames, so this reads the REF (current rows) and
+    // counts the whole bucket, not this row's array from a stale closure.
+    if (bucketRemaining(activitiesRef.current, target) <= 0) {
+      toast.warning(t('photoCapTitle'), capMessage());
       return;
     }
 
     const id = newPhotoId();
     const shot = { id, uri, base64: null, pending: true, timestamp: new Date().toISOString() };
-    setActivities(prev => prev.map((a, i) => {
-      if (i !== target) return a;
-      return { ...a, photos: [...(a.photos || []), shot] };
-    }));
+    setActivities(prev => {
+      // Second, authoritative check. The guard above reads a ref that is only
+      // refreshed after a commit, so two shutters fired inside one frame would
+      // both pass it; `prev` is always the real current rows.
+      if (bucketRemaining(prev, target) <= 0) return prev;
+      return prev.map((a, i) => {
+        if (i !== target) return a;
+        return { ...a, photos: [...(a.photos || []), shot] };
+      });
+    });
     setSessionShotIds(prev => [...prev, id]);
 
     // TEMP camera-speed diagnostic (pairs with the modal's timing badge).
@@ -653,9 +962,27 @@ export default function DailyJobsiteLog() {
       });
       return;
     }
-    const local = photo.uri || (photo.base64 ? `data:image/jpeg;base64,${photo.base64}` : null);
+    const local = photo.uri
+      || inlinePhotoData(photo.base64)
+      || inlinePhotoData(photo.thumb_base64);
     if (local) setPhotoLightbox({ uri: local, label: 'Original' });
   };
+
+  // Tile source for the activity grid. The local capture first (nothing to
+  // fetch), then whichever inline copy survives, then the served thumbnail —
+  // which is all a finalized log's photo has left once its full-size base64
+  // has been purged.
+  const photoTileUri = (photo, activityIndex, photoIndex) => (
+    photo?.uri
+    || inlinePhotoData(photo?.base64)
+    || inlinePhotoData(photo?.thumb_base64)
+    || (existingLogId
+      ? logbooksAPI.getLogbookPhotoUrl(
+        existingLogId, activityIndex, photoIndex, 'thumb', photo?.enhance_status || '',
+      )
+      : null)
+    || undefined
+  );
 
   const addActivity = () => setActivities(prev => {
     // A freshly added row is what the CP means to work on next, so it becomes
@@ -680,57 +1007,67 @@ export default function DailyJobsiteLog() {
       // below is best-effort; offline it's deferred (markPending) and the draft
       // stays the source of truth.
       const _key = draftKey({ projectId, logType: 'daily_jobsite', date });
-      const _persisted = await persistActivityPhotos(activities);
-      await writeDraft(_key, {
-        data: {
-          project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
-          general_description: generalDescription, activities: _persisted,
-          equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
-          visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
-        },
-        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-      });
 
-      // Let any background compression finish first. Without this, saving
-      // immediately after a capture would base64 the RAW sensor JPEG that the
-      // pending entry still points at — several MB inlined into the log.
-      // allSettled, not all: a failed compress must not block the save.
+      // Let any background compression finish FIRST, before anything reads a
+      // photo's uri. A save fired immediately after a capture would otherwise
+      // persist and upload the RAW sensor JPEG the pending entry still points
+      // at. allSettled, not all: a failed compress must not block the save.
       if (pendingCompressRef.current.length > 0) {
         await Promise.allSettled(pendingCompressRef.current);
       }
 
-      // Convert any URI-only photos to base64 before saving. Encode
-      // sequentially with a setTimeout(0) yield between photos so the
-      // native thread is released between encodes — the old Promise.all
-      // burst held the UI thread and froze submit. Payload shape
-      // unchanged (base64 still inlined under data.activities).
-      const activitiesWithBase64 = [];
-      for (const act of activities) {
-        if (!act.photos || act.photos.length === 0) {
-          activitiesWithBase64.push(act);
-          continue;
-        }
-        const convertedPhotos = [];
-        for (const photo of act.photos) {
-          // `pending`/`id` are client-side bookkeeping for the background
-          // compress. Strip them so the stored photo shape is exactly what it
-          // was before keep-shooting existed — and spread the REST through, so
-          // fields the backend adds (enhance_status, r2 keys) survive a re-save.
-          const { pending, id, ...stored } = photo; // eslint-disable-line no-unused-vars
-          if (stored.base64 || !stored.uri) {
-            convertedPhotos.push(stored); // already encoded, or nothing to encode
-            continue;
-          }
-          // Prefer the compressed derivative if its job finished. Read from the
-          // ref rather than `photo.uri` because that state update may not have
-          // reached this closure's copy of `activities` yet.
-          const uri = (id && compressedUriRef.current[id]) || stored.uri;
-          await new Promise((resolve) => setTimeout(resolve, 0)); // yield before each encode
-          const b64 = await uriToBase64(uri);
-          convertedPhotos.push({ ...stored, uri, base64: b64 });
-        }
-        activitiesWithBase64.push({ ...act, photos: convertedPhotos });
+      // The rows as they stand AFTER that, not the copy this closure captured.
+      const _rows = activitiesRef.current?.length ? activitiesRef.current : activities;
+      const _persisted = await persistActivityPhotos(_rows);
+      const _draftData = (acts) => ({
+        project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+        general_description: generalDescription, activities: acts,
+        equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
+        visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+      });
+      await writeDraft(_key, {
+        data: _draftData(_persisted),
+        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+      });
+
+      // persistActivityPhotos no longer fails silently. A photo it could not
+      // copy into documentDirectory is NOT recorded with a uri the app cannot
+      // prove it owns — so say so once, and let the CP finish his log.
+      const _lostPhotos = _persisted.reduce(
+        (n, a) => n + ((a.photos || []).filter((p) => p.persist_failed).length), 0,
+      );
+      if (_lostPhotos > 0) toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
+
+      // THE PHOTOS GO TO R2, NOT INTO THE DOCUMENT. Most are already there —
+      // uploaded as they were taken — and this catches the stragglers: a photo
+      // shot seconds ago, or one whose upload failed while the CP was in a
+      // dead zone. Bounded: uploadPendingActivityPhotos abandons the loop on
+      // the first offline failure or 5xx rather than making the CP wait out a
+      // hundred identical timeouts.
+      const _uploaded = await uploadPendingActivityPhotos(projectId, _persisted);
+      if (_uploaded.uploaded > 0) {
+        // The keys just learned, back into screen state and the draft. Merged
+        // by capture id rather than replacing the array, so an edit made while
+        // the save was in flight is not clobbered.
+        const _keyById = new Map();
+        _uploaded.activities.forEach((a) => (a.photos || []).forEach((p) => {
+          if (p.id && p.original_r2_key) _keyById.set(p.id, p.original_r2_key);
+        }));
+        setActivities((prev) => prev.map((a) => ({
+          ...a,
+          photos: (a.photos || []).map((p) => (
+            _keyById.has(p.id)
+              ? { ...p, original_r2_key: _keyById.get(p.id), upload_pending: false }
+              : p
+          )),
+        })));
+        await writeDraft(_key, { data: _draftData(_uploaded.activities) });
       }
+
+      const _payloadActivities = _uploaded.activities.map((act) => ({
+        ...act,
+        photos: (act.photos || []).map(photoForPayload).filter(Boolean),
+      }));
 
       const payload = {
         project_id: projectId,
@@ -742,7 +1079,7 @@ export default function DailyJobsiteLog() {
           weather_temp: weatherTemp,
           weather_wind: weatherWind,
           general_description: generalDescription,
-          activities: activitiesWithBase64,
+          activities: _payloadActivities,
           equipment_on_site: equipmentOnSite,
           checklist_items: checklistItems,
           observations,
@@ -789,6 +1126,14 @@ export default function DailyJobsiteLog() {
         await markPending(_key);
         console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
       }
+
+      // A PHOTO THAT HAS NOT REACHED R2 KEEPS THE DRAFT PENDING, even when the
+      // content push SUCCEEDED and cleared the marker above. The reconnect
+      // drain is the only thing that will retry that upload, and it only looks
+      // at keys in the pending index — without this, a photo whose upload
+      // failed while the rest of the day saved fine would sit on the device
+      // forever with nothing ever trying again.
+      if (hasPendingPhotoUploads(_uploaded.activities)) await markPending(_key);
 
       await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
 
@@ -849,11 +1194,44 @@ export default function DailyJobsiteLog() {
    *   1. handleSave('submitted') — content, photos and signature into the local
    *      draft first, server push best-effort (markPending on failure;
    *      draftSync drains it and re-applies /finalize on reconnect).
-   *   2. server /finalize when the doc has an id — best-effort, never fatal.
-   *   3. LOCAL freeze, unconditionally: an EOD sign with no signal must still be
-   *      frozen on this device. It MUST come after (1) — writeDraft refuses
-   *      content patches once a draft is finalized.
+   *   2. server /finalize when the doc has an id.
+   *   3. LOCAL freeze — but ONLY when the server never ANSWERED. An EOD sign
+   *      with no signal must still be frozen on this device; a log the server
+   *      rejected, or failed on, must not be. It MUST come after (1) —
+   *      writeDraft refuses content patches once a draft is finalized.
    *   4. flip the form read-only.
+   *
+   * REFUSAL IS NOT OFFLINE. Step 2 used to treat every failure as "offline":
+   *
+   *     } catch (finalizeErr) { console.warn('Finalize deferred...'); }
+   *     await markFinalized(_key); setLocked(true);
+   *     toast.success('Submitted & Signed', '...will sync when you are back online.');
+   *
+   * The server's finalize gate rejects an empty or unsigned log with a machine
+   * code (FINALIZE_EMPTY_LOG / FINALIZE_MISSING_CP_SIGNATURE). Run through that
+   * catch, a REFUSAL produced three compounding lies:
+   *
+   *   • the CP was told the log was signed, locked and would sync. It never
+   *     would — the server had said no, and would keep saying no.
+   *   • markFinalized makes the local draft IMMUTABLE (logbookDrafts.js
+   *     writeDraft), so he could not fix the very condition being refused.
+   *   • the content push had SUCCEEDED, so there was no pending key, so the
+   *     reconnect drain would never retry it either. Silent, permanent, and
+   *     the CP's own device showed FINALIZED.
+   *
+   * So a 4xx from the server is handled as what it is: the draft stays
+   * EDITABLE, nothing claims success, and the reason is shown in the CP's
+   * language — as a toast AND as a recorded refusal, because the toast alone
+   * lasts four seconds and the record is what is still there when he comes
+   * back. finalizeErrorCode, recordFinalizeError and the `finalize` i18n
+   * namespace are LogbookLockBar's, reused verbatim so the same refusal reads
+   * identically wherever it surfaces.
+   *
+   * A 5xx is neither of those and gets its own third branch: the server FAILED
+   * rather than judged, so there is nothing to name and nothing queued — it is
+   * simply retryable, and must not be frozen or announced as synced either.
+   * Only a genuine offline (isOfflineError — no response at all) keeps the
+   * freeze and the sync promise, and that path is untouched.
    */
   const handleSubmitAndSign = async () => {
     if (saving || signing) return;
@@ -873,9 +1251,62 @@ export default function DailyJobsiteLog() {
         try {
           await logbooksAPI.finalize(savedId);
           serverLocked = true;
+          await clearFinalizeError(savedId);
         } catch (finalizeErr) {
-          // Offline / server refused. The local freeze below still stands and
-          // the reconnect drain re-applies /finalize once the push lands.
+          // THREE OUTCOMES, NOT TWO. Only ONE of them may say "it will sync
+          // when you are back online", because only one of them is true:
+          //
+          //   OFFLINE — no response at all. The draft IS queued and the drain
+          //     WILL re-apply /finalize on reconnect, so the sync promise is
+          //     accurate and the local freeze is exactly right. Unchanged.
+          //   4xx    — the server looked at this log and said no. It will keep
+          //     saying no. Handled below as a refusal.
+          //   5xx    — the server FAILED rather than judged. Nothing is queued
+          //     (the content push succeeded, so there is no pending key and the
+          //     drain has nothing to retry) and nothing is locked. Telling the
+          //     CP it is "signed and locked and will sync" is the same lie as
+          //     the refusal case, just on a rarer path — so it is not told.
+          //
+          // isOfflineError is the app-wide predicate settleFetch uses; offline
+          // is not re-derived here, so this screen cannot drift from the rest
+          // of the app about what being offline means.
+          const offline = isOfflineError(finalizeErr);
+          const status = finalizeErr?.response?.status;
+          const refused = typeof status === 'number' && status >= 400 && status < 500;
+          if (!offline && !refused) {
+            // A server error is retryable and nothing else: the log is NOT
+            // frozen, so Submit & Sign can simply be pressed again once the
+            // server is well. No record is written — the persistent banner says
+            // the log is frozen on this device only, and it is not frozen at
+            // all. genericError ("could not be finalized. Please try again") is
+            // the existing bilingual copy for exactly this.
+            console.warn('Finalize FAILED server-side — not locked, not queued:', status || finalizeErr?.message);
+            toast.error(tFinalize('errorTitle'), gateCopy(null));
+            return;
+          }
+          if (refused) {
+            // NOT frozen locally, NOT announced as success, NOT navigated away
+            // from: the CP has to be able to fix what was refused, on this
+            // screen, right now. The content save above already landed, so
+            // nothing he has entered is at risk.
+            const code = finalizeErrorCode(finalizeErr);
+            console.warn('Finalize REFUSED by the server:', status, code);
+            // BOTH, deliberately. The toast is the immediate answer to the
+            // button he just pressed; the record is what outlives it. A toast
+            // is gone in four seconds, and if he walks off this screen while it
+            // fades, an unlocked compliance record is left with nothing at all
+            // saying so — the exact silence this whole path exists to end. The
+            // record raises LogbookLockBar's persistent "NOT LOCKED ON THE
+            // SERVER" banner on this log, and the successful finalize above
+            // already clears it.
+            await recordFinalizeError(savedId, code, _key, 'editor');
+            toast.error(tFinalize('errorTitle'), gateCopy(code));
+            return;
+          }
+          // GENUINELY OFFLINE. The local freeze below stands — an EOD sign with
+          // no signal must still hold — and the reconnect drain re-applies
+          // /finalize once the push lands, which is what makes the sync promise
+          // in the toast below a true statement.
           console.warn('Finalize deferred (will re-apply on reconnect):', finalizeErr?.message);
         }
       }
@@ -1064,12 +1495,16 @@ export default function DailyJobsiteLog() {
                 <View style={s.photosSection}>
                   <View style={s.photosHeader}>
                     <Camera size={14} strokeWidth={1.5} color={colors.text.muted} />
-                    {/* No "(0/5)" — an empty counter is chrome for something
+                    {/* No "(0/10)" — an empty counter is chrome for something
                         that does not exist yet. The cap only matters once the
-                        CP is actually accumulating photos. */}
+                        CP is actually accumulating photos.
+                        The count is the BUCKET's, not this row's: the cap is
+                        per subcontractor, and showing a row's own 3 against a
+                        limit of 10 would misstate how much room is left when
+                        that sub already has 7 on another row. */}
                     <Text style={s.activityLabel}>
                       PHOTOS{(act.photos || []).length > 0
-                        ? ` (${(act.photos || []).length}/${MAX_PHOTOS_PER_ACTIVITY})`
+                        ? ` (${photosInBucket(activities, i)}/${MAX_PHOTOS_PER_SUBCONTRACTOR})`
                         : ''}
                     </Text>
                     {/* The strip fits 2.8 tiles at 390px, so from the third
@@ -1098,8 +1533,7 @@ export default function DailyJobsiteLog() {
                           ) : (
                             <Pressable onPress={() => openPhotoLightbox(photo, i, pi)}>
                               <Image
-                                source={{ uri: photo.uri || (photo.base64 ?
-                                  `data:image/jpeg;base64,${photo.base64}` : undefined) }}
+                                source={{ uri: photoTileUri(photo, i, pi) }}
                                 style={s.photoImage}
                               />
                             </Pressable>
@@ -1111,7 +1545,13 @@ export default function DailyJobsiteLog() {
                       ))}
                     </ScrollView>
                   )}
-                  {(act.photos || []).length < MAX_PHOTOS_PER_ACTIVITY && (
+                  {/* The capture controls go when the SUBCONTRACTOR's bucket is
+                      full, which can happen on a row with no photos of its own
+                      — so the reason is stated instead of the buttons simply
+                      vanishing with nothing to explain them. */}
+                  {bucketRemaining(activities, i) <= 0 ? (
+                    <Text style={s.pendingHint}>{t('photoCapRowHint')}</Text>
+                  ) : (
                     <View style={s.photoActions}>
                       {/* Take Photo is the workflow; Gallery is the fallback.
                           They were identical outline pills, which said neither. */}

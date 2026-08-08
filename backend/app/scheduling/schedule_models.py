@@ -74,3 +74,36 @@ class Schedule(BaseModel):
     pruned_nodes: List[str] = Field(default_factory=list)
     healed_edges: List[GraphEdge] = Field(default_factory=list)
     generated_at: datetime
+
+
+# ── Activity-chip ranking output ─────────────────────────────────────
+# Produced by sequence_ranking.rank_activities from the sequence_rules_v1
+# graph. Ranking ORDERS chips; it never pre-selects, never blocks an entry,
+# and never writes to a record.
+CHIP_BANDS = ("suggested", "remembered_other", "always_available", "catalog", "other")
+
+
+class ActivityChip(BaseModel):
+    id: str
+    label: str
+    rank: int  # 0-based position in the emitted chip list
+    band: Literal["suggested", "remembered_other", "always_available",
+                  "catalog", "other"]
+    # NEVER pre-selected. Literal[False] makes a pre-selected chip
+    # unconstructible — a caller that tries selected=True gets a
+    # ValidationError, so "rank order only" cannot be violated by accident.
+    selected: Literal[False] = False
+
+
+class ActivityRanking(BaseModel):
+    project_id: str
+    rules_version: str
+    structural_system: Literal["cast_in_place", "cfs", "unknown"]
+    # False when the project has no structural system set — the caller needs
+    # this to say so in the UI. When False, BOTH superstructure loops are
+    # present in `chips`.
+    structural_system_set: bool
+    chips: List[ActivityChip] = Field(default_factory=list)
+    # Prior-day activity ids with no matching rule node. Reported, never raised
+    # and never blocking: an unrecognized prior degrades to the cold-start set.
+    unrecognized_prior_ids: List[str] = Field(default_factory=list)

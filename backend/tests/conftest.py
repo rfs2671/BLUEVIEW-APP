@@ -15,7 +15,22 @@ order-dependent (see docs/audits/test-isolation-2026-07-23.md):
      value even after patching server.db to a fixture with a different flag
      doc.
 
-This fixture resets BOTH before every test so no test inherits counter
+  3. server.py::checkin_rate_limiter and server.py::auth_rate_limiter
+     (server.py:573-574) — a SECOND, older pair of process-global
+     limiters, of a different class (server.py:557 RateLimiter) than
+     lib/rate_limits.py's, and entirely unknown to it. checkin_rate_limiter
+     caps 30 req / 60s per IP and guards the three public check-in
+     endpoints; every TestClient call in the suite shares the IP
+     "testclient", so its key is a single suite-wide bucket. Eight test
+     files POST to /api/checkin/register-and-checkin; past ~30 such POSTs
+     inside one rolling 60s window the endpoint starts returning
+     429 {"detail": "Too many requests. Please wait a moment."} to
+     whichever file happens to be running then. Because the window is
+     wall-clock, WHICH file gets starved varies run to run — this was the
+     suite's remaining order-dependence. Resetting the lib/ counter did
+     nothing for it: they are two unrelated objects.
+
+This fixture resets ALL of them before every test so no test inherits counter
 saturation or a cached flag from a predecessor.
 
 It does NOT set RATE_LIMITS_DISABLED: the limiter stays live so
@@ -48,10 +63,39 @@ from lib import rate_limits  # noqa: E402
 from lib import feature_flags  # noqa: E402
 
 
+def _reset_server_ip_limiters():
+    """Clear server.py's own in-memory RateLimiter instances.
+
+    Looked up through sys.modules rather than imported at conftest load so
+    this stays a no-op for tests that never import server (and so conftest
+    does not force server's heavy import on collection). server.RateLimiter
+    RateLimiter now exposes reset() (added alongside this change), so this
+    calls the public method instead of reaching into the private `_hits`
+    dict — the reach broke the moment the class changed. No test asserts on these two
+    limiters, so clearing them cannot mask a real expectation — the one
+    suite test that does assert a 429 (test_c2_rate_limits.py:577) exercises
+    the lib/rate_limits.py middleware, a different object with a different
+    response body.
+    """
+    server = sys.modules.get("server")
+    if server is None:
+        return
+    for name in ("checkin_rate_limiter", "auth_rate_limiter"):
+        limiter = getattr(server, name, None)
+        reset = getattr(limiter, "reset", None)
+        if callable(reset):
+            reset()
+        else:  # pragma: no cover — older server.py without RateLimiter.reset
+            hits = getattr(limiter, "_hits", None)
+            if hits is not None:
+                hits.clear()
+
+
 @pytest.fixture(autouse=True)
 def _reset_shared_state():
-    """Reset the process-global rate-limit counter and null the feature-flag
+    """Reset the process-global rate-limit counters and null the feature-flag
     cache before every test. Function-scoped + autouse → runs for all tests."""
     rate_limits.reset_counter()
+    _reset_server_ip_limiters()
     feature_flags.cache_invalidate(None)
     yield

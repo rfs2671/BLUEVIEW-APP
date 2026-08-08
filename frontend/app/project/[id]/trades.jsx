@@ -88,6 +88,9 @@ export default function ProjectTradesScreen() {
 
   const isAdmin = user?.role === 'admin';
   const readOnly = fetchState !== 'ok';
+  // Soft-deleted rows are kept in state (they must be SENT back marked
+  // inactive) but are never shown and never offered for selection.
+  const visibleAssignments = assignments.filter((a) => a.status !== 'inactive');
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -126,12 +129,25 @@ export default function ProjectTradesScreen() {
           .map((r2) => ({
             trade: String(r2.trade).trim(),
             company: String(r2.company).trim(),
+            // Stable server-minted row id. Carried through load AND save so
+            // a round-trip never strips it. The server owns the value and
+            // re-derives it on every PUT — this is a passthrough, not a
+            // claim the client can make.
+            id: r2.id ? String(r2.id) : '',
+            // Soft-delete marker. Inactive rows stay in the payload (they
+            // are never hard-deleted) but are hidden from this list and
+            // from every check-in dropdown.
+            status: String(r2.status || '').trim().toLowerCase(),
           }))
       );
       setDirty(false);
     }
     setLoading(false);
   };
+
+  const samePair = (a, t, c) =>
+    a.trade.trim().toLowerCase() === t.trim().toLowerCase() &&
+    a.company.trim().toLowerCase() === c.trim().toLowerCase();
 
   const addAssignment = () => {
     const t = newTrade.trim();
@@ -141,22 +157,43 @@ export default function ProjectTradesScreen() {
       return;
     }
     const dup = assignments.some(
-      (a) =>
-        a.trade.toLowerCase() === t.toLowerCase() &&
-        a.company.toLowerCase() === c.toLowerCase()
+      (a) => a.status !== 'inactive' && samePair(a, t, c)
     );
     if (dup) {
       toast.info('Already added', `${t} — ${c} is already in the list`);
       return;
     }
-    setAssignments([...assignments, { trade: t, company: c }]);
+    // The pair may already exist as a soft-deleted row. Reactivate that row
+    // so its id (and everything referencing it) survives, instead of
+    // appending a second row for the same pair.
+    const wasRemoved = assignments.some(
+      (a) => a.status === 'inactive' && samePair(a, t, c)
+    );
+    if (wasRemoved) {
+      setAssignments(
+        assignments.map((a) =>
+          a.status === 'inactive' && samePair(a, t, c)
+            ? { ...a, status: '' }
+            : a
+        )
+      );
+    } else {
+      setAssignments([...assignments, { trade: t, company: c, id: '', status: '' }]);
+    }
     setDirty(true);
     setNewTrade('');
     setNewCompany('');
   };
 
-  const removeAssignment = (idx) => {
-    setAssignments(assignments.filter((_, i) => i !== idx));
+  // Removal is a SOFT delete: the row stays in the payload marked inactive.
+  // Hard-deleting it would erase the roster entry that past check-ins,
+  // logbooks and reports were recorded against.
+  const removeAssignment = (row) => {
+    setAssignments(
+      assignments.map((a) =>
+        a === row ? { ...a, status: 'inactive' } : a
+      )
+    );
     setDirty(true);
   };
 
@@ -169,10 +206,21 @@ export default function ProjectTradesScreen() {
     setSaving(true);
     try {
       const cleaned = assignments
-        .map((a) => ({
-          trade: String(a.trade || '').trim(),
-          company: String(a.company || '').trim(),
-        }))
+        .map((a) => {
+          const row = {
+            trade: String(a.trade || '').trim(),
+            company: String(a.company || '').trim(),
+          };
+          // Carry the id back so the server can match this row to its
+          // stored twin. The server still re-derives the id itself — a
+          // client-supplied id is never trusted.
+          if (a.id) row.id = String(a.id);
+          // Soft-deleted rows are SENT, marked inactive — that is what
+          // records the removal. Omitting them would leave the removal to
+          // the server's carry-forward and lose the explicit intent.
+          if (a.status === 'inactive') row.status = 'inactive';
+          return row;
+        })
         .filter((a) => a.trade && a.company);
       await projectsAPI.update(projectId, { trade_assignments: cleaned });
       toast.success('Saved', 'Subcontractor roster updated');
@@ -373,10 +421,10 @@ export default function ProjectTradesScreen() {
 
           <GlassCard style={s.card}>
             <Text style={s.sectionLabel}>
-              ROSTER ({assignments.length})
+              ROSTER ({visibleAssignments.length})
             </Text>
 
-            {assignments.length === 0 && readOnly ? (
+            {visibleAssignments.length === 0 && readOnly ? (
               // A failed read is not "nobody is configured" — that claim would
               // send an admin re-entering a roster the server already has.
               <View style={s.emptyState}>
@@ -385,7 +433,7 @@ export default function ProjectTradesScreen() {
                   Reconnect to see the trades configured for this project.
                 </Text>
               </View>
-            ) : assignments.length === 0 ? (
+            ) : visibleAssignments.length === 0 ? (
               <View style={s.emptyState}>
                 <Text style={s.emptyText}>No subcontractors added yet.</Text>
                 <Text style={s.emptySubtext}>
@@ -395,14 +443,14 @@ export default function ProjectTradesScreen() {
               </View>
             ) : (
               <View style={s.rosterList}>
-                {assignments.map((a, idx) => (
-                  <View key={`${a.trade}|${a.company}|${idx}`} style={s.rosterRow}>
+                {visibleAssignments.map((a, idx) => (
+                  <View key={a.id || `${a.trade}|${a.company}|${idx}`} style={s.rosterRow}>
                     <View style={{ flex: 1 }}>
                       <Text style={s.rosterTrade}>{a.trade}</Text>
                       <Text style={s.rosterCompany}>{a.company}</Text>
                     </View>
                     <Pressable
-                      onPress={() => removeAssignment(idx)}
+                      onPress={() => removeAssignment(a)}
                       style={s.rosterRemove}
                       hitSlop={10}
                     >

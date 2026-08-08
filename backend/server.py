@@ -129,25 +129,147 @@ def _logbook_photo_r2_key(project_id: str, logbook_id: str, ai: int, pi: int, ki
     return f"logbook-photos/{project_id}/{logbook_id}/{ai}-{pi}-{kind}.jpg"
 
 
-def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
-    """Blocking: decode -> enhance -> upload both derivatives to R2.
+# ── THE CAPTURE-TIME KEY ─────────────────────────────────────────────────────
+# A photo is uploaded when it is TAKEN, not when the log is saved, so its key
+# cannot be built out of anything that only exists after a save:
+#
+#   logbook_id  DOES NOT EXIST YET. The editor's `existingLogId` is null until
+#               the first successful push, and a photo taken offline may have no
+#               server document for hours.
+#   (ai, pi)    are POSITIONS. Rows are added, removed and reordered all day; a
+#               positional key stops naming the same photo the moment they are.
+#
+# So the key is (project_id, activity_id, photo_id): all three client-minted,
+# all three stable for the life of the row. `activity_id` is the per-row id
+# minted on the device when the row is created; `photo_id` is the capture id
+# that already existed so a background compress could find its own photo again.
+#
+# BOTH SCHEMES COEXIST, AND NOTHING IS MIGRATED. _logbook_photo_r2_key above
+# still names every object the enhance pass wrote for a photo taken before this
+# change. Those keys are READ OFF THE PHOTO DOCUMENT and never recomputed (see
+# _logbook_photo_sources and _purge_finalized_photo_base64), so an old photo
+# keeps resolving forever without either scheme knowing about the other.
+def _logbook_photo_key_segment(value: str) -> str:
+    """One path segment of an R2 key, built from a client-supplied id.
 
-    Runs in _PHOTO_ENHANCE_POOL. Returns the fields to merge into the photo
-    entry. Raises on failure; the caller records the failure and MOVES ON —
-    the original base64 in Mongo is untouched either way, so a failed
-    enhancement can never lose a photo.
+    The ids are minted on the device, so they are untrusted input on their way
+    into an object key. Everything outside [A-Za-z0-9._-] is replaced, which
+    makes a traversal ('../') or an injected key prefix impossible to express.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "").strip())
+    return cleaned[:80] or "unknown"
+
+
+def _logbook_capture_photo_r2_key(project_id: str, activity_id: str, photo_id: str) -> str:
+    """logbook-photos/{project_id}/{activity_id}/{photo_id}.jpg
+
+    Same `logbook-photos/{project_id}/` prefix as the positional scheme, so the
+    project delete cascade (hard_delete_project) still sweeps both with the one
+    unconditional prefix it already uses.
+    """
+    return (
+        f"logbook-photos/{_logbook_photo_key_segment(project_id)}/"
+        f"{_logbook_photo_key_segment(activity_id)}/"
+        f"{_logbook_photo_key_segment(photo_id)}.jpg"
+    )
+
+
+def _logbook_photo_derivative_key(original_key: str, kind: str) -> str:
+    """The enhanced/thumb object belonging to a capture-scheme original.
+
+    Derived from the ORIGINAL KEY, never from (ai, pi), so the derivatives
+    inherit the original's position-independence instead of reintroducing the
+    very problem the capture key exists to solve.
+    """
+    base = original_key[:-4] if original_key.endswith(".jpg") else original_key
+    return f"{base}-{kind}.jpg"
+
+
+# A stored photo can carry up to four copies of itself, and WHICH ones exist
+# changes over the record's life:
+#
+#   base64          the full-size original, inlined in the logbook document.
+#                   DROPPED at finalize by _purge_finalized_photo_base64, but
+#                   only once R2 has been proven to hold both derivatives.
+#   thumb_base64    the ~400px copy written in its place. NEVER removed. This
+#                   is the last-resort copy: small beats absent on a signed
+#                   legal record.
+#   enhanced_r2_key / thumb_r2_key   the two objects the enhance pass uploads.
+#
+# Every reader must ask "which copies does this photo still have", never "does
+# it have base64" — the latter was the same question only while base64 was the
+# only copy, and it silently becomes "was this photo never taken" afterwards.
+def _logbook_photo_sources(photo: dict, v: str = "") -> list:
+    """Ordered (kind, value) copies to try for one serve request.
+
+    kind is "r2" (an object key) or "b64" (inline data). The requested
+    derivative leads and every other surviving copy follows, so no single
+    missing copy can 404 a photo another copy could have served.
+
+    With no variant asked for, ORIGINAL STILL MEANS ORIGINAL: the inline
+    full-size copy leads while it exists, and the derivatives stand in only
+    once the purge has taken it. That keeps the lightbox's "Original" label
+    honest instead of quietly serving an enhanced render under it.
+
+    `original_r2_key` is read because the ladder is specified in terms of an
+    original object; nothing writes that field today (the enhance pass uploads
+    enhanced + thumb and nothing else), so the rung is inert until something
+    does. It is listed, not assumed.
+    """
+    if not isinstance(photo, dict):
+        return []
+    enhanced = photo.get("enhanced_r2_key")
+    thumb = photo.get("thumb_r2_key")
+    original = photo.get("original_r2_key")
+    full_b64 = photo.get("base64")
+    thumb_b64 = photo.get("thumb_base64")
+    if v == "thumb":
+        order = [("r2", thumb), ("r2", enhanced), ("r2", original),
+                 ("b64", full_b64), ("b64", thumb_b64)]
+    elif v == "enhanced":
+        order = [("r2", enhanced), ("r2", thumb), ("r2", original),
+                 ("b64", full_b64), ("b64", thumb_b64)]
+    else:
+        order = [("b64", full_b64), ("r2", original), ("r2", enhanced),
+                 ("r2", thumb), ("b64", thumb_b64)]
+    out = []
+    for kind, val in order:
+        if val and (kind, val) not in out:
+            out.append((kind, val))
+    return out
+
+
+def _logbook_photo_is_renderable(photo: dict) -> bool:
+    """Has this photo ANY copy left to serve? Emit it if so."""
+    return bool(_logbook_photo_sources(photo))
+
+
+def _enhance_bytes_to_r2_sync(raw_bytes: bytes, enh_key: str, thumb_key: str,
+                              retain_thumb_b64: bool) -> dict:
+    """Blocking: enhance -> upload both derivatives -> return the photo patch.
+
+    `retain_thumb_b64` decides whether the ~400px copy is ALSO inlined back into
+    the document, and the two answers are not a preference:
+
+      False, for a photo that arrived as inline base64. The finalize purge
+      materialises that copy itself, from the bytes R2 really returns, in the
+      same update that removes the full-size original — because the writer must
+      not be the thing that verifies the writer (_purge_finalized_photo_base64).
+
+      True, for a photo UPLOADED AT CAPTURE. Such a photo never had an inline
+      copy for the purge to trade, so the purge skips it and thumb_base64 would
+      stay permanently absent. That copy is not an optimisation: it is what the
+      KIOSK draws for an inspector standing on site with no signal, whose
+      reader is inline-first on purpose (app/site/logbooks.jsx logbookPhotoUri).
+      At ~25-40KB it is ~4MB for a hundred photos — comfortably inside the 16MB
+      document ceiling this whole track exists to stay under, and nothing like
+      the ~20.5MB the full-size inline copies came to.
     """
     from lib.photo_enhance import enhance_photo
-
-    raw_bytes = base64.b64decode(b64_data)
     result = enhance_photo(raw_bytes)
-
-    enh_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "enhanced")
-    thumb_key = _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "thumb")
     _upload_to_r2(result.enhanced_jpeg, enh_key, "image/jpeg")
     _upload_to_r2(result.thumbnail_jpeg, thumb_key, "image/jpeg")
-
-    return {
+    patch = {
         "enhanced_r2_key": enh_key,
         "thumb_r2_key": thumb_key,
         "enhance_status": "done",
@@ -155,6 +277,49 @@ def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai:
         "enhanced_w": result.enhanced_size[0],
         "enhanced_h": result.enhanced_size[1],
     }
+    if retain_thumb_b64:
+        patch["thumb_base64"] = base64.b64encode(result.thumbnail_jpeg).decode("ascii")
+    return patch
+
+
+def _enhance_one_photo_sync(b64_data: str, project_id: str, logbook_id: str, ai: int, pi: int) -> dict:
+    """Blocking: decode -> enhance -> upload both derivatives to R2.
+
+    Runs in _PHOTO_ENHANCE_POOL. Returns the fields to merge into the photo
+    entry. Raises on failure; the caller records the failure and MOVES ON —
+    the original base64 in Mongo is untouched either way, so a failed
+    enhancement can never lose a photo.
+
+    This is the INLINE path and its behaviour is unchanged: positional keys,
+    and no retained thumbnail (the finalize purge writes that one).
+    """
+    return _enhance_bytes_to_r2_sync(
+        base64.b64decode(b64_data),
+        _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "enhanced"),
+        _logbook_photo_r2_key(project_id, logbook_id, ai, pi, "thumb"),
+        retain_thumb_b64=False,
+    )
+
+
+def _enhance_r2_original_sync(original_key: str) -> dict:
+    """Blocking: pull a CAPTURE-UPLOADED original back out of R2 and enhance it.
+
+    The photo never passed through Mongo, so there is no inline copy to read —
+    the bytes come from the object the device wrote at capture time. Raises on
+    any failure (missing object, R2 unreachable, undecodable image); the caller
+    records enhance_status="failed" and moves on, and the ORIGINAL OBJECT IS
+    NEVER TOUCHED, so a failed enhancement still cannot lose a photo — exactly
+    the invariant the inline path has always held.
+    """
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise RuntimeError("R2 is not configured")
+    obj = _r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=original_key)
+    return _enhance_bytes_to_r2_sync(
+        obj["Body"].read(),
+        _logbook_photo_derivative_key(original_key, "enhanced"),
+        _logbook_photo_derivative_key(original_key, "thumb"),
+        retain_thumb_b64=True,
+    )
 
 
 async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
@@ -179,14 +344,27 @@ async def _enhance_logbook_photos(logbook_id: str, project_id: str) -> None:
                 if photo.get("enhance_status") == "done":
                     continue          # idempotent: re-saving a log re-runs nothing
                 b64 = photo.get("base64")
-                if not b64:
+                orig_key = photo.get("original_r2_key")
+                if not b64 and not orig_key:
                     continue          # URI-only entry, nothing to enhance yet
                 field = f"data.activities.{ai}.photos.{pi}"
                 try:
-                    patch = await loop.run_in_executor(
-                        _PHOTO_ENHANCE_POOL,
-                        _enhance_one_photo_sync, b64, project_id, logbook_id, ai, pi,
-                    )
+                    if b64:
+                        # Inline path, unchanged. Deliberately FIRST: a photo
+                        # carrying both (what the backfill script produces
+                        # mid-migration) must keep taking the route whose
+                        # derivatives the finalize purge knows how to prove.
+                        patch = await loop.run_in_executor(
+                            _PHOTO_ENHANCE_POOL,
+                            _enhance_one_photo_sync, b64, project_id, logbook_id, ai, pi,
+                        )
+                    else:
+                        # Uploaded at capture: the bytes are in R2, never in
+                        # Mongo, so they are read back from the object itself.
+                        patch = await loop.run_in_executor(
+                            _PHOTO_ENHANCE_POOL,
+                            _enhance_r2_original_sync, orig_key,
+                        )
                     done += 1
                 except Exception as e:
                     logger.warning(
@@ -569,6 +747,12 @@ class RateLimiter:
             return False
         self._hits[key].append(now)
         return True
+
+    def reset(self) -> None:
+        """Clear all state. Used by tests; should not be called in
+        production. Mirrors _FixedWindowCounter.reset in lib/rate_limits.py
+        so a test fixture never has to reach into the private _hits dict."""
+        self._hits.clear()
 
 auth_rate_limiter = RateLimiter(max_requests=10, window_seconds=60)  # 10 req/min per IP
 checkin_rate_limiter = RateLimiter(max_requests=30, window_seconds=60)  # 30 req/min per IP — shift start bursts
@@ -1448,9 +1632,21 @@ class TradeAssignment(BaseModel):
     """One subcontractor assignment on a project.
     trade: the construction trade (e.g. 'HVAC / Mechanical')
     company: the sub doing that trade on this project (e.g. 'Air Star')
+    id: stable server-minted row id. DECLARED so Pydantic v2 does not
+        silently drop it (default model_config is extra="ignore", so an
+        undeclared `id` never reaches the handler at all — a frontend-only
+        fix is impossible). It is nonetheless SERVER-OWNED: update_project
+        discards whatever the client sends and re-derives the id by
+        matching the row against the stored roster (see
+        _merge_trade_assignments).
+    status: "inactive" marks a soft-deleted row. MUST stay a string —
+        ProjectResponse.trade_assignments is List[Dict[str, str]], so a
+        bool (or a None id) in the stored array 500s every later GET.
     """
     trade: str
     company: str
+    id: Optional[str] = None
+    status: Optional[str] = None
 
 
 class ProjectGate(BaseModel):
@@ -3187,10 +3383,13 @@ def _same_company(actor: dict, target: dict) -> bool:
 # 404 (not 403) when the project does not exist or is deleted — that matches the
 # existing project-detail behavior and does not confirm ids to a prober. 403
 # when it exists but the caller has no claim to it.
-async def require_project_access(
-    project_id: str,
-    current_user = Depends(get_current_user),
-) -> dict:
+#
+# The rules live in `_assert_project_access`, a plain coroutine, so endpoints
+# whose project id arrives in the BODY (or off a stored document) can apply the
+# exact same check — FastAPI can only resolve `require_project_access` as a
+# dependency when {project_id} is in the path. `require_project_access` below is
+# a thin Depends wrapper over it; every existing dependency site is unchanged.
+async def _assert_project_access(project_id: str, current_user: dict) -> dict:
     project = await db.projects.find_one({
         "_id": to_query_id(project_id), **ACTIVE_PROJECT_FILTER,
     })
@@ -3215,6 +3414,13 @@ async def require_project_access(
         return project
 
     raise HTTPException(status_code=403, detail="Not authorized for this project")
+
+
+async def require_project_access(
+    project_id: str,
+    current_user = Depends(get_current_user),
+) -> dict:
+    return await _assert_project_access(project_id, current_user)
 
 
 async def validate_assignable_projects(actor: dict, project_ids) -> List[str]:
@@ -8684,7 +8890,21 @@ async def get_project(project_id: str, current_user = Depends(get_current_user))
 async def update_project(project_id: str, project_data: ProjectUpdate, admin = Depends(get_admin_user)):
     update_data = {k: v for k, v in project_data.model_dump().items() if v is not None}
     update_data["updated_at"] = datetime.now(timezone.utc)
-    
+
+    # Roster rows carry a STABLE, SERVER-MINTED id. The $set below replaces
+    # the whole array, so the ids cannot come from the client — they are
+    # re-derived here by matching each submitted row against the stored
+    # roster. Note the dict-comprehension above only filters None at the TOP
+    # level, so an `id: None` inside a row would still reach Mongo and then
+    # 500 the ProjectResponse read-back; _merge_trade_assignments emits
+    # strings only.
+    if update_data.get("trade_assignments") is not None:
+        _existing_project = await db.projects.find_one({"_id": to_query_id(project_id)})
+        update_data["trade_assignments"] = _merge_trade_assignments(
+            (_existing_project or {}).get("trade_assignments") or [],
+            update_data["trade_assignments"],
+        )
+
     # Normalize email list to lowercase if present
     if "report_email_list" in update_data and update_data["report_email_list"] is not None:
         update_data["report_email_list"] = [e.lower() for e in update_data["report_email_list"]]
@@ -9166,8 +9386,12 @@ async def get_checkin_info(project_id: str, tag_id: str):
 
         # Per-project trade/company assignments. Admins set these via
         # PUT /api/projects/{id} with trade_assignments: [{trade, company}].
-        # Sanitize + drop any rows missing either field.
-        raw_assignments = project.get("trade_assignments") or []
+        # Sanitize + drop any rows missing either field. Soft-deleted rows
+        # are dropped HERE, server-side: checkin.html builds its <select>
+        # with the ARRAY INDEX as the option value and resolves the pick
+        # back by index, so filtering on the client would desynchronize
+        # that index. Filtering here keeps the two in step.
+        raw_assignments = _active_assignments(project)
         assignments: List[Dict[str, str]] = []
         for row in raw_assignments:
             if not isinstance(row, dict):
@@ -9341,6 +9565,99 @@ async def get_project_companies(project_id: str):
     return companies
 
 
+# ── worker_project_trades: a worker's trade + company, PER PROJECT ──────
+#
+# THE RULE (operator, final): a worker's trade and company belong to the
+# {worker, project} PAIR, never to the worker alone. A framer on one job may
+# be a painter for a different sub on the next. So:
+#   • first check-in on a project — the worker picks trade + company and the
+#     pairing is stored here;
+#   • later check-ins on the SAME project — read the pairing; do not
+#     re-prompt and do not raise needs_trade_assignment;
+#   • a DIFFERENT project — no pairing exists, so he picks again, entirely
+#     independently of what he picked elsewhere.
+# Nothing writes trade or company to the global `workers` document. A single
+# worker-level trade cannot represent two simultaneous jobs, and writing one
+# is exactly how a value bled across projects before.
+#
+# ── ACCEPTED DEBT (deliberate — do NOT "fix" this by merging the two) ──
+# `worker_enrollments` (backend/card_audit.py — model at card_audit.py:272-291,
+# unique index at card_audit.py:2281) ALREADY implements this same
+# per-worker-per-project rule, correctly, for the gate/NFC card system: it
+# carries `trade` + `sub_name` on a row keyed (project_id, card_id), so a
+# card-holder's trade is likewise scoped to one project.
+#
+# We are NOT reusing it and NOT merging into it, because the two systems
+# identify a person by DIFFERENT primary keys that the codebase never joins:
+#   • worker_enrollments  → card_id (a physical NFC card, per project)
+#   • worker_project_trades / checkins / workers → worker_id (a phone- or
+#     OSHA-number-resolved `workers` document)
+# There is no card_id on a `workers` doc and no worker_id on an enrollment.
+# Unifying the two identity systems is a real project with a migration and a
+# reconciliation policy for people who exist in one system but not the other;
+# it is explicitly out of scope here. Until that project happens, the two
+# collections are parallel implementations of one rule over two disjoint
+# populations, and that duplication is ACCEPTED, not accidental.
+WORKER_PROJECT_TRADES_COLLECTION = "worker_project_trades"
+
+
+async def _get_worker_project_trade(worker_id, project_id):
+    """The stored {trade, company} for this worker on this project, or None.
+
+    Returns None when either key is missing or no pairing exists. NEVER falls
+    back to the `workers` document — a value from another project is worse
+    than no value, because it is silently wrong instead of visibly absent.
+    """
+    if not worker_id or not project_id:
+        return None
+    row = await db[WORKER_PROJECT_TRADES_COLLECTION].find_one({
+        "worker_id": str(worker_id),
+        "project_id": str(project_id),
+    })
+    if not row:
+        return None
+    trade = str(row.get("trade") or "").strip()
+    company = str(row.get("company") or "").strip()
+    if not trade:
+        # A pairing with no trade tells us nothing; treat it as absent so the
+        # caller re-prompts rather than freezing an empty trade onto the row.
+        return None
+    return {"trade": trade, "company": company}
+
+
+async def _store_worker_project_trade(worker_id, project_id, trade, company):
+    """Upsert the pairing for this worker on this project.
+
+    Callers must only reach here on a RESOLVED trade — never with the
+    "UNASSIGNED" sentinel a flagged check-in carries, because storing that
+    would make the next visit read UNASSIGNED back and silently skip the
+    needs_trade_assignment flag the CP still has to clear.
+    Failure-isolated: a gate check-in must never fail because a bookkeeping
+    write did.
+    """
+    trade = str(trade or "").strip()
+    company = str(company or "").strip()
+    if not worker_id or not project_id or not trade or trade == "UNASSIGNED":
+        return
+    try:
+        await db[WORKER_PROJECT_TRADES_COLLECTION].update_one(
+            {"worker_id": str(worker_id), "project_id": str(project_id)},
+            {"$set": {
+                "worker_id": str(worker_id),
+                "project_id": str(project_id),
+                "trade": trade,
+                "company": company,
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            f"[worker_project_trades] upsert failed for "
+            f"worker={worker_id} project={project_id}: {e!r}"
+        )
+
+
 def _roster_key(value) -> str:
     """The ONE roster-match normalization rule: strip surrounding whitespace
     then casefold. Used for MATCHING a submitted (trade, company) against the
@@ -9352,8 +9669,94 @@ def _roster_key(value) -> str:
     return str(value or "").strip().casefold()
 
 
+def _assignment_is_inactive(row) -> bool:
+    """True for a soft-deleted roster row.
+
+    Soft-delete state is the STRING "inactive" on the row's `status` key,
+    NOT a boolean: ProjectResponse.trade_assignments is
+    List[Dict[str, str]], so a bool stored in the array makes every later
+    GET /projects/{id} fail validation with a 500.
+    """
+    if not isinstance(row, dict):
+        return False
+    return _roster_key(row.get("status")) == "inactive"
+
+
+def _active_assignments(project) -> List[Dict[str, Any]]:
+    """The project's roster rows that are still selectable.
+
+    Rows are passed through UNMODIFIED (no rebuild) so callers that
+    compare the raw stored rows keep seeing exactly what Mongo holds.
+    """
+    rows = (project or {}).get("trade_assignments") or []
+    return [r for r in rows if not _assignment_is_inactive(r)]
+
+
+def _merge_trade_assignments(existing_rows, incoming_rows) -> List[Dict[str, str]]:
+    """Merge a client-submitted roster onto the stored one, server-side.
+
+    Ids are SERVER-OWNED. The client's `id` is discarded outright; an
+    existing row's id is carried forward when the incoming row matches it
+    on the SAME normalization the check-in strict-roster match uses
+    (_roster_key over trade + company), and only a genuinely new pair
+    mints one. Without this, PUT /projects/{id} — which $sets the whole
+    array — would let any id-less client wipe every id on the roster.
+
+    Rows the client omits are NOT dropped either: they are retained with
+    status "inactive". Nothing here ever hard-deletes a roster row, so an
+    older client (or a stale tab) cannot destroy roster history.
+
+    Every emitted value is a string — `id: None` must never reach Mongo,
+    because ProjectResponse.trade_assignments is List[Dict[str, str]] and
+    a None value 500s the read-back on this very request.
+    """
+    existing_by_key: Dict[tuple, Dict[str, Any]] = {}
+    for row in existing_rows or []:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if not t or not c:
+            continue
+        existing_by_key.setdefault((_roster_key(t), _roster_key(c)), row)
+
+    merged: List[Dict[str, str]] = []
+    seen_keys = set()
+    for row in incoming_rows or []:
+        if not isinstance(row, dict):
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        if not t or not c:
+            continue
+        key = (_roster_key(t), _roster_key(c))
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        prior = existing_by_key.get(key) or {}
+        row_id = str(prior.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
+        out: Dict[str, str] = {"trade": t, "company": c, "id": row_id}
+        # Only an explicit "inactive" is persisted; an active row keeps the
+        # historical {trade, company, id} shape with no status key.
+        if _assignment_is_inactive(row):
+            out["status"] = "inactive"
+        merged.append(out)
+
+    # Anything the client left out is soft-deleted, never dropped.
+    for key, row in existing_by_key.items():
+        if key in seen_keys:
+            continue
+        t = str(row.get("trade") or "").strip()
+        c = str(row.get("company") or "").strip()
+        row_id = str(row.get("id") or "").strip() or f"srv_{uuid.uuid4().hex}"
+        merged.append({
+            "trade": t, "company": c, "id": row_id, "status": "inactive",
+        })
+    return merged
+
+
 @api_router.post("/checkin/register-and-checkin")
-async def register_and_checkin(data: dict):
+async def register_and_checkin(data: dict, request: Request):
     """Public endpoint - full registration with OSHA + orientation + check-in in one call"""
     project_id = data.get("project_id")
     tag_id = data.get("tag_id")
@@ -9389,6 +9792,23 @@ async def register_and_checkin(data: dict):
     # under a "Worker Signatures" heading on a toolbox-talk record.
     toolbox_confirm = bool(data.get("toolbox_talk_confirm"))
 
+    # Task 12 Phase 0: presence evidence + abuse control on this public endpoint.
+    # Capture the caller IP / User-Agent / device fingerprint — all already on the
+    # wire or in headers but previously DROPPED — and rate-limit per IP so a
+    # stale/shared check-in URL can't be scripted at volume. Keyed under "reg:" so
+    # it has its OWN 30/min budget (sized for shift-start bursts), separate from
+    # the upload-osha scan limiter's counter.
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")[:400]
+    device_fp = (device_info or {}).get("fingerprint_id") if isinstance(device_info, dict) else None
+    # RATE LIMIT REMOVED (operator ruling). This endpoint is the live gate.
+    # Workers on their own phones behind one site WiFi — or a shared gate
+    # tablet — all present a SINGLE client IP, so a per-IP cap made worker
+    # 31 at shift start get a 429 at the gate. A config artifact must never
+    # stop a man from working. Dropped outright, not tuned: no per-worker
+    # limit and no raised threshold were substituted. client_ip / user_agent
+    # / device_fp below are still captured as presence evidence.
+
     # FIX 1: `company` is deliberately NOT required here. When a project has
     # no trade_assignments configured there is nothing for the worker to pick,
     # so they legitimately submit no company. It is re-required below, but
@@ -9414,12 +9834,36 @@ async def register_and_checkin(data: dict):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Resolve the EXISTING worker before the roster check, because the
+    # per-project pairing below is keyed on their worker_id and decides
+    # whether the roster check runs at all. Read-only find_one, unchanged
+    # query — creation of a brand-new worker still happens further down,
+    # after the validation, exactly as before.
+    worker = None
+    if phone:
+        raw_digits = ''.join(c for c in phone if c.isdigit())
+        formatted = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
+    if not worker and osha_number:
+        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
+
+    # PER-PROJECT PAIRING: this worker already picked a trade + company on
+    # THIS project, so that answer stands. Read it, skip the roster prompt
+    # entirely, and never raise needs_trade_assignment — the trade is not
+    # pending, it is on file. On any OTHER project this lookup finds nothing
+    # and he picks again from scratch, which is the point.
+    existing_pair = await _get_worker_project_trade(
+        worker.get("_id") if worker else None, project_id,
+    )
+
     # Strict-roster enforcement: the submitted {trade, company} MUST match
     # one of the admin-configured trade_assignments for this project. The
     # frontend already forces a dropdown pick, but a modified client could
     # still POST arbitrary values — reject them here so the workforce list
     # matches who's actually been assigned to the project.
-    raw_assignments = project.get("trade_assignments") or []
+    # Soft-deleted rows are excluded: a removed sub must never be a valid
+    # NEW selection, even from a stale client that still has it cached.
+    raw_assignments = _active_assignments(project)
     allowed_pairs = set()
     for row in raw_assignments:
         if not isinstance(row, dict):
@@ -9443,7 +9887,14 @@ async def register_and_checkin(data: dict):
     # Why the trade is pending — selects the CP-notification copy below.
     # "" means the trade resolved normally and no notification fires.
     trade_flag_reason = ""
-    if not allowed_pairs:
+    if existing_pair:
+        # Already answered for THIS project — the stored pairing wins over
+        # whatever the client sent (a stale or blank client value must not be
+        # able to re-open a question the worker has already closed here), and
+        # nothing is flagged for the CP.
+        trade = existing_pair["trade"]
+        company = existing_pair["company"]
+    elif not allowed_pairs:
         needs_trade_assignment = True
         trade_flag_reason = "no_roster"
         trade = trade or "UNASSIGNED"
@@ -9477,22 +9928,14 @@ async def register_and_checkin(data: dict):
     admin_id = project.get("admin_id")
     company_id = project.get("company_id")
     
-    # Find or create worker by phone (or by OSHA number if no phone)
-    worker = None
-    if phone:
-        raw_digits = ''.join(c for c in phone if c.isdigit())
-        formatted = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [phone, raw_digits, formatted]}, "is_deleted": {"$ne": True}})
-    if not worker and osha_number:
-        worker = await db.workers.find_one({"osha_number": osha_number, "is_deleted": {"$ne": True}})
-    
+    # `worker` was already resolved above (the pairing lookup needed it).
     if not worker:
-        # Create new worker with full data
+        # Create new worker with full data.
+        # NOTE: no `trade` / `company` here. Those are per-project and live in
+        # worker_project_trades; a worker-level copy is what bled across jobs.
         worker = {
             "name": name,
             "phone": phone or "",
-            "trade": trade or "",
-            "company": company,
             "osha_number": osha_number or "",
             "osha_data": osha_data,
             "osha_card_image": osha_card_image,
@@ -9527,11 +9970,14 @@ async def register_and_checkin(data: dict):
             update_fields["osha_number"] = osha_number
         if name:
             update_fields["name"] = name
-        if company:
-            update_fields["company"] = company
-        if trade:
-            update_fields["trade"] = trade
-        
+        # THE BLEED, REMOVED: this used to stamp `company` and `trade` from
+        # the CURRENT check-in onto the global worker document on every
+        # visit, so a framer's next job — a different project, a different
+        # sub — read back the previous job's answer. Both now live only in
+        # worker_project_trades, keyed per project. Everything else here
+        # (name, phone, osha_number, images, certifications, orientations)
+        # is genuinely worker-level and still written.
+
         # Append safety orientation for this project if not already done
         if safety_orientation:
             existing_orientations = worker.get("safety_orientations", [])
@@ -9546,7 +9992,13 @@ async def register_and_checkin(data: dict):
                 update_fields["safety_orientations"] = existing_orientations
         
         await db.workers.update_one({"_id": worker["_id"]}, {"$set": update_fields})
-    
+        # The check-in row built below reads company/trade/name off this
+        # in-memory dict, which still holds the values loaded from the DB
+        # BEFORE the update above. Without this refresh a returning worker who
+        # changed employer freezes the STALE company onto today's check-in.
+        # Same idiom as the certifications refresh further down.
+        worker.update(update_fields)
+
     # Save orientation as a proper logbook document so CP can view/sign it
     if safety_orientation:
         worker_id_str = str(worker["_id"])
@@ -9722,10 +10174,15 @@ async def register_and_checkin(data: dict):
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
         "worker_phone": worker.get("phone"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
-        "company": worker.get("company"),
-        "trade": worker.get("trade"),
+        # Trade/company come from the PROJECT-SCOPED resolution above — the
+        # stored pairing when one exists, otherwise this visit's validated
+        # pick. They are deliberately NOT read off the worker document any
+        # more: that field no longer exists for new workers, and for old ones
+        # it holds whatever the last unrelated project happened to write.
+        "worker_company": company,
+        "worker_trade": trade,
+        "company": company,
+        "trade": trade,
         "project_id": project_id,
         "project_name": project.get("name"),
         "admin_id": admin_id,
@@ -9760,9 +10217,26 @@ async def register_and_checkin(data: dict):
         # without implying the worker signed a legal attestation.
         "toolbox_talk_confirmed": toolbox_confirm,
         "toolbox_talk_confirmed_at": now if toolbox_confirm else None,
+        # Task 12 Phase 0: presence evidence (previously received then dropped).
+        # Detective, not preventive — makes a stale-URL / off-site check-in
+        # queryable (one IP/UA/device behind many check-ins, or an IP never on
+        # site) instead of invisible.
+        "source_ip": client_ip,
+        "user_agent": user_agent,
+        "device_fingerprint": device_fp,
     }
 
     result = await db.checkins.insert_one(checkin_record)
+
+    # FIRST check-in on this project with a resolved trade — store the pairing
+    # so every later visit HERE reads it instead of re-prompting. Skipped when
+    # one already exists (nothing changed) and when the trade is still pending
+    # (UNASSIGNED must never become a stored answer — the CP has to assign it,
+    # and _store_worker_project_trade refuses the sentinel besides).
+    if not existing_pair and not needs_trade_assignment:
+        await _store_worker_project_trade(
+            str(worker["_id"]), project_id, trade, company,
+        )
 
     # FIX 1: tell the CP + admins this check-in needs a trade assigned. The
     # check-in is ALREADY written above; this dispatch is failure-isolated so
@@ -9936,17 +10410,59 @@ async def lookup_worker(data: dict):
     
     if not worker:
         return {"found": False}
-    
+
+    # Trade/company are PER PROJECT and are answered ONLY from the pairing
+    # for the project in this request. This used to return
+    # worker.get("trade") / worker.get("company") — a global value the
+    # worker may have picked on a completely different job — which the
+    # check-in page then pre-filled and submitted here.
+    #
+    # No pairing for THIS project (including a request that names no
+    # project) means NO trade and NO company come back, and the worker is
+    # asked to pick. There is deliberately no fallback to the worker
+    # document: a trade from another job is not a better guess than none,
+    # it is a wrong answer that looks confirmed.
+    #
+    # NOTE (scoped): only the trade source changes here. name / phone and
+    # this endpoint's (absent) auth are untouched — the PII question on
+    # them is a separate, still-pending operator decision.
+    project_id = data.get("project_id")
+    pair = await _get_worker_project_trade(worker["_id"], project_id)
+
+    # Site safety orientation is PER PROJECT under §3301.11, so the answer
+    # this endpoint gives must be per project too. The full
+    # safety_orientations list used to be shipped to the gate page, which
+    # then did the project match itself. Compute it here instead and return
+    # ONE project-scoped boolean:
+    #
+    #   - project-scoped, never "has any orientation". A worker oriented at
+    #     8 Walworth is NOT oriented at 588 Thomas S Boyland; a global
+    #     boolean would skip his site orientation there and write a false
+    #     compliance record.
+    #   - no project_id in the request means no project to be oriented on,
+    #     so the answer is False and the gate runs orientation. Failing
+    #     closed here is the safe direction: the cost is a repeated
+    #     orientation, not a missing one.
+    #
+    # osha_number stays the REAL value, deliberately — it is not a display
+    # field. checkin.html forwards it back into the register-and-checkin
+    # payload for returning workers (checkin.html:1142).
+    _orientations = worker.get("safety_orientations") or []
+    oriented_on_this_project = bool(project_id) and any(
+        isinstance(o, dict) and str(o.get("project_id")) == str(project_id)
+        for o in _orientations
+    )
+
     return {
         "found": True,
         "worker_id": str(worker["_id"]),
         "name": worker.get("name"),
-        "trade": worker.get("trade"),
-        "company": worker.get("company"),
+        "trade": pair["trade"] if pair else None,
+        "company": pair["company"] if pair else None,
         "osha_number": worker.get("osha_number"),
         "has_osha_card": bool(worker.get("osha_card_image")),
-        "safety_orientations": worker.get("safety_orientations", []),
-    }   
+        "oriented_on_this_project": oriented_on_this_project,
+    }
    
 @api_router.post("/checkin/submit")
 async def submit_checkin(checkin_data: PublicCheckInSubmit):
@@ -9976,8 +10492,9 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
         # per-project subcontractor roster. Workers can only submit a
         # pair that the admin pre-configured. Matching is case/whitespace
         # tolerant so the DB values get canonicalized to the admin's
-        # exact casing for consistent reporting.
-        raw_assignments = project.get("trade_assignments") or []
+        # exact casing for consistent reporting. Soft-deleted rows are
+        # excluded — a removed sub is never a valid new selection.
+        raw_assignments = _active_assignments(project)
         assignments = []
         for row in raw_assignments:
             if not isinstance(row, dict):
@@ -9987,52 +10504,76 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             if t and c:
                 assignments.append({"trade": t, "company": c})
 
-        if not assignments:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "This project has no subcontractors configured yet. "
-                    "Ask the project admin to set up the check-in trade list."
-                ),
-            )
+        # Resolve the EXISTING worker before the roster check — same
+        # read-only query the create-or-update block below runs, hoisted
+        # because the per-project pairing is keyed on their worker_id and
+        # decides whether the roster check runs at all.
+        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
+        formatted_phone = format_phone(raw_digits)
+        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
 
-        submitted_trade = str(checkin_data.trade or "").strip()
-        submitted_company = str(checkin_data.company or "").strip()
-        match = next(
-            (
-                a for a in assignments
-                if a["trade"].lower() == submitted_trade.lower()
-                and a["company"].lower() == submitted_company.lower()
-            ),
-            None,
+        # PER-PROJECT PAIRING: this worker already answered trade + company
+        # on THIS project, so the answer stands — no re-prompt, no flag. On
+        # any OTHER project this finds nothing and he picks again.
+        existing_pair = await _get_worker_project_trade(
+            worker.get("_id") if worker else None, checkin_data.project_id,
         )
-        if not match:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Please pick your trade and company from the dropdown. "
-                    "Custom entries are not allowed."
+
+        # A project with no configured trades used to hard-400 here, which
+        # blocked a real worker standing at the gate over a pure config gap.
+        # Admit them instead, mark the trade pending, and flag the check-in
+        # for the CP — the same fail-open register_and_checkin already does.
+        # The strict roster match below is UNCHANGED for projects that DO
+        # have trades.
+        needs_trade_assignment = False
+        # Why the trade is pending — selects the CP-notification copy below.
+        # "" means the trade resolved normally and no notification fires.
+        trade_flag_reason = ""
+        if existing_pair:
+            # Already answered for THIS project — the stored pairing wins over
+            # whatever the client sent, and nothing is flagged for the CP.
+            checkin_data.trade = existing_pair["trade"]
+            checkin_data.company = existing_pair["company"]
+        elif not assignments:
+            needs_trade_assignment = True
+            trade_flag_reason = "no_roster"
+            checkin_data.trade = str(checkin_data.trade or "").strip() or "UNASSIGNED"
+            checkin_data.company = str(checkin_data.company or "").strip() or "UNASSIGNED"
+        else:
+            submitted_trade = str(checkin_data.trade or "").strip()
+            submitted_company = str(checkin_data.company or "").strip()
+            match = next(
+                (
+                    a for a in assignments
+                    if a["trade"].lower() == submitted_trade.lower()
+                    and a["company"].lower() == submitted_company.lower()
                 ),
+                None,
             )
-        # Canonicalize to the admin's exact casing.
-        checkin_data.trade = match["trade"]
-        checkin_data.company = match["company"]
+            if not match:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Please pick your trade and company from the dropdown. "
+                        "Custom entries are not allowed."
+                    ),
+                )
+            # Canonicalize to the admin's exact casing.
+            checkin_data.trade = match["trade"]
+            checkin_data.company = match["company"]
 
         admin_id = project.get("admin_id")
         company_id = project.get("company_id")
         now = datetime.now(timezone.utc)
 
-        # Find or create worker
-        raw_digits = ''.join(c for c in checkin_data.phone if c.isdigit())
-        formatted_phone = format_phone(raw_digits)
-        worker = await db.workers.find_one({"phone": {"$in": [checkin_data.phone, raw_digits, formatted_phone]}, "is_deleted": {"$ne": True}})
-        
+        # `worker` was already resolved above (the pairing lookup needed it).
         if not worker:
+            # NOTE: no `trade` / `company` here. Those are per-project and
+            # live in worker_project_trades; a worker-level copy is what bled
+            # across jobs.
             new_worker = {
                 "name": checkin_data.name,
                 "phone": checkin_data.phone,
-                "company": checkin_data.company,
-                "trade": checkin_data.trade,
                 "admin_id": admin_id,
                 "company_id": company_id,
                 "created_at": now,
@@ -10048,10 +10589,10 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             update_fields = {}
             if worker.get("name") != checkin_data.name:
                 update_fields["name"] = checkin_data.name
-            if worker.get("company") != checkin_data.company:
-                update_fields["company"] = checkin_data.company
-            if worker.get("trade") != checkin_data.trade:
-                update_fields["trade"] = checkin_data.trade
+            # THE BLEED, REMOVED: `company` and `trade` used to be written
+            # here from the CURRENT check-in, so the next project read back
+            # this job's answer. Both are per-project now; only genuinely
+            # worker-level fields are still written.
             if not worker.get("admin_id"):
                 update_fields["admin_id"] = admin_id
             if not worker.get("company_id"):
@@ -10063,7 +10604,12 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
                     {"_id": worker["_id"]},
                     {"$set": update_fields}
                 )
-        
+                # The check-in row built below reads company/trade/name off this
+                # in-memory dict, which still holds the pre-update values.
+                # Without this refresh a returning worker who changed employer
+                # freezes the STALE company onto today's check-in.
+                worker.update(update_fields)
+
         # Check if already checked in today (EST-aligned)
         today_start, today_end = get_today_range_est()
         existing_checkin = await db.checkins.find_one({
@@ -10104,10 +10650,13 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "worker_id": str(worker["_id"]),
             "worker_name": worker.get("name"),
             "worker_phone": worker.get("phone"),
-            "worker_company": worker.get("company"),
-            "worker_trade": worker.get("trade"),
-            "company": worker.get("company"),
-            "trade": worker.get("trade"),
+            # Trade/company come from the PROJECT-SCOPED resolution above —
+            # the stored pairing when one exists, otherwise this visit's
+            # validated pick. Not read off the worker document any more.
+            "worker_company": checkin_data.company,
+            "worker_trade": checkin_data.trade,
+            "company": checkin_data.company,
+            "trade": checkin_data.trade,
             "project_id": checkin_data.project_id,
             "project_name": project.get("name"),
             "admin_id": admin_id,
@@ -10121,19 +10670,70 @@ async def submit_checkin(checkin_data: PublicCheckInSubmit):
             "updated_at": now,
             "is_deleted": False,
             "cert_warnings": cert_warnings,
+            # True when the project had no trades configured, so the worker
+            # checked in without one. The CP assigns the real trade later via
+            # POST /checkins/{id}/assign-trade.
+            "needs_trade_assignment": needs_trade_assignment,
         }
-        
+
         result = await db.checkins.insert_one(checkin_record)
-        
+
+        # FIRST check-in on this project with a resolved trade — store the
+        # pairing so every later visit HERE reads it instead of re-prompting.
+        # Skipped when one already exists and when the trade is still pending
+        # (UNASSIGNED must never become a stored answer).
+        if not existing_pair and not needs_trade_assignment:
+            await _store_worker_project_trade(
+                str(worker["_id"]), checkin_data.project_id,
+                checkin_data.trade, checkin_data.company,
+            )
+
+        # Tell the CP + admins this check-in needs a trade assigned. The
+        # check-in is ALREADY written above; this dispatch is failure-isolated
+        # so a notification problem can never block a worker at the gate.
+        # Mirrors the register_and_checkin dispatch.
+        if needs_trade_assignment:
+            try:
+                from zoneinfo import ZoneInfo
+                _nt_today = today_start.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+            except Exception:
+                _nt_today = now.strftime("%Y-%m-%d")
+            _nt_message = (
+                f"{worker.get('name') or 'A worker'} checked in at "
+                f"{project.get('name') or 'the site'} but this project has no "
+                f"trades configured, so no trade could be selected. Add the "
+                f"project's trades and assign this worker."
+            )
+            try:
+                await _notifications_inbox.dispatch_notification(
+                    db,
+                    project=project,
+                    kind="checkin_needs_trade",
+                    severity="warning",
+                    title="Check-in needs a trade assigned",
+                    message=_nt_message,
+                    source_kind="checkin",
+                    source_id=f"needs-trade:{str(worker['_id'])}:{_nt_today}",
+                    metadata={
+                        "checkin_id": str(result.inserted_id),
+                        "worker_id": str(worker["_id"]),
+                        "reason": trade_flag_reason,
+                    },
+                    deeplink_anchor="workforce",
+                )
+            except Exception as e:
+                logger.warning(f"[needs_trade] dispatch_notification failed: {e!r}")
+
         return {
             "success": True,
             "message": "Check-in successful",
             "checkin_id": str(result.inserted_id),
             "worker_name": worker.get("name"),
             "project_name": project.get("name"),
-            "check_in_time": now.isoformat()
+            "check_in_time": now.isoformat(),
+            "needs_trade_assignment": needs_trade_assignment,
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -10449,11 +11049,18 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         )
     cert_warnings = cert_result.get("warnings", [])
 
+    # Trade/company are PER PROJECT. This used to read worker.get("trade") /
+    # worker.get("company") off the global worker document — whatever some
+    # unrelated project last wrote there. Read the pairing for THIS project
+    # instead; when there is none, the row carries no trade rather than
+    # another job's trade.
+    _pair = await _get_worker_project_trade(worker["_id"], str(project["_id"]))
+
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
+        "worker_company": _pair["company"] if _pair else None,
+        "worker_trade": _pair["trade"] if _pair else None,
         "project_id": str(project["_id"]),
         "project_name": project.get("name"),
         "company_id": project.get("company_id"),
@@ -10466,7 +11073,7 @@ async def create_checkin(checkin_data: CheckInCreate, current_user = Depends(get
         "is_deleted": False,
         "cert_warnings": cert_warnings,
     }
-    
+
     result = await db.checkins.insert_one(checkin_record)
     checkin_record["id"] = str(result.inserted_id)
     checkin_record.pop("_id", None)
@@ -10542,11 +11149,17 @@ async def check_in_worker(checkin_data: CheckInCreate, request: Request = None):
 
     # Create check-in record
     now = datetime.now(timezone.utc)
+    # Trade/company are PER PROJECT. This used to read worker.get("trade") /
+    # worker.get("company") off the global worker document — whatever some
+    # unrelated project last wrote there. Read the pairing for THIS project
+    # instead; when there is none, the row carries no trade rather than
+    # another job's trade.
+    _pair = await _get_worker_project_trade(worker["_id"], str(project["_id"]))
     checkin_record = {
         "worker_id": str(worker["_id"]),
         "worker_name": worker.get("name"),
-        "worker_company": worker.get("company"),
-        "worker_trade": worker.get("trade"),
+        "worker_company": _pair["company"] if _pair else None,
+        "worker_trade": _pair["trade"] if _pair else None,
         "project_id": str(project["_id"]),
         "project_name": project.get("name"),
         "company_id": project.get("company_id"),
@@ -10716,7 +11329,10 @@ async def get_flagged_project_checkins(
     return {
         "project_id": project_id,
         "project_name": project.get("name"),
-        "trade_assignments": project.get("trade_assignments") or [],
+        # The review screen offers these as the choices for assign-trade, so
+        # soft-deleted rows are excluded. Surviving rows are passed through
+        # untouched — this filters the list, it does not reshape the rows.
+        "trade_assignments": _active_assignments(project),
         "items": results,
         "count": len(results),
     }
@@ -10738,10 +11354,14 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     The submitted {trade, company} must be one of the project's configured
     trade_assignments — the same strict-roster rule the check-in itself
     enforces, so this cannot introduce a pair the roster doesn't know.
+    Soft-deleted (inactive) rows count here, unlike everywhere else: a CP
+    may correct a check-in from any day, so a sub removed since that
+    check-in must still be selectable for it.
 
-    The worker document is updated too (so their next check-in prefills
-    correctly), but only when it has no trade yet — an assignment on one
-    project must not silently overwrite a trade set elsewhere.
+    The answer is also stored as the worker's pairing for THIS project in
+    worker_project_trades, so their next check-in here reads it instead of
+    being flagged again. Nothing is written to the global worker document:
+    an assignment on one project must not answer for any other.
     """
     trade = str((data or {}).get("trade") or "").strip()
     company = str((data or {}).get("company") or "").strip()
@@ -10774,8 +11394,20 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
     # Strict roster: the pair must exist on the project now that the admin has
     # configured trades. Prevents the assign action from becoming a back door
     # around the same validation register_and_checkin applies.
+    #
+    # INACTIVE (soft-deleted) rows are ACCEPTED here — and ONLY here. A CP may
+    # correct a check-in from ANY day; same-day is not enforced. So a sub that
+    # has been removed from the project since that check-in must still be
+    # selectable, otherwise correcting an old row 400s and the flag can never
+    # be cleared. Every other consumer (site-info, register_and_checkin,
+    # /checkin/submit, the flagged passthrough) still filters through
+    # _active_assignments, so a removed sub is never a valid NEW selection.
+    #
+    # The pair is scoped to this ONE project when it is stored below, so an
+    # inactive pair can describe this project's history without reaching any
+    # other project the worker has been on.
     allowed_pairs = set()
-    for row in (project.get("trade_assignments") or []):
+    for row in (project or {}).get("trade_assignments") or []:
         if not isinstance(row, dict):
             continue
         rt = str(row.get("trade") or "").strip()
@@ -10817,15 +11449,22 @@ async def assign_checkin_trade(checkin_id: str, data: dict, current_user = Depen
         }},
     )
 
-    # Keep the worker doc in step, but never clobber an existing trade.
+    # Record the CP's answer where trade actually lives: the PAIRING for
+    # this worker on THIS project. The next check-in here reads it and stops
+    # asking; a check-in on any other project is unaffected, which is the
+    # whole point of the pair key.
+    #
+    # This REPLACES the previous fill-if-empty write of `trade` onto the
+    # global worker document. That write was correct under the earlier
+    # ruling and is wrong under this one: even guarded by "only when empty",
+    # a worker-level trade is a single slot for a man who can hold different
+    # trades on different jobs, and whichever project filled it first
+    # answered for all the others.
     worker_id = checkin.get("worker_id")
     if worker_id:
-        worker = await db.workers.find_one({"_id": to_query_id(worker_id)})
-        if worker and not (worker.get("trade") or "").strip():
-            await db.workers.update_one(
-                {"_id": to_query_id(worker_id)},
-                {"$set": {"trade": trade, "updated_at": now}},
-            )
+        await _store_worker_project_trade(
+            worker_id, project_id_str, trade, company,
+        )
 
     await audit_log(
         "checkin_assign_trade", user_id, "checkin", checkin_id,
@@ -11185,7 +11824,14 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     log_dict["created_by"] = current_user.get("id")
     log_dict["created_by_name"] = current_user.get("full_name") or current_user.get("name") or current_user.get("device_name")
     log_dict["is_deleted"] = False
-	
+
+    # The project id arrives in the BODY, so it is caller-controlled and has to
+    # be authorized before anything is read or written under it. Runs FIRST so
+    # the duplicate-check 409 below cannot be used to probe another tenant's
+    # logs. 404 when the project does not exist, which also closes the old
+    # silent path that inserted a log with no company_id at all.
+    project = await _assert_project_access(log_data.project_id, current_user)
+
     # Prevent duplicate log for same project + date
     existing = await db.daily_logs.find_one({
         "project_id": log_data.project_id,
@@ -11194,12 +11840,9 @@ async def create_daily_log(log_data: DailyLogCreate, current_user = Depends(get_
     })
     if existing:
         raise HTTPException(status_code=409, detail="A daily log already exists for this project and date.")
-    
-    # Get project to inject company_id
-    project = await db.projects.find_one({"_id": to_query_id(log_data.project_id), "is_deleted": {"$ne": True}})
-    if project:
-        log_dict["company_id"] = project.get("company_id")
-    
+
+    log_dict["company_id"] = project.get("company_id")
+
     result = await db.daily_logs.insert_one(log_dict)
     log_dict["id"] = str(result.inserted_id)
 
@@ -11237,12 +11880,21 @@ async def update_daily_log(log_id: str, update_data: dict, current_user = Depend
     
     if existing.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is locked and cannot be edited.")
-    
+
+    # Authorize against the STORED project id, never the body: the body is the
+    # thing being authorized, so trusting it would let a caller name a project
+    # they do have access to while writing to a log belonging to another.
+    await _assert_project_access(str(existing.get("project_id") or ""), current_user)
+
     update_data.pop("id", None)
     update_data.pop("_id", None)
     update_data.pop("created_at", None)
     update_data.pop("created_by", None)
-    
+    # $set takes this dict wholesale, so an unpopped project_id/company_id would
+    # RE-PARENT the log into another tenant. Ownership is set at creation only.
+    update_data.pop("project_id", None)
+    update_data.pop("company_id", None)
+
     now = datetime.now(timezone.utc)
     update_data["updated_at"] = now
     update_data["updated_by"] = current_user.get("id")
@@ -12002,11 +12654,150 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             'style="margin:12px 0;"><tr><td style="background-color:#f1f5f9;'
             f'padding:16px;border-radius:8px;color:#334155;" bgcolor="#f1f5f9">{content}</td></tr></table>'
         )
-    
+
+    def sub_title(text):
+        return f'<h3 style="color:#0A1929;margin:16px 0 8px;font-size:14px;">{text}</h3>'
+
+    # ── ABSENT IS STATED, NEVER IMPLIED ──────────────────────────────────────
+    # This renderer is read by a DOB inspector. A key the CP never filled must
+    # never render as a VALUE — no invented "None", no silent "No". It renders
+    # "— Not recorded", the same words generate_combined_report already prints
+    # for the same fact (server.py:17486, :17553, :17612, :17696, :17862,
+    # :17916, :17932). Two compliance surfaces must not disagree about one
+    # record, and a blank is ambiguous: an inspector cannot tell whether the
+    # field was never asked or asked and left unanswered.
+    #
+    # TWO KINDS OF ABSENCE, and they are NOT the same:
+    #   (a) a FIELD missing from a section that IS being rendered
+    #       -> "— Not recorded"
+    #   (b) a ROW missing from a repeating list (load_entries,
+    #       adjacent_buildings, slump_tests, osha entries)
+    #       -> DROPPED, exactly as the combined report drops it. A row that
+    #          does not exist is not an unrecorded field, and printing one
+    #          would invent a record of work nobody logged.
+    # A whole SECTION whose payload is entirely absent stays absent too — a
+    # page of "— Not recorded" rows for a log that was never filled is the
+    # same fabrication in a different direction.
+    #
+    # False and 0 ARE captured values and render as captured.
+    NOT_RECORDED = "&mdash; Not recorded"
+
+    def has(d, key):
+        if not isinstance(d, dict) or key not in d:
+            return False
+        v = d[key]
+        if isinstance(v, bool):
+            return True
+        if v is None:
+            return False
+        if isinstance(v, str):
+            return v.strip() != ""
+        if isinstance(v, (list, dict, tuple, set)):
+            return len(v) > 0
+        return True
+
+    _raw = lambda v: v
+    _yn = lambda v: "Yes" if v else "No"
+
+    def field_lines(d, specs):
+        """[(key, label, fmt)] -> one info_box line per spec, ALWAYS.
+
+        Case (a): a key the CP never filled still gets its line, reading
+        "— Not recorded". The label is on the form either way, so a silent
+        omission would hide which questions went unanswered.
+
+        The one exception is the whole-section case: if NOT ONE of the specs
+        is on the document there is no section to annotate, and the box is not
+        rendered at all rather than fabricating a full page of absences.
+        """
+        if not any(has(d, key) for key, *_rest in specs):
+            return []
+        out = []
+        for key, label, fmt in specs:
+            val = fmt(d.get(key)) if has(d, key) else NOT_RECORDED
+            out.append(f'<strong style="color:#0A1929;">{label}:</strong> {val}')
+        return out
+
+    def maybe_info_box(lines):
+        return info_box("<br />".join(lines)) if lines else ""
+
+    def rows_table(headers, rows_html):
+        head = "".join(f'<th {TH}>{h}</th>' for h in headers)
+        return (
+            '<table cellpadding="0" cellspacing="0" border="0" width="100%" '
+            'style="border-collapse:collapse;margin:12px 0;font-size:13px;">'
+            f'<tr>{head}</tr>{rows_html}</table>'
+        )
+
+    def cell(v):
+        """A cell inside a row that EXISTS — case (b) territory.
+
+        An empty cell stays empty. The ROW is the record here, and the
+        combined report prints a bare em-dash in the same place
+        (server.py:17562-17565); neither form asserts a value.
+        """
+        return f'<td {TD}>{"" if v is None else v}</td>'
+
+    def key_label(k):
+        """Fallback label for a map key the label list does not know.
+
+        A snake_case key becomes Title Case. Anything else is rendered VERBATIM
+        — the kiosk keys its orientation checklist by the item's full English
+        sentence (backend/checkin.html:674-687, 1574-1579), and title-casing a
+        sentence turns a compliance line into nonsense.
+        """
+        s = str(k)
+        return s.replace("_", " ").title() if ("_" in s or " " not in s) else s
+
+    def toggle_map_rows(m, items):
+        """Rows for a sparse toggle map — case (a) over a FIXED checklist.
+
+        The editors seed these maps as {} and write a key only once the CP taps
+        it, so `key present and False` is an explicit No while `key absent` is
+        untouched. An untouched item reads "— Not recorded", never a silent
+        "No" — the same convention generate_combined_report uses for these
+        exact checklists (server.py:17482-17487, :17549-17554, :17912-17917).
+
+        The full checklist is only asserted once the map is keyed the way the
+        in-app editor keys it. The kiosk keys its orientation checklist by the
+        item's full English SENTENCE (backend/checkin.html:674-687), so a map
+        carrying none of the known keys renders only what it carries — listing
+        18 snake_case items as unrecorded against a kiosk document would be a
+        finding about a form that was never used.
+        """
+        if not isinstance(m, dict) or not m:
+            return ""
+        labels = dict(items)
+        known_present = [k for k, _ in items if k in m]
+        ordered = [k for k, _ in items] if known_present else []
+        ordered += [k for k in m.keys() if k not in labels]
+        rows = ""
+        for k in ordered:
+            val = _yn(m.get(k)) if k in m else NOT_RECORDED
+            rows += (f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
+                     f'<td {TD}>{val}</td></tr>')
+        return rows
+
+    def toggle_block(d, key, items, title, col_label):
+        """A titled table for a sparse toggle map. An absent/empty map is a
+        whole absent SECTION and renders nothing at all."""
+        rows = toggle_map_rows(d.get(key), items)
+        if not rows:
+            return ""
+        return sub_title(title) + rows_table([col_label, "Confirmed"], rows)
+
     # Build type-specific content
     body_html = ""
     type_title = ""
-    
+
+    # Top-level attestation, shared by every branch below. Rendered only when
+    # it is actually on the document.
+    cp_name_line = (
+        bold_para("CP", _capitalize_first(logbook.get("cp_name") or ""))
+        if logbook.get("cp_name") else ""
+    )
+    cp_sig_block = render_signature_html(logbook.get("cp_signature"), "CP Signature")
+
     if log_type == "daily_jobsite":
         type_title = "Daily Jobsite Log (NYC DOB 3301-02)"
         weather_str = f'{data.get("weather", "N/A")} {data.get("weather_temp", "")}'
@@ -12019,7 +12810,12 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             act_rows += (
                 # PR G: crew/company/location are short-entry (capitalize first);
                 # work description is prose (sentence case). num_workers excluded.
-                f'<tr><td {TD}>{_capitalize_first(act.get("crew_name", ""))}</td>'
+                # crew_id, NOT crew_name. The CP types a crew IDENTIFIER
+                # (daily_jobsite.jsx EMPTY_ACTIVITY `crew_id`, and the auto-seed
+                # writes `C1`, `C2`, ...). Nothing in the repo has ever written
+                # crew_name, so this column rendered empty on every record while
+                # generate_combined_report read the same row correctly.
+                f'<tr><td {TD}>{_capitalize_first(act.get("crew_id", ""))}</td>'
                 f'<td {TD}>{_capitalize_first(_display_sub_company(act.get("company")))}</td>'
                 f'<td {TD}>{act.get("num_workers", 0)}</td>'
                 f'<td {TD}>{_sentence_case(act.get("work_description", "N/A"))}</td>'
@@ -12157,10 +12953,492 @@ async def generate_single_logbook_html(logbook: dict) -> str:
             + ps_sig
         )
     
+    # ══════════════════════════════════════════════════════════════════════
+    #  THE OTHER EIGHT TYPES
+    #
+    #  Until this block existed, every one of these fell to the `else` below
+    #  and rendered a single "Status: submitted" line — a BLANK compliance
+    #  record for hot work, crane, excavation, concrete, scaffold, the SSC
+    #  daily log, the OSHA/SST log and subcontractor orientation.
+    #
+    #  Key names and section ordering follow generate_combined_report, which
+    #  already renders all eight correctly; the payload keys themselves come
+    #  from the editors that write them (cited per branch). Absence follows it
+    #  too: a field missing from a rendered section reads "— Not recorded",
+    #  and a missing ROW in a repeating list is dropped. One record must not
+    #  read differently on two compliance surfaces.
+    # ══════════════════════════════════════════════════════════════════════
+
+    elif log_type == "hot_work":
+        # frontend/app/logbooks/hot_work.jsx:189-199 (save) / :103-113 (draft);
+        # PRECAUTION_ITEMS :28-36.
+        type_title = "Hot Work Permit"
+        HW_PRECAUTIONS = [
+            ("area_cleared", "Area Cleared of Combustibles (35 ft)"),
+            ("fire_extinguisher_present", "Fire Extinguisher Present"),
+            ("sprinklers_operational", "Sprinklers Operational"),
+            ("combustibles_covered", "Combustibles Covered / Protected"),
+            ("fire_watch_assigned", "Fire Watch Assigned"),
+            ("ventilation_adequate", "Ventilation Adequate"),
+            ("permit_posted", "Permit Posted at Location"),
+        ]
+        # The editor captures NO real fire-watch end time — it DERIVES
+        # fire_watch_end_time as work end + 30 min (hot_work.jsx:42-54).
+        # FDNY can require 60, so it is labelled as the computed default it
+        # is and never asserted as a recorded watch-until. It rides in the
+        # spec list so an absent one reads "— Not recorded" like any other
+        # field rather than vanishing.
+        _fw_default = (
+            lambda v: f'{v} <span style="color:#94a3b8;">(default: work end + 30 min)</span>'
+        )
+        hw_lines = field_lines(data, [
+            ("work_type", "Work Type", _raw),
+            ("location", "Location", _capitalize_first),
+            ("worker_name", "Worker", _capitalize_first),
+            ("worker_cert_number", "Worker Cert #", _raw),
+            ("start_time", "Start Time", _raw),
+            ("end_time", "End Time", _raw),
+            ("fire_watch_name", "Fire Watch", _capitalize_first),
+            ("fire_watch_end_time", "Fire Watch Until", _fw_default),
+        ])
+        body_html = (
+            maybe_info_box(hw_lines)
+            + toggle_block(data, "precautions", HW_PRECAUTIONS,
+                           "Pre-Work Precautions", "Precaution")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "crane_operations":
+        # frontend/app/logbooks/crane_operations.jsx:174-181 (save);
+        # PRE_OP_CHECKLIST_ITEMS :24-40; EMPTY_LOAD_ENTRY :42-47.
+        type_title = "Crane Operations"
+        CRANE_PREOP = [
+            ("wire_ropes", "Wire Ropes Inspected"),
+            ("hooks_latches", "Hooks & Latches Secure"),
+            ("brakes", "Brakes Functional"),
+            ("outriggers", "Outriggers Deployed"),
+            ("load_chart", "Load Chart Available"),
+            ("boom_condition", "Boom Condition OK"),
+            ("anti_two_block", "Anti Two-Block Device"),
+            ("fire_extinguisher", "Fire Extinguisher Present"),
+            ("signals_reviewed", "Signals Reviewed"),
+            ("area_barricaded", "Area Barricaded"),
+            ("wind_speed_checked", "Wind Speed Checked"),
+            ("power_lines_clear", "Power Lines Clear"),
+            ("load_weight_known", "Load Weight Known"),
+            ("rigging_inspected", "Rigging Inspected"),
+            ("swing_radius_clear", "Swing Radius Clear"),
+        ]
+        # load_weight / radius are unit-less strings exactly as the operator
+        # typed them — the editor captures no unit, so none is printed.
+        load_rows = ""
+        for le in (data.get("load_entries") or []):
+            if not isinstance(le, dict):
+                continue
+            if not any(has(le, k) for k in ("time", "description", "load_weight", "radius")):
+                continue      # an untouched EMPTY_LOAD_ENTRY seed, not a lift
+            load_rows += (
+                "<tr>"
+                + cell(le.get("time"))
+                + cell(_capitalize_first(le.get("description", "")))
+                + cell(le.get("load_weight"))
+                + cell(le.get("radius"))
+                + "</tr>"
+            )
+        lift_html = (
+            sub_title("Lift Log")
+            + rows_table(["Time", "Description", "Load Weight", "Radius"], load_rows)
+        ) if load_rows else ""
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("crane_type", "Crane Type", _capitalize_first),
+                ("crane_id", "Crane ID", _raw),
+                ("operator_name", "Operator", _capitalize_first),
+                ("operator_license", "Operator License", _raw),
+            ]))
+            + toggle_block(data, "pre_operation_checklist", CRANE_PREOP,
+                           "Pre-Operation Checklist", "Item")
+            + lift_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "excavation_monitoring":
+        # frontend/app/logbooks/excavation_monitoring.jsx:184-194 (save);
+        # EMPTY_ADJACENT_BUILDING :27-31; `delta` is derived at save (:180-183).
+        type_title = "Excavation Monitoring"
+        exc_lines = field_lines(data, [
+            # excavation_depth is a raw number — the editor captures no unit.
+            ("excavation_depth", "Excavation Depth", _raw),
+            ("soil_type", "Soil Type", _raw),
+            ("protection_system", "Protection System", _raw),
+            ("groundwater_observed", "Groundwater Observed", _yn),
+            ("atmospheric_testing", "Atmospheric Testing", _yn),
+        ])
+        # The over-threshold flag is only meaningful ALONGSIDE a reading. With
+        # no reading the STATUS reads "— Not recorded" — a bare "Within
+        # threshold" over no measurement is a finding the CP never made
+        # (generate_combined_report does the same, server.py:17606-17612).
+        # With neither reading there is no vibration section to annotate and
+        # the whole block is dropped.
+        v_thr = str(data.get("vibration_threshold") or "").strip()
+        v_cur = str(data.get("vibration_current") or "").strip()
+        vib_html = ""
+        if v_thr or v_cur:
+            if v_thr and v_cur and has(data, "vibration_over_threshold"):
+                status = (
+                    '<span style="color:#b45309;font-weight:600;">&#9888; Over threshold</span>'
+                    if data.get("vibration_over_threshold") else "Within threshold"
+                )
+            else:
+                status = NOT_RECORDED
+            vib_lines = [
+                f'<strong style="color:#0A1929;">Threshold:</strong> {v_thr or NOT_RECORDED}',
+                f'<strong style="color:#0A1929;">Current:</strong> {v_cur or NOT_RECORDED}',
+                f'<strong style="color:#0A1929;">Status:</strong> {status}',
+            ]
+            vib_html = sub_title("Vibration") + info_box("<br />".join(vib_lines))
+
+        # Units and per-reading timestamps are NOT captured, so there is no
+        # unit in the headers and no time column — readings render as entered.
+        bld_rows = ""
+        for b in (data.get("adjacent_buildings") or []):
+            if not isinstance(b, dict):
+                continue
+            if not any(has(b, k) for k in ("address", "baseline_reading", "current_reading", "delta")):
+                continue
+            bld_rows += (
+                "<tr>"
+                + cell(_capitalize_first(b.get("address", "")))
+                + cell(b.get("baseline_reading"))
+                + cell(b.get("current_reading"))
+                + cell(b.get("delta"))
+                + "</tr>"
+            )
+        bld_html = (
+            sub_title("Adjacent-Structure Monitoring Points")
+            + rows_table(["Location", "Baseline", "Current", "Movement (&Delta;)"], bld_rows)
+        ) if bld_rows else ""
+
+        body_html = (
+            maybe_info_box(exc_lines) + vib_html + bld_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "concrete_operations":
+        # frontend/app/logbooks/concrete_operations.jsx:171-179 (save);
+        # FORMWORK_ITEMS :26-31; EMPTY_SLUMP_TEST :33-37.
+        type_title = "Concrete Operations"
+        FORMWORK_ITEMS = [
+            ("shores_plumb", "Shores Plumb"),
+            ("bracing_adequate", "Bracing Adequate"),
+            ("formwork_clean", "Formwork Clean"),
+            ("no_gaps", "No Gaps"),
+        ]
+        slump_rows = ""
+        for st in (data.get("slump_tests") or []):
+            if not isinstance(st, dict):
+                continue
+            t = str(st.get("time", "")).strip()
+            v = str(st.get("value", "")).strip()
+            p = st.get("pass")
+            if not t and not v and p is None:
+                continue      # an untouched EMPTY_SLUMP_TEST seed
+            # `pass` is TRI-STATE (EMPTY_SLUMP_TEST seeds it null). Null is
+            # rendered as nothing — never as a Fail the CP did not record.
+            if p is True:
+                result = '<span style="color:#15803d;font-weight:600;">Pass</span>'
+            elif p is False:
+                result = '<span style="color:#b91c1c;font-weight:600;">Fail</span>'
+            else:
+                result = ""
+            slump_rows += "<tr>" + cell(t) + cell(v) + cell(result) + "</tr>"
+        slump_html = (
+            sub_title("Slump Tests")
+            + rows_table(["Time", "Slump", "Result"], slump_rows)
+        ) if slump_rows else ""
+
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("pour_location", "Pour Location", _capitalize_first),
+                ("concrete_supplier", "Supplier", _capitalize_first),
+                ("mix_design", "Mix Design", _raw),
+                # volume_ordered / temperature are unit-less as entered.
+                ("volume_ordered", "Volume Ordered", _raw),
+                ("weather_conditions", "Weather", _raw),
+                ("temperature", "Temperature", _raw),
+            ]))
+            + slump_html
+            + toggle_block(data, "formwork_checklist", FORMWORK_ITEMS,
+                           "Formwork Inspection", "Item")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "scaffold_maintenance":
+        # frontend/app/logbooks/scaffold_maintenance.jsx:194
+        #   const data = { general_info: generalInfo, answers };
+        # GENERAL_INFO_FIELDS :27-36 + shed_type (:38, :89) and drawings_on_site
+        # (:90); MAINTENANCE_QUESTIONS :41-61; ANSWER_OPTIONS :63 = YES/NO/N/A.
+        type_title = "Scaffold Maintenance Inspection"
+        gi = data.get("general_info") or {}
+        answers = data.get("answers") or {}
+        SCAFFOLD_QUESTIONS = [
+            ("signs_on_parapets", "Are the signs on the parapets?"),
+            ("base_plates_mudsills", "Are the base plates and mudsills secured?"),
+            ("scaffold_pins_bolts", "Are the scaffold pins and bolts installed?"),
+            ("legs_poles_plumb", "Are the legs and poles plumb, braced and not displaced?"),
+            ("tie_ins_spaced", "Are tie-ins correctly spaced, properly secured and the correct amount?"),
+            ("cross_braces", "Are cross braces fully attached, not bent, and not missing?"),
+            ("pipe_clamps_tight", "Are pipe clamps tight?"),
+            ("window_jacks_tight", "Are window jacks tight?"),
+            ("planks_secured", "Are all the planks secured?"),
+            ("decking_planks_condition", "Are decking and planks in good condition?"),
+            ("deck_fully_planked", "Is deck fully planked?"),
+            ("gaps_open_spaces", "Are there gaps or open spaces on decking?"),
+            ("guardrails_toe_boards", "Are the guardrails and toe boards secured at all places where required?"),
+            ("netting_extension", "Is the netting extension of full length and height?"),
+            ("netting_secured", "Is the netting secured?"),
+            ("parapet_height", "Is the parapet the proper height and secured?"),
+            ("lights_working", "Are the lights working?"),
+            ("deck_clean", "Is the deck clean and free of debris?"),
+            ("drawings_on_site", "Drawings on site for inspection?"),
+        ]
+        # Answers are YES / NO / N/A strings, not booleans — an N/A the CP
+        # CHOSE is a real answer and is rendered as chosen. An UNANSWERED
+        # question reads "— Not recorded", never a silent "NO", matching
+        # generate_combined_report (server.py:17694-17697). If the form was
+        # never answered at all there is no checklist to annotate and the
+        # table is dropped.
+        q_labels = dict(SCAFFOLD_QUESTIONS)
+        q_answered = [k for k, _ in SCAFFOLD_QUESTIONS if has(answers, k)]
+        q_order = [k for k, _ in SCAFFOLD_QUESTIONS] if q_answered else []
+        q_order += [k for k in answers.keys() if k not in q_labels and has(answers, k)]
+        q_rows = ""
+        for k in q_order:
+            q_rows += (f'<tr><td {TD}>{q_labels.get(k) or key_label(k)}</td>'
+                       f'<td {TD}>{answers.get(k) if has(answers, k) else NOT_RECORDED}</td></tr>')
+        q_html = (
+            sub_title("Inspection Checklist")
+            + rows_table(["Question", "Answer"], q_rows)
+        ) if q_rows else ""
+
+        # general_info.drawings_on_site is a dead duplicate of the answers
+        # question of the same key — only the answer is rendered.
+        body_html = (
+            maybe_info_box(field_lines(gi, [
+                ("scaffold_erector", "Scaffold Erector", _capitalize_first),
+                ("renters_name", "Renter", _capitalize_first),
+                ("permit_number", "Permit #", _raw),
+                ("phone", "Phone #", _raw),
+                ("installation_date", "Installation Date", _raw),
+                ("expiration_date", "Expiration", _raw),
+                ("scaffold_height", "Scaffold Height", _raw),
+                ("num_platforms", "Platforms Decked", _raw),
+                ("shed_type", "Shed Type", _raw),
+            ]))
+            + q_html
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "ssc_daily_safety_log":
+        # frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save).
+        type_title = "SSC Daily Safety Log"
+        SSC_FLAGS = [
+            ("incidents_reported", "Incidents Reported"),
+            ("safety_meetings_held", "Safety Meetings Held"),
+            ("fire_protection_in_place", "Fire Protection in Place"),
+            ("housekeeping_satisfactory", "Housekeeping Satisfactory"),
+            ("ppe_compliance", "PPE Compliance"),
+        ]
+        # The five are a fixed list: once ANY of them is on the document the
+        # rest read "— Not recorded" rather than dropping out of the table.
+        # (generate_combined_report prints "No" for an absent flag here,
+        # server.py:17856-17857 — this renderer will not assert a negative
+        # finding from a key that is not on the record.)
+        flag_rows = ""
+        if any(has(data, key) for key, _ in SSC_FLAGS):
+            for key, label in SSC_FLAGS:
+                val = _yn(data.get(key)) if has(data, key) else NOT_RECORDED
+                flag_rows += f'<tr><td {TD}>{label}</td><td {TD}>{val}</td></tr>'
+        # These five are ToggleRows seeded false, so a rendered "No" may be an
+        # untouched default rather than a deliberate negative finding. Say so —
+        # a bare "No" must not read as an affirmative safety-violation
+        # attestation on a DOB record.
+        flags_html = (
+            sub_title("Compliance")
+            + rows_table(["Item", "Status"], flag_rows)
+            + '<p style="color:#94a3b8;font-size:11px;font-style:italic;margin:2px 0 0;">'
+              'Compliance items default to "No" if not explicitly set by the reviewer.</p>'
+        ) if flag_rows else ""
+
+        # An unwritten narrative reads "— Not recorded", never an asserted
+        # "none" that could pass for a negative finding the CP never made
+        # (generate_combined_report, server.py:17859-17862). All three go
+        # together: once the narrative section exists, every prompt on it is
+        # accounted for.
+        NARRATIVE_FIELDS = (
+            ("site_conditions", "Site Conditions"),
+            ("safety_violations_observed", "Safety Violations Observed"),
+            ("corrective_actions_taken", "Corrective Actions Taken"),
+        )
+        # Incident detail is only meaningful when an incident was reported —
+        # but if one WAS, a missing detail is an unanswered question, not
+        # silence.
+        show_incident = bool(data.get("incidents_reported"))
+        narrative = ""
+        if show_incident or any(has(data, k) for k, _ in NARRATIVE_FIELDS):
+            for key, label in NARRATIVE_FIELDS:
+                val = _sentence_case(data.get(key)) if has(data, key) else NOT_RECORDED
+                narrative += bold_para(label, val)
+            if show_incident:
+                detail = (
+                    _sentence_case(data.get("incident_details"))
+                    if has(data, "incident_details") else NOT_RECORDED
+                )
+                narrative += bold_para("Incident Details", detail)
+        narrative_html = (sub_title("Narrative") + narrative) if narrative else ""
+
+        body_html = (
+            maybe_info_box(field_lines(data, [
+                ("project_address", "Project Address", _capitalize_first),
+                ("ssp_number", "Site Safety Plan #", _raw),
+                ("weather", "Weather", _raw),
+                ("workers_on_site_count", "Workers on Site", _raw),
+            ]))
+            + flags_html
+            + narrative_html
+            + cp_name_line
+            + render_signature_html(logbook.get("cp_signature"), "SSC / SSM Signature")
+        )
+
+    elif log_type == "osha_log":
+        # frontend/app/logbooks/osha_log.jsx:200  data: { entries };
+        # EMPTY_ENTRY :28-37.
+        #
+        # NOTE vs generate_combined_report: that renderer adds a Review column
+        # by joining each row back to the worker's LIVE certifications. That is
+        # a database read, not a payload key, and this function renders one
+        # stored document — the snapshot is rendered as stored, with no
+        # invented review state.
+        type_title = "OSHA / SST Certification Log"
+        osha_rows = ""
+        for e in (data.get("entries") or []):
+            if not isinstance(e, dict):
+                continue
+            if not any(has(e, k) for k in
+                       ("worker_name", "company", "certification_type", "card_number", "expiration")):
+                continue      # an untouched EMPTY_ENTRY seed
+            # card_number / expiration are identifiers — rendered raw.
+            osha_rows += (
+                "<tr>"
+                + cell(_capitalize_first(e.get("worker_name", "")))
+                + cell(_capitalize_first(e.get("company", "")))
+                + cell(e.get("certification_type"))
+                + cell(e.get("card_number"))
+                + cell(e.get("expiration"))
+                + cell("&#10003;" if e.get("signed") else "")
+                + "</tr>"
+            )
+        body_html = (
+            (rows_table(["Worker", "Company", "Cert Type", "Card #", "Expiration", "Signed"],
+                        osha_rows) if osha_rows else "")
+            + cp_name_line + cp_sig_block
+        )
+
+    elif log_type == "subcontractor_orientation":
+        # ONE DOCUMENT PER WORKER (server.py:14945 comment). Payload keys:
+        #   frontend/app/logbooks/subcontractor_orientation.jsx:472-483 (manual
+        #   entry) and backend/server.py:9900-9912 (the kiosk registration
+        #   path), which write the same field names.
+        # Checklist labels: ORIENTATION_SECTIONS, subcontractor_orientation.jsx:49-87.
+        type_title = "Subcontractor Safety Orientation"
+        ORIENTATION_ITEMS = [
+            ("hard_hats", "Hard hats required at all times on site"),
+            ("safety_boots", "Safety boots required (steel toe, ANSI rated)"),
+            ("safety_glasses", "Safety glasses / eye protection required"),
+            ("high_vis", "High-visibility vest required near traffic"),
+            ("no_horseplay", "No horseplay, running, or unsafe behavior"),
+            ("report_hazards", "Report all hazards to CP immediately"),
+            ("fall_protection_required", "Fall protection required at 6 ft and above"),
+            ("harness_inspection", "Inspect harness before each use"),
+            ("ladder_safety", "Three-point contact on ladders at all times"),
+            ("scaffold_rules", "Only use scaffold as erected — no modifications"),
+            ("emergency_exits", "Emergency exit locations reviewed"),
+            ("first_aid", "First aid kit location reviewed"),
+            ("emergency_contact", "Emergency contact numbers provided"),
+            ("incident_reporting", "All incidents must be reported immediately"),
+            ("no_drugs_alcohol", "Zero tolerance for drugs and alcohol on site"),
+            ("sign_in_out", "Must sign in and out every day"),
+            ("authorized_areas", "Only enter authorized work areas"),
+            ("housekeeping", "Keep work area clean at all times"),
+        ]
+        orient_lines = field_lines(data, [
+            ("worker_name", "Worker", _capitalize_first),
+            ("worker_trade", "Trade", _capitalize_first),
+            ("worker_company", "Company", _capitalize_first),
+            ("osha_number", "OSHA / SST #", _raw),
+            ("orientation_number", "Orientation #", _raw),
+            ("language_provided", "Language Provided", _raw),
+            ("completed_at", "Completed",
+             lambda v: str(v)[:19].replace("T", " ")),
+        ])
+
+        # The kiosk writes {checked: bool, checked_at: iso} per item and keys it
+        # by the item's full English sentence (backend/checkin.html:674-687,
+        # 1574-1579); the in-app editor writes key -> bool. Both shapes render.
+        # An item the editor's map does not carry reads "— Not recorded"; a map
+        # keyed the kiosk way carries none of the known keys, so it renders only
+        # its own sentences (see toggle_map_rows).
+        checklist = data.get("checklist")
+        chk_rows = ""
+        if isinstance(checklist, dict) and checklist:
+            labels = dict(ORIENTATION_ITEMS)
+            known_present = [k for k, _ in ORIENTATION_ITEMS if k in checklist]
+            order = [k for k, _ in ORIENTATION_ITEMS] if known_present else []
+            order += [k for k in checklist.keys() if k not in labels]
+            for k in order:
+                if k not in checklist:
+                    val = NOT_RECORDED
+                else:
+                    v = checklist.get(k)
+                    checked = bool(v.get("checked")) if isinstance(v, dict) else bool(v)
+                    val = "&#10003;" if checked else "No"
+                chk_rows += (
+                    f'<tr><td {TD}>{labels.get(k) or key_label(k)}</td>'
+                    f'<td {TD}>{val}</td></tr>'
+                )
+        chk_html = (
+            sub_title("Safety Topics Reviewed")
+            + rows_table(["Topic", "Reviewed"], chk_rows)
+        ) if chk_rows else ""
+
+        # LOAD-BEARING: worker_signature is written as null on manual entries
+        # (subcontractor_orientation.jsx:481). When the key is THERE and empty,
+        # say UNSIGNED — an unattested acknowledgment must never be presented
+        # as complete. When the key is absent entirely, say nothing.
+        worker_sig_html = ""
+        if "worker_signature" in data:
+            if data.get("worker_signature"):
+                worker_sig_html = render_signature_html(
+                    data.get("worker_signature"), "Worker Acknowledgment",
+                )
+            else:
+                worker_sig_html = (
+                    '<p style="color:#b91c1c;font-weight:700;margin:6px 0;">'
+                    'Worker acknowledgment: UNSIGNED</p>'
+                )
+
+        body_html = (
+            maybe_info_box(orient_lines)
+            + chk_html
+            + worker_sig_html
+            + cp_name_line
+            + render_signature_html(logbook.get("cp_signature"), "Conducted By (CP)")
+        )
+
     else:
         type_title = log_type.replace("_", " ").title()
         body_html = bold_para("Status", logbook.get("status", "N/A"))
-    
+
     # Wrap in full HTML document
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{type_title} — {project_name} — {date}</title>
@@ -14165,10 +15443,20 @@ async def get_logbook_activity_photo(
     `v` selects a derivative: "thumb" (long edge 400) or "enhanced" (long edge
     1800). Anything else serves the untouched original.
 
-    EVERY failure path falls back to the original rather than 404-ing. A photo
+    EVERY failure path falls back to another copy rather than 404-ing. A photo
     that failed enhancement, or whose R2 object is missing, still renders in the
     report — losing a photo to a failed enhance is the one outcome this feature
     must never produce.
+
+    The ladder is _logbook_photo_sources: the requested derivative, then the
+    remaining R2 objects, then the inline full-size base64 while it exists, and
+    finally the RETAINED THUMBNAIL base64 that the finalize purge is forbidden
+    to remove. Only an empty ladder 404s. That last rung is what lets the purge
+    exist at all: with the full-size copy gone, R2 being unreachable at read
+    time has to degrade to a small photo, never to no photo.
+
+    Deliberately unauthenticated: the people reading an emailed daily report
+    have no login here.
     """
     from fastapi.responses import Response
     logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
@@ -14183,25 +15471,138 @@ async def get_logbook_activity_photo(
         raise HTTPException(status_code=404, detail="Photo not found")
     photo = photos[photo_index]
 
-    key = photo.get("thumb_r2_key") if v == "thumb" else (
-        photo.get("enhanced_r2_key") if v == "enhanced" else None
-    )
-    if key and _r2_client and R2_BUCKET_NAME:
+    for kind, val in _logbook_photo_sources(photo, v):
+        if kind == "r2":
+            if not (_r2_client and R2_BUCKET_NAME):
+                continue
+            try:
+                obj = await asyncio.to_thread(
+                    _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=val,
+                )
+                return Response(content=obj["Body"].read(), media_type="image/jpeg")
+            except Exception as e:
+                logger.warning(
+                    "[photo-enhance] R2 fetch failed key=%s, trying the next copy: %r",
+                    val, e,
+                )
+            continue
         try:
-            obj = await asyncio.to_thread(
-                _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=key,
-            )
-            return Response(content=obj["Body"].read(), media_type="image/jpeg")
+            return Response(content=base64.b64decode(val), media_type="image/jpeg")
         except Exception as e:
             logger.warning(
-                "[photo-enhance] R2 fetch failed key=%s, serving original: %r", key, e,
+                "[photo-enhance] inline copy would not decode for %s/%d/%d: %r",
+                logbook_id, activity_index, photo_index, e,
             )
+    raise HTTPException(status_code=404, detail="Photo data not available")
 
-    b64 = photo.get("base64", "")
-    if not b64:
-        raise HTTPException(status_code=404, detail="Photo data not available")
-    image_data = base64.b64decode(b64)
-    return Response(content=image_data, media_type="image/jpeg")
+
+# One capture, after the client-side 150KB compression cap (compressPhoto.js).
+# The ceiling is generous because the GALLERY path does not go through that
+# compressor — a picked HEIC off a modern phone is genuinely several MB — and
+# because rejecting a photo the CP has already taken is the one outcome worth
+# avoiding. It is a sanity bound on a single object, not a storage policy.
+_LOGBOOK_PHOTO_MAX_BYTES = 15 * 1024 * 1024
+
+# Content type is decided by the BYTES, never by the multipart header: the
+# header is client-controlled, and this endpoint is the one place arbitrary
+# bytes could be parked in the bucket under an image's name.
+_LOGBOOK_PHOTO_MAGIC = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+)
+
+
+def _logbook_photo_content_type(raw: bytes) -> str:
+    """The image type these bytes actually are, or '' if they are not an image.
+
+    JPEG and PNG are matched on their leading magic. HEIF/HEIC (what an iPhone
+    gallery pick can still be) carries 'ftyp' at offset 4, and WebP is a RIFF
+    container with 'WEBP' at offset 8 — both are checked positionally because
+    neither begins with a fixed signature.
+    """
+    if not raw or len(raw) < 12:
+        return ""
+    for magic, ctype in _LOGBOOK_PHOTO_MAGIC:
+        if raw.startswith(magic):
+            return ctype
+    if raw[4:8] == b"ftyp":
+        return "image/heic"
+    if raw[0:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+@api_router.post(
+    "/projects/{project_id}/logbook-photo",
+    dependencies=[Depends(require_approved), Depends(require_project_access)],
+)
+async def upload_logbook_photo(
+    project_id: str,
+    activity_id: str = Form(...),
+    photo_id: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Store ONE activity photo in R2, at the moment it is TAKEN.
+
+    THE DEFECT THIS CLOSES. Photos used to be inlined as base64 into
+    logbooks.data.activities[].photos[] at SAVE time. base64 inflates the
+    150KB client-side cap to ~200KB per photo, so ten subcontractors with ten
+    photos each is ~20.5MB against MongoDB's 16MB document ceiling: the
+    END-OF-DAY save fails, with the CP's whole day inside it. The finalize
+    purge cannot help — it runs AFTER the save it would have to protect. So
+    the bytes never enter the document at all; the row carries only the key.
+
+    AUTH. require_approved + require_project_access, the pair every other
+    project-scoped write carries (pinned by test_tenant_isolation_writes.py,
+    whose TIER3 bucket this route joins). require_project_access is what
+    authorises the CP: its branch 3 admits a caller with this project in
+    `assigned_projects`, which is how a CP reaches every other write on his own
+    jobsite. No new authorization concept is introduced.
+
+    IDEMPOTENT. The key is a pure function of (project_id, activity_id,
+    photo_id), so a retry after a dropped connection overwrites the same object
+    with the same bytes instead of orphaning one. That is what lets the offline
+    drain retry forever without leaking storage.
+
+    THE STATUS CODES ARE PART OF THE CONTRACT. A device that cannot upload
+    keeps the file and its pending marker and retries; it must be able to tell
+    'this photo is unacceptable' (4xx, stop) from 'storage is unavailable'
+    (5xx, keep trying). Unconfigured or failing R2 is therefore 503/502, never
+    a 400 the client could reasonably read as a reason to give up.
+    """
+    if not str(activity_id or "").strip() or not str(photo_id or "").strip():
+        raise HTTPException(
+            status_code=400, detail="activity_id and photo_id are required",
+        )
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read uploaded photo: {e}")
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded photo is empty.")
+    if len(file_bytes) > _LOGBOOK_PHOTO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Photo too large. Maximum 15 MB.")
+    content_type = _logbook_photo_content_type(file_bytes)
+    if not content_type:
+        raise HTTPException(status_code=400, detail="Uploaded file is not an image.")
+    if not (_r2_client and R2_BUCKET_NAME):
+        raise HTTPException(
+            status_code=503, detail="Photo storage (R2) is not configured",
+        )
+
+    r2_key = _logbook_capture_photo_r2_key(project_id, activity_id, photo_id)
+    try:
+        await asyncio.to_thread(_upload_to_r2, file_bytes, r2_key, content_type)
+    except Exception as e:
+        logger.error(f"logbook photo upload failed (key={r2_key}): {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail="Photo storage upload failed")
+
+    # `original_r2_key` is the field name on purpose: _logbook_photo_sources
+    # already reads it as the ORIGINAL rung of the serving ladder and has since
+    # Track P, where it was documented as inert because nothing wrote it. This
+    # is the thing that writes it. No reader changes.
+    return {"original_r2_key": r2_key, "bytes": len(file_bytes)}
+
 
 # ==================== CP PROFILE ENDPOINTS ====================
 
@@ -14286,10 +15687,33 @@ async def get_project_logbooks(
 
 @api_router.get("/logbooks/{logbook_id}")
 async def get_logbook(logbook_id: str, current_user = Depends(get_current_user)):
-    """Get a single logbook entry"""
-    logbook = await db.logbooks.find_one({"_id": to_query_id(logbook_id)})
+    """Get a single logbook entry.
+
+    This read used to match on `_id` alone — no company, no project, no
+    is_deleted — so any authenticated user could read any company's logbook,
+    including soft-deleted ones, by guessing or harvesting an ObjectId.
+
+    `Depends(require_project_access)` cannot be used: there is no {project_id}
+    in this path for FastAPI to resolve. The by-id idiom applies instead —
+    load the document, load its project, then authorize — the same shape the
+    check-in by-id endpoints use.
+
+    `user_can_act_on_project` has no site-device branch, but no site-device
+    flow reaches this route: the kiosk's only logbook read is
+    /logbooks/project/{id}/submitted (frontend/app/site/logbooks.jsx:175),
+    which is separately guarded. The single caller of this route in the whole
+    repo is logbooksAPI.getById (frontend/src/utils/api.js:815-818), which has
+    no call sites.
+    """
+    logbook = await db.logbooks.find_one({
+        "_id": to_query_id(logbook_id), "is_deleted": {"$ne": True},
+    })
     if not logbook:
         raise HTTPException(status_code=404, detail="Logbook not found")
+    project_id = str(logbook.get("project_id") or "")
+    project = await db.projects.find_one({"_id": to_query_id(project_id)})
+    if not project or not user_can_act_on_project(project, project_id, current_user):
+        raise HTTPException(status_code=403, detail="Not authorized for this logbook")
     return serialize_id(logbook)
 
 def _parse_iso_dt(raw):
@@ -14543,6 +15967,108 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     return serialize_id(updated)
 
 
+async def _purge_finalized_photo_base64(logbook_id: str, doc: dict) -> int:
+    """Drop the FULL-SIZE inline base64 from a finalized log's photos.
+
+    WHY. Every activity photo is stored twice: as an object in R2, and inlined
+    as base64 under data.activities[].photos[]. Nothing ever removed the inline
+    copy, and base64 inflates the 150KB client-side cap (compressPhoto.js) to
+    ~200KB per photo. That is what walks the document toward MongoDB's 16MB
+    ceiling, and it fails at the worst possible moment: on the end-of-day save
+    of a signed record, after the CP has already done all the work.
+
+    WHY HERE. This runs on finalize, after is_locked is set — NOT inside
+    _enhance_logbook_photos. That task is holding the bytes it has just
+    uploaded and has every incentive to declare its own upload a success. The
+    writer must not be the thing that verifies the writer.
+
+    THE THREE CONDITIONS, all required:
+      1. enhance_status == "done"
+      2. both enhanced_r2_key and thumb_r2_key present
+      3. a live head_object on BOTH keys succeeds
+
+    (3) is the one that carries the weight. (1) and (2) record what the writer
+    BELIEVED at the time; head_object is the only one that asks R2 what it
+    actually HAS. Anything short of all three and the base64 stays, permanently.
+
+    WHAT SURVIVES. The thumbnail base64 is written from the bytes R2 really
+    returns, in the SAME update that unsets the full-size copy, so there is no
+    instant where a photo has neither. It is never purged, under any condition:
+    a small photo beats no photo on a signed legal record, and this must never
+    remove the last copy. See _logbook_photo_sources, whose final rung it is.
+
+    IDEMPOTENT. A photo with no `base64` is skipped, so a second finalize (and
+    the backfill script) can never purge twice, and a purge is never retried
+    into a hole. Keys come from the photo document, never recomputed from
+    (ai, pi) via _logbook_photo_r2_key — activity rows can be reordered, and a
+    recomputed key would then point at a different photo's object.
+    """
+    if not (_r2_client and R2_BUCKET_NAME):
+        return 0            # nothing to prove anything with — keep every byte
+    activities = ((doc or {}).get("data") or {}).get("activities") or []
+    now = datetime.now(timezone.utc)
+    purged = 0
+
+    for ai, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            continue
+        for pi, photo in enumerate(activity.get("photos") or []):
+            if not isinstance(photo, dict) or not photo.get("base64"):
+                continue        # never had one, or already purged
+            if photo.get("enhance_status") != "done":
+                continue        # condition 1
+            enh_key = photo.get("enhanced_r2_key")
+            thumb_key = photo.get("thumb_r2_key")
+            if not enh_key or not thumb_key:
+                continue        # condition 2
+
+            try:
+                # Condition 3. Blocking boto3 off the event loop, as everywhere
+                # else in this file. Either head raising for ANY reason —
+                # missing object, credentials, R2 unreachable — means the proof
+                # was not obtained, and no proof means no purge.
+                for key in (enh_key, thumb_key):
+                    await asyncio.to_thread(
+                        _r2_client.head_object, Bucket=R2_BUCKET_NAME, Key=key,
+                    )
+                # Materialise the retained copy from the bytes R2 actually
+                # returns, BEFORE anything is removed.
+                thumb_b64 = photo.get("thumb_base64")
+                if not thumb_b64:
+                    obj = await asyncio.to_thread(
+                        _r2_client.get_object, Bucket=R2_BUCKET_NAME, Key=thumb_key,
+                    )
+                    thumb_b64 = base64.b64encode(obj["Body"].read()).decode("ascii")
+            except Exception as e:
+                logger.warning(
+                    "[photo-purge] R2 did not confirm logbook=%s a=%d p=%d: %r "
+                    "- full-size base64 KEPT", logbook_id, ai, pi, e,
+                )
+                continue
+            if not thumb_b64:
+                continue        # empty object; refuse to trade a copy for nothing
+
+            field = f"data.activities.{ai}.photos.{pi}"
+            await db.logbooks.update_one(
+                {"_id": to_query_id(logbook_id)},
+                {
+                    "$set": {
+                        f"{field}.thumb_base64": thumb_b64,
+                        f"{field}.base64_purged_at": now,
+                    },
+                    "$unset": {f"{field}.base64": ""},
+                },
+            )
+            purged += 1
+
+    if purged:
+        logger.info(
+            "[photo-purge] logbook=%s dropped full-size base64 from %d photo(s)",
+            logbook_id, purged,
+        )
+    return purged
+
+
 @api_router.post("/logbooks/{logbook_id}/finalize")
 async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_user)):
     """Tier 1 (1): END-OF-DAY FINALIZATION — locks the log immutable.
@@ -14551,6 +16077,18 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
     an amendment. This is the explicit finalize primitive; the future end-of-day
     batch-sign flow calls the same lock. It does NOT fire on an intermediate
     draft/submitted save — a working log stays editable until finalized here.
+
+    COMPLETENESS GATE. Finalizing is the act that makes a log immutable, so an
+    empty or unsigned document must not be able to reach that state — once
+    locked it can only be corrected by an amendment. Two conditions only:
+    the log must have content, and it must carry a CP signature. There are no
+    per-field rules here; what counts as a complete `data` payload differs per
+    log type and belongs to the editors, not to the lock.
+
+    The rejection returns a machine CODE, not prose. This codebase's convention
+    is that the server names the condition and the client owns the wording (see
+    the BLOCK_LABELS map in backend/checkin.html, which maps the cert-gate codes
+    to bilingual copy) — there is no server-side bilingual error precedent.
     """
     now = datetime.now(timezone.utc)
     existing = await db.logbooks.find_one({"_id": to_query_id(logbook_id), "is_deleted": {"$ne": True}})
@@ -14562,6 +16100,18 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
             raise HTTPException(status_code=403, detail="Not assigned to this project")
     if existing.get("is_locked"):
         return serialize_id(existing)  # idempotent — already finalized
+    # Sits AFTER the is_locked early-return so re-finalizing an already-locked
+    # log stays idempotent, and BEFORE the update_one so a rejected finalize
+    # mutates nothing at all. `existing` is the full document from the fetch
+    # above — no extra query.
+    if not existing.get("data"):
+        raise HTTPException(
+            status_code=400, detail={"code": "FINALIZE_EMPTY_LOG"},
+        )
+    if not existing.get("cp_signature"):
+        raise HTTPException(
+            status_code=400, detail={"code": "FINALIZE_MISSING_CP_SIGNATURE"},
+        )
     await db.logbooks.update_one(
         {"_id": to_query_id(logbook_id)},
         {"$set": {
@@ -14573,6 +16123,19 @@ async def finalize_logbook(logbook_id: str, current_user = Depends(get_current_u
             "updated_at": now,
         }},
     )
+    # Reclaim the inline full-size photo bytes now that the log is locked. Only
+    # ever after the lock, and never in the enhance task — see the docstring on
+    # _purge_finalized_photo_base64. `existing` is the pre-lock document; the
+    # update above touched no photo field, so its activities are current.
+    #
+    # Guarded because a finalize that SUCCEEDED must not be reported as failed
+    # over a storage optimisation. The log is already locked at this point; a
+    # skipped purge only means the bytes stay, which is the safe direction and
+    # exactly what happens whenever R2 cannot be reached.
+    try:
+        await _purge_finalized_photo_base64(logbook_id, existing)
+    except Exception as e:
+        logger.warning("[photo-purge] skipped for logbook=%s: %r", logbook_id, e)
     await audit_log("logbook_finalize", str(current_user.get("id", "")), "logbook", logbook_id, {
         "log_type": existing.get("log_type"), "project_id": existing.get("project_id"), "date": existing.get("date"),
     })
@@ -14992,6 +16555,15 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
     Dedup key: lower(name)+lower(company). New-system rows win on
     collision because their signature is the day's attestation, not
     a static profile image.
+
+    FIX 1 — every row additionally carries five flag fields so the pre-shift
+    roster can name WHY a worker is flagged and act on it without a second
+    lookup: checkin_id, sst_status, needs_trade_assignment, review_decision,
+    cert_warnings. Only PASS 2 (legacy `checkins`) can populate them — they
+    are fields OF a checkins row. Pass 1 (gate sign_ins) and pass 3
+    (compliance_alerts) have no such row, so they emit checkin_id=None and
+    the rest null/false/[]; a null checkin_id is the UI's signal that no
+    action can be offered. Nothing new is persisted by this change.
     """
     from zoneinfo import ZoneInfo
     eastern = ZoneInfo("America/New_York")
@@ -15086,6 +16658,30 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 "worker_signature": None,               # new system: frontend uses signin_id
                 "signin_id": first_signin_id,           # → /api/signatures/{signin_id}
                 "source": "gate_checkin",
+                # ── Flag fields (FIX 1) ──────────────────────────────────────
+                # The gate system writes `sign_ins` + `worker_enrollments` ONLY:
+                # card_audit.py contains no reference to the `checkins`
+                # collection at all (see _write_cookie_signin, card_audit.py:1283
+                # and the enrollment path at card_audit.py:1926 — both insert a
+                # sign_ins row and stop). So a gate-signed worker has NO
+                # checkins row, and therefore NO id to POST against
+                # /checkins/{checkin_id}/review or /assign-trade.
+                #
+                # checkin_id is emitted as null rather than fabricated. The
+                # per-check-in cert snapshot (sst_status / cert_warnings /
+                # review_decision) and needs_trade_assignment are all fields of
+                # a checkins row, so they do not exist for this population
+                # either — they are reported as null/false/[] , never guessed.
+                # The UI must offer NO action when checkin_id is null.
+                #
+                # (Enrollment also hard-requires a trade — card_audit.py:1832
+                # rejects a submission with no `trade` — so a gate worker can
+                # never be in the needs_trade_assignment state to begin with.)
+                "checkin_id": None,
+                "sst_status": None,
+                "needs_trade_assignment": False,
+                "review_decision": None,
+                "cert_warnings": [],
             })
     except Exception as _e:
         logger.warning(f"checkins-today new-system merge failed: {_e!r}")
@@ -15138,6 +16734,25 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
                 c.get("toolbox_talk_confirmed_at").isoformat()
                 if isinstance(c.get("toolbox_talk_confirmed_at"), datetime) else None
             ),
+            # ── Flag fields (FIX 1) ──────────────────────────────────────────
+            # ADMITTED-WITH-WARNINGS state, read straight off the checkins row
+            # that already holds it. Nothing new is persisted anywhere: the
+            # pre-shift roster needs a reason to display AND an id to POST
+            # against, and both already exist here.
+            #
+            #   checkin_id             → POST /checkins/{checkin_id}/review
+            #                            (decision "approved" | "sent_home")
+            #                            and POST /checkins/{checkin_id}/assign-trade
+            #   sst_status             → frozen at check-in (server.py ~:9826)
+            #   cert_warnings          → EXPIRED_SST / SST_UNKNOWN entries
+            #   needs_trade_assignment → cleared by assign-trade
+            #   review_decision        → null until a CP decides; re-review
+            #                            overwrites it, so it is never final
+            "checkin_id": str(c.get("_id")) if c.get("_id") is not None else None,
+            "sst_status": c.get("sst_status"),
+            "needs_trade_assignment": bool(c.get("needs_trade_assignment")),
+            "review_decision": c.get("review_decision"),
+            "cert_warnings": c.get("cert_warnings") or [],
         })
 
     # ── PASS 3 (Task 9): workers TURNED AWAY for missing OSHA today ──────
@@ -15184,6 +16799,19 @@ async def get_project_checkins_today(project_id: str, date: Optional[str] = None
             "blocked": True,
             "cert_cleared": False,
             "blocks": [b.get("type") for b in (a.get("blocks") or []) if isinstance(b, dict)],
+            # ── Flag fields (FIX 1) ──────────────────────────────────────────
+            # These rows come from compliance_alerts, NOT checkins — a blocked
+            # worker never reaches the checkins insert (register_and_checkin
+            # returns at server.py:9796, before it). There is no row to review
+            # or assign a trade on, so checkin_id is null and the snapshot
+            # fields are null/false/[]. This is the BLOCKED population, which is
+            # out of scope for the admitted-with-warnings actions: the null
+            # checkin_id is what makes the UI offer none.
+            "checkin_id": None,
+            "sst_status": None,
+            "needs_trade_assignment": False,
+            "review_decision": None,
+            "cert_warnings": [],
         })
 
     return result
@@ -15200,7 +16828,17 @@ async def get_project_daily_headcount(
     Used by Daily Jobsite Log — a per-company headcount report, NOT a
     per-worker signature roster. The response is flat:
 
-        [{"sub_name": "...", "trade": "...", "worker_count_today": N}, ...]
+        [{"sub_name": "...", "trade": "...", "worker_count_today": N,
+          "subcontractor_id": "srv_..." | None}, ...]
+
+    `subcontractor_id` is the project roster row's server-minted id
+    (project.trade_assignments[].id, see _merge_trade_assignments). It is
+    what lets the Daily Jobsite Log key an activity row on the
+    SUBCONTRACTOR instead of on its position in the array. It is None
+    whenever the (sub, trade) pair has no roster row — an "UNASSIGNED"
+    check-in, or a sub the admin has not entered yet. None is the honest
+    answer there and callers must treat it as "no roster identity"; a
+    fabricated id would silently merge two unrelated subs.
 
     Workers are counted, not listed. No signatures. The three logbooks
     that DO need per-worker signature autofill (preshift_signin,
@@ -15295,8 +16933,34 @@ async def get_project_daily_headcount(
             buckets[key] = row
         row["worker_count_today"] += 1
 
+    # ── Roster identity for each (sub, trade) pair ─────────────────────
+    # Resolved from the project doc already fetched above (no extra query),
+    # on the SAME normalization the check-in strict-roster match uses
+    # (_roster_key over company + trade), so a case-only or whitespace edit
+    # still resolves to the same row. An active row always wins; a
+    # soft-deleted row still supplies the id it was minted with rather than
+    # losing it, because the day's work really was done by that sub.
+    roster_ids: Dict[tuple, str] = {}
+    for _assignment in (project.get("trade_assignments") or []):
+        if not isinstance(_assignment, dict):
+            continue
+        _rid = str(_assignment.get("id") or "").strip()
+        if not _rid:
+            continue
+        _rkey = (_roster_key(_assignment.get("company")), _roster_key(_assignment.get("trade")))
+        if _assignment_is_inactive(_assignment):
+            roster_ids.setdefault(_rkey, _rid)
+        else:
+            roster_ids[_rkey] = _rid
+
     # Stable order: by sub_name, then trade
     rows = sorted(buckets.values(), key=lambda r: ((r["sub_name"] or "").lower(), (r["trade"] or "").lower()))
+    for row in rows:
+        # Absent from the roster -> None, never a minted id. A headcount read
+        # must not create roster identity; only the admin's roster does.
+        row["subcontractor_id"] = roster_ids.get(
+            (_roster_key(row.get("sub_name")), _roster_key(row.get("trade")))
+        )
     return rows
 
 
@@ -15759,7 +17423,13 @@ async def generate_combined_report(project_id: str, date: str) -> str:
             # Photos as URL-based <img> tags
             photos = ""
             for pi, photo in enumerate(act.get("photos") or []):
-                if photo.get("base64"):
+                # Emit on ANY surviving copy, not on base64. The full-size
+                # inline copy is dropped at finalize once R2 is proven to hold
+                # the derivatives, and a photo skipped here does not render as
+                # a broken image — it vanishes, so the report reads "no photos
+                # taken" on a day photos were taken. That is a false
+                # compliance record, which is worse than a missing image.
+                if _logbook_photo_is_renderable(photo):
                     # Grid cell shows the THUMBNAIL (long edge 400, ~25-40KB)
                     # and links to the full-size ENHANCED image. Previously the
                     # 140px cell pointed at the full original, so an email with
@@ -16855,13 +18525,35 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
 
     # Build summary of what sections are filled
     logbook_summary = []
+    total_failed_photos = 0
     for lb in logbooks:
+        # PHOTO ENHANCEMENT FAILURES.
+        # _enhance_logbook_photos stamps enhance_status="failed" + enhance_error
+        # on a photo whose enhance/upload pass raised (server.py:250-256).
+        # Nothing read either field. A failed enhancement means the photo has no
+        # R2 derivative, so it survives on its inline base64 alone — and it is
+        # the photo most likely to be MISSING from the day's report. Counted
+        # here so an admin can see it before the report goes out.
+        #
+        # ADMIN-ONLY BY CONSTRUCTION: this endpoint 403s anyone who is not
+        # admin/owner (above), and the count is deliberately absent from the CP
+        # editor and from the kiosk/inspector screen — it is our plumbing, not
+        # an inspector's business.
+        failed_photos = 0
+        for activity in ((lb.get("data") or {}).get("activities") or []):
+            if not isinstance(activity, dict):
+                continue
+            for photo in (activity.get("photos") or []):
+                if isinstance(photo, dict) and photo.get("enhance_status") == "failed":
+                    failed_photos += 1
+        total_failed_photos += failed_photos
         logbook_summary.append({
             "log_type": lb.get("log_type"),
             "status": lb.get("status", "draft"),
             "has_signature": bool(lb.get("cp_signature")),
             "cp_name": lb.get("cp_name"),
             "updated_at": lb.get("updated_at").isoformat() if isinstance(lb.get("updated_at"), datetime) else str(lb.get("updated_at", "")),
+            "failed_photo_count": failed_photos,
         })
 
     # Check if report was already sent today
@@ -16876,6 +18568,9 @@ async def get_report_preview(project_id: str, date: str, current_user = Depends(
         "date": date,
         "checkin_count": checkin_count,
         "logbooks": logbook_summary,
+        # Sum of the per-logbook counts above, so the panel has one number to
+        # show without walking the list.
+        "failed_photo_count": total_failed_photos,
         "has_daily_log": bool(daily_log),
         "daily_log_status": daily_log.get("status") if daily_log else None,
         "daily_log_weather": daily_log.get("weather") if daily_log else None,
@@ -29614,6 +31309,24 @@ async def startup_event():
         db.risk_scores,
         keys=[("company_id", 1), ("project_id", 1), ("calculated_at", -1)],
         name="risk_scores_company_project_calculated",
+    )
+
+    # worker_project_trades — the per-worker-per-project trade/company store.
+    # See the collection's contract + the ACCEPTED-DEBT note on
+    # worker_enrollments at WORKER_PROJECT_TRADES_COLLECTION above.
+    #
+    # UNIQUE on (worker_id, project_id): the pairing IS the identity of the
+    # row, so the DB — not application code — guarantees one trade per worker
+    # per project. Both gate paths upsert on exactly this key, so a
+    # double-tap at the gate can never mint a second, divergent pairing.
+    # Created through _ensure_index_resilient like every other index here, so
+    # a future key-shape change drops-and-recreates instead of bricking
+    # startup on an IndexKeySpecsConflict.
+    await _ensure_index_resilient(
+        db[WORKER_PROJECT_TRADES_COLLECTION],
+        keys=[("worker_id", 1), ("project_id", 1)],
+        name="worker_project_trades_worker_project_unique",
+        unique=True,
     )
 
     # Phase B1a — digest_dispatcher cron. 15-minute cadence, same

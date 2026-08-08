@@ -3,11 +3,17 @@
  * that nothing could ever produce is removed. No dead strings.
  *
  * Static guard over the real sources:
- *   review.jsx  — reason_EXTRACTION_INCOMPLETE removed (backend never emits it);
- *                 unknownSst + the reason_* keys are CONSUMED (t('unknownSst'),
+ *   src/i18n/{en,es}.js — reason_EXTRACTION_INCOMPLETE removed (backend never
+ *                 emits it); unknownSst + the reason_* keys are DEFINED, in
+ *                 both locales.
+ *   review.jsx  — those keys are CONSUMED (t('unknownSst'),
  *                 t(`reason_${...}`)); the unknown flag + Admit path exist.
  *   checkins.jsx — the site view reads sst_status === 'unknown' and its frozen
  *                 sst_unknown_reason.
+ *
+ * The definition half used to live in a local TRANSLATIONS map inside
+ * review.jsx; it moved to src/i18n verbatim, so those assertions now read the
+ * catalogues. The consumption half still reads review.jsx.
  *
  * Run:  node src/utils/reviewUnknownWiring.test.cjs
  */
@@ -17,6 +23,10 @@ const path = require('path');
 
 const review = fs.readFileSync(
   path.join(__dirname, '..', '..', 'app', 'logbooks', 'review.jsx'), 'utf8');
+const catalogues = ['en', 'es'].map((loc) => ({
+  loc,
+  src: fs.readFileSync(path.join(__dirname, '..', 'i18n', `${loc}.js`), 'utf8'),
+}));
 const checkins = fs.readFileSync(
   path.join(__dirname, '..', '..', 'app', 'site', 'checkins.jsx'), 'utf8');
 const workerDetail = fs.readFileSync(
@@ -28,27 +38,38 @@ function ok(cond, label) {
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
 
-// ── review.jsx ──
+// ── src/i18n — the strings themselves, in BOTH locales ──
+for (const { loc, src } of catalogues) {
+  ok(!/reason_EXTRACTION_INCOMPLETE/.test(src),
+    `i18n/${loc}: dead reason_EXTRACTION_INCOMPLETE removed (never produced)`);
+  ok(/unknownSst:/.test(src), `i18n/${loc}: unknownSst is defined`);
+  ok(/admittedUnverified:/.test(src), `i18n/${loc}: admittedUnverified is defined`);
+  ok(/\badmit:/.test(src), `i18n/${loc}: 'admit' label is defined (not 'Approve')`);
+}
 ok(!/reason_EXTRACTION_INCOMPLETE/.test(review),
-  'review.jsx: dead reason_EXTRACTION_INCOMPLETE removed (never produced)');
-ok(/unknownSst:/.test(review) && /t\('unknownSst'\)/.test(review),
-  "review.jsx: unknownSst is defined AND consumed via t('unknownSst')");
+  'review.jsx: no leftover reference to the dead reason code');
+
+// ── review.jsx — the render path that consumes them ──
+ok(/t\('unknownSst'\)/.test(review),
+  "review.jsx: unknownSst is consumed via t('unknownSst')");
 ok(/t\(`reason_\$\{/.test(review),
   'review.jsx: reason_* keys consumed via t(`reason_${code}`) render path');
 ok(/reasons\.includes\('unknown_sst'\)/.test(review),
   "review.jsx: reads the 'unknown_sst' flag_reason");
-ok(/admittedUnverified:/.test(review) && /t\('admittedUnverified'\)/.test(review),
-  'review.jsx: Admit records entry-only (admittedUnverified defined + used)');
-ok(/admit:/.test(review) && /t\('admit'\)/.test(review),
-  "review.jsx: 'admit' label defined + used (not 'Approve')");
+ok(/t\('admittedUnverified'\)/.test(review),
+  'review.jsx: Admit records entry-only (admittedUnverified used)');
+ok(/t\('admit'\)/.test(review),
+  "review.jsx: 'admit' label used (not 'Approve')");
 
 // The still-present reason_* keys must all be reachable via the generic lookup —
 // there is exactly one consumption site and it is a template, so every key is
-// wired. Assert the produced codes each have a key.
+// wired. Assert the produced codes each have a key, in both locales.
 for (const code of ['CLASS_UNVERIFIED', 'EXPIRY_IMPLAUSIBLE', 'EXPIRY_UNPARSEABLE',
                      'EXPIRY_CONFLICT', 'DUPLICATE_SST']) {
-  ok(new RegExp(`reason_${code}:`).test(review),
-    `review.jsx: reason_${code} present (backend can produce it)`);
+  for (const { loc, src } of catalogues) {
+    ok(new RegExp(`reason_${code}:`).test(src),
+      `i18n/${loc}: reason_${code} present (backend can produce it)`);
+  }
 }
 
 // ── checkins.jsx (site view) ──

@@ -57,6 +57,31 @@ const FALLBACK_LOG_TYPES = [
   { key: 'scaffold_maintenance', label: 'Scaffold Maintenance Log', subtitle: 'NYC DOB — Daily', icon: 'HardHat', color: semantic.neutral, frequency: 'daily', conditional: 'scaffold_erected' },
 ];
 
+/**
+ * FIX 1 — name the SPECIFIC reasons behind the Check-In Review banner.
+ *
+ * The banner used to print a fixed "expired SST cards or workers with no trade
+ * assigned" whatever the actual mix was, so a CP with one unknown SST card read
+ * a sentence about expired cards. Counts come from the flagged endpoint's
+ * existing flag_reasons; a check-in can carry more than one, so the parts do
+ * not necessarily sum to the check-in count.
+ *
+ * SOFT surface: it links to the review screen and blocks nothing.
+ */
+function flaggedReasonSummary({ expired = 0, unknown = 0, needsTrade = 0 } = {}) {
+  const parts = [];
+  if (expired) parts.push(`${expired} expired SST card${expired > 1 ? 's' : ''}`);
+  if (unknown) parts.push(`${unknown} unknown SST card${unknown > 1 ? 's' : ''}`);
+  if (needsTrade) {
+    parts.push(`${needsTrade} worker${needsTrade > 1 ? 's' : ''} with no trade assigned`);
+  }
+  // No reasons resolved (older rows, or a shape this build doesn't know) —
+  // say that plainly rather than assert a reason that was never reported.
+  if (!parts.length) return 'reason not reported';
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
 export default function LogBooksScreen() {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
@@ -76,7 +101,13 @@ export default function LogBooksScreen() {
   // Task A: flagged check-in count across the CP's projects, so the Check-In
   // Review banner only shows when there's genuinely something to review (and
   // taps land on the first project that has items).
-  const [flagged, setFlagged] = useState({ count: 0, projectId: null });
+  // FIX 1: also tallied PER REASON, so the banner names what is actually
+  // wrong instead of the generic "expired SST cards or workers with no trade
+  // assigned" it used to print whatever the mix was. The reasons come from the
+  // flagged endpoint's existing `flag_reasons` array — nothing new is stored.
+  const [flagged, setFlagged] = useState({
+    count: 0, projectId: null, expired: 0, unknown: 0, needsTrade: 0,
+  });
 
   const today = new Date().toISOString().split('T')[0];
   const todayFormatted = new Date().toLocaleDateString('en-US', {
@@ -104,18 +135,34 @@ export default function LogBooksScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!projects.length) { setFlagged({ count: 0, projectId: null }); return; }
+      if (!projects.length) {
+        setFlagged({ count: 0, projectId: null, expired: 0, unknown: 0, needsTrade: 0 });
+        return;
+      }
       const results = await Promise.all(projects.map(async (p) => {
         const pid = p._id || p.id;
         try {
           const d = await checkinsAPI.getFlagged(pid);
-          return { pid, c: d?.count ?? (d?.items?.length || 0) };
-        } catch (_e) { return { pid, c: 0 }; }
+          const items = d?.items || [];
+          // Per-reason tally. A single check-in can carry more than one reason
+          // (e.g. unknown SST AND no trade), so these need not sum to `c`.
+          let expired = 0, unknown = 0, needsTrade = 0;
+          for (const it of items) {
+            const rs = it.flag_reasons || [];
+            if (rs.includes('expired_sst')) expired += 1;
+            if (rs.includes('unknown_sst')) unknown += 1;
+            if (rs.includes('needs_trade')) needsTrade += 1;
+          }
+          return { pid, c: d?.count ?? items.length, expired, unknown, needsTrade };
+        } catch (_e) { return { pid, c: 0, expired: 0, unknown: 0, needsTrade: 0 }; }
       }));
       if (cancelled) return;
-      let total = 0, firstPid = null;
-      for (const r of results) { if (r.c > 0) { total += r.c; if (!firstPid) firstPid = r.pid; } }
-      setFlagged({ count: total, projectId: firstPid });
+      let total = 0, firstPid = null, expired = 0, unknown = 0, needsTrade = 0;
+      for (const r of results) {
+        if (r.c > 0) { total += r.c; if (!firstPid) firstPid = r.pid; }
+        expired += r.expired; unknown += r.unknown; needsTrade += r.needsTrade;
+      }
+      setFlagged({ count: total, projectId: firstPid, expired, unknown, needsTrade });
     })();
     return () => { cancelled = true; };
   }, [projects]);
@@ -503,7 +550,7 @@ export default function LogBooksScreen() {
                   <Text style={styles.notifTitle}>Check-In Review</Text>
                 </View>
                 <Text style={styles.notifWorker}>
-                  {flagged.count} check-in{flagged.count > 1 ? 's' : ''} to review — expired SST cards or workers with no trade assigned
+                  {flagged.count} check-in{flagged.count > 1 ? 's' : ''} to review — {flaggedReasonSummary(flagged)}
                 </Text>
               </GlassCard>
             </Pressable>

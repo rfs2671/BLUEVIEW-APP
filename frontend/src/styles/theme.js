@@ -193,12 +193,34 @@ const _light = {
   transparent: 'transparent',
 };
 
-// ─── Deep-assign helper ──────────────────────────────────────────────────────
-function _deepAssign(target, source) {
+// ─── Palette application ─────────────────────────────────────────────────────
+//
+// `colors` is mutated IN PLACE, never reassigned: semanticColors.js exposes
+// live getters over this exact object (and ThemeContext deep-copies it on each
+// toggle), so its identity has to survive a theme switch.
+//
+// The previous helper only ever ASSIGNED — it walked Object.keys(source) and
+// never deleted. A key present in one palette but absent from the other
+// therefore survived the switch still carrying the old theme's value, and the
+// incoming palette had no way to remove it. `glass.cardGradientEnd` is the
+// live instance: it is defined only in _light (see the glass block above), so
+// applyTheme('light') → applyTheme('dark') left a LIGHT rgba sitting on the
+// dark palette for the rest of the session. Nothing reads that key today, so
+// no pixel is currently wrong; the leak is structural, and the next
+// per-theme-only key added would be a real one.
+//
+// _applyPalette prunes before it assigns: when it returns, `target` has
+// EXACTLY the key set of `source`, at every depth.
+function _applyPalette(target, source) {
+  for (const key of Object.keys(target)) {
+    if (!Object.prototype.hasOwnProperty.call(source, key)) delete target[key];
+  }
   for (const key of Object.keys(source)) {
     if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key])) {
-      if (!target[key] || typeof target[key] !== 'object') target[key] = {};
-      _deepAssign(target[key], source[key]);
+      if (!target[key] || typeof target[key] !== 'object' || Array.isArray(target[key])) {
+        target[key] = {};
+      }
+      _applyPalette(target[key], source[key]);
     } else {
       target[key] = source[key];
     }
@@ -207,10 +229,10 @@ function _deepAssign(target, source) {
 
 // ─── Mutable colors object — starts dark, mutated by applyTheme() ────────────
 export const colors = {};
-_deepAssign(colors, _dark);
+_applyPalette(colors, _dark);
 
 export function applyTheme(mode) {
-  _deepAssign(colors, mode === 'light' ? _light : _dark);
+  _applyPalette(colors, mode === 'light' ? _light : _dark);
 }
 
 // ─── Static tokens ───────────────────────────────────────────────────────────

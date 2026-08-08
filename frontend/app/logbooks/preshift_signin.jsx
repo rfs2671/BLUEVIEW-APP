@@ -6,6 +6,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowLeft, Users, CheckCircle, XCircle, Save, Plus, Calendar, Lock,
+  ShieldAlert, Briefcase, Check, X,
 } from 'lucide-react-native';
 import AnimatedBackground from '../../src/components/AnimatedBackground';
 import { GlassCard } from '../../src/components/GlassCard';
@@ -15,7 +16,7 @@ import LogbookLockBar from '../../src/components/LogbookLockBar';
 import SignatureImage from '../../src/components/SignatureImage';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
-import { logbooksAPI, projectsAPI } from '../../src/utils/api';
+import { logbooksAPI, projectsAPI, checkinsAPI } from '../../src/utils/api';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, markFinalized } from '../../src/utils/logbookDrafts';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { capitalizeFirst } from '../../src/utils/textFormat';
@@ -65,6 +66,34 @@ export default function PreShiftSignIn() {
   const [projectLocation, setProjectLocation] = useState('');
   const [workers, setWorkers] = useState([]);
 
+  /**
+   * FIX 1 — ADMITTED-WITH-WARNINGS state, held DELIBERATELY OUTSIDE `workers`.
+   *
+   * `workers` is posted verbatim as logbook data.workers[] (see handleSave),
+   * so anything written onto a worker row is persisted into the logbook and
+   * flows on to the HTML report, the PDF, the kiosk viewer and the emailed
+   * report. The reason a worker is flagged must NOT go there: the state
+   * already lives on the check-in row behind /checkins/{id}/review and
+   * /checkins/{id}/assign-trade, and duplicating it into a signed logbook
+   * would create a second, frozen copy that can never be corrected.
+   *
+   * So the flags live in this separate map, keyed by worker_id, and are
+   * rendered from component state only. Shape per entry:
+   *   { checkin_id, sst_status, needs_trade, review_decision,
+   *     assigned_trade, assigned_company }
+   * checkin_id === null means the worker has no check-in row to act on
+   * (gate sign-in or turned-away) — the UI then offers NO action rather than
+   * pretending one exists.
+   */
+  const [flags, setFlags] = useState({});
+  // The project's configured trade roster. Same list the worker picks from at
+  // sign-in: both are `_active_assignments(project)` server-side.
+  const [roster, setRoster] = useState([]);
+  // worker_id whose trade picker is currently open (one at a time).
+  const [tradePickerFor, setTradePickerFor] = useState(null);
+  // worker_id with an in-flight review / assign call.
+  const [actingId, setActingId] = useState(null);
+
   useEffect(() => {
     fetchData();
   }, [projectId, date]);
@@ -111,11 +140,21 @@ export default function PreShiftSignIn() {
         return;
       }
 
-      const [projectData, checkins, existingLogs] = await Promise.all([
+      const [projectData, checkins, existingLogs, flaggedData] = await Promise.all([
         projectsAPI.getById(projectId).catch(() => null),
         logbooksAPI.getCheckinsForDate(projectId, date).catch(() => []),
         logbooksAPI.getByProject(projectId, 'preshift_signin', date).catch(() => []),
+        // FIX 1 — the trade roster for the assign-trade picker. This is the
+        // SAME data the worker's own sign-in dropdown offers: the flagged
+        // endpoint returns `trade_assignments: _active_assignments(project)`
+        // (server.py, get_flagged_project_checkins) and the public sign-in
+        // info endpoint builds its list from the same _active_assignments
+        // call. Read through the authenticated endpoint because the sign-in
+        // one is tag-scoped and public.
+        checkinsAPI.getFlagged(projectId).catch(() => null),
       ]);
+
+      setRoster(Array.isArray(flaggedData?.trade_assignments) ? flaggedData.trade_assignments : []);
 
       if (projectData) {
         setProjectLocation(projectData.address || projectData.location || projectData.name || '');
@@ -125,6 +164,10 @@ export default function PreShiftSignIn() {
       }
 
       const checkinList = Array.isArray(checkins) ? checkins : [];
+      // Built from the check-ins on EVERY path — including the one where the
+      // saved logbook already has its worker rows — so re-opening a saved
+      // draft still shows why a worker is flagged. Never merged into `workers`.
+      buildFlagMap(checkinList);
 
       // Tier 1 (1)b: prefer the EDITABLE (non-locked) doc — an amendment child —
       // over a locked original that shares (project, type, date).
@@ -178,8 +221,121 @@ export default function PreShiftSignIn() {
       inspected_ppe: null,
       signed: false,
       auto_filled: true, // Lock identity fields — came from sign-in system
+      // NOTE: no flag/reason fields here on purpose. See the `flags` state
+      // above — this object is persisted verbatim into the logbook.
     }));
     setWorkers(list);
+  };
+
+  /**
+   * FIX 1 — which of today's check-ins were ADMITTED WITH WARNINGS.
+   *
+   * Scope is exactly three states, all of which already exist on the check-in
+   * row that /checkins-today now returns:
+   *   sst_status 'expired'   → expired SST card   → review (approve / deny)
+   *   sst_status 'unknown'   → unknown SST card   → review (approve / deny)
+   *   needs_trade_assignment → no trade assigned  → assign-trade
+   *
+   * The BLOCKED population (missing OSHA, `blocked: true` rows sourced from
+   * compliance_alerts) is NOT included: those workers never completed sign-in,
+   * have no check-in row, and there is nothing here to approve.
+   *
+   * Result goes into `flags`, never into `workers`.
+   */
+  const buildFlagMap = (checkins) => {
+    const map = {};
+    for (const c of checkins) {
+      const key = c.worker_id;
+      if (!key) continue;
+      if (c.blocked) continue;   // out of scope: never admitted, no row to act on
+      const sst = c.sst_status === 'expired' || c.sst_status === 'unknown'
+        ? c.sst_status
+        : null;
+      const needsTrade = !!c.needs_trade_assignment;
+      if (!sst && !needsTrade) continue;
+      map[key] = {
+        // null for gate sign-ins / turned-away rows: no check-in row exists,
+        // so no action can be offered. Never fabricated client-side either.
+        checkin_id: c.checkin_id || null,
+        sst_status: sst,
+        needs_trade: needsTrade,
+        review_decision: c.review_decision || null,
+        assigned_trade: '',
+        assigned_company: '',
+      };
+    }
+    setFlags(map);
+  };
+
+  const setFlag = (workerKey, patch) => {
+    setFlags(prev => (
+      prev[workerKey] ? { ...prev, [workerKey]: { ...prev[workerKey], ...patch } } : prev
+    ));
+  };
+
+  /**
+   * Approve / deny an expired or unknown SST card.
+   *
+   * DENY MARKS, IT NEVER REMOVES: 'sent_home' is recorded on the check-in row
+   * and the worker stays on this roster. Both buttons stay available after a
+   * decision because re-review is allowed — the endpoint overwrites the
+   * decision on the row and audit_logs keeps every one of them.
+   */
+  const handleReview = async (workerKey, decision) => {
+    const f = flags[workerKey];
+    if (!f?.checkin_id) return;
+    setActingId(workerKey);
+    try {
+      const res = await checkinsAPI.review(f.checkin_id, decision);
+      setFlag(workerKey, { review_decision: res.review_decision });
+      toast.success(
+        decision === 'approved' ? 'Approved' : 'Denied',
+        decision === 'approved'
+          ? 'Recorded — the worker stays on the sign-in sheet.'
+          : 'Recorded as sent home — the worker stays on the sign-in sheet.',
+      );
+    } catch (e) {
+      // Nothing reached the server, so the row keeps its flag and says so.
+      toast.error('Not recorded', e?.response?.data?.detail || 'Could not save the decision.');
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  /**
+   * Assign a trade to a check-in that arrived without one.
+   *
+   * Only ever offered where NO trade was captured — trade is confirmed per
+   * project at check-in, and the CP never changes one that is already set.
+   * assign-trade clears needs_trade_assignment server-side, which is what
+   * retires the flag.
+   */
+  const handleAssignTrade = async (workerKey, index, assignment) => {
+    const f = flags[workerKey];
+    if (!f?.checkin_id || !assignment) return;
+    setActingId(workerKey);
+    try {
+      const res = await checkinsAPI.assignTrade(
+        f.checkin_id, assignment.trade, assignment.company,
+      );
+      setFlag(workerKey, {
+        needs_trade: false,
+        assigned_trade: res.trade,
+        assigned_company: res.company,
+      });
+      // The roster row showed the placeholder the gate stored when no trade
+      // could be selected. `company` is an EXISTING logbook field holding an
+      // existing kind of value — this corrects it from the server's response.
+      // No reason string or flag state is written here.
+      if (res.company) updateWorker(index, 'company', res.company);
+      setTradePickerFor(null);
+      toast.success('Trade assigned', `${res.trade} — ${res.company}`);
+    } catch (e) {
+      // Picker stays open and the flag stays up: nothing reached the server.
+      toast.error('Not assigned', e?.response?.data?.detail || 'Could not assign the trade.');
+    } finally {
+      setActingId(null);
+    }
   };
 
   const updateWorker = (index, field, value) => {
@@ -305,6 +461,135 @@ export default function PreShiftSignIn() {
     </View>
   );
 
+  /**
+   * FIX 1 — the per-row warning block.
+   *
+   * SOFT by design: it never hides the row, never disables a field and never
+   * gates Submit. The CP can sign the sheet with every one of these still
+   * open. It also never says "flagged" — each line names the specific reason.
+   *
+   * Tap-only: every control is a Pressable with onPress. No gestures.
+   */
+  const renderWorkerFlags = (worker, index) => {
+    const key = worker.worker_id;
+    const f = key ? flags[key] : null;
+    if (!f) return null;
+    const busy = actingId === key;
+    const sstFlagged = f.sst_status === 'expired' || f.sst_status === 'unknown';
+    const canAct = !!f.checkin_id;
+
+    return (
+      <View style={styles.flagBlock}>
+        {sstFlagged && (
+          <>
+            <View style={styles.flagReasonRow}>
+              <ShieldAlert size={14} strokeWidth={2} color={semantic.attention} />
+              <Text style={styles.flagReasonText}>
+                {f.sst_status === 'expired' ? 'Expired SST card' : 'Unknown SST card'}
+              </Text>
+            </View>
+            {f.review_decision && (
+              <Text style={styles.flagStatusText}>
+                {f.review_decision === 'approved'
+                  ? 'Approved — recorded on this check-in.'
+                  : 'Denied — recorded as sent home. Still listed below.'}
+              </Text>
+            )}
+            {canAct ? (
+              /* Both buttons stay available after a decision — re-review is
+                 allowed and the latest decision wins on the check-in row. */
+              <View style={styles.flagActions}>
+                <Pressable
+                  onPress={() => handleReview(key, 'approved')}
+                  disabled={busy}
+                  style={[styles.flagBtn, styles.flagBtnApprove, busy && styles.flagBtnBusy]}
+                >
+                  <Check size={14} strokeWidth={2} color={semantic.verified} />
+                  <Text style={[styles.flagBtnText, { color: semantic.verified }]}>
+                    Approve
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => handleReview(key, 'sent_home')}
+                  disabled={busy}
+                  style={[styles.flagBtn, styles.flagBtnDeny, busy && styles.flagBtnBusy]}
+                >
+                  <X size={14} strokeWidth={2} color={semantic.attention} />
+                  <Text style={[styles.flagBtnText, { color: semantic.attention }]}>
+                    Deny
+                  </Text>
+                </Pressable>
+              </View>
+            ) : (
+              /* No check-in row behind this worker (gate sign-in), so there is
+                 nothing to approve or deny. Say so rather than show a button
+                 that cannot work. */
+              <Text style={styles.flagHint}>
+                No check-in record to review for this worker.
+              </Text>
+            )}
+          </>
+        )}
+
+        {f.needs_trade && (
+          <>
+            <View style={styles.flagReasonRow}>
+              <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
+              <Text style={[styles.flagReasonText, { color: '#93c5fd' }]}>
+                No trade assigned
+              </Text>
+            </View>
+            {!canAct ? (
+              <Text style={styles.flagHint}>
+                No check-in record to assign a trade on for this worker.
+              </Text>
+            ) : roster.length === 0 ? (
+              <Text style={styles.flagHint}>
+                This project has no trades configured yet, so there is nothing
+                to pick from. An admin adds them on the project.
+              </Text>
+            ) : tradePickerFor === key ? (
+              <View style={styles.tradePicker}>
+                <Text style={styles.flagHint}>Select this worker's trade &amp; company</Text>
+                {roster.map((a, i) => (
+                  <Pressable
+                    key={`${a.trade}|${a.company}|${i}`}
+                    onPress={() => handleAssignTrade(key, index, a)}
+                    disabled={busy}
+                    style={[styles.tradeOption, busy && styles.flagBtnBusy]}
+                  >
+                    <Text style={styles.tradeOptionText}>{a.trade}</Text>
+                    <Text style={styles.tradeOptionSub}>{a.company}</Text>
+                  </Pressable>
+                ))}
+                <Pressable onPress={() => setTradePickerFor(null)} style={styles.tradeCancel}>
+                  <Text style={styles.flagHint}>Cancel</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => setTradePickerFor(key)}
+                disabled={busy}
+                style={[styles.flagBtn, styles.flagBtnAssign, busy && styles.flagBtnBusy]}
+              >
+                <Briefcase size={14} strokeWidth={2} color="#93c5fd" />
+                <Text style={[styles.flagBtnText, { color: '#93c5fd' }]}>
+                  Assign Trade
+                </Text>
+              </Pressable>
+            )}
+          </>
+        )}
+
+        {!f.needs_trade && f.assigned_trade ? (
+          <Text style={styles.flagStatusText}>
+            Trade assigned: {f.assigned_trade} — {f.assigned_company}
+          </Text>
+        ) : null}
+      </View>
+    );
+  };
+
   if (loading) {
     return (
       <AnimatedBackground>
@@ -395,6 +680,11 @@ export default function PreShiftSignIn() {
                     </View>
                   )}
                 </View>
+
+                {/* FIX 1 — why this worker is flagged, and what the CP can do
+                    about it. Soft: the row is never removed and Submit is
+                    never blocked. */}
+                {renderWorkerFlags(worker, index)}
 
                 {/* Name */}
                 <View style={styles.workerField}>
@@ -649,6 +939,72 @@ function buildStyles(colors, isDark) {
     borderColor: 'rgba(96,165,250,0.25)',
   },
   autoFilledText: { fontSize: 10, color: '#60a5fa', fontWeight: '600' },
+
+  // FIX 1 — per-row warning block (specific reason + tap-only actions)
+  flagBlock: {
+    marginBottom: spacing.sm,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+    backgroundColor: semantic.attentionBg,
+    gap: spacing.xs,
+  },
+  flagReasonRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  flagReasonText: { flex: 1, fontSize: 13, fontWeight: '700', color: semantic.attention },
+  flagStatusText: { fontSize: 12, color: colors.text.secondary },
+  flagHint: { fontSize: 12, color: colors.text.muted },
+  flagActions: { flexDirection: 'row', gap: spacing.sm },
+  flagBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    minHeight: 40,
+  },
+  flagBtnBusy: { opacity: 0.5 },
+  flagBtnApprove: {
+    borderColor: semantic.verifiedBorder,
+    backgroundColor: semantic.verifiedBg,
+  },
+  flagBtnDeny: {
+    borderColor: semantic.criticalBorder,
+    backgroundColor: semantic.criticalBg,
+  },
+  // Tints here are theme tokens, not new literals: src/styles/tokens.js is a
+  // MEASURED census of the colour literals on these screens and
+  // src/styles/tokens.test.cjs re-counts them on every run, so a fresh
+  // withAlpha()/rgba() string in this file would falsify that census.
+  flagBtnAssign: {
+    alignSelf: 'flex-start',
+    flex: 0,
+    borderColor: colors.glass.border,
+  },
+  flagBtnText: { fontSize: 13, fontWeight: '600' },
+  tradePicker: {
+    gap: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+  },
+  tradeOption: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.glass.border,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  tradeOptionText: { fontSize: 14, color: colors.text.primary, fontWeight: '600' },
+  tradeOptionSub: { fontSize: 12, color: colors.text.muted },
+  tradeCancel: { paddingVertical: spacing.sm, alignItems: 'center' },
 
   workerField: {
     flexDirection: 'row',

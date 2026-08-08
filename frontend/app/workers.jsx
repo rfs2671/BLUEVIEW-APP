@@ -12,6 +12,7 @@ import {
   Briefcase,
   Clock,
   MapPin,
+  ShieldAlert,
 } from 'lucide-react-native';
 import AnimatedBackground from '../src/components/AnimatedBackground';
 import { StatCard, IconPod, GlassListItem } from '../src/components/GlassCard';
@@ -27,7 +28,7 @@ import OfflineNotice from '../src/components/OfflineNotice';
 import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
-import { withAlpha } from '../src/styles/semanticColors';
+import { semantic, withAlpha } from '../src/styles/semanticColors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { checkinsAPI } from '../src/utils/api';
 import { settleFetch } from '../src/utils/offlineState';
@@ -65,6 +66,26 @@ async function readCachedCheckIns(date) {
   } catch (_e) {
     return null;
   }
+}
+
+/**
+ * FIX 1 — the SPECIFIC reasons a worker was admitted with warnings.
+ *
+ * Reads fields that already exist on the check-in row GET /api/checkins
+ * returns (sst_status and needs_trade_assignment are written at check-in;
+ * review_decision by /checkins/{id}/review). Nothing new is stored and
+ * nothing is derived that the server did not report.
+ *
+ * Never returns a generic "flagged" — an unnamed warning is not a warning.
+ * BLOCKED workers (missing OSHA) are not represented here at all: they never
+ * completed sign-in, so they have no check-in row on this screen.
+ */
+function checkinWarnings(checkin) {
+  const reasons = [];
+  if (checkin?.sst_status === 'expired') reasons.push('Expired SST card');
+  if (checkin?.sst_status === 'unknown') reasons.push('Unknown SST card');
+  if (checkin?.needs_trade_assignment) reasons.push('No trade assigned');
+  return reasons;
 }
 
 export default function WorkersScreen() {
@@ -170,6 +191,16 @@ export default function WorkersScreen() {
     { icon: Briefcase, value: uniqueCompanies, label: 'Companies' },
   ];
 
+  // FIX 1 — roll the per-row reasons up into one soft banner. It states what
+  // is open; it gates nothing on this screen.
+  const warningSummary = (() => {
+    const tally = new Map();
+    for (const c of todayCheckIns) {
+      for (const r of checkinWarnings(c)) tally.set(r, (tally.get(r) || 0) + 1);
+    }
+    return [...tally.entries()].map(([reason, n]) => `${n} ${reason.toLowerCase()}`);
+  })();
+
   return (
     <AnimatedBackground>
       <SafeAreaView style={s.container} edges={['top']}>
@@ -264,6 +295,20 @@ export default function WorkersScreen() {
             />
           )}
 
+          {/* FIX 1 — admitted-with-warnings summary. Soft and non-blocking:
+              these workers ARE on site and stay listed below; the banner only
+              names what is still open. Only rendered on an answered fetch, so
+              it can never make a claim from a failed read. */}
+          {!loading && fetchState === 'ok' && warningSummary.length > 0 && (
+            <View style={s.warnBanner}>
+              <ShieldAlert size={16} strokeWidth={2} color={semantic.attention} />
+              <View style={{ flex: 1 }}>
+                <Text style={s.warnTitle}>Admitted with warnings</Text>
+                <Text style={s.warnBody}>{warningSummary.join(' · ')}</Text>
+              </View>
+            </View>
+          )}
+
           {/* Checkins List */}
           <View style={s.checkinsList}>
             {loading ? (
@@ -334,6 +379,23 @@ export default function WorkersScreen() {
                               <Text style={s.metaText} numberOfLines={1} ellipsizeMode="tail">{workerInfo.company}</Text>
                             </View>
                           </View>
+
+                          {/* FIX 1 — the specific reason(s) this worker was
+                              admitted with warnings, plus the CP's decision if
+                              one has been recorded. Never the word "flagged". */}
+                          {checkinWarnings(checkin).map((reason) => (
+                            <View key={reason} style={s.warnRow}>
+                              <ShieldAlert size={11} strokeWidth={2} color={semantic.attention} />
+                              <Text style={s.warnRowText} numberOfLines={1}>{reason}</Text>
+                            </View>
+                          ))}
+                          {checkinWarnings(checkin).length > 0 && checkin.review_decision ? (
+                            <Text style={s.warnDecision} numberOfLines={1}>
+                              {checkin.review_decision === 'approved'
+                                ? 'Approved by CP'
+                                : 'Denied — recorded as sent home'}
+                            </Text>
+                          ) : null}
                         </View>
 
                         {/* Status */}
@@ -486,6 +548,23 @@ function buildStyles(colors, isDark) {
   checkinsList: {
     gap: spacing.sm,
   },
+  // FIX 1 — admitted-with-warnings surfaces (soft; they gate nothing).
+  warnBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: semantic.attentionBorder,
+    backgroundColor: semantic.attentionBg,
+  },
+  warnTitle: { fontSize: 13, fontWeight: '700', color: semantic.attention },
+  warnBody: { fontSize: 12, color: colors.text.secondary, marginTop: 2 },
+  warnRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 },
+  warnRowText: { flex: 1, fontSize: 11, fontWeight: '600', color: semantic.attention },
+  warnDecision: { fontSize: 11, color: colors.text.muted, marginTop: 2 },
   // Cards inside one company group used to be bare siblings with no gap, so
   // they visually touched. This gap is what separates card-from-card.
   companyGroup: {

@@ -135,6 +135,17 @@ class _FakeDb:
 
 _ROSTER = [{"trade": "Concrete", "company": "AAZ"}]
 
+_PAIRINGS = "worker_project_trades"
+
+
+def _pairing_writes(db):
+    """The (query, update) upserts server made against worker_project_trades.
+
+    _store_worker_project_trade calls db[COLLECTION].update_one, which this
+    fake records in `.updated`, so the per-project pairing is observable.
+    """
+    return db[_PAIRINGS].updated
+
 
 def _make_db(*, roster=_ROSTER, worker=None, existing_checkin=None):
     db = _FakeDb()
@@ -224,10 +235,17 @@ class RosterPickTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json().get("success"))
         self.assertNotEqual(resp.json().get("blocked"), True)
-        # ONE pick set BOTH fields on the worker doc.
+        # ONE pick set BOTH fields on the per-project pairing — trade and
+        # company are keyed on (worker_id, project_id), never on the global
+        # worker doc, which is created without either field.
         w = db.workers.inserted[0]
-        self.assertEqual(w.get("trade"), "Concrete")
-        self.assertEqual(w.get("company"), "AAZ")
+        self.assertNotIn("trade", w)
+        self.assertNotIn("company", w)
+        query, update = _pairing_writes(db)[-1]
+        self.assertEqual(query["project_id"], "proj1")
+        self.assertEqual(query["worker_id"], str(w["_id"]))
+        self.assertEqual(update["$set"]["trade"], "Concrete")
+        self.assertEqual(update["$set"]["company"], "AAZ")
         # ...and on the frozen checkin row, with the flag cleared.
         row = db.checkins.inserted[0]
         self.assertEqual(row.get("worker_trade"), "Concrete")
@@ -270,11 +288,14 @@ class RosterPickTest(unittest.TestCase):
                            trade_not_listed=True),
             )
         self.assertEqual(resp.status_code, 200, resp.text)
-        w = db.workers.inserted[0]
-        self.assertEqual(w.get("trade"), "Roofing")
-        self.assertEqual(w.get("company"), "Real Sub LLC")
+        row = db.checkins.inserted[0]
+        self.assertEqual(row.get("worker_trade"), "Roofing")
+        self.assertEqual(row.get("worker_company"), "Real Sub LLC")
         # Still flagged for the CP — a typed value doesn't put it on the roster.
-        self.assertTrue(db.checkins.inserted[0].get("needs_trade_assignment"))
+        self.assertTrue(row.get("needs_trade_assignment"))
+        # And a pending trade is never stored as this project's answer: the CP
+        # still has to assign one.
+        self.assertEqual(_pairing_writes(db), [])
 
     def test_returning_valid_pair_not_reprompted(self):
         existing = {

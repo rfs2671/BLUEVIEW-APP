@@ -186,6 +186,16 @@ select option{background:#1e293b;color:#f1f5f9}
   color:#93c5fd;font-size:14px;line-height:1.5;margin-top:4px;
 }
 
+/* Optional toolbox-talk confirmation (roster enhancement — never a gate) */
+.toolbox-opt{
+  display:flex;align-items:flex-start;gap:14px;cursor:pointer;text-align:left;
+  margin-top:16px;padding:14px;border-radius:var(--radius-sm);
+  background:rgba(255,255,255,0.04);border:1px solid var(--border);transition:border .2s;
+}
+.toolbox-opt:active{border-color:var(--blue)}
+.toolbox-opt .toolbox-label{font-size:15px;font-weight:500;line-height:1.4}
+.toolbox-opt .toolbox-hint{font-size:13px;color:var(--text3);line-height:1.4;margin-top:4px}
+
 /* Hide sections */
 .hidden{display:none!important}
 </style>
@@ -238,6 +248,16 @@ select option{background:#1e293b;color:#f1f5f9}
       <div class="returning-name" id="retName"></div>
       <div class="returning-info" id="retInfo"></div>
       <div class="returning-badge" data-i18n="retBadge">✓ Registered</div>
+    </div>
+    <!-- OPTIONAL toolbox-talk confirmation — see toggleToolboxTalk(). Checking
+         in already puts this worker on the toolbox-talk roster; this tap is a
+         roster enhancement only. It never gates or delays the button below. -->
+    <div class="toolbox-opt" onclick="toggleToolboxTalk('tbtBoxRet')">
+      <div class="check-box" id="tbtBoxRet"></div>
+      <div>
+        <div class="toolbox-label" data-i18n="toolboxLabel">Confirm attending today's toolbox talk (optional)</div>
+        <div class="toolbox-hint" data-i18n="toolboxHint">Optional — you are already on the toolbox talk roster. Your check-in is complete either way.</div>
+      </div>
     </div>
     <button class="btn btn-success" style="margin-top:8px;padding:18px;font-size:17px" onclick="quickCheckIn()" data-i18n="retCheckIn">
       ✓ &nbsp;Check In Now
@@ -361,6 +381,18 @@ select option{background:#1e293b;color:#f1f5f9}
         <canvas id="sigCanvas" width="600" height="200" style="width:100%;height:150px;border:2px solid var(--border);border-radius:var(--radius-sm);background:#ffffff;touch-action:none;cursor:crosshair"></canvas>        <div style="display:flex;justify-content:flex-end;margin-top:8px">
           <button class="btn btn-outline" onclick="clearSignature()" style="width:auto;padding:8px 16px;font-size:14px" data-i18n="clearSig">Clear</button>
         </div>
+        <!-- OPTIONAL toolbox-talk confirmation — deliberately placed BELOW the
+             signature pad and outside the signature attestation above. The
+             signature attests to the §3301.11 site orientation ONLY; it is
+             never replayed as toolbox-talk attendance. This is a tap, not a
+             signature, and it never gates the submit button below. -->
+        <div class="toolbox-opt" onclick="toggleToolboxTalk('tbtBoxReg')">
+          <div class="check-box" id="tbtBoxReg"></div>
+          <div>
+            <div class="toolbox-label" data-i18n="toolboxLabel">Confirm attending today's toolbox talk (optional)</div>
+            <div class="toolbox-hint" data-i18n="toolboxHint">Optional — you are already on the toolbox talk roster. Your check-in is complete either way.</div>
+          </div>
+        </div>
         <div style="display:flex;gap:10px;margin-top:16px">
           <button class="btn btn-outline" onclick="goStep(3)" style="flex:1" data-i18n="back">Back</button>
           <button class="btn btn-success" id="btnSubmitReg" onclick="submitRegistration()" disabled style="flex:2" data-i18n="completeCheckIn">Complete Check-In</button>
@@ -475,6 +507,9 @@ const TRANSLATIONS = {
     sigTitle: '✍️ Signature',
     sigDesc: 'By signing below, I confirm that I have reviewed and understand all safety orientation items above.',
     clearSig: 'Clear',
+    // ── OPTIONAL toolbox-talk roster confirmation (not a legal requirement) ──
+    toolboxLabel: "Confirm attending today's toolbox talk (optional)",
+    toolboxHint: 'Optional — you are already on the toolbox talk roster. Your check-in is complete either way.',
     // ── FIX 1: no trades configured — proceed and flag, never block ──
     noTradesProceed: 'No trades are set up yet for this project — you can still check in. Your CP will assign your trade later.',
     // ── FIX 2: card photo is optional; manual entry always available ──
@@ -567,6 +602,9 @@ const TRANSLATIONS = {
     sigTitle: '✍️ Firma',
     sigDesc: 'Al firmar abajo, confirmo que he revisado y entiendo todos los elementos de orientación de seguridad mencionados.',
     clearSig: 'Borrar',
+    // ── Confirmación OPCIONAL de la charla de seguridad (no es un requisito legal) ──
+    toolboxLabel: 'Confirmar que asistí a la charla de seguridad de hoy (opcional)',
+    toolboxHint: 'Opcional — usted ya figura en la lista de la charla de seguridad. Su registro queda completo de todos modos.',
     // ── FIX 1: sin oficios configurados — continuar y marcar, nunca bloquear ──
     noTradesProceed: 'Este proyecto aún no tiene oficios configurados — usted puede registrarse de todos modos. Su CP le asignará su oficio más adelante.',
     // ── FIX 2: la foto es opcional; la entrada manual siempre está disponible ──
@@ -858,32 +896,75 @@ function cropImage(dataUrl, box) {
   const savedId = localStorage.getItem(LS_WORKER_ID);
   
   if (savedPhone && savedId) {
+    // The saved identity is what lets a returning worker skip re-photographing
+    // their OSHA card and redoing the 12-item orientation. It may ONLY be retired
+    // on an authoritative answer — a successful response whose `found` is false,
+    // meaning the server looked and this worker genuinely is not on record.
+    // A FAILED lookup is not an answer: the old code cleared the identity from
+    // the catch, so a single transient blip (Wi-Fi dropping mid-request, a 502
+    // from the proxy) silently wiped the worker's record on this device and
+    // forced a FULL re-registration.
+    let lookup = null;
+    let lookupErr = null;
     try {
-      const lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone });
-      if (lookup.found) {
-        returningWorker = lookup;
-        const oriented = (lookup.safety_orientations || []).some(o => o.project_id === projectId);
-        if (oriented) {
-          showReturningScreen(lookup);
-        } else {
-          showReturningScreen(lookup, true);
-        }
-        return;
+      // project_id is REQUIRED: trade/company are stored per worker PER
+      // PROJECT, so a lookup that names no project can never find this
+      // gate's pairing and every returning worker gets re-prompted for
+      // trade + company. projectId is resolved above (path segment, the
+      // ?project_id query param, or the tag's own /info) before any screen
+      // is shown, so it is always populated by the time we get here.
+      lookup = await api('/checkin/lookup-worker', 'POST', { phone: savedPhone, project_id: projectId });
+    } catch (e) {
+      lookupErr = e;
+    }
+
+    if (lookup && lookup.found) {
+      returningWorker = lookup;
+      // Server-computed and scoped to THIS project (server.py lookup_worker).
+      // The page no longer receives the worker's full orientation history.
+      const oriented = lookup.oriented_on_this_project === true;
+      if (oriented) {
+        showReturningScreen(lookup);
+      } else {
+        showReturningScreen(lookup, true);
       }
-    } catch (e) {}
-    localStorage.removeItem(LS_WORKER_ID);
-    localStorage.removeItem(LS_WORKER_PHONE);
-    localStorage.removeItem(LS_WORKER_NAME);
+      return;
+    }
+
+    if (lookup && lookup.found === false) {
+      // Authoritative "unknown worker" — retire the stale identity.
+      localStorage.removeItem(LS_WORKER_ID);
+      localStorage.removeItem(LS_WORKER_PHONE);
+      localStorage.removeItem(LS_WORKER_NAME);
+    } else if (lookupErr) {
+      // Identity KEPT. Fall through to the phone screen so the worker still has a
+      // way in, but say why — otherwise being asked for a phone number they have
+      // already registered looks like their record was thrown away.
+      showError(lookupErr.network ? connectionErrorHint() : translateApiError(lookupErr), true);
+    }
   }
 
   showScreen('screenPhone');
 })();
 
 // ==================== API HELPER ====================
+// Two very different failures used to arrive here as the same anonymous Error:
+// a TRANSPORT failure (fetch rejects — dropped Wi-Fi, DNS, TLS, abort: no
+// response ever arrived, so the server said NOTHING) and a real server ANSWER
+// that happens to be an error status (4xx/5xx). Callers that act DESTRUCTIVELY
+// on failure — e.g. wiping the worker's saved identity off this device — must be
+// able to tell them apart, so transport failures are tagged `err.network = true`.
 async function api(path, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(API_BASE + path, opts);
+  let res;
+  try {
+    res = await fetch(API_BASE + path, opts);
+  } catch (netErr) {
+    const err = new Error((netErr && netErr.message) || 'Network request failed');
+    err.network = true;
+    throw err;
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Request failed' }));
     throw new Error(err.detail || 'Request failed');
@@ -933,6 +1014,16 @@ function submitFailureHint() {
     : ' — Your check-in did not go through. Fix the issue shown and try again — do NOT re-scan the tag.';
 }
 
+// Bilingual "we couldn't reach the server" hint. Used where a TRANSPORT failure
+// (err.network) must not be reported as though the server had answered — most
+// importantly on the returning-worker lookup, where the worker's saved identity
+// is deliberately KEPT and they need to know nothing was lost.
+function connectionErrorHint() {
+  return currentLang === 'es'
+    ? 'No se pudo conectar con el servidor. Tu registro NO se borró — ingresa tu teléfono o vuelve a intentarlo cuando haya señal.'
+    : 'Could not reach the server. Your record was NOT deleted — enter your phone or try again when you have signal.';
+}
+
 // ==================== PHONE LOOKUP ====================
 async function lookupWorker() {
   const phone = cleanPhone(document.getElementById('phoneInput').value);
@@ -940,12 +1031,20 @@ async function lookupWorker() {
 
   showLoading(t('lookingUp'));
   try {
-    const res = await api('/checkin/lookup-worker', 'POST', { phone });
+    // Same rule as the saved-identity lookup above — without project_id the
+    // per-project (trade, company) pairing is unreachable and the worker is
+    // asked to pick again on a project he has already answered for. This
+    // path is also what the phone-input Enter key runs (keydown handler
+    // below calls lookupWorker()), so both entry points are covered here.
+    const res = await api('/checkin/lookup-worker', 'POST', { phone, project_id: projectId });
     hideLoading();
     
     if (res.found) {
       returningWorker = res;
-      const oriented = (res.safety_orientations || []).some(o => o.project_id === projectId);
+      // Same server-computed, project-scoped flag as the saved-identity path.
+      // Strict === true so a missing/undefined field fails CLOSED and the
+      // worker is sent through orientation rather than silently skipping it.
+      const oriented = res.oriented_on_this_project === true;
       if (oriented) {
         localStorage.setItem(LS_WORKER_ID, res.worker_id);
         localStorage.setItem(LS_WORKER_PHONE, phone);
@@ -1046,6 +1145,8 @@ async function quickCheckIn() {
       trade: returningWorker.trade,
       company: returningWorker.company,
       osha_number: returningWorker.osha_number,
+      // OPTIONAL roster enhancement — false when untouched, never a gate.
+      toolbox_talk_confirm: toolboxTalkConfirmed('tbtBoxRet'),
     });
     hideLoading();
 
@@ -1092,9 +1193,13 @@ async function handleOshaPhoto(input) {
       });
       oshaData = res;
       if (res.box_2d && res.box_2d.length === 4) {
-        oshaImage = await cropImage(oshaImage, res.box_2d);
+        // Task 2: crop ONLY for the on-screen preview. `oshaImage` (what gets SAVED
+        // as osha_card_image on submit) stays the FULL compressed frame — the tight
+        // box_2d crop was producing a badly-cropped stored card. OCR already ran on
+        // the full image; box_2d is a display convenience, not the record.
+        const displayCrop = await cropImage(oshaImage, res.box_2d);
         const zoneImg = document.querySelector('#cameraZone img');
-        if (zoneImg) zoneImg.src = oshaImage;
+        if (zoneImg) zoneImg.src = displayCrop;
       }
       hideLoading();
       ocrAttempts++;
@@ -1356,6 +1461,36 @@ function updateCheckCount() {
   document.getElementById('btnStep3Next').disabled = done < total;
 }
 
+// ==================== TOOLBOX TALK (OPTIONAL) ====================
+// Workers do NOT legally need to sign the toolbox talk — the CP's signature over
+// the roster is the sole legal anchor (NYC DOB §3301.12.3, OSHA 29 CFR 1926.21),
+// and checking in ALREADY places the worker on that roster. This control is a
+// roster ENHANCEMENT that GCs/insurers often ask for, nothing more.
+//
+// Consequently it is NOT a gate: it defaults to unconfirmed, has no validation,
+// no required state and no early return anywhere. A worker who never taps it is
+// still fully on the roster and checks in identically. No signature is captured
+// — the server records the worker's name plus its own timestamp. (The stored
+// signature attests to the §3301.11 site orientation from day one and must not
+// be replayed as toolbox-talk attendance.)
+function toggleToolboxTalk(boxId) {
+  const el = document.getElementById(boxId);
+  if (!el) return;
+  el.classList.toggle('checked');
+}
+
+// Reads the current opt-in. Deliberately total: any missing element or DOM
+// surprise reads as NOT confirmed, so this can never throw on the submit path
+// and never blocks a check-in.
+function toolboxTalkConfirmed(boxId) {
+  try {
+    const el = document.getElementById(boxId);
+    return !!(el && el.classList.contains('checked'));
+  } catch (e) {
+    return false;
+  }
+}
+
 // ==================== STEP NAVIGATION ====================
 function goStep(step) {
   if (step === 2) {
@@ -1465,6 +1600,8 @@ async function submitRegistration() {
       safety_orientation: orientation,
       signature: signatureData,
       language_provided: currentLang,
+      // OPTIONAL roster enhancement — false when untouched, never a gate.
+      toolbox_talk_confirm: toolboxTalkConfirmed('tbtBoxReg'),
       device_info: {
         fingerprint_id: deviceFingerprint,
         components: deviceFingerprintComponents,

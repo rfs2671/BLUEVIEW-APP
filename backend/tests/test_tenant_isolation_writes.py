@@ -32,10 +32,15 @@ front of check-in and must never break it), and require_project_access branch 1
 authorizes a device for its provisioned project only. Both are asserted so a
 future edit cannot quietly break the kiosk.
 
-DELIBERATELY NOT COVERED HERE — the kiosk write path. POST /daily-logs takes
-project_id in the BODY, not the path, so require_project_access cannot read it;
-it needs a device-scoped body-param guard and is pending a separate decision.
-Same shape for PUT /daily-logs/{log_id}. Also excluded: hard-delete (platform
+NOT COVERED BY THE PINS BELOW, BUT NO LONGER OPEN — the kiosk write path. POST
+/daily-logs takes project_id in the BODY, not the path, so it cannot declare
+`Depends(require_project_access)` and the decorator pins here cannot see it. The
+rules were extracted into `_assert_project_access` (a plain coroutine over the
+same three branches, site-device included) and both endpoints now call it: the
+create with the body's project_id, the update with the STORED project_id so the
+body cannot re-parent a log. PUT also pops project_id/company_id out of the $set
+dict. Those two routes are covered by test_daily_logs_tenant_isolation.py
+instead. Also excluded: hard-delete (platform
 operator — require_project_access has no operator bypass and would break the
 cross-company purge), assign-projects and cs-registrations (no {project_id} in
 the path), repair-file-names (deliberately unfiltered for legacy rows), and
@@ -119,6 +124,11 @@ TIER3_ACTIONS = [
     ("post", "/projects/{project_id}/model/aggregate"),
     ("patch", "/projects/{project_id}/model/confirm"),
     ("post", "/projects/{project_id}/schedule/generate"),
+    # Track R2 — the capture-time logbook photo upload. A project-scoped write
+    # that spends STORAGE, so it carries both guards like every other one here,
+    # and joining this list is what makes that a pinned fact rather than a
+    # habit. require_project_access branch 3 is the CP's path to it.
+    ("post", "/projects/{project_id}/logbook-photo"),
 ]
 
 CLEAN_ROUTES = TIER1_DESTRUCTIVE + TIER2_SETTINGS + TIER3_ACTIONS
@@ -134,7 +144,7 @@ def _db_with(projects):
 
 
 class ProjectAccessDirections(unittest.TestCase):
-    """require_project_access IS the authorization boundary for all 25 routes."""
+    """require_project_access IS the authorization boundary for all 26 routes."""
 
     def _call(self, project_id, user):
         import server
@@ -267,8 +277,8 @@ class SourcePin(unittest.TestCase):
         """Adding a route to a tier means adding it here too."""
         self.assertEqual(len(TIER1_DESTRUCTIVE), 6)
         self.assertEqual(len(TIER2_SETTINGS), 6)
-        self.assertEqual(len(TIER3_ACTIONS), 13)
-        self.assertEqual(len(CLEAN_ROUTES), 25)
+        self.assertEqual(len(TIER3_ACTIONS), 14)
+        self.assertEqual(len(CLEAN_ROUTES), 26)
 
 
 class WiringPin(unittest.TestCase):

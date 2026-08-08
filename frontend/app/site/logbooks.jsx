@@ -27,11 +27,27 @@ import { settleFetch } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 
+// EVERY submitted log type this project can file. The list used to stop at
+// three, and the tab filter is `l.log_type === activeTab` — so the other eight
+// types were fetched by /logbooks/project/{id}/submitted, cached to the device,
+// and then had no tab that could show them. An inspector on the site device
+// could not reach a hot work permit, a crane log or an orientation record at
+// all. Labels resolve through src/i18n at render (`labelKey`), not here:
+// module scope is evaluated once at import, before a locale can be set.
 const LOG_TABS = [
-  { key: 'daily_jobsite', label: 'Daily Jobsite', icon: ClipboardList, color: '#3b82f6' },
-  { key: 'toolbox_talk', label: 'Toolbox Talk', icon: BookOpen, color: '#8b5cf6' },
-  { key: 'preshift_signin', label: 'Pre-Shift Sign-In', icon: Users, color: semantic.neutral },
+  { key: 'daily_jobsite', labelKey: 'tabDailyJobsite', icon: ClipboardList, color: '#3b82f6' },
+  { key: 'toolbox_talk', labelKey: 'tabToolboxTalk', icon: BookOpen, color: '#8b5cf6' },
+  { key: 'preshift_signin', labelKey: 'tabPreshift', icon: Users, color: semantic.neutral },
+  { key: 'hot_work', labelKey: 'tabHotWork', icon: AlertTriangle, color: '#8b5cf6' },
+  { key: 'crane_operations', labelKey: 'tabCrane', icon: Truck, color: '#3b82f6' },
+  { key: 'excavation_monitoring', labelKey: 'tabExcavation', icon: Eye, color: semantic.neutral },
+  { key: 'concrete_operations', labelKey: 'tabConcrete', icon: Wrench, color: '#3b82f6' },
+  { key: 'scaffold_maintenance', labelKey: 'tabScaffold', icon: ShieldCheck, color: '#8b5cf6' },
+  { key: 'ssc_daily_safety_log', labelKey: 'tabSsc', icon: ClipboardList, color: semantic.neutral },
+  { key: 'osha_log', labelKey: 'tabOsha', icon: FileText, color: '#3b82f6' },
+  { key: 'subcontractor_orientation', labelKey: 'tabOrientation', icon: Users, color: '#8b5cf6' },
 ];
 
 // How many days of submitted records we keep on the device. AsyncStorage is
@@ -58,6 +74,30 @@ const rosterClock = (v) => {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 };
 
+// A stored activity photo has more than one copy, and which ones exist changes
+// over the record's life. `base64` is the full-size original; the backend drops
+// it when the log is FINALIZED, and only after R2 has confirmed both
+// derivatives (server.py _purge_finalized_photo_base64). `thumb_base64` is the
+// ~400px copy written in its place and never removed.
+const inlinePhoto = (b64) => (
+  !b64 ? null : (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`)
+);
+
+// THIS SCREEN IS READ OFFLINE (docCache, OfflineNotice), so an inline copy
+// always beats a URL — an inspector in a dead zone must still see the photo.
+// The served thumbnail is the rung below, for a record whose full-size copy is
+// gone; `uri` is a path on the CP's own phone and stays last, where it was.
+const logbookPhotoUri = (photo, log, activityIndex, photoIndex) => {
+  if (!photo) return null;
+  return inlinePhoto(photo.base64)
+    || inlinePhoto(photo.thumb_base64)
+    || logbooksAPI.getLogbookPhotoUrl(
+      log?.id || log?._id, activityIndex, photoIndex, 'thumb', photo.enhance_status || '',
+    )
+    || photo.uri
+    || null;
+};
+
 export default function SiteLogbooksViewer() {
   const { colors, isDark } = useTheme();
   const s = buildStyles(colors, isDark);
@@ -65,6 +105,11 @@ export default function SiteLogbooksViewer() {
   const { isAuthenticated, isLoading: authLoading, siteMode, siteProject } = useAuth();
   const { isLocked, unlock } = useInspectorLock();
   const toast = useToast();
+  const t = useT('logbookView');
+  const tabLabel = (key) => {
+    const tab = LOG_TABS.find((x) => x.key === key);
+    return tab ? t(tab.labelKey) : key;
+  };
 
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('daily_jobsite');
@@ -366,7 +411,7 @@ export default function SiteLogbooksViewer() {
 
   const DocInfoRow = ({ icon: Icon, text }) => (
     <View style={s.docInfoRow}>
-      <Icon size={16} strokeWidth={1.5} color={colors.text.muted} />
+      {Icon ? <Icon size={16} strokeWidth={1.5} color={colors.text.muted} /> : null}
       <Text style={s.docInfoText}>{text}</Text>
     </View>
   );
@@ -442,7 +487,11 @@ export default function SiteLogbooksViewer() {
             {activities.map((act, i) => (
               <React.Fragment key={i}>
                 <DocTableRow cells={[
-                  { text: `${act.crew_name || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
+                  // crew_id, NOT crew_name — the CP types a crew IDENTIFIER
+                  // (daily_jobsite.jsx EMPTY_ACTIVITY `crew_id`, auto-seeded
+                  // C1/C2/...). crew_name has no writer anywhere in the repo,
+                  // so this cell showed company only on every record.
+                  { text: `${act.crew_id || ''} ${act.company || 'Unknown'}`.trim(), flex: 1.5 },
                   { text: String(act.num_workers || 0), flex: 0.6 },
                   { text: act.work_description || 'N/A', flex: 2 },
                   { text: act.work_locations || 'N/A', flex: 1 },
@@ -450,9 +499,7 @@ export default function SiteLogbooksViewer() {
                 {(act.photos || []).length > 0 && (
                   <View style={s.photoRow}>
                     {act.photos.map((photo, pi) => {
-                      const uri = photo.base64
-                        ? (photo.base64.startsWith('data:') ? photo.base64 : `data:image/jpeg;base64,${photo.base64}`)
-                        : photo.uri;
+                      const uri = logbookPhotoUri(photo, log, i, pi);
                       if (!uri) return null;
                       return <Image key={pi} source={{ uri }} style={s.activityPhoto} resizeMode="cover" />;
                     })}
@@ -626,10 +673,610 @@ export default function SiteLogbooksViewer() {
     );
   };
 
+  // ===========================================================================
+  //  THE OTHER EIGHT TYPES
+  //
+  //  These fell through to a literal "No data available", so the record a DOB
+  //  inspector opened on the site device was BLANK for hot work, crane,
+  //  excavation, concrete, scaffold, the SSC daily log, the OSHA/SST log and
+  //  subcontractor orientation. Payload keys come from the editor that writes
+  //  each one (cited per renderer) and match the PDF renderer
+  //  (server.py generate_single_logbook_html) key for key.
+  // ===========================================================================
+
+  // ABSENT IS STATED, NEVER IMPLIED. A key the CP never filled renders
+  // "— Not recorded" — the same words the PDF/report surface already prints
+  // for the same fact (server.py generate_combined_report). One record must
+  // not read differently on two compliance surfaces, and a blank is ambiguous:
+  // an inspector cannot tell whether the field was never asked or asked and
+  // left unanswered.
+  //
+  // TWO KINDS OF ABSENCE, and they are NOT the same:
+  //   (a) a FIELD missing from a section that IS rendered -> "— Not recorded"
+  //   (b) a ROW missing from a repeating list (load_entries,
+  //       adjacent_buildings, slump_tests, osha entries) -> DROPPED. A row
+  //       that does not exist is not an unrecorded field, and printing one
+  //       would invent a record of work nobody logged.
+  // A whole SECTION whose payload is entirely absent stays absent too.
+  //
+  // false and 0 ARE captured values and do render.
+  const hasVal = (d, key) => {
+    if (!d || typeof d !== 'object' || !(key in d)) return false;
+    const v = d[key];
+    if (typeof v === 'boolean') return true;
+    if (v === null || v === undefined) return false;
+    if (typeof v === 'string') return v.trim() !== '';
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'object') return Object.keys(v).length > 0;
+    return true;
+  };
+
+  // Booleans render as glyphs, matching the attendee "Present" column above —
+  // and sidestepping a Yes/No pair whose Spanish "No" is the English word.
+  const flag = (v) => (v ? '✓' : '✕');
+
+  // Fallback label for a map key with no entry in the label list. A snake_case
+  // key is title-cased; anything else is rendered VERBATIM — the kiosk keys its
+  // orientation checklist by the item's full English sentence
+  // (backend/checkin.html:674-687), and title-casing a sentence mangles it.
+  const keyLabel = (k) => {
+    const str = String(k);
+    return (str.includes('_') || !str.includes(' '))
+      ? str.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      : str;
+  };
+
+  // Info rows for every field on the form, in the order given. Case (a): a key
+  // the CP never filled still gets its row, reading "— Not recorded", so an
+  // inspector can see WHICH questions went unanswered. The exception is the
+  // whole-section case — if not one spec is on the document there is no
+  // section to annotate and the box is not rendered at all.
+  const DocFields = ({ data, specs }) => {
+    if (!specs.some(([key]) => hasVal(data, key))) return null;
+    return (
+      <View style={s.docInfoBox}>
+        {specs.map(([key, label, fmt]) => (
+          <DocInfoRow
+            key={key}
+            text={`${label}: ${hasVal(data, key)
+              ? (fmt ? fmt(data[key]) : data[key])
+              : t('fNotRecorded')}`}
+          />
+        ))}
+      </View>
+    );
+  };
+
+  // A sparse toggle map over a FIXED checklist — case (a). The editors seed
+  // these as {} and write a key only once the CP taps it, so `present and
+  // false` is an explicit no while `absent` is untouched: an untouched item
+  // reads "— Not recorded", never a silent ✕. An absent or empty map is a
+  // whole absent section and renders nothing.
+  //
+  // The full checklist is only asserted once the map is keyed the way the
+  // in-app editor keys it. The kiosk keys its orientation checklist by the
+  // item's full English SENTENCE (backend/checkin.html:674-687), so a map
+  // carrying none of the known keys renders only what it carries.
+  const ToggleTable = ({ map, items, title, colLabel, icon }) => {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return null;
+    const labels = Object.fromEntries(items);
+    const known = new Set(items.map(([k]) => k));
+    const anyKnown = items.some(([k]) => k in map);
+    const order = (anyKnown ? items.map(([k]) => k) : [])
+      .concat(Object.keys(map).filter((k) => !known.has(k)));
+    if (order.length === 0) return null;
+    return (
+      <>
+        <DocSectionLabel icon={icon || ShieldCheck} label={title} color={semantic.neutral} />
+        <DocTableRow isHeader cells={[{ text: colLabel, flex: 3 }, { text: t('fConfirmed'), flex: 0.8 }]} />
+        {order.map((k) => (
+          <DocTableRow key={k} cells={[
+            { text: labels[k] || keyLabel(k), flex: 3 },
+            { text: k in map ? flag(map[k]) : t('fNotRecorded'), flex: 0.8 },
+          ]} />
+        ))}
+      </>
+    );
+  };
+
+  // A row list — case (b). An entirely untouched EMPTY_* seed row is DROPPED
+  // rather than rendered as a line of "— Not recorded": a row that does not
+  // exist is not an unrecorded field. Inside a row that DOES exist, a missing
+  // cell stays empty — the row itself is the record.
+  const RowTable = ({ title, icon, headers, rows }) => {
+    if (!rows.length) return null;
+    return (
+      <>
+        <DocSectionLabel icon={icon} label={title} color={semantic.neutral} />
+        <DocTableRow isHeader cells={headers} />
+        {rows.map((cells, i) => <DocTableRow key={i} cells={cells} />)}
+      </>
+    );
+  };
+
+  const CpSignature = ({ log, label }) => (
+    <View style={s.signatureSection}>
+      <View style={s.signatureDivider} />
+      <SignatureBlock signature={log.cp_signature} label={label || 'Competent Person (CP)'} />
+      {log.cp_name && !log.cp_signature && <Text style={s.signedByName}>CP: {log.cp_name}</Text>}
+    </View>
+  );
+
+  // frontend/app/logbooks/hot_work.jsx:189-199 (save); PRECAUTION_ITEMS :28-36
+  const renderHotWork = (log) => {
+    const data = log.data || {};
+    const specs = [
+      ['work_type', t('hwWorkType')],
+      ['location', t('fLocation')],
+      ['worker_name', t('fWorker')],
+      ['worker_cert_number', t('hwWorkerCert')],
+      ['start_time', t('hwStart')],
+      ['end_time', t('hwEnd')],
+      ['fire_watch_name', t('hwFireWatch')],
+      // The editor captures NO real fire-watch end time — it DERIVES this as
+      // work end + 30 min (hot_work.jsx:42-54). FDNY can require 60, so it is
+      // labelled as the computed default rather than asserted as recorded.
+      ['fire_watch_end_time', t('hwFireWatchUntil'), (v) => `${v} ${t('hwFireWatchDefault')}`],
+    ];
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={specs} />
+        <ToggleTable
+          map={data.precautions}
+          items={[
+            ['area_cleared', t('p_area_cleared')],
+            ['fire_extinguisher_present', t('p_fire_extinguisher_present')],
+            ['sprinklers_operational', t('p_sprinklers_operational')],
+            ['combustibles_covered', t('p_combustibles_covered')],
+            ['fire_watch_assigned', t('p_fire_watch_assigned')],
+            ['ventilation_adequate', t('p_ventilation_adequate')],
+            ['permit_posted', t('p_permit_posted')],
+          ]}
+          title={t('hwPrecautions')}
+          colLabel={t('hwPrecaution')}
+          icon={AlertTriangle}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/crane_operations.jsx:174-181 (save);
+  // PRE_OP_CHECKLIST_ITEMS :24-40; EMPTY_LOAD_ENTRY :42-47
+  const renderCraneOperations = (log) => {
+    const data = log.data || {};
+    // load_weight / radius are unit-less strings as the operator typed them —
+    // the editor captures no unit, so none is shown.
+    const lifts = (data.load_entries || [])
+      .filter((le) => le && ['time', 'description', 'load_weight', 'radius'].some((k) => hasVal(le, k)))
+      .map((le) => [
+        { text: le.time || '', flex: 0.8 },
+        { text: le.description || '', flex: 2 },
+        { text: le.load_weight || '', flex: 1 },
+        { text: le.radius || '', flex: 0.8 },
+      ]);
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={[
+          ['crane_type', t('crType')],
+          ['crane_id', t('crId')],
+          ['operator_name', t('crOperator')],
+          ['operator_license', t('crLicense')],
+        ]} />
+        <ToggleTable
+          map={data.pre_operation_checklist}
+          items={[
+            ['wire_ropes', t('c_wire_ropes')],
+            ['hooks_latches', t('c_hooks_latches')],
+            ['brakes', t('c_brakes')],
+            ['outriggers', t('c_outriggers')],
+            ['load_chart', t('c_load_chart')],
+            ['boom_condition', t('c_boom_condition')],
+            ['anti_two_block', t('c_anti_two_block')],
+            ['fire_extinguisher', t('c_fire_extinguisher')],
+            ['signals_reviewed', t('c_signals_reviewed')],
+            ['area_barricaded', t('c_area_barricaded')],
+            ['wind_speed_checked', t('c_wind_speed_checked')],
+            ['power_lines_clear', t('c_power_lines_clear')],
+            ['load_weight_known', t('c_load_weight_known')],
+            ['rigging_inspected', t('c_rigging_inspected')],
+            ['swing_radius_clear', t('c_swing_radius_clear')],
+          ]}
+          title={t('crPreOp')}
+          colLabel={t('fItem')}
+        />
+        <RowTable
+          title={t('crLiftLog')}
+          icon={Truck}
+          headers={[
+            { text: t('fTime'), flex: 0.8 }, { text: t('fDescription'), flex: 2 },
+            { text: t('crLoadWeight'), flex: 1 }, { text: t('crRadius'), flex: 0.8 },
+          ]}
+          rows={lifts}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/excavation_monitoring.jsx:184-194 (save);
+  // EMPTY_ADJACENT_BUILDING :27-31; `delta` is derived at save (:180-183)
+  const renderExcavationMonitoring = (log) => {
+    const data = log.data || {};
+    const thr = String(data.vibration_threshold || '').trim();
+    const cur = String(data.vibration_current || '').trim();
+    // The over-threshold flag is only meaningful ALONGSIDE a reading. Without
+    // both readings the STATUS reads "— Not recorded" — a bare "Within
+    // threshold" over no measurement is a finding the CP never made. With
+    // NEITHER reading there is no vibration section to annotate at all.
+    const showStatus = !!thr && !!cur && hasVal(data, 'vibration_over_threshold');
+    // Units and per-reading timestamps are NOT captured, so no unit rides in
+    // the headers and there is no time column.
+    const points = (data.adjacent_buildings || [])
+      .filter((b) => b && ['address', 'baseline_reading', 'current_reading', 'delta'].some((k) => hasVal(b, k)))
+      .map((b) => [
+        { text: b.address || '', flex: 1.6 },
+        { text: b.baseline_reading || '', flex: 1 },
+        { text: b.current_reading || '', flex: 1 },
+        { text: b.delta || '', flex: 1 },
+      ]);
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={[
+          ['excavation_depth', t('exDepth')],
+          ['soil_type', t('exSoil')],
+          ['protection_system', t('exProtection')],
+          ['groundwater_observed', t('exGroundwater'), flag],
+          ['atmospheric_testing', t('exAtmospheric'), flag],
+        ]} />
+        {(!!thr || !!cur) && (
+          <>
+            <DocSectionLabel icon={AlertTriangle} label={t('exVibration')} color={semantic.neutral} />
+            <View style={s.docInfoBox}>
+              <DocInfoRow text={`${t('exThreshold')}: ${thr || t('fNotRecorded')}`} />
+              <DocInfoRow text={`${t('exCurrent')}: ${cur || t('fNotRecorded')}`} />
+              <DocInfoRow text={`${t('fStatus')}: ${showStatus
+                ? (data.vibration_over_threshold ? t('exOver') : t('exWithin'))
+                : t('fNotRecorded')}`}
+              />
+            </View>
+          </>
+        )}
+        <RowTable
+          title={t('exPoints')}
+          icon={MapPin}
+          headers={[
+            { text: t('fLocation'), flex: 1.6 }, { text: t('exBaseline'), flex: 1 },
+            { text: t('exCurrent'), flex: 1 }, { text: t('exMovement'), flex: 1 },
+          ]}
+          rows={points}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/concrete_operations.jsx:171-179 (save);
+  // FORMWORK_ITEMS :26-31; EMPTY_SLUMP_TEST :33-37
+  const renderConcreteOperations = (log) => {
+    const data = log.data || {};
+    // `pass` is TRI-STATE (EMPTY_SLUMP_TEST seeds it null). Null renders as
+    // nothing — never as a Fail the CP did not record.
+    const slumps = (data.slump_tests || [])
+      .filter((st) => st && (String(st.time || '').trim() || String(st.value || '').trim() || st.pass !== null && st.pass !== undefined))
+      .map((st) => [
+        { text: st.time || '', flex: 1 },
+        { text: st.value || '', flex: 1 },
+        { text: st.pass === true ? t('coPass') : st.pass === false ? t('coFail') : '', flex: 1 },
+      ]);
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={[
+          ['pour_location', t('coPour')],
+          ['concrete_supplier', t('coSupplier')],
+          ['mix_design', t('coMix')],
+          // volume_ordered / temperature are unit-less as entered.
+          ['volume_ordered', t('coVolume')],
+          ['weather_conditions', t('fWeather')],
+          ['temperature', t('fTemperature')],
+        ]} />
+        <RowTable
+          title={t('coSlumpTests')}
+          icon={ClipboardList}
+          headers={[
+            { text: t('fTime'), flex: 1 }, { text: t('coSlump'), flex: 1 },
+            { text: t('coResult'), flex: 1 },
+          ]}
+          rows={slumps}
+        />
+        <ToggleTable
+          map={data.formwork_checklist}
+          items={[
+            ['shores_plumb', t('fw_shores_plumb')],
+            ['bracing_adequate', t('fw_bracing_adequate')],
+            ['formwork_clean', t('fw_formwork_clean')],
+            ['no_gaps', t('fw_no_gaps')],
+          ]}
+          title={t('coFormwork')}
+          colLabel={t('fItem')}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/scaffold_maintenance.jsx:194
+  //   const data = { general_info: generalInfo, answers };
+  // GENERAL_INFO_FIELDS :27-36 (+ shed_type :38/:89); MAINTENANCE_QUESTIONS
+  // :41-61; ANSWER_OPTIONS :63 = YES / NO / N/A
+  const SCAFFOLD_QUESTIONS = () => [
+    ['signs_on_parapets', t('q_signs_on_parapets')],
+    ['base_plates_mudsills', t('q_base_plates_mudsills')],
+    ['scaffold_pins_bolts', t('q_scaffold_pins_bolts')],
+    ['legs_poles_plumb', t('q_legs_poles_plumb')],
+    ['tie_ins_spaced', t('q_tie_ins_spaced')],
+    ['cross_braces', t('q_cross_braces')],
+    ['pipe_clamps_tight', t('q_pipe_clamps_tight')],
+    ['window_jacks_tight', t('q_window_jacks_tight')],
+    ['planks_secured', t('q_planks_secured')],
+    ['decking_planks_condition', t('q_decking_planks_condition')],
+    ['deck_fully_planked', t('q_deck_fully_planked')],
+    ['gaps_open_spaces', t('q_gaps_open_spaces')],
+    ['guardrails_toe_boards', t('q_guardrails_toe_boards')],
+    ['netting_extension', t('q_netting_extension')],
+    ['netting_secured', t('q_netting_secured')],
+    ['parapet_height', t('q_parapet_height')],
+    ['lights_working', t('q_lights_working')],
+    ['deck_clean', t('q_deck_clean')],
+    ['drawings_on_site', t('q_drawings_on_site')],
+  ];
+
+  const renderScaffoldMaintenance = (log) => {
+    const data = log.data || {};
+    const gi = data.general_info || {};
+    const answers = data.answers || {};
+    const questions = SCAFFOLD_QUESTIONS();
+    const labels = Object.fromEntries(questions);
+    const known = new Set(questions.map(([k]) => k));
+    // Answers are YES / NO / N/A strings. An N/A the CP CHOSE is a real answer
+    // and shows as chosen; an UNANSWERED question reads "— Not recorded",
+    // never a silent NO. A form with no answers at all is a whole absent
+    // section and drops the table.
+    const anyAnswered = questions.some(([k]) => hasVal(answers, k));
+    const order = (anyAnswered ? questions.map(([k]) => k) : [])
+      .concat(Object.keys(answers).filter((k) => !known.has(k) && hasVal(answers, k)));
+    const rows = order.map((k) => [
+      { text: labels[k] || keyLabel(k), flex: 3 },
+      { text: hasVal(answers, k) ? String(answers[k]) : t('fNotRecorded'), flex: 0.8 },
+    ]);
+    return (
+      <View style={s.docContent}>
+        {/* general_info.drawings_on_site is a dead duplicate of the answers
+            question of the same key — only the answer is rendered. */}
+        <DocFields data={gi} specs={[
+          ['scaffold_erector', t('scErector')],
+          ['renters_name', t('scRenter')],
+          ['permit_number', t('scPermit')],
+          ['phone', t('scPhone')],
+          ['installation_date', t('scInstall')],
+          ['expiration_date', t('scExpiration')],
+          ['scaffold_height', t('scHeight')],
+          ['num_platforms', t('scPlatforms')],
+          ['shed_type', t('scShedType')],
+        ]} />
+        <RowTable
+          title={t('scChecklist')}
+          icon={ShieldCheck}
+          headers={[{ text: t('scQuestion'), flex: 3 }, { text: t('scAnswer'), flex: 0.8 }]}
+          rows={rows}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/ssc_daily_safety_log.jsx:192-206 (save)
+  const renderSscDailySafetyLog = (log) => {
+    const data = log.data || {};
+    // The five compliance toggles are a fixed list: once ANY of them is on the
+    // document the rest read "— Not recorded" rather than dropping out of the
+    // table. None at all is a whole absent section.
+    const FLAGS = [
+      ['incidents_reported', t('s_incidents_reported')],
+      ['safety_meetings_held', t('s_safety_meetings_held')],
+      ['fire_protection_in_place', t('s_fire_protection_in_place')],
+      ['housekeeping_satisfactory', t('s_housekeeping_satisfactory')],
+      ['ppe_compliance', t('s_ppe_compliance')],
+    ];
+    const flags = FLAGS.some(([k]) => hasVal(data, k)) ? FLAGS : [];
+    // An unwritten narrative reads "— Not recorded", never an asserted "none"
+    // that could pass for a negative finding the CP never made.
+    const NARRATIVE = [
+      ['site_conditions', t('sscSiteConditions')],
+      ['safety_violations_observed', t('sscViolations')],
+      ['corrective_actions_taken', t('sscCorrective')],
+    ];
+    // Incident detail is only meaningful when an incident was reported — but
+    // if one WAS, a missing detail is an unanswered question, not silence.
+    const showIncident = !!data.incidents_reported;
+    const narrative = (showIncident || NARRATIVE.some(([k]) => hasVal(data, k)))
+      ? NARRATIVE : [];
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={[
+          ['project_address', t('sscAddress')],
+          ['ssp_number', t('sscSsp')],
+          ['weather', t('fWeather')],
+          ['workers_on_site_count', t('sscWorkers')],
+        ]} />
+        {flags.length > 0 && (
+          <>
+            <DocSectionLabel icon={ShieldCheck} label={t('sscCompliance')} color={semantic.neutral} />
+            <DocTableRow isHeader cells={[{ text: t('fItem'), flex: 3 }, { text: t('fStatus'), flex: 0.8 }]} />
+            {flags.map(([k, label]) => (
+              <DocTableRow key={k} cells={[
+                { text: label, flex: 3 },
+                { text: hasVal(data, k) ? flag(data[k]) : t('fNotRecorded'), flex: 0.8 },
+              ]} />
+            ))}
+            {/* These five are ToggleRows seeded false, so a rendered "off" may
+                be an untouched default and not a deliberate negative finding.
+                Say so — the same caveat the PDF renderer prints. */}
+            <Text style={s.rosterLegend}>{t('sscDefaultNote')}</Text>
+          </>
+        )}
+        {(narrative.length > 0 || showIncident) && (
+          <>
+            <DocSectionLabel icon={FileText} label={t('sscNarrative')} color={semantic.neutral} />
+            {narrative.map(([k, label]) => (
+              <Text key={k} style={s.docParagraph}>
+                {`${label}: ${hasVal(data, k) ? data[k] : t('fNotRecorded')}`}
+              </Text>
+            ))}
+            {showIncident && (
+              <Text style={s.docParagraph}>
+                {`${t('sscIncidentDetails')}: ${hasVal(data, 'incident_details')
+                  ? data.incident_details : t('fNotRecorded')}`}
+              </Text>
+            )}
+          </>
+        )}
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // frontend/app/logbooks/osha_log.jsx:200  data: { entries }; EMPTY_ENTRY :28-37
+  // NOTE vs generate_combined_report: that renderer adds a Review column by
+  // joining each row to the worker's LIVE certifications. That is a database
+  // read, not a payload key — this screen renders the stored snapshot as
+  // stored, with no invented review state.
+  const renderOshaLog = (log) => {
+    const data = log.data || {};
+    const rows = (data.entries || [])
+      .filter((e) => e && ['worker_name', 'company', 'certification_type', 'card_number', 'expiration']
+        .some((k) => hasVal(e, k)))
+      .map((e) => [
+        { text: e.worker_name || '', flex: 1.5 },
+        { text: e.company || '', flex: 1 },
+        { text: e.certification_type || '', flex: 1 },
+        { text: e.card_number || '', flex: 1 },
+        { text: e.expiration || '', flex: 1 },
+        { text: e.signed ? '✓' : '', flex: 0.5 },
+      ]);
+    return (
+      <View style={s.docContent}>
+        <RowTable
+          title={t('tabOsha')}
+          icon={FileText}
+          headers={[
+            { text: t('fWorker'), flex: 1.5 }, { text: t('fCompany'), flex: 1 },
+            { text: t('oshaCertType'), flex: 1 }, { text: t('oshaCard'), flex: 1 },
+            { text: t('oshaExpiration'), flex: 1 }, { text: t('oshaSigned'), flex: 0.5 },
+          ]}
+          rows={rows}
+        />
+        <CpSignature log={log} />
+      </View>
+    );
+  };
+
+  // ONE DOCUMENT PER WORKER. Payload keys:
+  // frontend/app/logbooks/subcontractor_orientation.jsx:472-483 (manual entry)
+  // and backend/server.py:9900-9912 (kiosk registration) write the same names.
+  // Checklist labels: ORIENTATION_SECTIONS, subcontractor_orientation.jsx:49-87
+  const ORIENTATION_ITEMS = () => [
+    ['hard_hats', t('o_hard_hats')],
+    ['safety_boots', t('o_safety_boots')],
+    ['safety_glasses', t('o_safety_glasses')],
+    ['high_vis', t('o_high_vis')],
+    ['no_horseplay', t('o_no_horseplay')],
+    ['report_hazards', t('o_report_hazards')],
+    ['fall_protection_required', t('o_fall_protection_required')],
+    ['harness_inspection', t('o_harness_inspection')],
+    ['ladder_safety', t('o_ladder_safety')],
+    ['scaffold_rules', t('o_scaffold_rules')],
+    ['emergency_exits', t('o_emergency_exits')],
+    ['first_aid', t('o_first_aid')],
+    ['emergency_contact', t('o_emergency_contact')],
+    ['incident_reporting', t('o_incident_reporting')],
+    ['no_drugs_alcohol', t('o_no_drugs_alcohol')],
+    ['sign_in_out', t('o_sign_in_out')],
+    ['authorized_areas', t('o_authorized_areas')],
+    ['housekeeping', t('o_housekeeping')],
+  ];
+
+  const renderSubcontractorOrientation = (log) => {
+    const data = log.data || {};
+    // The kiosk writes {checked, checked_at} per item and keys it by the item's
+    // full English sentence (backend/checkin.html:674-687, 1574-1579); the
+    // in-app editor writes key -> bool. Both shapes render. An item the
+    // editor's map does not carry reads "— Not recorded"; a map keyed the
+    // kiosk way carries none of the known keys, so it renders only its own
+    // sentences rather than 18 fabricated absences.
+    const checklist = data.checklist;
+    const items = ORIENTATION_ITEMS();
+    const labels = Object.fromEntries(items);
+    const known = new Set(items.map(([k]) => k));
+    const isMap = !!checklist && typeof checklist === 'object' && !Array.isArray(checklist);
+    const anyKnown = isMap && items.some(([k]) => k in checklist);
+    const order = isMap
+      ? (anyKnown ? items.map(([k]) => k) : [])
+        .concat(Object.keys(checklist).filter((k) => !known.has(k)))
+      : [];
+    const checkedOf = (v) => (v && typeof v === 'object' ? !!v.checked : !!v);
+    const rows = order.map((k) => [
+      { text: labels[k] || keyLabel(k), flex: 3 },
+      { text: k in checklist ? flag(checkedOf(checklist[k])) : t('fNotRecorded'), flex: 0.8 },
+    ]);
+    return (
+      <View style={s.docContent}>
+        <DocFields data={data} specs={[
+          ['worker_name', t('fWorker')],
+          ['worker_trade', t('orTrade')],
+          ['worker_company', t('fCompany')],
+          ['osha_number', t('orOsha')],
+          ['orientation_number', t('orNumber')],
+          ['language_provided', t('orLanguage')],
+          ['completed_at', t('orCompleted'), (v) => String(v).slice(0, 19).replace('T', ' ')],
+        ]} />
+        <RowTable
+          title={t('orTopics')}
+          icon={ShieldCheck}
+          headers={[{ text: t('orTopic'), flex: 3 }, { text: t('orReviewed'), flex: 0.8 }]}
+          rows={rows}
+        />
+        {/* LOAD-BEARING: worker_signature is written as null on manual entries
+            (subcontractor_orientation.jsx:481). Key present and empty => say
+            UNSIGNED, so an unattested acknowledgment is never presented as
+            complete. Key absent entirely => say nothing. */}
+        {'worker_signature' in data && (
+          data.worker_signature
+            ? <SignatureBlock signature={data.worker_signature} label={t('orAck')} />
+            : (
+              <View style={s.unsignedBlock}>
+                <Text style={s.unsignedLabel}>{`${t('orAck')}: `}</Text>
+                <Text style={s.unsignedNames}>{t('orUnsigned')}</Text>
+              </View>
+            )
+        )}
+        <CpSignature log={log} label={t('orConductedBy')} />
+      </View>
+    );
+  };
+
   const renderLogContent = (log) => {
     if (log.log_type === 'daily_jobsite') return renderDailyJobsite(log);
     if (log.log_type === 'toolbox_talk') return renderToolboxTalk(log);
     if (log.log_type === 'preshift_signin') return renderPreshiftSignin(log);
+    if (log.log_type === 'hot_work') return renderHotWork(log);
+    if (log.log_type === 'crane_operations') return renderCraneOperations(log);
+    if (log.log_type === 'excavation_monitoring') return renderExcavationMonitoring(log);
+    if (log.log_type === 'concrete_operations') return renderConcreteOperations(log);
+    if (log.log_type === 'scaffold_maintenance') return renderScaffoldMaintenance(log);
+    if (log.log_type === 'ssc_daily_safety_log') return renderSscDailySafetyLog(log);
+    if (log.log_type === 'osha_log') return renderOshaLog(log);
+    if (log.log_type === 'subcontractor_orientation') return renderSubcontractorOrientation(log);
     return <Text style={s.logField}>No data available</Text>;
   };
 
@@ -685,7 +1332,7 @@ export default function SiteLogbooksViewer() {
                   style={[s.tab, isActive && { backgroundColor: `${tab.color}20`, borderColor: `${tab.color}50` }]}
                 >
                   <Icon size={16} strokeWidth={1.5} color={isActive ? tab.color : colors.text.muted} />
-                  <Text style={[s.tabText, isActive && { color: tab.color }]}>{tab.label}</Text>
+                  <Text style={[s.tabText, isActive && { color: tab.color }]}>{t(tab.labelKey)}</Text>
                   {count > 0 && (
                     <View style={[s.tabBadge, { backgroundColor: isActive ? tab.color : colors.text.muted }]}>
                       <Text style={s.tabBadgeText}>{count}</Text>
@@ -713,7 +1360,7 @@ export default function SiteLogbooksViewer() {
                 <FileText size={40} strokeWidth={1} color={colors.text.muted} />
                 <Text style={s.emptyTitle}>No Submitted Logs</Text>
                 <Text style={s.emptyText}>
-                  Submitted {LOG_TABS.find(t => t.key === activeTab)?.label || ''} entries will appear here.
+                  Submitted {tabLabel(activeTab)} entries will appear here.
                 </Text>
               </GlassCard>
             ) : (
@@ -764,7 +1411,7 @@ export default function SiteLogbooksViewer() {
                           <View style={s.docHeader}>
                             <View style={s.docHeaderLeft}>
                               <Text style={s.logType}>
-                                {LOG_TABS.find(t => t.key === log.log_type)?.label || log.log_type}
+                                {tabLabel(log.log_type)}
                               </Text>
                               <Text style={s.docDate}>{formatDate(log.date || date)}</Text>
                             </View>

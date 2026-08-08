@@ -7,7 +7,8 @@ POST /checkins/{id}/assign-trade must:
   • enforce the same per-project auth helper as the review endpoint
   • enforce the project's strict trade roster (no back door around the rule
     register_and_checkin applies)
-  • update the worker doc only when it has no trade yet
+  • store the CP's answer as the worker's pairing for THIS project in
+    worker_project_trades, and write nothing to the global worker document
 """
 
 from __future__ import annotations
@@ -29,9 +30,33 @@ _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent
 sys.path.insert(0, str(_BACKEND))
 
+_FRONTEND = _BACKEND.parent / "frontend"
+_I18N = _FRONTEND / "src" / "i18n"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+
+
+def _catalogue_src(locale):
+    """Raw source of one translation catalogue."""
+    return (_I18N / f"{locale}.js").read_text(encoding="utf-8")
+
+
+def _catalogue_entries(locale, namespace):
+    """{key: literal} DEFINED under one namespace of a catalogue.
+
+    The assign-trade strings used to be declared in a `const TRANSLATIONS`
+    map inside app/logbooks/review.jsx. They now live in
+    frontend/src/i18n/{en,es}.js under the `review` namespace — see
+    frontend/src/i18n/index.js. The screen reaches them via `useT('review')`.
+    """
+    src = _catalogue_src(locale)
+    block = re.search(
+        r"\n  %s: \{(.*?)\n  \}," % re.escape(namespace), src, re.S,
+    )
+    assert block is not None, f"namespace {namespace!r} not found in {locale}.js"
+    return dict(re.findall(r"^    (\w+): '(.*)',$", block.group(1), re.M))
 
 
 class _Result:
@@ -92,6 +117,17 @@ class _FakeDb:
 
 
 _ROSTER = [{"trade": "Carpenter", "company": "Acme Co"}]
+
+_PAIRINGS = "worker_project_trades"
+
+
+def _pairing_writes(db):
+    """The (query, update) upserts server made against worker_project_trades.
+
+    _store_worker_project_trade goes through db[COLLECTION].update_one, which
+    the fake records in `.updated` — so the pairing IS observable here.
+    """
+    return db[_PAIRINGS].updated
 
 
 def _mk_db(*, roster=None, worker=None):
@@ -211,19 +247,30 @@ class AssignTradeTest(unittest.TestCase):
         db.checkins.set_find_one(None)
         self.assertEqual(_post(db, _GOOD).status_code, 404)
 
-    # ── worker-doc side effect ───────────────────────────────────────────
+    # ── per-project pairing side effect ──────────────────────────────────
 
-    def test_worker_trade_filled_when_empty(self):
+    def test_answer_is_stored_as_this_projects_pairing(self):
+        """The CP's answer lands in worker_project_trades keyed on
+        (worker_id, project_id) — the only place trade/company live."""
         db = _mk_db(worker={"_id": "w1", "name": "Jane", "trade": ""})
         _post(db, _GOOD)
-        self.assertEqual(db.workers.last_set("trade"), "Carpenter")
+        writes = _pairing_writes(db)
+        self.assertEqual(len(writes), 1, "no pairing was written")
+        query, update = writes[-1]
+        self.assertEqual(query, {"worker_id": "w1", "project_id": "proj1"})
+        self.assertEqual(update["$set"]["trade"], "Carpenter")
+        self.assertEqual(update["$set"]["company"], "Acme Co")
 
-    def test_existing_worker_trade_not_clobbered(self):
-        """An assignment on one project must not overwrite a trade the worker
-        already carries from elsewhere."""
+    def test_nothing_is_written_to_the_global_worker_document(self):
+        """A worker who already carries a trade from another project keeps it
+        untouched — the assignment is scoped to this project's pairing, so the
+        global worker document is never written at all."""
         db = _mk_db(worker={"_id": "w1", "name": "Jane", "trade": "Electrician"})
         _post(db, _GOOD)
         self.assertIsNone(db.workers.last_set("trade"))
+        self.assertIsNone(db.workers.last_set("company"))
+        # The answer still had to go somewhere — the pairing, not the worker.
+        self.assertEqual(len(_pairing_writes(db)), 1)
 
 
 class AssignTradeFrontendTest(unittest.TestCase):
@@ -240,16 +287,30 @@ class AssignTradeFrontendTest(unittest.TestCase):
         self.assertIn("roster.map", self.src)
 
     def test_assign_strings_bilingual(self):
-        en = set(re.findall(r"^    (\w+):", re.search(
-            r"  en: \{(.*?)\n  \},", self.src, re.S).group(1), re.M))
-        es = set(re.findall(r"^    (\w+):", re.search(
-            r"  es: \{(.*?)\n  \},", self.src, re.S).group(1), re.M))
+        """The assign-trade copy exists in EN and ES.
+
+        Definitions live in src/i18n/{en,es}.js since the i18n migration; the
+        screen consumes them through `useT('review')` (asserted separately).
+        """
+        en = _catalogue_entries("en", "review")
+        es = _catalogue_entries("es", "review")
         for key in ("assignTrade", "chooseTrade", "assigned", "assignFailed",
                     "noRoster", "cancel"):
             self.assertIn(key, en, f"missing EN {key}")
             self.assertIn(key, es, f"missing ES {key}")
-        self.assertEqual(en - es, set())
-        self.assertEqual(es - en, set())
+            # Present is not enough — the ES entry must be a real translation,
+            # not the English literal copied across.
+            self.assertNotEqual(es[key], en[key], f"ES {key} is untranslated")
+        self.assertEqual(es["assignTrade"], "Asignar oficio")
+        self.assertEqual(set(en) - set(es), set())
+        self.assertEqual(set(es) - set(en), set())
+
+    def test_assign_screen_consumes_the_translation_layer(self):
+        """The keys above must be reached through src/i18n, not re-declared."""
+        self.assertIn("from '../../src/i18n'", self.src)
+        self.assertIn("useT('review')", self.src)
+        for key in ("assignTrade", "chooseTrade", "noRoster"):
+            self.assertIn(f"t('{key}')", self.src, f"{key} never rendered")
 
     def test_api_client_method_exists(self):
         api = (_BACKEND.parent / "frontend" / "src" / "utils"
