@@ -2,7 +2,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 import { logbooksAPI } from './api';
 import {
-  getPendingKeys, readDraft, setDraftBackendId, clearPending,
+  getPendingKeys, readDraft, setDraftBackendId, clearPending, writeDraft,
+  uploadPendingActivityPhotos,
 } from './logbookDrafts';
 
 /**
@@ -144,8 +145,33 @@ async function pushOne(key) {
   // trip. (A draft whose push already succeeded was cleared from the index and
   // never reaches this code, so there is no re-push of an already-locked doc.)
 
+  // ── PHOTOS FIRST ────────────────────────────────────────────────────────
+  // A daily_jobsite draft can hold photos whose upload never landed: taken in
+  // a dead zone, or dropped mid-upload. Each is a real file in
+  // documentDirectory with `upload_pending` on its row, and THIS is what gets
+  // them into R2 — before the content push, so the document the server
+  // receives NAMES its photos instead of describing them as pending.
+  //
+  // It also closes a hole that predates the R2 work: this drain has always
+  // pushed `draft.data`, and the draft has never stored base64, so a log that
+  // only ever reached the server through the drain arrived with photo entries
+  // that carried no image data at all.
+  //
+  // A photo that still has not uploaded leaves the key PENDING below, even
+  // when the content push succeeds. Nothing else would ever retry it.
+  let data = draft.data || {};
+  let photosStillPending = false;
+  if (Array.isArray(data.activities)) {
+    const shipped = await uploadPendingActivityPhotos(parsed.projectId, data.activities);
+    if (shipped.uploaded > 0) {
+      data = { ...data, activities: shipped.activities };
+      await writeDraft(key, { data });
+    }
+    photosStillPending = shipped.remaining > 0;
+  }
+
   const body = {
-    data: draft.data || {},
+    data,
     cp_signature: draft.cp_signature,
     cp_name: draft.cp_name,
     status: draft.status || 'draft',
@@ -184,8 +210,8 @@ async function pushOne(key) {
       if (!frozen.ok) {
         return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: draft.backend_id };
       }
-      await clearPending(key);
-      return { key, ok: true, mode: 'update' };
+      if (!photosStillPending) await clearPending(key);
+      return { key, ok: true, mode: 'update', photosPending: photosStillPending };
     }
     const created = await logbooksAPI.create({
       project_id: parsed.projectId,
@@ -199,8 +225,8 @@ async function pushOne(key) {
     if (!frozen.ok) {
       return { key, ok: false, reason: 'finalize-refused', code: frozen.code, logId: newId };
     }
-    await clearPending(key);
-    return { key, ok: true, mode: 'create' };
+    if (!photosStillPending) await clearPending(key);
+    return { key, ok: true, mode: 'create', photosPending: photosStillPending };
   } catch (e) {
     // Still offline, or the server refused. Leave it pending and try later.
     return { key, ok: false, reason: e?.message || 'push-failed' };
