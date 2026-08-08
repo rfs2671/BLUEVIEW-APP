@@ -98,8 +98,9 @@ const editorSrc = LF(fs.readFileSync(EDITOR, 'utf8'));
 const editor = new Function('logbooksAPI', 'existingLogId', `
   ${slice(editorSrc, 'inlinePhotoData', '\n);\n')}
   ${slice(editorSrc, 'isPurgedPhoto', '\n);\n')}
+  ${slice(editorSrc, 'photoForPayload', '\n};\n')}
   ${slice(editorSrc, 'photoTileUri', '\n  );\n')}
-  return { inlinePhotoData, isPurgedPhoto, photoTileUri };
+  return { inlinePhotoData, isPurgedPhoto, photoForPayload, photoTileUri };
 `);
 
 const saved = editor(API_STUB, 'lb1');
@@ -131,8 +132,25 @@ ok(saved.isPurgedPhoto({ thumb_base64: 'VEhVTUI=' }) === true,
 ok(saved.isPurgedPhoto({ uri: 'file:///x.jpg' }) === false
   && saved.isPurgedPhoto(null) === false,
   'editor: a fresh capture is NOT treated as purged — it must still be encoded');
-ok(/if \(stored\.base64 \|\| !stored\.uri \|\| isPurgedPhoto\(stored\)\)/.test(editorSrc),
-  'editor: the save loop skips re-encoding a purged photo from its stale uri');
+// Photos now go to R2 as they are TAKEN and the document carries only the key,
+// so the save path no longer re-encodes anything: photoForPayload replaced the
+// base64 loop. The rule this pinned is unchanged, and is now RUN rather than
+// pattern-matched - a purged photo passes through the payload mapper EXACTLY as
+// it arrived, so a save can never push the full-size copy back into the
+// document the purge just shrank.
+ok(JSON.stringify(saved.photoForPayload(PURGED)) === JSON.stringify(PURGED),
+  'editor: a purged photo goes into the payload untouched, no re-encode');
+ok(saved.photoForPayload(PURGED).base64 === undefined
+  && saved.photoForPayload(PURGED).upload_pending === undefined,
+  'editor: and it gains neither a full-size copy nor a pending-upload marker');
+ok(saved.photoForPayload({ original_r2_key: 'logbook-photos/p/act_1/cap_1.jpg', uri: 'file:///x.jpg' })
+  .base64 === undefined,
+  'editor: a photo already in R2 carries its key into the document, never its bytes');
+ok(saved.photoForPayload({ id: 'cap_1', uri: 'file:///x.jpg' }).upload_pending === true
+  && saved.photoForPayload({ id: 'cap_1', uri: 'file:///x.jpg' }).uri === 'file:///x.jpg',
+  'editor: a photo whose upload has not landed says so AND keeps its local uri');
+ok(saved.photoForPayload({ id: 'cap_1' }) === null,
+  'editor: an entry with nothing local and nothing stored is dropped, not written');
 
 // ── the lightbox label the enhance feature depends on is untouched ──────────
 ok(/enhance_status === 'done'/.test(editorSrc)

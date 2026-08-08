@@ -92,6 +92,14 @@ export default {
     photoCapTitle: 'Limit Reached',
     photoCapBody: 'Maximum {n} photos per subcontractor',
     photoCapRowHint: 'Photo limit reached for this subcontractor',
+    // A capture is copied out of the OS cache into documentDirectory before it
+    // is recorded, because the cache can be evicted. That copy used to fail
+    // SILENTLY and hand back the cache path, so the draft recorded a photo the
+    // app did not own and the CP was never told. It is now reported, and the
+    // photo is not recorded at all — the wording says both halves: it was not
+    // kept, and the fix is to take it again. It never blocks the log.
+    photoNotSavedTitle: 'Photo Not Saved',
+    photoNotSavedBody: 'This device could not store the photo, so it was not kept. Please take it again.',
   },
 
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────

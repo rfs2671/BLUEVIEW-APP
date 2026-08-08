@@ -24,7 +24,16 @@ import { useTheme } from '../../src/context/ThemeContext';
 import FloatingNav from '../../src/components/FloatingNav';
 import CameraCaptureModal, { useCameraPrewarmPermission } from '../../src/components/CameraCaptureModal';
 import { compressUnderCap } from '../../src/utils/compressPhoto';
-import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending, persistActivityPhotos, markFinalized } from '../../src/utils/logbookDrafts';
+import {
+  draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending,
+  persistActivityPhotos, markFinalized,
+  // Track R2 — photos go to R2 as they are TAKEN, so the document never
+  // carries full-size image data. persistPhoto now THROWS on a failed copy
+  // (it used to return the cache uri and say nothing), which is what makes
+  // "a photo taken offline is never lost" a claim this screen can honour.
+  persistPhoto, uploadCapturePhoto, uploadPendingActivityPhotos,
+  photoNeedsUpload, hasPendingPhotoUploads,
+} from '../../src/utils/logbookDrafts';
 // The finalize-gate mechanism LogbookLockBar and the reconnect drain already
 // share. Reused here rather than reimplemented: finalizeErrorCode is the ONE
 // place a FINALIZE_* code is pulled out of an axios error (and the one place
@@ -39,7 +48,6 @@ import { finalizeErrorCode, clearFinalizeError, recordFinalizeError } from '../.
 // else — no response at all — and not be a second, local guess at it.
 import { isOfflineError } from '../../src/utils/offlineState';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
 // ── THE PHOTO CAP: 10 PER SUBCONTRACTOR, AGGREGATED ─────────────────────────
@@ -148,36 +156,59 @@ const isPurgedPhoto = (photo) => Boolean(
   photo && (photo.base64_purged_at || photo.thumb_base64),
 );
 
-const uriToBase64 = async (uri) => {
-  try {
-    if (!uri) return null;
+// Patch ONE photo wherever it currently lives, matched by its CAPTURE ID.
+//
+// Not by (row index, photo index): a background upload can land after the CP
+// has added a row, deleted a sibling or switched subs, and both indexes move
+// when he does. The id does not, and it is unique across every row, so this
+// can never patch a different photo than the one it was told about.
+const patchPhoto = (rows, photoId, patch) => (rows || []).map((a) => (
+  ((a.photos || []).some((p) => p.id === photoId))
+    ? { ...a, photos: a.photos.map((p) => (p.id === photoId ? { ...p, ...patch } : p)) }
+    : a
+));
 
-    // Web: fetch the blob URL and convert to base64 via FileReader
-    if (Platform.OS === 'web') {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          // Strip the data:...;base64, prefix
-          const result = reader.result;
-          const b64 = result ? result.split(',')[1] : null;
-          resolve(b64);
-        };
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
-    }
+const dropPhoto = (rows, photoId) => (rows || []).map((a) => (
+  ((a.photos || []).some((p) => p.id === photoId))
+    ? { ...a, photos: a.photos.filter((p) => p.id !== photoId) }
+    : a
+));
 
-    // Native: use FileSystem
-    const b64 = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    return b64;
-  } catch (err) {
-    console.warn('base64 conversion failed for', uri, err?.message);
-    return null;
+/**
+ * ONE photo, as it is written into the logbook document.
+ *
+ * THE DOCUMENT NO LONGER CARRIES FULL-SIZE IMAGE DATA. A logbook is one
+ * MongoDB document with a 16MB ceiling, and re-encoding each photo to base64
+ * at save time cost ~200KB apiece: ten subcontractors at ten photos each
+ * measured 20,510,438 bytes, so the END-OF-DAY save was rejected outright,
+ * on a signed record, after the CP had done the whole day. Photos go to R2 as
+ * they are taken; the row carries the key.
+ *
+ * Returns null for a photo with nothing left to send, so the caller can drop
+ * it rather than write an empty entry into a compliance record.
+ */
+const photoForPayload = (photo) => {
+  if (!photo || typeof photo !== 'object') return photo;
+  // Client-side bookkeeping only: `pending` and `id` belong to the background
+  // compressor, `persist_failed` to the retake prompt.
+  const { pending, id, persist_failed, ...stored } = photo; // eslint-disable-line no-unused-vars
+  if (stored.original_r2_key) {
+    // In R2. The markers go with the pending state that is now over.
+    const { upload_pending, upload_rejected, ...done } = stored; // eslint-disable-line no-unused-vars
+    return done;
   }
+  if (stored.base64 || isPurgedPhoto(stored)) {
+    // An existing photo round-tripping through a re-save: an inline copy the
+    // backfill has not moved yet, or a finalized photo whose full-size copy
+    // the purge already took. Passed through EXACTLY as it arrived.
+    return stored;
+  }
+  if (!stored.uri) return null;   // nothing local, nothing stored — not a photo
+  // Taken, held on the device, upload not landed. The row says so: the readers
+  // fall back to the local file, and the reconnect drain uploads it and
+  // re-pushes. Deliberately NOT re-encoded to base64 — one such photo is
+  // ~200KB and a hundred of them is the save this whole change exists to stop.
+  return { ...stored, upload_pending: true };
 };
 const WEATHER_OPTIONS = ['Sunny', 'Cloudy', 'Rainy', 'Windy', 'Snow', 'Fog', 'Stormy'];
 const EQUIPMENT_ITEMS = [
@@ -632,6 +663,75 @@ export default function DailyJobsiteLog() {
     return crew ? `Crew ${crew}` : `Activity ${fabTargetIndex + 1}`;
   })();
 
+  // ── THE CAPTURE-TIME UPLOAD ───────────────────────────────────────────────
+  //
+  // Photos go to R2 as they are TAKEN, so the log document never carries
+  // full-size image data (see photoForPayload). The upload is driven off
+  // `activities` rather than bolted onto each capture path, because there are
+  // FOUR ways a photo arrives — the in-process shutter, the gallery picker,
+  // the web picker, and a draft rehydrated after the app was killed — and a
+  // guarantee that has to hold for all four should not be written four times.
+  //
+  // CAPTURE NEVER BLOCKS ON THE NETWORK: this runs after the commit that
+  // already painted the photo, and nothing on the shutter path awaits it.
+  //
+  // ONE ATTEMPT PER PHOTO PER SESSION. The id stays in the set whether the
+  // attempt succeeded or failed, so a failure cannot re-trigger this effect
+  // through its own setActivities and spin. Retries belong to handleSave and
+  // to the reconnect drain, which is where the CP is actually waiting for an
+  // answer.
+  const uploadAttemptedRef = useRef(new Set());
+
+  const uploadOneCapture = useCallback(async (activityId, photo) => {
+    const id = photo.id;
+    let localUri = photo.uri;
+    try {
+      localUri = await persistPhoto(photo.uri, id);
+    } catch (_e) {
+      // THE PHOTO DID NOT SAVE, AND THE CP IS TOLD SO.
+      //
+      // persistPhoto used to swallow this and hand back the OS CACHE uri: the
+      // draft then recorded a path the app does not own, the cache was evicted,
+      // and the photo was gone with nothing having reported it. A photo whose
+      // copy failed is now not recorded at all — it is removed from the row, so
+      // nothing on screen claims evidence that does not exist — and the CP is
+      // asked to retake it. He is NOT blocked from finishing the log.
+      setActivities((prev) => dropPhoto(prev, id));
+      setSessionShotIds((prev) => prev.filter((sid) => sid !== id));
+      toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
+      return;
+    }
+    if (localUri !== photo.uri) setActivities((prev) => patchPhoto(prev, id, { uri: localUri }));
+    try {
+      const key = await uploadCapturePhoto({
+        projectId, activityId, photoId: id, uri: localUri,
+      });
+      setActivities((prev) => patchPhoto(prev, id, {
+        original_r2_key: key, upload_pending: false,
+      }));
+    } catch (_e) {
+      // DEFERRED, NOT LOST. The file is in documentDirectory and its uri is in
+      // the draft, so it survives an app kill; the row keeps `upload_pending`,
+      // so every reader falls back to that local file and the CP never sees a
+      // blank tile in his own log; and handleSave and the reconnect drain both
+      // retry it. The key is a pure function of three stable ids, so a retry
+      // overwrites its own object rather than orphaning one.
+      setActivities((prev) => patchPhoto(prev, id, { upload_pending: true }));
+    }
+  }, [projectId, toast, t]);
+
+  useEffect(() => {
+    if (loading || locked || !projectId) return;
+    activities.forEach((a) => ((a && a.photos) || []).forEach((p) => {
+      // `pending` means the background compress has not finished; uploading now
+      // would send the RAW sensor JPEG the entry still points at.
+      if (!p || !p.id || p.pending) return;
+      if (!photoNeedsUpload(p) || uploadAttemptedRef.current.has(p.id)) return;
+      uploadAttemptedRef.current.add(p.id);
+      uploadOneCapture(a.activity_id, p);
+    }));
+  }, [activities, loading, locked, projectId, uploadOneCapture]);
+
   const pickActivityPhoto = async (activityIndex) => {
     lastEditedRef.current = activityIndex;
     // Counted across the whole bucket, not just this row — that is the fix.
@@ -654,8 +754,11 @@ export default function DailyJobsiteLog() {
     });
     if (result.canceled) return;
     const newPhotos = (result.assets || []).map((asset) => ({
+      // A capture id on EVERY entry point, not just the shutter: it is what the
+      // upload drain keys on, and it is the `photo_id` segment of the R2 key.
+      id: newPhotoId(),
       uri: asset.uri,
-      base64: null, // deferred — will be converted at save time
+      base64: null,
       timestamp: new Date().toISOString(),
     }));
     setActivities(prev => {
@@ -695,7 +798,7 @@ export default function DailyJobsiteLog() {
           if (bucketRemaining(prev, activityIndex) <= 0) return prev;
           return prev.map((a, idx) => {
             if (idx !== activityIndex) return a;
-            return { ...a, photos: [...(a.photos || []), { uri: asset.uri, base64: null, timestamp: new Date().toISOString() }] };
+            return { ...a, photos: [...(a.photos || []), { id: newPhotoId(), uri: asset.uri, base64: null, timestamp: new Date().toISOString() }] };
           });
         });
         return;
@@ -904,58 +1007,67 @@ export default function DailyJobsiteLog() {
       // below is best-effort; offline it's deferred (markPending) and the draft
       // stays the source of truth.
       const _key = draftKey({ projectId, logType: 'daily_jobsite', date });
-      const _persisted = await persistActivityPhotos(activities);
-      await writeDraft(_key, {
-        data: {
-          project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
-          general_description: generalDescription, activities: _persisted,
-          equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
-          visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
-        },
-        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
-      });
 
-      // Let any background compression finish first. Without this, saving
-      // immediately after a capture would base64 the RAW sensor JPEG that the
-      // pending entry still points at — several MB inlined into the log.
-      // allSettled, not all: a failed compress must not block the save.
+      // Let any background compression finish FIRST, before anything reads a
+      // photo's uri. A save fired immediately after a capture would otherwise
+      // persist and upload the RAW sensor JPEG the pending entry still points
+      // at. allSettled, not all: a failed compress must not block the save.
       if (pendingCompressRef.current.length > 0) {
         await Promise.allSettled(pendingCompressRef.current);
       }
 
-      // Convert any URI-only photos to base64 before saving. Encode
-      // sequentially with a setTimeout(0) yield between photos so the
-      // native thread is released between encodes — the old Promise.all
-      // burst held the UI thread and froze submit. Payload shape
-      // unchanged (base64 still inlined under data.activities).
-      const activitiesWithBase64 = [];
-      for (const act of activities) {
-        if (!act.photos || act.photos.length === 0) {
-          activitiesWithBase64.push(act);
-          continue;
-        }
-        const convertedPhotos = [];
-        for (const photo of act.photos) {
-          // `pending`/`id` are client-side bookkeeping for the background
-          // compress. Strip them so the stored photo shape is exactly what it
-          // was before keep-shooting existed — and spread the REST through, so
-          // fields the backend adds (enhance_status, r2 keys) survive a re-save.
-          const { pending, id, ...stored } = photo; // eslint-disable-line no-unused-vars
-          if (stored.base64 || !stored.uri || isPurgedPhoto(stored)) {
-            // already encoded, nothing to encode, or deliberately not re-encoded
-            convertedPhotos.push(stored);
-            continue;
-          }
-          // Prefer the compressed derivative if its job finished. Read from the
-          // ref rather than `photo.uri` because that state update may not have
-          // reached this closure's copy of `activities` yet.
-          const uri = (id && compressedUriRef.current[id]) || stored.uri;
-          await new Promise((resolve) => setTimeout(resolve, 0)); // yield before each encode
-          const b64 = await uriToBase64(uri);
-          convertedPhotos.push({ ...stored, uri, base64: b64 });
-        }
-        activitiesWithBase64.push({ ...act, photos: convertedPhotos });
+      // The rows as they stand AFTER that, not the copy this closure captured.
+      const _rows = activitiesRef.current?.length ? activitiesRef.current : activities;
+      const _persisted = await persistActivityPhotos(_rows);
+      const _draftData = (acts) => ({
+        project_address: projectAddress, weather, weather_temp: weatherTemp, weather_wind: weatherWind,
+        general_description: generalDescription, activities: acts,
+        equipment_on_site: equipmentOnSite, checklist_items: checklistItems, observations,
+        visitors_deliveries: visitorsDeliveries, time_in: timeIn, time_out: timeOut, areas_visited: areasVisited,
+      });
+      await writeDraft(_key, {
+        data: _draftData(_persisted),
+        cp_signature: cpSignature, cp_name: cpName, status: submitStatus,
+      });
+
+      // persistActivityPhotos no longer fails silently. A photo it could not
+      // copy into documentDirectory is NOT recorded with a uri the app cannot
+      // prove it owns — so say so once, and let the CP finish his log.
+      const _lostPhotos = _persisted.reduce(
+        (n, a) => n + ((a.photos || []).filter((p) => p.persist_failed).length), 0,
+      );
+      if (_lostPhotos > 0) toast.error(t('photoNotSavedTitle'), t('photoNotSavedBody'));
+
+      // THE PHOTOS GO TO R2, NOT INTO THE DOCUMENT. Most are already there —
+      // uploaded as they were taken — and this catches the stragglers: a photo
+      // shot seconds ago, or one whose upload failed while the CP was in a
+      // dead zone. Bounded: uploadPendingActivityPhotos abandons the loop on
+      // the first offline failure or 5xx rather than making the CP wait out a
+      // hundred identical timeouts.
+      const _uploaded = await uploadPendingActivityPhotos(projectId, _persisted);
+      if (_uploaded.uploaded > 0) {
+        // The keys just learned, back into screen state and the draft. Merged
+        // by capture id rather than replacing the array, so an edit made while
+        // the save was in flight is not clobbered.
+        const _keyById = new Map();
+        _uploaded.activities.forEach((a) => (a.photos || []).forEach((p) => {
+          if (p.id && p.original_r2_key) _keyById.set(p.id, p.original_r2_key);
+        }));
+        setActivities((prev) => prev.map((a) => ({
+          ...a,
+          photos: (a.photos || []).map((p) => (
+            _keyById.has(p.id)
+              ? { ...p, original_r2_key: _keyById.get(p.id), upload_pending: false }
+              : p
+          )),
+        })));
+        await writeDraft(_key, { data: _draftData(_uploaded.activities) });
       }
+
+      const _payloadActivities = _uploaded.activities.map((act) => ({
+        ...act,
+        photos: (act.photos || []).map(photoForPayload).filter(Boolean),
+      }));
 
       const payload = {
         project_id: projectId,
@@ -967,7 +1079,7 @@ export default function DailyJobsiteLog() {
           weather_temp: weatherTemp,
           weather_wind: weatherWind,
           general_description: generalDescription,
-          activities: activitiesWithBase64,
+          activities: _payloadActivities,
           equipment_on_site: equipmentOnSite,
           checklist_items: checklistItems,
           observations,
@@ -1014,6 +1126,14 @@ export default function DailyJobsiteLog() {
         await markPending(_key);
         console.warn('daily_jobsite push deferred (will sync on reconnect):', pushErr?.message);
       }
+
+      // A PHOTO THAT HAS NOT REACHED R2 KEEPS THE DRAFT PENDING, even when the
+      // content push SUCCEEDED and cleared the marker above. The reconnect
+      // drain is the only thing that will retry that upload, and it only looks
+      // at keys in the pending index — without this, a photo whose upload
+      // failed while the rest of the day saved fine would sit on the device
+      // forever with nothing ever trying again.
+      if (hasPendingPhotoUploads(_uploaded.activities)) await markPending(_key);
 
       await autoSave(cpName, cpSignature).catch(() => {});  // guarded: a CP-PROFILE save failure must never report "Could not save log" on a log that was already saved (and, for immediate types, already FROZEN)
 

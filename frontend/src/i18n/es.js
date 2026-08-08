@@ -78,6 +78,8 @@ export default {
     photoCapTitle: 'Límite alcanzado',
     photoCapBody: 'Máximo {n} fotos por subcontratista',
     photoCapRowHint: 'Se alcanzó el límite de fotos para este subcontratista',
+    photoNotSavedTitle: 'Foto no guardada',
+    photoNotSavedBody: 'Este dispositivo no pudo almacenar la foto, por lo que no se conservó. Tómela de nuevo.',
   },
 
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────

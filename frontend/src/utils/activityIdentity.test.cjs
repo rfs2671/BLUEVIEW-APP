@@ -293,8 +293,12 @@ ok(!/srv_/.test(noComments(seedBodySrc)) && !/srv_/.test(noComments(emptyActivit
   'source: the client never mints anything that looks like a server roster id');
 
 // The save path must not drop either field on the way to the server.
-const saveSpread = /activitiesWithBase64\.push\(\{ \.\.\.act, photos: convertedPhotos \}\)/.test(src)
-  && /activitiesWithBase64\.push\(act\);/.test(src);
+// The base64 re-encode loop is gone - photos go to R2 as they are TAKEN and the
+// document carries only the key - but the rule is the same one: the payload is
+// built by spreading the WHOLE activity and replacing only `photos`, so a field
+// added to a row (activity_id, subcontractor_id) reaches the server without
+// anyone having to remember to list it.
+const saveSpread = /_uploaded\.activities\.map\(\(act\) => \(\{\s*\.\.\.act,\s*photos:/.test(src);
 ok(saveSpread,
   'source: handleSave spreads the whole activity, so both new fields reach the server');
 
