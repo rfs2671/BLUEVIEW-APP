@@ -1,6 +1,13 @@
-// Spanish catalogue. Same namespaces and same key names as ./en.js — the test
-// asserts the two catalogues are key-identical, so a key added to one and
-// forgotten in the other fails CI instead of silently falling back to English.
+// Spanish catalogue. Key-identical to ./en.js for every namespace it declares —
+// the test asserts that, so a key added to one and forgotten in the other fails
+// CI instead of silently falling back to English.
+//
+// It does NOT declare every namespace en.js does. A logbook is a legal record
+// filed with the DOB and is written in English; Spanish belongs where a WORKER
+// must understand what he is signing (the gate, and any worker signature or
+// acknowledgment line inside a logbook). Namespaces that are entirely CP-facing
+// are English-only and are listed in EN_ONLY_NAMESPACES in i18n.test.cjs, which
+// asserts they are absent here rather than merely tolerating the gap.
 //
 // Every string here was moved verbatim out of the component that used to own
 // it.
@@ -77,69 +84,22 @@ export default {
     notPushedHint: 'El servidor rechazó este registro, por lo que NO se guardó y NO está bloqueado. Su trabajo sigue en este dispositivo y sigue siendo editable: corrija el problema indicado arriba y vuelva a enviarlo.',
   },
 
-  // ── app/logbooks/daily_jobsite.jsx — el límite de fotos por actividad ──────
-  // El límite es de 10 fotos POR SUBCONTRATISTA, sumadas en todas las filas
-  // que lo nombran. `{n}` se sustituye desde la constante única del código.
-  dailyJobsite: {
-    photoCapTitle: 'Límite alcanzado',
-    photoCapBody: 'Máximo {n} fotos por subcontratista',
-    photoCapRowHint: 'Se alcanzó el límite de fotos para este subcontratista',
-    screenTitle: 'Registro Diario de Obra',
-
-    sectionProject: 'Información del proyecto',
-    sectionActivities: 'Detalles de la actividad',
-    sectionEquipment: 'Equipo en obra',
-    sectionInspected: 'Elementos inspeccionados',
-    sectionObservations: 'Observaciones de seguridad / infracciones',
-    sectionVisitors: 'Visitantes / entregas',
-    sectionSignOff: 'Firma de la Persona Competente',
-
-    fieldAddress: 'Dirección',
-    fieldWeather: 'Clima',
-    fieldGeneralDescription: 'Descripción general de las actividades de hoy',
-    colCompany: 'EMPRESA',
-    colWorkDescription: 'DESCRIPCIÓN DEL TRABAJO',
-    colWorkLocations: 'UBICACIONES DEL TRABAJO',
-
-    phCompany: 'Empresa',
-    phWorkPerformed: 'Trabajo realizado...',
-    phWorkLocations: 'Pisos, áreas...',
-    phGeneralDescription: 'Describa el trabajo principal realizado hoy...',
-    phObservation: 'Describa la observación...',
-    phResponsibleParty: 'Parte responsable',
-    phRemedy: 'Remedio / acción correctiva',
-    phVisitors: 'Registre visitantes o entregas...',
-
-    photoTake: 'Tomar foto',
-    photoGallery: 'Galería',
-    photoLabel: 'Foto',
-    pendingAssignment: 'Asignación pendiente',
-    autoPopulatedHint: 'Completado automáticamente desde los registros de entrada. Edite si es necesario.',
-
-    permissionDeniedTitle: 'Permiso denegado',
-    permissionDeniedBody: 'Se requiere acceso a la galería para subir fotos',
-    cameraErrorTitle: 'Error de cámara',
-    cameraErrorBody: 'No se pudo abrir la cámara. Verifique los permisos en la configuración del dispositivo.',
-
-    draftSavedTitle: 'Borrador guardado',
-    saveFailedTitle: 'No se pudo guardar el registro',
-    signatureRequiredTitle: 'Se requiere firma',
-    signatureRequiredBody: 'Firme el registro antes de enviarlo: es un registro firmado.',
-    submittedTitle: 'Enviado y firmado',
-    submittedOfflineBody: 'Firmado y bloqueado en este dispositivo. Se sincronizará cuando vuelva a tener conexión.',
-
-    chipsSuggested: 'Sugerido según ayer',
-    chipsAlwaysAvailable: 'Siempre disponible',
-    chipsCatalog: 'Todas las actividades',
-    chipsRemembered: 'Usado en este proyecto',
-    chipOther: 'Otro',
-    chipOtherPrompt: '¿Cuál fue la actividad?',
-    structuralSystemUnknown: 'El sistema estructural no está definido para este proyecto, por lo que se muestran las actividades de hormigón y de CFS.',
-    chipsNoPriorDay: 'No hay un registro anterior para sugerir, por lo que estas son las actividades de inicio del proyecto.',
-
-    photoNotSavedTitle: 'Foto no guardada',
-    photoNotSavedBody: 'Este dispositivo no pudo almacenar la foto, por lo que no se conservó. Tómela de nuevo.',
-  },
+  // ── dailyJobsite — DELIBERATELY ABSENT, NOT MISSING ───────────────────────
+  // A logbook is a legal record filed with the DOB, so it is written in
+  // English. Spanish belongs where a WORKER has to understand what he is
+  // signing — the gate, and any line a worker signs or acknowledges inside a
+  // logbook. Every string in the dailyJobsite namespace is CP-facing (section
+  // headers, field labels, placeholders, photo/permission errors, save and
+  // submit toasts, activity-chip band labels), so none of it is translated.
+  //
+  // The daily jobsite log has no worker signature line; the CP signs it. If one
+  // is ever added, THAT line gets Spanish and the rest of the namespace does
+  // not.
+  //
+  // Safe by construction: translate() falls back to DEFAULT_LOCALE when the
+  // active locale has no entry (src/i18n/index.js), so a Spanish-locale CP sees
+  // English here rather than a blank or a raw key. The i18n test pins this
+  // namespace as EN-only so a translation cannot be added back by accident.
 
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────
   signature: {

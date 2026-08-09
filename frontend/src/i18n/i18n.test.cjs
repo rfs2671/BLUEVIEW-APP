@@ -85,12 +85,48 @@ ok(idxImports.every((m) => m === 'react' || m.startsWith('.')),
   `src/i18n/index.js imports only react + local files (${JSON.stringify(idxImports)})`);
 
 // ── Catalogue integrity ──────────────────────────────────────────────────────
+//
+// EN-ONLY NAMESPACES. A logbook is a legal record filed with the DOB, so it is
+// written in English. Spanish belongs where a WORKER has to understand what he
+// is signing: the gate, and any worker signature or acknowledgment line inside
+// a logbook. A namespace that is entirely CP-facing is therefore English-only.
+//
+// This is an ALLOWLIST, not a relaxation. A namespace named here must be
+// ABSENT from es — declaring it partially, or translating it back later,
+// FAILS. Every namespace not named here keeps the full strict parity rules
+// below (key-identical, no blanks, no untranslated copies). Adding a namespace
+// to this list is a deliberate legal decision, not a way to skip translating.
+const EN_ONLY_NAMESPACES = [
+  // app/logbooks/daily_jobsite.jsx — section headers, field labels,
+  // placeholders, photo/permission errors, save+submit toasts, activity-chip
+  // band labels. All CP-facing; the CP signs this log, no worker does.
+  'dailyJobsite',
+];
+
 const nsEn = Object.keys(I.CATALOGUES.en).sort();
 const nsEs = Object.keys(I.CATALOGUES.es).sort();
-ok(JSON.stringify(nsEn) === JSON.stringify(nsEs),
-  `en and es declare the same namespaces (${nsEn.join(', ')})`);
+const expectedEs = nsEn.filter((ns) => !EN_ONLY_NAMESPACES.includes(ns)).sort();
+
+ok(JSON.stringify(nsEs) === JSON.stringify(expectedEs),
+  `es declares exactly the translated namespaces (${nsEs.join(', ')})`);
+
+// The allowlist must not rot: a name here that no longer exists in en, or one
+// that has quietly reappeared in es, is a stale rule and fails loudly.
+for (const ns of EN_ONLY_NAMESPACES) {
+  ok(nsEn.includes(ns), `EN_ONLY "${ns}": still exists in en (stale allowlist entry otherwise)`);
+  ok(!nsEs.includes(ns),
+    `EN_ONLY "${ns}": absent from es — a logbook is an English legal record`);
+}
 
 for (const ns of nsEn) {
+  if (EN_ONLY_NAMESPACES.includes(ns)) {
+    // Still held to the rules that do not involve a translation.
+    const only = Object.keys(I.CATALOGUES.en[ns]);
+    const blankEn = only.filter((k) => !String(I.CATALOGUES.en[ns][k]).trim());
+    ok(blankEn.length === 0,
+      `${ns} (en-only): no blank strings${blankEn.length ? ` — ${JSON.stringify(blankEn)}` : ''}`);
+    continue;
+  }
   const a = Object.keys(I.CATALOGUES.en[ns]).sort();
   const b = Object.keys(I.CATALOGUES.es[ns]).sort();
   const missingEs = a.filter((k) => !b.includes(k));
@@ -105,6 +141,16 @@ for (const ns of nsEn) {
   const untranslated = a.filter((k) => I.CATALOGUES.en[ns][k] === I.CATALOGUES.es[ns][k]);
   ok(untranslated.length === 0,
     `${ns}: no es value is a copy of the en value${untranslated.length ? ` — ${JSON.stringify(untranslated)}` : ''}`);
+}
+
+// An EN-only namespace must still RESOLVE under a Spanish locale — falling back
+// to English, never to a blank or a raw key. This is what makes the removal
+// safe rather than merely tidy.
+for (const ns of EN_ONLY_NAMESPACES) {
+  const keys = Object.keys(I.CATALOGUES.en[ns]);
+  const bad = keys.filter((k) => I.translate(ns, k, 'es') !== I.CATALOGUES.en[ns][k]);
+  ok(bad.length === 0,
+    `${ns}: every key still resolves to English under the es locale${bad.length ? ` — ${JSON.stringify(bad.slice(0, 5))}` : ''}`);
 }
 
 // The two migrated maps must not have shrunk.
