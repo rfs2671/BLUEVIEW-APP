@@ -23,6 +23,7 @@ import { capitalizeFirst } from '../../src/utils/textFormat';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 
 /**
@@ -53,7 +54,8 @@ export default function PreShiftSignIn() {
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+  const tFinalize = useT('finalize');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -811,6 +813,7 @@ export default function PreShiftSignIn() {
 
           {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
           {!locked && (
+          <>
           <View style={styles.actions}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -824,9 +827,23 @@ export default function PreShiftSignIn() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color={semantic.verified} />}
               onPress={() => handleSave('submitted')}
               loading={saving}
+              disabled={!cpSignature}
               style={styles.submitBtn}
             />
           </View>
+          {/* Pre-shift sign-in is an IMMEDIATE log: it freezes the moment it is
+              submitted, so submitting unsigned would mint a locked, unsigned
+              legal record. This is the morning screen, so the hint matters more
+              here than anywhere — a disabled button with no reason stops a CP at
+              the start of his shift. There is no separate profile screen for the
+              signature (nothing under app/settings writes cp_signature), so the
+              hint names the pad directly above. */}
+          {!cpSignature && (
+            <Text style={styles.signHint}>
+              {tFinalize(profileLoaded ? 'submitNeedsSignature' : 'submitSignatureLoading')}
+            </Text>
+          )}
+          </>
           )}
 
           {/* logType drives the FREEZE MODEL: preshift_signin is IMMEDIATE, so the
@@ -835,6 +852,7 @@ export default function PreShiftSignIn() {
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
+            draftKey={draftKey({ projectId, logType: 'preshift_signin', date })}
             logType="preshift_signin"
             canFinalize={false}
             onFinalized={() => setLocked(true)}
@@ -1109,6 +1127,11 @@ function buildStyles(colors, isDark) {
   },
   totalLabel: { fontSize: 11, fontWeight: '700', color: colors.text.muted, textTransform: 'uppercase', letterSpacing: 0.5 },
   totalValue: { fontSize: 22, fontWeight: '800', color: colors.text.primary },
+
+  signHint: {
+    fontSize: 13, fontWeight: '600', color: semantic.attention,
+    marginTop: spacing.sm, marginBottom: spacing.xl, textAlign: 'center',
+  },
 
   actions: {
     flexDirection: 'row',

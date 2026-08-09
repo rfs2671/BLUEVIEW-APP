@@ -20,6 +20,7 @@ import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
+import { useT } from '../../src/i18n';
 
 const LOG_TYPE = 'hot_work';
 
@@ -60,7 +61,8 @@ export default function HotWorkPermitLog() {
   const { projectId, date } = useLocalSearchParams();
   const { user } = useAuth();
   const toast = useToast();
-  const { cpName, setCpName, cpSignature, setCpSignature, autoSave } = useCpProfile();
+  const { cpName, setCpName, cpSignature, setCpSignature, profileLoaded, autoSave } = useCpProfile();
+  const tFinalize = useT('finalize');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -464,6 +466,7 @@ export default function HotWorkPermitLog() {
 
           {/* Actions — hidden when finalized; the LockBar handles finalize/amend. */}
           {!locked && (
+          <>
           <View style={s.buttonRow}>
             <GlassButton
               title={saving ? 'Saving...' : 'Save Draft'}
@@ -477,9 +480,21 @@ export default function HotWorkPermitLog() {
               icon={<CheckCircle size={16} strokeWidth={1.5} color="#fff" />}
               onPress={() => handleSave('submitted')}
               loading={saving}
+              disabled={!cpSignature}
               style={{ flex: 1, backgroundColor: semantic.verified, borderColor: semantic.verified }}
             />
           </View>
+          {/* An IMMEDIATE log freezes the moment it is submitted, so submitting
+              unsigned would mint a locked, unsigned legal record. Disabling the
+              button alone is a dead end — the CP has no separate profile screen
+              to set a signature on (nothing under app/settings writes
+              cp_signature), so the hint names the pad directly above. */}
+          {!cpSignature && (
+            <Text style={s.signHint}>
+              {tFinalize(profileLoaded ? 'submitNeedsSignature' : 'submitSignatureLoading')}
+            </Text>
+          )}
+          </>
           )}
 
           {/* logType drives the freeze model: for an IMMEDIATE log the LockBar
@@ -488,6 +503,7 @@ export default function HotWorkPermitLog() {
           <LogbookLockBar
             locked={locked}
             logId={existingLogId}
+            draftKey={draftKey({ projectId, logType: LOG_TYPE, date })}
             logType={LOG_TYPE}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
@@ -522,6 +538,10 @@ function buildStyles(colors, isDark) {
     toggleDot: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: colors.text.subtle },
     toggleDotActive: { backgroundColor: semantic.verified, borderColor: semantic.verified },
     buttonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+    signHint: {
+      fontSize: 13, fontWeight: '600', color: semantic.attention,
+      marginTop: spacing.sm, textAlign: 'center',
+    },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     chip: {
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,

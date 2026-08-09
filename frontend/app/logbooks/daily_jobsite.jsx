@@ -1696,6 +1696,7 @@ export default function DailyJobsiteLog() {
             logType={'daily_jobsite'}
             locked={locked}
             logId={existingLogId}
+            draftKey={draftKey({ projectId, logType: 'daily_jobsite', date })}
             canFinalize={false}
             onFinalized={() => setLocked(true)}
             onAmended={fetchData}
