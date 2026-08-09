@@ -315,20 +315,26 @@ class ReviewScreenRoutingTest(unittest.TestCase):
         for extra in ("/project", "/site", "/workers", "/review'"):
             self.assertNotIn(extra, block, f"CP allowlist widened with {extra}")
 
-    def test_review_screen_is_bilingual(self):
-        """Every review string exists in BOTH catalogues.
+    def test_review_screen_is_english_only(self):
+        """Every review string exists in EN, and the namespace is absent from ES.
 
-        The definitions moved out of review.jsx into src/i18n/{en,es}.js, so
-        the parity check follows them there. The screen half of the invariant
-        — that review.jsx actually reads the layer — is asserted below.
+        FLIPPED, not deleted. A logbook is a legal record filed with the DOB and
+        is written in English; Spanish belongs where a WORKER must understand
+        what he is signing. `review` is the CP's decision surface on that
+        record, so it is EN-only by operator ruling.
+
+        The screen half of the invariant — that review.jsx reads the layer
+        rather than carrying its own map — is asserted below and is unchanged.
         """
         en = _catalogue_keys("en", "review")
-        es = _catalogue_keys("es", "review")
         self.assertTrue(en, "review namespace is empty in en.js")
-        self.assertEqual(en - es, set(), f"missing ES: {sorted(en - es)}")
-        self.assertEqual(es - en, set(), f"missing EN: {sorted(es - en)}")
-        # Spot-check that ES is really Spanish and not an English copy.
-        self.assertIn("'Revisión de Registros'", _catalogue_src("es"))
+        # Absence is checked on the raw source: _catalogue_keys asserts the
+        # namespace EXISTS, which is the opposite of what we need here.
+        self.assertIsNone(
+            re.search(r"^\s*review:\s*\{", _catalogue_src("es"), re.M),
+            "review must not be translated — EN-only by ruling; "
+            "translate() falls back to English for an es-locale CP",
+        )
         self.assertIn("'Check-In Review'", _catalogue_src("en"))
 
     def test_review_screen_consumes_the_translation_layer(self):

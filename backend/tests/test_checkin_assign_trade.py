@@ -286,24 +286,35 @@ class AssignTradeFrontendTest(unittest.TestCase):
         # Options come from the project's roster, not free text.
         self.assertIn("roster.map", self.src)
 
-    def test_assign_strings_bilingual(self):
-        """The assign-trade copy exists in EN and ES.
+    def test_assign_strings_are_english_only(self):
+        """The assign-trade copy exists in EN, and DELIBERATELY not in ES.
 
-        Definitions live in src/i18n/{en,es}.js since the i18n migration; the
-        screen consumes them through `useT('review')` (asserted separately).
+        FLIPPED, not deleted. A logbook is a legal record filed with the DOB, so
+        it is written in English; Spanish belongs where a WORKER must understand
+        what he is signing. `review` is the CP's approve / send-home /
+        assign-trade decision surface, so it is EN-only by operator ruling.
+
+        The half of this that actually protects the feature is unchanged: every
+        key the screen needs must EXIST, or the CP sees a raw key. What changed
+        is that ES is now asserted ABSENT rather than translated, so a
+        well-meant translation cannot quietly reappear.
         """
         en = _catalogue_entries("en", "review")
-        es = _catalogue_entries("es", "review")
+        # Absence is checked on the raw source: _catalogue_entries asserts the
+        # namespace EXISTS, which is the opposite of what we need here.
+        es_src = _catalogue_src("es")
+        self.assertIsNone(
+            re.search(r"^\s*review:\s*\{", es_src, re.M),
+            "review must not be translated — EN-only by ruling",
+        )
         for key in ("assignTrade", "chooseTrade", "assigned", "assignFailed",
                     "noRoster", "cancel"):
             self.assertIn(key, en, f"missing EN {key}")
-            self.assertIn(key, es, f"missing ES {key}")
-            # Present is not enough — the ES entry must be a real translation,
-            # not the English literal copied across.
-            self.assertNotEqual(es[key], en[key], f"ES {key} is untranslated")
-        self.assertEqual(es["assignTrade"], "Asignar oficio")
-        self.assertEqual(set(en) - set(es), set())
-        self.assertEqual(set(es) - set(en), set())
+        # Was: es["assignTrade"] == "Asignar oficio", plus EN/ES key parity.
+        # Both asserted the rule that has been reversed. The surviving check is
+        # the one that still protects the CP — the EN copy is real prose, not a
+        # placeholder or the key echoed back.
+        self.assertEqual(en["assignTrade"], "Assign trade")
 
     def test_assign_screen_consumes_the_translation_layer(self):
         """The keys above must be reached through src/i18n, not re-declared."""

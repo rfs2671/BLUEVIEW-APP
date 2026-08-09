@@ -120,8 +120,14 @@ for (const code of SERVER_CODES) {
     ok(!copy.includes(code) && copy !== `code_${code}`,
       `${code}/${loc}: renders prose, never the machine code or the catalogue key`);
   }
-  ok(gateCopyFor('en')(code) !== gateCopyFor('es')(code),
-    `${code}: the Spanish copy is actually translated, not the English string`);
+  // FLIPPED, not dropped. `finalize` is EN-only by ruling: a logbook is a legal
+  // record filed with the DOB and these are the CP's lock and refusal prompts.
+  // Every guard above still runs under BOTH locales — non-empty, its own
+  // message, never the raw code. What changed is that es now resolves to the
+  // English string through translate()'s fallback, which is what makes it
+  // "deliberately English" rather than "missing".
+  ok(gateCopyFor('en')(code) === gateCopyFor('es')(code),
+    `${code}: es resolves to the English copy — EN-only namespace`);
 }
 
 // ── 2. An unrecognised code falls back to the bilingual generic ──────────────
@@ -134,7 +140,8 @@ for (const loc of I.LOCALES) {
     `no code at all/${loc}: falls back to the generic message`);
   ok(GENERIC[loc].trim().length > 0, `generic/${loc}: is non-empty`);
 }
-ok(GENERIC.en !== GENERIC.es, 'the generic fallback itself is bilingual');
+ok(GENERIC.en === GENERIC.es,
+  'the generic fallback resolves to English under es — finalize is EN-only');
 
 // ── 3. The server's raw English detail is never surfaced ─────────────────────
 ok(!/detail/.test(doFinalizeSrc),

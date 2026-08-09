@@ -101,7 +101,28 @@ const EN_ONLY_NAMESPACES = [
   // placeholders, photo/permission errors, save+submit toasts, activity-chip
   // band labels. All CP-facing; the CP signs this log, no worker does.
   'dailyJobsite',
+  // app/site/logbooks.jsx — the filed-log viewer. Read by a CP or a DOB
+  // inspector, and a DOB inspector reads English.
+  'logbookView',
+  // app/logbooks/review.jsx — the CP's approve / send-home / assign-trade
+  // decisions on flagged workers.
+  'review',
+  // src/components/LogbookLockBar.jsx and the eleven editors — lock, refusal
+  // and signature prompts. CP-facing.
+  'finalize',
+  // app/reports.jsx — admin only.
+  'reportPreview',
 ];
+
+// NOT en-only, and deliberately so. `signature` (SignaturePad's affirmation
+// text) renders only on CP screens today, so strictly it would belong above. It
+// is held to the normal strict rules instead because it is the component a
+// WORKER would use if worker signing moves in-app — which is on the roadmap —
+// and deleting its Spanish would delete the mechanism the worker-signature
+// exception depends on. This assertion is the guard: adding `signature` to the
+// allowlist fails here, so the decision cannot be reversed silently.
+ok(!EN_ONLY_NAMESPACES.includes('signature'),
+  'signature stays TRANSLATED — it is what a worker signs if worker signing moves in-app');
 
 const nsEn = Object.keys(I.CATALOGUES.en).sort();
 const nsEs = Object.keys(I.CATALOGUES.es).sort();
@@ -176,9 +197,19 @@ const has = (ns, k, loc) =>
   Object.prototype.hasOwnProperty.call(I.CATALOGUES[loc][ns] || {}, k);
 for (const [ns, used] of [['review', reviewUsed], ['signature', padUsed]]) {
   for (const loc of I.LOCALES) {
-    const unresolved = used.filter((k) => !has(ns, k, loc));
+    // FLIPPED for EN-only namespaces, not dropped. `review` is now English-only
+    // (a CP's approve / send-home decisions), so demanding an es ENTRY would
+    // assert the rule we just reversed. The guard that actually matters is
+    // unchanged and still runs against both locales: every key the component
+    // asks for must RESOLVE to a real string. For an EN-only namespace that
+    // means resolving to the English one through translate()'s fallback —
+    // which is the difference between "deliberately English" and "missing".
+    const enOnly = EN_ONLY_NAMESPACES.includes(ns);
+    const unresolved = enOnly
+      ? used.filter((k) => I.translate(ns, k, loc) !== I.CATALOGUES.en[ns][k])
+      : used.filter((k) => !has(ns, k, loc));
     ok(unresolved.length === 0,
-      `${ns}/${loc}: every key the component asks for resolves${unresolved.length ? ` — ${JSON.stringify(unresolved)}` : ''}`);
+      `${ns}/${loc}: every key the component asks for resolves${enOnly ? ' (to English — EN-only namespace)' : ''}${unresolved.length ? ` — ${JSON.stringify(unresolved)}` : ''}`);
   }
 }
 
@@ -190,8 +221,13 @@ const REASON_CODES = Object.keys(I.CATALOGUES.en.review).filter((k) => k.startsW
 ok(REASON_CODES.length === 5,
   `5 cert-review reason codes are mapped (got ${REASON_CODES.length}: ${REASON_CODES.join(', ')})`);
 for (const loc of I.LOCALES) {
-  const bad = REASON_CODES.filter((k) => !has('review', k, loc));
-  ok(bad.length === 0, `review/${loc}: every reason_ code resolves`);
+  // Same flip as above: `review` is EN-only, so a dynamically built reason key
+  // must resolve to the ENGLISH string under every locale. Still a real guard —
+  // a backend code with no mapped copy renders as the raw key and fails here.
+  const bad = REASON_CODES.filter(
+    (k) => I.translate('review', k, loc) !== I.CATALOGUES.en.review[k],
+  );
+  ok(bad.length === 0, `review/${loc}: every reason_ code resolves (to English)`);
 }
 
 // Nothing was migrated that the screen has stopped using — and nothing is
@@ -205,10 +241,17 @@ ok(JSON.stringify(orphans) === JSON.stringify(['assign', 'refresh']),
   `review: the only unused keys are the two the old map already carried (got ${JSON.stringify(orphans)})`);
 
 // ── translate(): fallback order is es -> en -> the key itself ────────────────
-ok(I.translate('review', 'title', 'es') === I.CATALOGUES.es.review.title,
+// Repointed from `review` to `signature`: review is EN-only now, so it can no
+// longer demonstrate "the active locale wins" — it would pass for the wrong
+// reason. signature is the namespace that still carries Spanish, so it is the
+// one that can actually prove the precedence order.
+ok(I.translate('signature', 'verified', 'es') === I.CATALOGUES.es.signature.verified,
   'translate: the active locale wins');
-ok(I.translate('review', 'title', 'de') === I.CATALOGUES.en.review.title,
+ok(I.translate('signature', 'verified', 'de') === I.CATALOGUES.en.signature.verified,
   'translate: an unknown locale falls back to the current locale (en by default)');
+// And the EN-only direction: a namespace with no es entry resolves to English.
+ok(I.translate('review', 'title', 'es') === I.CATALOGUES.en.review.title,
+  'translate: an EN-only namespace resolves to English under es');
 ok(I.translate('review', 'no_such_key', 'es') === 'no_such_key',
   'translate: a missing key returns the KEY — review.jsx detects unmapped reason codes this way');
 ok(I.translate('nosuchns', 'title', 'es') === 'title',

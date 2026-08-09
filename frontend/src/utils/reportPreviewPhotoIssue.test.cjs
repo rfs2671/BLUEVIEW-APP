@@ -50,12 +50,15 @@ function loadCatalogue(file) {
 const EN = loadCatalogue('en.js');
 const ES = loadCatalogue('es.js');
 
-ok(!!EN.reportPreview && !!ES.reportPreview,
-  'the reportPreview namespace exists in both catalogues');
-ok(EN.reportPreview.failedPhotos.includes('{n}') && ES.reportPreview.failedPhotos.includes('{n}'),
-  'both locales carry the {n} placeholder the call site substitutes');
-ok(EN.reportPreview.failedPhotos !== ES.reportPreview.failedPhotos,
-  'the Spanish string is a translation, not a copy of the English');
+// FLIPPED, not dropped. `reportPreview` is admin-only and EN-only by ruling.
+// The placeholder guard — the thing that actually breaks the feature if it
+// regresses — still runs against EN; the ES side is now asserted ABSENT so a
+// well-meant translation cannot quietly reappear.
+ok(!!EN.reportPreview, 'the reportPreview namespace exists in the EN catalogue');
+ok(EN.reportPreview.failedPhotos.includes('{n}'),
+  'EN carries the {n} placeholder the call site substitutes');
+ok(ES.reportPreview === undefined,
+  'reportPreview is absent from the ES catalogue — admin-only surface');
 
 // ── Slice the REAL guarded block and run it ─────────────────────────────────
 const MARK = '{preview.failed_photo_count > 0 && (';

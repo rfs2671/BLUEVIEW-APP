@@ -38,14 +38,23 @@ function ok(cond, label) {
   else { failed += 1; console.log(`  FAIL  ${label}`); }
 }
 
-// ── src/i18n — the strings themselves, in BOTH locales ──
+// ── src/i18n — the strings themselves ──
+// FLIPPED, not dropped. `review` is EN-only by ruling: it is the CP's approve /
+// send-home / assign-trade decision surface on a legal record. The definitions
+// are asserted in EN; the ES catalogue is asserted to carry NO review namespace
+// at all, so a well-meant translation cannot quietly reappear. Both catalogues
+// are still checked for the dead reason code.
+const EN_SRC = catalogues.find((c) => c.loc === 'en').src;
+const ES_SRC = catalogues.find((c) => c.loc === 'es').src;
 for (const { loc, src } of catalogues) {
   ok(!/reason_EXTRACTION_INCOMPLETE/.test(src),
     `i18n/${loc}: dead reason_EXTRACTION_INCOMPLETE removed (never produced)`);
-  ok(/unknownSst:/.test(src), `i18n/${loc}: unknownSst is defined`);
-  ok(/admittedUnverified:/.test(src), `i18n/${loc}: admittedUnverified is defined`);
-  ok(/\badmit:/.test(src), `i18n/${loc}: 'admit' label is defined (not 'Approve')`);
 }
+ok(/unknownSst:/.test(EN_SRC), 'i18n/en: unknownSst is defined');
+ok(/admittedUnverified:/.test(EN_SRC), 'i18n/en: admittedUnverified is defined');
+ok(/\badmit:/.test(EN_SRC), "i18n/en: 'admit' label is defined (not 'Approve')");
+ok(!/^\s*review:\s*\{/m.test(ES_SRC),
+  'i18n/es: the review namespace is ABSENT — a CP decision on a legal record is English');
 ok(!/reason_EXTRACTION_INCOMPLETE/.test(review),
   'review.jsx: no leftover reference to the dead reason code');
 
@@ -66,10 +75,10 @@ ok(/t\('admit'\)/.test(review),
 // wired. Assert the produced codes each have a key, in both locales.
 for (const code of ['CLASS_UNVERIFIED', 'EXPIRY_IMPLAUSIBLE', 'EXPIRY_UNPARSEABLE',
                      'EXPIRY_CONFLICT', 'DUPLICATE_SST']) {
-  for (const { loc, src } of catalogues) {
-    ok(new RegExp(`reason_${code}:`).test(src),
-      `i18n/${loc}: reason_${code} present (backend can produce it)`);
-  }
+  // EN only — see above. The guard is unchanged in substance: a backend code
+  // with no mapped copy renders as the raw key to the CP, and that still fails.
+  ok(new RegExp(`reason_${code}:`).test(EN_SRC),
+    `i18n/en: reason_${code} present (backend can produce it)`);
 }
 
 // ── checkins.jsx (site view) ──
