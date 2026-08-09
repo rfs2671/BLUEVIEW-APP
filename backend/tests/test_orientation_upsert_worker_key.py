@@ -260,10 +260,15 @@ class OrientationUpsertWorkerKey(unittest.TestCase):
         }
         self.db.logbooks.docs.append(existing)
 
+        # Signed because create_logbook's submit gate now refuses an unsigned
+        # status="submitted" (SUBMIT_MISSING_CP_SIGNATURE). This test is about
+        # the DEDUPE KEY, not about signature policy — the signature is fixture
+        # hygiene, and the assertions below are unchanged.
         dj = LogbookCreate(
             project_id=PROJECT_ID, log_type="daily_jobsite", date=DATE,
             data={"weather": "rain", "activities": [{"crew_id": "C-9"}]},
-            cp_signature=None, cp_name=None, status="submitted",
+            cp_signature={"paths": [[1, 2]], "signed_at": "2026-08-09T12:00:00Z"},
+            cp_name="Carl CP", status="submitted",
         )
         self._create(dj)
 
