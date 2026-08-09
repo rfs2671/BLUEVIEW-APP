@@ -80,6 +80,22 @@ export default {
     notLockedTitle: 'NOT LOCKED ON THE SERVER',
     notLockedHint: 'This log is frozen on this device only. It stays queued and will retry, but the server keeps refusing it until the problem above is fixed.',
     notLockedHintEditor: 'The server refused this log, so it is NOT locked. Your draft is still editable — fix the problem above and submit again.',
+    // The submit-time gate on create/update (server.py create_logbook and
+    // update_logbook). Same machine-code convention as the finalize codes
+    // above: the server names the condition, the client owns the wording.
+    code_SUBMIT_EMPTY_LOG: 'This log is empty. Fill it in before submitting.',
+    code_SUBMIT_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before submitting.',
+    // Shown under a Submit button disabled because no signature is on file. A
+    // CP sets his signature by signing on the log itself — there is no separate
+    // profile screen for it (nothing under app/settings or app/profile writes
+    // cp_signature) — so the copy points at the pad directly above the button.
+    submitNeedsSignature: 'Sign above to submit. Your signature is saved for next time.',
+    submitSignatureLoading: 'Loading your saved signature...',
+    // A queued draft the server REFUSED on the reconnect drain. Distinct from
+    // notLocked* above: nothing was created, so nothing is frozen anywhere —
+    // the work is still on this device and still editable.
+    notPushedTitle: 'NOT SAVED TO THE SERVER',
+    notPushedHint: 'The server refused this log, so it was NOT saved and is NOT locked. Your work is still on this device and still editable — fix the problem above and submit again.',
   },
 
   // ── app/logbooks/daily_jobsite.jsx — the activity photo cap ────────────────

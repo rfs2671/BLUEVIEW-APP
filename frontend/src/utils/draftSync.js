@@ -59,10 +59,32 @@ export function parseDraftKey(key) {
  * `detail` is deliberately never returned from here, so it can never be
  * rendered.
  */
+/**
+ * SUBMIT_ as well as FINALIZE_. The submit-time gate on create_logbook /
+ * update_logbook uses the same convention as the finalize gate — a machine code
+ * in `detail.code`, no prose — so one extractor serves both. The export name is
+ * unchanged because it is the name every caller and test already uses; what
+ * widened is the set of gates the server can refuse at, not the mechanism.
+ */
+const GATE_CODE = /^(?:FINALIZE|SUBMIT)_[A-Z_]+$/;
+
 export function finalizeErrorCode(e) {
   const detail = e?.response?.data?.detail;
   const code = detail && typeof detail === 'object' ? detail.code : null;
-  return typeof code === 'string' && /^FINALIZE_[A-Z_]+$/.test(code) ? code : null;
+  return typeof code === 'string' && GATE_CODE.test(code) ? code : null;
+}
+
+/**
+ * Did the SERVER judge this request, or did it never arrive?
+ *
+ * A 4xx is a refusal: the server looked at the log and said no, and it will keep
+ * saying no until the log changes. Anything else — no response at all, a 5xx —
+ * is not a judgement and must never be reported to the CP as one. Mirrors the
+ * three-way split daily_jobsite.jsx makes on the foreground finalize path.
+ */
+function isServerRefusal(e) {
+  const status = e?.response?.status;
+  return typeof status === 'number' && status >= 400 && status < 500;
 }
 
 /**
@@ -177,6 +199,23 @@ async function pushOne(key) {
     status: draft.status || 'draft',
   };
 
+  // ── DO NOT PUSH AN UNSIGNED SUBMIT ──────────────────────────────────────
+  // The draft stores `status` and `cp_signature` independently (logbookDrafts
+  // writeDraft), so a form with no signature guard could write
+  // `status: 'submitted', cp_signature: null` and this drain would replay it
+  // verbatim. For an IMMEDIATE type the server locks on `status: submitted`, so
+  // that replay is how an unsigned log becomes a permanent record with nobody
+  // watching. Caught here rather than left to the server gate for one reason:
+  // the key must stay pending and the refusal must be recorded, and doing it
+  // before the request means the CP gets the same durable banner whether or not
+  // he ever had signal. The draft is untouched and still editable — signing the
+  // log rewrites it and the next drain sends it.
+  if (body.status === 'submitted' && !body.cp_signature) {
+    const target = draft.backend_id || key;
+    await recordFinalizeError(target, 'SUBMIT_MISSING_CP_SIGNATURE', key);
+    return { key, ok: false, reason: 'unsigned-submit', code: 'SUBMIT_MISSING_CP_SIGNATURE', logId: draft.backend_id || null };
+  }
+
   // Re-apply the freeze server-side once the content has landed, so a log signed
   // offline is locked on the server too. This covers the END_OF_DAY logs, whose
   // freeze is an explicit /finalize (an immediate type auto-locks on
@@ -228,7 +267,28 @@ async function pushOne(key) {
     if (!photosStillPending) await clearPending(key);
     return { key, ok: true, mode: 'create', photosPending: photosStillPending };
   } catch (e) {
-    // Still offline, or the server refused. Leave it pending and try later.
+    // Still offline, or the server REFUSED. Those are not the same thing and
+    // must not look the same to the CP.
+    //
+    // This used to return {ok:false} and nothing else, which left the key
+    // pending with NOTHING on any screen ever saying why — the same silent
+    // shape the finalize path was fixed for. A 4xx is a judgement the server
+    // will keep making, so it is recorded and surfaced; anything else (no
+    // response, a 5xx) is genuinely retryable and stays quiet, because claiming
+    // a refusal that did not happen is its own kind of lie.
+    //
+    // Recorded against backend_id when the log exists, and against the DRAFT
+    // KEY when it does not — a rejected create has no logbook id to hang a
+    // banner on, and the editor knows its own draft key. Same storage, same
+    // record shape, same banner; only the lookup handle differs.
+    if (isServerRefusal(e)) {
+      const target = draft.backend_id || key;
+      await recordFinalizeError(target, finalizeErrorCode(e), key);
+      return {
+        key, ok: false, reason: 'push-refused',
+        code: finalizeErrorCode(e), logId: draft.backend_id || null,
+      };
+    }
     return { key, ok: false, reason: e?.message || 'push-failed' };
   }
 }
@@ -244,11 +304,11 @@ export async function syncPendingDrafts() {
   for (const key of keys) {
     const r = await pushOne(key);
     if (r.ok) synced += 1;
-    else if (r.reason === 'finalize-refused') {
+    else if (r.reason === 'finalize-refused' || r.reason === 'push-refused' || r.reason === 'unsigned-submit') {
       refused += 1;
       // Diagnostic only. The user-visible surface is the banner LogbookLockBar
       // renders from the record written above — this drain has no screen.
-      console.warn(`[draftSync] server refused to finalize ${r.logId} (${r.code || 'no code'}); staying pending`);
+      console.warn(`[draftSync] ${r.reason} for ${r.logId || r.key} (${r.code || 'no code'}); staying pending`);
     }
   }
   if (synced) console.log(`[draftSync] pushed ${synced}/${keys.length} pending draft(s)`);

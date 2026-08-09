@@ -22,12 +22,18 @@ import { spacing, borderRadius } from '../styles/theme';
  * Props:
  *   locked       bool     — the loaded log's is_locked
  *   logId        string   — existing logbook id (null if unsaved)
+ *   draftKey     string   — this log's local draft key. OPTIONAL, and only used
+ *                           when logId is null: a push the server REFUSED before
+ *                           the log existed has no logbook id to be recorded
+ *                           against, so the drain records it against the draft
+ *                           key instead. Without this the refusal is invisible
+ *                           on exactly the logs that were never created.
  *   canFinalize  bool     — show the Finalize button (typically: saved && !locked)
  *   onFinalized  fn       — called after a successful finalize (editor sets locked)
  *   onAmended    fn       — called after a successful amend (editor re-loads; its
  *                           fetch prefers the non-locked child → becomes editable)
  */
-export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized, onAmended, logType }) {
+export default function LogbookLockBar({ locked, logId, draftKey, canFinalize, onFinalized, onAmended, logType }) {
   // FREEZE MODEL: for an IMMEDIATE log the SIGNATURE is the freeze — submitting
   // finalizes it in one action, so a separate "Finalize" button must never
   // appear (offering it would imply the signed log is still open). The Amend
@@ -65,8 +71,11 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
   // the logbook id and shown at the next interaction with that exact log.
   useEffect(() => {
     let alive = true;
-    if (!logId) { setRefusedCode(undefined); return undefined; }
-    readFinalizeError(logId)
+    // logId first; the draft key only when there is no log. A refused CREATE
+    // never produced an id, so the draft key is the only handle that exists.
+    const handle = logId || draftKey;
+    if (!handle) { setRefusedCode(undefined); return undefined; }
+    readFinalizeError(handle)
       .then((rec) => {
         if (!alive) return;
         setRefusedCode(rec ? (rec.code || null) : undefined);
@@ -78,7 +87,7 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
       })
       .catch(() => {});
     return () => { alive = false; };
-  }, [logId]);
+  }, [logId, draftKey]);
 
   const doFinalize = async () => {
     if (!logId || busy) return;
@@ -96,15 +105,23 @@ export default function LogbookLockBar({ locked, logId, canFinalize, onFinalized
     }
   };
 
+  // NOT SAVED vs NOT LOCKED — two different facts, and saying the wrong one is
+  // worse than saying nothing. With no logId the log was never created: nothing
+  // is frozen anywhere and the work exists only on this device. With a logId the
+  // content is on the server and only the LOCK was refused.
+  const neverSaved = !logId;
+
   // `undefined` = no refusal on record; `null` = refused with no recognised code.
   const notLockedBanner = refusedCode === undefined ? null : (
     <View style={s.warnBanner}>
       <AlertTriangle size={16} strokeWidth={2} color={semantic.attention} />
       <View style={s.warnTextWrap}>
-        <Text style={s.warnTitle}>{t('notLockedTitle')}</Text>
+        <Text style={s.warnTitle}>{t(neverSaved ? 'notPushedTitle' : 'notLockedTitle')}</Text>
         <Text style={s.warnBody}>{gateCopy(refusedCode)}</Text>
         <Text style={s.warnBody}>
-          {t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
+          {neverSaved
+            ? t('notPushedHint')
+            : t(refusedSource === 'editor' ? 'notLockedHintEditor' : 'notLockedHint')}
         </Text>
       </View>
     </View>

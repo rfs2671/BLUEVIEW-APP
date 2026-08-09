@@ -15794,6 +15794,35 @@ async def create_logbook(data: LogbookCreate, current_user = Depends(get_current
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # ── SUBMIT GATE ─────────────────────────────────────────────────────────
+    # For the nine IMMEDIATE types the signature IS the freeze: `is_locked` is
+    # set below purely from `status == "submitted"`, so without this check a POST
+    # carrying status="submitted", data={} and cp_signature=None mints a LOCKED,
+    # BLANK, UNSIGNED legal record that can only ever be corrected by amendment.
+    #
+    # Deliberately scoped to `submitted`. A DRAFT may be empty and unsigned —
+    # that is what a draft is, and register_and_checkin's orientation insert
+    # (server.py, "CP must add signature to submit") depends on it.
+    #
+    # PRESENCE ONLY, matching the finalize gate: what counts as a COMPLETE data
+    # payload differs per log type and belongs to the editors, not to the lock.
+    # This does NOT reject a form-shaped payload whose values are all blank —
+    # see the PR body; that needs a per-form minimum-content list.
+    #
+    # Placed after the project check and before the dedupe/upsert below so a
+    # rejected submit mutates nothing at all. The rejection returns a machine
+    # CODE and no prose — same convention as FINALIZE_*; the client owns the
+    # wording (frontend/src/i18n/{en,es}.js, `finalize` namespace).
+    if data.status == "submitted":
+        if not data.data:
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_EMPTY_LOG"},
+            )
+        if not data.cp_signature:
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
+            )
+
     # Check for existing entry same type+date (upsert logic).
     #
     # subcontractor_orientation is the ONE exception: it is PER-WORKER, not a
@@ -15939,6 +15968,38 @@ async def update_logbook(logbook_id: str, data: LogbookUpdate, current_user = De
     )
     if _lock_target and _lock_target.get("is_locked"):
         raise HTTPException(status_code=423, detail="This log is finalized and cannot be edited. Create an amendment instead.")
+
+    # ── SUBMIT GATE ─────────────────────────────────────────────────────────
+    # THE PRIMARY PATH, not a mirror of create_logbook's. The ordinary CP flow is
+    # Save Draft (POST, status=draft) then Submit — and because the log now
+    # exists, Submit arrives HERE as a PUT. This endpoint locks an IMMEDIATE log
+    # on `status == "submitted"` below with no check of any kind, so a gate on
+    # create alone would never see the path the CP actually walks.
+    #
+    # Judged on the EFFECTIVE post-update state, not on the request alone:
+    # LogbookUpdate's fields are all Optional and a submit may legitimately omit
+    # a signature that is already stored. Reading only the request would reject a
+    # properly signed log; reading only the stored doc would miss a signature
+    # arriving in this very request.
+    #
+    # Presence only, and only for `submitted` — same reasoning as create_logbook.
+    # Runs after the 423 and before `update` is built, so a rejection mutates
+    # nothing. The extra read happens only on a submit, never on a draft save.
+    if data.status == "submitted":
+        _cur = existing_lb if current_user.get("role") == "cp" else await db.logbooks.find_one(
+            {"_id": to_query_id(logbook_id)}, {"data": 1, "cp_signature": 1}
+        )
+        _cur = _cur or {}
+        _eff_data = data.data if data.data is not None else _cur.get("data")
+        _eff_sig = data.cp_signature if data.cp_signature is not None else _cur.get("cp_signature")
+        if not _eff_data:
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_EMPTY_LOG"},
+            )
+        if not _eff_sig:
+            raise HTTPException(
+                status_code=400, detail={"code": "SUBMIT_MISSING_CP_SIGNATURE"},
+            )
 
     now = datetime.now(timezone.utc)
     update = {"updated_at": now}

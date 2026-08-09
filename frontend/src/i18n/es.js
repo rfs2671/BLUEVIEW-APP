@@ -69,6 +69,12 @@ export default {
     notLockedTitle: 'NO SE BLOQUEÓ EN EL SERVIDOR',
     notLockedHint: 'Este registro está congelado solo en este dispositivo. Permanece en cola y se reintentará, pero el servidor seguirá rechazándolo hasta que se corrija el problema anterior.',
     notLockedHintEditor: 'El servidor rechazó este registro, por lo que NO está bloqueado. Su borrador sigue siendo editable: corrija el problema indicado arriba y vuelva a enviarlo.',
+    code_SUBMIT_EMPTY_LOG: 'Este registro está vacío. Complételo antes de enviarlo.',
+    code_SUBMIT_MISSING_CP_SIGNATURE: 'Este registro no está firmado. Fírmelo antes de enviarlo.',
+    submitNeedsSignature: 'Firme arriba para enviar. Su firma se guarda para la próxima vez.',
+    submitSignatureLoading: 'Cargando su firma guardada...',
+    notPushedTitle: 'NO SE GUARDÓ EN EL SERVIDOR',
+    notPushedHint: 'El servidor rechazó este registro, por lo que NO se guardó y NO está bloqueado. Su trabajo sigue en este dispositivo y sigue siendo editable: corrija el problema indicado arriba y vuelva a enviarlo.',
   },
 
   // ── app/logbooks/daily_jobsite.jsx — el límite de fotos por actividad ──────
