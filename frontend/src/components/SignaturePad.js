@@ -4,7 +4,7 @@ import { Trash2, Check, PenTool, AlertTriangle } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, borderRadius, typography } from '../styles/theme';
 import { semantic, withAlpha } from '../styles/semanticColors';
-import { useT } from '../i18n';
+import { useT, useLocale } from '../i18n';
 
 /**
  * Renders a set of paths as tiny absolutely-positioned dots inside a container.
@@ -90,7 +90,12 @@ const SignaturePad = ({
   // has already read once. An explicit `lang` prop still wins and hides the
   // toggle — a caller that pins a locale means it.
   const [padLang, setPadLang] = useState(lang);
-  const activeLang = lang ?? padLang;
+  // Resolved to a CONCRETE locale, never undefined, because it is recorded onto
+  // the signature: "the affirmation was shown in en" is a fact, `undefined` is
+  // not. Precedence: an explicit prop, then this pad's own choice, then the app
+  // locale (which has no control today and is always 'en' — see setLocale).
+  const appLocale = useLocale();
+  const activeLang = lang ?? padLang ?? appLocale;
   const t = useT('signature', activeLang);
 
   const [paths, setPaths] = useState([]);
@@ -175,6 +180,8 @@ const SignaturePad = ({
       timestamp: now,
       affirmed: true,
       affirmedAt: now,
+      // WHAT THE SIGNER WAS SHOWN, frozen at this instant. See handleAffirm.
+      affirmedLang: activeLang,
     };
 
     setSignatureData(sigData);
@@ -182,10 +189,20 @@ const SignaturePad = ({
     setIsAffirmed(true);
     isSignedRef.current = true;
     onSignatureCapture?.(sigData);
-  }, [canConfirm, signerName, onSignatureCapture]);
+  }, [canConfirm, signerName, onSignatureCapture, activeLang]);
 
   // ONE explicit affirmative action per document: keep the inherited credential
   // image but stamp a FRESH affirmation timestamp onto THIS record and emit it.
+  //
+  // affirmedLang records WHAT THE SIGNER WAS SHOWN, captured here and FROZEN.
+  // It is written once, next to affirmedAt, from the locale rendering at this
+  // instant — and never read back out of state afterwards. That matters: the
+  // toggle stays usable after signing, so a field that tracked live state would
+  // silently rewrite what the record claims a person was shown. A record that
+  // changes after the fact is worse than no record.
+  //
+  // Precedent for storing it at all: subcontractor_orientation.jsx already
+  // stores language_provided and renders it back.
   const handleAffirm = useCallback(() => {
     const now = new Date().toISOString();
     const base = (signatureData && typeof signatureData === 'object')
@@ -197,11 +214,12 @@ const SignaturePad = ({
       timestamp: now,
       affirmed: true,
       affirmedAt: now,
+      affirmedLang: activeLang,
     };
     setSignatureData(affirmedSig);
     setIsAffirmed(true);
     onSignatureCapture?.(affirmedSig);
-  }, [signatureData, signerName, onSignatureCapture]);
+  }, [signatureData, signerName, onSignatureCapture, activeLang]);
 
   // ── Render active drawing paths (current stroke + completed strokes) ──
   const renderPaths = () => {
