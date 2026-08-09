@@ -311,11 +311,29 @@ ok(/^\s*lang,\s*$/m.test(padSrc),
 
 ok(!/const TRANSLATIONS/.test(reviewSrc), 'review.jsx: the local TRANSLATIONS map is gone');
 ok(/useT\('review'\)/.test(reviewSrc), 'review.jsx: uses the review namespace');
-ok(/useLocale\(\)/.test(reviewSrc) && /setLocale\(/.test(reviewSrc),
-  'review.jsx: its EN/ES toggle reads and writes the app-wide locale');
+// FLIPPED, not dropped. The toggle is GONE from review.jsx by ruling: it
+// controlled nothing there once the screen became English-only, the screen
+// renders no SignaturePad, and the timestamps are unconditional en-US. Its one
+// real effect was remote — an app-wide setLocale changing a pad on another
+// screen. That choice moved onto SignaturePad, beside the sentence being
+// signed. Asserted as an ABSENCE so it cannot drift back.
+ok(!/setLocale\(/.test(reviewSrc),
+  'review.jsx: no language toggle — it controlled nothing on this screen');
+ok(!/useLocale\(\)/.test(reviewSrc),
+  'review.jsx: holds no locale state at all');
 ok(!/setLang/.test(reviewSrc), 'review.jsx: the screen-local lang state is gone');
-ok(/lang === 'es' \? 'es-US' : 'en-US'/.test(reviewSrc),
-  'review.jsx: date formatting still follows the locale');
+ok(/toLocaleString\('en-US'/.test(reviewSrc),
+  "review.jsx: timestamps are unconditional en-US — a filed fact renders one way");
+
+// SignaturePad owns the affirmation's language locally, so there is no session
+// state to lose and nothing else in the app changes with it.
+ok(/const \[padLang, setPadLang\] = useState\(lang\)/.test(padSrc),
+  'SignaturePad: the language choice is LOCAL to the pad');
+ok(/setPadLang\(/.test(padSrc), 'SignaturePad: renders a control that changes it');
+ok(/lang === undefined &&/.test(padSrc),
+  'SignaturePad: the toggle hides when a caller pinned `lang` — a pinned locale means it');
+ok(!/setLocale\(/.test(padSrc),
+  'SignaturePad: it never reaches for the app-wide locale');
 
 // The premise of the whole reconnection: no render site passes lang.
 function walk(dir, out = []) {

@@ -14,12 +14,19 @@
  * What it shows: check-ins where an expired SST is still unreviewed, or the
  * worker checked in with no trade because the project had none configured.
  *
- * Bilingual (EN/ES) via src/i18n (namespace `review`, 47 keys). The strings
- * used to live in a local TRANSLATIONS map here; they moved verbatim, so the
- * rendered output is unchanged. The language toggle in the header now sets the
- * app-wide locale rather than screen-local state, which is what makes
- * SignaturePad's Spanish reachable — none of the 13 screens that render it
- * pass a `lang` prop.
+ * ENGLISH ONLY, via src/i18n (namespace `review`). A logbook is a legal record
+ * filed with the DOB and this is the CP's decision surface on it — approve,
+ * send home, assign trade — so the copy is English and the ES catalogue
+ * deliberately carries no `review` namespace at all (see src/i18n/es.js and the
+ * EN_ONLY_NAMESPACES allowlist in src/i18n/i18n.test.cjs). translate() falls
+ * back to English, so an es-locale CP reads it normally.
+ *
+ * The header used to carry a language toggle. It is gone: it controlled nothing
+ * here once this screen became English-only, this screen renders no
+ * SignaturePad, and the timestamps are unconditional en-US. Its one real effect
+ * was remote — an app-wide setLocale that changed a signature pad on some other
+ * screen. That choice now lives on SignaturePad itself, next to the sentence
+ * being signed.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -57,7 +64,7 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
-import { useLocale, setLocale, useT } from '../../src/i18n';
+import { useT } from '../../src/i18n';
 
 export default function CheckInReviewScreen() {
   const { colors } = useTheme();
@@ -66,10 +73,10 @@ export default function CheckInReviewScreen() {
   const toast = useToast();
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
-  // Was screen-local `useState('en')`. The locale is now app-wide (src/i18n),
-  // so toggling here also reaches components this screen does not render —
-  // SignaturePad in particular, whose `lang` prop no call site passes.
-  const lang = useLocale();
+  // No locale state here any more. This screen is English-only — it is a CP
+  // decision surface on a legal record — and the one thing its old toggle
+  // really controlled, the SignaturePad affirmation, now belongs to the pad
+  // itself, next to the sentence being signed.
   const t = useT('review');
 
   const [projects, setProjects] = useState([]);
@@ -239,7 +246,11 @@ export default function CheckInReviewScreen() {
     if (!iso) return '';
     const d = new Date(iso);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleString(lang === 'es' ? 'es-US' : 'en-US', {
+    // UNCONDITIONAL en-US. This screen is a CP decision surface on a legal
+    // record, and a check-in timestamp is part of that record — es-US and en-US
+    // differ visibly in month names and AM/PM placement, so a locale-dependent
+    // timestamp would render the same filed fact two different ways.
+    return d.toLocaleString('en-US', {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
       hour12: true, timeZone: 'America/New_York',
     });
@@ -257,13 +268,14 @@ export default function CheckInReviewScreen() {
             onPress={() => router.back()}
           />
           <Text style={s.headerTitle}>{t('title')}</Text>
-          <Pressable
-            onPress={() => setLocale(lang === 'en' ? 'es' : 'en')}
-            style={s.langToggle}
-            hitSlop={10}
-          >
-            <Text style={s.langText}>{lang === 'en' ? 'ES' : 'EN'}</Text>
-          </Pressable>
+          {/* The language toggle that used to sit here is gone. It controlled
+              nothing on this screen: review's copy is English-only (a CP
+              decision surface on a legal record), this screen renders no
+              SignaturePad, and the timestamp above is now unconditional en-US.
+              Its one real effect was remote — app-wide setLocale changing a
+              signature pad on some OTHER screen the CP opened later. That
+              choice now lives on the pad itself, with the sentence being
+              signed. */}
         </View>
 
         <ScrollView
@@ -519,12 +531,6 @@ function buildStyles(colors) {
       ...typography.label, flex: 1,
       fontSize: 16, fontWeight: '600', color: colors.text.primary,
     },
-    langToggle: {
-      paddingHorizontal: spacing.sm, paddingVertical: spacing.xs,
-      borderRadius: borderRadius.full, borderWidth: 1,
-      borderColor: colors.glass.border,
-    },
-    langText: { fontSize: 12, fontWeight: '700', color: colors.text.secondary },
     scroll: { flex: 1 },
     scrollContent: { padding: spacing.lg, paddingBottom: 120, gap: spacing.sm },
     subtitle: {
