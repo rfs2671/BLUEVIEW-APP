@@ -16514,6 +16514,7 @@ async def _remember_other_activities(project_id, data) -> None:
 async def get_activity_chips(
     project_id: str,
     date: Optional[str] = None,
+    trade: Optional[str] = None,
     current_user = Depends(get_current_user),
 ):
     """Ranked activity chips for one project-day.
@@ -16553,16 +16554,28 @@ async def get_activity_chips(
     }
     prior = await db.logbooks.find_one(prior_query, sort=[("date", -1)])
 
+    # `trade` is the CREW's free-text roster trade. Without it the caller gets
+    # the whole catalogue, exactly as before. With it, the suggested and
+    # catalog bands narrow to what that trade actually does — an electrical
+    # crew was being offered drywall because the ranking keyed off the
+    # PROJECT's prior day and nothing else.
     ranking = rank_activities(
         project_id=str(project_id),
         prior_activity_ids=_activity_chip_ids((prior or {}).get("data")),
         structural_system=project.get("structural_system"),
         remembered_other_labels=project.get(PROJECT_OTHER_ACTIVITIES_FIELD) or [],
+        trade=trade,
     )
     out = ranking.model_dump()
     # Which day the suggestions were derived from, so the UI can be honest about
     # a stale or absent prior instead of implying the ranking is about today.
     out["prior_date"] = (prior or {}).get("date")
+    # Which taxonomy trades the roster string resolved to, so the caller can
+    # say "we did not recognise this trade" rather than implying the short
+    # list is authoritative. Empty means unfiltered.
+    from app.scheduling.trade_taxonomy_v1 import trades_for_roster
+    out["trade"] = trade or None
+    out["resolved_trades"] = trades_for_roster(trade)
     return out
 
 

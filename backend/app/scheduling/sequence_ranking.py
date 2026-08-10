@@ -116,6 +116,7 @@ def rank_activities(
     structural_system=None,
     remembered_other_labels: Optional[Sequence[str]] = None,
     graph: Optional[SequenceGraph] = None,
+    trade: Optional[str] = None,
 ) -> ActivityRanking:
     """Order the activity chips for one project-day.
 
@@ -129,13 +130,43 @@ def rank_activities(
         Free-text "Other" entries previously recorded for THIS project. They
         come back as their own chips. This function does not read or write that
         store; the caller supplies the labels.
+    trade
+        The crew's free-text roster trade. When it resolves to one or more
+        taxonomy trades, the SUGGESTED and CATALOG bands are narrowed to the
+        activities those trades actually perform, and that trade's new
+        activities are added to the catalogue.
+
+        AN ELECTRICAL CREW MUST NOT BE OFFERED DRYWALL. That was the defect:
+        the ranker keyed off the PROJECT's prior day, so every crew saw the
+        same three suggestions regardless of what it does.
+
+        WHAT IS NEVER FILTERED: the always-available band and "Other". Those
+        are not a trade's work — they are what any crew on any day can log —
+        and filtering them could leave a crew with an empty list. An
+        unrecognized trade also falls through to the unfiltered catalogue:
+        offering everything is worse than offering the right thing, and far
+        better than offering nothing.
+
+        A trade-filtered list is NOT a sequenced one. The new activities carry
+        no edges, so they are offered by trade and ordered by declaration, but
+        cannot rank off what happened yesterday until the signed sequence
+        document gives them edges.
     """
+    from app.scheduling.trade_taxonomy_v1 import (
+        node_ids_for_trades, trades_for_roster, NEW_NODES,
+    )
+    _trades = trades_for_roster(trade)
+    _trade_ids = node_ids_for_trades(_trades) if _trades else frozenset()
     g = graph if graph is not None else build_sequence_rules_v1()
     raw_system = structural_system
     system = resolve_structural_system(raw_system)
     system_set = system != SYSTEM_UNKNOWN
 
     nodes = [n for n in g.nodes if _branch_allowed(n, system)]
+    if _trade_ids:
+        # Only THIS trade's new activities join the catalogue. Adding all 249
+        # unconditionally would bury the sequenced ones under an unusable list.
+        nodes = nodes + [n for n in NEW_NODES if n.id in _trade_ids]
     order: Dict[str, int] = {n.id: i for i, n in enumerate(nodes)}
     label_of: Dict[str, str] = {n.id: getattr(n, "scope", n.id) for n in nodes}
     # The node's own trade, carried onto the chip. An InspectionGate has no
@@ -164,6 +195,8 @@ def rank_activities(
     # Always-available chips keep their own pinned band so their position never
     # moves day to day; "Other" is appended last by hand.
     suggested -= ALWAYS_AVAILABLE_IDS
+    if _trade_ids:
+        suggested &= _trade_ids
     suggested_ids = _strip_other(sorted(suggested, key=lambda i: (order[i], i)))
 
     # ── band 2: remembered "Other" entries for this project ──────────
@@ -177,8 +210,10 @@ def rank_activities(
 
     # ── band 4: the rest of the catalogue ────────────────────────────
     placed = set(suggested_ids) | set(always_ids) | {OTHER_ACTIVITY_ID}
+    _catalog_pool = (allowed & _trade_ids) if _trade_ids else allowed
     catalog_ids = _strip_other(
-        sorted((i for i in allowed if i not in placed), key=lambda i: (order[i], i))
+        sorted((i for i in _catalog_pool if i not in placed),
+               key=lambda i: (order[i], i))
     )
 
     chips: List[ActivityChip] = []
