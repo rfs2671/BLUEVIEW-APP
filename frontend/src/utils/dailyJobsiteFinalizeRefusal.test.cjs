@@ -230,9 +230,21 @@ async function run({ finalizeError, savedId = 'log123', saveFailed = false, loca
       error: (title, body) => calls.toasts.push({ kind: 'error', title, body }),
       warning: (title, body) => calls.toasts.push({ kind: 'warning', title, body }),
     },
-    // handleSave returns `undefined` when the save itself failed (and has
+    // persistAndPush returns `undefined` when the save itself failed (and has
     // already reported it), `null` when it only landed locally.
-    handleSave: async () => (saveFailed ? undefined : savedId),
+    // Named handleSave before the U1 stepper split saving from signing; the
+    // contract it stands in for is identical.
+    persistAndPush: async () => (saveFailed ? undefined : savedId),
+    // The stepper's own additions. `_key` moved out of this function and became
+    // a memoized value on the component; the observation gate is new, and runs
+    // BEFORE any of the finalize logic below, so it has to be satisfiable here.
+    _key: KEY,
+    observations: [],
+    incompleteObservations: () => [],
+    setStep: () => {},
+    // Real English copy, so the success-toast assertions ("back online",
+    // "amendment") test the shipped sentence rather than a stub.
+    t: (k) => I.translate('dailyJobsite', k, 'en'),
     logbooksAPI: {
       finalize: async () => { if (finalizeError) throw finalizeError; return { is_locked: true }; },
     },

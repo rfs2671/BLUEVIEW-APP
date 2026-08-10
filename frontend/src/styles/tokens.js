@@ -90,14 +90,14 @@ export const palette = Object.freeze({
 // step below is decorative chrome.
 export const alpha = Object.freeze({
   a02: 0.02, a03: 0.03, a04: 0.04, a05: 0.05, a06: 0.06,
-  a07: 0.07, a08: 0.08, a10: 0.1,  a12: 0.12, a15: 0.15,
+  a07: 0.07, a08: 0.08, a10: 0.1,  a15: 0.15,
   a20: 0.2,  a25: 0.25, a30: 0.3,  a35: 0.35, a40: 0.4,
-  a50: 0.5,  a60: 0.6,  a80: 0.8,  a90: 0.9,  a92: 0.92,
+  a50: 0.5,  a60: 0.6,  a90: 0.9,
 });
 
 // ─── tint(base, step) ────────────────────────────────────────────────────────
 // withAlpha under a shorter name. Alpha colours are always DERIVED from a
-// palette base so they cannot fork from it (the 47 hand-written rgba()
+// palette base so they cannot fork from it (the 44 hand-written rgba()
 // literals measured above are exactly that fork: `rgba(59,130,246,0.2)`,
 // `rgba(59, 130, 246, 0.1)` and `rgba(59,130,246,0.10)` are three spellings of
 // two colours, all of them palette.blue500 at an `alpha` step).
@@ -107,55 +107,56 @@ export const tint = withAlpha;
 // migration checklist, and a test can assert that `palette` × `alpha` still
 // covers all of it. `uses` is the occurrence count.
 //
+// RE-MEASURED after the U1 daily-jobsite rebuild, which moved that screen onto
+// the token file and took 14 withAlpha calls and 3 rgba() literals out of the
+// measurement with it. These numbers are the CURRENT source, not the original
+// audit snapshot.
+//
 // `via` records HOW the value is written today:
-//   'withAlpha' — already the sanctioned helper idiom (101 occurrences).
-//   'rgba'      — a hand-written rgba() string literal (47 occurrences).
+//   'withAlpha' — already the sanctioned helper idiom (87 occurrences).
+//   'rgba'      — a hand-written rgba() string literal (44 occurrences).
 // Keeping them apart matters: counting the withAlpha bases as raw colour
 // literals inflates the apparent colour debt from 47 to 148.
 export const MEASURED_TINTS = Object.freeze([
-  { base: 'white',     step: 'a02', uses: 1,  via: 'withAlpha' },
-  { base: 'white',     step: 'a03', uses: 1,  via: 'withAlpha' },
-  { base: 'white',     step: 'a04', uses: 22, via: 'withAlpha' },
-  { base: 'white',     step: 'a05', uses: 22, via: 'withAlpha' },
-  { base: 'white',     step: 'a06', uses: 6,  via: 'withAlpha' },
-  { base: 'white',     step: 'a07', uses: 1,  via: 'withAlpha' },
-  { base: 'white',     step: 'a08', uses: 13, via: 'withAlpha' },
-  { base: 'white',     step: 'a10', uses: 19, via: 'withAlpha' },
-  { base: 'white',     step: 'a12', uses: 1,  via: 'withAlpha' },
-  { base: 'white',     step: 'a15', uses: 2,  via: 'withAlpha' },
-  { base: 'white',     step: 'a20', uses: 2,  via: 'withAlpha' },
-  { base: 'white',     step: 'a80', uses: 1,  via: 'withAlpha' },
-  { base: 'black',     step: 'a04', uses: 2,  via: 'withAlpha' },
-  { base: 'black',     step: 'a06', uses: 2,  via: 'withAlpha' },
-  { base: 'black',     step: 'a60', uses: 1,  via: 'withAlpha' },
-  { base: 'black',     step: 'a90', uses: 1,  via: 'withAlpha' },
-  { base: 'red500',    step: 'a15', uses: 1,  via: 'withAlpha' },
-  { base: 'red500',    step: 'a40', uses: 1,  via: 'withAlpha' },
-  { base: 'slate400',  step: 'a10', uses: 1,  via: 'withAlpha' },
-  { base: 'slate400',  step: 'a30', uses: 1,  via: 'withAlpha' },
-
-  { base: 'blue500',   step: 'a08', uses: 1,  via: 'rgba' },
-  { base: 'blue500',   step: 'a10', uses: 4,  via: 'rgba' },
-  { base: 'blue500',   step: 'a15', uses: 5,  via: 'rgba' },
-  { base: 'blue500',   step: 'a20', uses: 8,  via: 'rgba' },
-  { base: 'blue500',   step: 'a30', uses: 3,  via: 'rgba' },
-  { base: 'blue500',   step: 'a40', uses: 3,  via: 'rgba' },
-  { base: 'blue500',   step: 'a50', uses: 4,  via: 'rgba' },
-  { base: 'blue400',   step: 'a10', uses: 1,  via: 'rgba' },
-  { base: 'blue400',   step: 'a15', uses: 1,  via: 'rgba' },
-  { base: 'blue400',   step: 'a25', uses: 1,  via: 'rgba' },
-  { base: 'blue400',   step: 'a30', uses: 1,  via: 'rgba' },
-  { base: 'blue300',   step: 'a30', uses: 1,  via: 'rgba' },
-  { base: 'blue300',   step: 'a35', uses: 1,  via: 'rgba' },
-  { base: 'blue300',   step: 'a40', uses: 1,  via: 'rgba' },
-  { base: 'cyan500',   step: 'a15', uses: 2,  via: 'rgba' },
-  { base: 'cyan500',   step: 'a20', uses: 1,  via: 'rgba' },
-  { base: 'cyan500',   step: 'a30', uses: 2,  via: 'rgba' },
-  { base: 'violet500', step: 'a15', uses: 1,  via: 'rgba' },
-  { base: 'violet500', step: 'a20', uses: 2,  via: 'rgba' },
-  { base: 'violet500', step: 'a30', uses: 1,  via: 'rgba' },
-  { base: 'violet500', step: 'a40', uses: 2,  via: 'rgba' },
-  { base: 'black',     step: 'a92', uses: 1,  via: 'rgba' },
+  { base: 'black',    step: 'a04',  uses: 2,   via: 'withAlpha' },
+  { base: 'black',    step: 'a06',  uses: 2,   via: 'withAlpha' },
+  { base: 'black',    step: 'a60',  uses: 1,   via: 'withAlpha' },
+  { base: 'black',    step: 'a90',  uses: 1,   via: 'withAlpha' },
+  { base: 'blue300',  step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'blue300',  step: 'a35',  uses: 1,   via: 'rgba' },
+  { base: 'blue300',  step: 'a40',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',  step: 'a10',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',  step: 'a15',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',  step: 'a25',  uses: 1,   via: 'rgba' },
+  { base: 'blue400',  step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'blue500',  step: 'a08',  uses: 1,   via: 'rgba' },
+  { base: 'blue500',  step: 'a10',  uses: 4,   via: 'rgba' },
+  { base: 'blue500',  step: 'a15',  uses: 5,   via: 'rgba' },
+  { base: 'blue500',  step: 'a20',  uses: 7,   via: 'rgba' },
+  { base: 'blue500',  step: 'a30',  uses: 3,   via: 'rgba' },
+  { base: 'blue500',  step: 'a40',  uses: 3,   via: 'rgba' },
+  { base: 'blue500',  step: 'a50',  uses: 3,   via: 'rgba' },
+  { base: 'cyan500',  step: 'a15',  uses: 2,   via: 'rgba' },
+  { base: 'cyan500',  step: 'a20',  uses: 1,   via: 'rgba' },
+  { base: 'cyan500',  step: 'a30',  uses: 2,   via: 'rgba' },
+  { base: 'red500',   step: 'a15',  uses: 1,   via: 'withAlpha' },
+  { base: 'red500',   step: 'a40',  uses: 1,   via: 'withAlpha' },
+  { base: 'slate400', step: 'a10',  uses: 1,   via: 'withAlpha' },
+  { base: 'slate400', step: 'a30',  uses: 1,   via: 'withAlpha' },
+  { base: 'violet500',step: 'a15',  uses: 1,   via: 'rgba' },
+  { base: 'violet500',step: 'a20',  uses: 2,   via: 'rgba' },
+  { base: 'violet500',step: 'a30',  uses: 1,   via: 'rgba' },
+  { base: 'violet500',step: 'a40',  uses: 2,   via: 'rgba' },
+  { base: 'white',    step: 'a02',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',    step: 'a03',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',    step: 'a04',  uses: 18,  via: 'withAlpha' },
+  { base: 'white',    step: 'a05',  uses: 20,  via: 'withAlpha' },
+  { base: 'white',    step: 'a06',  uses: 4,   via: 'withAlpha' },
+  { base: 'white',    step: 'a07',  uses: 1,   via: 'withAlpha' },
+  { base: 'white',    step: 'a08',  uses: 11,  via: 'withAlpha' },
+  { base: 'white',    step: 'a10',  uses: 17,  via: 'withAlpha' },
+  { base: 'white',    step: 'a15',  uses: 2,   via: 'withAlpha' },
+  { base: 'white',    step: 'a20',  uses: 2,   via: 'withAlpha' },
 ]);
 
 // ─── Type sizes ──────────────────────────────────────────────────────────────
@@ -200,7 +201,6 @@ export const fontWeight = Object.freeze({
 // (letterSpacing 2) — that spread is NOT counted here, only literals are.
 export const letterSpacing = Object.freeze({
   lsNeg1: -1,  // 1 use
-  ls03:   0.3, // 1 use
   ls05:   0.5, // 7 uses, 5 files
   ls08:   0.8, // 1 use
   ls1:    1,   // 3 uses, 3 files
@@ -224,7 +224,6 @@ export const radius = Object.freeze({
   r8:  8,  // 1 use   — theme borderRadius.sm
   r10: 10, // 1 use
   r11: 11, // 5 uses, 5 files — half of a 22x22 toggle dot (circle, not a step)
-  r13: 13, // 1 use          — half of a 26x26 badge (circle, not a step)
   r20: 20, // 1 use
 });
 
@@ -265,26 +264,22 @@ export const borderWidth = Object.freeze({
 export const opacity = Object.freeze({
   o50: 0.5,  // 4 uses, 4 files — the disabled/busy dim
   o80: 0.8,  // 2 uses, 2 files
-  o85: 0.85, // 2 uses, 1 file
   o90: 0.9,  // 1 use
 });
 
 // ─── Shadow ──────────────────────────────────────────────────────────────────
 //
-// EXACTLY ONE shadow exists across all 16 measured files
-// (app/logbooks/daily_jobsite.jsx:1475-1476). There is no shadow scale to
-// extract, so this is that single shadow, verbatim, and nothing else. The
-// theme's own per-theme `colors.shadow` block is a SEPARATE thing and is not
-// used by any of the measured screens.
-export const shadow = Object.freeze({
-  elevated: Object.freeze({
-    shadowColor:   '#000000',
-    shadowOpacity: 0.35,
-    shadowRadius:  12,
-    shadowOffset:  Object.freeze({ width: 0, height: 6 }),
-    elevation:     8,
-  }),
-});
+// NO shadow exists across the 16 measured files any more.
+//
+// There used to be exactly one (the old app/logbooks/daily_jobsite.jsx:1475-1476).
+// The U1 rebuild of that screen does not use a shadow, so the single sample
+// this scale was extrapolated from is gone. Rather than keep shipping a
+// `shadow.elevated` that nothing measures — the exact dishonesty this file's
+// test exists to catch — the export is removed. If a shadow is wanted again,
+// it is a DESIGNED value and belongs in theme.js, not in a measured scale.
+//
+// The theme's own per-theme `colors.shadow` block is a SEPARATE thing and is
+// untouched by this.
 
 export default {
   palette,
@@ -298,5 +293,4 @@ export default {
   space,
   borderWidth,
   opacity,
-  shadow,
 };

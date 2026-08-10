@@ -183,6 +183,83 @@ export default {
     chipOtherPrompt: 'What was the activity?',
     structuralSystemUnknown: 'Structural system not set for this project, so both concrete and CFS activities are shown.',
     chipsNoPriorDay: 'No earlier log to suggest from, so these are the project-start activities.',
+
+    // ── U1: the stepper ──────────────────────────────────────────────────
+    // Read by a Competent Person who is older, not technical, outdoors,
+    // gloved and one-handed. No screen may need more than twelve words read
+    // to know what to do, so these are short sentences, not instructions.
+    stepOf: 'Step {n} of {m}',
+    back: 'Back',
+    next: 'Next',
+    cancel: 'Cancel',
+    save: 'Save',
+
+    step1Title: 'Who was here',
+    step2Title: 'What each crew did',
+    step3Title: 'Safety observations',
+    step4Title: 'Site conditions',
+    step5Title: 'Review and sign',
+
+    // Step 1 — the gate roster.
+    // "Locked" has to read as PROVENANCE, not as a refusal. The CP is not
+    // being denied an edit; the app is telling him where the number came from
+    // and that it already matches the check-in record.
+    fromGate: 'From gate check-in',
+    gateLocked: 'Recorded at the gate',
+    crewsOnSite: 'Crews on site',
+    noCrews: 'No crews came through the gate for this day.',
+    addCrew: 'Add a crew the gate missed',
+    addCrewTitle: 'Add a crew',
+    correctCompany: 'Wrong company?',
+    correctCompanyTitle: 'Correct the company',
+    // Both values are kept on the row and attributed. The gate value is never
+    // overwritten, so the signed log and the check-in record cannot contradict
+    // each other — this sentence is what tells the CP that.
+    correctCompanyHint: 'The gate name is kept alongside your correction.',
+    correctedFrom: 'Gate recorded',
+    unboundCrew: 'Not on the project roster',
+    unboundCrewHint: 'Saved and flagged for an admin. It does not block this log.',
+    noCrewWorker: 'No crew assigned',
+    workers_one: '1 worker',
+    workers_other: '{n} workers',
+    checkedInAt: 'Checked in {time}',
+    checkInTimeUnknown: 'Check-in time not recorded',
+
+    // The roster-integrity warning. This is a compliance claim: a short list
+    // shown as complete is a fabricated record, so the CP is told plainly.
+    rosterPartialTitle: 'This roster may be incomplete',
+    rosterPartialBody: 'The server could not confirm the full list of who was on site. Check the crews below and add anyone missing before you sign.',
+    rosterCollapsedBody: 'Two workers with the same name at one company can be counted once. Check the worker counts below.',
+
+    // Step 2 — activity, location, then the camera.
+    activityQuestion: 'What did this crew do?',
+    locationQuestion: 'Where on site?',
+    locationOther: 'Somewhere else',
+    locationOtherPrompt: 'Where was the work?',
+    // The camera is unreachable until crew, activity and location are set, so
+    // that every photo carries all three before the shutter fires. The reason
+    // is stated rather than the button just being absent.
+    cameraLockedHint: 'Choose the activity and location first — every photo is labelled with them.',
+    photoTaggedWith: 'Photos will be labelled:',
+    photosCount_one: '1 photo',
+    photosCount_other: '{n} photos',
+
+    // Step 3 — an observation is not savable without a corrective action.
+    addObservation: 'Add an observation',
+    removeObservation: 'Remove this observation',
+    noObservations: 'No safety observations today.',
+    observationWho: 'Who is responsible?',
+    observationWhoHint: 'Pick a crew that was on site.',
+    observationRemedyRequired: 'What was done about it?',
+    observationRemedyMissing: 'Add what was done about it before saving.',
+    correctedImmediately: 'Fixed on the spot',
+
+    // Step 5 — the record read back before it is signed.
+    reviewHeading: 'Check this is right',
+    reviewNothingYet: 'Nothing recorded',
+    submitAndSign: 'Sign and close the day',
+    signingClosesDay: 'Signing locks this log. Corrections then need an amendment.',
+    savedAutomatically: 'Saved automatically',
   },
 
   // ── src/components/SignaturePad.js — 5 keys, was the local SIG_STRINGS ─────

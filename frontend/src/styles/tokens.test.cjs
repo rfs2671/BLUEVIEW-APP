@@ -59,9 +59,14 @@ function loadTokens() {
     .replace(/^export default [\s\S]*$/m, '')
     .replace(/^export const /gm, 'const ');
 
+  // `shadow` is deliberately absent: tokens.js no longer exports one (the
+  // single shadow it was extrapolated from left with the daily_jobsite
+  // rebuild). Listing it here would throw a ReferenceError rather than let the
+  // `!('shadow' in T)` assertion below do its job, so the loader collects only
+  // the scales that exist and that assertion checks the removal.
   const names = ['palette', 'alpha', 'tint', 'MEASURED_TINTS', 'fontSize',
     'fontWeight', 'letterSpacing', 'radius', 'space', 'borderWidth',
-    'opacity', 'shadow'];
+    'opacity'];
   // eslint-disable-next-line no-new-func
   return new Function(`${withAlphaSrc}\n${tokensSrc}\nreturn { ${names.join(', ')} };`)();
 }
@@ -188,7 +193,18 @@ const expand = (h) => {
   const s = String(h).toLowerCase().replace('#', '');
   return '#' + (s.length === 3 ? s.split('').map((c) => c + c).join('') : s.slice(0, 6));
 };
-bothWays('palette', measured.opaqueHex, T.palette, expand);
+// A palette colour is IN USE if it appears as a standalone opaque literal OR
+// as the base of a tint. Checking only the former reported `black` as invented
+// the moment the last bare '#000000' left the screens — while
+// withAlpha('#000000', 0.6) still depended on it. Both are real uses.
+const paletteInUse = new Map(measured.opaqueHex);
+for (const m of [measured.withAlphaPairs, measured.rgbaPairs]) {
+  for (const [k, c] of m) {
+    const base = k.split('@')[0];
+    paletteInUse.set(base, (paletteInUse.get(base) || 0) + c);
+  }
+}
+bothWays('palette', paletteInUse, T.palette, expand);
 
 // ── Tints: base × step must still reproduce every alpha colour in use ────────
 const paletteByColour = new Map(
@@ -241,13 +257,15 @@ ok(viaCounts.rgba === sum(measured.rgbaPairs),
 ok(viaCounts.rgba < viaCounts.withAlpha,
   'withAlpha idiom is counted apart from raw rgba() literals (the two must not be conflated)');
 
-// ── Shadow: the file claims there is exactly ONE ──────────────────────────────
-ok(measured.shadow.length === 1,
-  `exactly one shadow across the CP screens (found ${measured.shadow.length})`);
-ok(measured.shadow.length === 1
-  && measured.shadow[0].color === T.shadow.elevated.shadowColor
-  && measured.shadow[0].elevation === T.shadow.elevated.elevation,
-  'shadow.elevated matches the one shipped shadow verbatim');
+// ── Shadow: there is no longer one to measure ────────────────────────────────
+// tokens.js used to carry `shadow.elevated`, extrapolated from the single
+// shadow in the old daily_jobsite.jsx. The U1 rebuild of that screen dropped
+// it, so the sample is gone and the token went with it — a measured scale may
+// not keep shipping a value nothing measures.
+ok(measured.shadow.length === 0,
+  `no shadow remains across the CP screens (found ${measured.shadow.length})`);
+ok(!('shadow' in T),
+  'tokens.js no longer exports a shadow scale it cannot measure');
 
 // ── The three findings recorded in the tokens.js header ──────────────────────
 const themeSrc = fs.readFileSync(path.join(STYLES, 'theme.js'), 'utf8');
@@ -262,8 +280,14 @@ const ranked = [...measured.fontSize.entries()].sort((a, b) => b[1] - a[1]);
 const topTwo = ranked.slice(0, 2).map((e) => e[0]).sort((a, b) => a - b);
 ok(topTwo.length === 2 && topTwo[0] === 12 && topTwo[1] === 13,
   `finding (a): 12 and 13 are the two most-used font sizes (got ${JSON.stringify(topTwo)})`);
-ok(!themeSizes.has(12) && !themeSizes.has(13),
-  'finding (a): neither 12 nor 13 has an entry in theme typography.sizes');
+// RESOLVED by U1: `fine: 12` and `dense: 13` were added to theme.js
+// typography.sizes, which is what finding (a) asked for. The ranking assertion
+// above still stands (they remain the two most-used sizes, because the other
+// fifteen screens still write them as literals), but the gap that made them
+// untokenisable is closed. Flipped rather than deleted, so the fix cannot be
+// silently reverted.
+ok(themeSizes.has(12) && themeSizes.has(13),
+  'finding (a) RESOLVED: 12 and 13 now both have entries in theme typography.sizes');
 
 // (b) typography.sizes.xl (24) is referenced nowhere in app/ or src/.
 function walk(dir, out = []) {
@@ -280,9 +304,12 @@ const allSource = [...walk(path.join(FRONTEND, 'app')), ...walk(path.join(FRONTE
 // a prose mention is not a reference. Only real code counts.
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 const xlRefs = allSource.filter((p) => /sizes\.xl\b/.test(stripComments(fs.readFileSync(p, 'utf8'))));
-ok(xlRefs.length === 0,
-  `finding (b): typography.sizes.xl (24) is referenced zero times${xlRefs.length ? ` — ${JSON.stringify(xlRefs)}` : ''}`);
-ok(themeSizes.has(24), 'finding (b): ...while theme.js still defines sizes.xl = 24 (dead token)');
+// RESOLVED by U1: sizes.xl is the daily-jobsite stepper's primary-action label,
+// which the "one primary action, largest element on screen" rule requires to be
+// the biggest type on the page. It is no longer a dead token.
+ok(xlRefs.length > 0,
+  `finding (b) RESOLVED: typography.sizes.xl (24) now has real callers (${xlRefs.length})`);
+ok(themeSizes.has(24), 'finding (b): theme.js still defines sizes.xl = 24');
 
 // (c) how many of the distinct opaque literals already have an EXACT-STRING
 // hex token in theme.js. The research claim was 9 of 18; it is 5.
@@ -293,12 +320,14 @@ const distinctOpaque = [...measured.opaqueHex.keys()];
 const exactMatches = distinctOpaque.filter((h) => themeHexes.has(h));
 const colourMatches = distinctOpaque.filter((h) => themeHexes.has(expand(h))
   || [...themeHexes].some((t) => expand(t) === expand(h)));
-ok(distinctOpaque.length === 18,
-  `finding (c): 18 distinct opaque hex literals (got ${distinctOpaque.length})`);
+// Was 18 before U1. The rebuild removed the last standalone '#000000' from the
+// CP screens (it survives only as a tint base), leaving 17.
+ok(distinctOpaque.length === 17,
+  `finding (c): 17 distinct opaque hex literals (got ${distinctOpaque.length})`);
 ok(exactMatches.length === 5,
-  `finding (c): 5 of 18 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
+  `finding (c): 5 of 17 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
 ok(colourMatches.length === 6,
-  `finding (c): 6 of 18 match by colour once #fff is expanded (got ${colourMatches.length})`);
+  `finding (c): 6 of 17 match by colour once #fff is expanded (got ${colourMatches.length})`);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
