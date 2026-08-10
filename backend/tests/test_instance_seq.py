@@ -22,10 +22,15 @@ record says, and they belong to the operator. They are named DEFECT_ below so
 nobody reads a passing test as a statement that the behaviour is wanted:
 
   * a soft-deleted filing makes two live logs claim the same number;
-  * the count-then-insert is not atomic;
-  * and — found while testing the numbering, and larger than it — neither the
-    count NOR THE DEDUPE filters on company_id, so a create can land on
-    another company's unlocked logbook and overwrite it.
+  * the count-then-insert is not atomic.
+
+A THIRD WAS FOUND HERE AND IS NOW FIXED. Neither the count nor the dedupe
+filtered on company_id, and create_logbook compared no company at all — so a
+create could land on another company's unlocked logbook and $set over it. It
+surfaced as a numbering result (the new filing was not numbered 2, because
+there was no new filing). Fixed in #110; covered in full by
+test_logbook_cross_tenant_write.py. The refusal is asserted below so this file
+records how it was found rather than quietly dropping it.
 """
 
 from __future__ import annotations
@@ -259,7 +264,10 @@ class ItIsStampedOnceAndNeverRecomputed(InstanceSeqBase):
 class KnownDefects(InstanceSeqBase):
     """CURRENT behaviour, recorded so it is visible. A passing test here is
     NOT a statement that the behaviour is wanted — each is a numbering
-    decision on a filed record, which is the operator's to make."""
+    decision on a filed record, which is the operator's to make.
+
+    The third one this class used to hold — the cross-tenant clobber — is
+    fixed, and its test now asserts the refusal."""
 
     def test_DEFECT_a_deleted_filing_makes_two_logs_claim_the_same_number(self):
         """File three, delete the second, file a fourth. The count skips the
@@ -282,46 +290,53 @@ class KnownDefects(InstanceSeqBase):
         self.assertEqual(live, [1, 3, 3],
                          "two live filings claim to be the third of the day")
 
-    def test_DEFECT_another_companys_unlocked_log_is_overwritten_not_numbered(self):
-        """I went looking for a numbering bug — two companies sharing one
-        sequence, because the count_documents query has no company_id — and
-        found something larger sitting in front of it.
+    def test_the_cross_tenant_clobber_this_file_found_CANNOT_HAPPEN(self):
+        """WAS a defect, found here, fixed in #110.
 
-        THE DEDUPE HAS NO company_id EITHER (server.py, `dedupe_filter`). So
-        co1's create does not get numbered 2 behind co2's filing: it MATCHES
-        co2's row and $sets over it. The other company's logbook content is
-        replaced, and its instance_seq is left behind on top of the new
-        content.
+        I went looking for two companies sharing a sequence — the count query
+        has no company_id — and found something in front of it: the create did
+        not get NUMBERED behind the other company's row, it MATCHED that row
+        and $set over it, because the dedupe had no company_id either and
+        create_logbook compared no company at all.
 
-        Reachable only if a caller can hold a project_id belonging to another
-        company. create_logbook checks assigned_projects for role `cp` and
-        project EXISTENCE for everyone else — it never compares
-        project.company_id to the caller's. Whether a non-CP of co2 can obtain
-        a co1 project id is a question about the wider auth model and is not
-        settled here."""
-        self.db.logbooks.docs.append({
+        This asserts the DEDUPE half, which is what this file can reach: the
+        caller here is co1 acting on a co1 project, so the request is
+        legitimate and must succeed — while a co2 row sharing (project, type,
+        date) is neither matched nor touched. The 403 half, and the victim
+        document field by field, are in test_logbook_cross_tenant_write.py."""
+        stray = {
             "_id": "other_co", "project_id": PROJECT_ID, "company_id": "co2",
             "log_type": IMMEDIATE, "date": DATE, "is_deleted": False,
             "is_amendment": False, "instance_seq": 1,
             "data": {"note": "co2's record"},
-        })
+        }
+        self.db.logbooks.docs.append(dict(stray))
+
         self.create(_payload(status="submitted"))
 
-        self.assertEqual(len(self.db.logbooks.docs), 1,
-                         "co1's create inserted nothing — it landed on co2's row")
-        clobbered = self.db.logbooks.docs[0]
-        self.assertEqual(clobbered["_id"], "other_co")
-        self.assertEqual(clobbered["company_id"], "co2",
-                         "still labelled co2, now carrying co1's content")
-        self.assertEqual(clobbered["data"], {"note": "x"},
-                         "co2's record was overwritten")
-        self.assertEqual(clobbered["instance_seq"], 1,
-                         "and the number is the one co2 was stamped with")
+        self.assertEqual(len(self.db.logbooks.docs), 2,
+                         "co1's filing inserted its own row rather than landing on co2's")
+        self.assertEqual(self.db.logbooks.docs[0], stray,
+                         "co2's record is untouched, byte for byte")
+        mine = self.db.logbooks.docs[1]
+        self.assertEqual(mine["company_id"], "co1")
 
-    def test_the_count_query_omits_company_id(self):
-        """The numbering half of the same omission, asserted directly on the
-        source since the clobber above prevents it from being reachable
-        through the endpoint."""
+        # THE SURVIVING HALF, and it is now numbering only. #110 scoped the
+        # DEDUPE, which is what could destroy a record; the count_documents
+        # query above it still has no company_id, so another company's row on
+        # the same project-day still advances the number. co1's first filing
+        # is stamped 2. Nothing is overwritten and nothing is lost — the
+        # number is just wrong. Recorded, not fixed: see
+        # test_the_count_query_omits_company_id below.
+        self.assertEqual(mine["instance_seq"], 2,
+                         "co2's row still advances co1's count — numbering, not data loss")
+
+    def test_DEFECT_the_count_query_still_omits_company_id(self):
+        """The surviving half of the omission #110 fixed, and now numbering
+        only: the DEDUPE is scoped, so nothing can be overwritten, but the
+        count is not, so another company's row on the same project-day still
+        advances the number. Reachable where two companies hold rows on one
+        project — a legacy row, or a project whose company changed."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
         i = src.index('"instance_seq": (await db.logbooks.count_documents(')
         query = src[i:src.index("})) + 1", i)]
@@ -361,9 +376,14 @@ class NothingReadsIt(unittest.TestCase):
                          "instance_seq gained a reader — update this file's header")
 
     def test_it_is_not_rendered_on_any_filed_document(self):
+        """CODE lines only. The tenant fix's comment names instance_seq while
+        explaining what the clobber carried over, and a raw string count would
+        read that prose as a second reader."""
         src = (_BACKEND / "server.py").read_text(encoding="utf-8")
-        self.assertEqual(src.count("instance_seq"), 1,
-                         "one write, no renderer, no report")
+        code = [l for l in src.splitlines() if not l.strip().startswith("#")]
+        hits = [l.strip() for l in code if "instance_seq" in l]
+        self.assertEqual(len(hits), 1, f"one write, no renderer, no report: {hits}")
+        self.assertTrue(hits[0].startswith('"instance_seq":'), hits[0])
 
 
 if __name__ == "__main__":
