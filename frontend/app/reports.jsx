@@ -51,6 +51,7 @@ import { semantic, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
 import { useT } from '../src/i18n';
+import { easternToday, shiftDate } from '../src/utils/dates';
 
 const TABS = [
   { key: 'today', label: "Today's Report" },
@@ -88,7 +89,7 @@ export default function ReportsScreen() {
   const [preview, setPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewState, setPreviewState] = useState('ok');
-  const [previewDate, setPreviewDate] = useState(new Date().toISOString().split('T')[0]);
+  const [previewDate, setPreviewDate] = useState(easternToday());
 
   // History
   const [history, setHistory] = useState([]);
@@ -286,16 +287,16 @@ export default function ReportsScreen() {
   };
 
   const navigateDate = (direction) => {
-    const current = new Date(previewDate + 'T12:00:00');
-    current.setDate(current.getDate() + direction);
-    const newDate = current.toISOString().split('T')[0];
-    // Don't go into the future
-    const today = new Date().toISOString().split('T')[0];
-    if (newDate > today) return;
+    // Calendar arithmetic on a calendar string — no local Date parsing, which
+    // made the step depend on the device's zone.
+    const newDate = shiftDate(previewDate, direction);
+    // Don't go into the future. "Today" is the NEW YORK day: on the UTC one
+    // this unlocked tomorrow's report every evening after 20:00 EDT.
+    if (newDate > easternToday()) return;
     setPreviewDate(newDate);
   };
 
-  const isToday = previewDate === new Date().toISOString().split('T')[0];
+  const isToday = previewDate === easternToday();
 
   const formatDate = (dateStr) => {
     const d = new Date(dateStr + 'T12:00:00');

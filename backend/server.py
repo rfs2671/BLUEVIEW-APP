@@ -1224,6 +1224,34 @@ def get_day_range_est(date_str):
     day_start_utc = day_midnight_eastern.astimezone(timezone.utc)
     return day_start_utc, day_start_utc + timedelta(hours=24)
 
+
+def eastern_date(when=None) -> str:
+    """The NEW YORK calendar date for an instant, as 'YYYY-MM-DD'.
+
+    The date-only companion to the two range helpers above, which return
+    datetimes. It did not exist, so every caller that wanted just a day string
+    reached for `datetime.now(timezone.utc).strftime("%Y-%m-%d")` — which is
+    the UTC day, and from 20:00 EDT (19:00 EST) that is TOMORROW in New York.
+
+    Two different failures come out of that, and the second is the serious one:
+      * in a QUERY the screen asks for the wrong day and looks empty;
+      * on a RECORD a logbook is FILED stamped with tomorrow's date. That
+        persists, and an inspector reads it.
+
+    NYC DOB compliance is anchored to the New York calendar day, so this is the
+    correct default for anything that names a day. Use the UTC clock only for
+    instants (`check_in_time`, `created_at`) and for keys that merely need to be
+    unique per rotation, never for a calendar date.
+    """
+    from zoneinfo import ZoneInfo
+    when = when or datetime.now(timezone.utc)
+    return when.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+
+def eastern_today() -> str:
+    """Today's New York calendar date, as 'YYYY-MM-DD'."""
+    return eastern_date()
+
 VALID_PROJECT_CLASSES = {"regular", "major_a", "major_b"}
 
 
@@ -10014,7 +10042,11 @@ async def register_and_checkin(data: dict, request: Request):
                 "project_id": project_id,
                 "project_name": project.get("name", ""),
                 "company_id": company_id,
-                "date": now.strftime("%Y-%m-%d"),
+                # TIER 1 — this date is FILED onto a compliance record, not used
+                # for a lookup. `now` is UTC, so a worker registering at the gate
+                # after 20:00 EDT (19:00 EST) had his orientation stamped with
+                # TOMORROW's date. That persists and an inspector reads it.
+                "date": eastern_date(now),
                 "status": "draft",  # CP must add signature to submit
                 "cp_signature": None,
                 "cp_name": None,
@@ -21359,7 +21391,10 @@ async def nightly_compliance_check():
     try:
         logger.info("🔍 Nightly compliance check starting...")
         now = datetime.now(timezone.utc)
-        today = now.strftime("%Y-%m-%d")
+        # Eastern, not UTC. This job runs off-hours by design, which is exactly
+        # the window where the UTC day is already tomorrow in New York — it was
+        # checking the wrong day for missing logbooks every night.
+        today = eastern_date(now)
 
         projects = await db.projects.find({
             "status": "active", **ACTIVE_PROJECT_FILTER
@@ -24012,7 +24047,9 @@ async def _handle_dob_status(project_id: str) -> str:
 
 async def _handle_open_items(project_id: str) -> str:
     """Return uncorrected observations from today's daily log."""
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Eastern: `date` on daily_logs is a New York calendar day, so an evening
+    # query on the UTC day looked for tomorrow's log and reported none found.
+    today_str = eastern_today()
     log = await db.daily_logs.find_one({"project_id": project_id, "date": today_str})
     if not log:
         return "No daily log found for today."

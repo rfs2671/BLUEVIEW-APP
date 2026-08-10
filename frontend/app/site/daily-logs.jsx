@@ -57,6 +57,7 @@ import { colors, spacing, borderRadius, typography } from '../../src/styles/them
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, chrome, surface, withAlpha } from '../../src/styles/semanticColors';
 import { useIsWide } from '../../src/hooks/useIsDesktop';
+import { easternToday } from '../../src/utils/dates';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -82,7 +83,7 @@ const SAFETY_CHECKLIST_ITEMS = [
 // (project + log type + date) — the same key the server dedups on.
 const LOG_TYPE = 'site_daily_log';
 
-const todayStr = () => new Date().toISOString().split('T')[0];
+const todayStr = () => easternToday();
 
 export default function SiteDailyLogsScreen() {
   // Theme read at RENDER time. A module-scope StyleSheet snapshots colors.*

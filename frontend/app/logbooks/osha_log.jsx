@@ -22,6 +22,7 @@ import { freezeIfImmediate } from '../../src/utils/logbookTiming';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { easternToday } from '../../src/utils/dates';
 
 const CERT_TYPES = ['OSHA 10', 'OSHA 30', 'OSHA 40hr', 'OSHA 62hr', 'SST', 'Flagman', 'Forklift', 'Scaffold', 'Other'];
 
@@ -33,7 +34,10 @@ const EMPTY_ENTRY = () => ({
   card_number: '',
   expiration: '',
   signed: false,
-  date: new Date().toISOString().split('T')[0],
+  // TIER 1 — this date is FILED onto the OSHA/SST row, not used for a lookup.
+  // toISOString() is UTC, so an entry added after 20:00 EDT (19:00 EST) was
+  // stamped with TOMORROW's date. That persists and an inspector reads it.
+  date: easternToday(),
 });
 
 export default function OshaLogBook() {

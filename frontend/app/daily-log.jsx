@@ -68,6 +68,7 @@ import { spacing, borderRadius, typography } from '../src/styles/theme';
 import { semantic, chrome, withAlpha } from '../src/styles/semanticColors';
 import { useTheme } from '../src/context/ThemeContext';
 import HeaderBrand from '../src/components/HeaderBrand';
+import { easternToday } from '../src/utils/dates';
 
 const weatherOptions = [
   { value: 'sunny', label: 'Sunny', icon: Sun },
@@ -97,7 +98,7 @@ const LOG_TYPE = 'daily_log';
 
 // The screen has always keyed "today" off the UTC date slice; keep that exact
 // convention so the draft key and the server lookup agree with existing rows.
-const todayISO = () => new Date().toISOString().split('T')[0];
+const todayISO = () => easternToday();
 
 export default function DailyLogScreen() {
   const { colors, isDark } = useTheme();
