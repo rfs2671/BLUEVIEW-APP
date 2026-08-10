@@ -7,6 +7,7 @@ import {
   Pressable,
   TextInput,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -32,9 +33,10 @@ import OfflineNotice from '../../src/components/OfflineNotice';
 import { useToast } from '../../src/components/Toast';
 import { useAuth } from '../../src/context/AuthContext';
 import { logbooksAPI } from '../../src/utils/api';
+import { finalizeErrorCode } from '../../src/utils/draftSync';
 import { draftKey, readDraft, writeDraft, setDraftBackendId, markPending, clearPending } from '../../src/utils/logbookDrafts';
 import { freezeIfImmediate } from '../../src/utils/logbookTiming';
-import { settleFetch } from '../../src/utils/offlineState';
+import { settleFetch, isOfflineError } from '../../src/utils/offlineState';
 import { useCpProfile } from '../../src/hooks/useCpProfile';
 import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
@@ -232,6 +234,10 @@ export default function SubcontractorOrientation() {
   const [newName, setNewName] = useState('');
   const [newCompany, setNewCompany] = useState('');
   const [newTrade, setNewTrade] = useState('');
+  // {orientation, value} — the inline "assign a trade" prompt. A refusal
+  // that names no worker and offers no fix is a dead end on a screen that
+  // may list a dozen of them.
+  const [assigningTrade, setAssigningTrade] = useState(null);
   const [newOsha, setNewOsha] = useState('');
   const [newChecklist, setNewChecklist] = useState({});
   const [newOrientationNum, setNewOrientationNum] = useState('');
@@ -328,7 +334,68 @@ export default function SubcontractorOrientation() {
   // applied to the on-device draft whether or not the push lands. New
   // information later is a NEW orientation record; corrections go through the
   // amendment-as-child path.
+  /**
+   * Assign the missing trade, in place, on the row that is missing it.
+   *
+   * Written to the on-device draft FIRST so it survives with no signal, then
+   * pushed best-effort as a plain draft update — this does NOT submit. The CP
+   * signs afterwards, which is the action that files the record.
+   */
+  const handleAssignTrade = async () => {
+    const a = assigningTrade;
+    if (!a) return;
+    const trade = String(a.value || '').trim();
+    if (!trade) { setAssigningTrade(null); return; }
+    const orientation = a.orientation;
+    const nextData = { ...(orientation.data || {}), worker_trade: trade };
+    const key = draftKey({
+      projectId, logType: LOG_TYPE,
+      date: orientation.date || todayISO(),
+      workerId: workerIdOf(orientation),
+    });
+    try {
+      await writeDraft(key, { data: nextData, status: 'draft' });
+      const next = orientations.map((o) => (
+        sameRecord(o, orientation) ? { ...o, data: nextData } : o
+      ));
+      setOrientations(next);
+      await writeCachedList(projectId, next);
+
+      const id = recordIdOf(orientation);
+      if (id) {
+        try {
+          await logbooksAPI.update(id, { data: nextData, status: 'draft' });
+          await clearPending(key);
+        } catch (pushErr) {
+          await markPending(key);
+          console.warn('Trade assignment deferred (will sync on reconnect):', pushErr?.message);
+        }
+      } else {
+        await markPending(key);
+      }
+      toast.success('Trade assigned', `${nextData.worker_name || 'Worker'} — ${trade}`);
+    } catch (e) {
+      toast.error('Could not save', 'The trade was not assigned. Try again.');
+    }
+    setAssigningTrade(null);
+  };
+
+  /** A submitted orientation must name the trade the worker was oriented to do. */
+  const orientationTrade = (o) => String((o?.data || {}).worker_trade || '').trim();
+
   const handleSignExisting = async (orientation, cpSig, cpN) => {
+    // PRE-FLIGHT. The server refuses this submit (SUBMIT_MISSING_TRADE), and
+    // catching it here means the CP is not asked to sign a record that is about
+    // to be rejected — and is offered the fix on the spot instead of a dead end.
+    // The server check is still the real gate; this only saves a round trip.
+    if (!orientationTrade(orientation)) {
+      setAssigningTrade({ orientation, value: '' });
+      toast.warning(
+        'Trade required',
+        `Assign a trade for ${(orientation.data || {}).worker_name || 'this worker'} before signing.`,
+      );
+      return;
+    }
     const id = recordIdOf(orientation);
     const key = draftKey({
       projectId,
@@ -365,6 +432,38 @@ export default function SubcontractorOrientation() {
           });
           landed = true;
         } catch (pushErr) {
+          // THREE OUTCOMES, NOT TWO — the same split daily_jobsite makes on
+          // finalize. Treating a REFUSAL as "deferred" would freeze the record
+          // below and tell the CP it was signed, while the server keeps saying
+          // no and the drain has nothing queued that would ever fix it.
+          const offline = isOfflineError(pushErr);
+          const status = pushErr?.response?.status;
+          const refused = typeof status === 'number' && status >= 400 && status < 500;
+          if (refused) {
+            const code = finalizeErrorCode(pushErr);
+            const who = pushErr?.response?.data?.detail?.worker_name
+              || (orientation.data || {}).worker_name || 'this worker';
+            // Roll the optimistic state back: nothing was submitted, nothing is
+            // frozen, and the draft stays a draft so it can still be fixed.
+            await writeDraft(key, {
+              data: orientation.data || {}, cp_signature: cpSig, cp_name: cpN,
+              status: 'draft',
+            });
+            if (code === 'SUBMIT_MISSING_TRADE') {
+              setAssigningTrade({ orientation, value: '' });
+              toast.error('Trade required', `${who} has no trade assigned. Assign one, then sign.`);
+            } else {
+              toast.error('Not submitted', 'The server refused this orientation. It is still on this device and still editable.');
+            }
+            return;   // NOT frozen, NOT announced as signed
+          }
+          if (!offline) {
+            // 5xx — the server failed rather than judged. Retryable; nothing is
+            // frozen and nothing claims success.
+            console.warn('Orientation push FAILED server-side:', status);
+            toast.error('Not submitted', 'The server could not be reached properly. Try again.');
+            return;
+          }
           console.warn('Orientation signature push deferred (will sync on reconnect):', pushErr?.message);
         }
       }
@@ -871,6 +970,26 @@ export default function SubcontractorOrientation() {
 
                         {/* CP signature — add if not yet signed AND not finalized.
                             A finalized (is_locked) row must never be re-signable. */}
+                        {/* NO TRADE, NO SUBMIT. Stated on the row itself, with
+                            the fix beside it — a refusal the CP meets only
+                            after signing, on a screen listing a dozen workers,
+                            names nobody and offers nothing. */}
+                        {!isSigned && !isLocked && !String(d.worker_trade || '').trim() && (
+                          <View style={styles.tradeMissingBox}>
+                            <Text style={styles.tradeMissingTitle}>No trade assigned</Text>
+                            <Text style={styles.tradeMissingText}>
+                              This orientation cannot be signed until {d.worker_name || 'this worker'} has a trade.
+                            </Text>
+                            <Pressable
+                              style={styles.tradeAssignBtn}
+                              accessibilityRole="button"
+                              onPress={() => setAssigningTrade({ orientation: orient, value: '' })}
+                            >
+                              <Text style={styles.tradeAssignBtnText}>Assign trade</Text>
+                            </Pressable>
+                          </View>
+                        )}
+
                         {!isSigned && !isLocked && (
                           <OrientationSignaturePanel
                           onSign={(sig, name) => handleSignExisting(orient, sig, name)}
@@ -909,6 +1028,37 @@ export default function SubcontractorOrientation() {
           )}
         </ScrollView>
       </SafeAreaView>
+
+      {/* Assign the missing trade without leaving the screen. */}
+      <Modal
+        visible={!!assigningTrade}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setAssigningTrade(null)}
+      >
+        <View style={styles.tradeModalOverlay}>
+          <GlassCard style={styles.tradeModalCard}>
+            <Text style={styles.sectionTitle}>Assign a trade</Text>
+            <Text style={styles.tradeMissingText}>
+              {(assigningTrade?.orientation?.data || {}).worker_name || 'This worker'}
+              {' — the orientation cannot be signed without one.'}
+            </Text>
+            <TextInput
+              style={styles.fieldInput}
+              value={assigningTrade?.value || ''}
+              onChangeText={(v) => setAssigningTrade((prev) => ({ ...prev, value: v }))}
+              placeholder="Trade"
+              placeholderTextColor={colors.text.subtle}
+              autoCapitalize="words"
+              autoFocus
+            />
+            <View style={styles.tradeModalActions}>
+              <GlassButton title="Cancel" onPress={() => setAssigningTrade(null)} />
+              <GlassButton title="Assign" onPress={handleAssignTrade} />
+            </View>
+          </GlassCard>
+        </View>
+      </Modal>
     </AnimatedBackground>
   );
 }
@@ -1084,6 +1234,32 @@ function buildStyles(colors, isDark) {
     marginTop: spacing.sm,
   },
   orientCard: { marginBottom: spacing.sm, padding: 0, overflow: 'hidden' },
+  tradeMissingBox: {
+    marginTop: spacing.md, padding: spacing.md,
+    borderRadius: borderRadius.md, borderWidth: 1,
+    borderColor: semantic.attentionBorder, backgroundColor: semantic.attentionBg,
+    gap: spacing.xs,
+  },
+  tradeMissingTitle: {
+    fontSize: typography.sizes.sm, fontWeight: '700', color: colors.text.primary,
+  },
+  tradeMissingText: { fontSize: typography.sizes.sm, color: colors.text.secondary },
+  tradeAssignBtn: {
+    marginTop: spacing.sm, minHeight: 44, alignItems: 'center',
+    justifyContent: 'center', borderRadius: borderRadius.md,
+    borderWidth: 1, borderColor: semantic.attentionBorder,
+  },
+  tradeAssignBtnText: {
+    fontSize: typography.sizes.sm, fontWeight: '700', color: colors.text.primary,
+  },
+  tradeModalOverlay: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    padding: spacing.lg, backgroundColor: withAlpha('#000000', 0.6),
+  },
+  tradeModalCard: { width: '100%', padding: spacing.lg, gap: spacing.sm },
+  tradeModalActions: {
+    flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm,
+  },
   orientHeader: {
     flexDirection: 'row',
     alignItems: 'center',

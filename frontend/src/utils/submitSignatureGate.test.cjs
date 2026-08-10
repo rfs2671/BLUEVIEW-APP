@@ -112,10 +112,15 @@ ok(!/^\s*finalize:\s*\{/m.test(es),
 const SUBMIT_CODES = [...new Set(
   [...serverSrc.matchAll(/"code":\s*"(SUBMIT_[A-Z_]+)"/g)].map((m) => m[1]),
 )].sort();
-ok(SUBMIT_CODES.length === 2
+// Three now. SUBMIT_MISSING_TRADE joined them: a safety orientation may be
+// CREATED without a trade (the gate check-in writes one that way, and a worker
+// at the turnstile is never blocked for an admin's unfinished roster) but may
+// not be SUBMITTED without one. Same machine-code convention, no new mechanism.
+ok(SUBMIT_CODES.length === 3
   && SUBMIT_CODES.includes('SUBMIT_EMPTY_LOG')
-  && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE'),
-  `server.py returns exactly the 2 submit codes (${SUBMIT_CODES.join(', ')})`);
+  && SUBMIT_CODES.includes('SUBMIT_MISSING_CP_SIGNATURE')
+  && SUBMIT_CODES.includes('SUBMIT_MISSING_TRADE'),
+  `server.py returns exactly the 3 submit codes (${SUBMIT_CODES.join(', ')})`);
 for (const c of SUBMIT_CODES) {
   ok(en.includes(`code_${c}:`),
     `${c}: has mapped copy, so it never falls back to the generic message`);
@@ -124,7 +129,12 @@ for (const c of SUBMIT_CODES) {
 // ── 5. both server endpoints are gated, not just create ──────────────────────
 // The ordinary flow is Save Draft (POST) then Submit — which, because the log
 // exists by then, arrives as a PUT. A gate on create alone never sees it.
-const gateHits = (serverSrc.match(/SUBMIT_MISSING_CP_SIGNATURE/g) || []).length;
+// Counts RAISE SITES, not mentions: the helper that backs the trade gate names
+// this code in its docstring to explain the convention it follows, and a prose
+// mention is not a gate. Matching on the detail literal keeps that honest.
+const gateHits = (
+  serverSrc.match(/detail=\{"code": "SUBMIT_MISSING_CP_SIGNATURE"\}/g) || []
+).length;
 ok(gateHits === 2, `the signature gate exists in BOTH endpoints (${gateHits} sites)`);
 const updateFn = serverSrc.slice(
   serverSrc.indexOf('async def update_logbook'),

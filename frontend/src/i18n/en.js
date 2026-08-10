@@ -85,6 +85,15 @@ export default {
     // above: the server names the condition, the client owns the wording.
     code_SUBMIT_EMPTY_LOG: 'This log is empty. Fill it in before submitting.',
     code_SUBMIT_MISSING_CP_SIGNATURE: 'This log is not signed. Sign it before submitting.',
+    // A safety orientation may be CREATED without a trade — the gate check-in
+    // writes one that way, and a worker at the turnstile is never blocked for
+    // an admin's unfinished roster. It may not be SUBMITTED without one: the
+    // record is entirely about what this man was oriented TO do on this site.
+    // The server sends the worker's name alongside the code; the orientation
+    // screen names him and offers the fix on his row, so this generic sentence
+    // is the fallback for anywhere else the code surfaces (the reconnect drain
+    // has no screen and no row to point at).
+    code_SUBMIT_MISSING_TRADE: 'This worker has no trade assigned. Assign one before submitting the orientation.',
     // Shown under a Submit button disabled because no signature is on file. A
     // CP sets his signature by signing on the log itself — there is no separate
     // profile screen for it (nothing under app/settings or app/profile writes
