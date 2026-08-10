@@ -208,6 +208,13 @@ def _logbook(photos=None, **overrides):
 def _db_with(doc):
     db = _FakeDb()
     db.logbooks.docs = [doc]
+    # The logbook write endpoints authorize against the logbook's PROJECT now
+    # (load doc, load project, authorize — get_logbook's idiom), so a fixture
+    # with no project row is a 403. Same company as the users below, which is
+    # what makes them authorized; a missing project row deliberately fails
+    # CLOSED, and that is asserted in test_logbook_write_guards.py.
+    db.projects.docs = [{"_id": "proj1", "name": "5 Beekman",
+                         "company_id": "co_a"}]
     return db
 
 
