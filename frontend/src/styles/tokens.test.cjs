@@ -324,10 +324,15 @@ const colourMatches = distinctOpaque.filter((h) => themeHexes.has(expand(h))
 // CP screens (it survives only as a tint base), leaving 17.
 ok(distinctOpaque.length === 17,
   `finding (c): 17 distinct opaque hex literals (got ${distinctOpaque.length})`);
-ok(exactMatches.length === 5,
-  `finding (c): 5 of 17 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
-ok(colourMatches.length === 6,
-  `finding (c): 6 of 17 match by colour once #fff is expanded (got ${colourMatches.length})`);
+// Was 5. The U1 restyle added `outdoor.accent: '#60a5fa'` to theme.js — the
+// blue the app's count and status pills are drawn in — so that literal now has
+// a token where it did not before. The finding's POINT is unchanged (the
+// original research claimed 9, and it was never 9); the count moved because
+// one more literal became tokenised, which is the direction of travel.
+ok(exactMatches.length === 6,
+  `finding (c): 6 of 17 have an exact-string token in theme.js, NOT 9 (got ${exactMatches.length}: ${exactMatches.sort().join(', ')})`);
+ok(colourMatches.length === 7,
+  `finding (c): 7 of 17 match by colour once #fff is expanded (got ${colourMatches.length})`);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

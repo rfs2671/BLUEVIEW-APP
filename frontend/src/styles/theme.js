@@ -254,37 +254,63 @@ export const borderRadius = {
   full: 9999,
 };
 
-// ─── Outdoor palette — deliberately NOT theme-aware ──────────────────────────
+// ─── Outdoor palette — the app's LIGHT look, pinned ──────────────────────────
 //
-// The CP fills a logbook standing outside, often in direct sun, on his own
-// phone with whatever theme he happens to have set. Legibility there is a
-// function of contrast against sunlight, not of a preference — so these values
-// do not flip with `applyTheme`. A dark card in direct sun is unreadable no
-// matter how deliberately it was chosen.
+// WHAT THIS IS NOW. Every value below is lifted from `_light` above, or from
+// the shared components that render it (GlassCard's gradient and shadow,
+// GlassButton's icon pill). It is not a second design language: it is the app's
+// own light theme, frozen, so a screen can wear the house look without
+// inheriting the theme switch.
 //
-// This is the ONE place in the app that opts out of the theme, and it opts out
-// for a stated physical reason. It is still a token group: screens consume
-// these names, never the hex.
+// WHY IT IS PINNED RATHER THAN READ FROM `colors`. The CP fills a logbook
+// standing outside, often in direct sun, on his own phone with whatever theme
+// he happens to have set. `colors` is a live view over the ACTIVE palette, so
+// consuming it would make this screen go dark for anyone with dark mode on —
+// and a dark card in direct sun is unreadable no matter how deliberately it was
+// chosen. Legibility there is a function of sunlight, not of a preference.
 //
-// Contrast ratios against `surface` (#ffffff), sRGB:
-//   text     #111827  → 16.1:1   (WCAG AAA at every size)
-//   textSoft #374151  →  9.7:1   (AAA)
-//   textDim  #4b5563  →  7.6:1   (AAA)  — the floor; nothing dimmer is used
-// The STATE tints are here too, rather than reused from semanticColors. Those
-// are live getters over the mutable theme palette and are built as low-alpha
-// washes intended to sit on a dark glass surface; over white in sunlight they
-// wash out to nearly nothing. A warning a CP cannot see is not a warning, so
-// this group carries its own opaque, high-contrast versions.
+// This group therefore holds the same values the app shows in light mode and
+// never flips. In light mode the stepper is pixel-equivalent to a GlassCard
+// screen; in dark mode it stays readable instead of matching.
+//
+// THE VALUES ARE COPIED, NOT REFERENCED, AND THAT IS THE COST. If `_light`
+// changes, this must be updated with it — asserted by
+// src/styles/outdoorMatchesLight.test.cjs, which fails when the two drift.
+//
+// Contrast against `cardTop` (#ffffff at 0.92 over the background gradient):
+//   text      #0A1929              → 16.8:1  (WCAG AAA at every size)
+//   textSoft  rgba(10,25,41,0.75)  →  6.4:1  (AA, AAA at large)
+//   textDim   rgba(10,25,41,0.65)  →  4.8:1  (AA) — the floor; nothing dimmer
 export const outdoor = {
-  surface: '#ffffff',
-  surfaceSunk: '#f3f4f6',
-  surfaceSelected: '#1d4ed8',
-  text: '#111827',
-  textSoft: '#374151',
-  textDim: '#4b5563',
+  // Page background — the three stops AnimatedBackground paints.
+  backgroundStart: '#d0dcf0',
+  backgroundMiddle: '#D6E4F7',
+  backgroundEnd: '#ccd8ee',
+
+  // Card fill: the white→blue-100 vertical gradient GlassCard uses in light
+  // mode. NOT a flat white — the flat fill is what read as foreign.
+  cardTop: 'rgba(255, 255, 255, 0.92)',
+  cardBottom: 'rgba(219, 234, 254, 0.65)',
+  // A sunken well inside a card (read-only values, hints).
+  surfaceSunk: 'rgba(219, 234, 254, 0.45)',
+  // An opaque surface for the header strip and the footer.
+  surface: 'rgba(255, 255, 255, 0.85)',
+  surfaceSelected: '#1565C0',
+
+  text: '#0A1929',
+  textSoft: 'rgba(10, 25, 41, 0.75)',
+  textDim: 'rgba(10, 25, 41, 0.65)',
   textOnSelected: '#ffffff',
-  line: '#d1d5db',
-  lineStrong: '#9ca3af',
+
+  // The glass border — present but soft. GlassCard draws exactly this, so the
+  // "no visible border" in the brief is not what the app actually does.
+  line: 'rgba(191, 219, 254, 0.60)',
+  lineStrong: 'rgba(147, 197, 253, 0.70)',
+
+  // The accent the reference screen's count badge uses.
+  accent: '#60a5fa',
+  accentBg: 'rgba(96, 165, 250, 0.15)',
+  accentBorder: 'rgba(96, 165, 250, 0.30)',
 
   warnBg: '#fef3c7',
   warnBorder: '#d97706',
@@ -295,9 +321,17 @@ export const outdoor = {
   okBorder: '#15803d',
   ok: '#166534',
 
-  // A real modal backdrop. semantic.neutralBg is rgba(148,163,184,0.18) — a
-  // tint, not a scrim; a modal over it would read as part of the page.
-  scrim: 'rgba(17, 24, 39, 0.72)',
+  scrim: 'rgba(10, 25, 41, 0.72)',
+};
+
+// The soft diffuse card shadow, from _light.shadow + GlassCard's elevation.
+// Spread as a style object so a consumer cannot get half of it.
+export const outdoorShadow = {
+  shadowColor: 'rgba(30, 58, 138, 0.15)',
+  shadowOffset: { width: 0, height: 8 },
+  shadowOpacity: 0.15,
+  shadowRadius: 24,
+  elevation: 6,
 };
 
 // ─── Touch targets ───────────────────────────────────────────────────────────
@@ -334,4 +368,4 @@ export const typography = {
   stat:  { fontSize: 36, fontWeight: '200' },
 };
 
-export default { colors, spacing, borderRadius, typography, touchTarget, outdoor };
+export default { colors, spacing, borderRadius, typography, touchTarget, outdoor, outdoorShadow };

@@ -259,6 +259,71 @@ ok(numericRadius.length === 0,
 const jsxHex = componentBody.match(/color="#[0-9a-fA-F]{3,8}"/g) || [];
 ok(jsxHex.length === 0, `no hardcoded icon colours${jsxHex.length ? ` — ${JSON.stringify(jsxHex)}` : ''}`);
 
+// ═══ THE APP'S LOOK ══════════════════════════════════════════════════════════
+// The stepper was built against the token file and the rest of the app was not,
+// so the screen that followed the design system was the one that looked
+// foreign. It now wears the house look — GlassCard's light rendering, rebuilt
+// from tokens because GlassCard itself is theme-aware and would go dark
+// outdoors. These pin the six gaps that were measured against the reference
+// screen (app/logbooks/preshift_signin.jsx).
+console.log('\n── It looks like the rest of the app ──');
+
+// 1. BACKGROUND — AnimatedBackground's blue gradient, not a flat grey.
+ok(/<AnimatedBackground>/.test(src), 'the screen still renders AnimatedBackground');
+const scrollBlock = stylesBody.match(/\n\s{4}scroll:\s*\{([\s\S]*?)\n?\s{4}\},/);
+ok(scrollBlock && !/backgroundColor/.test(scrollBlock[1]),
+  'the scroll view paints NO background — the flat grey was hiding the gradient');
+
+// 2. CARD FILL — a white->blue vertical gradient, not a flat white.
+ok(/import \{ LinearGradient \} from 'expo-linear-gradient';/.test(src),
+  'the card uses a real gradient');
+ok(/colors=\{\[outdoor\.cardTop, outdoor\.cardBottom\]\}/.test(src),
+  'from outdoor.cardTop to outdoor.cardBottom, the values GlassCard uses');
+ok(/function Card\(\{ s, style, children \}\)/.test(src),
+  'and it is one Card component, so every surface matches');
+
+// 3. CORNER RADIUS — 32, the app's card corner, not 12.
+const cardFill = stylesBody.match(/\n\s{4}cardFill:\s*\{([\s\S]*?)\n\s{4}\},/);
+ok(cardFill && /borderRadius: borderRadius\.xxl/.test(cardFill[1]),
+  'cards round to borderRadius.xxl (32), matching GlassCard');
+
+// 4. ELEVATION — a soft diffuse shadow.
+ok(/\.\.\.outdoorShadow/.test(stylesBody),
+  'cards carry the app\'s soft shadow rather than a hairline border');
+const cardShadow = stylesBody.match(/\n\s{4}cardShadow:\s*\{([\s\S]*?)\n\s{4}\},/);
+ok(cardShadow && /\.\.\.outdoorShadow/.test(cardShadow[1]),
+  'the shadow sits on the OUTER view, away from the gradient\'s overflow clip');
+
+// 5. PADDING — generous, matching GlassCard's spacing.xl.
+ok(cardFill && /padding: spacing\.xl/.test(cardFill[1]),
+  'cards pad by spacing.xl (32), the same as GlassCard');
+
+// 6. CONTROLS — pills, and a circular back button.
+const headerBack = stylesBody.match(/\n\s{4}headerBack:\s*\{([\s\S]*?)\n\s{4}\},/);
+ok(headerBack && /borderRadius: borderRadius\.full/.test(headerBack[1]),
+  'the back arrow sits in a circular pill, like GlassButton\'s icon variant');
+for (const name of ['primaryBtn', 'secondaryBtn', 'chip', 'photoBtn', 'photoBtnGhost']) {
+  const m = stylesBody.match(new RegExp(`\\n\\s{4}${name}:\\s*\\{([\\s\\S]*?)\\n\\s{4}\\},`));
+  ok(m && /borderRadius: borderRadius\.full/.test(m[1]),
+    `${name} is pill-shaped`);
+}
+const gateBadge = stylesBody.match(/\n\s{4}gateBadge:\s*\{([\s\S]*?)\n\s{4}\},/);
+ok(gateBadge && /borderRadius: borderRadius\.full/.test(gateBadge[1])
+  && /outdoor\.accentBg/.test(gateBadge[1]),
+'status reads as a small rounded pill badge, in the app\'s accent');
+
+// THE RESTYLE DID NOT COST THE TOUCH TARGETS. A pill is visually smaller than
+// a rectangle at the same height; the floor is unchanged regardless.
+for (const name of ['chip', 'input', 'secondaryBtn', 'photoBtn', 'photoBtnGhost',
+  'headerBack', 'toggleRow']) {
+  const m = stylesBody.match(new RegExp(`\\n\\s{4}${name}:\\s*\\{([\\s\\S]*?)\\n\\s{4}\\},`));
+  ok(m && /touchTarget\.min/.test(m[1]),
+    `${name} still carries the 56pt floor after the restyle`);
+}
+const pb = stylesBody.match(/\n\s{4}primaryBtn:\s*\{([\s\S]*?)\n\s{4}\},/);
+ok(pb && /touchTarget\.primary/.test(pb[1]),
+  'the primary action still carries the larger 72pt target');
+
 // ═══ THE EASTERN DATE RULE ═══════════════════════════════════════════════════
 console.log('\n── Eastern dates ──');
 
