@@ -450,15 +450,72 @@ ok(/weather_fetch_state: weatherFetchState/.test(code),
 
 // The manual chooser is GONE. With it gone, a silent failure would leave the CP
 // unable to fill the field at all — which is why the failure state came first.
+//
+// WEATHER LIVES ON STEP 1 NOW, with the crews and the equipment: it is a fact
+// about what the day was, not a site condition the CP is asked to assess.
+const step1 = code.slice(code.indexOf('const renderStep1'), code.indexOf('const renderStep2'));
 const step4 = code.slice(code.indexOf('const renderStep4'), code.indexOf('const renderStep5'));
-ok(!/WEATHER_OPTIONS\.map/.test(step4),
-  'Step 4 no longer renders weather as a tappable chooser');
+ok(!/WEATHER_OPTIONS\.map/.test(code),
+  'weather is nowhere rendered as a tappable chooser');
 ok(!/setWeather\(weather === w/.test(code),
   'nothing on the screen sets weather by hand');
-ok(/weatherUnavailableTitle/.test(step4),
-  'a failed fetch is STATED on the step, not left looking unanswered');
-ok(/weatherUnavailableOffline/.test(step4),
+ok(/weatherUnavailableTitle/.test(step1),
+  'a failed fetch is STATED on Step 1, not left looking unanswered');
+ok(/weatherUnavailableOffline/.test(step1),
   'and offline is distinguished from a server that answered badly');
+ok(!/weatherUnavailableTitle/.test(step4),
+  'and weather is no longer asked for on Step 4 — it moved, it was not copied');
+
+// ═══ THE FIVE STEPS, AND WHAT IS ON EACH ═════════════════════════════════════
+console.log('\n── The restructure: what was on site, and what was walked ──');
+
+const step3code = code.slice(code.indexOf('const renderStep3'), code.indexOf('const renderStep4'));
+
+// STEP 1 — what was on site: crews, equipment, weather.
+ok(/EQUIPMENT_ITEMS\.map/.test(step1),
+  'equipment is answered on Step 1 — a hoist being present is the same kind of fact as a man being present');
+ok(!/EQUIPMENT_ITEMS\.map/.test(step4) && !/EQUIPMENT_ITEMS\.map/.test(step3code),
+  'and it appears exactly once — it moved, it was not copied');
+ok(/toggleEquipment/.test(step1) && /equipment_on_site: equipmentOnSite/.test(code),
+  'the key is unchanged: both PDF renderers read equipment_on_site');
+
+// STEP 3 — observations, plus who came onto the site who was not working on it.
+ok(/sectionVisitors/.test(step3code) && !/sectionVisitors/.test(step4),
+  'visitors / deliveries / inspections sits with the observations');
+ok(/Visitors \/ Deliveries \/ Inspections/.test(en),
+  "an INSPECTOR turning up is an arrival, and the heading says so");
+ok(/visitors_deliveries: visitorsDeliveries/.test(code),
+  'and that key is unchanged too');
+
+// STEP 4 — the nine walked inspections. THE POINT: a tick could say the CP
+// looked; it could never say what he found.
+ok(/CHECKLIST_ITEMS\.map/.test(step4),
+  'Step 4 renders the nine items');
+ok(!/CHECKLIST_ITEMS\.map/.test(step1) && !/CHECKLIST_ITEMS\.map/.test(step3code),
+  'and only Step 4 does');
+ok(/inspectionRow\(checklistItems, it\.key\)/.test(step4),
+  'each item is read through the shared rule, not re-derived on the screen');
+ok(/INSPECTION_PASS/.test(step4) && /INSPECTION_FAIL/.test(step4),
+  'pass and fail are both offered');
+ok(!/toggleChecklist/.test(code),
+  'the old tick-toggle is GONE — a tick beside "Fall Protections" reads as "fine"');
+
+// A FAILED INSPECTION MUST SAY WHAT FAILED.
+ok(/inspectionNoteRequired/.test(step4) && /phInspectionNote/.test(step4),
+  'a fail opens a note field');
+ok(/noteMissing && \(/.test(step4),
+  'and an un-noted fail is flagged on the card itself');
+ok(/const badInspections = incompleteInspections\(checklistItems\);/.test(code),
+  'signing checks every inspection');
+ok(/setStep\(4\);/.test(code),
+  'and an un-noted fail sends the CP back to the step that has it, rather than refusing at the signature');
+
+// NOT WALKED IS NOT A PASS — asserted on the review, which is what he signs.
+const step5i = code.slice(code.indexOf('const renderStep5'));
+ok(/reviewInspectionsNotWalked/.test(step5i),
+  'the review names the items he did NOT walk — a missing item is not a passed one');
+ok(/errorText/.test(step5i) && /inspectionFail/.test(step5i),
+  'and a fail is called a fail, in red, on the screen he signs');
 
 const step5w = code.slice(code.indexOf('const renderStep5'));
 ok(/weatherFetchState === 'ok' && weather/.test(step5w),
