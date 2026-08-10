@@ -212,6 +212,10 @@ export default {
     // Step 4 — the nine items, walked. A tick could only say the CP LOOKED;
     // on a filed 3301-02 that reads as "this is fine", with no way to say
     // otherwise. Pass, fail, or not walked — and a fail says what failed.
+    // The progress pips carry a third state and colour alone is a weak
+    // signal outdoors, so the row says it out loud to a screen reader.
+    stepsIncomplete: 'Steps {steps} are started but not finished.',
+    stepsAllComplete: 'Every step you have been through is complete.',
     inspectionsHint: 'Tap Pass or Fail for each. Leave an item blank if you did not walk it.',
     inspectionPass: 'Pass',
     inspectionFail: 'Fail',

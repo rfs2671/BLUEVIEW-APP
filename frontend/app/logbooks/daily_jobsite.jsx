@@ -89,6 +89,7 @@ import {
   INSPECTION_PASS, INSPECTION_FAIL, inspectionRow, incompleteInspections,
   deriveGeneralDescription,
   observationComplete, incompleteObservations, formatLogDate, formatCheckInTime,
+  stepComplete,
   rosterKey,
 } from '../../src/utils/dailyJobsiteModel';
 
@@ -632,6 +633,22 @@ export default function DailyJobsiteLog() {
     () => deriveGeneralDescription(activities, chipTrades),
     [activities, chipTrades],
   );
+
+  /**
+   * The steps he has WALKED PAST and left unfinished.
+   *
+   * stepComplete has been a tested pure function called by nothing: its own
+   * docstring claimed it drove the progress marks, and the marks were purely
+   * positional (`n <= step`). So a crew with no work described first appeared
+   * as "— Nothing yet" on the review, with nothing before it.
+   *
+   * `n < step`, not `n <= step`: the step he is standing on is work in
+   * progress, not an omission.
+   */
+  const stepsLeftIncomplete = useMemo(() => {
+    const state = { activities, observations, checklistItems, cpSignature };
+    return [1, 2, 3, 4, 5].filter((n) => n < step && !stepComplete(n, state));
+  }, [step, activities, observations, checklistItems, cpSignature]);
 
   // THE CP IS ATTESTING TO THIS SENTENCE, so the app may draft it and may not
   // write it for him. The draft only lands in the record when he has been on
@@ -1885,10 +1902,37 @@ export default function DailyJobsiteLog() {
           </View>
         </View>
 
-        {/* Progress — marks only. It never gates. */}
-        <View style={s.progressRow}>
+        {/* Progress — marks only. It NEVER gates: a CP who cannot complete a
+            step because the data is not there must still be able to finish and
+            sign his day.
+
+            THREE STATES, because position and completeness are different
+            questions and one pip used to answer only the first:
+              unfilled  not reached yet
+              filled    reached
+              amber     reached, LEFT, and still incomplete
+
+            Amber is for a step he has MOVED PAST. The step he is standing on
+            is not marked incomplete while he is filling it in — that would
+            scold him for work in progress. */}
+        <View
+          style={s.progressRow}
+          accessibilityRole="progressbar"
+          accessibilityLabel={
+            stepsLeftIncomplete.length
+              ? t('stepsIncomplete').replace('{steps}', stepsLeftIncomplete.join(', '))
+              : t('stepsAllComplete')
+          }
+        >
           {[1, 2, 3, 4, 5].map((n) => (
-            <View key={n} style={[s.progressPip, n <= step && s.progressPipOn]} />
+            <View
+              key={n}
+              style={[
+                s.progressPip,
+                n <= step && s.progressPipOn,
+                stepsLeftIncomplete.includes(n) && s.progressPipWarn,
+              ]}
+            />
           ))}
         </View>
 
@@ -2167,6 +2211,10 @@ function buildStyles() {
       backgroundColor: outdoor.line,
     },
     progressPipOn: { backgroundColor: outdoor.surfaceSelected },
+    // Reached, left, and still incomplete. Last in the style array so it
+    // wins over progressPipOn — an incomplete step he has walked past is
+    // the more important of the two things the pip can say.
+    progressPipWarn: { backgroundColor: outdoor.warn },
 
     // NO background colour. The flat grey was covering AnimatedBackground's
     // blue-tinted gradient, which is what made this screen read as foreign

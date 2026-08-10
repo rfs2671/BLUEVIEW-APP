@@ -181,7 +181,7 @@ ok(/const chipsFor = \(a\) => chipsByTrade\[String\(a\?\.trade \|\| ''\)\.trim\(
   'each crew reads its OWN trade list, keyed on its trade');
 ok(/const myChips = chipsFor\(a\);/.test(code),
   'Step 2 renders that list, not a shared one');
-ok(!/chips\.filter\(/.test(code),
+ok(!/chips\.filter\(/.test(code),
   'no single project-wide chip list survives');
 // One fetch per DISTINCT trade, not one per crew.
 ok(/\[\.\.\.new Set\(/.test(code) && /wanted\.map/.test(code),
@@ -516,6 +516,39 @@ ok(/reviewInspectionsNotWalked/.test(step5i),
   'the review names the items he did NOT walk — a missing item is not a passed one');
 ok(/errorText/.test(step5i) && /inspectionFail/.test(step5i),
   'and a fail is called a fail, in red, on the screen he signs');
+
+// ═══ THE PROGRESS PIPS SAY WHAT IS UNFINISHED ════════════════════════════════
+// stepComplete was a tested pure function CALLED BY NOTHING, with a docstring
+// claiming it drove these marks. The marks were purely positional, so a crew
+// with no work described first surfaced as "— Nothing yet" on the review, with
+// nothing before it.
+console.log('\n── Progress pips: position AND completeness ──');
+
+ok(/stepComplete/.test(code), 'the screen actually calls the rule now');
+ok(/import \{[^}]*stepComplete[^}]*\} from '\.\.\/\.\.\/src\/utils\/dailyJobsiteModel'/s
+  .test(code), 'and imports it from the model rather than restating the rule');
+ok(/n < step && !stepComplete\(n, state\)/.test(code),
+  'a step he is STANDING ON is work in progress, not an omission — n < step, not n <= step');
+ok(/stepsLeftIncomplete\.includes\(n\) && s\.progressPipWarn/.test(code),
+  'the third pip state is applied');
+ok(/progressPipWarn: \{ backgroundColor: outdoor\.warn \}/.test(stylesBody),
+  'and it comes from the token file, not a literal');
+// Order matters: the warn style is listed after progressPipOn so it wins.
+// Sliced from the array's own brackets, and BOTH indexes must be real: an
+// earlier version of this test sliced up to the first 'progressPipWarn', so a
+// swapped array left indexOf('progressPipOn') at -1 and the assertion passed
+// on the mutation it existed to catch.
+const pipStart = code.indexOf('s.progressPip,');
+const pipArr = code.slice(pipStart, code.indexOf(']}', pipStart));
+const onAt = pipArr.indexOf('progressPipOn');
+const warnAt = pipArr.indexOf('progressPipWarn');
+ok(onAt > -1 && warnAt > -1 && onAt < warnAt,
+  'an incomplete step he walked past outranks "reached" in the style array');
+// Colour alone is a weak signal outdoors in sunlight.
+ok(/accessibilityRole="progressbar"/.test(code) && /stepsIncomplete/.test(code),
+  'the row says it out loud too, rather than relying on colour alone');
+ok(/state = \{ activities, observations, checklistItems, cpSignature \}/.test(code),
+  'and every input the rule reads is supplied — a missing one reads as complete');
 
 const step5w = code.slice(code.indexOf('const renderStep5'));
 ok(/weatherFetchState === 'ok' && weather/.test(step5w),
