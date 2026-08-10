@@ -22,6 +22,7 @@ import { settleFetch } from '../../src/utils/offlineState';
 import { spacing, borderRadius, typography } from '../../src/styles/theme';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
 import { useTheme } from '../../src/context/ThemeContext';
+import { easternToday } from '../../src/utils/dates';
 
 export default function SiteDeviceHomeScreen() {
   const { colors, isDark } = useTheme();
@@ -61,8 +62,8 @@ export default function SiteDeviceHomeScreen() {
   const fetchCounts = async () => {
     if (!siteProject?.id) return;
 
-    // Get today's date for filtering logs
-    const today = new Date().toISOString().split('T')[0];
+    // Get today's date for filtering logs — the NEW YORK day, not the UTC one.
+    const today = easternToday();
 
     // Each count settles INDEPENDENTLY — the old shared try meant a failed logs
     // read skipped the check-in read entirely, so one dead endpoint reported

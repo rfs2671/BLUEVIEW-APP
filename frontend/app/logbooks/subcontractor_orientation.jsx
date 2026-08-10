@@ -40,6 +40,7 @@ import { recordSignatureEvent } from '../../src/utils/signatureAudit';
 import { colors, spacing, borderRadius, typography } from '../../src/styles/theme';
 import { useTheme } from '../../src/context/ThemeContext';
 import { semantic, withAlpha } from '../../src/styles/semanticColors';
+import { easternToday } from '../../src/utils/dates';
 
 const LANGUAGE_LABELS = {
   en: 'English',
@@ -112,7 +113,7 @@ const LOG_TYPE = 'subcontractor_orientation';
 const LIST_CACHE_PREFIX = 'bv_orientations:';
 const DRAFT_PTR_PREFIX = 'bv_orientation_draft_ptr:';
 
-const todayISO = () => new Date().toISOString().split('T')[0];
+const todayISO = () => easternToday();
 
 const recordIdOf = (o) => o?.id || o?._id || null;
 const workerIdOf = (o) => o?.data?.worker_id || null;
